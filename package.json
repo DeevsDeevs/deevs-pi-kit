@@ -13,7 +13,8 @@
   ],
   "pi": {
     "extensions": [
-      "./extensions/*.ts"
+      "./extensions/*.ts",
+      "./extensions/*/index.ts"
     ],
     "skills": [
       "./skills"
@@ -21,6 +22,9 @@
     "prompts": [
       "./prompts/*.md"
     ]
+  },
+  "dependencies": {
+    "@mariozechner/pi-ai": "*"
   },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*"
