@@ -15,7 +15,7 @@ export function createAlertSink(pi: ExtensionAPI, config: ProcessesConfig): (eve
 		pi.sendMessage(
 			{
 				customType: "background-tasks",
-				content: formatProcessEvent(event),
+				content: formatProcessEvent(event, triggerTurn, event.triggerTurn && !triggerTurn),
 				display: true,
 				details: event,
 			},
@@ -24,11 +24,31 @@ export function createAlertSink(pi: ExtensionAPI, config: ProcessesConfig): (eve
 	};
 }
 
-function formatProcessEvent(event: ProcessManagerEvent): string {
+function formatProcessEvent(event: ProcessManagerEvent, triggerTurn: boolean, rateLimited: boolean): string {
+	const suffix = rateLimited ? "\nAgent wake-up skipped: alert rate limit reached." : triggerTurn ? "\nAgent wake-up queued." : "";
+
 	switch (event.type) {
-		case "watch_match":
-			return `Process ${event.process.id} (${event.process.name}) matched watch "${event.pattern}".`;
-		case "process_exit":
-			return `Process ${event.process.id} (${event.process.name}) exited with status ${event.process.status}.`;
+		case "watch_match": {
+			const header = `${event.process.name} (${event.process.id})`;
+			const text = event.text ? `\nMatched output: ${truncateOneLine(event.text, 240)}` : "";
+			return `Watch matched for ${header}: "${event.pattern}".${text}${suffix}`;
+		}
+		case "process_exit": {
+			const process = event.process;
+			const header = `${process.name} (${process.id})`;
+			const exit = process.signal || process.exitCode === null ? "" : ` exit=${process.exitCode}`;
+			const signal = process.signal ? ` signal=${process.signal}` : "";
+			const logs = process.logFile ? `\nLogs: ${process.logFile}` : "";
+			return `Process finished: ${header} status=${process.status}${exit}${signal}.${logs}${suffix}`;
+		}
+		case "shutdown_cleanup": {
+			const names = event.processes.map((process) => `${process.name} (${process.id})`).join(", ");
+			return `Stopped ${event.processes.length} non-persistent background task(s) for ${event.reason}: ${names}.`;
+		}
 	}
+}
+
+function truncateOneLine(value: string, maxLength: number): string {
+	const line = value.replace(/\s+/g, " ").trim();
+	return line.length <= maxLength ? line : `${line.slice(0, maxLength - 3)}...`;
 }

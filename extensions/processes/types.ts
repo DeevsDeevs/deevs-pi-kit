@@ -1,5 +1,6 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import type { ProcessLogWriter } from "./logs.ts";
+import type { PtyProcessHandle } from "./pty-runner.ts";
 import type { RuntimeWatch } from "./watches.ts";
 
 export type ProcessStatus =
@@ -49,13 +50,25 @@ export interface WatchSpec {
 	triggerTurn?: boolean;
 }
 
-export interface ProcessManagerEvent {
-	type: "watch_match" | "process_exit";
-	process: ManagedProcessInfo;
-	pattern?: string;
-	text?: string;
-	triggerTurn: boolean;
-}
+export type ProcessManagerEvent =
+	| {
+		type: "watch_match";
+		process: ManagedProcessInfo;
+		pattern: string;
+		text: string;
+		triggerTurn: boolean;
+	}
+	| {
+		type: "process_exit";
+		process: ManagedProcessInfo;
+		triggerTurn: boolean;
+	}
+	| {
+		type: "shutdown_cleanup";
+		processes: ManagedProcessInfo[];
+		reason: string;
+		triggerTurn: false;
+	};
 
 export interface ManagedProcessInfo {
 	id: string;
@@ -100,7 +113,7 @@ export interface StartProcessInput {
 	cwd?: string;
 	waitMs?: number;
 	maxBytes?: number;
-	backend?: "pipe" | "pty";
+	backend?: "pipe" | "pty" | "tmux";
 	env?: Record<string, string>;
 	persistent?: boolean;
 	alertOnExit?: boolean;
@@ -167,6 +180,11 @@ export interface SpawnedProcess {
 
 export interface ManagedProcessInternal extends ManagedProcessInfo {
 	child: ChildProcessWithoutNullStreams | null;
+	ptyProcess: PtyProcessHandle | null;
 	logWriter: ProcessLogWriter | null;
+	tmuxSession: string | null;
+	tmuxLastCapture: string;
+	tmuxPollTimer: NodeJS.Timeout | null;
 	watches: RuntimeWatch[];
+	suppressNextExitEvent?: boolean;
 }

@@ -400,7 +400,7 @@ Parameters:
   cwd?: string;
   waitMs?: number;
   maxBytes?: number;
-  backend?: "pipe" | "pty";
+  backend?: "pipe" | "pty" | "tmux";
   env?: Record<string, string>;
   persistent?: boolean;
   alertOnExit?: boolean;
@@ -531,7 +531,8 @@ Clears terminal process records and optionally deletes logs.
 
 - `/proc` — process panel or simple list summary
 - `/proc:read [id|name]` — show recent output
-- `/proc:kill [id|name]` — graceful stop
+- `/proc:kill [id|name|--all]` — graceful stop
+- `/proc:kill-all` — graceful stop for all running managed processes
 - `/proc:signal [id|name] [signal]` — explicit signal
 - `/proc:logs [id|name]` — show log paths or open log viewer
 - `/proc:clear [id|name|--exited]` — clear records/logs
@@ -762,20 +763,28 @@ Persistence should not be implemented until session-scoped process management is
 
 ## Implementation status
 
-Started:
+Done or working:
 
 - Phase 0 scaffold.
 - Phase 1 core pipe manager.
-- Selected Phase 2 controls: `proc_write`, `proc_signal`, `proc_clear`, and bash background blocker.
-- Phase 3 bounded disk logs with `proc_logs` and `/proc:logs`.
-- Phase 4 substring/regex watches and alert messages.
+- Phase 2 controls/safety: `proc_write`, `proc_signal`, `proc_clear`, cwd validation, process caps, and bash background blocker.
+- Phase 3 bounded disk logs with `proc_logs` and `/proc:logs` tail output.
+- Phase 4 substring/regex watches, improved `background-tasks` alert messages, and persisted one-shot watch state for persistent tasks.
+- Phase 5 command parity including `/proc:list`, `/proc:signal`, `/proc:kill-all`, `/proc:dock`, and stream-selectable `/proc:logs`.
+- Phase 6 PTY backend via node-pty.
+- Phase 7 rich UI: `/proc` overlay panel, `/proc:dock` widget, `/proc:logs` searchable log overlay, and `/proc:settings` session settings.
+- Phase 8 persistence/reattach for tmux-backed tasks, including persisted one-shot watch state and avoiding old tmux pane replay as new output after restore.
+- Phase 9 tmux backend for terminal-style/persistence-capable process sessions.
 
-Not started:
+Remaining:
 
-- rich UI
-- PTY backend
-- persistence/reattach
-- tmux backend
+- persistent package-level settings storage.
+- formal automated test suite.
+
+UI note:
+
+- `ctx.ui.setWidget()` widgets are status/dock surfaces, not focused navigation surfaces.
+- Interactive navigation belongs in `ctx.ui.custom()` overlays; `/proc` opens that overlay panel.
 
 ## Implementation phases
 
@@ -940,8 +949,8 @@ extensions/processes/pty-runner.ts
 
 Tasks:
 
-- evaluate `node-pty` packaging with pi packages
-- make PTY dependency optional if possible
+- use `node-pty` as an optional dependency
+- make PTY fail clearly if `node-pty` is unavailable
 - add backend selection
 - support terminal size config
 - improve SIGINT/stdin behavior
@@ -959,14 +968,14 @@ Success criteria:
 Files:
 
 ```text
-extensions/processes/ui/*
+extensions/processes/ui.ts
 ```
 
 Tasks:
 
 - process panel
 - process picker
-- log overlay
+- searchable log overlay
 - dock/status widget
 - settings command
 
@@ -1058,9 +1067,9 @@ Success criteria:
 - `v0.3.0` — bounded disk logs
 - `v0.4.0` — watches/alerts
 - `v0.5.0` — user commands/UI basics
-- `v0.6.0` — PTY backend experimental
+- `v0.6.0` — PTY backend
 - `v0.7.0` — rich UI/dock
-- `v0.8.0` — persistence experimental
+- `v0.8.0` — persistence
 
 ### Compatibility
 
@@ -1082,7 +1091,7 @@ Mitigation: bounded memory ring; max log bytes; chunk caps; truncation notices.
 
 ### Native PTY dependency pain
 
-Mitigation: pipe backend first; PTY optional and experimental; keep package usable without native dependency.
+Mitigation: pipe backend first; PTY optional; keep package usable without native dependency.
 
 ### Platform-specific process semantics
 
@@ -1129,5 +1138,5 @@ The full plugin is done when:
 - bash background hacks are blocked/guided
 - user can inspect and kill from commands/UI
 - watches can notify user/agent without spam
-- PTY mode works for common dev tools or is clearly experimental
+- PTY mode works for common dev tools or is clearly marked as optional
 - disabling/removing the plugin leaves no surprise processes behind
