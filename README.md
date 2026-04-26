@@ -4,7 +4,7 @@ Perfect pi kit to be 10x Deevs' engineer.
 
 This is Deevs' portable [pi](https://pi.dev) package.
 
-It is intentionally empty for now: add prompts, skills, extensions, and themes as the workflow evolves.
+It starts minimal and grows only with tools that earn their keep.
 
 ## Install
 
@@ -33,6 +33,30 @@ pi install git:github.com/DeevsDeevs/deevs-pi-kit -l
 ├── skills/       # Agent skills, each with SKILL.md
 └── package.json  # pi package manifest
 ```
+
+## Extensions
+
+### Managed background processes
+
+A first implementation lives in `extensions/processes/`.
+
+Current tools:
+
+- `proc_start`
+- `proc_read`
+- `proc_list`
+- `proc_write`
+- `proc_signal`
+- `proc_clear`
+
+Current commands:
+
+- `/proc`
+- `/proc:read [id|name]`
+- `/proc:kill [id|name]`
+- `/proc:clear [id|name|--exited]`
+
+Full roadmap: [`docs/processes-plugin-plan.md`](docs/processes-plugin-plan.md).
 
 ## Development
 
