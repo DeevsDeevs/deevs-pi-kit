@@ -1,0 +1,28 @@
+{
+  "name": "deevs-pi-kit",
+  "version": "0.1.0",
+  "description": "Perfect pi kit to be 10x Deevs' engineer",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "coding-agent",
+    "agent-skills"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/*.ts"
+    ],
+    "skills": [
+      "./skills"
+    ],
+    "prompts": [
+      "./prompts/*.md"
+    ]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*"
+  }
+}
