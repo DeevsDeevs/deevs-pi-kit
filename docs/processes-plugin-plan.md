@@ -767,11 +767,11 @@ Started:
 - Phase 0 scaffold.
 - Phase 1 core pipe manager.
 - Selected Phase 2 controls: `proc_write`, `proc_signal`, `proc_clear`, and bash background blocker.
+- Phase 3 bounded disk logs with `proc_logs` and `/proc:logs`.
+- Phase 4 substring/regex watches and alert messages.
 
 Not started:
 
-- disk logs
-- watches/alerts
 - rich UI
 - PTY backend
 - persistence/reattach

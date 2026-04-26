@@ -4,6 +4,7 @@ import type { ProcessManager } from "./manager.ts";
 import type {
 	ClearProcessInput,
 	ListProcessInput,
+	LogsProcessInput,
 	ReadProcessInput,
 	SignalProcessInput,
 	StartProcessInput,
@@ -60,10 +61,16 @@ const ListSchema = Type.Object({
 	includePersistent: Type.Optional(Type.Boolean()),
 });
 
+const LogsSchema = Type.Object({
+	id: Type.String({ description: "Process ID" }),
+	stream: Type.Optional(StringEnum(["stdout", "stderr", "combined"] as const)),
+	maxBytes: Type.Optional(Type.Number({ description: "Maximum log tail bytes to return" })),
+});
+
 const ClearSchema = Type.Object({
 	id: Type.Optional(Type.String({ description: "Terminal process ID to clear" })),
 	allExited: Type.Optional(Type.Boolean({ description: "Clear all terminal process records" })),
-	deleteLogs: Type.Optional(Type.Boolean({ description: "Reserved for disk logs" })),
+	deleteLogs: Type.Optional(Type.Boolean({ description: "Delete log files for cleared records" })),
 });
 
 export function registerProcessTools(pi: ExtensionAPI, manager: ProcessManager): void {
@@ -151,6 +158,22 @@ export function registerProcessTools(pi: ExtensionAPI, manager: ProcessManager):
 	});
 
 	pi.registerTool({
+		name: "proc_logs",
+		label: "Process Logs",
+		description: "Return bounded disk log file paths and sizes for a managed process.",
+		promptSnippet: "Get log file paths for a managed background process.",
+		promptGuidelines: ["Use proc_logs when buffered proc_read output is insufficient and disk logging is available."],
+		parameters: LogsSchema,
+		async execute(_toolCallId, params: LogsProcessInput) {
+			const logs = await manager.logs(params);
+			return {
+				content: [{ type: "text", text: logs ? formatLogs(logs) : "No logs for this process." }],
+				details: { logs },
+			};
+		},
+	});
+
+	pi.registerTool({
 		name: "proc_clear",
 		label: "Clear Process",
 		description: "Clear terminal managed process records. Running processes are never cleared.",
@@ -158,13 +181,25 @@ export function registerProcessTools(pi: ExtensionAPI, manager: ProcessManager):
 		promptGuidelines: ["Use proc_clear only for exited/signaled/failed process records; stop running processes with proc_signal first."],
 		parameters: ClearSchema,
 		async execute(_toolCallId, params: ClearProcessInput) {
-			const result = manager.clear(params);
+			const result = await manager.clear(params);
 			return {
 				content: [{ type: "text", text: `Cleared ${result.cleared.length} process record(s).` }],
 				details: result,
 			};
 		},
 	});
+}
+
+function formatLogs(logs: Awaited<NonNullable<ReturnType<ProcessManager["logs"]>>>): string {
+	const header = [
+		`stream:   ${logs.stream}`,
+		`combined: ${logs.logFile}`,
+		`stdout:   ${logs.stdoutLogFile}`,
+		`stderr:   ${logs.stderrLogFile}`,
+		`bytes:    ${logs.bytesWritten}/${logs.maxBytes}${logs.truncated ? " truncated" : ""}`,
+		`tail:     ${logs.contentBytes} bytes${logs.truncatedFromStart ? " (truncated from start)" : ""}`,
+	].join("\n");
+	return logs.content ? `${header}\n\n${logs.content}` : `${header}\n\n(no log output)`;
 }
 
 function formatStartResult(result: Awaited<ReturnType<ProcessManager["start"]>>): string {

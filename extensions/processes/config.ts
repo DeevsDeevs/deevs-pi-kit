@@ -74,7 +74,7 @@ export const defaultConfig: ProcessesConfig = {
 		allowNetworkListeners: true,
 	},
 	logs: {
-		enabled: false,
+		enabled: true,
 		rotate: true,
 	},
 	alerts: {

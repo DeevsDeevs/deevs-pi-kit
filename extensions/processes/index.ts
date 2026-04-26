@@ -1,4 +1,5 @@
 import { isToolCallEventType, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { createAlertSink } from "./alerts.ts";
 import { defaultConfig } from "./config.ts";
 import { registerProcessCommands } from "./commands.ts";
 import { ProcessManager } from "./manager.ts";
@@ -8,7 +9,7 @@ import { registerProcessTools } from "./tools.ts";
 
 export default function deevsProcessesExtension(pi: ExtensionAPI): void {
 	const config = defaultConfig;
-	const manager = new ProcessManager(config);
+	const manager = new ProcessManager(config, createAlertSink(pi, config));
 
 	registerProcessTools(pi, manager);
 	registerProcessCommands(pi, manager);
