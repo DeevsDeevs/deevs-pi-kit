@@ -16,7 +16,7 @@ export interface ProcessesConfig {
 	execution: {
 		shellPath?: string;
 		allowCwdOutsideProject: boolean;
-		defaultBackend: "pipe" | "pty";
+		defaultBackend: "pipe" | "pty" | "tmux";
 		allowPty: boolean;
 		killOnShutdown: boolean;
 		killOnReload: boolean;
@@ -43,6 +43,8 @@ export interface ProcessesConfig {
 		dockEnabled: boolean;
 		dockHeight: number;
 		followLogs: boolean;
+		terminalCols: number;
+		terminalRows: number;
 	};
 }
 
@@ -62,10 +64,10 @@ export const defaultConfig: ProcessesConfig = {
 	execution: {
 		allowCwdOutsideProject: false,
 		defaultBackend: "pipe",
-		allowPty: false,
+		allowPty: true,
 		killOnShutdown: true,
 		killOnReload: true,
-		persistentEnabled: false,
+		persistentEnabled: true,
 	},
 	safety: {
 		blockBackgroundBash: true,
@@ -87,6 +89,8 @@ export const defaultConfig: ProcessesConfig = {
 		dockEnabled: false,
 		dockHeight: 10,
 		followLogs: true,
+		terminalCols: 120,
+		terminalRows: 30,
 	},
 };
 

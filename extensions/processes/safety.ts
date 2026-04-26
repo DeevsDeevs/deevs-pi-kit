@@ -30,7 +30,9 @@ export function validateStartInput(input: StartProcessInput, config: ProcessesCo
 		throw new Error("proc_start argv entries must be non-empty strings");
 	}
 	if (input.backend === "pty" && !config.execution.allowPty) throw new Error("PTY backend is not enabled yet");
+	if ((input.backend === "tmux" || input.persistent) && input.env) throw new Error("tmux backend does not support env overlays yet");
 	if (input.persistent && !config.execution.persistentEnabled) throw new Error("Persistent processes are not enabled yet");
+	if (input.persistent && input.backend && input.backend !== "tmux") throw new Error("Persistent processes require the tmux backend");
 	if ((input.watches?.length ?? 0) > config.limits.maxWatchesPerProcess) {
 		throw new Error(`Too many watches; max is ${config.limits.maxWatchesPerProcess}`);
 	}

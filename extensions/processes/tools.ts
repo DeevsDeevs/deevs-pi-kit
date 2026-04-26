@@ -26,7 +26,7 @@ const StartSchema = Type.Object({
 	cwd: Type.Optional(Type.String({ description: "Working directory; defaults to current project" })),
 	waitMs: Type.Optional(Type.Number({ description: "Initial wait for output/exit, capped by config" })),
 	maxBytes: Type.Optional(Type.Number({ description: "Maximum output bytes to return" })),
-	backend: Type.Optional(StringEnum(["pipe", "pty"] as const)),
+	backend: Type.Optional(StringEnum(["pipe", "pty", "tmux"] as const)),
 	env: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "Environment overlay" })),
 	persistent: Type.Optional(Type.Boolean()),
 	alertOnExit: Type.Optional(Type.Boolean()),
