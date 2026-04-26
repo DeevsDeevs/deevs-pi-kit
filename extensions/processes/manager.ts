@@ -1,15 +1,19 @@
 import { EventEmitter } from "node:events";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { clampReadBytes, clampWaitMs, type ProcessesConfig } from "./config.ts";
+import { ProcessLogWriter, readLogTail, type ProcessLogRead } from "./logs.ts";
 import { OutputBuffer } from "./output-buffer.ts";
 import { signalProcess, signalProcessGroup, spawnPipeProcess } from "./runner.ts";
 import { resolveCwd, validateStartInput } from "./safety.ts";
+import { compileWatches, findWatchMatches } from "./watches.ts";
 import type {
 	ClearProcessInput,
 	ListProcessInput,
+	LogsProcessInput,
 	ManagedProcessInfo,
 	ManagedProcessInternal,
 	OutputStream,
+	ProcessManagerEvent,
 	ReadProcessInput,
 	ReadResult,
 	SignalProcessInput,
@@ -27,7 +31,10 @@ export class ProcessManager {
 	private pendingStarts = 0;
 	private shuttingDown = false;
 
-	constructor(private readonly config: ProcessesConfig) {
+	constructor(
+		private readonly config: ProcessesConfig,
+		private readonly onProcessEvent?: (event: ProcessManagerEvent) => void,
+	) {
 		this.events.setMaxListeners(200);
 	}
 
@@ -79,7 +86,8 @@ export class ProcessManager {
 				lastOutputAt: null,
 			},
 			child: null,
-			watches: input.watches ? [...input.watches] : [],
+			logWriter: null,
+			watches: compileWatches(input.watches, this.config),
 		};
 
 		const buffer = new OutputBuffer({
@@ -87,6 +95,14 @@ export class ProcessManager {
 			maxChunkBytes: this.config.limits.maxChunkBytes,
 		});
 		Object.defineProperty(processRecord, "output", { value: buffer, enumerable: false });
+
+		processRecord.logWriter = await ProcessLogWriter.create({ id, name: processRecord.name, cwd, config: this.config });
+		if (processRecord.logWriter) {
+			const logs = processRecord.logWriter.info();
+			processRecord.logFile = logs.logFile;
+			processRecord.stdoutLogFile = logs.stdoutLogFile;
+			processRecord.stderrLogFile = logs.stderrLogFile;
+		}
 
 		this.processes.set(id, processRecord);
 		this.releaseReservedLiveSlot();
@@ -186,6 +202,7 @@ export class ProcessManager {
 			if ((error as NodeJS.ErrnoException).code === "ESRCH") {
 				processRecord.status = "unknown";
 				processRecord.endedAt = Date.now();
+				void processRecord.logWriter?.close();
 				return this.toInfo(processRecord);
 			}
 			throw error;
@@ -196,14 +213,19 @@ export class ProcessManager {
 			await this.waitForTerminal(processRecord.id, timeoutMs);
 			if (!TERMINAL_STATUSES.has(processRecord.status)) {
 				processRecord.status = "kill_timeout";
-				processRecord.endedAt = Date.now();
 			}
 		}
 
 		return this.toInfo(processRecord);
 	}
 
-	clear(input: ClearProcessInput): { cleared: string[]; remaining: ManagedProcessInfo[] } {
+	async logs(input: LogsProcessInput): Promise<ProcessLogRead | null> {
+		const info = this.get(input.id).logWriter?.info();
+		if (!info) return null;
+		return readLogTail(info, { stream: input.stream, maxBytes: clampReadBytes(input.maxBytes, this.config) });
+	}
+
+	async clear(input: ClearProcessInput): Promise<{ cleared: string[]; remaining: ManagedProcessInfo[] }> {
 		const cleared: string[] = [];
 		const targets = input.allExited
 			? [...this.processes.values()].filter((processRecord) => TERMINAL_STATUSES.has(processRecord.status))
@@ -213,6 +235,8 @@ export class ProcessManager {
 
 		for (const processRecord of targets) {
 			if (!TERMINAL_STATUSES.has(processRecord.status)) throw new Error(`Refusing to clear running process: ${processRecord.id}`);
+			await processRecord.logWriter?.close();
+			if (input.deleteLogs) await processRecord.logWriter?.deleteFiles();
 			this.processes.delete(processRecord.id);
 			cleared.push(processRecord.id);
 		}
@@ -265,8 +289,19 @@ export class ProcessManager {
 		const processRecord = this.processes.get(id);
 		if (!processRecord) return;
 		const chunk = this.bufferOf(processRecord).append(stream, data);
+		const logBytes = processRecord.logWriter?.append(stream, chunk.text) ?? 0;
+		for (const match of findWatchMatches(processRecord.watches, stream, chunk.text, this.config.alerts.repeatWatchCooldownMs)) {
+			this.onProcessEvent?.({
+				type: "watch_match",
+				process: this.toInfo(processRecord),
+				pattern: match.watch.pattern,
+				text: match.text,
+				triggerTurn: match.watch.triggerTurn ?? true,
+			});
+		}
 		if (stream === "stdout") processRecord.stats.stdoutBytes += chunk.byteLength;
 		else processRecord.stats.stderrBytes += chunk.byteLength;
+		processRecord.stats.logBytes += logBytes;
 		processRecord.stats.bufferedBytes = this.bufferOf(processRecord).bufferedBytes;
 		processRecord.stats.droppedBytes = this.bufferOf(processRecord).droppedByteCount;
 		processRecord.stats.lastOutputAt = chunk.time;
@@ -279,19 +314,37 @@ export class ProcessManager {
 		processRecord.status = "failed";
 		processRecord.endedAt = Date.now();
 		this.appendOutput(id, "stderr", Buffer.from(`${error.message}\n`));
+		void processRecord.logWriter?.close();
 		this.events.emit(this.eventName(id));
+		this.maybeEmitExitEvent(processRecord, false);
 	}
 
 	private markExited(id: string, code: number | null, childSignal: NodeJS.Signals | null): void {
 		const processRecord = this.processes.get(id);
 		if (!processRecord || TERMINAL_STATUSES.has(processRecord.status)) return;
+		const wasKilling = processRecord.status === "killing" || processRecord.status === "kill_timeout";
 		processRecord.exitCode = code;
 		processRecord.signal = childSignal;
 		processRecord.endedAt = Date.now();
 		processRecord.stdinOpen = false;
 		processRecord.status = childSignal ? "signaled" : "exited";
+		void processRecord.logWriter?.close();
 		this.events.emit(this.eventName(id));
+		this.maybeEmitExitEvent(processRecord, wasKilling);
 		this.enforceExitedRecordLimit();
+	}
+
+	private maybeEmitExitEvent(processRecord: ManagedProcessInternal, wasKilling: boolean): void {
+		const failed = !wasKilling && (processRecord.status === "failed" || processRecord.status === "signaled" || (processRecord.exitCode ?? 0) !== 0);
+		const triggerTurn = failed ? processRecord.alertPolicy.alertOnFailure : processRecord.alertPolicy.alertOnExit;
+		if (!triggerTurn && !processRecord.alertPolicy.alertOnExit) return;
+		if (failed && !processRecord.alertPolicy.alertOnFailure) return;
+
+		this.onProcessEvent?.({
+			type: "process_exit",
+			process: this.toInfo(processRecord),
+			triggerTurn,
+		});
 	}
 
 	private async waitForChange(id: string, afterSeq: number, waitMs: number, signal?: AbortSignal): Promise<void> {
@@ -398,7 +451,10 @@ export class ProcessManager {
 			.sort((a, b) => (a.endedAt ?? 0) - (b.endedAt ?? 0));
 		while (exited.length > this.config.limits.maxExitedRecords) {
 			const oldest = exited.shift();
-			if (oldest) this.processes.delete(oldest.id);
+			if (oldest) {
+				void oldest.logWriter?.close();
+				this.processes.delete(oldest.id);
+			}
 		}
 	}
 

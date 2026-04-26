@@ -40,6 +40,8 @@ pi install git:github.com/DeevsDeevs/deevs-pi-kit -l
 
 A first implementation lives in `extensions/processes/`.
 
+Current support includes bounded memory output, disk log tails, process watches/alerts, and shutdown cleanup.
+
 Current tools:
 
 - `proc_start`
@@ -47,6 +49,7 @@ Current tools:
 - `proc_list`
 - `proc_write`
 - `proc_signal`
+- `proc_logs`
 - `proc_clear`
 
 Current commands:
@@ -54,6 +57,7 @@ Current commands:
 - `/proc`
 - `/proc:read [id|name]`
 - `/proc:kill [id|name]`
+- `/proc:logs [id|name]`
 - `/proc:clear [id|name|--exited]`
 
 Full roadmap: [`docs/processes-plugin-plan.md`](docs/processes-plugin-plan.md).

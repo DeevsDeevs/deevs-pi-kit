@@ -44,6 +44,24 @@ export function registerProcessCommands(pi: ExtensionAPI, manager: ProcessManage
 		},
 	});
 
+	pi.registerCommand("proc:logs", {
+		description: "Show log tail for a managed process",
+		getArgumentCompletions: (prefix) => completeProcessIds(manager, prefix),
+		handler: async (args, ctx) => {
+			const idOrName = args.trim();
+			if (!idOrName) {
+				ctx.ui.notify("Usage: /proc:logs [id|name]", "warning");
+				return;
+			}
+			try {
+				const logs = await manager.logs({ id: manager.resolveId(idOrName), maxBytes: 16_384 });
+				ctx.ui.notify(logs ? formatLogs(logs) : "No logs for this process.", "info");
+			} catch (error) {
+				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+			}
+		},
+	});
+
 	pi.registerCommand("proc:clear", {
 		description: "Clear exited managed process records",
 		getArgumentCompletions: (prefix) => ["--exited", ...manager.list({ includeExited: true, includePersistent: true }).map((p) => p.id)]
@@ -56,13 +74,25 @@ export function registerProcessCommands(pi: ExtensionAPI, manager: ProcessManage
 				return;
 			}
 			try {
-				const result = value === "--exited" ? manager.clear({ allExited: true }) : manager.clear({ id: manager.resolveId(value) });
+				const result = value === "--exited" ? await manager.clear({ allExited: true }) : await manager.clear({ id: manager.resolveId(value) });
 				ctx.ui.notify(`Cleared ${result.cleared.length} process record(s).`, "info");
 			} catch (error) {
 				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 			}
 		},
 	});
+}
+
+function formatLogs(logs: Awaited<NonNullable<ReturnType<ProcessManager["logs"]>>>): string {
+	const header = [
+		`stream:   ${logs.stream}`,
+		`combined: ${logs.logFile}`,
+		`stdout:   ${logs.stdoutLogFile}`,
+		`stderr:   ${logs.stderrLogFile}`,
+		`bytes:    ${logs.bytesWritten}/${logs.maxBytes}${logs.truncated ? " truncated" : ""}`,
+		`tail:     ${logs.contentBytes} bytes${logs.truncatedFromStart ? " (truncated from start)" : ""}`,
+	].join("\n");
+	return logs.content ? `${header}\n\n${logs.content}` : `${header}\n\n(no log output)`;
 }
 
 function completeProcessIds(manager: ProcessManager, prefix: string): Array<{ value: string; label: string }> {

@@ -1,4 +1,6 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import type { ProcessLogWriter } from "./logs.ts";
+import type { RuntimeWatch } from "./watches.ts";
 
 export type ProcessStatus =
 	| "starting"
@@ -45,6 +47,14 @@ export interface WatchSpec {
 	stream?: "stdout" | "stderr" | "both";
 	repeat?: boolean;
 	triggerTurn?: boolean;
+}
+
+export interface ProcessManagerEvent {
+	type: "watch_match" | "process_exit";
+	process: ManagedProcessInfo;
+	pattern?: string;
+	text?: string;
+	triggerTurn: boolean;
 }
 
 export interface ManagedProcessInfo {
@@ -125,6 +135,12 @@ export interface ListProcessInput {
 	includePersistent?: boolean;
 }
 
+export interface LogsProcessInput {
+	id: string;
+	stream?: "stdout" | "stderr" | "combined";
+	maxBytes?: number;
+}
+
 export interface ClearProcessInput {
 	id?: string;
 	allExited?: boolean;
@@ -151,5 +167,6 @@ export interface SpawnedProcess {
 
 export interface ManagedProcessInternal extends ManagedProcessInfo {
 	child: ChildProcessWithoutNullStreams | null;
-	watches: WatchSpec[];
+	logWriter: ProcessLogWriter | null;
+	watches: RuntimeWatch[];
 }
