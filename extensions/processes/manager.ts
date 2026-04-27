@@ -34,6 +34,7 @@ import type {
 } from "./types.ts";
 
 const TERMINAL_STATUSES = new Set(["exited", "signaled", "failed", "orphaned", "unknown"]);
+const OUTPUT_CHANGE_THROTTLE_MS = 250;
 
 export class ProcessManager {
 	private readonly processes = new Map<string, ManagedProcessInternal>();
@@ -43,6 +44,7 @@ export class ProcessManager {
 	private pendingStarts = 0;
 	private stateFile: string | null = null;
 	private shuttingDown = false;
+	private changeTimer: NodeJS.Timeout | null = null;
 
 	constructor(
 		private readonly config: ProcessesConfig,
@@ -62,6 +64,10 @@ export class ProcessManager {
 
 	notifySettingsChanged(): void {
 		this.emitChange();
+	}
+
+	isShuttingDown(): boolean {
+		return this.shuttingDown;
 	}
 
 	async restore(ctx: ExtensionContext): Promise<void> {
@@ -418,7 +424,7 @@ export class ProcessManager {
 		processRecord.stats.droppedBytes = this.bufferOf(processRecord).droppedByteCount;
 		processRecord.stats.lastOutputAt = chunk.time;
 		this.events.emit(this.eventName(id));
-		this.emitChange();
+		this.emitChange(OUTPUT_CHANGE_THROTTLE_MS);
 	}
 
 	private markFailed(id: string, error: Error): void {
@@ -714,7 +720,21 @@ export class ProcessManager {
 		this.pendingStarts = Math.max(0, this.pendingStarts - 1);
 	}
 
-	private emitChange(): void {
+	private emitChange(throttleMs = 0): void {
+		if (throttleMs <= 0) {
+			this.flushChange();
+			return;
+		}
+		if (this.changeTimer) return;
+		this.changeTimer = setTimeout(() => this.flushChange(), throttleMs);
+		this.changeTimer.unref?.();
+	}
+
+	private flushChange(): void {
+		if (this.changeTimer) {
+			clearTimeout(this.changeTimer);
+			this.changeTimer = null;
+		}
 		for (const listener of this.changeListeners) listener();
 	}
 

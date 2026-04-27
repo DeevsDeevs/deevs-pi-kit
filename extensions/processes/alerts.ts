@@ -6,22 +6,37 @@ export function createAlertSink(pi: ExtensionAPI, config: ProcessesConfig): (eve
 	const sentAt: number[] = [];
 
 	return (event) => {
+		const displayEvent = filterSuppressedProcesses(event, config);
+		if (!displayEvent) return;
+
 		const now = Date.now();
 		while (sentAt.length > 0 && now - sentAt[0]! > 60_000) sentAt.shift();
 
-		const triggerTurn = event.triggerTurn && sentAt.length < config.alerts.maxAgentTurnsPerMinute;
+		const triggerTurn = displayEvent.triggerTurn && sentAt.length < config.alerts.maxAgentTurnsPerMinute;
 		if (triggerTurn) sentAt.push(now);
 
 		pi.sendMessage(
 			{
 				customType: "background-tasks",
-				content: formatProcessEvent(event, triggerTurn, event.triggerTurn && !triggerTurn),
+				content: formatProcessEvent(displayEvent, triggerTurn, displayEvent.triggerTurn && !triggerTurn),
 				display: true,
-				details: event,
+				details: displayEvent,
 			},
 			{ triggerTurn, deliverAs: "followUp" },
 		);
 	};
+}
+
+function filterSuppressedProcesses(event: ProcessManagerEvent, config: ProcessesConfig): ProcessManagerEvent | null {
+	if (event.type === "process_exit") return isSuppressedProcess(event.process.name, config) ? null : event;
+	if (event.type !== "shutdown_cleanup") return event;
+
+	const processes = event.processes.filter((process) => !isSuppressedProcess(process.name, config));
+	return processes.length > 0 ? { ...event, processes } : null;
+}
+
+function isSuppressedProcess(name: string, config: ProcessesConfig): boolean {
+	return config.alerts.suppressNotificationsForNamePrefixes.some((prefix) => name.startsWith(prefix));
 }
 
 function formatProcessEvent(event: ProcessManagerEvent, triggerTurn: boolean, rateLimited: boolean): string {
