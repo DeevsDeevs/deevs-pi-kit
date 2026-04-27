@@ -137,8 +137,8 @@ export function registerChainTools(pi: ExtensionAPI, service: ChainService): voi
 		async execute(_toolCallId, params: ChainSearchInput) {
 			const mode = params.mode ?? (params.regex ? "regex" : "lookup");
 			if (mode === "lookup") {
-				const result = await service.lookup(params);
-				return { content: [{ type: "text", text: formatLookup(result) }], details: result };
+				const result = await service.rankedSearch(params);
+				return { content: [{ type: "text", text: formatRankedSearch(result) }], details: result };
 			}
 			const result = await service.search({ ...params, regex: mode === "regex" });
 			return { content: [{ type: "text", text: formatSearch(result) }], details: result };
@@ -177,7 +177,7 @@ export function formatSearch(result: Awaited<ReturnType<ChainService["search"]>>
 	return [`Search (${mode}): ${result.query}`, ...lines].join("\n\n");
 }
 
-export function formatLookup(result: Awaited<ReturnType<ChainService["lookup"]>>): string {
+export function formatRankedSearch(result: Awaited<ReturnType<ChainService["rankedSearch"]>>): string {
 	if (result.matches.length === 0) return `No relevant chain links for: ${result.query}`;
 	const lines = result.matches.map((match, index) => [
 		`${index + 1}. ${match.link.chain}/${match.link.filename}@${match.link.branch} score=${match.score.toFixed(3)} lexical=${match.lexicalScore.toFixed(3)} recency=${match.recencyScore.toFixed(3)}`,

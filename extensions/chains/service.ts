@@ -9,9 +9,6 @@ import type {
 	ChainForkResult,
 	ChainLinkInfo,
 	ChainListInput,
-	ChainLookupInput,
-	ChainLookupMatch,
-	ChainLookupResult,
 	ChainListItem,
 	ChainLoadInput,
 	ChainLoadResult,
@@ -160,7 +157,7 @@ export class ChainService {
 		return { query, matches, truncated: false, regex: Boolean(input.regex) };
 	}
 
-	async lookup(input: ChainLookupInput): Promise<ChainLookupResult> {
+	async rankedSearch(input: RankedSearchInput): Promise<RankedSearchResult> {
 		const query = validateQuery(input.query);
 		const branch = input.branch ? validateBranchName(input.branch) : undefined;
 		const maxResults = clamp(input.maxResults ?? DEFAULT_MAX_RESULTS, 1, MAX_RESULTS);
@@ -183,7 +180,7 @@ export class ChainService {
 			for (const term of queryTermSet) if (doc.termFrequency.has(term)) documentFrequency.set(term, (documentFrequency.get(term) ?? 0) + 1);
 		}
 		const averageLength = docs.reduce((sum, doc) => sum + doc.length, 0) / docs.length || 1;
-		const matches: ChainLookupMatch[] = [];
+		const matches: RankedSearchMatch[] = [];
 		for (const doc of docs) {
 			const matchedTerms = [...queryTermSet].filter((term) => doc.termFrequency.has(term));
 			if (matchedTerms.length === 0) continue;
@@ -245,7 +242,7 @@ export class ChainService {
 		if (input.searchQuery?.trim()) {
 			const searchMode = input.searchMode ?? "lookup";
 			if (searchMode === "lookup") {
-				const lookup = await this.lookup({ chain: loaded.link.chain, branch: loaded.link.branch, query: input.searchQuery, maxResults: input.maxSearchMatches ?? DEFAULT_CONTEXT_SEARCH_MATCHES });
+				const lookup = await this.rankedSearch({ chain: loaded.link.chain, branch: loaded.link.branch, query: input.searchQuery, maxResults: input.maxSearchMatches ?? DEFAULT_CONTEXT_SEARCH_MATCHES });
 				searchMatches = lookup.matches.map((match) => ({ link: match.link, line: Number(match.snippet.split(":", 1)[0]) || 1, snippet: match.snippet }));
 				if (lookup.matches.length > 0) append(`\n## Relevant hits for ${JSON.stringify(input.searchQuery)}\n${lookup.matches.map((match) => `### ${match.link.filename} score=${match.score.toFixed(3)}\n${match.snippet}`).join("\n\n")}\n`);
 			} else {
@@ -459,6 +456,30 @@ function validateQuery(value: string): string {
 function clampFloat(value: number, min: number, max: number): number {
 	if (!Number.isFinite(value)) return min;
 	return Math.max(min, Math.min(value, max));
+}
+
+interface RankedSearchInput {
+	query: string;
+	chain?: string;
+	branch?: string;
+	maxResults?: number;
+	recencyHalfLifeDays?: number;
+	recencyWeight?: number;
+}
+
+interface RankedSearchMatch {
+	link: ChainLinkInfo;
+	score: number;
+	lexicalScore: number;
+	recencyScore: number;
+	matchedTerms: string[];
+	snippet: string;
+}
+
+interface RankedSearchResult {
+	query: string;
+	matches: RankedSearchMatch[];
+	truncated: boolean;
 }
 
 interface LookupDocument {
