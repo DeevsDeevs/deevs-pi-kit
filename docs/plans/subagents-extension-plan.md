@@ -921,9 +921,11 @@ c             clear search
 q/esc         close/back
 ```
 
-### `/agents:dock`
+### Footer status and `/agents:dock`
 
-Disabled by default.
+A compact footer status is shown while subagents are active, e.g. `subagents: 3 running / 1 group`, and cleared when idle.
+
+`/agents:dock` is disabled by default.
 
 Commands:
 

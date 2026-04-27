@@ -1,65 +1,96 @@
-# Subagents Extension
+# Subagents
 
-Curated Deevs staff agents for Pi. Subagents run as managed background jobs on top of the `processes` extension.
+Curated Deevs staff agents for Pi. Each subagent runs as a managed background job backed by the `processes` extension.
 
-## Built-in staff
+## Staff
 
-- `explorer` — targeted code/context recon
-- `architect` — design and migration planning
-- `reviewer` — strict correctness/security/performance review
-- `tester` — test strategy and validation gaps
-- `devops` — runtime/config/process/deployment investigation
-- `python-dev` — Python-specific review
-- `cpp-dev` — C++ correctness/UB/performance review
-- `rust-dev` — Rust ownership/async/API review
-- `anti-slop` — remove AI-generated complexity and noise
+```text
+explorer    code/context reconnaissance
+architect   design and migration planning
+reviewer    correctness/security/performance review
+tester      test strategy and validation gaps
+devops      runtime/config/process/deployment investigation
+python-dev  Python-specific review
+cpp-dev     C++ correctness/UB/performance review
+rust-dev    Rust ownership/async/API review
+anti-slop   remove AI-generated complexity and noise
+```
+
+## Defaults
+
+- read-only unless `allowWrite: true` is explicitly passed
+- completion/failure/timeout messages wake the parent agent
+- backing process notifications are suppressed to avoid duplicate alerts
+- active runs show a compact footer status
+- `/agents` opens the dashboard when runs exist, otherwise the staff catalog
 
 ## Tools
 
-- `agent_list`
-- `agent_start`
-- `agent_parallel_start`
-- `agent_read`
-- `agent_status`
-- `agent_stop`
-- `agent_logs`
-- `agent_clear`
-
-Subagents are read-only by default. Pass `allowWrite: true` only when writes were explicitly requested.
-
-Subagent completion/failure/timeout notifications wake the parent agent by default. Backing `agent:`/`agent-group:` process notifications are suppressed so users do not get duplicate background-task alerts for the same subagent lifecycle event.
+```text
+agent_list            list available staff agents
+agent_start           start one background subagent
+agent_parallel_start  start a parallel group
+agent_read            read friendly output, or raw process chunks
+agent_status          inspect runs/groups
+agent_stop            stop a run/group
+agent_logs            inspect artifacts or backing process logs
+agent_clear           clear completed records/artifacts
+```
 
 ## Commands
 
 ```text
-/agents                 # dashboard/status when runs exist, staff catalog otherwise
-/agents:catalog         # staff catalog browser
-/agents:list            # text staff catalog
-/agents:run explorer -- Map this feature
-/agents:parallel reviewer,tester,anti-slop -- Review current diff
-/agents:status
-/agents:read a_...
-/agents:stop a_...
-/agents:logs a_... result
-/agents:clear a_...
-/agents:dock show
+/agents                       dashboard/status if runs exist; catalog otherwise
+/agents:catalog               staff browser
+/agents:browse                alias for /agents:catalog
+/agents:list                  text staff list
+/agents:run <agent> -- <task>
+/agents:parallel a,b -- <task>
+/agents:status                run/group dashboard
+/agents:read <id> [--raw]
+/agents:logs <id> [source]
+/agents:stop <id>
+/agents:clear <id|--completed> [--delete-artifacts]
+/agents:dock [show|hide|toggle]
 /agents:settings
+```
+
+Log sources:
+
+```text
+result  task  system-prompt  metadata  combined  stdout  stderr
+```
+
+## Examples
+
+```json
+{
+  "agent": "explorer",
+  "task": "Map how the process extension starts and reads managed processes."
+}
+```
+
+```json
+{
+  "tasks": [
+    { "agent": "reviewer", "task": "Review the current diff for correctness." },
+    { "agent": "tester", "task": "Find missing validation coverage." },
+    { "agent": "anti-slop", "task": "Identify avoidable complexity in the current diff." }
+  ],
+  "concurrency": 3
+}
+```
+
+```text
+/agents:parallel reviewer,tester,anti-slop -- Review current diff
 ```
 
 ## Runtime model
 
-Each run launches a child Pi process in JSON print mode using:
-
-- `--no-skills`
-- `--no-extensions`
-- explicit child safety runtime extension
-- `--append-system-prompt`
-- run-specific `--session-dir`
-
-Run artifacts live under:
+Subagents launch child Pi processes in isolated JSON-print mode with a run-specific session directory and safety runtime. Artifacts live under:
 
 ```text
 ${PI_CODING_AGENT_DIR:-~/.pi/agent}/subagent-runs/<project-hash>/<run-id>/
 ```
 
-The status index is session-scoped/in-memory for MVP, matching `/proc:settings` and non-persistent process records.
+The live status index is session-scoped/in-memory. Artifacts remain on disk until cleared with `deleteArtifacts` / `--delete-artifacts`.

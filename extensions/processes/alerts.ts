@@ -36,6 +36,10 @@ function filterSuppressedProcesses(event: ProcessManagerEvent, config: Processes
 }
 
 function isSuppressedProcess(name: string, config: ProcessesConfig): boolean {
+	return isSuppressedProcessName(name, config);
+}
+
+export function isSuppressedProcessName(name: string, config: ProcessesConfig): boolean {
 	return config.alerts.suppressNotificationsForNamePrefixes.some((prefix) => name.startsWith(prefix));
 }
 

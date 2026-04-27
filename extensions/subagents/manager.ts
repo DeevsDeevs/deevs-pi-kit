@@ -375,6 +375,7 @@ export class SubagentManager {
 			run.timer = setTimeout(() => void this.timeoutRun(run.id), timeoutMs);
 			run.timer.unref?.();
 			this.writeRunMetadata(run);
+			this.emitChange();
 			if (run.cancelRequested || group?.cancelRequested) {
 				run.cancelRequested = true;
 				await this.processManager.signal({ id: run.procId, signal: "SIGTERM", tree: true, timeoutMs: 1000 });
