@@ -23,13 +23,14 @@ anti-slop   remove AI-generated complexity and noise
 - backing process notifications are suppressed to avoid duplicate alerts
 - active runs show a compact footer status
 - `/agents` opens the dashboard when runs exist, otherwise the staff catalog
+- optional `chainContext` is packed by the parent and prepended to the task
 
 ## Tools
 
 ```text
 agent_list            list available staff agents
-agent_start           start one background subagent
-agent_parallel_start  start a parallel group
+agent_start           start one background subagent; accepts optional chainContext
+agent_parallel_start  start a parallel group; each task accepts optional chainContext
 agent_read            read friendly output, or raw process chunks
 agent_status          inspect runs/groups
 agent_stop            stop a run/group
@@ -67,6 +68,14 @@ result  task  system-prompt  metadata  combined  stdout  stderr
 {
   "agent": "explorer",
   "task": "Map how the process extension starts and reads managed processes."
+}
+```
+
+```json
+{
+  "agent": "reviewer",
+  "task": "Review the current plan using the saved handoff context.",
+  "chainContext": { "chain": "deevs-pi-kit", "branch": "main", "mode": "pack", "includeParents": 2, "searchQuery": "handoff", "maxBytes": 12000 }
 }
 ```
 

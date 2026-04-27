@@ -23,8 +23,10 @@ Reload after local edits:
 ```text
 extensions/processes/   Managed long-running commands
 extensions/subagents/   Curated background staff agents
+extensions/chains/      Durable multi-session work chains
 skills/background-tasks Guidance for proc_* usage
 skills/subagents/       Guidance for agent_* usage
+skills/chain-system/    Guidance for chain handoffs/search
 prompts/                Prompt templates
 docs/                   Design notes and plans
 ```
@@ -96,7 +98,21 @@ Commands:
 /agents:settings
 ```
 
-Subagents are read-only by default. Pass write permission only when explicitly requested. Active runs show a footer status and completion wakes the parent agent. Full docs: [`extensions/subagents/README.md`](extensions/subagents/README.md).
+Subagents are read-only by default. Pass write permission only when explicitly requested. Use `chainContext` for parent-loaded chain handoffs. Active runs show a footer status and completion wakes the parent agent. Full docs: [`extensions/subagents/README.md`](extensions/subagents/README.md).
+
+### Chains
+
+`extensions/chains/` stores resumable work handoffs in project-local `.chains/` markdown files.
+
+```text
+/chain-link <name>             summarize current work and save a link
+/chain-load <name>             load latest link as working context
+/chain-fork <name> <branch>    fork a branch from an existing link
+/chain-list [--branches]       list chains
+/chain-search [name] <query>   full-link text/regex search across links
+```
+
+Tools: `chain_save`, `chain_load`, `chain_fork`, `chain_context`, `chain_list`, `chain_search`. `chain_context` packs current/parent/recent/search context within a byte budget; subagents can receive it through `agent_start.chainContext` or per-task `chainContext` in `agent_parallel_start`.
 
 ## Development checks
 
@@ -106,6 +122,10 @@ bun build extensions/processes/index.ts --outdir /tmp/deevs-proc-build \
   --external @mariozechner/pi-tui --external node-pty
 
 bun build extensions/subagents/index.ts --outdir /tmp/deevs-subagents-build \
+  --external @mariozechner/pi-coding-agent --external @mariozechner/pi-ai \
+  --external @mariozechner/pi-tui --external node-pty
+
+bun build extensions/chains/index.ts --outdir /tmp/deevs-chains-build \
   --external @mariozechner/pi-coding-agent --external @mariozechner/pi-ai \
   --external @mariozechner/pi-tui --external node-pty
 

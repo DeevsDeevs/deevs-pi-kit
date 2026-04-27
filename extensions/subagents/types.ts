@@ -1,4 +1,5 @@
 import type { ReadResult } from "../processes/types.ts";
+import type { ChainContextInput } from "../chains/types.ts";
 
 export type AgentMode = "advisory" | "executor";
 export type AgentContextMode = "fresh" | "fork";
@@ -47,6 +48,7 @@ export interface AgentStartInput {
 	allowWrite?: boolean;
 	timeoutMs?: number;
 	maxBytes?: number;
+	chainContext?: ChainContextInput;
 }
 
 export interface AgentParallelTaskInput {
@@ -56,6 +58,7 @@ export interface AgentParallelTaskInput {
 	tools?: string[];
 	allowWrite?: boolean;
 	context?: AgentContextMode;
+	chainContext?: ChainContextInput;
 }
 
 export interface AgentParallelStartInput {
@@ -125,6 +128,7 @@ export interface AgentRunRecord {
 	lastSeq?: number;
 	finalOutput?: string;
 	extractionWarning?: string;
+	chainContext?: ChainContextInput;
 }
 
 export interface AgentGroupRecord {

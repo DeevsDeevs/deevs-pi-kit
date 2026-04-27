@@ -3,6 +3,19 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { SubagentManager } from "./manager.ts";
 import type { AgentClearInput, AgentLogsInput, AgentParallelStartInput, AgentReadInput, AgentStartInput, AgentStatusInput, AgentStopInput } from "./types.ts";
 
+const ChainContextSchema = Type.Object({
+	chain: Type.String({ description: "Chain name to load from .chains before starting the subagent" }),
+	branch: Type.Optional(Type.String({ description: "Branch name; defaults to main unless link is provided" })),
+	link: Type.Optional(Type.String({ description: "Specific link filename; defaults to latest" })),
+	maxBytes: Type.Optional(Type.Number({ description: "Maximum chain context bytes to include" })),
+	mode: Type.Optional(Type.String({ description: "latest for one link, pack for compact parent/recent/search context" })),
+	includeParents: Type.Optional(Type.Number({ description: "Parent links to include in pack mode" })),
+	recentLinks: Type.Optional(Type.Number({ description: "Recent sibling links to summarize in pack mode" })),
+	searchQuery: Type.Optional(Type.String({ description: "Optional search query to include matching snippets in pack mode" })),
+	maxSearchMatches: Type.Optional(Type.Number({ description: "Maximum search matches to include in pack mode" })),
+	compact: Type.Optional(Type.Boolean({ description: "Use compact section extraction for included links" })),
+});
+
 const AgentTaskSchema = Type.Object({
 	agent: Type.String(),
 	task: Type.String(),
@@ -10,6 +23,7 @@ const AgentTaskSchema = Type.Object({
 	tools: Type.Optional(Type.Array(Type.String())),
 	allowWrite: Type.Optional(Type.Boolean()),
 	context: Type.Optional(StringEnum(["fresh", "fork"] as const)),
+	chainContext: Type.Optional(ChainContextSchema),
 });
 
 const AgentListSchema = Type.Object({
@@ -28,6 +42,7 @@ const AgentStartSchema = Type.Object({
 	allowWrite: Type.Optional(Type.Boolean({ description: "Explicitly allow edit/write tools for this run" })),
 	timeoutMs: Type.Optional(Type.Number()),
 	maxBytes: Type.Optional(Type.Number()),
+	chainContext: Type.Optional(ChainContextSchema),
 });
 
 const AgentParallelStartSchema = Type.Object({
@@ -92,6 +107,7 @@ export function registerSubagentTools(pi: ExtensionAPI, manager: SubagentManager
 		promptGuidelines: [
 			"Use explorer for non-trivial reconnaissance before editing.",
 			"Subagents are background jobs; use agent_status/agent_read/agent_logs to inspect them.",
+			"Use chainContext or call chain_context first when a subagent needs durable chain context.",
 			"Do not set allowWrite unless the user explicitly requested writes.",
 		],
 		parameters: AgentStartSchema,
@@ -106,7 +122,7 @@ export function registerSubagentTools(pi: ExtensionAPI, manager: SubagentManager
 		label: "Start Agent Group",
 		description: "Start a parallel background group of curated subagents.",
 		promptSnippet: "Run independent staff-agent perspectives in parallel.",
-		promptGuidelines: ["Use for independent review/test/anti-slop perspectives; default concurrency is 3."],
+		promptGuidelines: ["Use for independent review/test/anti-slop perspectives; default concurrency is 3.", "Each task may include chainContext for a bounded, parent-loaded chain handoff."],
 		parameters: AgentParallelStartSchema,
 		async execute(_toolCallId, params: AgentParallelStartInput, signal, _onUpdate, ctx) {
 			const result = await manager.startParallel(params, ctx, signal);
@@ -136,7 +152,7 @@ export function registerSubagentTools(pi: ExtensionAPI, manager: SubagentManager
 		parameters: AgentStatusSchema,
 		async execute(_toolCallId, params: AgentStatusInput) {
 			const result = manager.status(params);
-			return { content: [{ type: "text", text: manager.formatStatus(params.includeCompleted ?? true) }], details: result };
+			return { content: [{ type: "text", text: manager.formatStatus(params) }], details: result };
 		},
 	});
 

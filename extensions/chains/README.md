@@ -1,0 +1,50 @@
+# Chains
+
+Durable multi-session work handoffs for Pi. Links are markdown files stored under project-local `.chains/`.
+
+## Commands
+
+```text
+/chain-link <chain> [--branch name] [--parent link.md]
+/chain-load <chain> [--branch name] [link.md]
+/chain-fork <chain> <new-branch> [--from link.md] [--from-branch name]
+/chain-list [--branches]
+/chain-search [chain] [--branch name] [--regex] <query>
+```
+
+## Tools
+
+```text
+chain_save    save a markdown chain link; supports branch/parent metadata
+chain_load    load latest/specific link, optionally by branch
+chain_fork    prepare a new branch from an existing link
+chain_context pack latest/parent/recent/search context for subagents or resume
+chain_list    list chains, latest links, and optional branch summaries
+chain_search  full-link text or regex search with snippets
+```
+
+## Storage
+
+```text
+.chains/<chain-name>/<timestamp>-<slug>.md
+```
+
+New links include frontmatter:
+
+```yaml
+chain: deevs-pi-kit
+branch: main
+parent: 2026-04-28-0031-previous.md
+created: 2026-04-28T00:31:00.000Z
+```
+
+Older links without metadata are treated as branch `main`.
+
+## Workflow
+
+- `/chain-link` asks the model to summarize using the `chain-system` skill, then save via `chain_save`.
+- `/chain-fork` queues the first branch-link summary and sets `parent` to the source link.
+- `/chain-load` injects loaded context into the next turn.
+- `/chain-search` searches full saved markdown links; add `--regex` for JavaScript regex matching.
+
+Chains can pass focused context to subagents: pass `chainContext` to `agent_start` / per-task `agent_parallel_start`, or use `chain_context` and paste the packed block manually. `chain_context` defaults to pack mode: current link, parent trail, recent link summaries, and optional search hits within a byte budget. Save a follow-up link with run/group IDs and accepted recommendations.

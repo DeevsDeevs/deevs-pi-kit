@@ -63,6 +63,7 @@ export class OutputBuffer {
 
 			if (bytes + chunk.byteLength > options.maxBytes) {
 				truncated = true;
+				if (selected.length === 0 && options.maxBytes > 0) selected.push(truncateChunk(chunk, options.maxBytes));
 				break;
 			}
 
@@ -108,4 +109,21 @@ export class OutputBuffer {
 			this.droppedBytes += dropped.byteLength;
 		}
 	}
+}
+
+function truncateChunk(chunk: OutputChunk, maxBytes: number): OutputChunk {
+	const suffix = `\n[proc read chunk truncated to ${maxBytes} bytes]\n`;
+	const suffixBytes = Buffer.byteLength(suffix, "utf8");
+	const truncatedText = suffixBytes >= maxBytes
+		? fitUtf8(suffix, maxBytes)
+		: `${fitUtf8(chunk.text, maxBytes - suffixBytes)}${suffix}`;
+	return { ...chunk, text: truncatedText, byteLength: Buffer.byteLength(truncatedText, "utf8") };
+}
+
+function fitUtf8(value: string, maxBytes: number): string {
+	if (maxBytes <= 0) return "";
+	if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
+	let text = value;
+	while (Buffer.byteLength(text, "utf8") > maxBytes && text.length > 0) text = text.slice(0, -1);
+	return text;
 }

@@ -1,6 +1,8 @@
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { ChainService } from "../chains/service.ts";
 import type { ProcessManager } from "../processes/manager.ts";
+import { resolveCwd } from "../processes/safety.ts";
 import type { ManagedProcessInfo, ReadResult } from "../processes/types.ts";
 import { clampConcurrency, clampReturnBytes, clampStatusTailBytes, clampTimeoutMs, defaultAgentsSettings } from "./config.ts";
 import { findAgent, loadBuiltinAgents } from "./agents.ts";
@@ -94,7 +96,7 @@ export class SubagentManager {
 			throw new Error(`Concurrency ${rawConcurrency} exceeds max ${this.settings.parallelMaxConcurrency}`);
 		}
 
-		const cwd = path.resolve(ctx.cwd);
+		const cwd = await resolveCwd(undefined, ctx, this.processManager.getConfig());
 		const id = this.createGroupId();
 		const artifactsDir = createRunArtifactsDir(cwd, id);
 		const group: AgentGroupRecord = {
@@ -287,8 +289,9 @@ export class SubagentManager {
 		return { cleared, remaining: this.status({ includeCompleted: true }) };
 	}
 
-	formatStatus(includeCompleted = true): string {
-		const status = this.status({ includeCompleted });
+	formatStatus(input: AgentStatusInput | boolean = {}): string {
+		const statusInput: AgentStatusInput = typeof input === "boolean" ? { includeCompleted: input } : input;
+		const status = this.status(statusInput);
 		if (status.runs.length === 0 && status.groups.length === 0) return "No subagent runs.";
 		const lines: string[] = [];
 		for (const group of status.groups) lines.push(`${group.id} [${group.status}] parallel ${group.children.length} run(s) ${formatDuration(Date.now() - group.startedAt)}`);
@@ -299,7 +302,7 @@ export class SubagentManager {
 	private async startRun(input: AgentStartInput, ctx: ExtensionContext, signal?: AbortSignal, group?: AgentGroupRecord): Promise<AgentStartResult> {
 		if (!input.task?.trim()) throw new Error(`Task for ${input.agent || "agent"} is empty.`);
 		const agent = this.getAgent(input.agent);
-		const cwd = path.resolve(input.cwd ?? group?.cwd ?? ctx.cwd);
+		const cwd = await resolveCwd(input.cwd ?? group?.cwd, ctx, this.processManager.getConfig());
 		const context = input.context ?? "fresh";
 		const allowWrite = input.allowWrite ?? this.settings.defaultAllowWrite ?? agent.write;
 		const tools = resolveTools(input.tools ?? agent.tools, allowWrite);
@@ -312,7 +315,8 @@ export class SubagentManager {
 		const resultPath = path.join(artifactsDir, "result.md");
 		const metadataPath = path.join(artifactsDir, "metadata.json");
 		const systemPrompt = buildAgentSystemPrompt({ agent, task: input.task, cwd, allowWrite, tools, context });
-		const taskPrompt = buildTaskPrompt(input.task);
+		const taskWithChainContext = await this.withChainContext(input.task, input.chainContext, cwd);
+		const taskPrompt = buildTaskPrompt(taskWithChainContext);
 		writeTextFile(path.join(artifactsDir, "agent.md"), agent.body);
 		writeTextFile(systemPromptPath, systemPrompt);
 		writeTextFile(taskPath, taskPrompt);
@@ -336,6 +340,7 @@ export class SubagentManager {
 			systemPromptPath,
 			metadataPath,
 			timeoutMs,
+			chainContext: input.chainContext,
 		};
 		this.runs.set(id, run);
 		if (group) {
@@ -395,6 +400,18 @@ export class SubagentManager {
 			}
 			throw error;
 		}
+	}
+
+	private async withChainContext(task: string, chainContext: AgentStartInput["chainContext"], cwd: string): Promise<string> {
+		if (!chainContext) return task;
+		const service = new ChainService(cwd);
+		const result = await service.context(chainContext);
+		return [
+			"Chain context loaded by the parent before delegation follows.",
+			result.context,
+			"Subagent task:",
+			task,
+		].join("\n\n");
 	}
 
 	private buildPiArgs(run: AgentRunRecord, ctx: ExtensionContext): string[] {
@@ -494,7 +511,7 @@ export class SubagentManager {
 	private async startInitialGroupRuns(group: AgentGroupRecord, ctx: ExtensionContext, signal?: AbortSignal): Promise<void> {
 		const tasks = group.pending.splice(0, group.concurrency);
 		this.writeGroupMetadata(group);
-		await Promise.all(tasks.map((task) => this.startRun({ ...task, timeoutMs: group.timeoutMs, maxBytes: group.maxBytesPerAgent }, ctx, signal, group)));
+		await Promise.all(tasks.map((task) => this.startGroupRun(group, task, ctx, signal, false)));
 		this.updateGroupStatus(group);
 		if (group.status === "running") this.scheduleGroup(group, ctx, signal);
 	}
@@ -503,12 +520,55 @@ export class SubagentManager {
 		if (group.status !== "running" || group.cancelRequested) return;
 		while (group.activeCount < group.concurrency && group.pending.length > 0 && !group.cancelRequested) {
 			const task = group.pending.shift()!;
-			void this.startRun({ ...task, timeoutMs: group.timeoutMs, maxBytes: group.maxBytesPerAgent }, ctx, signal, group)
-				.catch((error) => {
-					this.updateGroupStatus(group);
-					this.pi.sendMessage({ customType: "subagents", content: `Failed to start ${task.agent} in ${group.id}: ${error instanceof Error ? error.message : String(error)}`, display: true }, { triggerTurn: true, deliverAs: "followUp" });
-				});
+			void this.startGroupRun(group, task, ctx, signal, true);
 		}
+		this.writeGroupMetadata(group);
+	}
+
+	private async startGroupRun(group: AgentGroupRecord, task: AgentParallelTaskInput, ctx: ExtensionContext, signal?: AbortSignal, updateOnFailure = true): Promise<void> {
+		const childCountBefore = group.children.length;
+		try {
+			await this.startRun({ ...task, timeoutMs: group.timeoutMs, maxBytes: group.maxBytesPerAgent }, ctx, signal, group);
+		} catch (error) {
+			if (group.children.length === childCountBefore) this.recordGroupStartFailure(group, task, error);
+			if (updateOnFailure) this.updateGroupStatus(group);
+			this.pi.sendMessage({ customType: "subagents", content: `Failed to start ${task.agent} in ${group.id}: ${error instanceof Error ? error.message : String(error)}`, display: true }, { triggerTurn: true, deliverAs: "followUp" });
+		}
+	}
+
+	private recordGroupStartFailure(group: AgentGroupRecord, task: AgentParallelTaskInput, error: unknown): void {
+		const id = this.createRunId();
+		const artifactsDir = createRunArtifactsDir(group.cwd, id);
+		const message = `Failed to start ${task.agent}: ${error instanceof Error ? error.message : String(error)}`;
+		const run: AgentRunRecord = {
+			id,
+			procId: null,
+			groupId: group.id,
+			agent: task.agent,
+			task: task.task,
+			status: "failed",
+			startedAt: Date.now(),
+			endedAt: Date.now(),
+			cwd: group.cwd,
+			context: task.context ?? "fresh",
+			model: task.model,
+			tools: task.tools ?? [],
+			allowWrite: task.allowWrite ?? false,
+			artifactsDir,
+			resultPath: path.join(artifactsDir, "result.md"),
+			taskPath: path.join(artifactsDir, "task.md"),
+			systemPromptPath: path.join(artifactsDir, "system-prompt.md"),
+			metadataPath: path.join(artifactsDir, "metadata.json"),
+			timeoutMs: group.timeoutMs,
+			finalOutput: message,
+			chainContext: task.chainContext,
+		};
+		this.runs.set(id, run);
+		group.children.push(id);
+		writeTextFile(run.resultPath, message);
+		writeTextFile(run.taskPath, buildTaskPrompt(task.task));
+		writeTextFile(run.systemPromptPath, "Subagent failed before child Pi launch.");
+		this.writeRunMetadata(run);
 		this.writeGroupMetadata(group);
 	}
 
