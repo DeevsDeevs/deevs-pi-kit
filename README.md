@@ -39,12 +39,41 @@ Reload after edits inside Pi:
 ```text
 .
 ├── extensions/              # TypeScript Pi extensions
-│   └── processes/           # Managed background-task extension
-├── prompts/                 # Prompt templates; intentionally empty for now
-├── skills/                  # Skills; intentionally empty for now
+│   ├── processes/           # Managed background-task extension
+│   └── subagents/           # Curated background staff agents
+├── prompts/                 # Prompt templates
+├── skills/                  # Agent behavior guidance
 ├── docs/                    # Design notes and implementation plans
 └── package.json             # Pi package manifest
 ```
+
+## Skills
+
+### Background tasks
+
+`skills/background-tasks/` teaches the agent when to use the managed process tools instead of shell backgrounding.
+
+It should trigger for dev servers, test watchers, build/watch loops, workers, REPL-like tools, and any command that should continue running while the conversation proceeds.
+
+The skill reinforces:
+
+- use `proc_start` instead of `cmd &`, `nohup`, `disown`, or `setsid`
+- use cursor reads with `proc_read`
+- choose `pipe` by default, `pty` for TTY behavior, and tmux for persistence/terminal workflows
+- use watches intentionally
+- stop and clear tasks cleanly
+
+### Subagents
+
+`skills/subagents/` teaches the agent when to use curated background staff agents.
+
+It reinforces:
+
+- use `explorer` for non-trivial reconnaissance
+- use `reviewer`, `tester`, and `anti-slop` for independent pre-merge checks
+- use `agent_parallel_start` for independent perspectives
+- keep subagents read-only unless writes were explicitly requested
+- inspect background runs with `agent_status`, `agent_read`, and `agent_logs`
 
 ## Extensions
 
@@ -150,6 +179,66 @@ Start with a watch:
 }
 ```
 
+### Curated subagents
+
+`extensions/subagents/` provides Deevs-style staff agents as background jobs backed by the process manager.
+
+Built-in staff:
+
+- `explorer`
+- `architect`
+- `reviewer`
+- `tester`
+- `devops`
+- `python-dev`
+- `cpp-dev`
+- `rust-dev`
+- `anti-slop`
+
+Tools:
+
+- `agent_list`
+- `agent_start`
+- `agent_parallel_start`
+- `agent_read`
+- `agent_status`
+- `agent_stop`
+- `agent_logs`
+- `agent_clear`
+
+Commands:
+
+- `/agents` — dashboard/status when runs exist, staff catalog otherwise
+- `/agents:catalog` — staff catalog browser
+- `/agents:browse` — alias for `/agents:catalog`
+- `/agents:list`
+- `/agents:run`
+- `/agents:parallel`
+- `/agents:status`
+- `/agents:read`
+- `/agents:stop`
+- `/agents:logs`
+- `/agents:clear`
+- `/agents:dock`
+- `/agents:settings`
+
+Quick examples:
+
+```json
+{
+  "agent": "explorer",
+  "task": "Map how the processes extension starts and reads managed processes."
+}
+```
+
+```text
+/agents:parallel reviewer,tester,anti-slop -- Review current diff
+```
+
+Full extension docs: [`extensions/subagents/README.md`](extensions/subagents/README.md).
+
+Implementation plan: [`docs/plans/subagents-extension-plan.md`](docs/plans/subagents-extension-plan.md).
+
 ## Development
 
 Validate package contents:
@@ -158,11 +247,18 @@ Validate package contents:
 npm pack --dry-run
 ```
 
-Bundle-check the process extension during development:
+Bundle-check the extensions during development:
 
 ```bash
 bun build extensions/processes/index.ts \
   --outdir /tmp/deevs-proc-build \
+  --external @mariozechner/pi-coding-agent \
+  --external @mariozechner/pi-ai \
+  --external @mariozechner/pi-tui \
+  --external node-pty
+
+bun build extensions/subagents/index.ts \
+  --outdir /tmp/deevs-subagents-build \
   --external @mariozechner/pi-coding-agent \
   --external @mariozechner/pi-ai \
   --external @mariozechner/pi-tui \

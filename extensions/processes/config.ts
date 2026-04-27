@@ -36,6 +36,7 @@ export interface ProcessesConfig {
 	alerts: {
 		defaultAlertOnFailure: boolean;
 		defaultAlertOnExit: boolean;
+		suppressNotificationsForNamePrefixes: string[];
 		repeatWatchCooldownMs: number;
 		maxAgentTurnsPerMinute: number;
 	};
@@ -82,6 +83,7 @@ export const defaultConfig: ProcessesConfig = {
 	alerts: {
 		defaultAlertOnFailure: true,
 		defaultAlertOnExit: false,
+		suppressNotificationsForNamePrefixes: ["agent:", "agent-group:"],
 		repeatWatchCooldownMs: 5000,
 		maxAgentTurnsPerMinute: 3,
 	},
