@@ -109,10 +109,10 @@ Subagents are read-only by default. Pass write permission only when explicitly r
 /chain-load <name>             load latest link as working context
 /chain-fork <name> <branch>    fork a branch from an existing link
 /chain-list [--branches]       list chains
-/chain-search [name] <query>   full-link text/regex search across links
+/chain-search [name] <query>   universal ranked/text/regex chain search
 ```
 
-Tools: `chain_save`, `chain_load`, `chain_fork`, `chain_context`, `chain_list`, `chain_search`. `chain_context` packs current/parent/recent/search context within a byte budget; subagents can receive it through `agent_start.chainContext` or per-task `chainContext` in `agent_parallel_start`.
+Tools: `chain_save`, `chain_load`, `chain_fork`, `chain_context`, `chain_list`, `chain_search`. `chain_search` defaults to dependency-free BM25-style ranked lookup; use `mode: "text"` or `mode: "regex"` for exact matching. `chain_context` packs current/parent/recent/search context within a byte budget; subagents can receive it through `agent_start.chainContext` or per-task `chainContext` in `agent_parallel_start`.
 
 ## Development checks
 

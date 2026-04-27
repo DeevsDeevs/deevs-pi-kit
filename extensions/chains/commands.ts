@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { validateBranchName, validateChainName, validateLinkName, type ChainService } from "./service.ts";
-import { formatList, formatLoad, formatSearch } from "./tools.ts";
+import { formatList, formatLoad, formatLookup, formatSearch } from "./tools.ts";
 
 interface ChainLinkArgs {
 	chain: string;
@@ -83,11 +83,12 @@ export function registerChainCommands(pi: ExtensionAPI, service: ChainService): 
 		handler: async (args, ctx) => {
 			const parsed = await parseSearchArgs(service, args);
 			if (!parsed.query) {
-				ctx.ui.notify("Usage: /chain-search [chain-name|--chain name] [--branch name] [--regex] <query>", "warning");
+				ctx.ui.notify("Usage: /chain-search [chain-name|--chain name] [--lookup|--text|--regex] [--branch name] <query>", "warning");
 				return;
 			}
 			try {
-				ctx.ui.notify(formatSearch(await service.search(parsed)), "info");
+				const mode = parsed.mode ?? (parsed.regex ? "regex" : "lookup");
+				ctx.ui.notify(mode === "lookup" ? formatLookup(await service.lookup(parsed)) : formatSearch(await service.search({ ...parsed, regex: mode === "regex" })), "info");
 			} catch (error) {
 				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 			}
@@ -184,26 +185,35 @@ function parseForkArgs(args: string): { chain: string; branch: string; from?: st
 	return parsed;
 }
 
-async function parseSearchArgs(service: ChainService, args: string): Promise<{ chain?: string; branch?: string; query: string; regex?: boolean }> {
+async function parseSearchArgs(service: ChainService, args: string): Promise<{ chain?: string; branch?: string; query: string; mode?: "lookup" | "text" | "regex"; regex?: boolean; maxResults?: number; recencyHalfLifeDays?: number }> {
 	const parts = args.trim().split(/\s+/).filter(Boolean);
 	if (parts.length === 0) return { query: "" };
 	let chain: string | undefined;
 	let branch: string | undefined;
-	const regex = parts.includes("--regex");
-	for (let index = parts.length - 1; index >= 0; index--) if (parts[index] === "--regex") parts.splice(index, 1);
-	const chainFlag = parts.indexOf("--chain");
-	if (chainFlag >= 0) {
-		chain = parts[chainFlag + 1];
-		parts.splice(chainFlag, 2);
+	let mode: "lookup" | "text" | "regex" | undefined;
+	let maxResults: number | undefined;
+	let recencyHalfLifeDays: number | undefined;
+	const takeFlagValue = (flag: string): string | undefined => {
+		const index = parts.indexOf(flag);
+		if (index < 0) return undefined;
+		const value = parts[index + 1];
+		parts.splice(index, 2);
+		return value;
+	};
+	chain = takeFlagValue("--chain");
+	branch = takeFlagValue("--branch");
+	const max = takeFlagValue("--max-results");
+	const halfLife = takeFlagValue("--half-life");
+	if (max) maxResults = Number(max);
+	if (halfLife) recencyHalfLifeDays = Number(halfLife);
+	for (let index = parts.length - 1; index >= 0; index--) {
+		if (parts[index] === "--regex") { mode = "regex"; parts.splice(index, 1); }
+		else if (parts[index] === "--text") { mode = "text"; parts.splice(index, 1); }
+		else if (parts[index] === "--lookup") { mode = "lookup"; parts.splice(index, 1); }
 	}
-	const branchFlag = parts.indexOf("--branch");
-	if (branchFlag >= 0) {
-		branch = parts[branchFlag + 1];
-		parts.splice(branchFlag, 2);
-	}
-	if (parts.length === 0) return { chain, branch, query: "", regex };
-	if (chain) return { chain, branch, query: parts.join(" "), regex };
-	if (parts.length === 1) return { branch, query: parts[0]!, regex };
+	if (parts.length === 0) return { chain, branch, query: "", mode, regex: mode === "regex", maxResults, recencyHalfLifeDays };
+	if (chain) return { chain, branch, query: parts.join(" "), mode, regex: mode === "regex", maxResults, recencyHalfLifeDays };
+	if (parts.length === 1) return { branch, query: parts[0]!, mode, regex: mode === "regex", maxResults, recencyHalfLifeDays };
 	const chains = new Set((await service.list()).map((item) => item.chain));
-	return chains.has(parts[0]!) ? { chain: parts[0], branch, query: parts.slice(1).join(" "), regex } : { branch, query: parts.join(" "), regex };
+	return chains.has(parts[0]!) ? { chain: parts[0], branch, query: parts.slice(1).join(" "), mode, regex: mode === "regex", maxResults, recencyHalfLifeDays } : { branch, query: parts.join(" "), mode, regex: mode === "regex", maxResults, recencyHalfLifeDays };
 }

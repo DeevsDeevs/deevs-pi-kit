@@ -39,19 +39,23 @@ const ContextSchema = Type.Object({
 	mode: Type.Optional(Type.String({ description: "latest for one link, pack for compact parent/recent/search context" })),
 	includeParents: Type.Optional(Type.Number({ description: "Parent links to include in pack mode" })),
 	recentLinks: Type.Optional(Type.Number({ description: "Recent sibling links to summarize in pack mode" })),
-	searchQuery: Type.Optional(Type.String({ description: "Optional search query to include matching snippets in pack mode" })),
+	searchQuery: Type.Optional(Type.String({ description: "Optional query to include matching/relevant snippets in pack mode" })),
+	searchMode: Type.Optional(Type.String({ description: "lookup for ranked results, text for exact text, regex for regex; default lookup" })),
 	maxSearchMatches: Type.Optional(Type.Number({ description: "Maximum search matches to include in pack mode" })),
 	compact: Type.Optional(Type.Boolean({ description: "Use compact section extraction for included links" })),
 });
 
 const SearchSchema = Type.Object({
-	query: Type.String({ description: "Search text or regex" }),
+	query: Type.String({ description: "Search query" }),
 	chain: Type.Optional(Type.String({ description: "Restrict search to one chain" })),
 	branch: Type.Optional(Type.String({ description: "Restrict search to one branch" })),
 	maxResults: Type.Optional(Type.Number({ description: "Maximum matches to return" })),
-	contextLines: Type.Optional(Type.Number({ description: "Snippet context lines around each match" })),
-	regex: Type.Optional(Type.Boolean({ description: "Treat query as a JavaScript regular expression" })),
-	caseSensitive: Type.Optional(Type.Boolean({ description: "Case-sensitive search" })),
+	contextLines: Type.Optional(Type.Number({ description: "Snippet context lines for text/regex mode" })),
+	mode: Type.Optional(Type.String({ description: "lookup for ranked BM25-style results, text for exact text, regex for regex; default lookup" })),
+	regex: Type.Optional(Type.Boolean({ description: "Legacy alias for mode=regex" })),
+	caseSensitive: Type.Optional(Type.Boolean({ description: "Case-sensitive text/regex search" })),
+	recencyHalfLifeDays: Type.Optional(Type.Number({ description: "Lookup recency decay half-life in days; default 30" })),
+	recencyWeight: Type.Optional(Type.Number({ description: "Lookup recency blend from 0 to 1; default 0.15" })),
 });
 
 export function registerChainTools(pi: ExtensionAPI, service: ChainService): void {
@@ -126,12 +130,17 @@ export function registerChainTools(pi: ExtensionAPI, service: ChainService): voi
 	pi.registerTool({
 		name: "chain_search",
 		label: "Search Chains",
-		description: "Search across full .chains markdown links with text or regex matching and return snippets.",
-		promptSnippet: "Search durable work chains by text or regex.",
-		promptGuidelines: ["Use chain_search to find prior decisions, files, blockers, or next steps across saved chains."],
+		description: "Universal chain search: ranked lookup by default, exact text with mode=text, regex with mode=regex or regex=true.",
+		promptSnippet: "Search durable work chains by relevance, exact text, or regex.",
+		promptGuidelines: ["Use default lookup mode for ideas/topics; use mode=text or mode=regex for exact matching."],
 		parameters: SearchSchema,
 		async execute(_toolCallId, params: ChainSearchInput) {
-			const result = await service.search(params);
+			const mode = params.mode ?? (params.regex ? "regex" : "lookup");
+			if (mode === "lookup") {
+				const result = await service.lookup(params);
+				return { content: [{ type: "text", text: formatLookup(result) }], details: result };
+			}
+			const result = await service.search({ ...params, regex: mode === "regex" });
 			return { content: [{ type: "text", text: formatSearch(result) }], details: result };
 		},
 	});
@@ -166,6 +175,19 @@ export function formatSearch(result: Awaited<ReturnType<ChainService["search"]>>
 	const lines = result.matches.map((match) => [`${match.link.chain}/${match.link.filename}@${match.link.branch}:${match.line}`, match.snippet].join("\n"));
 	if (result.truncated) lines.push("[search truncated by maxResults]");
 	return [`Search (${mode}): ${result.query}`, ...lines].join("\n\n");
+}
+
+export function formatLookup(result: Awaited<ReturnType<ChainService["lookup"]>>): string {
+	if (result.matches.length === 0) return `No relevant chain links for: ${result.query}`;
+	const lines = result.matches.map((match, index) => [
+		`${index + 1}. ${match.link.chain}/${match.link.filename}@${match.link.branch} score=${match.score.toFixed(3)} lexical=${match.lexicalScore.toFixed(3)} recency=${match.recencyScore.toFixed(3)}`,
+		`Title: ${match.link.title}`,
+		match.link.nextStep ? `Next: ${match.link.nextStep}` : "",
+		`Terms: ${match.matchedTerms.join(", ")}`,
+		match.snippet,
+	].filter(Boolean).join("\n"));
+	if (result.truncated) lines.push("[lookup truncated by maxResults]");
+	return [`Lookup: ${result.query}`, ...lines].join("\n\n");
 }
 
 export function formatContext(result: Awaited<ReturnType<ChainService["load"]>>): string {

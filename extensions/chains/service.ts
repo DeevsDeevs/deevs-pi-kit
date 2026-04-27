@@ -1,4 +1,4 @@
-import { lstat, mkdir, open, readdir, readFile, realpath } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { extractNextStep, extractTitle, parseCreatedAt, parseMetadata, slugify, stripFrontmatter, truncateText, withMetadata } from "./parser.ts";
 import type {
@@ -9,6 +9,9 @@ import type {
 	ChainForkResult,
 	ChainLinkInfo,
 	ChainListInput,
+	ChainLookupInput,
+	ChainLookupMatch,
+	ChainLookupResult,
 	ChainListItem,
 	ChainLoadInput,
 	ChainLoadResult,
@@ -24,6 +27,11 @@ const DEFAULT_MAX_BYTES = 65_536;
 const MAX_BYTES = 262_144;
 const DEFAULT_MAX_RESULTS = 20;
 const MAX_RESULTS = 100;
+const MAX_QUERY_CHARS = 1000;
+const MAX_LOOKUP_TERMS = 32;
+const MAX_FULL_LINK_BYTES = 1_000_000;
+const DEFAULT_LOOKUP_HALF_LIFE_DAYS = 30;
+const DEFAULT_LOOKUP_RECENCY_WEIGHT = 0.15;
 const DEFAULT_CONTEXT_PARENT_LINKS = 2;
 const DEFAULT_CONTEXT_RECENT_LINKS = 3;
 const DEFAULT_CONTEXT_SEARCH_MATCHES = 8;
@@ -129,8 +137,7 @@ export class ChainService {
 	}
 
 	async search(input: ChainSearchInput): Promise<ChainSearchResult> {
-		const query = input.query.trim();
-		if (!query) throw new Error("Missing query.");
+		const query = validateQuery(input.query);
 		const branch = input.branch ? validateBranchName(input.branch) : undefined;
 		const maxResults = clamp(input.maxResults ?? DEFAULT_MAX_RESULTS, 1, MAX_RESULTS);
 		const contextLines = clamp(input.contextLines ?? 1, 0, 5);
@@ -151,6 +158,42 @@ export class ChainService {
 			}
 		}
 		return { query, matches, truncated: false, regex: Boolean(input.regex) };
+	}
+
+	async lookup(input: ChainLookupInput): Promise<ChainLookupResult> {
+		const query = validateQuery(input.query);
+		const branch = input.branch ? validateBranchName(input.branch) : undefined;
+		const maxResults = clamp(input.maxResults ?? DEFAULT_MAX_RESULTS, 1, MAX_RESULTS);
+		const halfLifeDays = clamp(input.recencyHalfLifeDays ?? DEFAULT_LOOKUP_HALF_LIFE_DAYS, 1, 3650);
+		const recencyWeight = clampFloat(input.recencyWeight ?? DEFAULT_LOOKUP_RECENCY_WEIGHT, 0, 1);
+		const chains = input.chain ? [{ chain: validateChainName(input.chain), count: 0, latest: null }] : await this.list();
+		const queryTerms = tokenize(query).slice(0, MAX_LOOKUP_TERMS);
+		if (queryTerms.length === 0) throw new Error("Lookup query has no searchable terms.");
+		const queryTermSet = new Set(queryTerms);
+		const docs: LookupDocument[] = [];
+
+		for (const item of chains) {
+			const links = await this.links(item.chain, branch);
+			for (const link of links) docs.push(await this.lookupDocument(link));
+		}
+		if (docs.length === 0) return { query, matches: [], truncated: false };
+
+		const documentFrequency = new Map<string, number>();
+		for (const doc of docs) {
+			for (const term of queryTermSet) if (doc.termFrequency.has(term)) documentFrequency.set(term, (documentFrequency.get(term) ?? 0) + 1);
+		}
+		const averageLength = docs.reduce((sum, doc) => sum + doc.length, 0) / docs.length || 1;
+		const matches: ChainLookupMatch[] = [];
+		for (const doc of docs) {
+			const matchedTerms = [...queryTermSet].filter((term) => doc.termFrequency.has(term));
+			if (matchedTerms.length === 0) continue;
+			const lexicalScore = bm25Score(doc, matchedTerms, documentFrequency, docs.length, averageLength) + phraseBoost(doc, query);
+			const recencyScore = Math.exp(-Math.max(0, doc.link.ageDays ?? 0) / halfLifeDays);
+			const score = lexicalScore * (1 - recencyWeight) + recencyScore * recencyWeight;
+			matches.push({ link: doc.link, score, lexicalScore, recencyScore, matchedTerms, snippet: bestLookupSnippet(doc, matchedTerms) });
+		}
+		matches.sort((left, right) => right.score - left.score || (right.link.createdAt ?? "").localeCompare(left.link.createdAt ?? ""));
+		return { query, matches: matches.slice(0, maxResults), truncated: matches.length > maxResults };
 	}
 
 	async context(input: ChainContextInput): Promise<ChainContextResult> {
@@ -200,9 +243,16 @@ export class ChainService {
 
 		let searchMatches: ChainSearchMatch[] = [];
 		if (input.searchQuery?.trim()) {
-			const search = await this.search({ chain: loaded.link.chain, branch: loaded.link.branch, query: input.searchQuery, maxResults: input.maxSearchMatches ?? DEFAULT_CONTEXT_SEARCH_MATCHES, contextLines: 1 });
-			searchMatches = search.matches;
-			if (searchMatches.length > 0) append(`\n## Search hits for ${JSON.stringify(input.searchQuery)}\n${searchMatches.map((match) => `### ${match.link.filename}:${match.line}\n${match.snippet}`).join("\n\n")}\n`);
+			const searchMode = input.searchMode ?? "lookup";
+			if (searchMode === "lookup") {
+				const lookup = await this.lookup({ chain: loaded.link.chain, branch: loaded.link.branch, query: input.searchQuery, maxResults: input.maxSearchMatches ?? DEFAULT_CONTEXT_SEARCH_MATCHES });
+				searchMatches = lookup.matches.map((match) => ({ link: match.link, line: Number(match.snippet.split(":", 1)[0]) || 1, snippet: match.snippet }));
+				if (lookup.matches.length > 0) append(`\n## Relevant hits for ${JSON.stringify(input.searchQuery)}\n${lookup.matches.map((match) => `### ${match.link.filename} score=${match.score.toFixed(3)}\n${match.snippet}`).join("\n\n")}\n`);
+			} else {
+				const search = await this.search({ chain: loaded.link.chain, branch: loaded.link.branch, query: input.searchQuery, maxResults: input.maxSearchMatches ?? DEFAULT_CONTEXT_SEARCH_MATCHES, contextLines: 1, regex: searchMode === "regex" });
+				searchMatches = search.matches;
+				if (searchMatches.length > 0) append(`\n## Search hits for ${JSON.stringify(input.searchQuery)}\n${searchMatches.map((match) => `### ${match.link.filename}:${match.line}\n${match.snippet}`).join("\n\n")}\n`);
+			}
 		}
 
 		return { link: loaded.link, context: parts.join("\n"), truncated, includedLinks, searchMatches };
@@ -285,6 +335,21 @@ export class ChainService {
 		}
 	}
 
+	private async lookupDocument(link: ChainLinkInfo): Promise<LookupDocument> {
+		const raw = await this.readFullLinkContent(link.chain, link.filename);
+		const content = stripFrontmatter(raw);
+		const weightedContent = [
+			weightedText(link.title, 4),
+			weightedText(link.nextStep ?? "", 3),
+			weightedText(preferredSections(content), 2),
+			content,
+		].join("\n");
+		const terms = tokenize(weightedContent);
+		const termFrequency = new Map<string, number>();
+		for (const term of terms) termFrequency.set(term, (termFrequency.get(term) ?? 0) + 1);
+		return { link, content, lines: content.split(/\r?\n/), termFrequency, length: Math.max(1, terms.length) };
+	}
+
 	private async readLinkContent(chain: string, filename: string, maxBytes: number): Promise<string> {
 		const path = await this.safeLinkPath(chain, filename);
 		const handle = await open(path, "r");
@@ -298,7 +363,7 @@ export class ChainService {
 	}
 
 	private async readFullLinkContent(chain: string, filename: string): Promise<string> {
-		return readFile(await this.safeLinkPath(chain, filename), "utf8");
+		return this.readLinkContent(chain, filename, MAX_FULL_LINK_BYTES);
 	}
 
 	private async safeLinkPath(chain: string, filename: string): Promise<string> {
@@ -382,6 +447,95 @@ function isAlreadyExists(error: unknown): boolean {
 function clamp(value: number, min: number, max: number): number {
 	if (!Number.isFinite(value)) return min;
 	return Math.max(min, Math.min(Math.floor(value), max));
+}
+
+function validateQuery(value: string): string {
+	const query = value.trim();
+	if (!query) throw new Error("Missing query.");
+	if (query.length > MAX_QUERY_CHARS) throw new Error(`Query is too long; max ${MAX_QUERY_CHARS} characters.`);
+	return query;
+}
+
+function clampFloat(value: number, min: number, max: number): number {
+	if (!Number.isFinite(value)) return min;
+	return Math.max(min, Math.min(value, max));
+}
+
+interface LookupDocument {
+	link: ChainLinkInfo;
+	content: string;
+	lines: string[];
+	termFrequency: Map<string, number>;
+	length: number;
+}
+
+function tokenize(value: string): string[] {
+	return value
+		.toLowerCase()
+		.normalize("NFKD")
+		.replace(/[\u0300-\u036f]/g, "")
+		.split(/[^a-z0-9]+/g)
+		.map(stem)
+		.filter((term) => term.length >= 2 && !STOP_WORDS.has(term));
+}
+
+function stem(term: string): string {
+	if (term.length > 5 && term.endsWith("ing")) return term.slice(0, -3);
+	if (term.length > 4 && term.endsWith("ied")) return `${term.slice(0, -3)}y`;
+	if (term.length > 4 && term.endsWith("ed")) return term.slice(0, -2);
+	if (term.length > 4 && term.endsWith("es") && !/(ses|xes|zes)$/.test(term)) return term.slice(0, -2);
+	if (term.length > 3 && term.endsWith("s") && !/(ss|us|is)$/.test(term)) return term.slice(0, -1);
+	return term;
+}
+
+const STOP_WORDS = new Set(["the", "and", "for", "that", "this", "with", "from", "into", "onto", "have", "has", "had", "are", "was", "were", "will", "would", "could", "should", "not", "but", "you", "your", "our", "out"]);
+
+function weightedText(text: string, weight: number): string {
+	return Array.from({ length: Math.max(1, Math.floor(weight)) }, () => text).join("\n");
+}
+
+function preferredSections(content: string): string {
+	return content.split(/(?=^##\s+)/m)
+		.filter((part) => /^##\s+(?:\d+\.\s*)?(Work Completed|Decisions|Files|Unresolved|Pending|Current Work|Next Step|Key Technical Concepts)/i.test(part.trim()))
+		.join("\n\n");
+}
+
+function bm25Score(doc: LookupDocument, terms: string[], df: Map<string, number>, totalDocs: number, averageLength: number): number {
+	const k1 = 1.4;
+	const b = 0.75;
+	let score = 0;
+	for (const term of terms) {
+		const termFrequency = doc.termFrequency.get(term) ?? 0;
+		if (termFrequency <= 0) continue;
+		const documentFrequency = df.get(term) ?? 0;
+		const idf = Math.log(1 + (totalDocs - documentFrequency + 0.5) / (documentFrequency + 0.5));
+		const denominator = termFrequency + k1 * (1 - b + b * (doc.length / averageLength));
+		score += idf * ((termFrequency * (k1 + 1)) / denominator);
+	}
+	return score;
+}
+
+function phraseBoost(doc: LookupDocument, query: string): number {
+	const needle = query.trim().toLowerCase();
+	if (needle.length < 3) return 0;
+	const title = doc.link.title.toLowerCase();
+	const next = (doc.link.nextStep ?? "").toLowerCase();
+	const body = doc.content.toLowerCase();
+	return (title.includes(needle) ? 2 : 0) + (next.includes(needle) ? 1.25 : 0) + (body.includes(needle) ? 0.75 : 0);
+}
+
+function bestLookupSnippet(doc: LookupDocument, terms: string[]): string {
+	let bestIndex = 0;
+	let bestScore = -1;
+	for (let index = 0; index < doc.lines.length; index++) {
+		const tokens = tokenize(doc.lines[index] ?? "");
+		const score = terms.reduce((sum, term) => sum + tokens.filter((token) => token === term).length, 0);
+		if (score > bestScore) {
+			bestScore = score;
+			bestIndex = index;
+		}
+	}
+	return snippet(doc.lines, bestIndex, 1);
 }
 
 function createMatcher(query: string, regex: boolean, caseSensitive: boolean): (line: string) => boolean {

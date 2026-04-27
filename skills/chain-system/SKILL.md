@@ -31,7 +31,7 @@ Human commands:
 /chain-load <chain> [--branch name] [link.md]
 /chain-fork <chain> <new-branch> [--from link.md] [--from-branch name]
 /chain-list [--branches]
-/chain-search [chain] [--branch name] [--regex] <query>
+/chain-search [chain] [--branch name] [--lookup|--text|--regex] <query>
 ```
 
 Model tools:
@@ -42,7 +42,7 @@ chain_load    load latest/specific link, optionally by branch
 chain_fork    resolve a parent for a new branch; follow with chain_save
 chain_context pack latest/parent/recent/search context for subagents or resume
 chain_list    list chains, optionally branch/link metadata
-chain_search  full-link text or regex search with snippets, optionally by chain/branch
+chain_search  universal search: ranked lookup by default, exact text, or regex
 ```
 
 ## When to use
@@ -50,7 +50,7 @@ chain_search  full-link text or regex search with snippets, optionally by chain/
 - Before ending a long or complex session.
 - When the user says to save context, continue later, create a handoff, or chain link.
 - At the start of resumed work, use `chain_load` or `/chain-load`.
-- When looking for old decisions, files, bugs, or next steps, use `chain_search` before broad rediscovery; use regex when literal search is not enough.
+- When looking for old decisions, files, bugs, or next steps, use `chain_search`; default lookup mode is relevance-ranked, while `mode: "text"` / `--text` and `mode: "regex"` / `--regex` are exact matching modes.
 - When work diverges, use `chain_fork` or `/chain-fork` and save follow-up links on the new branch.
 - When delegating to subagents, load/search the relevant chain branch and include the focused context in the subagent task.
 
@@ -102,7 +102,7 @@ Example subagent task wording:
 agent_start({
   agent: "reviewer",
   task: "Focus only on search/index design and return migration risks.",
-  chainContext: { chain: "deevs-pi-kit", branch: "semantic-search", mode: "pack", includeParents: 2, searchQuery: "index", maxBytes: 12000 }
+  chainContext: { chain: "deevs-pi-kit", branch: "semantic-search", mode: "pack", includeParents: 2, searchQuery: "index design", searchMode: "lookup", maxBytes: 12000 }
 })
 ```
 
