@@ -16,7 +16,7 @@ import {
 	signalTmuxSession,
 	startTmuxProcess,
 } from "./tmux-runner.ts";
-import { compileWatches, findWatchMatches } from "./watches.ts";
+import { compileWatches, findWatchMatches, type RuntimeWatch } from "./watches.ts";
 import type {
 	ClearProcessInput,
 	ListProcessInput,
@@ -92,12 +92,16 @@ export class ProcessManager {
 		if (this.shuttingDown) throw new Error("process manager is shutting down");
 		validateStartInput(input, this.config);
 		this.reserveLiveSlot();
+		let slotReserved = true;
 
 		let cwd: string;
 		try {
 			cwd = await resolveCwd(input.cwd, ctx, this.config);
 		} catch (error) {
-			this.releaseReservedLiveSlot();
+			if (slotReserved) {
+				this.releaseReservedLiveSlot();
+				slotReserved = false;
+			}
 			throw error;
 		}
 
@@ -106,6 +110,16 @@ export class ProcessManager {
 
 		const now = Date.now();
 		const backend = input.persistent && !input.backend ? "tmux" : (input.backend ?? this.config.execution.defaultBackend);
+		let watches: RuntimeWatch[];
+		try {
+			watches = compileWatches(input.watches, this.config);
+		} catch (error) {
+			if (slotReserved) {
+				this.releaseReservedLiveSlot();
+				slotReserved = false;
+			}
+			throw error;
+		}
 		const processRecord: ManagedProcessInternal = {
 			id,
 			name: input.name.trim(),
@@ -144,7 +158,7 @@ export class ProcessManager {
 			tmuxSession: null,
 			tmuxLastCapture: "",
 			tmuxPollTimer: null,
-			watches: compileWatches(input.watches, this.config),
+			watches,
 		};
 
 		const buffer = new OutputBuffer({
@@ -153,7 +167,15 @@ export class ProcessManager {
 		});
 		Object.defineProperty(processRecord, "output", { value: buffer, enumerable: false });
 
-		processRecord.logWriter = await ProcessLogWriter.create({ id, name: processRecord.name, cwd, config: this.config });
+		try {
+			processRecord.logWriter = await ProcessLogWriter.create({ id, name: processRecord.name, cwd, config: this.config });
+		} catch (error) {
+			if (slotReserved) {
+				this.releaseReservedLiveSlot();
+				slotReserved = false;
+			}
+			throw error;
+		}
 		if (processRecord.logWriter) {
 			const logs = processRecord.logWriter.info();
 			processRecord.logFile = logs.logFile;
@@ -162,7 +184,10 @@ export class ProcessManager {
 		}
 
 		this.processes.set(id, processRecord);
-		this.releaseReservedLiveSlot();
+		if (slotReserved) {
+			this.releaseReservedLiveSlot();
+			slotReserved = false;
+		}
 
 		try {
 			if (signal?.aborted) throw new Error("proc_start cancelled before spawn");
