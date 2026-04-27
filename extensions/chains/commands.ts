@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { validateBranchName, validateChainName, validateLinkName, type ChainService } from "./service.ts";
-import { formatList, formatLoad, formatLookup, formatSearch } from "./tools.ts";
+import { formatList, formatLoad, formatRankedSearch, formatSearch } from "./tools.ts";
 
 interface ChainLinkArgs {
 	chain: string;
@@ -88,7 +88,7 @@ export function registerChainCommands(pi: ExtensionAPI, service: ChainService): 
 			}
 			try {
 				const mode = parsed.mode ?? (parsed.regex ? "regex" : "lookup");
-				ctx.ui.notify(mode === "lookup" ? formatLookup(await service.lookup(parsed)) : formatSearch(await service.search({ ...parsed, regex: mode === "regex" })), "info");
+				ctx.ui.notify(mode === "lookup" ? formatRankedSearch(await service.rankedSearch(parsed)) : formatSearch(await service.search({ ...parsed, regex: mode === "regex" })), "info");
 			} catch (error) {
 				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 			}

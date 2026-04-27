@@ -11,9 +11,9 @@ const ChainContextSchema = Type.Object({
 	mode: Type.Optional(Type.String({ description: "latest for one link, pack for compact parent/recent/search context" })),
 	includeParents: Type.Optional(Type.Number({ description: "Parent links to include in pack mode" })),
 	recentLinks: Type.Optional(Type.Number({ description: "Recent sibling links to summarize in pack mode" })),
-	searchQuery: Type.Optional(Type.String({ description: "Optional exact search query to include matching snippets in pack mode" })),
-	lookupQuery: Type.Optional(Type.String({ description: "Optional ranked lookup query to include relevant snippets in pack mode" })),
-	maxSearchMatches: Type.Optional(Type.Number({ description: "Maximum search/lookup matches to include in pack mode" })),
+	searchQuery: Type.Optional(Type.String({ description: "Optional query to include matching/relevant snippets in pack mode" })),
+	searchMode: Type.Optional(Type.String({ description: "lookup for ranked results, text for exact text, regex for regex; default lookup" })),
+	maxSearchMatches: Type.Optional(Type.Number({ description: "Maximum search matches to include in pack mode" })),
 	compact: Type.Optional(Type.Boolean({ description: "Use compact section extraction for included links" })),
 });
 

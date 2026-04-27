@@ -68,15 +68,6 @@ export interface ChainSearchInput {
 	recencyWeight?: number;
 }
 
-export interface ChainLookupInput {
-	query: string;
-	chain?: string;
-	branch?: string;
-	maxResults?: number;
-	recencyHalfLifeDays?: number;
-	recencyWeight?: number;
-}
-
 export interface ChainContextInput extends ChainLoadInput {
 	mode?: "latest" | "pack";
 	includeParents?: number;
@@ -116,21 +107,6 @@ export interface ChainSearchResult {
 	matches: ChainSearchMatch[];
 	truncated: boolean;
 	regex: boolean;
-}
-
-export interface ChainLookupMatch {
-	link: ChainLinkInfo;
-	score: number;
-	lexicalScore: number;
-	recencyScore: number;
-	matchedTerms: string[];
-	snippet: string;
-}
-
-export interface ChainLookupResult {
-	query: string;
-	matches: ChainLookupMatch[];
-	truncated: boolean;
 }
 
 export interface ChainContextResult {
