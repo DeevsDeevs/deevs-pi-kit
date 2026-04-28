@@ -78,6 +78,7 @@ const AgentLogsSchema = Type.Object({
 	id: Type.String({ description: "Run id a_... or group id g_..." }),
 	source: Type.Optional(StringEnum(["result", "task", "system-prompt", "metadata", "combined", "stdout", "stderr"] as const)),
 	maxBytes: Type.Optional(Type.Number()),
+	raw: Type.Optional(Type.Boolean({ description: "Return unfiltered raw process logs for combined/stdout/stderr; default is compact" })),
 });
 
 const AgentClearSchema = Type.Object({
@@ -173,9 +174,9 @@ export function registerSubagentTools(pi: ExtensionAPI, manager: SubagentManager
 	pi.registerTool({
 		name: "agent_logs",
 		label: "Agent Logs",
-		description: "Read subagent artifacts or backing process logs.",
-		promptSnippet: "Inspect result.md, task.md, system-prompt.md, metadata.json, or process logs for a subagent.",
-		promptGuidelines: ["Use this when agent_read is insufficient or prompt/task/debug artifacts matter."],
+		description: "Read subagent artifacts or compact backing process logs.",
+		promptSnippet: "Inspect result.md, task.md, system-prompt.md, metadata.json, or compact process-log activity for a subagent.",
+		promptGuidelines: ["Use this when agent_read is insufficient or prompt/task/debug artifacts matter.", "For combined/stdout/stderr, raw:false/default returns compact activity; use raw:true only when debugging log parsing."],
 		parameters: AgentLogsSchema,
 		async execute(_toolCallId, params: AgentLogsInput) {
 			const result = await manager.logs(params);

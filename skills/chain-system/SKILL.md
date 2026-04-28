@@ -54,12 +54,59 @@ chain_search  universal search: ranked lookup by default, exact text, or regex
 - When work diverges, use `chain_fork` or `/chain-fork` and save follow-up links on the new branch.
 - When delegating to subagents, load/search the relevant chain branch and include the focused context in the subagent task.
 
+## Proactive chain triggers
+
+Use chains without waiting for an explicit reminder when the work is clearly durable. Keep this lightweight; chains are for handoff-quality memory, not chat logs.
+
+At the start of work:
+
+- If the user says "continue", "resume", "pick up", "where were we", or references prior work, call `chain_load` for the named chain if known; otherwise use `chain_list`/`chain_search`.
+- If the task is non-trivial and likely tied to an existing project, run a quick `chain_search` for the project/topic before rediscovering old decisions.
+- If loaded context is stale, ambiguous, or conflicts with source files, state the uncertainty and verify against current files.
+
+During work:
+
+- Save after meaningful milestones: implemented feature, validated fix, design decision, failed/rejected approach worth remembering, or completed review.
+- Save before context may be lost: long session, compaction risk, switching tasks, handing off to another agent, or stopping with pending work.
+- For research tasks, save selected sources/queries/IDs only when findings affect future decisions.
+
+With subagents:
+
+- Before spawning subagents on ongoing project work, prefer `chainContext` so each child receives a bounded, parent-loaded context pack.
+- After subagents return, save a link only if their findings changed decisions, exposed risks, or created follow-up work.
+
+Do not save when:
+
+- the task is a one-shot answer, tiny edit, or throwaway command;
+- the link would only repeat visible git diff with no decisions or next steps;
+- the user asks not to persist context.
+
 ## Branching model
 
 - Default branch is `main`.
 - A fork is a new branch whose first link has `parent` set to the source link filename.
 - Use branches for experiments, UI alternatives, subagent research tracks, or parallel implementation approaches.
 - Do not create branches for trivial one-off notes.
+
+Branch when the work has a different hypothesis or merge policy from the current line:
+
+- competing designs or implementations;
+- risky refactors or experiments that may be abandoned;
+- focused subagent/research tracks that should not pollute `main` until accepted;
+- user-requested alternatives, spikes, or comparisons.
+
+Stay on the current branch when:
+
+- continuing the same implementation/review;
+- adding validation results or follow-up fixes for the same decision line;
+- saving a normal end-of-session handoff.
+
+When creating a branch:
+
+1. Use `chain_fork` to resolve and validate the parent link.
+2. Save the first branch link with `branch` and `parent` metadata.
+3. State branch scope, why it exists, and what would merge back.
+4. When the branch is accepted/rejected, save a link on the parent branch (usually `main`) summarizing the outcome and the branch links that matter.
 
 Typical flow:
 

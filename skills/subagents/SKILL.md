@@ -53,7 +53,7 @@ Do not read raw logs by default. `agent_logs` is for debugging or deliberate art
 - You need `metadata`, `task`, or `system-prompt` to debug launch/scope/tool issues.
 - You are diagnosing subagent behavior itself.
 
-Prefer `agent_read` first because `agent_logs source="combined"` can dump verbose JSON streams, tool chatter, and model reasoning into context.
+Prefer `agent_read` first. `agent_logs source="combined"` now defaults to compact activity, but it is still a debugging path; `agent_logs raw:true` can dump verbose JSON streams, tool chatter, and model reasoning into context.
 
 `agent_read` may say "No final assistant output yet" while a child is still thinking or using tools. Before treating that as a hang, check `agent_status`. Use `agent_logs` only if progress is suspicious or you need to diagnose what the child is doing. If logs show broad or recursive searches, stop the run and relaunch with tighter scope.
 
