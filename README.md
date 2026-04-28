@@ -24,9 +24,11 @@ Reload after local edits:
 extensions/processes/   Managed long-running commands
 extensions/subagents/   Curated background staff agents
 extensions/chains/      Durable multi-session work chains
+extensions/wiki/        Deterministic markdown wiki helpers
 skills/background-tasks Guidance for proc_* usage
 skills/subagents/       Guidance for agent_* usage
 skills/chain-system/    Guidance for chain handoffs/search
+skills/wiki/            Curated markdown knowledge-base workflow
 prompts/                Prompt templates
 docs/                   Design notes and plans
 ```
@@ -114,6 +116,21 @@ Subagents are read-only by default. Pass write permission only when explicitly r
 
 Tools: `chain_save`, `chain_load`, `chain_fork`, `chain_context`, `chain_list`, `chain_search`. `chain_search` defaults to dependency-free BM25-style ranked lookup; use `mode: "text"` or `mode: "regex"` for exact matching. `chain_context` packs current/parent/recent/search context within a byte budget; subagents can receive it through `agent_start.chainContext` or per-task `chainContext` in `agent_parallel_start`.
 
+### Wiki
+
+`extensions/wiki/` provides deterministic helpers for curated markdown wikis used with `skills/wiki`.
+
+```text
+/wiki:init <path> --domain "..."  create standard wiki files/dirs
+/wiki:status <path>               show counts, graph summary, top issues
+/wiki:lint <path>                 report links/index/frontmatter/tag issues
+/wiki:graph <path>                parse [[wikilinks]] into graph health
+/wiki:search <path> <query>       ranked/text/regex wiki search
+/wiki:context <path> <query>      pack bounded wiki context
+```
+
+Tools: `wiki_init`, `wiki_status`, `wiki_lint`, `wiki_graph`, `wiki_search`, `wiki_context`. All require an explicit project-local wiki path. The extension does not fetch URLs or auto-write wiki pages; curation stays deliberate via `skills/wiki` and normal `write`/`edit`.
+
 ## Development checks
 
 ```bash
@@ -126,6 +143,10 @@ bun build extensions/subagents/index.ts --outdir /tmp/deevs-subagents-build \
   --external @mariozechner/pi-tui --external node-pty
 
 bun build extensions/chains/index.ts --outdir /tmp/deevs-chains-build \
+  --external @mariozechner/pi-coding-agent --external @mariozechner/pi-ai \
+  --external @mariozechner/pi-tui --external node-pty
+
+bun build extensions/wiki/index.ts --outdir /tmp/deevs-wiki-build \
   --external @mariozechner/pi-coding-agent --external @mariozechner/pi-ai \
   --external @mariozechner/pi-tui --external node-pty
 
