@@ -7,7 +7,7 @@ description: Run a bounded test and review pass for completed or proposed change
 
 Use this skill to answer: **is this change good enough to ship under the user's review budget?**
 
-This is post-change validation, not open-ended debugging or architecture exploration. If checks expose a concrete failure, switch to `diagnose`.
+This is post-change validation, not open-ended debugging or architecture exploration. If checks expose a concrete failure, report it in the verdict; switch to `diagnose` only when the user asks to root-cause or fix it.
 
 ## 1. Set the budget
 
