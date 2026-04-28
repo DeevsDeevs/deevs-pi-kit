@@ -35,6 +35,7 @@ skills/arxiv/           arXiv research workflow
 skills/grill-me/        One-question-at-a-time plan/design grilling
 skills/diagnose/        Repro-first debugging and root-cause workflow
 skills/codebase-orientation/ Map unfamiliar repo areas before acting
+skills/validation-review/ Bounded test/review pass before shipping
 prompts/                Prompt templates
 docs/                   Design notes and plans
 ```
@@ -172,6 +173,10 @@ It points agents toward project-native evidence and Pi-managed supervision: focu
 `skills/codebase-orientation/` teaches the assistant to map an unfamiliar repo area before editing or debugging. It is useful for large codebases, especially Rust workspaces, where safe changes depend on crate boundaries, callers, key types/traits, state flow, and narrow validation commands.
 
 It uses Pi-native orchestration (`agent_start`, `agent_read`, diagrams, chains) while keeping the target repo's own structure and commands as the source of truth.
+
+### Validation review
+
+`skills/validation-review/` teaches a bounded post-change review workflow: check requirements, logic, tests/e2e evidence, and slop before shipping. It uses project-native checks plus scoped subagent perspectives such as `tester`, `reviewer`, `anti-slop`, `rust-dev`, or `devops` within the user's requested review budget.
 
 ## Development checks
 
