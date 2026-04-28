@@ -47,7 +47,7 @@ chain_search  universal search: ranked lookup by default, exact text, or regex
 
 ## When to use
 
-- Before ending a long or complex session.
+- Before ending a long or complex session; do not save links for trivial one-step tasks.
 - When the user says to save context, continue later, create a handoff, or chain link.
 - At the start of resumed work, use `chain_load` or `/chain-load`.
 - When looking for old decisions, files, bugs, or next steps, use `chain_search`; default lookup mode is relevance-ranked, while `mode: "text"` / `--text` and `mode: "regex"` / `--regex` are exact matching modes.
@@ -64,9 +64,9 @@ chain_search  universal search: ranked lookup by default, exact text, or regex
 Typical flow:
 
 ```text
-/chain-fork deevs-pi-kit semantic-search --from-branch main
-/chain-link deevs-pi-kit --branch semantic-search
-/chain-load deevs-pi-kit --branch semantic-search
+/chain-fork project-work experiment --from-branch main
+/chain-link project-work --branch experiment
+/chain-load project-work --branch experiment
 ```
 
 ## Link content rubric

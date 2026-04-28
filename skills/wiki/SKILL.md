@@ -50,14 +50,18 @@ Before changing an existing wiki:
 3. Read recent `log.md` entries.
 4. Search existing pages for the topic/entity before creating a new page.
 
-Use Pi tools directly:
+Use wiki tools for deterministic orientation when available:
 
 ```text
-read        read schema/index/log/pages
-bash rg     search existing pages and wikilinks
-write       create new pages only after path/scope is clear
-edit        update existing pages/index/log precisely
+wiki_status   inspect structure and top health warnings
+wiki_lint     find link/frontmatter/index/tag/source issues
+wiki_search   search pages by relevance/text/regex
+wiki_context  pack relevant bounded wiki context
+read          read schema/index/log/pages when editing precisely
+write/edit    create or update pages after path/scope is clear
 ```
+
+Use `bash` only for small repo-local scans the wiki tools do not cover.
 
 Skipping orientation creates duplicate pages, broken links, and stale contradictions.
 
@@ -150,10 +154,9 @@ For large folders or many sources, inventory first, then process bounded batches
 
 When answering a question from the wiki:
 
-1. Read `index.md` and relevant schema notes.
-2. Search markdown pages for key terms when the wiki is non-trivial.
-3. Read relevant pages and source notes.
-4. Answer with wiki citations, e.g. `[[page-a]]`, `[[page-b]]`.
+1. Use `wiki_context` or `wiki_search` to find relevant pages.
+2. Read `index.md`, relevant schema notes, pages, and source notes when precision matters.
+3. Answer with wiki citations, e.g. `[[page-a]]`, `[[page-b]]`.
 5. If the answer is a substantial synthesis that would be painful to recreate, ask whether to file it under `queries/` or `comparisons/`.
 6. Log filed queries; do not log every trivial lookup unless the user asks for exhaustive history.
 
@@ -171,7 +174,7 @@ When the user asks to lint/audit, check and report by severity:
 - stale or very long pages that may need review/splitting
 - log size/rotation needs
 
-Use `bash` with `rg`, `find`, or a small one-off script for deterministic scans. Ask before making broad fixes.
+Prefer `wiki_lint`, `wiki_status`, and `wiki_graph` for deterministic scans. Use `bash` with `rg`, `find`, or a small one-off script only for checks the wiki tools do not cover. Ask before making broad fixes.
 
 ## Subagent workflow for large wikis
 
