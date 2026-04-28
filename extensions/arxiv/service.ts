@@ -62,25 +62,28 @@ export class ArxivService {
 
 function buildSearchQuery(input: ArxivSearchInput): string {
 	const parts: string[] = [];
-	if (input.query?.trim()) parts.push(fieldTerms("all", input.query));
+	if (input.query?.trim()) parts.push(generalQuery(input.query));
 	if (input.title?.trim()) parts.push(fieldPhrase("ti", input.title));
 	if (input.author?.trim()) parts.push(fieldPhrase("au", input.author));
-	if (input.abstract?.trim()) parts.push(fieldTerms("abs", input.abstract));
+	if (input.abstract?.trim()) parts.push(fieldQuery("abs", input.abstract));
 	if (input.category?.trim()) parts.push(`cat:${input.category.trim()}`);
 	return parts.join(" AND ");
 }
 
-function fieldPhrase(field: string, value: string): string {
+function generalQuery(value: string): string {
 	const query = value.trim();
-	if (advancedQuery(query)) return `${field}:${query}`;
-	return /\s/.test(query) ? `${field}:"${query.replace(/"/g, "")}"` : `${field}:${query}`;
+	return advancedQuery(query) ? query : `all:${query}`;
 }
 
-function fieldTerms(field: string, value: string): string {
+function fieldQuery(field: string, value: string): string {
 	const query = value.trim();
-	if (advancedQuery(query)) return `${field}:${query}`;
-	const terms = query.split(/\s+/).filter(Boolean).map((term) => term.replace(/["()]/g, ""));
-	return terms.map((term) => `${field}:${term}`).join(" AND ");
+	return advancedQuery(query) ? query : `${field}:${query}`;
+}
+
+function fieldPhrase(field: string, value: string): string {
+	const query = value.trim();
+	if (advancedQuery(query)) return query;
+	return /\s/.test(query) ? `${field}:"${query.replace(/"/g, "")}"` : `${field}:${query}`;
 }
 
 function advancedQuery(query: string): boolean {
