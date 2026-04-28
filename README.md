@@ -32,6 +32,7 @@ skills/chain-system/    Guidance for chain handoffs/search
 skills/wiki/            Curated markdown knowledge-base workflow
 skills/concept-diagrams Compact Mermaid/SVG visual explanations
 skills/arxiv/           arXiv research workflow
+skills/datadog-pup/     Safe Datadog operations through the `pup` CLI
 skills/grill-me/        One-question-at-a-time plan/design grilling
 skills/diagnose/        Repro-first debugging and root-cause workflow
 skills/codebase-orientation/ Map unfamiliar repo areas before acting
@@ -161,6 +162,10 @@ For codebase diagrams, inspect source files first and cite the paths used. Prefe
 ### arXiv research
 
 `skills/arxiv/` teaches bounded paper discovery, abstract-level triage, arXiv ID lookup, BibTeX generation, and when to save findings to chains or a wiki. It explicitly warns not to treat preprints as peer-reviewed truth or abstracts as full-paper evidence.
+
+### Datadog Pup
+
+`skills/datadog-pup/` teaches safe Datadog investigation and operations through the `pup` CLI. It emphasizes live command discovery (`pup agent schema --compact`, `pup <domain> --help`), auth/site checks, `--read-only` exploration, bounded time ranges and limits, API-side aggregation, JSON output, redaction of sensitive log data, and explicit approval before creates/updates/deletes/debugger probes/workflow runs.
 
 ### Diagnose
 
