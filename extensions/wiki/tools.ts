@@ -83,7 +83,7 @@ export function registerWikiTools(pi: ExtensionAPI, service: WikiService): void 
 	pi.registerTool({
 		name: "wiki_lint",
 		label: "Lint Wiki",
-		description: "Deterministically report broken links, ambiguous links, orphans, index/frontmatter/tag issues, and raw hash drift.",
+		description: "Deterministically report broken links, ambiguous links, orphans, index/frontmatter/tag issues, and source hash drift.",
 		promptSnippet: "Lint a markdown wiki before broad edits or after ingest.",
 		parameters: LintSchema,
 		async execute(_toolCallId, params: WikiLintInput) {
@@ -142,7 +142,7 @@ export function formatStatus(result: Awaited<ReturnType<WikiService["status"]>>)
 	const issues = result.issues.length ? result.issues.map((issue) => `- [${issue.severity}] ${issue.code}: ${issue.message}`).join("\n") : "- none";
 	return [
 		`Wiki status: ${result.path}`,
-		`Pages: ${result.pageCount} (${typeCounts}); raw sources: ${result.rawCount}`,
+		`Pages: ${result.pageCount} (${typeCounts}); saved sources: ${result.sourceCount}`,
 		`Core missing: ${[...missingFiles, ...missingDirs].join(", ") || "none"}`,
 		`Graph: ${result.graph.nodes} nodes, ${result.graph.edges} edges, ${result.graph.orphans} orphans, ${result.graph.brokenLinks} broken, ${result.graph.ambiguousLinks} ambiguous`,
 		`Latest log: ${result.latestLogEntry ?? "(none)"}`,

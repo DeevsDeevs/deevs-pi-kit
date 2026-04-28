@@ -19,6 +19,24 @@ Use the `agent_*` tools to delegate focused work to curated background staff age
 
 Do not over-delegate trivial tasks. If the answer is obvious from one file or one command, do it directly.
 
+## Scope every task
+
+Always bound subagent scope before launch:
+
+- Prefer `agent_start` with an explicit `cwd` set to the project or package under review.
+- `agent_parallel_start` currently has no top-level `cwd`; it inherits the parent working directory. If the parent cwd is too broad, use separate `agent_start` calls with explicit `cwd`, or make each parallel task explicitly say which directory/files to inspect and what to avoid.
+- Name the exact files, dirs, commands, or diff ranges to inspect when possible.
+- Tell subagents not to search parent directories, `~/.pi`, process logs, `node_modules`, or unrelated sibling repos unless the task is specifically about those areas.
+- Put hard limits in broad review tasks: max tool calls, max files, or "inspect only these paths".
+
+Good bounded review task:
+
+```text
+Inspect only README.md and skills/grill-me/SKILL.md in this repo.
+Do not search outside cwd, ~/.pi, process logs, node_modules, or sibling repos.
+Use at most 3 inspection commands. Return final structured output immediately after inspection.
+```
+
 ## Lifecycle
 
 Subagents are background jobs. After starting one:
@@ -28,6 +46,8 @@ Subagents are background jobs. After starting one:
 3. Use `agent_logs` for artifacts/process logs.
 4. Use `agent_stop` if a run is stuck or no longer useful.
 5. Use `agent_clear` only for terminal records.
+
+`agent_read` may say "No final assistant output yet" while a child is still thinking or using tools. Before treating that as a hang, check `agent_status` and, if needed, `agent_logs` with `source: "combined"` to see recent tool activity. If the log shows broad or recursive searches, stop the run and relaunch with tighter scope.
 
 Backing processes also appear in `/proc` because the subagents extension uses the background process manager.
 

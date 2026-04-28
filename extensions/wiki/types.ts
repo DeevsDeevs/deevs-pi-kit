@@ -126,7 +126,7 @@ export interface WikiStatusResult {
 	coreFiles: Record<string, boolean>;
 	coreDirs: Record<string, boolean>;
 	pageCount: number;
-	rawCount: number;
+	sourceCount: number;
 	pageCountsByType: Record<string, number>;
 	latestLogEntry: string | null;
 	graph: {

@@ -29,6 +29,8 @@ skills/background-tasks Guidance for proc_* usage
 skills/subagents/       Guidance for agent_* usage
 skills/chain-system/    Guidance for chain handoffs/search
 skills/wiki/            Curated markdown knowledge-base workflow
+skills/concept-diagrams Compact Mermaid/SVG visual explanations
+skills/grill-me/        One-question-at-a-time plan/design grilling
 prompts/                Prompt templates
 docs/                   Design notes and plans
 ```
@@ -129,7 +131,15 @@ Tools: `chain_save`, `chain_load`, `chain_fork`, `chain_context`, `chain_list`, 
 /wiki:context <path> <query>      pack bounded wiki context
 ```
 
-Tools: `wiki_init`, `wiki_status`, `wiki_lint`, `wiki_graph`, `wiki_search`, `wiki_context`. All require an explicit project-local wiki path. The extension does not fetch URLs or auto-write wiki pages; curation stays deliberate via `skills/wiki` and normal `write`/`edit`.
+Tools: `wiki_init`, `wiki_status`, `wiki_lint`, `wiki_graph`, `wiki_search`, `wiki_context`. All require an explicit project-local wiki path. The standard layout uses `sources/` for immutable saved source artifacts and `sources/assets/` for images/binaries. For codebase wikis, cite repo paths directly rather than copying code into `sources/`. The extension does not fetch URLs or auto-write wiki pages; curation stays deliberate via `skills/wiki` and normal `write`/`edit`.
+
+## Skills
+
+### Concept diagrams
+
+`skills/concept-diagrams/` teaches the assistant to create compact visual explanations. It defaults to Mermaid in Markdown for architecture maps, data flows, sequence diagrams, state machines, lifecycle diagrams, and concept maps. When the user asks for a polished visual artifact, it can use a self-contained HTML/SVG template under `skills/concept-diagrams/templates/`.
+
+For codebase diagrams, inspect source files first and cite the paths used. Prefer several small diagrams over one unreadable mega-diagram.
 
 ## Development checks
 

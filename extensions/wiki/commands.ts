@@ -23,7 +23,7 @@ export function registerWikiCommands(pi: ExtensionAPI, service: WikiService): vo
 	});
 
 	pi.registerCommand("wiki:lint", {
-		description: "Lint wiki links, index, frontmatter, tags, and raw hashes",
+		description: "Lint wiki links, index, frontmatter, tags, and source hashes",
 		handler: async (args, ctx) => {
 			const path = args.trim();
 			if (!path) return ctx.ui.notify("Usage: /wiki:lint <path>", "warning");
