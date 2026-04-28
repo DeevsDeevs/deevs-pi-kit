@@ -46,7 +46,7 @@ export function extractLiveOutputFromRead(result: ReadResult): LiveAgentOutput {
 	if (stderr) return { visibleOutput: `No final assistant output yet. Recent stderr:\n${stderr}`, messages: parsed.messages };
 
 	return {
-		visibleOutput: "No final assistant output yet. Use raw:true or agent_logs source=combined for the raw JSON stream.",
+		visibleOutput: "No final assistant output yet. Use agent_logs source=combined for compact activity, or raw:true only when debugging the raw JSON stream.",
 		messages: parsed.messages,
 	};
 }

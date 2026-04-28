@@ -51,9 +51,9 @@ export function createSubagentsUi(manager: SubagentManager) {
 		async showStatus(ctx: any) {
 			await ctx.ui.custom((tui: any, theme: any, _kb: any, done: () => void) => new AgentStatusPanel(manager, ctx, theme, done, () => tui.requestRender()), { overlay: true, overlayOptions: { width: "90%", maxHeight: "82%", anchor: "center", margin: 1 } });
 		},
-		async showLogs(ctx: any, id: string, source?: any) {
-			const result = await manager.logs({ id, source });
-			await ctx.ui.custom((tui: any, theme: any, _kb: any, done: () => void) => new TextViewer(`${result.source}: ${result.path ?? id}`, result.content, theme, done, () => tui.requestRender()), { overlay: true, overlayOptions: { width: "92%", maxHeight: "85%", anchor: "center", margin: 1 } });
+		async showLogs(ctx: any, id: string, source?: any, raw?: boolean) {
+			const result = await manager.logs({ id, source, raw });
+			await ctx.ui.custom((tui: any, theme: any, _kb: any, done: () => void) => new TextViewer(`${result.source}: ${result.path ?? id}${raw ? " (raw)" : ""}`, result.content, theme, done, () => tui.requestRender()), { overlay: true, overlayOptions: { width: "92%", maxHeight: "85%", anchor: "center", margin: 1 } });
 		},
 		async showSettings(ctx: any) {
 			await ctx.ui.custom((tui: any, theme: any, _kb: any, done: () => void) => new AgentsSettingsPanel(manager, theme, done, () => tui.requestRender()), { overlay: true, overlayOptions: { width: "72%", maxHeight: "80%", anchor: "center", margin: 1 } });

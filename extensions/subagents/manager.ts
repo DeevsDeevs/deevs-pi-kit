@@ -8,6 +8,7 @@ import { clampConcurrency, clampReturnBytes, clampStatusTailBytes, clampTimeoutM
 import { findAgent, loadBuiltinAgents } from "./agents.ts";
 import { buildAgentSystemPrompt, buildTaskPrompt } from "./prompt.ts";
 import { createRunArtifactsDir, deleteArtifacts, readTextTail, writeJsonFile, writeTextFile } from "./logs.ts";
+import { compactAgentProcessLog } from "./log-compact.ts";
 import { extractFinalOutputFromRead, extractLiveOutputFromRead } from "./result.ts";
 import type {
 	AgentClearInput,
@@ -248,7 +249,9 @@ export class SubagentManager {
 			if (!run.procId) return { content: "No backing process for this run.", source };
 			const logs = await this.processManager.logs({ id: run.procId, stream: source, maxBytes });
 			const logPath = source === "stdout" ? logs?.stdoutLogFile : source === "stderr" ? logs?.stderrLogFile : logs?.logFile;
-			return { path: logPath, content: logs?.content ?? "No process logs for this run.", source };
+			if (!logs?.content) return { path: logPath, content: "No process logs for this run.", source };
+			const content = input.raw ? logs.content : compactAgentProcessLog(logs.content, maxBytes);
+			return { path: logPath, content, source };
 		}
 		const filePath = source === "result" ? run.resultPath : source === "task" ? run.taskPath : source === "system-prompt" ? run.systemPromptPath : run.metadataPath;
 		return { path: filePath, content: readTextTail(filePath, maxBytes), source };

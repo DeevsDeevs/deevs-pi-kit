@@ -117,18 +117,21 @@ export function registerSubagentCommands(pi: ExtensionAPI, manager: SubagentMana
 	});
 
 	pi.registerCommand("agents:logs", {
-		description: "Open/read subagent artifacts and process logs",
+		description: "Open/read subagent artifacts and compact process logs",
 		handler: async (args, ctx) => {
 			manager.setContext(ctx);
-			const [id, source] = args.trim().split(/\s+/).filter(Boolean);
+			const parts = args.trim().split(/\s+/).filter(Boolean);
+			const raw = parts.includes("--raw");
+			const filtered = parts.filter((part) => part !== "--raw");
+			const [id, source] = filtered;
 			if (!id) {
-				ctx.ui.notify("Usage: /agents:logs <run-id|group-id> [result|task|system-prompt|metadata|combined|stdout|stderr]", "warning");
+				ctx.ui.notify("Usage: /agents:logs <run-id|group-id> [result|task|system-prompt|metadata|combined|stdout|stderr] [--raw]", "warning");
 				return;
 			}
 			try {
-				if (ctx.hasUI) await ui.showLogs(ctx, id, source as any);
+				if (ctx.hasUI) await ui.showLogs(ctx, id, source as any, raw);
 				else {
-					const result = await manager.logs({ id, source: source as any });
+					const result = await manager.logs({ id, source: source as any, raw });
 					ctx.ui.notify(`${result.path ?? result.source}\n\n${result.content}`, "info");
 				}
 			} catch (error) {

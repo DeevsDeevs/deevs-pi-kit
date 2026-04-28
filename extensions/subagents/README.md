@@ -34,7 +34,7 @@ agent_parallel_start  start a parallel group; each task accepts optional chainCo
 agent_read            read friendly output, or raw process chunks
 agent_status          inspect runs/groups
 agent_stop            stop a run/group
-agent_logs            inspect artifacts or backing process logs
+agent_logs            inspect artifacts or compact backing process logs; raw:true for full JSON stream
 agent_clear           clear completed records/artifacts
 ```
 
@@ -49,7 +49,7 @@ agent_clear           clear completed records/artifacts
 /agents:parallel a,b -- <task>
 /agents:status                run/group dashboard
 /agents:read <id> [--raw]
-/agents:logs <id> [source]
+/agents:logs <id> [source] [--raw]
 /agents:stop <id>
 /agents:clear <id|--completed> [--delete-artifacts]
 /agents:dock [show|hide|toggle]
@@ -61,6 +61,8 @@ Log sources:
 ```text
 result  task  system-prompt  metadata  combined  stdout  stderr
 ```
+
+For `combined`, `stdout`, and `stderr`, `agent_logs` and `/agents:logs` default to compact activity summaries that omit JSON token deltas, tool deltas, and model reasoning. Use `raw:true` or `--raw` only when debugging the backing process log format itself.
 
 ## Examples
 

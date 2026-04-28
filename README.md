@@ -101,14 +101,14 @@ Commands:
 /agents:parallel a,b -- <task>
 /agents:status                run/group dashboard
 /agents:read <id> [--raw]
-/agents:logs <id> [source]
+/agents:logs <id> [source] [--raw]
 /agents:stop <id>
 /agents:clear <id|--completed>
 /agents:dock [show|hide|toggle]
 /agents:settings
 ```
 
-Subagents are read-only by default. Pass write permission only when explicitly requested. Use `chainContext` for parent-loaded chain handoffs. Active runs show a footer status and completion wakes the parent agent. Full docs: [`extensions/subagents/README.md`](extensions/subagents/README.md).
+Subagents are read-only by default. Pass write permission only when explicitly requested. Use `chainContext` for parent-loaded chain handoffs. Active runs show a footer status and completion wakes the parent agent. Backing process logs default to compact activity summaries; use `raw:true` / `--raw` only for full JSON log debugging. Full docs: [`extensions/subagents/README.md`](extensions/subagents/README.md).
 
 ### Chains
 

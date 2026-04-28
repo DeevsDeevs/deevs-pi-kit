@@ -93,6 +93,7 @@ export interface AgentLogsInput {
 	id: string;
 	source?: AgentLogSource;
 	maxBytes?: number;
+	raw?: boolean;
 }
 
 export interface AgentClearInput {
