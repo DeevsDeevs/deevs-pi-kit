@@ -21,27 +21,31 @@ Reload after local edits:
 ## Contents
 
 ```text
-extensions/processes/   Managed long-running commands
+extensions/processes/   Process-backed background task tools (`proc_*`)
 extensions/subagents/   Curated background staff agents
 extensions/chains/      Durable multi-session work chains
 extensions/wiki/        Deterministic markdown wiki helpers
-skills/background-tasks Guidance for proc_* usage
+extensions/arxiv/       arXiv paper search/lookup/BibTeX tools
+skills/background-tasks User-intent workflow for `extensions/processes`
 skills/subagents/       Guidance for agent_* usage
 skills/chain-system/    Guidance for chain handoffs/search
 skills/wiki/            Curated markdown knowledge-base workflow
 skills/concept-diagrams Compact Mermaid/SVG visual explanations
+skills/arxiv/           arXiv research workflow
 skills/grill-me/        One-question-at-a-time plan/design grilling
+skills/diagnose/        Repro-first debugging and root-cause workflow
+skills/codebase-orientation/ Map unfamiliar repo areas before acting
 prompts/                Prompt templates
 docs/                   Design notes and plans
 ```
 
 ## Extensions
 
-### Background tasks
+### Background tasks / managed processes
 
-`extensions/processes/` runs long-lived commands without shell detaching hacks (`&`, `nohup`, `disown`, `setsid`).
+Background tasks are powered by `extensions/processes/` and exposed as `proc_*` tools plus `/proc:*` commands. The folder/API name is implementation-oriented: Pi manages OS processes. The skill name, `skills/background-tasks`, is intent-oriented: use it when a command should keep running while the conversation continues.
 
-Use it for dev servers, watchers, workers, REPLs, and any command that should keep running while the conversation continues.
+Use it for dev servers, watchers, workers, REPLs, and long-lived commands without shell detaching hacks (`&`, `nohup`, `disown`, `setsid`).
 
 Tools:
 
@@ -133,6 +137,18 @@ Tools: `chain_save`, `chain_load`, `chain_fork`, `chain_context`, `chain_list`, 
 
 Tools: `wiki_init`, `wiki_status`, `wiki_lint`, `wiki_graph`, `wiki_search`, `wiki_context`. All require an explicit project-local wiki path. The standard layout uses `sources/` for immutable saved source artifacts and `sources/assets/` for images/binaries. For codebase wikis, cite repo paths directly rather than copying code into `sources/`. The extension does not fetch URLs or auto-write wiki pages; curation stays deliberate via `skills/wiki` and normal `write`/`edit`.
 
+### arXiv
+
+`extensions/arxiv/` searches the official arXiv export API for paper metadata and abstracts.
+
+```text
+/arxiv:search <query>       search papers by query/title/author/category
+/arxiv:get <id[,id]>        fetch exact paper metadata and abstracts
+/arxiv:bibtex <id[,id]>     generate simple BibTeX entries
+```
+
+Tools: `arxiv_search`, `arxiv_get`, `arxiv_bibtex`. Results are bounded, no API key is required, and the extension does not download PDFs or fetch arbitrary URLs. Use `skills/arxiv` for research triage and citation discipline.
+
 ## Skills
 
 ### Concept diagrams
@@ -140,6 +156,22 @@ Tools: `wiki_init`, `wiki_status`, `wiki_lint`, `wiki_graph`, `wiki_search`, `wi
 `skills/concept-diagrams/` teaches the assistant to create compact visual explanations. It defaults to Mermaid in Markdown for architecture maps, data flows, sequence diagrams, state machines, lifecycle diagrams, and concept maps. When the user asks for a polished visual artifact, it can use a self-contained HTML/SVG template under `skills/concept-diagrams/templates/`.
 
 For codebase diagrams, inspect source files first and cite the paths used. Prefer several small diagrams over one unreadable mega-diagram.
+
+### arXiv research
+
+`skills/arxiv/` teaches bounded paper discovery, abstract-level triage, arXiv ID lookup, BibTeX generation, and when to save findings to chains or a wiki. It explicitly warns not to treat preprints as peer-reviewed truth or abstracts as full-paper evidence.
+
+### Diagnose
+
+`skills/diagnose/` teaches a repro-first debugging loop for broken behavior, failing builds, flaky commands, hung subagents, process issues, and performance regressions. It emphasizes fast feedback loops, falsifiable hypotheses, targeted probes, cleanup, and verification against the original symptom.
+
+It points agents toward project-native evidence and Pi-managed supervision: focused build/test commands, fixture repros, `proc_*` for long-running loops, and tightly scoped subagent help when useful.
+
+### Codebase orientation
+
+`skills/codebase-orientation/` teaches the assistant to map an unfamiliar repo area before editing or debugging. It is useful for large codebases, especially Rust workspaces, where safe changes depend on crate boundaries, callers, key types/traits, state flow, and narrow validation commands.
+
+It uses Pi-native orchestration (`agent_start`, `agent_read`, diagrams, chains) while keeping the target repo's own structure and commands as the source of truth.
 
 ## Development checks
 
@@ -157,6 +189,10 @@ bun build extensions/chains/index.ts --outdir /tmp/deevs-chains-build \
   --external @mariozechner/pi-tui --external node-pty
 
 bun build extensions/wiki/index.ts --outdir /tmp/deevs-wiki-build \
+  --external @mariozechner/pi-coding-agent --external @mariozechner/pi-ai \
+  --external @mariozechner/pi-tui --external node-pty
+
+bun build extensions/arxiv/index.ts --outdir /tmp/deevs-arxiv-build \
   --external @mariozechner/pi-coding-agent --external @mariozechner/pi-ai \
   --external @mariozechner/pi-tui --external node-pty
 

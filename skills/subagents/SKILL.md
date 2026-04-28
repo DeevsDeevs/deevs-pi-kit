@@ -42,12 +42,20 @@ Use at most 3 inspection commands. Return final structured output immediately af
 Subagents are background jobs. After starting one:
 
 1. Use `agent_status` to see state.
-2. Use `agent_read` for friendly output.
-3. Use `agent_logs` for artifacts/process logs.
-4. Use `agent_stop` if a run is stuck or no longer useful.
-5. Use `agent_clear` only for terminal records.
+2. Use `agent_read` for normal progress/final output.
+3. Use `agent_stop` if a run is stuck or no longer useful.
+4. Use `agent_clear` only for terminal records.
 
-`agent_read` may say "No final assistant output yet" while a child is still thinking or using tools. Before treating that as a hang, check `agent_status` and, if needed, `agent_logs` with `source: "combined"` to see recent tool activity. If the log shows broad or recursive searches, stop the run and relaunch with tighter scope.
+Do not read raw logs by default. `agent_logs` is for debugging or deliberate artifact inspection, such as:
+
+- `agent_read` is missing, truncated, or confusing.
+- The run appears stuck, cancelled, failed, or timed out.
+- You need `metadata`, `task`, or `system-prompt` to debug launch/scope/tool issues.
+- You are diagnosing subagent behavior itself.
+
+Prefer `agent_read` first because `agent_logs source="combined"` can dump verbose JSON streams, tool chatter, and model reasoning into context.
+
+`agent_read` may say "No final assistant output yet" while a child is still thinking or using tools. Before treating that as a hang, check `agent_status`. Use `agent_logs` only if progress is suspicious or you need to diagnose what the child is doing. If logs show broad or recursive searches, stop the run and relaunch with tighter scope.
 
 Backing processes also appear in `/proc` because the subagents extension uses the background process manager.
 

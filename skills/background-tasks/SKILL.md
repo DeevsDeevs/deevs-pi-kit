@@ -5,11 +5,9 @@ description: Use when starting, supervising, reading, or stopping long-running c
 
 # Background Tasks
 
-Use Pi's managed process tools for long-running work.
+Use Pi's managed process tools for commands that should keep running while the conversation continues.
 
-## Core rule
-
-Do **not** start background work with shell detachment patterns:
+Core rule: never start background work with shell detachment patterns:
 
 ```bash
 cmd &
@@ -18,34 +16,28 @@ disown
 setsid cmd ...
 ```
 
-Use `proc_start` instead. Managed tasks are visible, bounded, readable, signalable, and cleaned up by Pi.
+Use `proc_start` instead. Managed tasks are visible, readable, signalable, and cleanable by Pi.
 
-## When to use this skill
+## When to use
 
-Use this workflow for:
+Use for:
 
-- dev servers (`npm run dev`, `vite`, `next dev`, `rails server`, etc.)
-- test watchers
-- build/watch loops
-- file watchers
-- workers and queues
+- dev servers, workers, queues, and local services
+- test/build/file watchers
 - REPL-like tools that need stdin
-- scripts expected to run longer than a normal blocking command
-- commands the user wants to inspect later
+- long flaky repro loops or scripts you need to inspect later
 - commands that should survive `/reload` when explicitly requested
 
-For short one-shot commands, normal shell tools are fine.
+For short one-shot commands, use normal shell tools.
 
 ## Default workflow
 
-1. Start the task with `proc_start`.
-2. Give the task a clear `name` based on its purpose.
-3. Set `waitMs` to capture initial readiness/failure output.
-4. Use `proc_read` with `afterSeq` to poll new output.
-5. Use `proc_logs` or `/proc:logs` for larger history.
-6. Use `proc_write` for stdin.
-7. Use `proc_signal` or `/proc:kill` to stop it.
-8. Use `proc_clear` after it is terminal, optionally with `deleteLogs: true`.
+1. Start with `proc_start` and a clear `name`.
+2. Set `waitMs` to capture initial readiness/failure output.
+3. Read incremental output with `proc_read` and `afterSeq`.
+4. Use `proc_write` for stdin.
+5. Stop with `proc_signal`.
+6. Clear terminal records with `proc_clear` when no longer useful.
 
 Example:
 
@@ -55,98 +47,57 @@ Example:
   "command": "npm run dev",
   "waitMs": 1000,
   "maxBytes": 4000,
-  "watches": [
-    {
-      "pattern": "ready",
-      "mode": "substring",
-      "stream": "stdout",
-      "triggerTurn": false
-    }
-  ]
+  "watches": [{ "pattern": "ready", "mode": "substring", "stream": "stdout" }]
 }
 ```
 
 ## Backend choice
 
-Use this decision tree:
-
-1. Use the default `pipe` backend for most tasks.
-2. Use `backend: "pty"` when the command needs a TTY, colors, terminal prompts, or `test -t` behavior.
-3. Use `backend: "tmux"` for terminal-style tasks that benefit from tmux behavior.
-4. Use `persistent: true` only when the user wants the task to survive Pi reloads; this uses tmux-backed persistence.
+- Default `pipe`: most tasks.
+- `backend: "pty"`: command needs a TTY, colors, terminal prompts, or `test -t` behavior.
+- `backend: "tmux"`: terminal-style tasks that specifically benefit from tmux behavior.
+- `persistent: true`: only when the user wants the task to survive Pi reloads; this is tmux-backed.
 
 Do not choose tmux just because a task is long-running. The pipe backend is the clean default.
 
 ## Watches and alerts
 
-Add watches when there is a useful readiness or failure marker.
+Add watches only for useful readiness/failure markers.
 
-Good watch patterns:
+Good patterns:
 
-- server ready: `ready`, `listening`, `Local:`, `compiled successfully`
-- tests failed: `FAIL`, `failed`, `panic`, `Error:`
-- worker ready: `connected`, `subscribed`, `processed`
+- ready: `ready`, `listening`, `Local:`, `compiled successfully`
+- failure: `FAIL`, `failed`, `panic`, `Error:`
+- worker: `connected`, `subscribed`, `processed`
 
-Use `triggerTurn: false` for informational readiness if the agent does not need to wake up immediately.
-
-Use `repeat: true` only when repeated alerts are actually useful. One-shot watches are the safer default.
+Use one-shot watches by default. Use `repeat: true` only when repeated alerts are useful. Use `triggerTurn: false` for informational readiness when the agent does not need to wake immediately.
 
 ## Reading output
 
 Prefer cursor reads:
 
 ```json
-{
-  "id": "p_abc_1",
-  "afterSeq": 12,
-  "waitMs": 1000,
-  "maxBytes": 8000,
-  "stream": "combined"
-}
+{ "id": "p_abc_1", "afterSeq": 12, "waitMs": 1000, "maxBytes": 8000 }
 ```
 
-Keep track of `nextSeq` and pass it back as `afterSeq` on the next read.
+Track `nextSeq` and pass it as `afterSeq` next time.
 
-Use `/proc:logs [id|name]` for human log inspection. It opens a searchable overlay when Pi UI is available.
+Use `proc_logs` or `/proc:logs` only when buffered reads are insufficient or a human needs searchable history. Do not dump large logs into context by default.
 
 ## Stopping and cleanup
 
-For graceful shutdown:
+Stop gracefully first:
 
 ```json
-{
-  "id": "p_abc_1",
-  "signal": "SIGTERM",
-  "tree": true,
-  "timeoutMs": 5000
-}
+{ "id": "p_abc_1", "signal": "SIGTERM", "tree": true, "timeoutMs": 5000 }
 ```
 
-If graceful shutdown fails, use `SIGKILL`.
+Use `SIGKILL` only if graceful shutdown fails.
 
-After a task exits, clear it if it is no longer useful:
+Clear exited records when they are no longer useful:
 
 ```json
-{
-  "id": "p_abc_1",
-  "deleteLogs": true
-}
-```
-
-To stop all managed tasks when the user asks for cleanup, use `/proc:kill-all` or signal all running records with `proc_signal`.
-
-## Human UI commands
-
-Mention these when useful:
-
-```text
-/proc                                  # interactive task panel
-/proc:list                             # text task list
-/proc:dock show                        # compact status dock
-/proc:logs [id|name] [combined|stdout|stderr]
-/proc:settings                         # session defaults
-/proc:kill [id|name|--all]
-/proc:clear [id|name|--exited]
+{ "id": "p_abc_1", "deleteLogs": true }
 ```
 
 ## Persistent tasks
@@ -157,21 +108,21 @@ Persistent tasks:
 
 - are tmux-backed
 - survive `/reload`
-- restore metadata on the next Pi session start
+- restore metadata on next Pi session start
 - preserve one-shot watch fired state
 
 Do not promise pipe-backed persistence. Pipe stdio cannot be reattached after Pi reloads.
 
-## Communication style
+## Report to user
 
 When starting long-running work, report:
 
-- process name
-- process ID
-- what command was launched
-- how to inspect logs or stop it
+- process name and id
+- command launched
+- how to inspect output
+- how to stop it
 
-Example response:
+Example:
 
 ```text
 Started dev-server as p_abc_1. Use /proc or /proc:logs dev-server to inspect it; /proc:kill dev-server stops it.

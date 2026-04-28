@@ -1,4 +1,8 @@
-# Managed Background Tasks
+# Background Tasks / Managed Processes
+
+This extension lives at `extensions/processes/` because it manages OS processes. In user-facing docs and skills, the workflow is called **background tasks** because that is the intent: run a command while the conversation continues.
+
+Use the paired skill at [`skills/background-tasks`](../../skills/background-tasks/SKILL.md) for agent behavior guidance.
 
 Run long-lived commands in Pi without detached shell hacks (`cmd &`, `nohup`, `disown`, `setsid`). Tasks stay visible, readable, bounded, and killable.
 
@@ -35,6 +39,16 @@ Inspect from Pi:
 /proc:read dev-server
 /proc:logs dev-server
 /proc:kill dev-server
+```
+
+## Naming map
+
+```text
+User intent / skill:     background tasks
+Extension implementation: extensions/processes/
+Tool prefix:             proc_*
+Slash commands:          /proc and /proc:*
+Footer/status label:     background-tasks
 ```
 
 ## Tools
