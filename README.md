@@ -27,6 +27,7 @@ extensions/chains/      Durable multi-session work chains
 extensions/wiki/        Deterministic markdown wiki helpers
 extensions/arxiv/       arXiv paper search/lookup/BibTeX tools
 extensions/todos/       Session-scoped managed todo list (`todo_list`)
+extensions/ask-user/    Interactive clarification/decision UI (`ask_user`)
 extensions/notifier/     Ready-for-input terminal notifications
 skills/background-tasks User-intent workflow for `extensions/processes`
 skills/subagents/       Guidance for agent_* usage
@@ -35,6 +36,7 @@ skills/wiki/            Curated markdown knowledge-base workflow
 skills/concept-diagrams Compact Mermaid/SVG visual explanations
 skills/arxiv/           arXiv research workflow
 skills/todos/           Guidance for effective `todo_list` usage
+skills/ask-user/        When to clarify via the interactive `ask_user` UI
 skills/datadog-pup/     Safe Datadog operations through the `pup` CLI
 skills/grill-me/        One-question-at-a-time plan/design grilling
 skills/diagnose/        Repro-first debugging and root-cause workflow
@@ -70,10 +72,10 @@ Commands:
 /proc:signal <id|name> <sig>  SIGINT/SIGTERM/SIGKILL
 /proc:clear <id|name|--exited>
 /proc:dock [show|hide|toggle]
-/proc:settings
+/proc:settings [status|reset|set <key> <value>]
 ```
 
-Active non-subagent tasks show a compact blue footer status. Full docs: [`extensions/processes/README.md`](extensions/processes/README.md).
+Active non-subagent tasks show a compact blue footer status. Process settings persist to `.pi/processes.json`. Full docs: [`extensions/processes/README.md`](extensions/processes/README.md).
 
 ### Subagents
 
@@ -108,10 +110,10 @@ Commands:
 /agents:stop <id>
 /agents:clear <id|--completed>
 /agents:dock [show|hide|toggle]
-/agents:settings
+/agents:settings [status|reset|...]
 ```
 
-Subagents are read-only by default. Pass write permission only when explicitly requested. Use `chainContext` for parent-loaded chain handoffs. Active runs show a footer status and completion wakes the parent agent. Backing process logs default to compact activity summaries; use `raw:true` / `--raw` only for full JSON log debugging. Full docs: [`extensions/subagents/README.md`](extensions/subagents/README.md).
+Subagents are read-only by default. Pass write permission only when explicitly requested. Use `chainContext` for parent-loaded chain handoffs. Active runs show a footer status and completion wakes the parent agent. Backing process logs default to compact activity summaries; use `raw:true` / `--raw` only for full JSON log debugging. Subagent settings persist to `.pi/subagents.json`. Full docs: [`extensions/subagents/README.md`](extensions/subagents/README.md).
 
 ### Chains
 
@@ -123,11 +125,12 @@ Subagents are read-only by default. Pass write permission only when explicitly r
 /chain-fork <name> <branch>    fork a branch from an existing link
 /chain-list [--branches]       list chains
 /chain-search [name] <query>   universal ranked/text/regex chain search
+/chain-discipline              show/set persistent chain discipline mode
 ```
 
 Tools: `chain_save`, `chain_load`, `chain_fork`, `chain_context`, `chain_list`, `chain_search`. `chain_search` defaults to dependency-free BM25-style ranked lookup; use `mode: "text"` or `mode: "regex"` for exact matching. `chain_context` packs current/parent/recent/search context within a byte budget; subagents can receive it through `agent_start.chainContext` or per-task `chainContext` in `agent_parallel_start`.
 
-Chain discipline hooks nudge the model to search/load chains for resumed or durable project work and remind after meaningful unsaved work. Default mode is non-blocking `nudge`; opt into guarded behavior with `.pi/chain-discipline.json` if you want mutating tools blocked until chain context is checked.
+Chain discipline hooks nudge the model to search/load chains for resumed or durable project work and remind after meaningful unsaved work. Default mode is non-blocking `nudge`; opt into guarded behavior with `/chain-discipline mode guarded` if you want mutating tools blocked until chain context is checked. The command persists project settings to `.pi/chain-discipline.json`.
 
 ### Wiki
 
@@ -160,11 +163,42 @@ Tools: `arxiv_search`, `arxiv_get`, `arxiv_bibtex`. Results are bounded, no API 
 
 `extensions/todos/` provides a minimal session-scoped todo list for non-trivial multi-step work. The `todo_list` tool supports `read`, `write` (complete replacement), and `clear`; items have `pending`, `in_progress`, `blocked`, or `done` status. It uses a compact widget plus a read-only `/todos` overlay; `/todos clear` resets it. Todos are for current-session progress, not durable memory; use chains for handoffs.
 
+### Ask user
+
+`extensions/ask-user/` provides the `ask_user` tool: an interactive overlay for collecting 1-5 focused clarifications or decisions during an agent run. It shows searchable/filterable multiple-choice options with wrapped descriptions, renders context in the overlay, and keeps custom/freeform answers inside the same UI with an editor. For batched questions, one overlay shows progress tabs; `←`/`→` switch questions in option-list mode, `↑`/`↓` move through options, and the batch returns when every question is answered.
+
+Use it when implementation would otherwise rely on a material assumption. The tool's prompt guidelines tell agents to gather evidence first and avoid asking questions that files/docs/commands can answer.
+
+Example tool shape:
+
+```json
+{
+  "context": "Current notifier code can rely on terminal protocols only, or keep native fallbacks.",
+  "questions": [
+    {
+      "id": "notification-path",
+      "question": "Which notification path should we ship?",
+      "options": [
+        { "title": "Terminal protocols only", "description": "Simpler and Ghostty-native" },
+        { "title": "Keep fallback", "description": "More reliable on macOS, less terminal-native" }
+      ],
+      "allowFreeform": true
+    }
+  ]
+}
+```
+
 ### Notifier
 
 `extensions/notifier/` sends a ready-for-input signal on Pi's `agent_end` event. It uses terminal protocols only: Kitty OSC 99 when available, Ghostty OSC 9 + OSC 777 when running in Ghostty, otherwise OSC 777. It also sends BEL by default so terminal bell/audio settings can handle sound. Run `/notifier:test` after `/reload` to test it.
 
-Optional project config lives at `.pi/notifier.json`:
+Optional project config lives at `.pi/notifier.json` and can be edited with `/notifier:settings`:
+
+```text
+/notifier:settings status
+/notifier:settings enable|disable|reset
+/notifier:settings set <enabled|title|body|terminal|bell|terminalRequiresTty|minIntervalMs|jsonl> <value>
+```
 
 ```json
 {
@@ -194,6 +228,10 @@ For codebase diagrams, inspect source files first and cite the paths used. Prefe
 ### Todos
 
 `skills/todos/` teaches when and how to use `todo_list`: create compact current-session plans for non-trivial work, mark exactly what is `in_progress`, use `blocked` with notes instead of fake progress, update via complete replacement writes, and clear stale lists. It explicitly separates ephemeral todo progress from durable chain handoffs.
+
+### Ask user
+
+`skills/ask-user/` teaches when to call the interactive `ask_user` UI: gather evidence first, batch 1-5 related clarifications, use option descriptions for trade-offs, and stop rather than silently assuming after cancelled high-impact questions.
 
 ### Datadog Pup
 
@@ -241,6 +279,10 @@ bun build extensions/arxiv/index.ts --outdir /tmp/deevs-arxiv-build \
 bun build extensions/todos/index.ts --outdir /tmp/deevs-todos-build \
   --external @mariozechner/pi-coding-agent --external @mariozechner/pi-ai \
   --external @mariozechner/pi-tui --external node-pty
+
+bun build extensions/ask-user/index.ts --target node --outdir /tmp/deevs-ask-user-build \
+  --external @mariozechner/pi-coding-agent --external @mariozechner/pi-ai \
+  --external @mariozechner/pi-tui
 
 bun build extensions/notifier/index.ts --target node --outdir /tmp/deevs-notifier-build \
   --external @mariozechner/pi-coding-agent

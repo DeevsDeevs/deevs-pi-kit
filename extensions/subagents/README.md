@@ -53,7 +53,9 @@ agent_clear           clear completed records/artifacts
 /agents:stop <id>
 /agents:clear <id|--completed> [--delete-artifacts]
 /agents:dock [show|hide|toggle]
-/agents:settings
+/agents:settings                         settings overlay; persists changes
+/agents:settings status                  show project-persistent settings
+/agents:settings reset                   reset settings and persist defaults
 ```
 
 Log sources:
@@ -105,3 +107,9 @@ ${PI_CODING_AGENT_DIR:-~/.pi/agent}/subagent-runs/<project-hash>/<run-id>/
 ```
 
 The live status index is session-scoped/in-memory. Artifacts remain on disk until cleared with `deleteArtifacts` / `--delete-artifacts`.
+
+## Project settings
+
+Subagent defaults persist to `.pi/subagents.json` when changed through `/agents:settings`, `/agents:dock`, or the settings overlay.
+
+Persisted settings include model allowlists/defaults, timeout/concurrency defaults, dock settings, write default, and terminal wake-up behavior. `defaultAllowWrite` still defaults to `false`; only persist `true` deliberately.

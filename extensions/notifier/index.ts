@@ -1,7 +1,8 @@
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { spawn } from "node:child_process";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { loadProjectConfig, saveProjectConfig } from "../shared/project-config.ts";
 
 type NotifierConfig = {
 	enabled?: boolean;
@@ -19,6 +20,8 @@ type ResolvedConfig = Required<Omit<NotifierConfig, "command" | "jsonl">> & {
 	command?: string[];
 	jsonl?: string;
 };
+
+const NOTIFIER_CONFIG_FILE = "notifier.json";
 
 const DEFAULT_CONFIG: ResolvedConfig = {
 	enabled: true,
@@ -118,12 +121,11 @@ function resolveConfig(parsed: NotifierConfig): ResolvedConfig {
 }
 
 async function loadConfig(cwd: string): Promise<ResolvedConfig> {
-	try {
-		const raw = await readFile(join(cwd, ".pi", "notifier.json"), "utf8");
-		return resolveConfig(JSON.parse(raw) as NotifierConfig);
-	} catch {
-		return DEFAULT_CONFIG;
-	}
+	return loadProjectConfig(cwd, NOTIFIER_CONFIG_FILE, DEFAULT_CONFIG, (input) => resolveConfig(input as NotifierConfig));
+}
+
+async function saveConfig(cwd: string, config: ResolvedConfig): Promise<string> {
+	return saveProjectConfig(cwd, NOTIFIER_CONFIG_FILE, config);
 }
 
 async function notify(ctx: ExtensionContext, config: ResolvedConfig, debugFanout = false): Promise<void> {
@@ -151,6 +153,18 @@ export default function (pi: ExtensionAPI): void {
 		await notify(ctx, config);
 	});
 
+	pi.registerCommand("notifier:settings", {
+		description: "Show or persist project notifier settings",
+		handler: async (args, ctx) => {
+			try {
+				config = await applyNotifierSettingsCommand(args, ctx.cwd, config);
+				ctx.ui.notify(`${formatConfig(config)}\nProject config: .pi/notifier.json`, "info");
+			} catch (error) {
+				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+			}
+		},
+	});
+
 	pi.registerCommand("notifier:test", {
 		description: "Send a test ready notification using extensions/notifier.",
 		handler: async (_args, ctx) => {
@@ -162,4 +176,58 @@ export default function (pi: ExtensionAPI): void {
 			);
 		},
 	});
+}
+
+async function applyNotifierSettingsCommand(args: string, cwd: string, current: ResolvedConfig): Promise<ResolvedConfig> {
+	const parts = args.trim().split(/\s+/).filter(Boolean);
+	if (parts.length === 0 || parts[0] === "status" || parts[0] === "show") return loadConfig(cwd);
+	let next: ResolvedConfig = { ...current, command: current.command ? [...current.command] : undefined, jsonl: current.jsonl };
+	const command = parts[0]!;
+	if (command === "reset") next = { ...DEFAULT_CONFIG };
+	else if (command === "enable") next.enabled = true;
+	else if (command === "disable") next.enabled = false;
+	else if (command === "set") next = setNotifierValue(next, parts[1], parts.slice(2).join(" "));
+	else throw new Error("Usage: /notifier:settings [status|enable|disable|reset|set <key> <value>]");
+	await saveConfig(cwd, next);
+	return loadConfig(cwd);
+}
+
+function setNotifierValue(config: ResolvedConfig, key: string | undefined, rawValue: string): ResolvedConfig {
+	if (!key) throw new Error("Usage: /notifier:settings set <key> <value>");
+	const value = rawValue.trim();
+	const next = { ...config };
+	if (key === "enabled") next.enabled = parseBool(value, key);
+	else if (key === "terminal") next.terminal = parseBool(value, key);
+	else if (key === "bell") next.bell = parseBool(value, key);
+	else if (key === "terminalRequiresTty") next.terminalRequiresTty = parseBool(value, key);
+	else if (key === "title") next.title = value || DEFAULT_CONFIG.title;
+	else if (key === "body") next.body = value || DEFAULT_CONFIG.body;
+	else if (key === "minIntervalMs") {
+		const parsed = Number(value);
+		if (!Number.isFinite(parsed)) throw new Error("minIntervalMs must be a number");
+		next.minIntervalMs = Math.max(0, Math.floor(parsed));
+	} else if (key === "jsonl") next.jsonl = value && value !== "none" ? value : undefined;
+	else if (key === "command") throw new Error("Set notifier command by editing .pi/notifier.json as a JSON string array; shell-like command strings are intentionally not accepted here.");
+	else throw new Error(`Unknown notifier setting: ${key}`);
+	return next;
+}
+
+function parseBool(value: string, key: string): boolean {
+	if (value === "true" || value === "1") return true;
+	if (value === "false" || value === "0") return false;
+	throw new Error(`${key} must be true or false`);
+}
+
+function formatConfig(config: ResolvedConfig): string {
+	return [
+		`enabled: ${config.enabled}`,
+		`title: ${config.title}`,
+		`body: ${config.body}`,
+		`terminal: ${config.terminal}`,
+		`bell: ${config.bell}`,
+		`terminalRequiresTty: ${config.terminalRequiresTty}`,
+		`minIntervalMs: ${config.minIntervalMs}`,
+		`command: ${config.command?.join(" ") ?? "(none)"}`,
+		`jsonl: ${config.jsonl ?? "(none)"}`,
+	].join("\n");
 }

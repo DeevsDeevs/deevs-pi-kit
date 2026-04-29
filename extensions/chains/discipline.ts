@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 
@@ -49,6 +49,18 @@ const INSPECTION_TOOLS = new Set(["read", "todo_list", "wiki_status", "wiki_lint
 export function registerChainDiscipline(pi: ExtensionAPI): void {
 	let config = { ...DEFAULT_CONFIG };
 	let current: RunState | undefined;
+
+	pi.registerCommand("chain-discipline", {
+		description: "Show or persist project chain discipline settings",
+		handler: async (args, ctx) => {
+			try {
+				config = await handleChainDisciplineCommand(args, ctx.cwd, config);
+				ctx.ui.notify(formatConfig(config, ctx.cwd), "info");
+			} catch (error) {
+				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+			}
+		},
+	});
 
 	pi.on("session_start", async (_event, ctx) => {
 		config = await loadChainDisciplineConfig(ctx.cwd);
@@ -124,10 +136,100 @@ export function registerChainDiscipline(pi: ExtensionAPI): void {
 }
 
 export async function loadChainDisciplineConfig(cwd: string): Promise<ChainDisciplineConfig> {
-	const fromFile = await readConfigFile(join(cwd, ".pi", "chain-discipline.json"));
+	const fromFile = await readConfigFile(configPath(cwd));
 	const modeFromEnv = parseMode(process.env.DEEVS_CHAIN_DISCIPLINE_MODE);
 	const enabledFromEnv = parseBool(process.env.DEEVS_CHAIN_DISCIPLINE_ENABLED);
 	return normalizeConfig({ ...DEFAULT_CONFIG, ...fromFile, mode: modeFromEnv ?? fromFile.mode ?? DEFAULT_CONFIG.mode, enabled: enabledFromEnv ?? fromFile.enabled ?? DEFAULT_CONFIG.enabled });
+}
+
+export async function handleChainDisciplineCommand(args: string, cwd: string, current: ChainDisciplineConfig): Promise<ChainDisciplineConfig> {
+	const parts = args.trim().split(/\s+/).filter(Boolean);
+	if (parts.length === 0 || parts[0] === "status" || parts[0] === "show") return loadChainDisciplineConfig(cwd);
+	if (parts[0] === "help") throw new Error(commandUsage());
+
+	let next: ChainDisciplineConfig = { ...current };
+	const command = parts[0]!;
+	if (command === "enable") next.enabled = true;
+	else if (command === "disable") next.enabled = false;
+	else if (command === "reset") next = { ...DEFAULT_CONFIG };
+	else if (command === "mode") next.mode = requireMode(parts[1]);
+	else if (parseMode(command)) next.mode = command as ChainDisciplineMode;
+	else if (command === "default-chain") next.defaultChain = parseOptionalString(parts[1]);
+	else if (command === "set") next = setConfigValue(next, parts[1], parts[2]);
+	else throw new Error(commandUsage());
+
+	await writeProjectConfig(cwd, next);
+	return loadChainDisciplineConfig(cwd);
+}
+
+function configPath(cwd: string): string {
+	return join(cwd, ".pi", "chain-discipline.json");
+}
+
+async function writeProjectConfig(cwd: string, config: ChainDisciplineConfig): Promise<void> {
+	const path = configPath(cwd);
+	await mkdir(join(cwd, ".pi"), { recursive: true });
+	await writeFile(path, `${JSON.stringify(stripUndefined(config), null, 2)}\n`, "utf8");
+}
+
+function stripUndefined(config: ChainDisciplineConfig): Record<string, unknown> {
+	return Object.fromEntries(Object.entries(config).filter(([, value]) => value !== undefined));
+}
+
+function setConfigValue(config: ChainDisciplineConfig, key: string | undefined, value: string | undefined): ChainDisciplineConfig {
+	if (!key) throw new Error(commandUsage());
+	const next = { ...config };
+	if (key === "enabled") next.enabled = requireBool(value, key);
+	else if (key === "mode") next.mode = requireMode(value);
+	else if (key === "defaultChain" || key === "default-chain") next.defaultChain = parseOptionalString(value);
+	else if (key === "guardResumePrompts") next.guardResumePrompts = requireBool(value, key);
+	else if (key === "guardDurablePrompts") next.guardDurablePrompts = requireBool(value, key);
+	else if (key === "nudgeAfterMutatingTools") next.nudgeAfterMutatingTools = requireBool(value, key);
+	else if (key === "notifyOnStart") next.notifyOnStart = requireBool(value, key);
+	else throw new Error(`Unknown chain discipline setting: ${key}\n${commandUsage()}`);
+	return next;
+}
+
+function requireMode(value: string | undefined): ChainDisciplineMode {
+	const mode = parseMode(value);
+	if (!mode) throw new Error(`Mode must be off, nudge, guarded, or strict.\n${commandUsage()}`);
+	return mode;
+}
+
+function requireBool(value: string | undefined, key: string): boolean {
+	const parsed = parseBool(value);
+	if (parsed === undefined) throw new Error(`${key} must be true or false.`);
+	return parsed;
+}
+
+function parseOptionalString(value: string | undefined): string | undefined {
+	if (!value || value === "none" || value === "null" || value === "-") return undefined;
+	return value;
+}
+
+function formatConfig(config: ChainDisciplineConfig, cwd: string): string {
+	return [
+		`Chain discipline (${configPath(cwd)})`,
+		`enabled: ${config.enabled}`,
+		`mode: ${config.mode}`,
+		`defaultChain: ${config.defaultChain ?? "(none)"}`,
+		`guardResumePrompts: ${config.guardResumePrompts}`,
+		`guardDurablePrompts: ${config.guardDurablePrompts}`,
+		`nudgeAfterMutatingTools: ${config.nudgeAfterMutatingTools}`,
+		`notifyOnStart: ${config.notifyOnStart}`,
+		"Commands: /chain-discipline mode <off|nudge|guarded|strict>, enable, disable, reset, default-chain <name|none>, set <key> <value>",
+	].join("\n");
+}
+
+function commandUsage(): string {
+	return [
+		"Usage: /chain-discipline [status]",
+		"       /chain-discipline mode <off|nudge|guarded|strict>",
+		"       /chain-discipline <off|nudge|guarded|strict>",
+		"       /chain-discipline enable|disable|reset",
+		"       /chain-discipline default-chain <name|none>",
+		"       /chain-discipline set <enabled|mode|defaultChain|guardResumePrompts|guardDurablePrompts|nudgeAfterMutatingTools|notifyOnStart> <value>",
+	].join("\n");
 }
 
 async function readConfigFile(path: string): Promise<Partial<ChainDisciplineConfig>> {

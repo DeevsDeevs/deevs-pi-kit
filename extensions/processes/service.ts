@@ -1,6 +1,6 @@
 import { isToolCallEventType, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { createAlertSink } from "./alerts.ts";
-import { defaultConfig } from "./config.ts";
+import { applyProcessesConfig, defaultConfig, loadProcessesConfig, saveProcessesConfig } from "./config.ts";
 import { ProcessManager } from "./manager.ts";
 import { ensureSupportedPlatform } from "./runner.ts";
 import { detectBackgroundBash } from "./safety.ts";
@@ -30,10 +30,11 @@ export function getProcessService(pi: ExtensionAPI): ProcessService {
 		return existing;
 	}
 
-	const manager = new ProcessManager(defaultConfig, createAlertSink(pi, defaultConfig));
+	const config = structuredClone(defaultConfig);
+	const manager = new ProcessManager(config, createAlertSink(pi, config));
 	const service: ProcessService = {
 		manager,
-		processUi: createProcessUi(manager),
+		processUi: createProcessUi(manager, (ctx) => saveProcessesConfig(ctx.cwd, manager.getConfig())),
 		active: true,
 		lifecycleRegistered: false,
 		surfaceRegistered: false,
@@ -56,6 +57,7 @@ function registerProcessLifecycleOnce(pi: ExtensionAPI, service: ProcessService)
 	pi.on("session_start", async (_event, ctx) => {
 		try {
 			ensureSupportedPlatform();
+			applyProcessesConfig(service.manager.getConfig(), await loadProcessesConfig(ctx.cwd));
 			await service.manager.restore(ctx);
 		} catch (error) {
 			ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
