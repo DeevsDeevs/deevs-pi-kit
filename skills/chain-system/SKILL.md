@@ -153,6 +153,15 @@ agent_start({
 })
 ```
 
+## Extension discipline hooks
+
+`extensions/chains` may add extra runtime discipline beyond this skill:
+
+- default `nudge` mode appends reminders for resumed/durable project prompts and may notify after meaningful unsaved work;
+- optional `guarded` mode can block mutating tools until `chain_search`, `chain_load`, `chain_context`, or `chain_list` has run;
+- it never auto-saves chain links because durable links need handoff-quality summaries;
+- respect explicit user wording such as “do not use chains” or “no chains”.
+
 ## Guardrails
 
 - Use `chain_save`; do not hand-roll writes into `.chains` unless the tool is unavailable.
