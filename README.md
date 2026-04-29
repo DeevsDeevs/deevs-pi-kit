@@ -26,12 +26,15 @@ extensions/subagents/   Curated background staff agents
 extensions/chains/      Durable multi-session work chains
 extensions/wiki/        Deterministic markdown wiki helpers
 extensions/arxiv/       arXiv paper search/lookup/BibTeX tools
+extensions/todos/       Session-scoped managed todo list (`todo_list`)
+extensions/notifier/     Ready-for-input terminal notifications
 skills/background-tasks User-intent workflow for `extensions/processes`
 skills/subagents/       Guidance for agent_* usage
 skills/chain-system/    Guidance for chain handoffs/search
 skills/wiki/            Curated markdown knowledge-base workflow
 skills/concept-diagrams Compact Mermaid/SVG visual explanations
 skills/arxiv/           arXiv research workflow
+skills/todos/           Guidance for effective `todo_list` usage
 skills/datadog-pup/     Safe Datadog operations through the `pup` CLI
 skills/grill-me/        One-question-at-a-time plan/design grilling
 skills/diagnose/        Repro-first debugging and root-cause workflow
@@ -151,6 +154,29 @@ Tools: `wiki_init`, `wiki_status`, `wiki_lint`, `wiki_graph`, `wiki_search`, `wi
 
 Tools: `arxiv_search`, `arxiv_get`, `arxiv_bibtex`. Results are bounded, no API key is required, and the extension does not download PDFs or fetch arbitrary URLs. Use `skills/arxiv` for research triage and citation discipline.
 
+### Todos
+
+`extensions/todos/` provides a minimal session-scoped todo list for non-trivial multi-step work. The `todo_list` tool supports `read`, `write` (complete replacement), and `clear`; items have `pending`, `in_progress`, `blocked`, or `done` status. It uses a compact widget plus a read-only `/todos` overlay; `/todos clear` resets it. Todos are for current-session progress, not durable memory; use chains for handoffs.
+
+### Notifier
+
+`extensions/notifier/` sends a ready-for-input signal on Pi's `agent_end` event. It uses terminal protocols only: Kitty OSC 99 when available, Ghostty OSC 9 + OSC 777 when running in Ghostty, otherwise OSC 777. It also sends BEL by default so terminal bell/audio settings can handle sound. Run `/notifier:test` after `/reload` to test it.
+
+Optional project config lives at `.pi/notifier.json`:
+
+```json
+{
+  "enabled": true,
+  "title": "Pi",
+  "body": "Ready for input",
+  "terminal": true,
+  "bell": true,
+  "terminalRequiresTty": true,
+  "command": ["cmux", "notify", "--title", "{title}", "--body", "{body}"],
+  "jsonl": ".pi/notifier-events.jsonl"
+}
+```
+
 ## Skills
 
 ### Concept diagrams
@@ -162,6 +188,10 @@ For codebase diagrams, inspect source files first and cite the paths used. Prefe
 ### arXiv research
 
 `skills/arxiv/` teaches bounded paper discovery, abstract-level triage, arXiv ID lookup, BibTeX generation, and when to save findings to chains or a wiki. It explicitly warns not to treat preprints as peer-reviewed truth or abstracts as full-paper evidence.
+
+### Todos
+
+`skills/todos/` teaches when and how to use `todo_list`: create compact current-session plans for non-trivial work, mark exactly what is `in_progress`, use `blocked` with notes instead of fake progress, update via complete replacement writes, and clear stale lists. It explicitly separates ephemeral todo progress from durable chain handoffs.
 
 ### Datadog Pup
 
@@ -205,6 +235,13 @@ bun build extensions/wiki/index.ts --outdir /tmp/deevs-wiki-build \
 bun build extensions/arxiv/index.ts --outdir /tmp/deevs-arxiv-build \
   --external @mariozechner/pi-coding-agent --external @mariozechner/pi-ai \
   --external @mariozechner/pi-tui --external node-pty
+
+bun build extensions/todos/index.ts --outdir /tmp/deevs-todos-build \
+  --external @mariozechner/pi-coding-agent --external @mariozechner/pi-ai \
+  --external @mariozechner/pi-tui --external node-pty
+
+bun build extensions/notifier/index.ts --target node --outdir /tmp/deevs-notifier-build \
+  --external @mariozechner/pi-coding-agent
 
 npm pack --dry-run
 ```
