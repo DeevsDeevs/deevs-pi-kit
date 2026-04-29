@@ -82,7 +82,10 @@ persistent, alertOnExit, alertOnFailure, watches
 /proc:signal <id|name> <sig>  SIGINT/SIGTERM/SIGKILL
 /proc:clear <id|name|--exited>
 /proc:dock [show|hide|toggle] optional status widget
-/proc:settings                session settings
+/proc:settings                settings overlay; persists changes
+/proc:settings status         show project-persistent settings
+/proc:settings reset          reset settings and persist defaults
+/proc:settings set <key> <value>
 ```
 
 `/proc` keys:
@@ -124,6 +127,17 @@ Clean exits are visible but wake the agent only with `alertOnExit: true`. Failur
 
 Subagent backing processes (`agent:` / `agent-group:`) are excluded from background-task notifications and footer counts; inspect them with `proc_list` when needed.
 
+## Project settings
+
+Process defaults persist to `.pi/processes.json` when changed through `/proc:settings`, `/proc:dock`, or the settings overlay. Runtime process state remains separate under Pi's agent directory.
+
+Supported command keys:
+
+```text
+defaultBackend killOnReload killOnShutdown defaultAlertOnFailure
+defaultAlertOnExit dockEnabled dockHeight blockBackgroundBash
+```
+
 ## Logs and state
 
 Default locations:
@@ -135,7 +149,7 @@ Default locations:
 
 ## Limits
 
-- settings are session-scoped
+- settings are project-scoped in `.pi/processes.json`
 - pipe tasks do not survive reload
 - persistent tasks require tmux
 - PTY support depends on optional `node-pty`

@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { getProcessService } from "../processes/service.ts";
+import { applyAgentsSettings, loadAgentsSettings, saveAgentsSettings } from "./config.ts";
 import { registerSubagentCommands } from "./commands.ts";
 import { SubagentManager } from "./manager.ts";
 import { registerSubagentTools } from "./tools.ts";
@@ -25,12 +26,13 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 
 	const { manager: processManager } = getProcessService(pi);
 	const subagentManager = new SubagentManager(pi, processManager);
-	const ui = createSubagentsUi(subagentManager);
+	const ui = createSubagentsUi(subagentManager, (ctx) => saveAgentsSettings(ctx.cwd, subagentManager.settings));
 
 	registerSubagentTools(pi, subagentManager);
 	registerSubagentCommands(pi, subagentManager, ui);
 
 	pi.on("session_start", async (_event, ctx) => {
+		applyAgentsSettings(subagentManager.settings, await loadAgentsSettings(ctx.cwd));
 		subagentManager.setContext(ctx);
 		surfaceState.unsubscribeStatus?.();
 		const updateStatus = () => updateFooterStatus(ctx, subagentManager);

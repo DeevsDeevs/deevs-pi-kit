@@ -59,7 +59,17 @@ Default mode is `nudge`:
 - after meaningful mutating work without `chain_save`, Pi notifies that a handoff link may be useful;
 - it never auto-saves chain links.
 
-Optional project config lives at `.pi/chain-discipline.json`:
+Use `/chain-discipline` to view or persist project-level settings in `.pi/chain-discipline.json`:
+
+```text
+/chain-discipline status
+/chain-discipline mode <off|nudge|guarded|strict>
+/chain-discipline enable|disable|reset
+/chain-discipline default-chain <name|none>
+/chain-discipline set <key> <value>
+```
+
+The persisted config file looks like:
 
 ```json
 {
@@ -80,7 +90,7 @@ Modes:
 - `guarded` — block mutating tools on high-confidence resumed work until `chain_search`, `chain_load`, `chain_context`, or `chain_list` runs. Set `guardDurablePrompts: true` to also guard broader durable project prompts.
 - `strict` — opt-in hard mode for any reminded prompt; likely noisy.
 
-Environment overrides:
+The command updates the current runtime immediately and persists for future reloads/sessions. Environment overrides still win when set:
 
 ```text
 DEEVS_CHAIN_DISCIPLINE_MODE=off|nudge|guarded|strict

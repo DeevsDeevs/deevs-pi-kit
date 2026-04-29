@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { applyAgentsSettings, defaultAgentsSettings, saveAgentsSettings } from "./config.ts";
 import type { SubagentManager } from "./manager.ts";
 import type { createSubagentsUi } from "./ui.ts";
 
@@ -178,14 +179,19 @@ export function registerSubagentCommands(pi: ExtensionAPI, manager: SubagentMana
 	});
 
 	pi.registerCommand("agents:settings", {
-		description: "Configure subagents defaults for this session",
+		description: "Configure and persist project subagent defaults",
 		handler: async (args, ctx) => {
 			manager.setContext(ctx);
 			const text = args.trim();
 			if (text) {
 				try {
+					if (text === "status" || text === "show") {
+						ctx.ui.notify(`${formatSettings(manager)}\nProject config: .pi/subagents.json`, "info");
+						return;
+					}
 					applySettingsCommand(manager, text);
-					ctx.ui.notify(formatSettings(manager), "info");
+					await saveAgentsSettings(ctx.cwd, manager.settings);
+					ctx.ui.notify(`${formatSettings(manager)}\nPersisted: .pi/subagents.json`, "info");
 				} catch (error) {
 					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 				}
@@ -266,6 +272,10 @@ function applySettingsCommand(manager: SubagentManager, text: string): void {
 		for (const [agent, value] of Object.entries(settings.modelsByAgent)) if (value === model) delete settings.modelsByAgent[agent];
 		return;
 	}
+	if (command === "reset") {
+		applyAgentsSettings(settings, defaultAgentsSettings);
+		return;
+	}
 	if (command === "clear-models") {
 		settings.allowedModels = [];
 		settings.defaultModel = undefined;
@@ -293,7 +303,7 @@ function applySettingsCommand(manager: SubagentManager, text: string): void {
 		}
 		return;
 	}
-	throw new Error("Usage: /agents:settings [allow-model|disallow-model|clear-models|default-model|agent-model] ...");
+	throw new Error("Usage: /agents:settings [allow-model|disallow-model|clear-models|default-model|agent-model|reset] ...");
 }
 
 function formatSettings(manager: SubagentManager): string {

@@ -12,11 +12,12 @@ interface DockState {
 	unsubscribe?: () => void;
 }
 
-export function createSubagentsUi(manager: SubagentManager) {
+export function createSubagentsUi(manager: SubagentManager, onSettingsChanged?: (ctx: any) => void | Promise<void>) {
 	const dock: DockState = { visible: false };
 	return {
 		showDock(ctx: any) {
 			manager.settings.dockEnabled = true;
+			void onSettingsChanged?.(ctx);
 			if (dock.visible) {
 				dock.requestRender?.();
 				return;
@@ -31,6 +32,7 @@ export function createSubagentsUi(manager: SubagentManager) {
 		},
 		hideDock(ctx: any) {
 			manager.settings.dockEnabled = false;
+			void onSettingsChanged?.(ctx);
 			dock.unsubscribe?.();
 			dock.unsubscribe = undefined;
 			dock.visible = false;
@@ -56,7 +58,7 @@ export function createSubagentsUi(manager: SubagentManager) {
 			await ctx.ui.custom((tui: any, theme: any, _kb: any, done: () => void) => new TextViewer(`${result.source}: ${result.path ?? id}${raw ? " (raw)" : ""}`, result.content, theme, done, () => tui.requestRender()), { overlay: true, overlayOptions: { width: "92%", maxHeight: "85%", anchor: "center", margin: 1 } });
 		},
 		async showSettings(ctx: any) {
-			await ctx.ui.custom((tui: any, theme: any, _kb: any, done: () => void) => new AgentsSettingsPanel(manager, theme, done, () => tui.requestRender()), { overlay: true, overlayOptions: { width: "72%", maxHeight: "80%", anchor: "center", margin: 1 } });
+			await ctx.ui.custom((tui: any, theme: any, _kb: any, done: () => void) => new AgentsSettingsPanel(manager, theme, done, () => tui.requestRender(), () => { void onSettingsChanged?.(ctx); }), { overlay: true, overlayOptions: { width: "72%", maxHeight: "80%", anchor: "center", margin: 1 } });
 		},
 	};
 }
@@ -229,7 +231,7 @@ class TextViewer implements Component {
 
 class AgentsSettingsPanel implements Component {
 	private list: SettingsList;
-	constructor(private readonly manager: SubagentManager, private readonly theme: any, private readonly done: () => void, private readonly requestRender: () => void) {
+	constructor(private readonly manager: SubagentManager, private readonly theme: any, private readonly done: () => void, private readonly requestRender: () => void, private readonly onSettingsChanged: () => void) {
 		this.list = new SettingsList(this.items(), 13, settingsListTheme(theme), (id, value) => this.setValue(id, value), () => done());
 	}
 	handleInput(data: string): void { this.list.handleInput(data); this.requestRender(); }
@@ -261,6 +263,7 @@ class AgentsSettingsPanel implements Component {
 		else if (id === "wakeOnFailure") s.wakeOnFailure = value === "true";
 		else if (id === "wakeOnTimeout") s.wakeOnTimeout = value === "true";
 		this.list.updateValue(id, value);
+		this.onSettingsChanged();
 	}
 }
 

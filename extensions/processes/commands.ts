@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { applyProcessesConfig, defaultConfig, saveProcessesConfig } from "./config.ts";
 import type { ProcessManager } from "./manager.ts";
 import type { createProcessUi } from "./ui.ts";
 
@@ -119,8 +120,23 @@ export function registerProcessCommands(pi: ExtensionAPI, manager: ProcessManage
 	});
 
 	pi.registerCommand("proc:settings", {
-		description: "Configure background task defaults for this session",
-		handler: async (_args, ctx) => {
+		description: "Configure and persist background task defaults",
+		handler: async (args, ctx) => {
+			const text = args.trim();
+			if (text) {
+				try {
+					if (text === "status" || text === "show") {
+						ctx.ui.notify(`${formatSettings(manager)}\nProject config: .pi/processes.json`, "info");
+						return;
+					}
+					applyProcessSettingsCommand(manager, text);
+					await saveProcessesConfig(ctx.cwd, manager.getConfig());
+					ctx.ui.notify(`${formatSettings(manager)}\nPersisted: .pi/processes.json`, "info");
+				} catch (error) {
+					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+				}
+				return;
+			}
 			if (ctx.hasUI) await processUi.showSettings(ctx);
 			else ctx.ui.notify(formatSettings(manager), "info");
 		},
@@ -174,6 +190,46 @@ async function signalAll(manager: ProcessManager, signal: "SIGINT" | "SIGTERM" |
 		signaled: targets.filter((_process, index) => results[index]?.status === "fulfilled").map((process) => process.id),
 		failed: targets.filter((_process, index) => results[index]?.status === "rejected").map((process) => process.id),
 	};
+}
+
+function applyProcessSettingsCommand(manager: ProcessManager, text: string): void {
+	const [command, key, value] = text.split(/\s+/).filter(Boolean);
+	const config = manager.getConfig();
+	if (!command) return;
+	if (command === "reset") {
+		applyProcessesConfig(config, defaultConfig);
+		manager.notifySettingsChanged();
+		return;
+	}
+	if (command !== "set" || !key || value === undefined) throw new Error("Usage: /proc:settings [status|reset|set <key> <value>]");
+	if (key === "defaultBackend") {
+		if (!isBackend(value)) throw new Error("defaultBackend must be pipe, pty, or tmux");
+		config.execution.defaultBackend = value;
+	} else if (key === "killOnReload") config.execution.killOnReload = parseBool(value, key);
+	else if (key === "killOnShutdown") config.execution.killOnShutdown = parseBool(value, key);
+	else if (key === "defaultAlertOnFailure") config.alerts.defaultAlertOnFailure = parseBool(value, key);
+	else if (key === "defaultAlertOnExit") config.alerts.defaultAlertOnExit = parseBool(value, key);
+	else if (key === "dockEnabled") config.ui.dockEnabled = parseBool(value, key);
+	else if (key === "dockHeight") config.ui.dockHeight = clampInt(value, 1, 30, key);
+	else if (key === "blockBackgroundBash") config.safety.blockBackgroundBash = parseBool(value, key);
+	else throw new Error(`Unknown process setting: ${key}`);
+	manager.notifySettingsChanged();
+}
+
+function parseBool(value: string, key: string): boolean {
+	if (value === "true" || value === "1") return true;
+	if (value === "false" || value === "0") return false;
+	throw new Error(`${key} must be true or false`);
+}
+
+function clampInt(value: string, min: number, max: number, key: string): number {
+	const parsed = Number(value);
+	if (!Number.isFinite(parsed)) throw new Error(`${key} must be a number`);
+	return Math.max(min, Math.min(Math.floor(parsed), max));
+}
+
+function isBackend(value: string): value is "pipe" | "pty" | "tmux" {
+	return value === "pipe" || value === "pty" || value === "tmux";
 }
 
 function formatSignalAllResult(result: { signaled: string[]; failed: string[] }): string {

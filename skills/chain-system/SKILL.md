@@ -159,6 +159,7 @@ agent_start({
 
 - default `nudge` mode appends reminders for resumed/durable project prompts and may notify after meaningful unsaved work;
 - optional `guarded` mode can block mutating tools until `chain_search`, `chain_load`, `chain_context`, or `chain_list` has run;
+- `/chain-discipline` shows or persists project-level mode/settings in `.pi/chain-discipline.json`;
 - it never auto-saves chain links because durable links need handoff-quality summaries;
 - respect explicit user wording such as “do not use chains” or “no chains”.
 

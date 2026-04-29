@@ -14,12 +14,13 @@ interface DockState {
 	unsubscribe?: () => void;
 }
 
-export function createProcessUi(manager: ProcessManager) {
+export function createProcessUi(manager: ProcessManager, onSettingsChanged?: (ctx: any) => void | Promise<void>) {
 	const dock: DockState = { visible: false };
 
 	return {
 		showDock(ctx: any) {
 			manager.getConfig().ui.dockEnabled = true;
+			void onSettingsChanged?.(ctx);
 			if (dock.visible) {
 				dock.component?.invalidate();
 				dock.requestRender?.();
@@ -43,6 +44,7 @@ export function createProcessUi(manager: ProcessManager) {
 
 		hideDock(ctx: any) {
 			manager.getConfig().ui.dockEnabled = false;
+			void onSettingsChanged?.(ctx);
 			dock.unsubscribe?.();
 			dock.unsubscribe = undefined;
 			dock.requestRender = undefined;
@@ -91,6 +93,7 @@ export function createProcessUi(manager: ProcessManager) {
 							dock.component?.invalidate();
 							dock.requestRender?.();
 						}
+						void onSettingsChanged?.(ctx);
 					}),
 				{ overlay: true, overlayOptions: { width: "70%", maxHeight: "80%", anchor: "center", margin: 1 } },
 			);
