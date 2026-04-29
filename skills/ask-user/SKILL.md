@@ -11,7 +11,7 @@ This is a **clarification and decision gate**, not general conversation. The UI 
 
 ## When to use
 
-Call `ask_user` when you have **1-5 focused questions** and at least one is true:
+Call `ask_user` — instead of asking inline in normal chat — when you have **1-5 focused questions** and at least one is true:
 
 - requirements, acceptance criteria, or success conditions are ambiguous
 - multiple valid implementation paths exist and the trade-off is preference-dependent

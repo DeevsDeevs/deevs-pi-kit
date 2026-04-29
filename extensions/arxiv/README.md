@@ -1,44 +1,30 @@
-# arXiv Extension
+# arXiv
 
-Deterministic arXiv metadata search using the official `export.arxiv.org` Atom API.
-
-No API key, no dependencies, no PDF scraping. This extension is for discovery, abstract-level triage, exact-paper lookup, and BibTeX generation.
+Search arXiv through the official Atom API. Use it for paper discovery, abstract-level triage, exact ID lookup, and BibTeX generation.
 
 ## Tools
 
 ```text
-arxiv_search   search by query/title/author/abstract/category
-arxiv_get      fetch exact papers by arXiv id
-arxiv_bibtex   generate simple BibTeX from official metadata
+arxiv_search   search by query, title, author, abstract, or category
+arxiv_get      fetch metadata and abstracts for arXiv IDs
+arxiv_bibtex   generate simple BibTeX entries
 ```
 
 ## Commands
 
 ```text
-/arxiv:search [--max N] [--sort relevance|submittedDate|lastUpdatedDate] [--category cs.LG] [--author name] <query>
+/arxiv:search [options] <query>
 /arxiv:get [--bibtex] <id[,id]>
 /arxiv:bibtex <id[,id]>
 ```
 
-## Examples
+Common search options: `--max`, `--sort`, `--category`, `--author`.
 
-```json
-{ "query": "retrieval augmented generation", "category": "cs.CL", "maxResults": 5, "sortBy": "submittedDate" }
-```
+## Limits
 
-```json
-{ "ids": "1706.03762,2402.03300", "includeBibtex": true }
-```
+- no API key required
+- no PDF download or arbitrary URL fetching
+- bounded result counts and request timeout
+- polite in-process throttle
 
-## Scope and safety
-
-- fixed host: `https://export.arxiv.org/api/query`
-- request timeout: 15 seconds
-- polite in-process throttle: about one request every 3 seconds
-- `maxResults` capped at 25
-- ID lookup capped at 25 ids
-- no arbitrary URL fetching
-- no Semantic Scholar/citation API in the MVP
-- no PDF download or full-paper extraction
-
-arXiv papers are preprints. Treat results as research leads, not validated truth.
+arXiv papers are preprints. Treat results as leads, not peer-reviewed truth.

@@ -589,6 +589,7 @@ export default function askUserExtension(pi: ExtensionAPI): void {
 		promptSnippet: "Ask the user focused clarification questions through an interactive UI.",
 		promptGuidelines: [
 			"Use ask_user when 1-5 concrete clarifications materially affect implementation, scope, safety, or acceptance criteria.",
+			"When those conditions are met, call ask_user instead of asking clarification questions inline in normal chat.",
 			"Before calling ask_user, gather available evidence from files, docs, commands, or prior context; do not ask questions tools can answer.",
 			"Ask related clarification questions together in one call, but keep each question focused and decision-shaped.",
 			"Prefer 2-5 short options with trade-off descriptions when there are clear choices; allow freeform when useful.",
