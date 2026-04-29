@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { registerChainCommands } from "./commands.ts";
+import { registerChainDiscipline } from "./discipline.ts";
 import { ChainService } from "./service.ts";
 import { registerChainTools } from "./tools.ts";
 
@@ -23,6 +24,7 @@ export default function chainsExtension(pi: ExtensionAPI): void {
 	const service = new ChainService(process.cwd());
 	registerChainTools(pi, service);
 	registerChainCommands(pi, service);
+	registerChainDiscipline(pi);
 
 	pi.on("session_start", async (_event, ctx) => {
 		service.setCwd(ctx.cwd);

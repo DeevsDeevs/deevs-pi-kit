@@ -127,6 +127,8 @@ Subagents are read-only by default. Pass write permission only when explicitly r
 
 Tools: `chain_save`, `chain_load`, `chain_fork`, `chain_context`, `chain_list`, `chain_search`. `chain_search` defaults to dependency-free BM25-style ranked lookup; use `mode: "text"` or `mode: "regex"` for exact matching. `chain_context` packs current/parent/recent/search context within a byte budget; subagents can receive it through `agent_start.chainContext` or per-task `chainContext` in `agent_parallel_start`.
 
+Chain discipline hooks nudge the model to search/load chains for resumed or durable project work and remind after meaningful unsaved work. Default mode is non-blocking `nudge`; opt into guarded behavior with `.pi/chain-discipline.json` if you want mutating tools blocked until chain context is checked.
+
 ### Wiki
 
 `extensions/wiki/` provides deterministic helpers for curated markdown wikis used with `skills/wiki`.

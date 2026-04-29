@@ -46,7 +46,8 @@ function renderTemplate(value: string, ctx: ExtensionContext, config: ResolvedCo
 		.replaceAll("{project}", basename(ctx.cwd));
 }
 
-function writeTerminalNotification(title: string, body: string, bell: boolean, debugFanout = false): void {
+function writeTerminalNotification(config: ResolvedConfig, debugFanout = false): void {
+	const { title, body } = config;
 	const safeTitle = stripControl(title).replaceAll(";", " ");
 	const safeBody = stripControl(body).replaceAll(";", " ");
 
@@ -68,7 +69,7 @@ function writeTerminalNotification(title: string, body: string, bell: boolean, d
 		if (debugFanout) process.stdout.write(`\x1b]9;${safeTitle}: ${safeBody}\x07`);
 	}
 
-	if (bell) process.stdout.write("\x07");
+	if (config.bell) process.stdout.write("\x07");
 }
 
 function runCommand(command: string[], ctx: ExtensionContext, config: ResolvedConfig): void {
@@ -129,7 +130,7 @@ async function notify(ctx: ExtensionContext, config: ResolvedConfig, debugFanout
 	if (!config.enabled) return;
 
 	if (config.terminal && (!config.terminalRequiresTty || process.stdout.isTTY)) {
-		writeTerminalNotification(config.title, config.body, config.bell, debugFanout);
+		writeTerminalNotification(config, debugFanout);
 	}
 	if (config.command) runCommand(config.command, ctx, config);
 	if (config.jsonl) await appendJsonl(config.jsonl, ctx, config);
