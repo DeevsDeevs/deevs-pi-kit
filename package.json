@@ -1,7 +1,7 @@
 {
   "name": "deevs-pi-kit",
   "version": "0.1.0",
-  "description": "Perfect pi kit to be 10x Deevs' engineer",
+  "description": "Portable Pi package with managed processes, subagents, chains, wiki helpers, research tools, and skills",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
