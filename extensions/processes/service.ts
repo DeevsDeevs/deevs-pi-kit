@@ -1,4 +1,4 @@
-import { isToolCallEventType, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { isToolCallEventType, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createAlertSink } from "./alerts.ts";
 import { applyProcessesConfig, defaultConfig, loadProcessesConfig, saveProcessesConfig } from "./config.ts";
 import { ProcessManager } from "./manager.ts";
@@ -34,7 +34,9 @@ export function getProcessService(pi: ExtensionAPI): ProcessService {
 	const manager = new ProcessManager(config, createAlertSink(pi, config));
 	const service: ProcessService = {
 		manager,
-		processUi: createProcessUi(manager, (ctx) => saveProcessesConfig(ctx.cwd, manager.getConfig())),
+		processUi: createProcessUi(manager, async (ctx) => {
+			await saveProcessesConfig(ctx.cwd, manager.getConfig());
+		}),
 		active: true,
 		lifecycleRegistered: false,
 		surfaceRegistered: false,

@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { registerTodoCommands } from "./commands.ts";
 import { TodoState } from "./state.ts";
 import { registerTodoTools } from "./tools.ts";

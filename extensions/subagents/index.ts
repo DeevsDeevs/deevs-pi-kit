@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getProcessService } from "../processes/service.ts";
 import { applyAgentsSettings, loadAgentsSettings, saveAgentsSettings } from "./config.ts";
 import { registerSubagentCommands } from "./commands.ts";
@@ -26,7 +26,9 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 
 	const { manager: processManager } = getProcessService(pi);
 	const subagentManager = new SubagentManager(pi, processManager);
-	const ui = createSubagentsUi(subagentManager, (ctx) => saveAgentsSettings(ctx.cwd, subagentManager.settings));
+	const ui = createSubagentsUi(subagentManager, async (ctx) => {
+		await saveAgentsSettings(ctx.cwd, subagentManager.settings);
+	});
 
 	registerSubagentTools(pi, subagentManager);
 	registerSubagentCommands(pi, subagentManager, ui);

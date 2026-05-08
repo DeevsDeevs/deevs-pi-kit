@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { ArxivService } from "./service.ts";
 import { formatBibtex, formatGet, formatSearch } from "./tools.ts";
 import type { ArxivSearchInput, ArxivSortBy } from "./types.ts";

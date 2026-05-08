@@ -1,3 +1,4 @@
+import type { Dirent } from "node:fs";
 import { lstat, mkdir, open, readdir, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { extractNextStep, extractTitle, parseCreatedAt, parseMetadata, slugify, stripFrontmatter, truncateText, withMetadata } from "./parser.ts";
@@ -110,7 +111,7 @@ export class ChainService {
 	async list(input: ChainListInput = {}): Promise<ChainListItem[]> {
 		const root = await this.ensureRootDir(false);
 		if (!root) return [];
-		let entries: Awaited<ReturnType<typeof readdir>>;
+		let entries: Dirent<string>[];
 		try {
 			entries = await readdir(root, { withFileTypes: true });
 		} catch (error) {
@@ -260,7 +261,7 @@ export class ChainService {
 		const branch = branchName ? validateBranchName(branchName) : undefined;
 		const dir = await this.ensureChainDir(chain, false);
 		if (!dir) return [];
-		let entries: Awaited<ReturnType<typeof readdir>>;
+		let entries: Dirent<string>[];
 		try {
 			entries = await readdir(dir, { withFileTypes: true });
 		} catch (error) {

@@ -1,5 +1,5 @@
-import { StringEnum, Type } from "@mariozechner/pi-ai";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { StringEnum, Type } from "@earendil-works/pi-ai";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { SubagentManager } from "./manager.ts";
 import type { AgentClearInput, AgentLogsInput, AgentParallelStartInput, AgentReadInput, AgentStartInput, AgentStatusInput, AgentStopInput } from "./types.ts";
 

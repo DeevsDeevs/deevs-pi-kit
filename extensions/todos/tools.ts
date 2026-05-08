@@ -1,6 +1,6 @@
-import { StringEnum, Type } from "@mariozechner/pi-ai";
-import { Text } from "@mariozechner/pi-tui";
-import type { AgentToolResult, ExtensionAPI, ExtensionContext, Theme, ToolRenderResultOptions } from "@mariozechner/pi-coding-agent";
+import { StringEnum, Type } from "@earendil-works/pi-ai";
+import { Text } from "@earendil-works/pi-tui";
+import type { AgentToolResult, ExtensionAPI, ExtensionContext, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { TODO_TOOL_NAME, type TodoState } from "./state.ts";
 import type { TodoDetails, TodoListInput, TodoStatus } from "./types.ts";
 import { formatTodoText, updateTodoWidget } from "./ui.ts";

@@ -1,5 +1,5 @@
-import { Type } from "@mariozechner/pi-ai";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { Type } from "@earendil-works/pi-ai";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { ArxivService } from "./service.ts";
 import { formatPaperLine } from "./service.ts";
 import type { ArxivBibtexInput, ArxivGetInput, ArxivSearchInput } from "./types.ts";
@@ -37,7 +37,7 @@ export function registerArxivTools(pi: ExtensionAPI, service: ArxivService): voi
 			const result = await service.search(params);
 			return { content: [{ type: "text", text: formatSearch(result) }], details: result };
 		},
-	});
+	} as any);
 
 	pi.registerTool({
 		name: "arxiv_get",
@@ -49,7 +49,7 @@ export function registerArxivTools(pi: ExtensionAPI, service: ArxivService): voi
 			const result = await service.get(params);
 			return { content: [{ type: "text", text: formatGet(result) }], details: result };
 		},
-	});
+	} as any);
 
 	pi.registerTool({
 		name: "arxiv_bibtex",
@@ -61,7 +61,7 @@ export function registerArxivTools(pi: ExtensionAPI, service: ArxivService): voi
 			const result = await service.bibtex(params);
 			return { content: [{ type: "text", text: formatBibtex(result) }], details: result };
 		},
-	});
+	} as any);
 }
 
 export function formatSearch(result: Awaited<ReturnType<ArxivService["search"]>>): string {

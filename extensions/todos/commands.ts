@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { TODO_CUSTOM_TYPE, type TodoState } from "./state.ts";
 import type { TodoPersistedState } from "./types.ts";
 import { clearTodoWidget, showTodoOverlay, updateTodoWidget } from "./ui.ts";
