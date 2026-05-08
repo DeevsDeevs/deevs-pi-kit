@@ -1,7 +1,7 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { spawn } from "node:child_process";
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadProjectConfig, saveProjectConfig } from "../shared/project-config.ts";
 
 type NotifierConfig = {

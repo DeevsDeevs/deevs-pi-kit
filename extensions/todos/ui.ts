@@ -1,5 +1,5 @@
-import type { ExtensionContext, Theme } from "@mariozechner/pi-coding-agent";
-import { Key, matchesKey, truncateToWidth, type Component } from "@mariozechner/pi-tui";
+import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { Key, matchesKey, truncateToWidth, type Component } from "@earendil-works/pi-tui";
 import type { TodoItem, TodoStats } from "./types.ts";
 
 const WIDGET_ID = "deevs-todos";
@@ -23,7 +23,7 @@ export async function showTodoOverlay(ctx: ExtensionContext, todos: TodoItem[], 
 		ctx.ui.notify(formatTodoText(todos, stats), "info");
 		return;
 	}
-	await ctx.ui.custom((_tui: any, theme: Theme, _kb: any, done: () => void) => new TodoOverlay(todos, stats, theme, done), {
+	await ctx.ui.custom<void>((_tui: any, theme: Theme, _kb: any, done) => new TodoOverlay(todos, stats, theme, () => done(undefined)), {
 		overlay: true,
 		overlayOptions: { width: "70%", minWidth: 48, maxHeight: "80%", anchor: "center", margin: 1 },
 	});

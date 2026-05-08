@@ -1,4 +1,4 @@
-import { isToolCallEventType, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { isToolCallEventType, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { detectBackgroundBash } from "../processes/safety.ts";
 
 export default function childSafetyRuntime(pi: ExtensionAPI): void {

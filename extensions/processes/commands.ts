@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { applyProcessesConfig, defaultConfig, saveProcessesConfig } from "./config.ts";
 import type { ProcessManager } from "./manager.ts";
 import type { createProcessUi } from "./ui.ts";

@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerProcessCommands } from "./commands.ts";
 import { claimProcessSurface, getProcessService } from "./service.ts";
 import { createProcessFooterStatus } from "./status.ts";

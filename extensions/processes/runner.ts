@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type SpawnOptions } from "node:child_process";
 import type { ProcessesConfig } from "./config.ts";
 import { getShellPath } from "./config.ts";
 import type { SpawnedProcess, SpawnSpec } from "./types.ts";
@@ -13,11 +13,11 @@ export function spawnPipeProcess(spec: SpawnSpec, config: ProcessesConfig): Spaw
 	ensureSupportedPlatform();
 
 	const env = { ...process.env, ...spec.env };
-	const options = {
+	const options: SpawnOptions = {
 		cwd: spec.cwd,
 		env,
 		detached: true,
-		stdio: ["pipe", "pipe", "pipe"] as const,
+		stdio: ["pipe", "pipe", "pipe"],
 	};
 
 	const child = spec.argv

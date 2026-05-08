@@ -1,5 +1,5 @@
-import { Key, matchesKey, SelectList, SettingsList, truncateToWidth } from "@mariozechner/pi-tui";
-import type { Component, SelectItem, SelectListTheme, SettingItem, SettingsListTheme } from "@mariozechner/pi-tui";
+import { Key, matchesKey, SelectList, SettingsList, truncateToWidth } from "@earendil-works/pi-tui";
+import type { Component, SelectItem, SelectListTheme, SettingItem, SettingsListTheme } from "@earendil-works/pi-tui";
 import type { SubagentManager } from "./manager.ts";
 import type { AgentRunStatus } from "./types.ts";
 
@@ -218,7 +218,7 @@ class TextViewer implements Component {
 		if (matchesKey(data, Key.down)) this.scroll++;
 		else if (matchesKey(data, Key.up)) this.scroll--;
 		else if (matchesKey(data, "g")) this.scroll = 0;
-		else if (matchesKey(data, "G")) this.scroll = this.lines().length;
+		else if (matchesKey(data, Key.shift("g"))) this.scroll = this.lines().length;
 		this.scroll = Math.max(0, Math.min(this.scroll, Math.max(0, this.lines().length - 22)));
 		this.requestRender();
 	}

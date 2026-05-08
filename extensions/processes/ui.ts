@@ -1,5 +1,5 @@
-import { Key, matchesKey, SelectList, SettingsList, truncateToWidth } from "@mariozechner/pi-tui";
-import type { Component, SelectItem, SelectListTheme, SettingItem, SettingsListTheme } from "@mariozechner/pi-tui";
+import { Key, matchesKey, SelectList, SettingsList, truncateToWidth } from "@earendil-works/pi-tui";
+import type { Component, SelectItem, SelectListTheme, SettingItem, SettingsListTheme } from "@earendil-works/pi-tui";
 import type { ProcessManager } from "./manager.ts";
 import type { ManagedProcessInfo, ProcessStatus, ReadStreamFilter } from "./types.ts";
 
@@ -333,7 +333,7 @@ class LogViewer implements Component {
 		else if (matchesKey(data, Key.pageUp)) this.scroll -= LOG_VIEW_ROWS;
 		else if (matchesKey(data, Key.pageDown)) this.scroll += LOG_VIEW_ROWS;
 		else if (matchesKey(data, "g")) this.scroll = 0;
-		else if (matchesKey(data, "G")) this.scroll = Math.max(0, this.filteredLines().length - LOG_VIEW_ROWS);
+		else if (matchesKey(data, Key.shift("g"))) this.scroll = Math.max(0, this.filteredLines().length - LOG_VIEW_ROWS);
 		else if (matchesKey(data, "c")) this.query = "";
 		this.clampScroll();
 		this.requestRender();

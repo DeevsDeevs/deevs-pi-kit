@@ -1,6 +1,6 @@
-import { DynamicBorder, getMarkdownTheme, type AgentToolResult, type ExtensionAPI, type ExtensionContext, type Theme, type ToolRenderResultOptions } from "@mariozechner/pi-coding-agent";
-import { Type } from "@mariozechner/pi-ai";
-import { Container, Editor, Key, Markdown, matchesKey, Spacer, Text, truncateToWidth, wrapTextWithAnsi, type Component, type SelectItem, type TUI } from "@mariozechner/pi-tui";
+import { DynamicBorder, getMarkdownTheme, type AgentToolResult, type ExtensionAPI, type ExtensionContext, type Theme, type ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
+import { Type } from "@earendil-works/pi-ai";
+import { Container, Editor, Key, Markdown, matchesKey, Spacer, Text, truncateToWidth, wrapTextWithAnsi, type Component, type SelectItem, type TUI } from "@earendil-works/pi-tui";
 
 type AskOptionInput = string | { title: string; description?: string };
 
@@ -604,18 +604,16 @@ export default function askUserExtension(pi: ExtensionAPI): void {
 				return {
 					content: [{ type: "text" as const, text: "ask_user requires at least one question." }],
 					details: { context, answers: [], cancelled: true, error: "No questions supplied" },
-					isError: true,
 				};
 			}
 
-			if (signal?.aborted) return { content: [{ type: "text" as const, text: "ask_user cancelled." }], details: { context, answers: [], cancelled: true }, isError: true };
+			if (signal?.aborted) return { content: [{ type: "text" as const, text: "ask_user cancelled." }], details: { context, answers: [], cancelled: true } };
 
 			if (!ctx.hasUI || !ctx.ui) {
 				const text = `Interactive UI is unavailable. Please answer:\n\n${questions.map((question, index) => `${index + 1}. ${question.question}`).join("\n")}`;
 				return {
 					content: [{ type: "text" as const, text }],
 					details: { context, answers: [], cancelled: true, error: "UI unavailable" },
-					isError: true,
 				};
 			}
 
@@ -634,7 +632,6 @@ export default function askUserExtension(pi: ExtensionAPI): void {
 			return {
 				content: [{ type: "text" as const, text: cancelled ? `User clarification cancelled or incomplete:\n${summarizeAnswers(answers)}` : `User answered:\n${summarizeAnswers(answers)}` }],
 				details: { context, answers, cancelled },
-				isError: cancelled,
 			};
 		},
 		renderCall(args: AskUserInput, theme: Theme) {

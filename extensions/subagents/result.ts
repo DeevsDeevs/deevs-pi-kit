@@ -1,4 +1,4 @@
-import type { Message } from "@mariozechner/pi-ai";
+import type { Message } from "@earendil-works/pi-ai";
 import type { ReadResult } from "../processes/types.ts";
 
 export interface ExtractedAgentOutput {
@@ -84,5 +84,8 @@ function getFinalOutput(messages: Message[]): string {
 }
 
 function getTextContent(message: Message): string {
-	return (message.content ?? []).filter((part) => part.type === "text").map((part) => part.text).join("\n").trim();
+	const content = message.content;
+	if (typeof content === "string") return content.trim();
+	if (!Array.isArray(content)) return "";
+	return content.filter((part): part is Extract<typeof part, { type: "text" }> => part.type === "text").map((part) => part.text).join("\n").trim();
 }

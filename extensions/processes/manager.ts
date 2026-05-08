@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { clampReadBytes, clampWaitMs, type ProcessesConfig } from "./config.ts";
 import { ProcessLogWriter, readLogTail, type ProcessLogRead } from "./logs.ts";
 import { OutputBuffer } from "./output-buffer.ts";
@@ -601,7 +601,7 @@ export class ProcessManager {
 			captured = await captureTmuxPane(session);
 		} catch {
 			if (!(await hasTmuxSession(session))) {
-				this.markExited(id, processRecord.exitCode, processRecord.signal);
+				this.markExited(id, processRecord.exitCode, processRecord.signal as NodeJS.Signals | null);
 			}
 			return;
 		}

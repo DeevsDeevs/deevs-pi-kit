@@ -1,7 +1,7 @@
-import { Type } from "@mariozechner/pi-ai";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { Type } from "@earendil-works/pi-ai";
+import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { ChainService } from "./service.ts";
-import type { ChainContextInput, ChainForkInput, ChainListInput, ChainLoadInput, ChainSaveInput, ChainSearchInput } from "./types.ts";
+import type { ChainContextInput, ChainForkInput, ChainListInput, ChainLoadInput, ChainSaveInput, ChainSearchInput, ChainSearchResult } from "./types.ts";
 
 const SaveSchema = Type.Object({
 	chain: Type.String({ description: "Chain name; stored under .chains/<chain>" }),
@@ -134,7 +134,7 @@ export function registerChainTools(pi: ExtensionAPI, service: ChainService): voi
 		promptSnippet: "Search durable work chains by relevance, exact text, or regex.",
 		promptGuidelines: ["Use default lookup mode for ideas/topics; use mode=text or mode=regex for exact matching."],
 		parameters: SearchSchema,
-		async execute(_toolCallId, params: ChainSearchInput) {
+		async execute(_toolCallId, params: ChainSearchInput): Promise<AgentToolResult<ChainSearchResult | Awaited<ReturnType<ChainService["rankedSearch"]>>>> {
 			const mode = params.mode ?? (params.regex ? "regex" : "lookup");
 			if (mode === "lookup") {
 				const result = await service.rankedSearch(params);
