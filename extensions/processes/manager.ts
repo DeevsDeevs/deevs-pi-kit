@@ -34,7 +34,6 @@ import type {
 } from "./types.ts";
 
 const TERMINAL_STATUSES = new Set(["exited", "signaled", "failed", "orphaned", "unknown"]);
-const OUTPUT_CHANGE_THROTTLE_MS = 250;
 
 export class ProcessManager {
 	private readonly processes = new Map<string, ManagedProcessInternal>();
@@ -449,7 +448,6 @@ export class ProcessManager {
 		processRecord.stats.droppedBytes = this.bufferOf(processRecord).droppedByteCount;
 		processRecord.stats.lastOutputAt = chunk.time;
 		this.events.emit(this.eventName(id));
-		this.emitChange(OUTPUT_CHANGE_THROTTLE_MS);
 	}
 
 	private markFailed(id: string, error: Error): void {

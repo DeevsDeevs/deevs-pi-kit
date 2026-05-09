@@ -39,6 +39,35 @@ export function formatTodoText(todos: TodoItem[], stats: TodoStats): string {
 	return lines.join("\n");
 }
 
+export function renderTodoWidgetLines(todos: TodoItem[], stats: TodoStats, theme: Theme, width: number): string[] {
+	const lines: string[] = [];
+	const active = stats.inProgress ? `, ${stats.inProgress} active` : "";
+	const blocked = stats.blocked ? `, ${stats.blocked} blocked` : "";
+	lines.push(truncateToWidth(`${theme.fg("accent", " Todos ")} ${theme.fg("muted", `${stats.done}/${stats.total} done${active}${blocked}`)}`, width));
+	for (const todo of todos.slice(0, MAX_WIDGET_TODOS)) lines.push(truncateToWidth(formatTodoLine(todo, theme), width));
+	if (todos.length > MAX_WIDGET_TODOS) lines.push(truncateToWidth(theme.fg("dim", `  … ${todos.length - MAX_WIDGET_TODOS} more`), width));
+	return lines;
+}
+
+export function renderTodoOverlayLines(todos: TodoItem[], stats: TodoStats, theme: Theme, width: number): string[] {
+	const lines: string[] = [];
+	lines.push(truncateToWidth(todoOverlayHeader(width, theme), width));
+	lines.push("");
+	if (todos.length === 0) {
+		lines.push(truncateToWidth(`  ${theme.fg("dim", "No todos for this session.")}`, width));
+	} else {
+		lines.push(truncateToWidth(`  ${theme.fg("muted", `${stats.done}/${stats.total} done · ${stats.pending} pending · ${stats.inProgress} active · ${stats.blocked} blocked`)}`, width));
+		lines.push("");
+		for (const todo of todos) {
+			lines.push(truncateToWidth(formatTodoLine(todo, theme), width));
+			if (todo.notes) lines.push(truncateToWidth(`      ${theme.fg("dim", todo.notes)}`, width));
+		}
+	}
+	lines.push("");
+	lines.push(truncateToWidth(`  ${theme.fg("dim", "Press q or Escape to close · /todos clear to reset")}`, width));
+	return lines;
+}
+
 class TodoWidget implements Component {
 	private cachedWidth?: number;
 	private cachedLines?: string[];
@@ -47,12 +76,7 @@ class TodoWidget implements Component {
 
 	render(width: number): string[] {
 		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
-		const lines: string[] = [];
-		const active = this.stats.inProgress ? `, ${this.stats.inProgress} active` : "";
-		const blocked = this.stats.blocked ? `, ${this.stats.blocked} blocked` : "";
-		lines.push(truncateToWidth(`${this.theme.fg("accent", " Todos ")} ${this.theme.fg("muted", `${this.stats.done}/${this.stats.total} done${active}${blocked}`)}`, width));
-		for (const todo of this.todos.slice(0, MAX_WIDGET_TODOS)) lines.push(truncateToWidth(formatTodoLine(todo, this.theme), width));
-		if (this.todos.length > MAX_WIDGET_TODOS) lines.push(truncateToWidth(this.theme.fg("dim", `  … ${this.todos.length - MAX_WIDGET_TODOS} more`), width));
+		const lines = renderTodoWidgetLines(this.todos, this.stats, this.theme, width);
 		this.cachedWidth = width;
 		this.cachedLines = lines;
 		return lines;
@@ -76,21 +100,7 @@ class TodoOverlay implements Component {
 
 	render(width: number): string[] {
 		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
-		const lines: string[] = [];
-		lines.push(truncateToWidth(this.header(width), width));
-		lines.push("");
-		if (this.todos.length === 0) {
-			lines.push(truncateToWidth(`  ${this.theme.fg("dim", "No todos for this session.")}`, width));
-		} else {
-			lines.push(truncateToWidth(`  ${this.theme.fg("muted", `${this.stats.done}/${this.stats.total} done · ${this.stats.pending} pending · ${this.stats.inProgress} active · ${this.stats.blocked} blocked`)}`, width));
-			lines.push("");
-			for (const todo of this.todos) {
-				lines.push(truncateToWidth(formatTodoLine(todo, this.theme), width));
-				if (todo.notes) lines.push(truncateToWidth(`      ${this.theme.fg("dim", todo.notes)}`, width));
-			}
-		}
-		lines.push("");
-		lines.push(truncateToWidth(`  ${this.theme.fg("dim", "Press q or Escape to close · /todos clear to reset")}`, width));
+		const lines = renderTodoOverlayLines(this.todos, this.stats, this.theme, width);
 		this.cachedWidth = width;
 		this.cachedLines = lines;
 		return lines;
@@ -100,13 +110,13 @@ class TodoOverlay implements Component {
 		this.cachedWidth = undefined;
 		this.cachedLines = undefined;
 	}
+}
 
-	private header(width: number): string {
-		const title = this.theme.fg("accent", this.theme.bold(" Todo List "));
-		const left = this.theme.fg("borderMuted", "─".repeat(3));
-		const right = this.theme.fg("borderMuted", "─".repeat(Math.max(0, width - 16)));
-		return `${left}${title}${right}`;
-	}
+function todoOverlayHeader(width: number, theme: Theme): string {
+	const title = theme.fg("accent", theme.bold(" Todo List "));
+	const left = theme.fg("borderMuted", "─".repeat(3));
+	const right = theme.fg("borderMuted", "─".repeat(Math.max(0, width - 16)));
+	return `${left}${title}${right}`;
 }
 
 function formatTodoLine(todo: TodoItem, theme: Theme): string {
