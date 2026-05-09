@@ -1,3 +1,4 @@
+import { readFileSync, readdirSync } from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ChainService } from "../chains/service.ts";
@@ -26,6 +27,7 @@ import type {
 	AgentStartInput,
 	AgentStartResult,
 	AgentStatusInput,
+	AgentUsage,
 	AgentStopInput,
 } from "./types.ts";
 
@@ -319,7 +321,8 @@ export class SubagentManager {
 		const metadataPath = path.join(artifactsDir, "metadata.json");
 		const systemPrompt = buildAgentSystemPrompt({ agent, task: input.task, cwd, allowWrite, tools, context });
 		const taskWithChainContext = await this.withChainContext(input.task, input.chainContext, cwd);
-		const taskPrompt = buildTaskPrompt(taskWithChainContext);
+		const taskWithBudget = withBudgetInstructions(taskWithChainContext, input.tokenBudget, input.costBudgetUsd);
+		const taskPrompt = buildTaskPrompt(taskWithBudget);
 		writeTextFile(path.join(artifactsDir, "agent.md"), agent.body);
 		writeTextFile(systemPromptPath, systemPrompt);
 		writeTextFile(taskPath, taskPrompt);
@@ -343,6 +346,9 @@ export class SubagentManager {
 			systemPromptPath,
 			metadataPath,
 			timeoutMs,
+			tokenBudget: input.tokenBudget,
+			costBudgetUsd: input.costBudgetUsd,
+			budget: budgetFromInput(input.tokenBudget, input.costBudgetUsd),
 			chainContext: input.chainContext,
 		};
 		this.runs.set(id, run);
@@ -499,8 +505,17 @@ export class SubagentManager {
 		const extracted = extractFinalOutputFromRead(read);
 		run.finalOutput = this.formatTerminalOutput(run, extracted.finalOutput, extracted.warning);
 		run.extractionWarning = extracted.warning;
+		run.usage = collectSessionUsage(path.join(run.artifactsDir, "session"));
+		run.budget = budgetWithStatus(run.tokenBudget, run.costBudgetUsd, run.usage);
 		writeTextFile(run.resultPath, run.finalOutput || "");
 		this.writeRunMetadata(run);
+		if (run.groupId) {
+			const group = this.groups.get(run.groupId);
+			if (group) {
+				group.usage = sumUsage(group.children.map((id) => this.runs.get(id)?.usage).filter(Boolean) as AgentUsage[]);
+				this.writeGroupMetadata(group);
+			}
+		}
 		this.notifyRunTerminal(run);
 	}
 
@@ -623,7 +638,8 @@ export class SubagentManager {
 		run.terminalNotified = true;
 		const wake = (run.status === "completed" && this.settings.wakeOnCompletion) || (run.status === "failed" && this.settings.wakeOnFailure) || (run.status === "timeout" && this.settings.wakeOnTimeout);
 		const preview = truncateOneLine(run.finalOutput || "", 500);
-		const text = `Subagent finished: ${run.agent} (${run.id}) status=${run.status}.${preview ? `\nPreview: ${preview}` : ""}${wake ? "\nAgent wake-up queued." : ""}`;
+			const usage = run.usage ? `\nUsage: ${formatUsage(run.usage)}${run.budget?.status === "over_budget" ? " (over budget)" : ""}` : "";
+		const text = `Subagent finished: ${run.agent} (${run.id}) status=${run.status}.${preview ? `\nPreview: ${preview}` : ""}${usage}${wake ? "\nAgent wake-up queued." : ""}`;
 		this.pi.sendMessage({ customType: "subagents", content: text, display: true, details: { run: this.publicRun(run) } }, { triggerTurn: wake, deliverAs: "followUp" });
 	}
 
@@ -633,7 +649,9 @@ export class SubagentManager {
 		const children = group.children.map((id) => this.runs.get(id)).filter(Boolean) as AgentRunRecord[];
 		const wake = (group.status === "completed" && this.settings.wakeOnCompletion) || children.some((run) => (run.status === "failed" && this.settings.wakeOnFailure) || (run.status === "timeout" && this.settings.wakeOnTimeout));
 		const summary = children.map((run) => `${run.agent} ${statusGlyph(run.status)}`).join(", ");
-		this.pi.sendMessage({ customType: "subagents", content: `Subagent group finished: ${group.id} status=${group.status}: ${summary}${wake ? "\nAgent wake-up queued." : ""}`, display: true, details: { group: this.publicGroup(group) } }, { triggerTurn: wake, deliverAs: "followUp" });
+		group.usage = sumUsage(children.map((run) => run.usage).filter(Boolean) as AgentUsage[]);
+		const usage = group.usage ? `\nUsage: ${formatUsage(group.usage)}` : "";
+		this.pi.sendMessage({ customType: "subagents", content: `Subagent group finished: ${group.id} status=${group.status}: ${summary}${usage}${wake ? "\nAgent wake-up queued." : ""}`, display: true, details: { group: this.publicGroup(group) } }, { triggerTurn: wake, deliverAs: "followUp" });
 	}
 
 	private readGroup(input: AgentReadInput): AgentReadResult {
@@ -702,6 +720,8 @@ export class SubagentManager {
 			cwd: run.cwd,
 			artifactsDir: run.artifactsDir,
 			logs: { combined: proc?.logFile, stdout: proc?.stdoutLogFile, stderr: proc?.stderrLogFile },
+			usage: run.usage,
+			budget: run.budget,
 			output: this.formatRaw(output),
 			nextSeq: output.nextSeq,
 		};
@@ -763,6 +783,123 @@ export class SubagentManager {
 		this.groupCounter += 1;
 		return `g_${Date.now().toString(36)}_${this.groupCounter}`;
 	}
+}
+
+
+function withBudgetInstructions(task: string, tokenBudget?: number, costBudgetUsd?: number): string {
+	if (!tokenBudget && !costBudgetUsd) return task;
+	const lines = [
+		"Parent-assigned subagent budget (advisory, but report if you believe you are about to exceed it):",
+	];
+	if (tokenBudget) lines.push(`- Token budget: ${tokenBudget}`);
+	if (costBudgetUsd) lines.push(`- Cost budget: $${costBudgetUsd}`);
+	lines.push("Keep the response focused and stop once the assigned task is answered.", "", task);
+	return lines.join("\n");
+}
+
+function budgetFromInput(tokenBudget?: number, costBudgetUsd?: number) {
+	if (!tokenBudget && !costBudgetUsd) return undefined;
+	return { tokenBudget, costBudgetUsd, status: "unknown" as const };
+}
+
+function budgetWithStatus(tokenBudget: number | undefined, costBudgetUsd: number | undefined, usage: AgentUsage | undefined) {
+	if (!tokenBudget && !costBudgetUsd) return undefined;
+	if (!usage) return { tokenBudget, costBudgetUsd, status: "unknown" as const };
+	const overBudget = (tokenBudget !== undefined && billableTokens(usage) > tokenBudget) || (costBudgetUsd !== undefined && usage.cost.total > costBudgetUsd);
+	return { tokenBudget, costBudgetUsd, status: overBudget ? "over_budget" as const : "within_budget" as const };
+}
+
+function collectSessionUsage(sessionDir: string): AgentUsage | undefined {
+	const files = listJsonlFiles(sessionDir);
+	const usages: AgentUsage[] = [];
+	for (const file of files) {
+		let text = "";
+		try {
+			text = readFileSync(file, "utf8");
+		} catch {
+			continue;
+		}
+		for (const line of text.split(/\r?\n/)) {
+			if (!line.trim()) continue;
+			try {
+				const entry = JSON.parse(line) as any;
+				const message = entry?.type === "message" ? entry.message : undefined;
+				if (message?.role === "assistant" && message.usage) usages.push(normalizeUsage(message.usage));
+			} catch {
+				// Ignore partial/corrupt lines from interrupted child sessions.
+			}
+		}
+	}
+	return sumUsage(usages);
+}
+
+function listJsonlFiles(dir: string): string[] {
+	let entries: import("node:fs").Dirent[] = [];
+	try {
+		entries = readdirSync(dir, { withFileTypes: true });
+	} catch {
+		return [];
+	}
+	const files: string[] = [];
+	for (const entry of entries) {
+		const fullPath = path.join(dir, entry.name);
+		if (entry.isDirectory()) files.push(...listJsonlFiles(fullPath));
+		else if (entry.isFile() && entry.name.endsWith(".jsonl")) files.push(fullPath);
+	}
+	return files;
+}
+
+function normalizeUsage(usage: any): AgentUsage {
+	const cost = usage.cost ?? {};
+	return {
+		input: numberValue(usage.input ?? usage.inputTokens),
+		output: numberValue(usage.output ?? usage.outputTokens),
+		cacheRead: numberValue(usage.cacheRead ?? usage.cachedInputTokens),
+		cacheWrite: numberValue(usage.cacheWrite),
+		totalTokens: numberValue(usage.totalTokens ?? usage.total),
+		cost: {
+			input: numberValue(cost.input),
+			output: numberValue(cost.output),
+			cacheRead: numberValue(cost.cacheRead),
+			cacheWrite: numberValue(cost.cacheWrite),
+			total: numberValue(cost.total),
+		},
+	};
+}
+
+function sumUsage(usages: AgentUsage[]): AgentUsage | undefined {
+	if (usages.length === 0) return undefined;
+	return usages.reduce<AgentUsage>((sum, usage) => ({
+		input: sum.input + usage.input,
+		output: sum.output + usage.output,
+		cacheRead: sum.cacheRead + usage.cacheRead,
+		cacheWrite: sum.cacheWrite + usage.cacheWrite,
+		totalTokens: sum.totalTokens + usage.totalTokens,
+		cost: {
+			input: sum.cost.input + usage.cost.input,
+			output: sum.cost.output + usage.cost.output,
+			cacheRead: sum.cost.cacheRead + usage.cost.cacheRead,
+			cacheWrite: sum.cost.cacheWrite + usage.cost.cacheWrite,
+			total: sum.cost.total + usage.cost.total,
+		},
+	}), zeroUsage());
+}
+
+function zeroUsage(): AgentUsage {
+	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+}
+
+function numberValue(value: unknown): number {
+	return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function billableTokens(usage: AgentUsage): number {
+	return Math.max(0, usage.input) + Math.max(0, usage.cacheWrite) + Math.max(0, usage.output);
+}
+
+function formatUsage(usage: AgentUsage): string {
+	const cost = usage.cost.total > 0 ? `, $${usage.cost.total.toFixed(4)}` : "";
+	return `${billableTokens(usage)} tokens${cost}`;
 }
 
 function resolveTools(baseTools: string[], allowWrite: boolean): string[] {

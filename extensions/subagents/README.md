@@ -23,6 +23,7 @@ anti-slop   simplify overbuilt or noisy changes
 - backing process alerts are suppressed to avoid duplicates
 - active runs show a compact footer status
 - optional `chainContext` is loaded by the parent and prepended to the task
+- optional `tokenBudget` and `costBudgetUsd` are passed as advisory task constraints and reconciled from child Pi session usage when available
 
 ## Tools
 
@@ -37,7 +38,7 @@ agent_logs            inspect artifacts or compact process logs
 agent_clear           clear completed records and artifacts
 ```
 
-Use `agent_read` first. Use `agent_logs` when you need artifacts, metadata, or raw process logs.
+Use `agent_read` first. Use `agent_logs` when you need artifacts, metadata, or raw process logs. Terminal run metadata includes parsed usage and budget status when the child session recorded usage.
 
 ## Commands
 

@@ -45,6 +45,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", async (_event, ctx) => {
 		surfaceState.unsubscribeStatus?.();
 		surfaceState.unsubscribeStatus = undefined;
+		ui.dispose(ctx);
 		ctx.ui.setStatus("subagents", undefined);
 		surfaceState.active = false;
 	});

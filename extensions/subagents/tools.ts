@@ -24,6 +24,8 @@ const AgentTaskSchema = Type.Object({
 	tools: Type.Optional(Type.Array(Type.String())),
 	allowWrite: Type.Optional(Type.Boolean()),
 	context: Type.Optional(StringEnum(["fresh", "fork"] as const)),
+	tokenBudget: Type.Optional(Type.Number({ description: "Advisory token budget for this subagent run" })),
+	costBudgetUsd: Type.Optional(Type.Number({ description: "Advisory USD cost budget for this subagent run" })),
 	chainContext: Type.Optional(ChainContextSchema),
 });
 
@@ -43,6 +45,8 @@ const AgentStartSchema = Type.Object({
 	allowWrite: Type.Optional(Type.Boolean({ description: "Explicitly allow edit/write tools for this run" })),
 	timeoutMs: Type.Optional(Type.Number()),
 	maxBytes: Type.Optional(Type.Number()),
+	tokenBudget: Type.Optional(Type.Number({ description: "Advisory token budget for this subagent run; usage is recorded from the child Pi session when available" })),
+	costBudgetUsd: Type.Optional(Type.Number({ description: "Advisory USD cost budget for this subagent run; usage is recorded from the child Pi session when available" })),
 	chainContext: Type.Optional(ChainContextSchema),
 });
 
