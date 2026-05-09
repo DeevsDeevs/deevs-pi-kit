@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { MissionCurrent, MissionUsage } from "./types.ts";
+import type { MissionCurrent, MissionProgressRecord, MissionUsage } from "./types.ts";
 
 export function missionRoot(cwd: string): string {
 	return join(cwd, ".missions");
@@ -17,12 +17,21 @@ export async function initializeMissionArtifacts(cwd: string, mission: MissionCu
 		writeFile(join(mission.artifactDir, "plan.md"), formatPlanMarkdown(mission), "utf8"),
 		writeFile(join(mission.artifactDir, "decisions.md"), formatDecisionsMarkdown(mission), "utf8"),
 		writeFile(join(mission.artifactDir, "audit.md"), formatAuditMarkdown(mission), "utf8"),
+		writeFile(join(mission.artifactDir, "log.md"), formatProgressLogMarkdown(mission, []), "utf8"),
 	]);
 }
 
 export async function updateMissionSummaryArtifact(mission: MissionCurrent, usage?: MissionUsage): Promise<void> {
 	await mkdir(mission.artifactDir, { recursive: true });
 	await writeFile(join(mission.artifactDir, "mission.md"), formatMissionMarkdown(mission, usage), "utf8");
+}
+
+export async function writeMissionProgressArtifacts(mission: MissionCurrent, progress: MissionProgressRecord[], usage?: MissionUsage): Promise<void> {
+	await mkdir(mission.artifactDir, { recursive: true });
+	await Promise.all([
+		writeFile(join(mission.artifactDir, "log.md"), formatProgressLogMarkdown(mission, progress), "utf8"),
+		writeFile(join(mission.artifactDir, "mission.md"), formatMissionMarkdown(mission, usage, progress), "utf8"),
+	]);
 }
 
 export async function writeCompletionAudit(mission: MissionCurrent, summary: string | undefined, audit: Array<{ requirement: string; evidence: string }> | undefined, usage: MissionUsage): Promise<void> {
@@ -50,12 +59,13 @@ export async function writeCompletionAudit(mission: MissionCurrent, summary: str
 	await writeFile(join(mission.artifactDir, "audit.md"), lines.join("\n"), "utf8");
 }
 
-function formatMissionMarkdown(mission: MissionCurrent, usage?: MissionUsage): string {
+function formatMissionMarkdown(mission: MissionCurrent, usage?: MissionUsage, progress: MissionProgressRecord[] = []): string {
 	const budget = [
 		mission.tokenBudget ? `Token budget: ${mission.tokenBudget}` : "Token budget: unbounded",
 		mission.costBudgetUsd ? `Cost budget: $${mission.costBudgetUsd}` : "Cost budget: unbounded",
 	].join("\n");
 	const usageText = usage ? [`Tokens used: ${usage.totalTokens}`, `Cost used: $${usage.totalCostUsd.toFixed(4)}`].join("\n") : "Usage: not accounted yet";
+	const latest = progress.at(-1);
 	return [
 		`# Mission: ${mission.title}`,
 		"",
@@ -81,6 +91,9 @@ function formatMissionMarkdown(mission: MissionCurrent, usage?: MissionUsage): s
 		"## Current Reason",
 		mission.lastReason ?? "(none)",
 		"",
+		"## Latest Progress",
+		latest ? `${new Date(latest.at).toISOString()} — ${latest.summary}` : "(none recorded)",
+		"",
 	].join("\n");
 }
 
@@ -88,7 +101,7 @@ function formatPlanMarkdown(mission: MissionCurrent): string {
 	return [
 		`# Plan: ${mission.title}`,
 		"", 
-		"Maintain the live execution checklist with the Pi `todo_list` tool. Use this file for durable notes that should survive session/tree changes.",
+		"This file is initialized once. Prefer `mission_progress` for durable progress; avoid manually editing plan/audit/decisions every slice unless doing a checkpoint or final audit.",
 		"",
 		"## Requirements",
 		"",
@@ -100,8 +113,8 @@ function formatPlanMarkdown(mission: MissionCurrent): string {
 		"- [ ] Gather real repo/session evidence before changing behavior.",
 		"- [ ] Execute one bounded, verifiable work slice.",
 		"- [ ] Validate with commands, artifact inspection, or other concrete evidence.",
-		"- [ ] Record durable decisions here or in `decisions.md` when they affect future turns.",
-		"- [ ] Save a chain link at meaningful milestones.",
+		"- [ ] Record durable progress with `mission_progress` when summary/evidence/remaining work changes.",
+		"- [ ] Save a chain link only at meaningful checkpoints, handoffs, or final cleanup.",
 		"",
 		"## Completion Gate",
 		"",
@@ -124,6 +137,8 @@ function formatAuditMarkdown(mission: MissionCurrent): string {
 		"",
 		"Fill this when the mission is complete. Do not call `mission_complete` until every requirement has evidence.",
 		"",
+		"Use `mission_search`/`log.md` as supporting notes, then write a concrete requirement-to-evidence audit at completion time.",
+		"",
 		"## Requirements to Evidence",
 		"",
 		"| Requirement | Evidence | Status |",
@@ -133,4 +148,24 @@ function formatAuditMarkdown(mission: MissionCurrent): string {
 		"| Save durable handoff when useful |  | pending |",
 		"",
 	].join("\n");
+}
+
+function formatProgressLogMarkdown(mission: MissionCurrent, progress: MissionProgressRecord[]): string {
+	const lines = [
+		`# Mission Log: ${mission.title}`,
+		"",
+		"Append-only generated view of `mission_progress` records. Search this file with `mission_search`.",
+		"",
+	];
+	if (progress.length === 0) {
+		lines.push("(no progress recorded yet)", "");
+		return lines.join("\n");
+	}
+	for (const item of progress) {
+		lines.push(`## ${new Date(item.at).toISOString()}${item.checkpoint ? " checkpoint" : ""}`, "", item.summary, "");
+		if (item.evidence.length) lines.push("Evidence:", ...item.evidence.map((value) => `- ${value}`), "");
+		if (item.validation.length) lines.push("Validation:", ...item.validation.map((value) => `- ${value}`), "");
+		if (item.remaining.length) lines.push("Remaining:", ...item.remaining.map((value) => `- ${value}`), "");
+	}
+	return lines.join("\n");
 }

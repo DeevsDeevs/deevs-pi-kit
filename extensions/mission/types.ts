@@ -1,5 +1,5 @@
 export type MissionStatus = "active" | "paused" | "budget_limited" | "complete" | "stuck" | "cleared";
-export type MissionEventKind = "created" | "status_changed" | "continued" | "completed" | "artifact_updated";
+export type MissionEventKind = "created" | "status_changed" | "continued" | "completed" | "progress" | "artifact_updated";
 
 export interface MissionUsage {
 	mainTokens: number;
@@ -20,6 +20,10 @@ export interface MissionEvent {
 	status?: MissionStatus;
 	reason?: string;
 	summary?: string;
+	evidence?: string[];
+	remaining?: string[];
+	validation?: string[];
+	checkpoint?: boolean;
 	slug?: string;
 	chain?: string;
 	chainBranch?: string;
@@ -30,6 +34,16 @@ export interface MissionEvent {
 	baselineSubagentTokens?: number;
 	baselineMainCostUsd?: number;
 	baselineSubagentCostUsd?: number;
+}
+
+export interface MissionProgressRecord {
+	missionId: string;
+	at: number;
+	summary: string;
+	evidence: string[];
+	remaining: string[];
+	validation: string[];
+	checkpoint: boolean;
 }
 
 export interface MissionCurrent {
@@ -65,7 +79,21 @@ export interface MissionCreateInput {
 	chainBranch?: string;
 }
 
+export interface MissionProgressInput {
+	summary: string;
+	evidence?: string[];
+	remaining?: string[];
+	validation?: string[];
+	checkpoint?: boolean;
+}
+
+export interface MissionSearchInput {
+	query: string;
+	maxResults?: number;
+}
+
 export interface MissionCompleteInput {
 	summary?: string;
 	audit?: Array<{ requirement: string; evidence: string }>;
+	userRequested?: boolean;
 }
