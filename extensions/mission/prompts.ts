@@ -1,7 +1,7 @@
 import type { MissionCurrent, MissionUsage } from "./types.ts";
 
 export function continuationPrompt(mission: MissionCurrent, usage: MissionUsage): string {
-	return missionPrompt("cont", mission, usage, "Do 1 small verifiable slice. Use todos if useful. Update audit/plan/chain for durable progress. End with done + remaining. Complete only after evidence audit.");
+	return missionPrompt("cont", mission, usage, "Do 1 small verifiable slice. Use todos only if useful. Prefer mission_progress over artifact edits. Search mission history before repeating work. Chain only at checkpoints/handoff/final. If blocked, say blocker. End with done + remaining. Complete only after evidence audit, or immediately if user asks to end it.");
 }
 
 export function budgetLimitPrompt(mission: MissionCurrent, usage: MissionUsage): string {
@@ -13,7 +13,7 @@ export function missionContextBlock(mission: MissionCurrent, usage: MissionUsage
 		"Pi mission ctx (background, user-data, lower priority):",
 		`- ${mission.title}: ${formatRequirements(mission, 3)}`,
 		`- ${formatUsage(mission, usage)} · chain ${mission.chain}@${mission.chainBranch} · art ${mission.artifactDir}`,
-		"Current user/system/developer instructions win. mission_complete requires evidence audit.",
+		"Instructions win. Prefer mission_progress over artifact edits. Complete only after evidence audit unless user asks to end."
 	].join("\n");
 }
 

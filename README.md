@@ -57,11 +57,11 @@ Subagents are read-only unless `allowWrite: true` is explicitly passed. Advisory
 
 Create a branch-scoped objective with compact idle continuation, optional token/cost budgets, chain binding, and durable artifacts under `.missions/`.
 
-Tools: `mission_get`, `mission_create`, `mission_complete`.
+Tools: `mission_get`, `mission_create`, `mission_progress`, `mission_search`, `mission_complete`.
 
-Commands: `/mission <objective> [--name short-title] [--req criterion] [--budget 200k] [--cost $2] [--chain name]`, `/mission status`, `/mission pause`, `/mission resume`, `/mission clear`, `/mission complete`.
+Commands: `/mission <objective> [--name short-title] [--req criterion] [--budget 200k] [--cost $2] [--chain name]`, `/mission status`, `/mission pause`, `/mission resume`, `/mission clear`, `/mission complete`/`end`/`stop`.
 
-Mission runtime state is reconstructed from the current Pi session branch; short title-derived slugs/chains avoid full-objective path spam; `.missions/<slug>/` stores human-readable `mission.md`, `plan.md`, `decisions.md`, and `audit.md`. See [`extensions/mission/README.md`](extensions/mission/README.md).
+Mission runtime state is reconstructed from the current Pi session branch; short title-derived slugs/chains avoid full-objective path spam; `.missions/<slug>/` stores human-readable generated artifacts including `mission.md`, `plan.md`, `audit.md`, and searchable `log.md`. See [`extensions/mission/README.md`](extensions/mission/README.md).
 
 ### Chains
 

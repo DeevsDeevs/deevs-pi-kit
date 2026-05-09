@@ -2,7 +2,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ChainService } from "../chains/service.ts";
 import { slugify } from "../chains/parser.ts";
 import { missionDir } from "./artifacts.ts";
-import type { MissionCreateInput, MissionCurrent, MissionEvent, MissionStatus, MissionUsage } from "./types.ts";
+import type { MissionCreateInput, MissionCurrent, MissionEvent, MissionProgressInput, MissionProgressRecord, MissionStatus, MissionUsage } from "./types.ts";
 
 export const MISSION_CUSTOM_TYPE = "deevs-mission-state";
 const DEFAULT_CHAIN_BRANCH = "main";
@@ -10,6 +10,7 @@ const DEFAULT_CHAIN_BRANCH = "main";
 export class MissionState {
 	private current: MissionCurrent | undefined;
 	private usage: MissionUsage = zeroUsage();
+	private progress: MissionProgressRecord[] = [];
 
 	read(): MissionCurrent | undefined {
 		if (!this.current || this.current.status === "cleared" || this.current.status === "complete") return undefined;
@@ -25,11 +26,16 @@ export class MissionState {
 		return { ...this.usage };
 	}
 
+	readProgress(): MissionProgressRecord[] {
+		return this.progress.map((item) => ({ ...item, evidence: [...item.evidence], remaining: [...item.remaining], validation: [...item.validation] }));
+	}
+
 	loadFromSession(ctx: ExtensionContext): void {
 		const branch = ctx.sessionManager.getBranch() as Array<any>;
 		const rolling = zeroUsage();
 		const seenSubagents = new Set<string>();
 		this.current = undefined;
+		this.progress = [];
 		for (const entry of branch) {
 			if (entry.type === "custom" && entry.customType === MISSION_CUSTOM_TYPE) {
 				const rawEvent = entry.data as MissionEvent | undefined;
@@ -91,6 +97,22 @@ export class MissionState {
 		return { kind: "continued", missionId: mission.missionId, at: Date.now(), status: mission.status };
 	}
 
+	progressEvent(input: MissionProgressInput): MissionEvent {
+		const mission = this.requireCurrent();
+		const summary = input.summary.trim();
+		if (!summary) throw new Error("mission_progress summary must not be empty.");
+		return {
+			kind: "progress",
+			missionId: mission.missionId,
+			at: Date.now(),
+			summary: summary.slice(0, 1200),
+			evidence: normalizeProgressList(input.evidence, 20),
+			remaining: normalizeProgressList(input.remaining, 20),
+			validation: normalizeProgressList(input.validation, 20),
+			checkpoint: input.checkpoint === true,
+		};
+	}
+
 	budgetExceeded(): "token" | "cost" | null {
 		const mission = this.current;
 		if (!mission || mission.status !== "active") return null;
@@ -108,6 +130,7 @@ export class MissionState {
 		if (event.kind === "created") {
 			if (!event.objective || !event.slug || !event.chain || !event.artifactDir) return;
 			const requirements = normalizeRequirements(event.requirements?.length ? event.requirements : inferRequirements(event.objective));
+			this.progress = [];
 			this.current = {
 				missionId: event.missionId,
 				objective: event.objective,
@@ -135,6 +158,17 @@ export class MissionState {
 		if (event.reason) this.current.lastReason = event.reason;
 		if (event.summary) this.current.lastSummary = event.summary;
 		if (event.kind === "continued") this.current.lastContinuationAt = event.at;
+		if (event.kind === "progress" && event.summary) {
+			this.progress.push({
+				missionId: event.missionId,
+				at: event.at,
+				summary: event.summary,
+				evidence: normalizeProgressList(event.evidence, 20),
+				remaining: normalizeProgressList(event.remaining, 20),
+				validation: normalizeProgressList(event.validation, 20),
+				checkpoint: event.checkpoint === true,
+			});
+		}
 	}
 }
 
@@ -164,6 +198,21 @@ function inferRequirements(objective: string): string[] {
 		.filter(Boolean);
 	const parts = rawParts.length > 1 ? rawParts : [objective.trim()];
 	return normalizeRequirements(parts);
+}
+
+function normalizeProgressList(values: string[] | undefined, maxItems: number): string[] {
+	const seen = new Set<string>();
+	const result: string[] = [];
+	for (const value of values ?? []) {
+		const cleaned = value.trim().replace(/\s+/g, " ").slice(0, 500);
+		if (!cleaned) continue;
+		const key = cleaned.toLowerCase();
+		if (seen.has(key)) continue;
+		seen.add(key);
+		result.push(cleaned);
+		if (result.length >= maxItems) break;
+	}
+	return result;
 }
 
 function normalizeRequirements(values: string[]): string[] {

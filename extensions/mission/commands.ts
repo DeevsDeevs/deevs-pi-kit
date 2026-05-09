@@ -1,12 +1,12 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { initializeMissionArtifacts, updateMissionSummaryArtifact } from "./artifacts.ts";
+import { initializeMissionArtifacts, updateMissionSummaryArtifact, writeCompletionAudit } from "./artifacts.ts";
 import type { MissionState } from "./state.ts";
 import { formatMission } from "./tools.ts";
 import type { MissionCreateInput, MissionStatus } from "./types.ts";
 
 export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, setContext: (ctx: ExtensionContext) => void, maybeContinue: (ctx: ExtensionContext) => void): void {
 	pi.registerCommand("mission", {
-		description: "Create/manage a branch-scoped mission: /mission <objective> [--name title] [--budget 200k] [--cost $2] [--chain name] | status|pause|resume|clear",
+		description: "Create/manage a branch-scoped mission: /mission <objective> [--name title] [--budget 200k] [--cost $2] [--chain name] | status|pause|resume|complete|clear",
 		handler: async (args, ctx) => {
 			setContext(ctx);
 			state.loadFromSession(ctx);
@@ -23,8 +23,8 @@ export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, s
 				if (status === "active") maybeContinue(ctx);
 				return;
 			}
-			if (command === "complete") {
-				await setStatus(pi, state, "complete", ctx, "/mission complete");
+			if (command === "complete" || command === "end" || command === "stop") {
+				await completeByUserRequest(pi, state, ctx, `/mission ${command}`);
 				return;
 			}
 
@@ -48,6 +48,21 @@ async function setStatus(pi: ExtensionAPI, state: MissionState, status: MissionS
 		const mission = state.append(pi, event);
 		if (mission) await updateMissionSummaryArtifact(mission, state.readUsage());
 		ctx.ui.notify(formatMission(mission, state.readUsage()), "info");
+	} catch (error) {
+		ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+	}
+}
+
+async function completeByUserRequest(pi: ExtensionAPI, state: MissionState, ctx: ExtensionContext, reason: string): Promise<void> {
+	try {
+		const summary = "Mission ended at explicit user request. Use /mission resume to continue if needed.";
+		const event = state.statusEvent("complete", reason, summary);
+		const mission = state.append(pi, event);
+		if (!mission) return;
+		const usage = state.readUsage();
+		await writeCompletionAudit(mission, summary, [{ requirement: "User-requested mission end", evidence: "The user explicitly asked to end/complete the mission; this records closure without claiming all objective requirements are satisfied. Use /mission resume to continue if needed." }], usage);
+		await updateMissionSummaryArtifact(mission, usage);
+		ctx.ui.notify(`${formatMission(mission, usage)}\nResume: /mission resume`, "info");
 	} catch (error) {
 		ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 	}
