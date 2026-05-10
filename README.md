@@ -1,6 +1,6 @@
 # deevs-pi-kit
 
-Portable Pi package with managed background tasks, curated subagents, durable chains, markdown wiki helpers, arXiv tools, session todos, prompt templates, and focused skills.
+Portable Pi package with managed background tasks, curated subagents, persistent missions, durable chains, markdown wiki helpers, arXiv tools, session todos, and focused skills.
 
 ## Install
 
@@ -21,6 +21,7 @@ Reload Pi after installing or editing:
 ```text
 extensions/processes/   Managed background processes (`proc_*`)
 extensions/subagents/   Curated background staff agents (`agent_*`)
+extensions/mission/     Branch-scoped persistent objectives (`mission_*`)
 extensions/chains/      Durable markdown handoffs (`chain_*`)
 extensions/wiki/        Curated markdown wiki helpers (`wiki_*`)
 extensions/arxiv/       arXiv search, lookup, and BibTeX tools
@@ -28,8 +29,7 @@ extensions/todos/       Session-scoped todo list (`todo_list`)
 extensions/ask-user/    Interactive clarification UI (`ask_user`)
 extensions/notifier/    Ready-for-input terminal notifications
 skills/                 Agent behavior guidance
-prompts/                Prompt templates
-docs/                   Design notes and plans
+prompts/                Optional project prompt templates
 ```
 
 ## Extensions
@@ -50,7 +50,17 @@ Run focused staff agents in the background. Built-in agents include `explorer`, 
 
 Tools: `agent_list`, `agent_start`, `agent_parallel_start`, `agent_read`, `agent_status`, `agent_stop`, `agent_logs`, `agent_clear`.
 
-Subagents are read-only unless `allowWrite: true` is explicitly passed. Project settings persist to `.pi/subagents.json`. See [`extensions/subagents/README.md`](extensions/subagents/README.md).
+Subagents are read-only unless `allowWrite: true` is explicitly passed. Advisory `tokenBudget` and `costBudgetUsd` inputs are recorded with child-session usage when available. Project settings persist to `.pi/subagents.json`. See [`extensions/subagents/README.md`](extensions/subagents/README.md).
+
+### Mission
+
+Create a branch-scoped objective with compact idle continuation, optional token/cost budgets, chain binding, and durable artifacts under `.missions/`.
+
+Tools: `mission_get`, `mission_create`, `mission_progress`, `mission_search`, `mission_complete`.
+
+Commands: `/mission <objective> [--name short-title] [--req criterion] [--budget 200k] [--cost $2] [--chain name]`, `/mission status`, `/mission pause`, `/mission resume`, `/mission clear`, `/mission complete`/`end`/`stop`.
+
+Mission runtime state is reconstructed from the current Pi session branch; short title-derived slugs/chains avoid full-objective path spam; `.missions/<slug>/` stores human-readable generated artifacts including `mission.md`, `plan.md`, `audit.md`, and searchable `log.md`. See [`extensions/mission/README.md`](extensions/mission/README.md).
 
 ### Chains
 

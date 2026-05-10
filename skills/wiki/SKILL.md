@@ -1,6 +1,6 @@
 ---
 name: wiki
-description: Build, query, and maintain a curated markdown knowledge base with schema/index/log discipline. Use when the user asks for a project/domain wiki, durable research notes, source ingestion, wiki linting, or promoting stable chain findings into canonical knowledge.
+description: Build, query, and maintain curated markdown wikis with schema/index/log discipline. Use for project/domain wikis, durable research notes, source ingestion, linting, or canonicalized chain findings.
 ---
 
 # Wiki
