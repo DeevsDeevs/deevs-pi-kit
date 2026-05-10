@@ -72,7 +72,7 @@ function formatMissionMarkdown(mission: MissionCurrent, usage?: MissionUsage, pr
 		`Mission ID: ${mission.missionId}`,
 		`Status: ${mission.status}`,
 		`Chain: ${mission.chain}@${mission.chainBranch}`,
-		`Artifacts: ${mission.artifactDir}`,
+		`Artifacts: .missions/${mission.slug}`,
 		`Created: ${new Date(mission.createdAt).toISOString()}`,
 		`Updated: ${new Date(mission.updatedAt).toISOString()}`,
 		"",

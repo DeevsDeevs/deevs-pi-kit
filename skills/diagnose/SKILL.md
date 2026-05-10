@@ -1,6 +1,6 @@
 ---
 name: diagnose
-description: Run a disciplined debugging loop for broken behavior, failing builds, flaky commands, hung background work, process issues, and performance regressions. Use when the user says "diagnose", "debug", "why is this failing", reports an error, or asks to find root cause.
+description: Run a disciplined debugging loop for broken behavior, failing builds, flaky commands, hung processes, or regressions. Use when the user asks to diagnose, debug, or find root cause.
 ---
 
 # Diagnose
