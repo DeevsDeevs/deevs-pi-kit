@@ -1,6 +1,6 @@
 # deevs-pi-kit
 
-Portable Pi package with managed background tasks, curated subagents, persistent missions, durable chains, markdown wiki helpers, arXiv tools, session todos, prompt templates, and focused skills.
+Portable Pi package with managed background tasks, curated subagents, persistent missions, durable chains, markdown wiki helpers, arXiv tools, session todos, and focused skills.
 
 ## Install
 
@@ -29,8 +29,7 @@ extensions/todos/       Session-scoped todo list (`todo_list`)
 extensions/ask-user/    Interactive clarification UI (`ask_user`)
 extensions/notifier/    Ready-for-input terminal notifications
 skills/                 Agent behavior guidance
-prompts/                Prompt templates
-docs/                   Design notes and plans
+prompts/                Optional project prompt templates
 ```
 
 ## Extensions
