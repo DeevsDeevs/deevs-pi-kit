@@ -44,6 +44,7 @@ export function registerArxivTools(pi: ExtensionAPI, service: ArxivService): voi
 		label: "Get arXiv Papers",
 		description: "Fetch metadata and abstracts for one or more specific arXiv IDs.",
 		promptSnippet: "Retrieve exact arXiv papers by id for citation, abstract review, or BibTeX.",
+		promptGuidelines: ["Use when the user provides exact arXiv IDs or needs metadata for known papers."],
 		parameters: IdsSchema,
 		async execute(_toolCallId, params: ArxivGetInput) {
 			const result = await service.get(params);
@@ -56,6 +57,7 @@ export function registerArxivTools(pi: ExtensionAPI, service: ArxivService): voi
 		label: "arXiv BibTeX",
 		description: "Generate simple BibTeX entries for one or more arXiv IDs from official metadata.",
 		promptSnippet: "Generate BibTeX for arXiv papers by id.",
+		promptGuidelines: ["Use only for exact arXiv IDs; prefer arxiv_search first when the paper is unknown."],
 		parameters: BibtexSchema,
 		async execute(_toolCallId, params: ArxivBibtexInput) {
 			const result = await service.bibtex(params);

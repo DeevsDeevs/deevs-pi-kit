@@ -43,13 +43,3 @@ mission_complete
 Mission continuation is compact and idle-driven: creating or resuming a mission can enqueue a hidden continuation turn when Pi is idle, no messages are pending, and budget remains. After each completed continuation with assistant/tool progress, Mission may continue again while idle. When context usage reaches 75%, Mission asks Pi to compact first with Mission-specific summary instructions, then resumes continuation. It can resume on startup/reload/resume, while explicit abort pauses the mission so Escape remains an exit hatch. User prompts take priority.
 
 Token budgets use Codex-like accounted tokens over Pi's normalized usage fields: `input + cacheWrite + output`, excluding `cacheRead`. Cost budgets use Pi's reported `cost.total`. Objective completion should be backed by concrete audit evidence; explicit user-requested completion/end/stop records an honest closure audit and can be resumed with `/mission resume` if needed. Normal continuation should prefer `mission_progress` over manually editing mission artifacts, and should reserve chain links for checkpoints, handoffs, or final cleanup.
-
-## Prompt benchmark
-
-Run the deterministic prompt benchmark after changing Mission prompts:
-
-```bash
-npx tsx extensions/mission/prompt-benchmark.ts
-```
-
-It compares generated prompts against the previous baseline for safety framing, boundedness, audit discipline, continuity hooks, loop safety, and aggressive prompt concision.

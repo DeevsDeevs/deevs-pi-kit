@@ -1,6 +1,6 @@
 ---
 name: background-tasks
-description: Use when starting, supervising, reading, or stopping long-running commands such as dev servers, test watchers, build/watch loops, REPLs, services, workers, or any command that should keep running while the conversation continues. Prefer managed proc_* tools over bash backgrounding.
+description: Use for long-running commands that must stay observable, such as dev servers, watchers, REPLs, services, or workers. Prefer managed proc_* tools over shell backgrounding.
 ---
 
 # Background Tasks

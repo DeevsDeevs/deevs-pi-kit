@@ -7,47 +7,47 @@ import type { MissionState } from "./state.ts";
 import type { MissionCompleteInput, MissionCreateInput, MissionProgressInput, MissionSearchInput } from "./types.ts";
 
 const CreateSchema = Type.Object({
-	objective: Type.String({ description: "Full mission objective and requirements to pursue until complete, paused, cleared, or budget-limited" }),
-	title: Type.Optional(Type.String({ description: "Short human-readable mission name; recommended for long objectives" })),
-	requirements: Type.Optional(Type.Array(Type.String(), { description: "Optional decomposed requirements/success criteria from the objective" })),
-	tokenBudget: Type.Optional(Type.Number({ description: "Optional positive token budget for the mission" })),
-	costBudgetUsd: Type.Optional(Type.Number({ description: "Optional positive USD cost budget for the mission" })),
-	chain: Type.Optional(Type.String({ description: "Optional chain name; if omitted Mission auto-binds to a matching or derived chain" })),
-	chainBranch: Type.Optional(Type.String({ description: "Chain branch; defaults to main" })),
+	objective: Type.String({ description: "Mission objective/user request" }),
+	title: Type.Optional(Type.String({ description: "Short mission name" })),
+	requirements: Type.Optional(Type.Array(Type.String(), { description: "Success criteria" })),
+	tokenBudget: Type.Optional(Type.Number({ description: "Token budget" })),
+	costBudgetUsd: Type.Optional(Type.Number({ description: "USD budget" })),
+	chain: Type.Optional(Type.String({ description: "Chain name" })),
+	chainBranch: Type.Optional(Type.String({ description: "Chain branch; default main" })),
 });
 
 const GetSchema = Type.Object({});
 
 const ProgressSchema = Type.Object({
-	summary: Type.String({ description: "Short durable progress/blocker/checkpoint summary" }),
-	evidence: Type.Optional(Type.Array(Type.String(), { description: "Concrete evidence, files, commands, outputs, or decisions worth preserving" })),
-	remaining: Type.Optional(Type.Array(Type.String(), { description: "Known remaining work or blockers" })),
-	validation: Type.Optional(Type.Array(Type.String(), { description: "Validation commands/results or checks performed" })),
-	checkpoint: Type.Optional(Type.Boolean({ description: "True only for meaningful checkpoint/handoff/final progress" })),
+	summary: Type.String({ description: "Progress/blocker summary" }),
+	evidence: Type.Optional(Type.Array(Type.String(), { description: "Evidence/files/decisions" })),
+	remaining: Type.Optional(Type.Array(Type.String(), { description: "Remaining work/blockers" })),
+	validation: Type.Optional(Type.Array(Type.String(), { description: "Checks run/results" })),
+	checkpoint: Type.Optional(Type.Boolean({ description: "Meaningful checkpoint" })),
 });
 
 const SearchSchema = Type.Object({
-	query: Type.String({ description: "Search terms for mission artifacts and progress logs" }),
-	maxResults: Type.Optional(Type.Number({ description: "Maximum matches to return; default 8" })),
+	query: Type.String({ description: "Search terms" }),
+	maxResults: Type.Optional(Type.Number({ description: "Max matches; default 8" })),
 });
 
 const AuditItemSchema = Type.Object({ 
-	requirement: Type.String({ description: "Requirement or success criterion" }),
-	evidence: Type.String({ description: "Concrete evidence that satisfies the requirement" }),
+	requirement: Type.String({ description: "Requirement" }),
+	evidence: Type.String({ description: "Evidence" }),
 });
 
 const CompleteSchema = Type.Object({
-	summary: Type.Optional(Type.String({ description: "Concise completion summary" })),
-	audit: Type.Optional(Type.Array(AuditItemSchema, { description: "Requirement-to-evidence completion audit" })),
-	userRequested: Type.Optional(Type.Boolean({ description: "True when explicitly ending the mission because the user asked, even if the objective audit is incomplete" })),
+	summary: Type.Optional(Type.String({ description: "Completion summary" })),
+	audit: Type.Optional(Type.Array(AuditItemSchema, { description: "Requirement/evidence audit" })),
+	userRequested: Type.Optional(Type.Boolean({ description: "User explicitly asked to end" })),
 });
 
 export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setContext: (ctx: ExtensionContext) => void): void {
 	(pi as any).registerTool({
 		name: "mission_get",
 		label: "Get Mission",
-		description: "Get the current branch-scoped Pi mission, including status, chain binding, budgets, usage, and artifact path.",
-		promptSnippet: "Read the active branch-scoped mission.",
+		description: "Get active Mission state, usage, chain, and artifacts.",
+		promptSnippet: "Read active Mission.",
 		parameters: GetSchema as any,
 		async execute(_toolCallId: string, _params: unknown, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
 			setContext(ctx);
@@ -61,13 +61,12 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 	(pi as any).registerTool({
 		name: "mission_create",
 		label: "Create Mission",
-		description: "Create a persistent branch-scoped mission only when explicitly requested by the user or system/developer instructions.",
-		promptSnippet: "Create a persistent mission objective for this branch.",
+		description: "Create a persistent branch-scoped Mission when explicitly requested.",
+		promptSnippet: "Create a Mission.",
 		promptGuidelines: [
-			"Use mission_create only when the user explicitly asks for a mission/goal/objective that should continue across turns.",
-			"For long or multi-part objectives, provide a concise title and decomposed requirements; ask the user only if the name/scope is ambiguous.",
-			"Set tokenBudget or costBudgetUsd only when the user explicitly requests a budget.",
-			"Mission auto-binds to a short title-derived chain if chain is omitted and creates .missions artifacts.",
+			"Only when the user/system/developer asks for a continuing mission/goal.",
+			"Use a short title and requirements for long objectives; ask only if scope is ambiguous.",
+			"Set budgets only when requested; chain defaults to a short title-derived name.",
 		],
 		parameters: CreateSchema as any,
 		async execute(_toolCallId: string, params: MissionCreateInput, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
@@ -76,20 +75,19 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 			const event = await state.create(params, ctx);
 			const mission = state.append(pi, event)!;
 			await initializeMissionArtifacts(ctx.cwd, mission, state.readUsage());
-			return { content: [{ type: "text" as const, text: `Mission created: ${mission.title}\nChain: ${mission.chain}@${mission.chainBranch}\nArtifacts: ${mission.artifactDir}` }], details: { mission, usage: state.readUsage() } };
+			return { content: [{ type: "text" as const, text: `Mission created: ${mission.title}\n${formatMissionLocation(mission)}` }], details: { mission, usage: state.readUsage() } };
 		},
 	});
 
 	(pi as any).registerTool({
 		name: "mission_progress",
 		label: "Mission Progress",
-		description: "Record compact durable mission progress without manually editing mission artifacts. Generated artifacts become searchable with mission_search.",
-		promptSnippet: "Append a compact mission progress record instead of editing .missions files manually.",
+		description: "Record compact progress/evidence/remaining work in searchable Mission logs.",
+		promptSnippet: "Record compact Mission progress.",
 		promptGuidelines: [
-			"Use mission_progress when durable progress, evidence, validation, remaining work, or a blocker changes.",
-			"Do not call it for every tiny tool result; keep summaries compact.",
-			"Prefer this over manually editing .missions/plan.md, audit.md, or decisions.md during normal work.",
-			"Set checkpoint=true only for meaningful milestones, handoffs, cleanup, or final validation.",
+			"Use when durable progress, evidence, validation, remaining work, or blockers change.",
+			"Not for every tiny result; prefer over manual artifact edits.",
+			"checkpoint=true only for milestones, handoffs, cleanup, or final validation.",
 		],
 		parameters: ProgressSchema as any,
 		async execute(_toolCallId: string, params: MissionProgressInput, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
@@ -99,18 +97,17 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 			const mission = state.append(pi, event)!;
 			const usage = state.readUsage();
 			await writeMissionProgressArtifacts(mission, state.readProgress(), usage);
-			return { content: [{ type: "text" as const, text: `Mission progress recorded: ${mission.title}\nArtifacts: ${mission.artifactDir}/log.md` }], details: { mission, progress: state.readProgress().at(-1), usage } };
+			return { content: [{ type: "text" as const, text: `Mission progress recorded: ${mission.title}\nLog: .missions/${mission.slug}/log.md` }], details: { mission, progress: state.readProgress().at(-1), usage } };
 		},
 	});
 
 	(pi as any).registerTool({
 		name: "mission_search",
 		label: "Search Missions",
-		description: "Search durable Mission artifacts and generated progress logs, similar to chain search but scoped to .missions/.",
-		promptSnippet: "Search prior mission progress and artifacts before repeating work.",
+		description: "Search .missions markdown and generated progress logs.",
+		promptSnippet: "Search Mission history.",
 		promptGuidelines: [
-			"Use mission_search to find prior Mission decisions, evidence, remaining work, or validation results.",
-			"Use concise topic queries; inspect concrete files only when search results are insufficient.",
+			"Use concise topic queries before repeating work; inspect files only when needed.",
 		],
 		parameters: SearchSchema as any,
 		async execute(_toolCallId: string, params: MissionSearchInput, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
@@ -123,13 +120,12 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 	(pi as any).registerTool({
 		name: "mission_complete",
 		label: "Complete Mission",
-		description: "Mark the active mission complete only after auditing objective requirements against concrete evidence.",
-		promptSnippet: "Complete the active mission after a concrete completion audit.",
+		description: "Complete achieved Mission, or end immediately on explicit user request.",
+		promptSnippet: "Complete or user-end Mission.",
 		promptGuidelines: [
-			"Use mission_complete when the mission objective is actually achieved and no required work remains.",
-			"If the user explicitly asks to end/complete/stop the mission, call mission_complete immediately with userRequested=true; summarize known remaining work and mention the mission can be resumed if needed.",
-			"Do not use mission_complete merely because budget is exhausted, work is paused, or progress is partial without an explicit user request.",
-			"Include a concise summary and, when possible, requirement-to-evidence audit items.",
+			"Complete only when objective is achieved and no required work remains.",
+			"If user asks to end/complete/stop, call with userRequested=true and note remaining work/resume option.",
+			"Never complete merely for budget, pause, or partial progress.",
 		],
 		parameters: CompleteSchema as any,
 		async execute(_toolCallId: string, params: MissionCompleteInput, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
@@ -145,7 +141,7 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 			await updateMissionSummaryArtifact(mission, usage);
 			const verb = userRequested ? "ended" : "complete";
 			const resumeHint = userRequested ? "\nResume: /mission resume" : "";
-			return { content: [{ type: "text" as const, text: `Mission ${verb}: ${mission.title}\nUsage: ${usage.totalTokens} tokens, $${usage.totalCostUsd.toFixed(4)}\nArtifacts: ${mission.artifactDir}${resumeHint}` }], details: { mission, usage, audit, userRequested } };
+			return { content: [{ type: "text" as const, text: `Mission ${verb}: ${mission.title}\nUsage: ${usage.totalTokens} tokens, $${usage.totalCostUsd.toFixed(4)}\n${formatMissionLocation(mission)}${resumeHint}` }], details: { mission, usage, audit, userRequested } };
 		},
 	});
 }
@@ -200,16 +196,30 @@ export function formatMission(mission: ReturnType<MissionState["readAny"]>, usag
 		mission.tokenBudget ? `${usage.totalTokens}/${mission.tokenBudget} tokens` : `${usage.totalTokens} tokens`,
 		mission.costBudgetUsd ? `$${usage.totalCostUsd.toFixed(4)}/$${mission.costBudgetUsd}` : `$${usage.totalCostUsd.toFixed(4)}`,
 	].join(", ");
-	const requirements = mission.requirements.length
-		? [`Requirements:`, ...mission.requirements.map((item) => `- ${item}`)]
-		: [];
+	const objective = mission.objective !== mission.title ? `Objective: ${compactMissionText(mission.objective, 180)}` : undefined;
+	const requirements = formatMissionRequirements(mission.requirements);
 	return [
 		`${mission.missionId} [${mission.status}] ${mission.title}`,
-		mission.objective !== mission.title ? `Objective: ${mission.objective}` : undefined,
-		...requirements,
-		`Budget/usage: ${budget}`,
-		`Chain: ${mission.chain}@${mission.chainBranch}`,
-		`Artifacts: ${mission.artifactDir}`,
-		mission.lastReason ? `Reason: ${mission.lastReason}` : undefined,
+		objective,
+		requirements ? `Req: ${requirements}` : undefined,
+		`Usage: ${budget}`,
+		formatMissionLocation(mission),
+		mission.lastReason ? `Reason: ${compactMissionText(mission.lastReason, 160)}` : undefined,
 	].filter(Boolean).join("\n");
+}
+
+function formatMissionLocation(mission: NonNullable<ReturnType<MissionState["readAny"]>>): string {
+	return `Chain: ${mission.chain}@${mission.chainBranch}\nArtifacts: .missions/${mission.slug}`;
+}
+
+function formatMissionRequirements(requirements: string[]): string {
+	if (!requirements.length) return "";
+	const visible = requirements.slice(0, 6).map((item) => compactMissionText(item, 80));
+	const suffix = requirements.length > visible.length ? ` (+${requirements.length - visible.length} more in mission.md)` : "";
+	return `${visible.map((item) => `• ${item}`).join(" ")}${suffix}`;
+}
+
+function compactMissionText(text: string, max: number): string {
+	const normalized = text.replace(/\s+/g, " ").trim();
+	return normalized.length <= max ? normalized : `${normalized.slice(0, max - 1).trimEnd()}…`;
 }

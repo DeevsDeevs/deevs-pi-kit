@@ -6,7 +6,7 @@ import type { MissionCreateInput, MissionStatus } from "./types.ts";
 
 export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, setContext: (ctx: ExtensionContext) => void, maybeContinue: (ctx: ExtensionContext) => void): void {
 	pi.registerCommand("mission", {
-		description: "Create/manage a branch-scoped mission: /mission <objective> [--name title] [--budget 200k] [--cost $2] [--chain name] | status|pause|resume|complete|clear",
+		description: "Create/manage a branch-scoped Mission.",
 		handler: async (args, ctx) => {
 			setContext(ctx);
 			state.loadFromSession(ctx);
@@ -33,7 +33,7 @@ export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, s
 				const event = await state.create(input, ctx);
 				const mission = state.append(pi, event)!;
 				await initializeMissionArtifacts(ctx.cwd, mission, state.readUsage());
-				ctx.ui.notify(`Mission created: ${mission.title}\nChain: ${mission.chain}@${mission.chainBranch}\nArtifacts: ${mission.artifactDir}`, "info");
+				ctx.ui.notify(`Mission created: ${mission.title}\nChain: ${mission.chain}@${mission.chainBranch}\nArtifacts: .missions/${mission.slug}`, "info");
 				maybeContinue(ctx);
 			} catch (error) {
 				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");

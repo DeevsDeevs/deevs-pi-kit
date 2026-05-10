@@ -122,6 +122,7 @@ export function registerWikiTools(pi: ExtensionAPI, service: WikiService): void 
 		label: "Pack Wiki Context",
 		description: "Pack relevant wiki pages, snippets, schema/index orientation, and optional links into bounded context.",
 		promptSnippet: "Prepare curated wiki context for the current task or a subagent.",
+		promptGuidelines: ["Use query/pages to keep context targeted; set maxBytes for large wikis."],
 		parameters: ContextSchema,
 		async execute(_toolCallId, params: WikiContextInput) {
 			const result = await service.context(params);
