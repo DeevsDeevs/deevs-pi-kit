@@ -66,9 +66,12 @@ function registerProcessLifecycleOnce(pi: ExtensionAPI, service: ProcessService)
 		}
 	});
 
-	pi.on("session_shutdown", async (event) => {
+	pi.on("session_shutdown", async (event, ctx) => {
+		service.processUi.dispose(ctx);
 		await service.manager.shutdown(event.reason);
 		service.active = false;
+		service.lifecycleRegistered = false;
+		service.surfaceRegistered = false;
 	});
 
 	pi.on("tool_call", async (event) => {

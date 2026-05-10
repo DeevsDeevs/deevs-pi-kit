@@ -1,6 +1,6 @@
 ---
 name: concept-diagrams
-description: Create source-grounded visual explanations. Default to compact Mermaid diagrams in Markdown; use standalone SVG/HTML only for polished visual artifacts. Use for codebase maps, data/control flows, sequence diagrams, state machines, concept maps, lifecycle views, and architecture explanations.
+description: Create source-grounded visual explanations such as codebase maps, flows, sequence diagrams, state machines, and architecture views. Prefer compact Mermaid; use SVG/HTML only for polished artifacts.
 ---
 
 # Concept Diagrams

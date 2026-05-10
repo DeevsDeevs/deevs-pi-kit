@@ -1,6 +1,6 @@
-import { DynamicBorder, getMarkdownTheme, type AgentToolResult, type ExtensionAPI, type ExtensionContext, type Theme, type ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder, type AgentToolResult, type ExtensionAPI, type ExtensionContext, type Theme, type ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { Type } from "@earendil-works/pi-ai";
-import { Container, Editor, Key, Markdown, matchesKey, Spacer, Text, truncateToWidth, wrapTextWithAnsi, type Component, type SelectItem, type TUI } from "@earendil-works/pi-tui";
+import { Container, Editor, Key, matchesKey, Spacer, Text, truncateToWidth, wrapTextWithAnsi, type Component, type SelectItem, type TUI } from "@earendil-works/pi-tui";
 
 type AskOptionInput = string | { title: string; description?: string };
 
@@ -87,6 +87,16 @@ function itemsForQuestion(question: AskQuestionInput): SelectItem[] {
 
 function initialModeForQuestion(question: AskQuestionInput): AskMode {
 	return (question.options?.length ?? 0) === 0 ? "freeform" : "select";
+}
+
+export function askQuestionNavigationTarget(currentIndex: number, questionCount: number, data: string): number | undefined {
+	if (matchesKey(data, Key.left)) return Math.max(0, currentIndex - 1);
+	if (matchesKey(data, Key.right)) return Math.min(Math.max(0, questionCount - 1), currentIndex + 1);
+	return undefined;
+}
+
+export function askFreeformEscapeAction(hasOptions: boolean): "select" | "cancel" {
+	return hasOptions ? "select" : "cancel";
 }
 
 function createSelectTheme(theme: Theme) {
@@ -296,7 +306,7 @@ class AskOverlay implements Component {
 	handleInput(data: string): void {
 		if (this.mode === "freeform") {
 			if (matchesKey(data, Key.escape)) {
-				if (this.items.length > 0) this.showSelect();
+				if (askFreeformEscapeAction(this.items.length > 0) === "select") this.showSelect();
 				else this.done(null);
 				return;
 			}
@@ -316,11 +326,7 @@ class AskOverlay implements Component {
 
 		if (this.context) {
 			container.addChild(new Spacer(1));
-			try {
-				container.addChild(new Markdown(`**Context**\n\n${this.context}`, 1, 0, getMarkdownTheme()));
-			} catch {
-				container.addChild(new Text(`${this.theme.fg("accent", this.theme.bold("Context"))}\n${this.theme.fg("muted", this.context)}`, 1, 0));
-			}
+			container.addChild(new Text(formatContext(this.context, this.theme), 1, 0));
 		}
 
 		container.addChild(new Spacer(1));
@@ -463,12 +469,9 @@ class MultiAskOverlay implements Component {
 	handleInput(data: string): void {
 		const state = this.currentState();
 		if (state.mode === "select") {
-			if (matchesKey(data, Key.left)) {
-				this.goTo(this.currentIndex - 1);
-				return;
-			}
-			if (matchesKey(data, Key.right)) {
-				this.goTo(this.currentIndex + 1);
+			const nextIndex = askQuestionNavigationTarget(this.currentIndex, this.questions.length, data);
+			if (nextIndex !== undefined) {
+				this.goTo(nextIndex);
 				return;
 			}
 			this.ensureList(state).handleInput(data);
@@ -477,7 +480,7 @@ class MultiAskOverlay implements Component {
 		}
 
 		if (matchesKey(data, Key.escape)) {
-			if (this.currentItems().length > 0) this.showSelect();
+			if (askFreeformEscapeAction(this.currentItems().length > 0) === "select") this.showSelect();
 			else this.done(null);
 			return;
 		}
@@ -497,11 +500,7 @@ class MultiAskOverlay implements Component {
 
 		if (this.context) {
 			container.addChild(new Spacer(1));
-			try {
-				container.addChild(new Markdown(`**Context**\n\n${this.context}`, 1, 0, getMarkdownTheme()));
-			} catch {
-				container.addChild(new Text(`${this.theme.fg("accent", this.theme.bold("Context"))}\n${this.theme.fg("muted", this.context)}`, 1, 0));
-			}
+			container.addChild(new Text(formatContext(this.context, this.theme), 1, 0));
 		}
 
 		container.addChild(new Spacer(1));
@@ -568,6 +567,10 @@ async function askOne(ctx: ExtensionContext, question: AskQuestionInput, index: 
 	const result = await askOverlay(ctx, question.question, progress, context, items, initialMode);
 	if (!result) return { id: question.id, question: question.question, answer: null, kind: "cancelled", cancelled: true };
 	return { id: question.id, question: question.question, answer: result.answer, kind: result.kind, cancelled: false };
+}
+
+function formatContext(context: string, theme: Theme): string {
+	return `${theme.fg("accent", theme.bold("Context"))}\n${theme.fg("muted", context)}`;
 }
 
 function summarizeAnswers(answers: AskAnswer[]): string {

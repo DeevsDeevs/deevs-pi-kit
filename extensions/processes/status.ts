@@ -12,22 +12,21 @@ export function createProcessFooterStatus(manager: ProcessManager) {
 	const update = () => {
 		if (!ctx) return;
 		const config = manager.getConfig();
-		const processes = manager.list({ includeExited: false, includePersistent: true });
-		const active = processes.filter(
-			(process) =>
-				!isSuppressedProcessName(process.name, config) &&
-				(process.status === "starting" || process.status === "running" || process.status === "killing" || process.status === "kill_timeout"),
-		);
-		if (active.length === 0) {
+		const processes = manager.list({ includeExited: false, includePersistent: true })
+			.filter((process) => !isSuppressedProcessName(process.name, config));
+		const running = processes.filter((process) => process.status === "starting" || process.status === "running");
+		const stopping = processes.filter((process) => process.status === "killing");
+		const stuck = processes.filter((process) => process.status === "kill_timeout");
+		if (running.length === 0 && stopping.length === 0 && stuck.length === 0) {
 			ctx.ui.setStatus("background-tasks", undefined);
 			return;
 		}
 
-		const persistent = active.filter((process) => process.persistent).length;
-		const stuck = active.filter((process) => process.status === "kill_timeout").length;
-		const parts = [`background: ${active.length} running`];
+		const persistent = running.filter((process) => process.persistent).length;
+		const parts = [`background: ${running.length} running`];
 		if (persistent > 0) parts.push(`${persistent} persistent`);
-		if (stuck > 0) parts.push(`${stuck} stuck`);
+		if (stopping.length > 0) parts.push(`${stopping.length} stopping`);
+		if (stuck.length > 0) parts.push(`${stuck.length} stuck`);
 		ctx.ui.setStatus("background-tasks", colorBlue(parts.join(" / ")));
 	};
 

@@ -1,5 +1,6 @@
 import { Key, matchesKey, SelectList, SettingsList, truncateToWidth } from "@earendil-works/pi-tui";
 import type { Component, SelectItem, SelectListTheme, SettingItem, SettingsListTheme } from "@earendil-works/pi-tui";
+import { isSuppressedProcessName } from "./alerts.ts";
 import type { ProcessManager } from "./manager.ts";
 import type { ManagedProcessInfo, ProcessStatus, ReadStreamFilter } from "./types.ts";
 
@@ -16,6 +17,15 @@ interface DockState {
 
 export function createProcessUi(manager: ProcessManager, onSettingsChanged?: (ctx: any) => void | Promise<void>) {
 	const dock: DockState = { visible: false };
+
+	const clearDock = (ctx?: any) => {
+		dock.unsubscribe?.();
+		dock.unsubscribe = undefined;
+		dock.requestRender = undefined;
+		dock.component = undefined;
+		dock.visible = false;
+		ctx?.ui?.setWidget(DOCK_ID, undefined);
+	};
 
 	return {
 		showDock(ctx: any) {
@@ -45,12 +55,11 @@ export function createProcessUi(manager: ProcessManager, onSettingsChanged?: (ct
 		hideDock(ctx: any) {
 			manager.getConfig().ui.dockEnabled = false;
 			void onSettingsChanged?.(ctx);
-			dock.unsubscribe?.();
-			dock.unsubscribe = undefined;
-			dock.requestRender = undefined;
-			dock.component = undefined;
-			dock.visible = false;
-			ctx.ui.setWidget(DOCK_ID, undefined);
+			clearDock(ctx);
+		},
+
+		dispose(ctx?: any) {
+			clearDock(ctx);
 		},
 
 		toggleDock(ctx: any) {
@@ -102,8 +111,8 @@ export function createProcessUi(manager: ProcessManager, onSettingsChanged?: (ct
 }
 
 export function renderDockLines(manager: ProcessManager, theme?: any, width = Number.POSITIVE_INFINITY): string[] {
-	const processes = manager.list({ includeExited: false, includePersistent: true });
 	const config = manager.getConfig();
+	const processes = visibleProcesses(manager.list({ includeExited: false, includePersistent: true }), manager);
 	const accent = (text: string) => theme?.fg ? theme.fg("accent", text) : text;
 	const muted = (text: string) => theme?.fg ? theme.fg("muted", text) : text;
 	const lines: string[] = [];
@@ -111,7 +120,13 @@ export function renderDockLines(manager: ProcessManager, theme?: any, width = Nu
 	if (!config.ui.dockEnabled) return [truncateToWidth(`${accent("background-tasks")}: ${muted("dock disabled")}`, width)];
 	if (processes.length === 0) return [truncateToWidth(`${accent("background-tasks")}: ${muted("idle")}`, width)];
 
-	lines.push(truncateToWidth(`${accent("background-tasks")}: ${processes.length} running`, width));
+	const running = processes.filter((process) => process.status === "starting" || process.status === "running").length;
+	const stopping = processes.filter((process) => process.status === "killing").length;
+	const stuck = processes.filter((process) => process.status === "kill_timeout").length;
+	const summary = [`${running} running`];
+	if (stopping > 0) summary.push(`${stopping} stopping`);
+	if (stuck > 0) summary.push(`${stuck} stuck`);
+	lines.push(truncateToWidth(`${accent("background-tasks")}: ${summary.join(" / ")}`, width));
 	for (const process of processes.slice(0, Math.max(1, config.ui.dockHeight - 1))) {
 		const runtime = formatDuration(Date.now() - process.startedAt);
 		lines.push(truncateToWidth(`${statusIcon(process.status)} ${process.name} ${runtime} - ${shortCommand(process)}`, width));
@@ -183,13 +198,7 @@ class ProcessPanel implements Component {
 		lines.push("");
 		lines.push(...list.render(width));
 		lines.push("");
-		if (selected) {
-			lines.push(truncateToWidth(th.fg("borderMuted", "-".repeat(width)), width));
-			lines.push(truncateToWidth(`id: ${selected.id} | status: ${selected.status} | cwd: ${selected.cwd}`, width));
-			lines.push(truncateToWidth(`cmd: ${shortCommand(selected, 240)}`, width));
-		} else {
-			lines.push(truncateToWidth(th.fg("dim", "No managed processes."), width));
-		}
+		lines.push(...renderProcessPanelDetailLines(selected, th, width));
 		return lines;
 	}
 
@@ -233,7 +242,7 @@ class ProcessPanel implements Component {
 	}
 
 	private processes(): ManagedProcessInfo[] {
-		return this.manager.list({ includeExited: true, includePersistent: true });
+		return visibleProcesses(this.manager.list({ includeExited: true, includePersistent: true }), this.manager);
 	}
 
 	private selectedProcess(): ManagedProcessInfo | undefined {
@@ -296,6 +305,45 @@ class ProcessPanel implements Component {
 	}
 }
 
+export interface ProcessLogViewerRenderInput {
+	processName: string;
+	stream: string;
+	allLineCount: number;
+	lines: string[];
+	scroll: number;
+	query: string;
+	searchMode: boolean;
+	truncatedFromStart: boolean;
+	theme: any;
+	width: number;
+}
+
+export function renderProcessLogViewerLines(input: ProcessLogViewerRenderInput): string[] {
+	const visible = input.lines.slice(input.scroll, input.scroll + LOG_VIEW_ROWS);
+	const rangeStart = input.lines.length > 0 ? input.scroll + 1 : 0;
+	const rangeEnd = input.lines.length > 0 ? Math.min(input.scroll + LOG_VIEW_ROWS, input.lines.length) : 0;
+	const out: string[] = [];
+	const title = ` logs: ${input.processName} (${input.stream}) `;
+	out.push(truncateToWidth(input.theme.fg("accent", input.theme.bold(title)), input.width));
+	out.push(truncateToWidth(input.theme.fg("borderMuted", "-".repeat(input.width)), input.width));
+	out.push(truncateToWidth(input.theme.fg("dim", "/ or f search | up/down scroll | PgUp/PgDn | g/G | c clear search | q close"), input.width));
+	out.push(truncateToWidth(`${input.searchMode ? "search>" : "filter:"} ${input.query || "(none)"} | ${input.lines.length}/${input.allLineCount} lines | ${rangeStart}-${rangeEnd}`, input.width));
+	if (input.truncatedFromStart) out.push(truncateToWidth(input.theme.fg("warning", "tail truncated from start"), input.width));
+	if (visible.length > 0) for (const line of visible) out.push(truncateToWidth(line, input.width));
+	else out.push(truncateToWidth(input.theme.fg("dim", input.query ? "(no matching log lines)" : "(no log output)"), input.width));
+	return out;
+}
+
+export function renderProcessPanelDetailLines(process: ManagedProcessInfo | undefined, theme: any, width: number): string[] {
+	if (!process) return [truncateToWidth(theme.fg("dim", "No managed processes."), width)];
+	return [
+		truncateToWidth(theme.fg("borderMuted", "-".repeat(width)), width),
+		truncateToWidth(`id: ${process.id} | status: ${process.status}`, width),
+		truncateToWidth(`cwd: ${process.cwd}`, width),
+		truncateToWidth(`cmd: ${shortCommand(process, 240)}`, width),
+	];
+}
+
 class LogViewer implements Component {
 	private readonly lines: string[];
 	private scroll = 0;
@@ -342,16 +390,18 @@ class LogViewer implements Component {
 	render(width: number): string[] {
 		const lines = this.filteredLines();
 		this.clampScroll();
-		const visible = lines.slice(this.scroll, this.scroll + LOG_VIEW_ROWS);
-		const out: string[] = [];
-		const title = ` logs: ${this.processName} (${this.stream}) `;
-		out.push(truncateToWidth(this.theme.fg("accent", this.theme.bold(title)), width));
-		out.push(truncateToWidth(this.theme.fg("borderMuted", "-".repeat(width)), width));
-		out.push(truncateToWidth(this.theme.fg("dim", "/ or f search | up/down scroll | PgUp/PgDn | g/G | c clear search | q close"), width));
-		out.push(truncateToWidth(`${this.searchMode ? "search>" : "filter:"} ${this.query || "(none)"} | ${lines.length}/${this.lines.length} lines | ${this.scroll + 1}-${Math.min(this.scroll + LOG_VIEW_ROWS, lines.length)}`, width));
-		if (this.truncatedFromStart) out.push(truncateToWidth(this.theme.fg("warning", "tail truncated from start"), width));
-		for (const line of visible) out.push(truncateToWidth(line, width));
-		return out;
+		return renderProcessLogViewerLines({
+			processName: this.processName,
+			stream: this.stream,
+			allLineCount: this.lines.length,
+			lines,
+			scroll: this.scroll,
+			query: this.query,
+			searchMode: this.searchMode,
+			truncatedFromStart: this.truncatedFromStart,
+			theme: this.theme,
+			width,
+		});
 	}
 
 	invalidate(): void {}
@@ -366,6 +416,18 @@ class LogViewer implements Component {
 		const max = Math.max(0, this.filteredLines().length - LOG_VIEW_ROWS);
 		this.scroll = Math.max(0, Math.min(this.scroll, max));
 	}
+}
+
+export function processSettingsItems(config: ReturnType<ProcessManager["getConfig"]>): SettingItem[] {
+	return [
+		{ id: "defaultBackend", label: "Default backend", currentValue: config.execution.defaultBackend, values: ["pipe", "pty", "tmux"], description: "Backend used when proc_start does not specify one." },
+		{ id: "killOnReload", label: "Kill non-persistent on reload", currentValue: boolValue(config.execution.killOnReload), values: ["true", "false"], description: "Stop session-scoped tasks during /reload." },
+		{ id: "killOnShutdown", label: "Kill non-persistent on shutdown", currentValue: boolValue(config.execution.killOnShutdown), values: ["true", "false"], description: "Stop session-scoped tasks when Pi exits." },
+		{ id: "alertOnFailure", label: "Wake on failure by default", currentValue: boolValue(config.alerts.defaultAlertOnFailure), values: ["true", "false"], description: "Default alertOnFailure for new tasks." },
+		{ id: "alertOnExit", label: "Wake on clean exit by default", currentValue: boolValue(config.alerts.defaultAlertOnExit), values: ["true", "false"], description: "Default alertOnExit for new tasks." },
+		{ id: "dockEnabled", label: "Dock enabled", currentValue: boolValue(config.ui.dockEnabled), values: ["true", "false"], description: "Controls whether /proc:dock renders task lines." },
+		{ id: "dockHeight", label: "Dock height", currentValue: String(config.ui.dockHeight), values: ["3", "5", "8", "10", "15"], description: "Maximum dock lines." },
+	];
 }
 
 class ProcessSettings implements Component {
@@ -400,16 +462,7 @@ class ProcessSettings implements Component {
 	}
 
 	private items(): SettingItem[] {
-		const config = this.manager.getConfig();
-		return [
-			{ id: "defaultBackend", label: "Default backend", currentValue: config.execution.defaultBackend, values: ["pipe", "pty", "tmux"], description: "Backend used when proc_start does not specify one." },
-			{ id: "killOnReload", label: "Kill non-persistent on reload", currentValue: boolValue(config.execution.killOnReload), values: ["true", "false"], description: "Stop session-scoped tasks during /reload." },
-			{ id: "killOnShutdown", label: "Kill non-persistent on shutdown", currentValue: boolValue(config.execution.killOnShutdown), values: ["true", "false"], description: "Stop session-scoped tasks when Pi exits." },
-			{ id: "alertOnFailure", label: "Wake on failure by default", currentValue: boolValue(config.alerts.defaultAlertOnFailure), values: ["true", "false"], description: "Default alertOnFailure for new tasks." },
-			{ id: "alertOnExit", label: "Wake on clean exit by default", currentValue: boolValue(config.alerts.defaultAlertOnExit), values: ["true", "false"], description: "Default alertOnExit for new tasks." },
-			{ id: "dockEnabled", label: "Dock enabled", currentValue: boolValue(config.ui.dockEnabled), values: ["true", "false"], description: "Controls whether /proc:dock renders task lines." },
-			{ id: "dockHeight", label: "Dock height", currentValue: String(config.ui.dockHeight), values: ["3", "5", "8", "10", "15"], description: "Maximum dock lines." },
-		];
+		return processSettingsItems(this.manager.getConfig());
 	}
 
 	private setValue(id: string, value: string): void {
@@ -425,6 +478,11 @@ class ProcessSettings implements Component {
 		this.manager.notifySettingsChanged();
 		this.onSettingsChanged();
 	}
+}
+
+function visibleProcesses(processes: ManagedProcessInfo[], manager: ProcessManager): ManagedProcessInfo[] {
+	const config = manager.getConfig();
+	return processes.filter((process) => !isSuppressedProcessName(process.name, config));
 }
 
 function formatListLabel(process: ManagedProcessInfo): string {

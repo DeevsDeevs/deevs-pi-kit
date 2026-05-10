@@ -38,6 +38,27 @@ export interface AgentsSettings {
 	maxCompletedRecords: number;
 }
 
+export interface AgentUsage {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	totalTokens: number;
+	cost: {
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite: number;
+		total: number;
+	};
+}
+
+export interface AgentBudget {
+	tokenBudget?: number;
+	costBudgetUsd?: number;
+	status?: "within_budget" | "over_budget" | "unknown";
+}
+
 export interface AgentStartInput {
 	agent: string;
 	task: string;
@@ -48,6 +69,8 @@ export interface AgentStartInput {
 	allowWrite?: boolean;
 	timeoutMs?: number;
 	maxBytes?: number;
+	tokenBudget?: number;
+	costBudgetUsd?: number;
 	chainContext?: ChainContextInput;
 }
 
@@ -58,6 +81,8 @@ export interface AgentParallelTaskInput {
 	tools?: string[];
 	allowWrite?: boolean;
 	context?: AgentContextMode;
+	tokenBudget?: number;
+	costBudgetUsd?: number;
 	chainContext?: ChainContextInput;
 }
 
@@ -122,6 +147,10 @@ export interface AgentRunRecord {
 	systemPromptPath: string;
 	metadataPath: string;
 	timeoutMs: number;
+	tokenBudget?: number;
+	costBudgetUsd?: number;
+	usage?: AgentUsage;
+	budget?: AgentBudget;
 	timedOut?: boolean;
 	cancelRequested?: boolean;
 	terminalNotified?: boolean;
@@ -152,6 +181,7 @@ export interface AgentGroupRecord {
 	resultPath: string;
 	timeoutMs: number;
 	maxBytesPerAgent?: number;
+	usage?: AgentUsage;
 	terminalNotified?: boolean;
 }
 
@@ -169,6 +199,8 @@ export interface AgentStartResult {
 		stdout?: string | null;
 		stderr?: string | null;
 	};
+	usage?: AgentUsage;
+	budget?: AgentBudget;
 	output?: string;
 	nextSeq?: number;
 }
