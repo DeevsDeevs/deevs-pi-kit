@@ -23,6 +23,8 @@ export default function missionExtension(pi: ExtensionAPI): void {
 	let currentCtx: ExtensionContext | undefined;
 	let continuationInFlight = false;
 	let compactionInFlight = false;
+	let disposed = false;
+	const continuationTimers = new Set<ReturnType<typeof setTimeout>>();
 
 	const setContext = (ctx: ExtensionContext) => {
 		currentCtx = ctx;
@@ -33,19 +35,34 @@ export default function missionExtension(pi: ExtensionAPI): void {
 		updateMissionStatus(ctx, state);
 	};
 	const maybeContinue = (ctx: ExtensionContext) => {
+		if (disposed || currentCtx !== ctx) return;
 		void maybeContinueMission(pi, state, ctx, continuationInFlight, compactionInFlight, (value) => {
 			continuationInFlight = value;
 		}, (value) => {
 			compactionInFlight = value;
-		}, maybeContinue);
+		}, maybeContinue).catch((error) => {
+			try {
+				if (!disposed && currentCtx === ctx && ctx.hasUI) ctx.ui.notify(`Mission continuation skipped: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			} catch {
+				// The context may already be stale during session replacement/reload cleanup.
+			}
+		});
+	};
+	const scheduleMaybeContinue = (ctx: ExtensionContext) => {
+		const timer = setTimeout(() => {
+			continuationTimers.delete(timer);
+			maybeContinue(ctx);
+		}, 0);
+		continuationTimers.add(timer);
 	};
 
 	registerMissionTools(pi, state, setContext);
 	registerMissionCommands(pi, state, setContext, maybeContinue);
 
 	pi.on("session_start", async (event: any, ctx) => {
+		disposed = false;
 		restore(ctx);
-		if (["startup", "reload", "resume"].includes(event?.reason)) setTimeout(() => maybeContinue(ctx), 0);
+		if (["startup", "reload", "resume"].includes(event?.reason)) scheduleMaybeContinue(ctx);
 	});
 	pi.on("session_tree", async (_event, ctx) => restore(ctx));
 	pi.on("session_compact", async (_event, ctx) => {
@@ -54,7 +71,7 @@ export default function missionExtension(pi: ExtensionAPI): void {
 		// Pi emits session_compact before the core compaction wrapper has fully unwound.
 		// Defer the Mission continuation so an active mission resumes after both manual
 		// and automatic compaction without racing session/agent reconnection.
-		setTimeout(() => maybeContinue(ctx), 0);
+		scheduleMaybeContinue(ctx);
 	});
 	pi.on("turn_start", async (_event, ctx) => setContext(ctx));
 	pi.on("turn_end", async (_event, ctx) => {
@@ -78,7 +95,11 @@ export default function missionExtension(pi: ExtensionAPI): void {
 		return { systemPrompt: `${systemPrompt}\n\n${missionContextBlock(mission, usage)}` };
 	});
 	pi.on("session_shutdown", async () => {
+		disposed = true;
+		for (const timer of continuationTimers) clearTimeout(timer);
+		continuationTimers.clear();
 		clearMissionStatus(currentCtx);
+		currentCtx = undefined;
 		surfaceState.active = false;
 	});
 }
