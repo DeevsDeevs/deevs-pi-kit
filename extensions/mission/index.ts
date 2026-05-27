@@ -35,14 +35,14 @@ export default function missionExtension(pi: ExtensionAPI): void {
 		updateMissionStatus(ctx, state);
 	};
 	const maybeContinue = (ctx: ExtensionContext) => {
-		if (disposed || currentCtx !== ctx) return;
+		if (disposed) return;
 		void maybeContinueMission(pi, state, ctx, continuationInFlight, compactionInFlight, (value) => {
 			continuationInFlight = value;
 		}, (value) => {
 			compactionInFlight = value;
 		}, maybeContinue).catch((error) => {
 			try {
-				if (!disposed && currentCtx === ctx && ctx.hasUI) ctx.ui.notify(`Mission continuation skipped: ${error instanceof Error ? error.message : String(error)}`, "warning");
+				if (!disposed && ctx.hasUI) ctx.ui.notify(`Mission continuation skipped: ${error instanceof Error ? error.message : String(error)}`, "warning");
 			} catch {
 				// The context may already be stale during session replacement/reload cleanup.
 			}
