@@ -27,6 +27,7 @@ extensions/wiki/        Curated markdown wiki helpers (`wiki_*`)
 extensions/arxiv/       arXiv search, lookup, and BibTeX tools
 extensions/todos/       Session-scoped todo list (`todo_list`)
 extensions/ask-user/    Interactive clarification UI (`ask_user`)
+extensions/codex-fast/  OpenAI Codex Fast mode service tier (`/codex-fast`)
 extensions/notifier/    Ready-for-input terminal notifications
 skills/                 Agent behavior guidance
 prompts/                Optional project prompt templates
@@ -103,6 +104,16 @@ Collect focused clarifications or decisions through an interactive overlay.
 Tool: `ask_user`.
 
 Use it only after checking files, docs, and commands that could answer the question.
+
+### Codex Fast
+
+Enable OpenAI Codex Fast mode by injecting `service_tier: "priority"` into eligible ChatGPT-auth `openai-codex` requests. It does not change the selected model or thinking level.
+
+Commands: `/codex-fast`, `/codex-fast status`, `/codex-fast on`, `/codex-fast off`, `/codex-fast auto`, `/codex-fast toggle`.
+
+Optional config: `.pi/codex-fast.json` or `~/.pi/agent/extensions/codex-fast.json` with `{ "enabled": false, "showStatus": true }`.
+
+Requires `/login` → ChatGPT Plus/Pro (Codex), and only applies to `openai-codex` GPT-5.4/GPT-5.5.
 
 ### Notifier
 
