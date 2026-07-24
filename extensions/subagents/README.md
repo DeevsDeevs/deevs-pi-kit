@@ -9,6 +9,7 @@ explorer    code/context reconnaissance
 architect   design and migration planning
 reviewer    correctness, security, and performance review
 tester      validation strategy and coverage gaps
+logic-hunter spec-vs-implementation logic bug hunting
 devops      runtime, config, and deployment investigation
 python-dev  Python-specific review
 cpp-dev     C++ correctness and performance review
@@ -24,6 +25,7 @@ anti-slop   simplify overbuilt or noisy changes
 - active runs show a compact footer status
 - optional `chainContext` is loaded by the parent and prepended to the task
 - optional `tokenBudget` and `costBudgetUsd` are passed as advisory task constraints and reconciled from child Pi session usage when available
+- repeated `agent_read` calls for active runs/groups are throttled to one per 60 seconds by default; first and terminal reads return immediately
 
 ## Tools
 
@@ -38,7 +40,7 @@ agent_logs            inspect artifacts or compact process logs
 agent_clear           clear completed records and artifacts
 ```
 
-Use `agent_read` first. Use `agent_logs` when you need artifacts, metadata, or raw process logs. Terminal run metadata includes parsed usage and budget status when the child session recorded usage.
+Use `agent_read` first. Its `waitMs` parameter controls the minimum interval since the previous non-terminal read (default `60000`; `0` disables throttling). Use `agent_logs` when you need artifacts, metadata, or raw process logs. Terminal run metadata includes parsed usage and budget status when the child session recorded usage.
 
 ## Commands
 
