@@ -61,7 +61,7 @@ const AgentParallelStartSchema = Type.Object({
 const AgentReadSchema = Type.Object({
 	id: Type.String({ description: "Run id a_... or group id g_..." }),
 	afterSeq: Type.Optional(Type.Number()),
-	waitMs: Type.Optional(Type.Number()),
+	waitMs: Type.Optional(Type.Number({ description: "Minimum interval since the previous non-terminal read; defaults to 60000ms" })),
 	maxBytes: Type.Optional(Type.Number()),
 	stream: Type.Optional(StringEnum(["combined", "stdout", "stderr"] as const)),
 	raw: Type.Optional(Type.Boolean()),
@@ -141,7 +141,7 @@ export function registerSubagentTools(pi: ExtensionAPI, manager: SubagentManager
 		label: "Read Agent",
 		description: "Read a subagent run or parallel group.",
 		promptSnippet: "Read friendly output from a subagent run/group; raw mode returns backing process chunks.",
-		promptGuidelines: ["Use raw:true only when debugging process output parsing."],
+		promptGuidelines: ["Use raw:true only when debugging process output parsing.", "agent_read enforces a 60-second interval between non-terminal reads by default; terminal results return immediately."],
 		parameters: AgentReadSchema,
 		async execute(_toolCallId, params: AgentReadInput, signal) {
 			const result = await manager.read(params, signal);

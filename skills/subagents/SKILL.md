@@ -11,6 +11,7 @@ Use the `agent_*` tools to delegate focused work to curated background staff age
 
 - Use `agent_start` with `explorer` for non-trivial reconnaissance before editing.
 - Use `reviewer`, `tester`, and `anti-slop` for independent pre-merge perspectives.
+- Use `logic-hunter` for language-agnostic spec-vs-implementation bug hunting and data/control-flow correctness.
 - Use `architect` for design boundaries and migration plans.
 - Use `devops` for runtime/config/process/log/deployment failures.
 - Use `python-dev`, `cpp-dev`, or `rust-dev` for language-specific review.
