@@ -1,4 +1,5 @@
 import { basename } from "node:path";
+import { utf8Head } from "../shared/bytes.ts";
 
 const STALE_AFTER_DAYS = 7;
 
@@ -73,17 +74,10 @@ export function truncateText(value: string, maxBytes: number): { text: string; t
 	if (bytes <= maxBytes) return { text: value, truncated: false };
 	const suffix = `\n\n[chain content truncated to ${maxBytes} bytes]`;
 	const suffixBytes = Buffer.byteLength(suffix, "utf8");
-	const text = suffixBytes >= maxBytes ? fitUtf8(suffix, maxBytes) : `${fitUtf8(value, maxBytes - suffixBytes)}${suffix}`;
+	const text = suffixBytes >= maxBytes ? utf8Head(suffix, maxBytes) : `${utf8Head(value, maxBytes - suffixBytes)}${suffix}`;
 	return { text, truncated: true };
 }
 
-function fitUtf8(value: string, maxBytes: number): string {
-	if (maxBytes <= 0) return "";
-	if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
-	let text = value;
-	while (Buffer.byteLength(text, "utf8") > maxBytes && text.length > 0) text = text.slice(0, -1);
-	return text;
-}
 
 function dateFromFilename(filename: string): Date | null {
 	const match = /^(\d{4})-(\d{2})-(\d{2})-(\d{4,9})-/.exec(filename);

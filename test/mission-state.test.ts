@@ -107,6 +107,17 @@ describe("Mission state", () => {
 		expect(test.state.readUsage()).toMatchObject({ subagentTokens: 15, subagentCostUsd: 0.1 });
 	});
 
+	it("freezes usage at terminal status in one branch pass", async () => {
+		const test = setup();
+		const created = await test.state.create({ objective: "Do work", chain: "kit" }, test.ctx);
+		test.state.append(test.pi, created);
+		test.branch.push({ type: "message", message: { role: "assistant", usage: { input: 5, output: 2, cost: { total: 0.01 } } } });
+		test.state.append(test.pi, test.state.statusEvent("complete", "done", "done"));
+		test.branch.push({ type: "message", message: { role: "assistant", usage: { input: 100, output: 100, cost: { total: 1 } } } });
+		test.state.loadFromSession(test.ctx);
+		expect(test.state.readUsage()).toMatchObject({ totalTokens: 7, totalCostUsd: 0.01 });
+	});
+
 	it("treats repeated completion as idempotent", async () => {
 		const test = setup();
 		const created = await test.state.create({ objective: "Do work", title: "Probe", chain: "kit" }, test.ctx);
@@ -146,6 +157,30 @@ describe("Mission state", () => {
 		expect(test.branch).toHaveLength(before);
 		expect(completed).toBe(0);
 		expect(notices).toEqual(["Mission already complete: Probe"]);
+	});
+
+	it("routes the direct end command through the shared completion validator", async () => {
+		const test = setup();
+		const created = await test.state.create({ objective: "Do work", title: "Probe", chain: "kit" }, test.ctx);
+		test.state.append(test.pi, created);
+		let command: { handler: (args: string, ctx: ExtensionContext) => Promise<void> } | undefined;
+		let directUserRequest = false;
+		let completed = 0;
+		const pi = {
+			...test.pi,
+			registerCommand(_name: string, value: typeof command) { command = value; },
+		} as unknown as ExtensionAPI;
+		registerMissionCommands(pi, test.state, () => undefined, () => undefined, {
+			validateCompletion: (_input, _ctx, direct) => { directUserRequest = direct === true; return ["synthetic blocker"]; },
+			onCompleted: () => { completed++; },
+		});
+		const notices: string[] = [];
+		const ctx = { ...test.ctx, ui: { notify: (message: string) => { notices.push(message); } } } as unknown as ExtensionContext;
+		await command!.handler("end", ctx);
+		expect(directUserRequest).toBe(true);
+		expect(test.state.read()?.status).toBe("active");
+		expect(completed).toBe(0);
+		expect(notices[0]).toContain("synthetic blocker");
 	});
 
 	it("counts continuation turns against the turn budget", async () => {

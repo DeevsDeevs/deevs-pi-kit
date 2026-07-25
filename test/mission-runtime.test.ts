@@ -29,6 +29,11 @@ async function setup(options: { pending?: boolean } = {}) {
 	const created = await state.create({ objective: "Implement it", requirements: ["Feature works"], chain: "kit" }, ctx);
 	state.append(pi, created);
 	const runtime = new MissionRuntime(pi, state);
+	const emptyService = {
+		list: () => ({ runs: [], groups: [] }),
+		executor: { onChange: () => () => undefined },
+	} as unknown as SubagentService;
+	setSubagentService(emptyService);
 	runtime.register();
 	const emit = async (event: string, value: unknown = {}) => {
 		for (const handler of handlers.get(event) ?? []) await handler(value as never, ctx);
@@ -43,6 +48,9 @@ describe("Mission runtime", () => {
 		await test.emit("session_start", { reason: "resume" });
 		expect(test.messages).toHaveLength(1);
 		expect(test.messages[0]?.options).toEqual({ triggerTurn: true, deliverAs: "followUp" });
+		const wake = test.messages[0]?.message as { content?: string };
+		expect(wake.content).toContain("do not shrink scope to fit one turn");
+		expect(wake.content).not.toContain("one reversible, verifiable slice");
 		expect(test.state.read()?.turnCount).toBe(1);
 	});
 
@@ -70,6 +78,23 @@ describe("Mission runtime", () => {
 		expect(await test.runtime.validateCompletion({ userRequested: true }, test.ctx)).not.toEqual([]);
 		test.branch.push({ type: "message", message: { role: "user", content: "Stop the mission now." } });
 		expect(await test.runtime.validateCompletion({ userRequested: true }, test.ctx)).toEqual([]);
+		expect(await test.runtime.validateCompletion({ userRequested: true }, test.ctx, true)).toEqual([]);
+	});
+
+	it("fails completion and continuation closed when child settlement cannot be verified", async () => {
+		const test = await setup();
+		const service = {
+			list: () => { throw new Error("synthetic registry failure"); },
+			executor: { onChange: () => () => undefined },
+		} as unknown as SubagentService;
+		setSubagentService(service);
+		try {
+			await test.emit("session_start", { reason: "resume" });
+			expect(test.messages).toEqual([]);
+			expect(await test.runtime.validateCompletion({ audit: [] }, test.ctx)).toContain("Cannot verify child settlement: synthetic registry failure");
+		} finally {
+			clearSubagentService(service);
+		}
 	});
 
 	it("defers continuation and completion while Jobs are active", async () => {
@@ -117,6 +142,23 @@ describe("Mission runtime", () => {
 			await new Promise((resolve) => setTimeout(resolve, 10));
 			expect(test.state.read()?.reviewStatus).toBe("awaiting_adjudication");
 			expect(test.messages).toHaveLength(1);
+		} finally {
+			clearSubagentService(service);
+		}
+	});
+
+	it("moves a lost reviewer run back to a recoverable due state", async () => {
+		const test = await setup();
+		const service = {
+			list: () => ({ runs: [], groups: [] }),
+			executor: { get: () => { throw new Error("Unknown delegate run"); }, onChange: () => () => undefined },
+		} as unknown as SubagentService;
+		setSubagentService(service);
+		try {
+			test.state.append(test.pi, test.state.reviewEvent("running", { runId: "missing-review", reason: "reviewing" }));
+			await test.emit("session_start", { reason: "resume" });
+			expect(test.state.read()?.reviewStatus).toBe("due");
+			expect(test.state.read()?.reviewReason).toContain("independent review run lost");
 		} finally {
 			clearSubagentService(service);
 		}

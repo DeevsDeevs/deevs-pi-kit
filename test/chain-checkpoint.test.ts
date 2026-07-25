@@ -5,6 +5,7 @@ import type { ChainService } from "../extensions/chains/service.ts";
 import {
 	CHAIN_CHECKPOINT_ENTRY,
 	ChainCheckpointService,
+	chainCheckpoints,
 	emptyChainCheckpoint,
 	reduceChainCheckpoint,
 	replayChainCheckpoint,
@@ -96,6 +97,30 @@ describe("Chain checkpoint state", () => {
 		await command!.handler("", ctx);
 		expect(labels).toHaveLength(2);
 		expect(new Set(labels).size).toBe(2);
+	});
+
+	it("exposes an explicit reasoned checkpoint waiver command", async () => {
+		let command: { handler: (args: string, ctx: ExtensionContext) => Promise<void> } | undefined;
+		const branch: Array<Record<string, unknown>> = [];
+		const pi = {
+			appendEntry(customType: string, data: unknown) { branch.push({ type: "custom", customType, data }); },
+			registerCommand(name: string, value: typeof command) { if (name === "chain-waive") command = value; },
+		} as unknown as ExtensionAPI;
+		const checkpoint = new ChainCheckpointService(pi);
+		checkpoint.activate("kit", "main");
+		checkpoint.due("test due");
+		const previous = chainCheckpoints.current;
+		chainCheckpoints.current = checkpoint;
+		try {
+			const notices: string[] = [];
+			const ctx = { ui: { notify: (message: string) => { notices.push(message); } } } as unknown as ExtensionContext;
+			registerChainCommands(pi, {} as ChainService);
+			await command!.handler("documented exception", ctx);
+			expect(checkpoint.read()).toMatchObject({ status: "saved", waiverReason: "documented exception" });
+			expect(notices[0]).toContain("documented exception");
+		} finally {
+			chainCheckpoints.current = previous;
+		}
 	});
 
 	it("does not checkpoint a sideways or backward HEAD move", async () => {

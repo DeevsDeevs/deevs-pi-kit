@@ -103,16 +103,17 @@ describe("bounded Jobs", () => {
 
 	it("preserves the configured output cap and cursor drops after restore", async () => {
 		const { manager, ctx } = setup();
-		const script = `let i=0;const timer=setInterval(()=>{console.log(String(i++).repeat(2_000));if(i===5)clearInterval(timer)},10);`;
+		const script = `let i=0;const timer=setInterval(()=>{console.log(String(i++ % 10).repeat(200));if(i===20)clearInterval(timer)},5);`;
 		const started = await manager.start({ name: "capped", argv: [process.execPath, "-e", script], maxBytes: 1_024 }, ctx);
 		await manager.wait([started.spec.id]);
 		const before = manager.read({ id: started.spec.id, maxBytes: 10_000 });
 		expect(before.job.spec.maxBufferBytes).toBe(1_024);
 		expect(before.job.runtime.bufferedBytes).toBeLessThanOrEqual(1_024);
 		expect(before.earliestSeq).toBeGreaterThan(1);
+		expect(before.chunks.length).toBeGreaterThan(0);
 		expect(statSync(started.spec.spoolPath).size).toBeLessThan(2_048);
-		const metadata = JSON.parse(readFileSync(started.spec.spoolPath, "utf8").split("\n")[0]!) as { nextSeq: number; droppedBytes: number };
-		expect(metadata.nextSeq).toBe(before.earliestSeq);
+		const metadata = readFileSync(started.spec.spoolPath, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as { type?: string; nextSeq?: number; droppedBytes?: number }).reverse().find((record) => record.type === "meta")! as { nextSeq: number; droppedBytes: number };
+		expect(metadata.nextSeq).toBe(before.chunks.at(-1)!.seq + 1);
 		expect(metadata.droppedBytes).toBeGreaterThan(0);
 
 		const restored = new JobManager({ appendEntry() {} } as unknown as ExtensionAPI);

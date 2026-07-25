@@ -4,6 +4,7 @@ node_modules/
 .chains/
 .missions/
 test/
+scripts/
 AGENTS.md
 tsconfig.json
 *.log

@@ -30,7 +30,7 @@ subagent_wait  status, wait, or cancellation with real settlement
 
 ## Guarantees
 
-- read-only unless `allowWrite: true` is explicit;
+- read-only unless `allowWrite: true` is explicit and the user confirms the run in the TUI;
 - requested tools may narrow but never broaden persona capability;
 - detached worker owns the private Pi child and durable artifacts;
 - parent reload restoration, stale-worker reconciliation, bounded JSONL/stderr, partial output, and process-group cancellation;

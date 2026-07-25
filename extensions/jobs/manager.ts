@@ -100,7 +100,7 @@ export class JobManager {
 			logPath: path.join(artifactsDir, "combined.log"),
 			spoolPath: path.join(artifactsDir, "chunks.jsonl"),
 		};
-		const runtime: JobRuntime = { version: 1, id, status: "starting", startedAt: Date.now(), ready: !input.readyPattern, bufferedBytes: 0, droppedBytes: 0, logBytes: 0, logTruncated: false, spoolBytes: 0, spoolTruncated: false };
+		const runtime: JobRuntime = { version: 1, id, status: "starting", startedAt: Date.now(), ready: !input.readyPattern, bufferedBytes: 0, droppedBytes: 0, logBytes: 0, logTruncated: false, spoolBytes: 0 };
 		const record = { spec, runtime };
 		writeJson(path.join(artifactsDir, "spec.json"), spec);
 		writeJson(spec.runtimePath, runtime);
@@ -224,7 +224,6 @@ export class JobManager {
 				spec.spoolPath ??= path.join(spec.artifactsDir, "chunks.jsonl");
 				spec.maxBufferBytes ??= 1_000_000;
 				runtime.spoolBytes ??= 0;
-				runtime.spoolTruncated ??= false;
 				if (this.active.has(spec.id)) continue;
 				const record = { spec, runtime };
 				if (!TERMINAL.has(runtime.status)) {
@@ -240,7 +239,7 @@ export class JobManager {
 					const records = readFileSync(spec.spoolPath, "utf8").split(/\r?\n/).filter(Boolean).flatMap((line) => {
 						try { return [JSON.parse(line) as Record<string, unknown>]; } catch { return []; }
 					});
-					const metadata = records.find((item) => item.type === "meta") as { nextSeq?: number; droppedBytes?: number } | undefined;
+					const metadata = [...records].reverse().find((item) => item.type === "meta") as { nextSeq?: number; droppedBytes?: number } | undefined;
 					const chunks = records.filter((item) => Number.isInteger(item.seq)) as unknown as JobChunk[];
 					buffer.restore(chunks, metadata);
 				}
@@ -287,11 +286,15 @@ export class JobManager {
 		runtime.lastOutputAt = chunk.at;
 		runtime.bufferedBytes = buffer.bufferedBytes;
 		runtime.droppedBytes = buffer.droppedBytes;
-		const spoolRecords = [{ type: "meta", nextSeq: buffer.nextSeq, droppedBytes: buffer.droppedBytes }, ...buffer.snapshot()];
-		const spool = spoolRecords.map((item) => JSON.stringify(item)).join("\n") + "\n";
-		writeTextAtomic(active.record.spec.spoolPath, spool);
-		runtime.spoolBytes = Buffer.byteLength(spool);
-		runtime.spoolTruncated = runtime.droppedBytes > 0;
+		const metadata = { type: "meta", nextSeq: buffer.nextSeq, droppedBytes: buffer.droppedBytes };
+		const addition = `${JSON.stringify(chunk)}\n${JSON.stringify(metadata)}\n`;
+		appendFileSync(active.record.spec.spoolPath, addition, { encoding: "utf8", mode: 0o600 });
+		runtime.spoolBytes += Buffer.byteLength(addition);
+		if (runtime.spoolBytes > active.record.spec.maxBufferBytes * 2) {
+			const compact = [...buffer.snapshot(), metadata].map((item) => JSON.stringify(item)).join("\n") + "\n";
+			writeTextAtomic(active.record.spec.spoolPath, compact);
+			runtime.spoolBytes = Buffer.byteLength(compact);
+		}
 		if (!runtime.logTruncated) {
 			const remaining = MAX_LOG_BYTES - runtime.logBytes;
 			if (remaining > 0) {

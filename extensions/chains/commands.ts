@@ -100,6 +100,21 @@ export function registerChainCommands(pi: ExtensionAPI, service: ChainService): 
 		},
 	});
 
+	pi.registerCommand("chain-waive", {
+		description: "Waive the current Chain checkpoint with an explicit reason",
+		handler: async (args, ctx) => {
+			const reason = args.trim();
+			if (!reason) return ctx.ui.notify("Usage: /chain-waive <reason>", "warning");
+			try {
+				if (!chainCheckpoints.current) throw new Error("Chain checkpoint service is unavailable.");
+				chainCheckpoints.current.waive(reason);
+				ctx.ui.notify(`Chain checkpoint waived: ${reason}`, "info");
+			} catch (error) {
+				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+			}
+		},
+	});
+
 	pi.registerCommand("chain-fork", {
 		description: "Create a forked branch from an existing chain link",
 		getArgumentCompletions: async (prefix) => completeChains(service, prefix),

@@ -59,7 +59,5 @@ Material mutation sets independent review due. Mission launches a fresh read-onl
 
 Pi custom session entries are authoritative. Human/search projections remain under `.missions/<slug>/`:
 
-- `mission.md`
-- `plan.md`
-- `audit.md`
-- `log.md`
+- `mission.md` — canonical status, requirements, latest progress, and completion audit
+- `log.md` — searchable generated progress history

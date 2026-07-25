@@ -55,13 +55,19 @@ const CompleteSchema = Type.Object({
 	userRequested: Type.Optional(Type.Boolean({ description: "User explicitly asked to end" })),
 });
 
-interface MissionToolHooks {
-	validateCompletion?: (input: MissionCompleteInput, ctx: ExtensionContext) => Promise<string[]> | string[];
+export interface MissionCompletionHooks {
+	validateCompletion?: (input: MissionCompleteInput, ctx: ExtensionContext, directUserRequest?: boolean) => Promise<string[]> | string[];
+	onCompleted?: (ctx: ExtensionContext) => void;
+}
+
+interface MissionToolHooks extends MissionCompletionHooks {
 	onCreated?: (ctx: ExtensionContext) => void;
 	onProgress?: (input: MissionProgressInput, ctx: ExtensionContext) => void;
 	onObjectiveUpdated?: (input: MissionUpdateInput, ctx: ExtensionContext) => void;
-	onCompleted?: (ctx: ExtensionContext) => void;
 }
+
+const USER_END_SUMMARY = "Mission ended at explicit user request. Use /mission resume to continue if needed.";
+const USER_END_AUDIT = [{ requirement: "User-requested mission end", evidence: "The user explicitly asked to end/complete the mission; this records closure without claiming all objective requirements are satisfied. Use /mission resume to continue if needed." }];
 
 export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setContext: (ctx: ExtensionContext) => void, hooks: MissionToolHooks = {}): void {
 	pi.registerTool({
@@ -189,27 +195,39 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 		renderResult: (result: { details?: unknown }, options: { expanded: boolean }, theme: Theme) => missionResult(result.details, options.expanded, theme, Array.isArray((result.details as { blockers?: unknown } | undefined)?.blockers)),
 		async execute(_toolCallId: string, params: MissionCompleteInput, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
 			setContext(ctx);
-			state.loadFromSession(ctx);
-			const userRequested = params.userRequested === true;
-			const existing = state.readAny();
-			if (existing?.status === "complete") return { content: [{ type: "text" as const, text: `Mission already complete: ${existing.title}` }], details: { mission: existing, usage: state.readUsage(), alreadyComplete: true } };
-			if (hooks.validateCompletion) {
-				const blockers = await hooks.validateCompletion(params, ctx);
-				if (blockers.length) return { content: [{ type: "text" as const, text: `Mission completion blocked:\n${blockers.map((blocker) => `- ${blocker}`).join("\n")}` }], details: { mission: state.readAny(), usage: state.readUsage(), blockers } };
-			}
-			const summary = params.summary ?? (userRequested ? "Mission ended at explicit user request. Use /mission resume to continue if needed." : undefined);
-			const audit = params.audit?.length ? params.audit : userRequested ? [{ requirement: "User-requested mission end", evidence: "The user explicitly asked to end/complete the mission; this records closure without claiming all objective requirements are satisfied. Use /mission resume to continue if needed." }] : undefined;
-			const event = state.statusEvent("complete", userRequested ? "mission_complete called by explicit user request" : "mission_complete called", summary);
-			const mission = state.append(pi, event)!;
-			const usage = state.readUsage();
-			await writeCompletionAudit(mission, summary, audit, usage);
-			await updateMissionSummaryArtifact(mission, usage);
-			hooks.onCompleted?.(ctx);
-			const verb = userRequested ? "ended" : "complete";
-			const resumeHint = userRequested ? "\nResume: /mission resume" : "";
-			return { content: [{ type: "text" as const, text: `Mission ${verb}: ${mission.title}\nUsage: ${usage.totalTokens} tokens, $${usage.totalCostUsd.toFixed(4)}\n${formatMissionLocation(mission)}${resumeHint}` }], details: { mission, usage, audit, userRequested } };
+			const result = await completeMission(pi, state, ctx, params, params.userRequested ? "mission_complete called by explicit user request" : "mission_complete called", hooks);
+			if (result.alreadyComplete) return { content: [{ type: "text" as const, text: `Mission already complete: ${result.mission!.title}` }], details: result };
+			if (result.blockers?.length) return { content: [{ type: "text" as const, text: `Mission completion blocked:\n${result.blockers.map((blocker) => `- ${blocker}`).join("\n")}` }], details: result };
+			const verb = result.userRequested ? "ended" : "complete";
+			const resumeHint = result.userRequested ? "\nResume: /mission resume" : "";
+			return { content: [{ type: "text" as const, text: `Mission ${verb}: ${result.mission!.title}\nUsage: ${result.usage.totalTokens} tokens, $${result.usage.totalCostUsd.toFixed(4)}\n${formatMissionLocation(result.mission!)}${resumeHint}` }], details: result };
 		},
 	});
+}
+
+export async function completeMission(
+	pi: ExtensionAPI,
+	state: MissionState,
+	ctx: ExtensionContext,
+	input: MissionCompleteInput,
+	reason: string,
+	hooks: MissionCompletionHooks = {},
+	directUserRequest = false,
+) {
+	state.loadFromSession(ctx);
+	const existing = state.readAny();
+	const usage = state.readUsage();
+	if (existing?.status === "complete") return { mission: existing, usage, alreadyComplete: true, userRequested: input.userRequested === true };
+	const blockers = hooks.validateCompletion ? await hooks.validateCompletion(input, ctx, directUserRequest) : [];
+	if (blockers.length) return { mission: existing, usage, blockers, userRequested: input.userRequested === true };
+	const userRequested = input.userRequested === true;
+	const summary = input.summary ?? (userRequested ? USER_END_SUMMARY : undefined);
+	const audit = input.audit?.length ? input.audit : userRequested ? USER_END_AUDIT : undefined;
+	const mission = state.append(pi, state.statusEvent("complete", reason, summary))!;
+	const completedUsage = state.readUsage();
+	await writeCompletionAudit(mission, summary, audit, completedUsage, state.readProgress());
+	hooks.onCompleted?.(ctx);
+	return { mission, usage: completedUsage, audit, userRequested };
 }
 
 function missionCall(action: string, target: string, theme: Theme): Text {

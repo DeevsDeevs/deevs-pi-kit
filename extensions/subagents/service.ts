@@ -45,8 +45,6 @@ export interface SubagentStartRequest {
 	tasks?: SubagentTaskInput[];
 	concurrency?: number;
 	failFast?: boolean;
-	/** Internal authorization set only by the public extension after inspecting the latest user message. */
-	writeAuthorized?: boolean;
 	/** Internal: foreground workflow children return through their owning tool call instead of a second wake. */
 	deliverTerminal?: boolean;
 }
@@ -103,13 +101,13 @@ export class SubagentService {
 
 	async start(request: SubagentStartRequest, ctx: ExtensionContext): Promise<DelegateRun | SubagentGroup> {
 		this.ctx = ctx;
-		if ((request.allowWrite || request.tasks?.some((task) => task.allowWrite)) && request.writeAuthorized !== true) throw new Error("Delegated writes require explicit user authorization at the Subagent service boundary.");
+		const previous = request.resume ? this.executor.get(request.resume) : undefined;
+		const writeRequested = request.allowWrite === true || request.tasks?.some((task) => task.allowWrite) === true || previous?.spec.allowWrite === true;
+		if (writeRequested && !await authorizeDelegatedWrite(ctx, request)) throw new Error("Delegated writes were not authorized by the user.");
 		if (request.tasks?.length) return this.startGroup(request.tasks, request, ctx);
 		if (request.resume) {
 			if (!request.task?.trim()) throw new Error("A resume task is required.");
-			const previous = this.executor.get(request.resume);
-			if (previous.spec.allowWrite && request.writeAuthorized !== true) throw new Error("Resuming a write-capable Subagent requires fresh explicit user authorization.");
-			const settings = await loadAgentsSettings(previous.spec.cwd);
+			const settings = await loadAgentsSettings(previous!.spec.cwd);
 			this.reserveCapacity(settings.parallelMaxConcurrency);
 			try {
 				const run = await this.executor.resume({
@@ -225,7 +223,7 @@ export class SubagentService {
 		const cwd = path.resolve(task.cwd ?? ctx.cwd);
 		const settings = await loadAgentsSettings(cwd);
 		const model = task.model ?? settings.modelsByAgent[persona.name] ?? persona.model ?? settings.defaultModel;
-		if (model && !settings.allowedModels.includes(model)) throw new Error(`Model override not allowed: ${model}`);
+		if (model && settings.allowedModels.length && !settings.allowedModels.includes(model)) throw new Error(`Model override not allowed: ${model}`);
 		this.reserveCapacity(settings.parallelMaxConcurrency);
 		try {
 			const run = await this.executor.start({
@@ -335,7 +333,7 @@ export class SubagentService {
 	private async onRunChange(run: DelegateRun): Promise<void> {
 		if (!isTerminal(run.runtime.status)) return;
 		this.emitTerminal(run);
-		for (const group of this.groups.values()) {
+		for (const group of [...this.groups.values()]) {
 			const owned = group.active.includes(run.spec.id);
 			if (owned) {
 				group.active = group.active.filter((id) => id !== run.spec.id);
@@ -526,6 +524,12 @@ export class SubagentService {
 	private root(cwd: string): string {
 		return this.artifactsRoot ?? defaultDelegateRoot(cwd);
 	}
+}
+
+async function authorizeDelegatedWrite(ctx: ExtensionContext, request: SubagentStartRequest): Promise<boolean> {
+	if (ctx.mode !== "tui") return false;
+	const target = request.tasks?.length ? `${request.tasks.length} Subagents` : request.resume ? `resumed Subagent ${request.resume}` : `${request.agent ?? "Subagent"} persona`;
+	return ctx.ui.confirm("Authorize delegated writes?", `${target} will receive edit/write tools and shell access for this run.`);
 }
 
 function isTerminal(status: DelegateRunStatus): boolean {

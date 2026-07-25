@@ -49,7 +49,6 @@ export interface JobRuntime {
 	logBytes: number;
 	logTruncated: boolean;
 	spoolBytes: number;
-	spoolTruncated: boolean;
 	error?: string;
 }
 

@@ -4,6 +4,7 @@ import { showTextViewer, TextViewer } from "../extensions/shared/text-viewer.ts"
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { renderTodoWidgetLines } from "../extensions/todos/ui.ts";
 import { visibleWidth } from "@earendil-works/pi-tui";
+import { wikiResult } from "../extensions/wiki/tools.ts";
 
 const theme = {
 	fg: (_color: string, text: string) => text,
@@ -57,6 +58,12 @@ describe("shared compact UI", () => {
 		} finally {
 			write.mockRestore();
 		}
+	});
+
+	it("renders expanded wiki context from its pages field", () => {
+		const rendered = wikiResult({ path: "wiki", pages: [{ id: "one" }], context: "packed context" }, true, theme).render(80).join("\n");
+		expect(rendered).toContain("context from 1 page(s)");
+		expect(rendered).toContain("packed context");
 	});
 
 	it("keeps the Todo widget to summary, active item, and first blocker", () => {
