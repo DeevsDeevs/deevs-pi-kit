@@ -1,11 +1,6 @@
 export type WikiSearchMode = "lookup" | "text" | "regex";
 export type WikiIssueSeverity = "error" | "warning" | "notice";
 
-export interface WikiPathInput {
-	path: string;
-	maxBytes?: number;
-}
-
 export interface WikiInitInput {
 	path: string;
 	domain: string;

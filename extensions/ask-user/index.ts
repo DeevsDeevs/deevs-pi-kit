@@ -1,6 +1,6 @@
 import { DynamicBorder, type AgentToolResult, type ExtensionAPI, type ExtensionContext, type Theme, type ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { Type } from "@earendil-works/pi-ai";
-import { Container, Editor, Key, matchesKey, Spacer, Text, truncateToWidth, wrapTextWithAnsi, type Component, type SelectItem, type TUI } from "@earendil-works/pi-tui";
+import { Container, Editor, Key, matchesKey, SelectList, Spacer, Text, truncateToWidth, type Component, type Focusable, type SelectItem, type TUI } from "@earendil-works/pi-tui";
 
 type AskOptionInput = string | { title: string; description?: string };
 
@@ -14,6 +14,7 @@ type AskQuestionInput = {
 type AskUserInput = {
 	context?: string;
 	questions: AskQuestionInput[];
+	timeoutMs?: number;
 };
 
 type AnswerKind = "selection" | "freeform" | "cancelled";
@@ -33,14 +34,13 @@ type AskUserDetails = {
 	error?: string;
 };
 
-type OverlayResult = { kind: "selection" | "freeform"; answer: string } | null;
 type AskMode = "select" | "freeform";
 type DraftAnswer = { kind: "selection" | "freeform"; answer: string };
 type MultiQuestionState = {
 	mode: AskMode;
 	answer?: DraftAnswer;
 	freeformDraft: string;
-	list?: AskOptionList;
+	list?: SelectList;
 	editor?: Editor;
 };
 
@@ -70,6 +70,7 @@ const AskUserSchema = Type.Object({
 		minItems: 1,
 		maxItems: MAX_QUESTIONS,
 	}),
+	timeoutMs: Type.Optional(Type.Number({ minimum: 1_000, maximum: 30 * 60_000, description: "Optional dialog timeout" })),
 });
 
 function normalizeOption(option: AskOptionInput): SelectItem {
@@ -116,236 +117,8 @@ function createEditorTheme(theme: Theme) {
 	};
 }
 
-function isPrintable(data: string): boolean {
-	return data.length === 1 && data >= " " && data !== "\x7f";
-}
-
-function optionSearchText(item: SelectItem): string {
-	return `${item.label} ${item.description ?? ""}`.toLowerCase();
-}
-
-function filterItems(items: SelectItem[], filter: string): SelectItem[] {
-	const query = filter.trim().toLowerCase();
-	if (!query) return items;
-	const terms = query.split(/\s+/).filter(Boolean);
-	return items.filter((item) => terms.every((term) => optionSearchText(item).includes(term)));
-}
-
-function wrapPlain(text: string, width: number): string[] {
-	const normalized = text.replace(/\s+/g, " ").trim();
-	if (!normalized) return [""];
-	return wrapTextWithAnsi(normalized, Math.max(1, width));
-}
-
-class AskOptionList implements Component {
-	private allItems: SelectItem[];
-	private filteredItems: SelectItem[];
-	private theme: Theme;
-	private selectedIndex = 0;
-	private filter = "";
-
-	onSelect?: (item: SelectItem) => void;
-	onCancel?: () => void;
-
-	constructor(items: SelectItem[], theme: Theme) {
-		this.allItems = items;
-		this.filteredItems = items;
-		this.theme = theme;
-	}
-
-	invalidate(): void { }
-
-	getFilter(): string {
-		return this.filter;
-	}
-
-	private updateFilter(nextFilter: string): void {
-		this.filter = nextFilter;
-		this.filteredItems = filterItems(this.allItems, this.filter);
-		this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredItems.length - 1));
-	}
-
-	handleInput(data: string): void {
-		if (matchesKey(data, Key.up)) {
-			this.selectedIndex = Math.max(0, this.selectedIndex - 1);
-			return;
-		}
-		if (matchesKey(data, Key.down)) {
-			this.selectedIndex = Math.min(Math.max(0, this.filteredItems.length - 1), this.selectedIndex + 1);
-			return;
-		}
-		if (matchesKey(data, Key.home)) {
-			this.selectedIndex = 0;
-			return;
-		}
-		if (matchesKey(data, Key.end)) {
-			this.selectedIndex = Math.max(0, this.filteredItems.length - 1);
-			return;
-		}
-		if (matchesKey(data, Key.enter)) {
-			const item = this.filteredItems[this.selectedIndex];
-			if (item) this.onSelect?.(item);
-			return;
-		}
-		if (matchesKey(data, Key.escape)) {
-			if (this.filter) this.updateFilter("");
-			else this.onCancel?.();
-			return;
-		}
-		if (matchesKey(data, Key.backspace)) {
-			this.updateFilter(this.filter.slice(0, -1));
-			return;
-		}
-		if (isPrintable(data)) this.updateFilter(this.filter + data);
-	}
-
-	render(width: number): string[] {
-		const lines: string[] = [];
-		const titleWidth = Math.max(8, width - 6);
-		const descriptionWidth = Math.max(8, width - 8);
-
-		if (this.filter) lines.push(this.theme.fg("dim", `filter: ${this.filter}`));
-		if (this.filteredItems.length === 0) {
-			lines.push(this.theme.fg("warning", "No matching options. Backspace to edit, esc to clear."));
-			return lines.map((line) => truncateToWidth(line, width));
-		}
-
-		const windowStart = Math.max(0, Math.min(this.selectedIndex - Math.floor(MAX_VISIBLE_OPTIONS / 2), this.filteredItems.length - MAX_VISIBLE_OPTIONS));
-		const visible = this.filteredItems.slice(windowStart, windowStart + MAX_VISIBLE_OPTIONS);
-		for (let offset = 0; offset < visible.length; offset += 1) {
-			const item = visible[offset]!;
-			const absoluteIndex = windowStart + offset;
-			const selected = absoluteIndex === this.selectedIndex;
-			const pointer = selected ? this.theme.fg("accent", "→") : " ";
-			const titleStyle = selected ? (text: string) => this.theme.fg("accent", text) : (text: string) => this.theme.fg("text", text);
-			const prefix = `${pointer} `;
-			const titleLines = wrapPlain(item.label, titleWidth);
-			for (let i = 0; i < titleLines.length; i += 1) {
-				const linePrefix = i === 0 ? prefix : "  ";
-				lines.push(truncateToWidth(`${linePrefix}${titleStyle(titleLines[i]!)}`, width));
-			}
-			if (item.description) {
-				for (const descLine of wrapPlain(item.description, descriptionWidth).slice(0, 3)) {
-					lines.push(truncateToWidth(`    ${this.theme.fg("muted", descLine)}`, width));
-				}
-			}
-		}
-		if (this.filteredItems.length > visible.length) lines.push(this.theme.fg("dim", `(${this.selectedIndex + 1}/${this.filteredItems.length})`));
-		return lines.map((line) => truncateToWidth(line, width));
-	}
-}
-
-class AskOverlay implements Component {
-	private mode: AskMode;
-	private title: string;
-	private progress: string;
-	private context: string | undefined;
-	private items: SelectItem[];
-	private theme: Theme;
-	private tui: TUI;
-	private done: (result: OverlayResult) => void;
-	private list?: AskOptionList;
-	private editor?: Editor;
-	private freeformDraft = "";
-
-	constructor(title: string, progress: string, context: string | undefined, items: SelectItem[], initialMode: AskMode, tui: TUI, theme: Theme, done: (result: OverlayResult) => void) {
-		this.title = title;
-		this.progress = progress;
-		this.context = context;
-		this.items = items;
-		this.mode = initialMode;
-		this.tui = tui;
-		this.theme = theme;
-		this.done = done;
-	}
-
-	invalidate(): void {
-		this.list?.invalidate();
-		this.editor?.invalidate();
-	}
-
-	private ensureList(): AskOptionList {
-		if (this.list) return this.list;
-		const list = new AskOptionList(this.items, this.theme);
-		list.onCancel = () => this.done(null);
-		list.onSelect = (item) => {
-			if (item.value === FREEFORM_VALUE) this.showFreeform();
-			else this.done({ kind: "selection", answer: item.value });
-		};
-		this.list = list;
-		return list;
-	}
-
-	private ensureEditor(): Editor {
-		if (this.editor) return this.editor;
-		const editor = new Editor(this.tui, createEditorTheme(this.theme));
-		editor.disableSubmit = false;
-		editor.onSubmit = (text: string) => {
-			const trimmed = text.trim();
-			if (trimmed) this.done({ kind: "freeform", answer: trimmed });
-		};
-		this.editor = editor;
-		return editor;
-	}
-
-	private showFreeform(): void {
-		this.mode = "freeform";
-		const editor = this.ensureEditor();
-		editor.setText(this.freeformDraft);
-		this.invalidate();
-		this.tui.requestRender();
-	}
-
-	private showSelect(): void {
-		if (this.editor) this.freeformDraft = this.editor.getText();
-		this.mode = "select";
-		this.invalidate();
-		this.tui.requestRender();
-	}
-
-	handleInput(data: string): void {
-		if (this.mode === "freeform") {
-			if (matchesKey(data, Key.escape)) {
-				if (askFreeformEscapeAction(this.items.length > 0) === "select") this.showSelect();
-				else this.done(null);
-				return;
-			}
-			this.ensureEditor().handleInput(data);
-			this.tui.requestRender();
-			return;
-		}
-		this.ensureList().handleInput(data);
-		this.tui.requestRender();
-	}
-
-	render(width: number): string[] {
-		const container = new Container();
-		container.addChild(new DynamicBorder((text: string) => this.theme.fg("accent", text)));
-		container.addChild(new Text(this.theme.fg("accent", this.theme.bold("Ask User")) + this.theme.fg("dim", `  ${this.progress}`), 1, 0));
-		container.addChild(new Text(this.theme.fg("text", this.theme.bold(this.title)), 1, 1));
-
-		if (this.context) {
-			container.addChild(new Spacer(1));
-			container.addChild(new Text(formatContext(this.context, this.theme), 1, 0));
-		}
-
-		container.addChild(new Spacer(1));
-		if (this.mode === "freeform") {
-			container.addChild(new Text(this.theme.fg("accent", this.theme.bold("Custom response")), 1, 0));
-			container.addChild(this.ensureEditor());
-			container.addChild(new Text(this.theme.fg("dim", this.items.length > 0 ? "enter submit • esc options" : "enter submit • esc cancel"), 1, 0));
-		} else {
-			const list = this.ensureList();
-			container.addChild(list);
-			const filterHint = list.getFilter() ? "esc clear filter/cancel" : "type filter • esc cancel";
-			container.addChild(new Text(this.theme.fg("dim", `↑↓ navigate • ${filterHint} • enter select`), 1, 0));
-		}
-		container.addChild(new DynamicBorder((text: string) => this.theme.fg("accent", text)));
-		return container.render(width).map((line) => truncateToWidth(line, width));
-	}
-}
-
-class MultiAskOverlay implements Component {
+class MultiAskOverlay implements Component, Focusable {
+	focused = false;
 	private questions: AskQuestionInput[];
 	private context: string | undefined;
 	private states: MultiQuestionState[];
@@ -425,9 +198,9 @@ class MultiAskOverlay implements Component {
 		this.goTo(next === -1 ? this.currentIndex : next);
 	}
 
-	private ensureList(state: MultiQuestionState): AskOptionList {
+	private ensureList(state: MultiQuestionState): SelectList {
 		if (state.list) return state.list;
-		const list = new AskOptionList(this.currentItems(), this.theme);
+		const list = new SelectList(this.currentItems(), MAX_VISIBLE_OPTIONS, createSelectTheme(this.theme));
 		list.onCancel = () => this.done(null);
 		list.onSelect = (item) => {
 			if (item.value === FREEFORM_VALUE) this.showFreeform();
@@ -491,6 +264,7 @@ class MultiAskOverlay implements Component {
 	render(width: number): string[] {
 		const question = this.currentQuestion();
 		const state = this.currentState();
+		if (state.editor) state.editor.focused = this.focused && state.mode === "freeform";
 		const container = new Container();
 		container.addChild(new DynamicBorder((text: string) => this.theme.fg("accent", text)));
 		container.addChild(new Text(this.theme.fg("accent", this.theme.bold("Ask User")) + this.theme.fg("dim", `  question ${this.currentIndex + 1}/${this.questions.length} · ${this.answeredCount()}/${this.questions.length} answered`), 1, 0));
@@ -509,10 +283,8 @@ class MultiAskOverlay implements Component {
 			container.addChild(this.ensureEditor(state));
 			container.addChild(new Text(this.theme.fg("dim", this.currentItems().length > 0 ? "enter answer • esc options" : "enter answer • esc cancel"), 1, 0));
 		} else {
-			const list = this.ensureList(state);
-			container.addChild(list);
-			const filterHint = list.getFilter() ? "esc clear filter/cancel" : "type filter • esc cancel";
-			container.addChild(new Text(this.theme.fg("dim", `←/→ questions • ↑↓ options • ${filterHint} • enter answer`), 1, 0));
+			container.addChild(this.ensureList(state));
+			container.addChild(new Text(this.theme.fg("dim", "←/→ questions • ↑↓ options • esc cancel • enter answer"), 1, 0));
 		}
 		container.addChild(new DynamicBorder((text: string) => this.theme.fg("accent", text)));
 		return container.render(width).map((line) => truncateToWidth(line, width));
@@ -528,9 +300,19 @@ class MultiAskOverlay implements Component {
 	}
 }
 
-async function askMultiOverlay(ctx: ExtensionContext, questions: AskQuestionInput[], context: string | undefined): Promise<AskAnswer[] | null> {
-	return ctx.ui.custom<AskAnswer[] | null>(
-		(tui, theme, _keybindings, done) => new MultiAskOverlay(questions, context, tui, theme, done),
+async function askMultiOverlay(ctx: ExtensionContext, questions: AskQuestionInput[], context: string | undefined, signal?: AbortSignal, timeoutMs?: number): Promise<AskAnswer[] | null> {
+	let close: (() => void) | undefined;
+	let cancelled = signal?.aborted ?? false;
+	const abort = (): void => { cancelled = true; close?.(); };
+	const timer = timeoutMs ? setTimeout(abort, timeoutMs) : undefined;
+	signal?.addEventListener("abort", abort, { once: true });
+	try {
+		return await ctx.ui.custom<AskAnswer[] | null>(
+		(tui, theme, _keybindings, done) => {
+			close = () => done(null);
+			if (cancelled) queueMicrotask(close);
+			return new MultiAskOverlay(questions, context, tui, theme, done);
+		},
 		{
 			overlay: true,
 			overlayOptions: {
@@ -541,32 +323,38 @@ async function askMultiOverlay(ctx: ExtensionContext, questions: AskQuestionInpu
 				margin: 1,
 			},
 		},
-	);
+		);
+	} finally {
+		if (timer) clearTimeout(timer);
+		signal?.removeEventListener("abort", abort);
+	}
 }
 
-async function askOverlay(ctx: ExtensionContext, title: string, progress: string, context: string | undefined, items: SelectItem[], initialMode: AskMode): Promise<OverlayResult> {
-	return ctx.ui.custom<OverlayResult>(
-		(tui, theme, _keybindings, done) => new AskOverlay(title, progress, context, items, initialMode, tui, theme, done),
-		{
-			overlay: true,
-			overlayOptions: {
-				anchor: "center",
-				width: "92%",
-				minWidth: 48,
-				maxHeight: "85%",
-				margin: 1,
-			},
-		},
-	);
-}
-
-async function askOne(ctx: ExtensionContext, question: AskQuestionInput, index: number, total: number, context: string | undefined): Promise<AskAnswer> {
-	const items = itemsForQuestion(question);
-	const initialMode = initialModeForQuestion(question);
-	const progress = total === 1 ? "" : `question ${index + 1}/${total}`;
-	const result = await askOverlay(ctx, question.question, progress, context, items, initialMode);
-	if (!result) return { id: question.id, question: question.question, answer: null, kind: "cancelled", cancelled: true };
-	return { id: question.id, question: question.question, answer: result.answer, kind: result.kind, cancelled: false };
+async function askNativeDialogs(ctx: ExtensionContext, questions: AskQuestionInput[], signal?: AbortSignal, timeoutMs?: number): Promise<AskAnswer[]> {
+	const answers: AskAnswer[] = [];
+	for (const question of questions) {
+		if (signal?.aborted) break;
+		const options = (question.options ?? []).map(normalizeOption);
+		let answer: string | undefined;
+		let kind: AnswerKind = "selection";
+		if (options.length) {
+			const labels = options.map((option) => option.description ? `${option.label} — ${option.description}` : option.label);
+			if (question.allowFreeform !== false) labels.push("Type custom response…");
+			const selected = await ctx.ui.select(question.question, labels, { timeout: timeoutMs, signal });
+			if (selected === "Type custom response…") {
+				kind = "freeform";
+				answer = await ctx.ui.input(question.question, "Type your answer", { timeout: timeoutMs, signal });
+			} else if (selected) {
+				answer = options[labels.indexOf(selected)]?.value ?? selected;
+			}
+		} else if (question.allowFreeform !== false) {
+			kind = "freeform";
+			answer = await ctx.ui.input(question.question, "Type your answer", { timeout: timeoutMs, signal });
+		}
+		answers.push({ id: question.id, question: question.question, answer: answer ?? null, kind: answer === undefined ? "cancelled" : kind, cancelled: answer === undefined });
+		if (answer === undefined) break;
+	}
+	return answers;
 }
 
 function formatContext(context: string, theme: Theme): string {
@@ -623,12 +411,11 @@ export default function askUserExtension(pi: ExtensionAPI): void {
 			onUpdate?.({ content: [{ type: "text" as const, text: "Waiting for user clarification..." }], details: { context, answers: [], cancelled: false } });
 
 			const answers: AskAnswer[] = [];
-			if (questions.length > 1) {
-				const batchAnswers = await askMultiOverlay(ctx, questions, context);
-				if (batchAnswers) answers.push(...batchAnswers);
+			if (ctx.mode !== "tui") {
+				answers.push(...await askNativeDialogs(ctx, questions, signal, params.timeoutMs));
 			} else {
-				const answer = await askOne(ctx, questions[0]!, 0, 1, context);
-				answers.push(answer);
+				const batchAnswers = await askMultiOverlay(ctx, questions, context, signal, params.timeoutMs);
+				if (batchAnswers) answers.push(...batchAnswers);
 			}
 
 			const cancelled = answers.length === 0 || answers.some((answer) => answer.cancelled) || answers.length < questions.length;

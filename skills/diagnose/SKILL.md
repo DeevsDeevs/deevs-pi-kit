@@ -57,9 +57,9 @@ Other useful loops:
 - small throwaway harness when no existing seam reaches the bug
 - benchmark/profiler loop for performance regressions
 
-For long-running servers, watchers, workers, or flaky repro loops, use Pi's `proc_start` and inspect with `proc_read`; never use `&`, `nohup`, `disown`, or `setsid`.
+Use bounded `job_start`/`job_read` for finite repro loops. Use Herdr for persistent servers, watchers, or workers; never use `&`, `nohup`, `disown`, or `setsid`.
 
-Use subagents only when independent investigation helps. Scope them tightly with `cwd`, exact files/dirs, and explicit exclusions. Use `agent_read` for normal output and reserve `agent_logs` for debugging stuck/failed/confusing runs or deliberate artifact inspection.
+Use Subagents only when independent investigation helps. Scope them tightly with `cwd`, exact files/dirs, and explicit exclusions. Use `subagent_wait` for settlement/output and `/agents <run-id>` for artifact details.
 
 For long diagnoses, save durable handoff context with `chain_save`: symptom, repro command, hypotheses tested, files touched, process/subagent ids, and next step.
 

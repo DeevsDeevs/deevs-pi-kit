@@ -39,8 +39,8 @@ Source-of-truth order: source code, tests, config, and CI beat project docs; pro
 
 - Use `read` for relevant source/docs/project instructions.
 - Use `bash` for bounded `rg`, `find`, package metadata, and test discovery.
-- Use `agent_start` only when the area spans enough files that a bounded read-only map would help; give explicit `cwd`, paths, exclusions, and output shape.
-- Use `agent_read` for normal subagent output; use `agent_logs` only to debug stuck/failed/confusing subagent behavior.
+- Use `subagent` only when the area spans enough files that a bounded read-only map would help; give explicit `cwd`, paths, exclusions, and output shape.
+- Use `subagent_wait` for settlement and output; use `/agents <run-id>` for artifact details.
 - Use a small Mermaid diagram only when it materially reduces prose.
 - Use `chain_save` only when the orientation map is likely useful future context.
 

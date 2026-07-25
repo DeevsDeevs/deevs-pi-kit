@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import * as path from "node:path";
-import type { AgentDefinition, AgentMode } from "./types.ts";
+import type { AgentDefinition, AgentMode } from "./catalog-types.ts";
 
 const MODULE_DIR = decodeURIComponent(new URL(".", import.meta.url).pathname);
 const AGENTS_DIR = path.join(MODULE_DIR, "agents");
@@ -39,7 +39,6 @@ function parseAgentFile(filePath: string): AgentDefinition {
 		tags,
 		disabled,
 		body: body.trim(),
-		filePath,
 	};
 }
 

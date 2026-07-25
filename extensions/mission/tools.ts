@@ -1,10 +1,11 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
+import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { initializeMissionArtifacts, missionRoot, updateMissionSummaryArtifact, writeCompletionAudit, writeMissionProgressArtifacts } from "./artifacts.ts";
 import type { MissionState } from "./state.ts";
-import type { MissionCompleteInput, MissionCreateInput, MissionProgressInput, MissionSearchInput } from "./types.ts";
+import type { MissionCompleteInput, MissionCreateInput, MissionProgressInput, MissionSearchInput, MissionUpdateInput } from "./types.ts";
 
 const CreateSchema = Type.Object({
 	objective: Type.String({ description: "Mission objective/user request" }),
@@ -12,6 +13,8 @@ const CreateSchema = Type.Object({
 	requirements: Type.Optional(Type.Array(Type.String(), { description: "Success criteria" })),
 	tokenBudget: Type.Optional(Type.Number({ description: "Token budget" })),
 	costBudgetUsd: Type.Optional(Type.Number({ description: "USD budget" })),
+	turnBudget: Type.Optional(Type.Number({ description: "Provider-turn budget" })),
+	wallDeadlineMs: Type.Optional(Type.Number({ description: "Wall deadline from creation in milliseconds" })),
 	chain: Type.Optional(Type.String({ description: "Chain name" })),
 	chainBranch: Type.Optional(Type.String({ description: "Chain branch; default main" })),
 });
@@ -24,6 +27,16 @@ const ProgressSchema = Type.Object({
 	remaining: Type.Optional(Type.Array(Type.String(), { description: "Remaining work/blockers" })),
 	validation: Type.Optional(Type.Array(Type.String(), { description: "Checks run/results" })),
 	checkpoint: Type.Optional(Type.Boolean({ description: "Meaningful checkpoint" })),
+	reviewSkipReason: Type.Optional(Type.String({ description: "Explicit reason to skip otherwise-required independent review" })),
+	reviewVerdict: Type.Optional(Type.Union([Type.Literal("clear"), Type.Literal("changes_requested")], { description: "Parent adjudication of the completed independent review" })),
+	reviewRunId: Type.Optional(Type.String({ description: "Exact independent reviewer run being adjudicated" })),
+	reviewReason: Type.Optional(Type.String({ description: "Evidence-based adjudication reason" })),
+});
+
+const UpdateSchema = Type.Object({
+	objective: Type.Optional(Type.String({ description: "Revised Mission objective" })),
+	requirements: Type.Optional(Type.Array(Type.String(), { description: "Replacement success criteria" })),
+	reason: Type.String({ description: "Why the Mission specification changed" }),
 });
 
 const SearchSchema = Type.Object({
@@ -42,13 +55,23 @@ const CompleteSchema = Type.Object({
 	userRequested: Type.Optional(Type.Boolean({ description: "User explicitly asked to end" })),
 });
 
-export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setContext: (ctx: ExtensionContext) => void): void {
-	(pi as any).registerTool({
+interface MissionToolHooks {
+	validateCompletion?: (input: MissionCompleteInput, ctx: ExtensionContext) => Promise<string[]> | string[];
+	onCreated?: (ctx: ExtensionContext) => void;
+	onProgress?: (input: MissionProgressInput, ctx: ExtensionContext) => void;
+	onObjectiveUpdated?: (input: MissionUpdateInput, ctx: ExtensionContext) => void;
+	onCompleted?: (ctx: ExtensionContext) => void;
+}
+
+export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setContext: (ctx: ExtensionContext) => void, hooks: MissionToolHooks = {}): void {
+	pi.registerTool({
 		name: "mission_get",
 		label: "Get Mission",
 		description: "Get active Mission state, usage, chain, and artifacts.",
 		promptSnippet: "Read active Mission.",
-		parameters: GetSchema as any,
+		parameters: GetSchema,
+		renderCall: (_args: unknown, theme: Theme) => missionCall("get", "", theme),
+		renderResult: (result: { details?: unknown }, options: { expanded: boolean }, theme: Theme) => missionResult(result.details, options.expanded, theme),
 		async execute(_toolCallId: string, _params: unknown, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
 			setContext(ctx);
 			state.loadFromSession(ctx);
@@ -58,7 +81,7 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 		},
 	});
 
-	(pi as any).registerTool({
+	pi.registerTool({
 		name: "mission_create",
 		label: "Create Mission",
 		description: "Create a persistent branch-scoped Mission when explicitly requested.",
@@ -68,18 +91,21 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 			"Use a short title and requirements for long objectives; ask only if scope is ambiguous.",
 			"Set budgets only when requested; chain defaults to a short title-derived name.",
 		],
-		parameters: CreateSchema as any,
+		parameters: CreateSchema,
+		renderCall: (args: MissionCreateInput, theme: Theme) => missionCall("create", args.title ?? args.objective, theme),
+		renderResult: (result: { details?: unknown }, options: { expanded: boolean }, theme: Theme) => missionResult(result.details, options.expanded, theme),
 		async execute(_toolCallId: string, params: MissionCreateInput, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
 			setContext(ctx);
 			state.loadFromSession(ctx);
 			const event = await state.create(params, ctx);
 			const mission = state.append(pi, event)!;
-			await initializeMissionArtifacts(ctx.cwd, mission, state.readUsage());
+			await initializeMissionArtifacts(mission, state.readUsage());
+			hooks.onCreated?.(ctx);
 			return { content: [{ type: "text" as const, text: `Mission created: ${mission.title}\n${formatMissionLocation(mission)}` }], details: { mission, usage: state.readUsage() } };
 		},
 	});
 
-	(pi as any).registerTool({
+	pi.registerTool({
 		name: "mission_progress",
 		label: "Mission Progress",
 		description: "Record compact progress/evidence/remaining work in searchable Mission logs.",
@@ -89,19 +115,48 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 			"Not for every tiny result; prefer over manual artifact edits.",
 			"checkpoint=true only for milestones, handoffs, cleanup, or final validation.",
 		],
-		parameters: ProgressSchema as any,
+		parameters: ProgressSchema,
+		renderCall: (args: MissionProgressInput, theme: Theme) => missionCall("progress", args.summary, theme),
+		renderResult: (result: { details?: unknown }, options: { expanded: boolean }, theme: Theme) => missionResult(result.details, options.expanded, theme),
 		async execute(_toolCallId: string, params: MissionProgressInput, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
 			setContext(ctx);
 			state.loadFromSession(ctx);
+			const currentMission = state.read();
+			if (params.reviewSkipReason?.trim() && currentMission?.reviewStatus === "running") throw new Error("Cannot skip review while the reviewer is still running; cancel and settle it first.");
+			if (params.reviewVerdict) {
+				const current = currentMission;
+				if (!current || current.reviewStatus !== "awaiting_adjudication" || !params.reviewRunId || params.reviewRunId !== current.reviewRunId) throw new Error("Review adjudication requires the exact awaiting reviewer run id.");
+				if (!params.reviewReason?.trim()) throw new Error("Review adjudication requires an evidence-based reason.");
+			}
 			const event = state.progressEvent(params);
-			const mission = state.append(pi, event)!;
+			let mission = state.append(pi, event)!;
+			if (params.reviewSkipReason?.trim()) mission = state.append(pi, state.reviewEvent("skipped", { skippedReason: params.reviewSkipReason }))!;
 			const usage = state.readUsage();
 			await writeMissionProgressArtifacts(mission, state.readProgress(), usage);
+			hooks.onProgress?.(params, ctx);
 			return { content: [{ type: "text" as const, text: `Mission progress recorded: ${mission.title}\nLog: .missions/${mission.slug}/log.md` }], details: { mission, progress: state.readProgress().at(-1), usage } };
 		},
 	});
 
-	(pi as any).registerTool({
+	pi.registerTool({
+		name: "mission_update",
+		label: "Update Mission",
+		description: "Revise the active Mission objective or success criteria with a recorded reason.",
+		promptSnippet: "Update an active Mission specification when the user changes scope.",
+		parameters: UpdateSchema,
+		renderCall: (args: MissionUpdateInput, theme: Theme) => missionCall("update", args.reason, theme),
+		renderResult: (result: { details?: unknown }, options: { expanded: boolean }, theme: Theme) => missionResult(result.details, options.expanded, theme),
+		async execute(_toolCallId: string, params: MissionUpdateInput, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
+			setContext(ctx);
+			state.loadFromSession(ctx);
+			const mission = state.append(pi, state.objectiveUpdateEvent(params))!;
+			await updateMissionSummaryArtifact(mission, state.readUsage());
+			hooks.onObjectiveUpdated?.(params, ctx);
+			return { content: [{ type: "text" as const, text: `Mission updated: ${mission.title}\nObjective version: ${mission.objectiveVersion}` }], details: { mission, usage: state.readUsage() } };
+		},
+	});
+
+	pi.registerTool({
 		name: "mission_search",
 		label: "Search Missions",
 		description: "Search .missions markdown and generated progress logs.",
@@ -109,7 +164,9 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 		promptGuidelines: [
 			"Use concise topic queries before repeating work; inspect files only when needed.",
 		],
-		parameters: SearchSchema as any,
+		parameters: SearchSchema,
+		renderCall: (args: MissionSearchInput, theme: Theme) => missionCall("search", args.query, theme),
+		renderResult: (result: { details?: unknown }, options: { expanded: boolean }, theme: Theme) => missionResult(result.details, options.expanded, theme),
 		async execute(_toolCallId: string, params: MissionSearchInput, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
 			setContext(ctx);
 			const results = await searchMissions(ctx.cwd, params);
@@ -117,7 +174,7 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 		},
 	});
 
-	(pi as any).registerTool({
+	pi.registerTool({
 		name: "mission_complete",
 		label: "Complete Mission",
 		description: "Complete achieved Mission, or end immediately on explicit user request.",
@@ -127,11 +184,17 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 			"If user asks to end/complete/stop, call with userRequested=true and note remaining work/resume option.",
 			"Never complete merely for budget, pause, or partial progress.",
 		],
-		parameters: CompleteSchema as any,
+		parameters: CompleteSchema,
+		renderCall: (args: MissionCompleteInput, theme: Theme) => missionCall(args.userRequested ? "end" : "complete", args.summary ?? "", theme),
+		renderResult: (result: { details?: unknown }, options: { expanded: boolean }, theme: Theme) => missionResult(result.details, options.expanded, theme, Array.isArray((result.details as { blockers?: unknown } | undefined)?.blockers)),
 		async execute(_toolCallId: string, params: MissionCompleteInput, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
 			setContext(ctx);
 			state.loadFromSession(ctx);
 			const userRequested = params.userRequested === true;
+			if (hooks.validateCompletion) {
+				const blockers = await hooks.validateCompletion(params, ctx);
+				if (blockers.length) return { content: [{ type: "text" as const, text: `Mission completion blocked:\n${blockers.map((blocker) => `- ${blocker}`).join("\n")}` }], details: { mission: state.readAny(), usage: state.readUsage(), blockers } };
+			}
 			const summary = params.summary ?? (userRequested ? "Mission ended at explicit user request. Use /mission resume to continue if needed." : undefined);
 			const audit = params.audit?.length ? params.audit : userRequested ? [{ requirement: "User-requested mission end", evidence: "The user explicitly asked to end/complete the mission; this records closure without claiming all objective requirements are satisfied. Use /mission resume to continue if needed." }] : undefined;
 			const event = state.statusEvent("complete", userRequested ? "mission_complete called by explicit user request" : "mission_complete called", summary);
@@ -139,11 +202,32 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 			const usage = state.readUsage();
 			await writeCompletionAudit(mission, summary, audit, usage);
 			await updateMissionSummaryArtifact(mission, usage);
+			hooks.onCompleted?.(ctx);
 			const verb = userRequested ? "ended" : "complete";
 			const resumeHint = userRequested ? "\nResume: /mission resume" : "";
 			return { content: [{ type: "text" as const, text: `Mission ${verb}: ${mission.title}\nUsage: ${usage.totalTokens} tokens, $${usage.totalCostUsd.toFixed(4)}\n${formatMissionLocation(mission)}${resumeHint}` }], details: { mission, usage, audit, userRequested } };
 		},
 	});
+}
+
+function missionCall(action: string, target: string, theme: Theme): Text {
+	return new Text(theme.fg("toolTitle", theme.bold(`mission ${action} `)) + theme.fg("muted", target.replace(/\s+/g, " ").slice(0, 90)), 0, 0);
+}
+
+function missionResult(details: unknown, expanded: boolean, theme: Theme, isError = false): Text {
+	const value = details as { mission?: ReturnType<MissionState["readAny"]>; usage?: ReturnType<MissionState["readUsage"]>; blockers?: string[]; results?: unknown[] } | undefined;
+	if (value?.blockers?.length) return new Text(`${theme.fg("error", "completion blocked")} · ${value.blockers.length} blocker(s)${expanded ? `\n${value.blockers.map((blocker) => `- ${blocker}`).join("\n")}` : ""}`, 0, 0);
+	if (value?.mission) {
+		const mission = value.mission;
+		const color = isError ? "error" : mission.status === "complete" ? "success" : mission.status === "active" ? "warning" : "muted";
+		let text = `${theme.fg(color, mission.status)} ${theme.fg("accent", mission.title)} ${theme.fg("muted", mission.missionId)}`;
+		if (mission.reviewStatus && mission.reviewStatus !== "not_required") text += ` · review ${mission.reviewStatus}`;
+		if (value.usage) text += ` · ${value.usage.totalTokens} tokens`;
+		if (expanded) text += `\n${mission.objective}`;
+		return new Text(text, 0, 0);
+	}
+	if (value?.results) return new Text(`${theme.fg("success", "✓")} ${value.results.length} mission match(es)`, 0, 0);
+	return new Text(theme.fg(isError ? "error" : "dim", isError ? "Mission operation failed" : "No active Mission"), 0, 0);
 }
 
 interface MissionSearchResult {

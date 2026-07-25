@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { showTextViewer } from "../shared/text-viewer.ts";
 import type { ArxivService } from "./service.ts";
 import { formatBibtex, formatGet, formatSearch } from "./tools.ts";
 import type { ArxivSearchInput, ArxivSortBy } from "./types.ts";
@@ -9,7 +10,7 @@ export function registerArxivCommands(pi: ExtensionAPI, service: ArxivService): 
 		handler: async (args, ctx) => {
 			const parsed = parseSearchArgs(args);
 			if (!parsed) return ctx.ui.notify("Usage: /arxiv:search [--max N] [--sort relevance|submittedDate|lastUpdatedDate] [--category cs.LG] [--author name] <query>", "warning");
-			try { ctx.ui.notify(formatSearch(await service.search(parsed)), "info"); } catch (error) { ctx.ui.notify(message(error), "error"); }
+			try { await showTextViewer(ctx, "arXiv search", formatSearch(await service.search(parsed))); } catch (error) { ctx.ui.notify(message(error), "error"); }
 		},
 	});
 
@@ -19,7 +20,7 @@ export function registerArxivCommands(pi: ExtensionAPI, service: ArxivService): 
 			const parts = splitArgs(args);
 			const includeBibtex = removeFlag(parts, "--bibtex");
 			if (!parts.length) return ctx.ui.notify("Usage: /arxiv:get [--bibtex] <id[,id]>", "warning");
-			try { ctx.ui.notify(formatGet(await service.get({ ids: parts.join(","), includeBibtex })), "info"); } catch (error) { ctx.ui.notify(message(error), "error"); }
+			try { await showTextViewer(ctx, "arXiv papers", formatGet(await service.get({ ids: parts.join(","), includeBibtex }))); } catch (error) { ctx.ui.notify(message(error), "error"); }
 		},
 	});
 
@@ -28,7 +29,7 @@ export function registerArxivCommands(pi: ExtensionAPI, service: ArxivService): 
 		handler: async (args, ctx) => {
 			const ids = args.trim();
 			if (!ids) return ctx.ui.notify("Usage: /arxiv:bibtex <id[,id]>", "warning");
-			try { ctx.ui.notify(formatBibtex(await service.bibtex({ ids })), "info"); } catch (error) { ctx.ui.notify(message(error), "error"); }
+			try { await showTextViewer(ctx, "arXiv BibTeX", formatBibtex(await service.bibtex({ ids }))); } catch (error) { ctx.ui.notify(message(error), "error"); }
 		},
 	});
 }

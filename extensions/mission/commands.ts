@@ -3,8 +3,10 @@ import { initializeMissionArtifacts, updateMissionSummaryArtifact, writeCompleti
 import type { MissionState } from "./state.ts";
 import { formatMission } from "./tools.ts";
 import type { MissionCreateInput, MissionStatus } from "./types.ts";
+import { showTextViewer } from "../shared/text-viewer.ts";
+import { chainCheckpoints } from "../chains/checkpoint.ts";
 
-export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, setContext: (ctx: ExtensionContext) => void, maybeContinue: (ctx: ExtensionContext) => void): void {
+export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, setContext: (ctx: ExtensionContext) => void, maybeContinue: (ctx: ExtensionContext) => void, hooks: { onCreated?: (ctx: ExtensionContext) => void; onChanged?: (ctx: ExtensionContext) => void; onCompleted?: (ctx: ExtensionContext) => void } = {}): void {
 	pi.registerCommand("mission", {
 		description: "Create/manage a branch-scoped Mission.",
 		handler: async (args, ctx) => {
@@ -12,7 +14,7 @@ export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, s
 			state.loadFromSession(ctx);
 			const trimmed = args.trim();
 			if (!trimmed || trimmed === "status" || trimmed === "show") {
-				ctx.ui.notify(formatMission(state.read(), state.readUsage()), "info");
+				await showTextViewer(ctx, "Mission", formatMission(state.read(), state.readUsage()));
 				return;
 			}
 
@@ -20,11 +22,15 @@ export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, s
 			if (["pause", "resume", "clear"].includes(command)) {
 				const status = command === "pause" ? "paused" : command === "resume" ? "active" : "cleared";
 				await setStatus(pi, state, status, ctx, `/${command}`);
+				if (status === "paused") chainCheckpoints.current?.due("Mission paused");
+				hooks.onChanged?.(ctx);
 				if (status === "active") maybeContinue(ctx);
 				return;
 			}
 			if (command === "complete" || command === "end" || command === "stop") {
 				await completeByUserRequest(pi, state, ctx, `/mission ${command}`);
+				chainCheckpoints.current?.due("Mission ended by user request");
+				hooks.onCompleted?.(ctx);
 				return;
 			}
 
@@ -32,7 +38,8 @@ export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, s
 				const input = parseCreateArgs(trimmed);
 				const event = await state.create(input, ctx);
 				const mission = state.append(pi, event)!;
-				await initializeMissionArtifacts(ctx.cwd, mission, state.readUsage());
+				await initializeMissionArtifacts(mission, state.readUsage());
+				hooks.onCreated?.(ctx);
 				ctx.ui.notify(`Mission created: ${mission.title}\nChain: ${mission.chain}@${mission.chainBranch}\nArtifacts: .missions/${mission.slug}`, "info");
 				maybeContinue(ctx);
 			} catch (error) {

@@ -1,0 +1,142 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { DelegateExecutor } from "../extensions/subagents/executor.ts";
+import { SubagentService, type SubagentGroup } from "../extensions/subagents/service.ts";
+
+const cleanup: Array<() => void> = [];
+afterEach(() => cleanup.splice(0).reverse().forEach((fn) => fn()));
+
+function setup(failReviewer = false) {
+	const root = mkdtempSync(path.join(tmpdir(), "subagent-service-"));
+	const project = mkdtempSync(path.join(tmpdir(), "subagent-project-"));
+	const branch: Array<Record<string, unknown>> = [];
+	const pi = {
+		appendEntry(customType: string, data: unknown) { branch.push({ type: "custom", customType, data }); },
+	} as unknown as ExtensionAPI;
+	const ctx = {
+		cwd: project,
+		sessionManager: { getSessionFile: () => "/tmp/parent.jsonl", getBranch: () => branch },
+		isIdle: () => false,
+		hasPendingMessages: () => false,
+	} as unknown as ExtensionContext;
+	const executor = new DelegateExecutor({
+		artifactsRoot: root,
+		command: (spec) => {
+			if (failReviewer && spec.persona === "reviewer") throw new Error("reviewer launch failed");
+			const message = { role: "assistant", content: [{ type: "text", text: `${spec.persona} done` }], usage: { input: 2, output: 1, cost: { total: 0.001 } } };
+			const script = `const m=${JSON.stringify(message)}; setTimeout(()=>{console.log(JSON.stringify({type:'message_end',message:m}));console.log(JSON.stringify({type:'turn_end',message:m,toolResults:[]}));console.log(JSON.stringify({type:'agent_settled'}));},25);`;
+			return { command: process.execPath, args: ["-e", script] };
+		},
+	});
+	const service = new SubagentService(pi, executor, root);
+	service.setContext(ctx);
+	cleanup.push(() => service.dispose(), () => rmSync(root, { recursive: true, force: true }), () => rmSync(project, { recursive: true, force: true }));
+	return { service, ctx, branch };
+}
+
+describe("SubagentService", () => {
+	it("runs a persisted bounded parallel group to quiescence", async () => {
+		const { service, ctx, branch } = setup();
+		const result = await service.start({
+			tasks: [
+				{ agent: "explorer", task: "Inspect one file." },
+				{ agent: "reviewer", task: "Review one file." },
+			],
+			concurrency: 1,
+			background: false,
+		}, ctx) as SubagentGroup;
+
+		expect(result.status).toBe("completed");
+		expect(result.children).toHaveLength(2);
+		expect(result.active).toEqual([]);
+		expect(result.pending).toEqual([]);
+		const emittedKinds = branch
+			.map((entry) => entry.data as { type?: string; event?: { source?: { kind?: string } } })
+			.filter((operation) => operation?.type === "emit")
+			.map((operation) => operation.event?.source?.kind);
+		expect(emittedKinds).toContain("subagent-group");
+	});
+
+	it("waits for active children and emits a terminal partial group after launch failure", async () => {
+		const { service, ctx, branch } = setup(true);
+		const result = await service.start({
+			tasks: [{ agent: "explorer", task: "Inspect." }, { agent: "reviewer", task: "Review." }],
+			concurrency: 2,
+			background: false,
+		}, ctx) as SubagentGroup;
+		expect(result.status).toBe("partial");
+		expect(result.active).toEqual([]);
+		expect(result.launchFailures).toEqual(["reviewer launch failed"]);
+		expect(branch.some((entry) => (entry.data as { event?: { source?: { kind?: string } } })?.event?.source?.kind === "subagent-group")).toBe(true);
+	});
+
+	it("enforces the configured global concurrency limit across fresh runs", async () => {
+		const { service, ctx } = setup();
+		mkdirSync(path.join(ctx.cwd, ".pi"), { recursive: true });
+		writeFileSync(path.join(ctx.cwd, ".pi/subagents.json"), JSON.stringify({ parallelMaxConcurrency: 1 }));
+		const originalStart = service.executor.start.bind(service.executor);
+		let releaseLaunch!: () => void;
+		let launchEntered!: () => void;
+		const entered = new Promise<void>((resolve) => { launchEntered = resolve; });
+		const gate = new Promise<void>((resolve) => { releaseLaunch = resolve; });
+		vi.spyOn(service.executor, "start").mockImplementationOnce(async (input) => {
+			launchEntered();
+			await gate;
+			return originalStart(input);
+		});
+		const first = service.start({ agent: "explorer", task: "First." }, ctx);
+		await entered;
+		await expect(service.start({ agent: "reviewer", task: "Second." }, ctx)).rejects.toThrow("concurrency limit reached (1)");
+		releaseLaunch();
+		const run = await first;
+		await service.executor.cancel((run as { spec: { id: string } }).spec.id);
+	});
+
+	it("serializes cancellation with an in-flight group launch", async () => {
+		const { service, ctx } = setup();
+		const originalStart = service.executor.start.bind(service.executor);
+		let releaseLaunch!: () => void;
+		let launchEntered!: () => void;
+		const entered = new Promise<void>((resolve) => { launchEntered = resolve; });
+		const gate = new Promise<void>((resolve) => { releaseLaunch = resolve; });
+		vi.spyOn(service.executor, "start").mockImplementation(async (input) => {
+			launchEntered();
+			await gate;
+			return originalStart(input);
+		});
+		const starting = service.start({ tasks: [{ agent: "explorer", task: "Inspect." }], concurrency: 1 }, ctx);
+		await entered;
+		const group = service.list().groups[0]!;
+		const cancelling = service.wait({ ids: [group.id], cancel: true, waitMs: 0 });
+		releaseLaunch();
+		await starting;
+		const [result] = await cancelling;
+		expect((result as SubagentGroup).status).toBe("cancelled");
+		expect((result as SubagentGroup).active).toEqual([]);
+	});
+
+	it("withholds group terminal cancellation while a child is still stopping", async () => {
+		const { service, ctx, branch } = setup();
+		const group = await service.start({ tasks: [{ agent: "explorer", task: "Inspect." }], concurrency: 1 }, ctx) as SubagentGroup;
+		vi.spyOn(service.executor, "cancel").mockImplementation(async (id) => {
+			const run = service.executor.get(id);
+			run.runtime.status = "stopping";
+			return run;
+		});
+		const [result] = await service.wait({ ids: [group.id], cancel: true, waitMs: 0 });
+		expect((result as SubagentGroup).status).toBe("running");
+		expect(branch.some((entry) => (entry.data as { event?: { source?: { kind?: string; id?: string } } })?.event?.source?.kind === "subagent-group" && (entry.data as { event?: { source?: { id?: string } } }).event?.source?.id === group.id)).toBe(false);
+	});
+
+	it("enforces write authorization and persona tool policy at the service boundary", async () => {
+		const { service, ctx } = setup();
+		await expect(service.start({ agent: "reviewer", task: "Edit it.", allowWrite: true }, ctx)).rejects.toThrow("explicit user authorization");
+		await expect(service.start({ agent: "reviewer", task: "Edit it.", tools: ["edit"] }, ctx)).rejects.toThrow("not allowed");
+		const authorized = await service.start({ agent: "reviewer", task: "Edit it.", allowWrite: true, writeAuthorized: true, background: false }, ctx);
+		expect((authorized as { spec: { id: string; tools: string[] } }).spec.tools).toContain("edit");
+		await expect(service.start({ resume: (authorized as { spec: { id: string } }).spec.id, task: "Continue." }, ctx)).rejects.toThrow("fresh explicit user authorization");
+	});
+});

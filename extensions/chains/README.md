@@ -2,7 +2,7 @@
 
 Durable work handoffs stored as markdown links under project-local `.chains/`.
 
-Use chains when work may span sessions, needs resumable context, or should be handed to subagents. Chains are deliberate summaries; the extension never auto-saves model notes.
+Chains remain deliberate human-readable summaries; Pi Kit never auto-generates noisy links.
 
 ## Tools
 
@@ -10,7 +10,7 @@ Use chains when work may span sessions, needs resumable context, or should be ha
 chain_save     save a markdown handoff link
 chain_load     load the latest or a selected link
 chain_fork     create a branch from an existing link
-chain_context  pack bounded context for resume or subagents
+chain_context  pack bounded context for resume or Subagents
 chain_list     list chains and branches
 chain_search   ranked, text, or regex search
 ```
@@ -23,8 +23,20 @@ chain_search   ranked, text, or regex search
 /chain-fork <chain> <new-branch> [--from link.md]
 /chain-list [--branches]
 /chain-search [chain] [--lookup|--text|--regex] <query>
-/chain-discipline [status|mode|default-chain|enable|disable|reset|set]
 ```
+
+## State-aware checkpoint discipline
+
+Pi custom entries track:
+
+- the active Chain and branch;
+- `saved` versus `checkpoint due`;
+- concrete due reasons;
+- latest saved link or explicit waiver reason.
+
+Checkpoint state is restored after resume/tree navigation and re-armed after compaction. Successful Chain tools update it directly. File mutation is detected from successful write/edit tools and before/after Git fingerprints rather than prompt classification or shell-command regexes. Mission creation, objective changes, review/milestones, write-enabled Subagents, and bounded Jobs also mark checkpoints due.
+
+The footer shows `chain name@branch` only when active and `chain ! name@branch` when due. Before the next agent turn, a due/resume reminder is injected from state. Mission completion vetoes a due checkpoint unless it is explicitly waived with a reason.
 
 ## Storage
 
@@ -32,26 +44,4 @@ chain_search   ranked, text, or regex search
 .chains/<chain>/<timestamp>-<slug>.md
 ```
 
-Links include frontmatter for chain, branch, parent, and creation time. Older links without metadata are treated as branch `main`.
-
-## Chain discipline
-
-Chain discipline adds reminders so durable work checks existing context and saves useful handoffs.
-
-Modes:
-
-```text
-off       disabled
-nudge     reminders only; default
-guarded   block mutating tools on high-confidence resumed work until context is checked
-strict    harder opt-in guarding; can be noisy
-```
-
-Project settings live in `.pi/chain-discipline.json` and can be changed with `/chain-discipline`. Environment variables can override project settings:
-
-```text
-DEEVS_CHAIN_DISCIPLINE_MODE=off|nudge|guarded|strict
-DEEVS_CHAIN_DISCIPLINE_ENABLED=true|false
-```
-
-Use wording like “no chains” or “do not use chains” to bypass for a single prompt.
+Links include frontmatter for chain, branch, parent, and creation time. Older links without metadata are treated as branch `main`. Checkpoint operations live in Pi session entries; `.chains` remains the cross-session/cross-harness content format.

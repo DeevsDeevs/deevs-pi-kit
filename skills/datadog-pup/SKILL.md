@@ -140,13 +140,15 @@ pup --read-only symdb search --service <service> --query "Controller" --view pro
 
 Before creating a probe, confirm service, environment, location, captures, TTL, and cleanup plan. Prefer capture expressions over full snapshots. Use a short TTL. Delete the probe after use.
 
-If watching a probe or other long-running command, use Pi managed background processes:
+A probe watch with an explicit short timeout can use a bounded Job:
 
 ```text
-proc_start name="pup-debugger-watch" command="pup debugger probes watch <id> --timeout 60 --limit 10 --fields message,captures,timestamp"
-proc_read ...
-proc_signal ...
+job_start name="pup-debugger-watch" command="pup debugger probes watch <id> --timeout 60 --limit 10 --fields message,captures,timestamp"
+job_read ...
+job_stop ...
 ```
+
+Use Herdr instead when the watch must persist beyond the bounded session.
 
 ## Writes and changes
 

@@ -56,11 +56,11 @@ Use clippy/full workspace/e2e only when budget and project conventions justify i
 
 For servers, browsers, workers, or e2e flows:
 
-- use `proc_start` for long-running servers/watchers
-- wait for readiness with `proc_read` or watches
+- use Herdr for persistent servers/watchers; use `job_start` only for bounded commands
+- wait for bounded readiness with `job_start` readiness watches
 - run the smoke/e2e action with real assertions
 - capture concise evidence
-- stop processes with `proc_signal`
+- stop bounded Jobs with `job_stop`
 
 Do not dump large logs unless needed.
 
@@ -76,7 +76,7 @@ Useful perspectives:
 - `rust-dev` — Rust ownership, async, traits, feature flags, errors
 - `devops` — CI, runtime config, deployment/process concerns
 
-Prefer separate `agent_start` calls with explicit `cwd` when cwd matters. Use `agent_read` normally. Use `agent_logs` only to debug stuck/failed/confusing subagent behavior.
+Prefer separate `subagent` calls with explicit `cwd` when cwd matters. Use `subagent_wait` for settlement/output and `/agents <run-id>` for artifact details.
 
 Do not delegate what one local command or one file read can prove.
 

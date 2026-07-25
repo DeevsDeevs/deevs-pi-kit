@@ -1,0 +1,11 @@
+node_modules/
+.git/
+.pi/
+.chains/
+.missions/
+test/
+AGENTS.md
+tsconfig.json
+*.log
+*.tgz
+.env*
