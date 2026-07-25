@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DelegateExecutor } from "../extensions/subagents/executor.ts";
 import { SubagentService, type SubagentGroup } from "../extensions/subagents/service.ts";
+import { DEFAULT_TIMEOUT_MS } from "../extensions/subagents/config.ts";
 
 const cleanup: Array<() => void> = [];
 afterEach(() => cleanup.splice(0).reverse().forEach((fn) => fn()));
@@ -38,6 +39,14 @@ function setup(failReviewer = false) {
 }
 
 describe("SubagentService", () => {
+	it("uses generous defaults unless the orchestrator supplies tighter limits", async () => {
+		const { service, ctx } = setup();
+		const defaulted = await service.start({ agent: "explorer", task: "Inspect." }, ctx);
+		expect((defaulted as { spec: { limits: { wallMs: number; turns?: number } } }).spec.limits).toMatchObject({ wallMs: DEFAULT_TIMEOUT_MS });
+		const limited = await service.start({ agent: "explorer", task: "Inspect.", wallMs: 1_234, turns: 2 }, ctx);
+		expect((limited as { spec: { limits: { wallMs: number; turns?: number } } }).spec.limits).toMatchObject({ wallMs: 1_234, turns: 2 });
+	});
+
 	it("runs a persisted bounded parallel group to quiescence", async () => {
 		const { service, ctx, branch } = setup();
 		const result = await service.start({

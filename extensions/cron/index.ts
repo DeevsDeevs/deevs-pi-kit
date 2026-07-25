@@ -58,13 +58,16 @@ export default function cronExtension(pi: ExtensionAPI): void {
 		},
 		renderCall(input: CronInput, theme: Theme) {
 			const target = input.action === "create" ? input.cron ?? "invalid" : input.action === "delete" ? input.id ?? "invalid" : "";
-			return new Text(theme.fg("toolTitle", theme.bold(`cron ${input.action} `)) + theme.fg("muted", target), 0, 0);
+			return new Text(`${theme.fg("toolTitle", theme.bold("cron"))} ${theme.fg("accent", input.action)}${target ? ` ${theme.fg("muted", target)}` : ""}`, 0, 0);
 		},
 		renderResult(result, { expanded }, theme) {
 			const details = result.details as CronDetails | undefined;
-			if (details?.task) return new Text(renderTask(details.task, expanded, theme), 0, 0);
-			if (details?.tasks) return new Text(details.tasks.length ? details.tasks.map((task) => renderTask(task, expanded, theme)).join("\n") : theme.fg("dim", "No cron tasks"), 0, 0);
-			if (details?.deletedId) return new Text(theme.fg("success", `deleted ${details.deletedId}`), 0, 0);
+			if (details?.task) return new Text(`${theme.fg("success", "scheduled")} ${renderTask(details.task, expanded, theme)}`, 0, 0);
+			if (details?.tasks) {
+				const rows = details.tasks.map((task) => renderTask(task, expanded, theme));
+				return new Text(rows.length ? `${theme.fg("muted", `${rows.length} scheduled`)}\n${rows.join("\n")}` : theme.fg("dim", "No scheduled tasks"), 0, 0);
+			}
+			if (details?.deletedId) return new Text(`${theme.fg("success", "deleted")} ${theme.fg("accent", details.deletedId)}`, 0, 0);
 			return new Text(theme.fg("dim", "Cron operation finished"), 0, 0);
 		},
 	});
@@ -94,16 +97,24 @@ export default function cronExtension(pi: ExtensionAPI): void {
 			}
 			const tasks = manager.list();
 			const selected = action ? tasks.filter((task) => task.id === action || `${task.cron} ${task.prompt}`.toLowerCase().includes(action.toLowerCase())) : tasks;
-			await showTextViewer(ctx, "Cron", formatList(selected));
+			if (!selected.length && ctx.mode === "tui") {
+				ctx.ui.notify(action ? `No cron tasks match ${JSON.stringify(action)}.` : "No cron tasks scheduled.", action ? "warning" : "info");
+				return;
+			}
+			await showTextViewer(ctx, selected.length ? `Cron · ${selected.length} scheduled` : "Cron", formatList(selected));
 		},
 	});
 
 	pi.registerMessageRenderer(CRON_MESSAGE_TYPE, (message, { expanded }, theme) => {
-		const details = message.details as { taskId?: string; cron?: string; recurring?: boolean; coalescedCount?: number; stale?: boolean } | undefined;
-		const header = `${theme.fg("warning", "cron fired")} ${theme.fg("accent", details?.taskId ?? "unknown")} ${theme.fg("muted", details?.cron ?? "")}`;
-		if (!expanded) return new Text(`${header}${details?.coalescedCount && details.coalescedCount > 1 ? ` · ${details.coalescedCount} coalesced` : ""}${details?.stale ? " · stale final fire" : ""}`, 0, 0);
-		const content = typeof message.content === "string" ? message.content : message.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
-		return new Text(`${header}\n${theme.fg("dim", content)}`, 0, 0);
+		const details = message.details as { taskId?: string; cron?: string; prompt?: string; recurring?: boolean; coalescedCount?: number; stale?: boolean } | undefined;
+		const header = `${theme.fg(details?.stale ? "warning" : "accent", "cron fired")} · ${theme.fg("muted", details?.taskId ?? "unknown")} · ${details?.cron ?? "unknown schedule"}`;
+		const count = details?.coalescedCount ?? 1;
+		if (!expanded) return new Text(`${header}${count > 1 ? theme.fg("warning", ` · ${count} coalesced`) : ""}${details?.stale ? theme.fg("warning", " · final stale fire") : ""}`, 0, 0);
+		return new Text([
+			header,
+			theme.fg("dim", `${details?.recurring ? "recurring" : "one-shot"} · ${count} occurrence${count === 1 ? "" : "s"}${details?.stale ? " · final stale fire" : ""}`),
+			details?.prompt ? `${theme.fg("muted", "prompt")} ${details.prompt}` : "",
+		].filter(Boolean).join("\n"), 0, 0);
 	});
 
 	pi.on("session_start", (_event, ctx) => manager.restore(ctx));
@@ -119,16 +130,16 @@ function formatList(tasks: CronTaskView[]): string {
 
 function formatTask(task: CronTaskView, includePrompt: boolean): string {
 	return [
-		`${task.id} · ${task.humanSchedule} · ${task.recurring ? "recurring" : "one-shot"}${task.stale ? " · stale" : ""}`,
-		`cron: ${task.cron}`,
-		`next: ${task.nextFireAt === null ? "none" : formatLocalTime(task.nextFireAt)}`,
-		`prompt: ${JSON.stringify(includePrompt ? task.prompt : preview(task.prompt))}`,
+		`${task.id}  ${task.humanSchedule}`,
+		`  ${task.recurring ? "recurring" : "one-shot"}${task.stale ? " · stale final fire" : ""} · next ${task.nextFireAt === null ? "none" : formatLocalTime(task.nextFireAt)}`,
+		`  ${task.cron}`,
+		`  ${JSON.stringify(includePrompt ? task.prompt : preview(task.prompt))}`,
 	].join("\n");
 }
 
 function renderTask(task: CronTaskView, expanded: boolean, theme: Theme): string {
-	let text = `${theme.fg(task.stale ? "warning" : "success", task.recurring ? "recurring" : "one-shot")} ${theme.fg("accent", task.id)} · ${theme.fg("muted", task.humanSchedule)}`;
-	if (expanded) text += `\n${task.cron}\nnext ${task.nextFireAt === null ? "none" : formatLocalTime(task.nextFireAt)}\n${task.prompt}`;
+	let text = `${theme.fg("accent", task.id)} · ${task.recurring ? "recurring" : "one-shot"} · ${theme.fg("muted", task.humanSchedule)}`;
+	if (expanded) text += `\n  ${theme.fg("muted", "next")} ${task.nextFireAt === null ? "none" : formatLocalTime(task.nextFireAt)}\n  ${theme.fg("muted", "prompt")} ${task.prompt}`;
 	return text;
 }
 

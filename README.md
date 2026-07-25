@@ -50,7 +50,7 @@ Run focused staff agents in the background. Built-in agents include `explorer`, 
 
 Tools: `subagent`, `subagent_wait`. Command: `/agents [run-or-group-id]`, `/agents stop <id>`, `/agents resume <id> <task>`, or `/agents clear [id]`.
 
-Subagents are read-only unless `allowWrite: true` is explicitly authorized by the latest user message. Read-only personas receive `safe_read`, `safe_list`, and `safe_search`—never unrestricted `bash`. The process-isolated executor supports bounded parallel groups, hard cancellation, exact per-run usage, enforced wall/turn/token/cost limits, detached recovery, persistent agent identity, and resume into the exact private Pi session. Project model/concurrency settings remain in `.pi/subagents.json`.
+Subagents are read-only unless `allowWrite: true` is explicitly authorized by the latest user message. Read-only personas receive `safe_read`, `safe_list`, and `safe_search`—never unrestricted `bash`. The process-isolated executor supports parallel groups, hard cancellation, exact per-run usage, detached recovery, persistent agent identity, and resume into the exact private Pi session. Omitted turn/token/cost limits are unbounded; wall time defaults to six hours and is capped at 24 hours. Explicit orchestrator limits always win. Project model/concurrency settings remain in `.pi/subagents.json`.
 
 ### Workflows
 

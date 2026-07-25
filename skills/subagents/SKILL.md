@@ -42,6 +42,6 @@ Detached runs are owned by a dedicated worker and can be restored after parent r
 - Personas are read-only by default and receive `safe_read`, `safe_list`, and `safe_search`, not unrestricted shell execution.
 - `allowWrite: true` is valid only when the latest real user message explicitly requested delegated/Subagent writes; it enables the write tools and shell.
 - A requested `tools` list can narrow persona capabilities, never broaden them.
-- Use wall, turn, token, and cost limits for expensive work. Token/cost enforcement occurs after provider usage is known and may overshoot by at most one provider call.
+- Omitted turn, token, and cost limits are unbounded. Wall time defaults to six hours (24-hour cap); set tighter limits only when the orchestration plan needs them. Token/cost enforcement may overshoot by at most one provider call when explicitly set.
 - Subagents cannot spawn nested Subagents.
 - Persistent/interactive commands belong in Herdr; bounded non-agent commands belong in Jobs.

@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import * as path from "node:path";
 import { ownsProcessIdentity, quiesceProcessGroup, readProcessIdentity } from "../shared/process-group.ts";
+import { DEFAULT_TIMEOUT_MS } from "./config.ts";
 import {
 	createDelegatePaths,
 	defaultDelegateRoot,
@@ -340,7 +341,7 @@ function resolveTools(personaTools: string[], requested: string[] | undefined, a
 
 function limitsFrom(input: Pick<DelegateStartInput, "wallMs" | "turns" | "tokens" | "costUsd">): DelegateRunSpec["limits"] {
 	return {
-		wallMs: positive(input.wallMs, "wallMs") ?? 15 * 60_000,
+		wallMs: positive(input.wallMs, "wallMs") ?? DEFAULT_TIMEOUT_MS,
 		turns: positive(input.turns, "turns"),
 		tokens: positive(input.tokens, "tokens"),
 		costUsd: positive(input.costUsd, "costUsd"),

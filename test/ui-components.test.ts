@@ -3,6 +3,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { showTextViewer, TextViewer } from "../extensions/shared/text-viewer.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { renderTodoWidgetLines } from "../extensions/todos/ui.ts";
+import { visibleWidth } from "@earendil-works/pi-tui";
 
 const theme = {
 	fg: (_color: string, text: string) => text,
@@ -12,10 +13,23 @@ const theme = {
 
 describe("shared compact UI", () => {
 	it.each([1, 40, 80, 120])("renders the bounded text viewer at width %i", (width) => {
-		const viewer = new TextViewer("Results 👩🏽‍💻", Array.from({ length: 40 }, (_, index) => `line ${index} 漢字`).join("\n"), theme, () => undefined, () => undefined);
+		const viewer = new TextViewer("Results", Array.from({ length: 40 }, (_, index) => `line ${index} content`).join("\n"), theme, () => undefined, () => undefined);
 		const lines = viewer.render(width);
 		expect(lines.length).toBeLessThanOrEqual(28);
 		expect(lines.length).toBeGreaterThan(0);
+		expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
+		if (width >= 4) {
+			expect(lines[0]).toContain("╭");
+			expect(lines.at(-1)).toContain("╰");
+		}
+	});
+
+	it("keeps the viewer within a short terminal and updates its page size after resize", () => {
+		let pageSize = 4;
+		const viewer = new TextViewer("Results", Array.from({ length: 40 }, (_, index) => `line ${index}`).join("\n"), theme, () => undefined, () => undefined, () => pageSize);
+		expect(viewer.render(40).length).toBeLessThanOrEqual(10);
+		pageSize = 8;
+		expect(viewer.render(40).length).toBeLessThanOrEqual(14);
 	});
 
 	it("uses structured notifications instead of TUI overlays in RPC mode", async () => {

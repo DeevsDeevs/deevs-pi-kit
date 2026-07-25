@@ -36,7 +36,7 @@ Pi custom entries track:
 
 Checkpoint state is restored after resume/tree navigation and re-armed after compaction. Successful Chain tools update it directly. File mutation is detected from successful write/edit tools and before/after Git fingerprints rather than prompt classification or shell-command regexes. Mission creation, objective changes, review/milestones, write-enabled Subagents, and bounded Jobs also mark checkpoints due.
 
-The footer shows `chain name@branch` only when active and `chain ! name@branch` when due. Before the next agent turn, a due/resume reminder is injected from state. Mission completion vetoes a due checkpoint unless it is explicitly waived with a reason.
+The footer stays quiet while saved and shows `checkpoint due: name@branch` only when attention is needed. Before the next agent turn, a due/resume reminder is injected from state. Mission completion vetoes a due checkpoint unless it is explicitly waived with a reason.
 
 ## Storage
 

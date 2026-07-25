@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildPiCommand, DelegateExecutor } from "../extensions/subagents/executor.ts";
+import { DEFAULT_TIMEOUT_MS } from "../extensions/subagents/config.ts";
 import type { DelegateRunSpec, DelegateStartInput } from "../extensions/subagents/runtime-types.ts";
 
 const roots: string[] = [];
@@ -43,6 +44,15 @@ function completedScript(output = "Ship"): string {
 }
 
 describe("DelegateExecutor", () => {
+	it("leaves usage limits unbounded and uses the generous default wall limit", async () => {
+		const executor = setup(() => completedScript());
+		const run = await executor.start(input({ wallMs: undefined }));
+		expect(run.spec.limits).toMatchObject({ wallMs: DEFAULT_TIMEOUT_MS });
+		expect(run.spec.limits.turns).toBeUndefined();
+		expect(run.spec.limits.tokens).toBeUndefined();
+		expect(run.spec.limits.costUsd).toBeUndefined();
+	});
+
 	it("never falls back to default tools for read-only or empty tool selections", async () => {
 		const executor = setup(() => completedScript());
 		await expect(executor.start(input({ tools: [] }))).rejects.toThrow("tools must not be empty");
