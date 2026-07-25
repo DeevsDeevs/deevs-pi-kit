@@ -7,7 +7,6 @@ import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { detectDetachedShell } from "../shared/process-safety.ts";
 import { ownsProcessIdentity, quiesceProcessGroup, readProcessIdentity, trySignalGroup } from "../shared/process-group.ts";
-import { chainCheckpoints } from "../chains/checkpoint.ts";
 import { requestRuntimeDelivery } from "../shared/runtime-delivery.ts";
 import { runtimeEvents } from "../shared/runtime-events.ts";
 import { JobBuffer } from "./buffer.ts";
@@ -33,7 +32,9 @@ export class JobManager {
 	private readonly active = new Map<string, ActiveJob>();
 	private readonly buffers = new Map<string, JobBuffer>();
 	private readonly staleTimers = new Map<string, NodeJS.Timeout>();
+	private readonly hidden = new Set<string>();
 	private readonly events = new EventEmitter();
+	private parentSessionFile?: string;
 
 	constructor(private readonly pi: ExtensionAPI) {}
 
@@ -43,11 +44,13 @@ export class JobManager {
 	}
 
 	list(): JobRecord[] {
-		return [...this.records.values()].sort((a, b) => b.runtime.startedAt - a.runtime.startedAt);
+		return [...this.records.values()]
+			.filter((record) => !this.hidden.has(record.spec.id) && record.spec.parentSessionFile === this.parentSessionFile)
+			.sort((a, b) => b.runtime.startedAt - a.runtime.startedAt);
 	}
 
 	clearTerminal(id?: string): number {
-		const candidates = id ? [this.records.get(id)].filter((record): record is JobRecord => record !== undefined) : this.list().filter((record) => TERMINAL.has(record.runtime.status));
+		const candidates = this.list().filter((record) => (!id || record.spec.id === id) && TERMINAL.has(record.runtime.status));
 		let cleared = 0;
 		for (const record of candidates) {
 			if (!TERMINAL.has(record.runtime.status)) continue;
@@ -61,12 +64,14 @@ export class JobManager {
 
 	get(id: string): JobRecord {
 		const record = this.records.get(id);
-		if (!record) throw new Error(`Unknown job: ${id}`);
+		if (!record || this.hidden.has(id) || record.spec.parentSessionFile !== this.parentSessionFile) throw new Error(`Unknown job: ${id}`);
 		return record;
 	}
 
 	async start(input: JobStartInput, ctx: ExtensionContext, signal?: AbortSignal): Promise<JobRecord> {
 		validateStart(input);
+		const parentSessionFile = ctx.sessionManager.getSessionFile();
+		await this.switchSession(parentSessionFile);
 		if (input.command) {
 			const reason = detectDetachedShell(input.command);
 			if (reason) throw new Error(reason);
@@ -89,6 +94,7 @@ export class JobManager {
 			readyMode: input.readyMode,
 			readyTimeoutMs: input.readyPattern ? clamp(input.readyTimeoutMs, 100, 5 * 60_000, 30_000) : undefined,
 			createdAt: Date.now(),
+			parentSessionFile,
 			artifactsDir,
 			runtimePath: path.join(artifactsDir, "runtime.json"),
 			logPath: path.join(artifactsDir, "combined.log"),
@@ -170,8 +176,12 @@ export class JobManager {
 	}
 
 	async stop(id: string, status: "cancelled" | "timeout" | "failed" = "cancelled", error?: string): Promise<JobRecord> {
-		const record = this.get(id);
+		return this.stopRecord(this.get(id), status, error);
+	}
+
+	private async stopRecord(record: JobRecord, status: "cancelled" | "timeout" | "failed", error?: string): Promise<JobRecord> {
 		if (TERMINAL.has(record.runtime.status)) return record;
+		const id = record.spec.id;
 		const active = this.active.get(id);
 		if (!active?.child.pid) {
 			const quiesced = record.runtime.pid ? await stopStaleProcess(record.runtime.pid, record.runtime.processIdentity) : true;
@@ -183,18 +193,25 @@ export class JobManager {
 			this.scheduleStaleReconciliation(record);
 			return record;
 		}
+		clearTimeout(active.timer);
+		if (active.readyTimer) clearTimeout(active.readyTimer);
 		active.requestedStatus = status;
 		record.runtime.status = "stopping";
 		if (error) record.runtime.error = error;
 		writeJson(record.spec.runtimePath, record.runtime);
 		this.emit(record);
 		trySignalGroup(active.child.pid, "SIGTERM");
-		active.killTimer = setTimeout(() => trySignalGroup(active.child.pid!, "SIGKILL"), 1_500);
-		active.killTimer.unref?.();
-		return this.waitOne(id, 3_000);
+		if (!active.killTimer) {
+			active.killTimer = setTimeout(() => trySignalGroup(active.child.pid!, "SIGKILL"), 1_500);
+			active.killTimer.unref?.();
+		}
+		return this.waitOne(id, 3_000, undefined, true);
 	}
 
 	async restore(ctx: ExtensionContext): Promise<void> {
+		const parentSessionFile = ctx.sessionManager.getSessionFile();
+		await this.switchSession(parentSessionFile);
+		if (!parentSessionFile) return;
 		const root = jobsRoot(ctx.cwd);
 		if (!existsSync(root)) return;
 		for (const entry of readdirSync(root, { withFileTypes: true })) {
@@ -202,6 +219,7 @@ export class JobManager {
 			try {
 				const dir = path.join(root, entry.name);
 				const spec = JSON.parse(readFileSync(path.join(dir, "spec.json"), "utf8")) as JobSpec;
+				if (spec.parentSessionFile !== parentSessionFile) continue;
 				const runtime = JSON.parse(readFileSync(spec.runtimePath, "utf8")) as JobRuntime;
 				spec.spoolPath ??= path.join(spec.artifactsDir, "chunks.jsonl");
 				spec.maxBufferBytes ??= 1_000_000;
@@ -236,8 +254,25 @@ export class JobManager {
 		this.pruneTerminal();
 	}
 
+	private async switchSession(parentSessionFile?: string): Promise<void> {
+		if (this.parentSessionFile === parentSessionFile) return;
+		this.parentSessionFile = parentSessionFile;
+		await Promise.all([...this.records.values()].filter((record) => record.spec.parentSessionFile !== parentSessionFile).map(async (record) => {
+			this.hidden.add(record.spec.id);
+			if (!TERMINAL.has(record.runtime.status)) await this.stopRecord(record, "cancelled", "Parent Pi session changed.");
+			if (TERMINAL.has(record.runtime.status)) {
+				this.hidden.delete(record.spec.id);
+				this.records.delete(record.spec.id);
+				this.buffers.delete(record.spec.id);
+			}
+		}));
+	}
+
 	async shutdown(): Promise<void> {
-		await Promise.all([...this.active.keys()].map((id) => this.stop(id, "cancelled", "Pi session shut down.")));
+		await Promise.all([...this.active.keys()].flatMap((id) => {
+			const record = this.records.get(id);
+			return record ? [this.stopRecord(record, "cancelled", "Pi session shut down.")] : [];
+		}));
 		for (const timer of this.staleTimers.values()) clearTimeout(timer);
 		this.staleTimers.clear();
 		this.events.removeAllListeners();
@@ -319,8 +354,13 @@ export class JobManager {
 		record.runtime.error = error;
 		writeJson(record.spec.runtimePath, record.runtime);
 		this.emit(record);
-		this.emitTerminal(record);
-		this.pruneTerminal();
+		if (this.hidden.delete(record.spec.id)) {
+			this.records.delete(record.spec.id);
+			this.buffers.delete(record.spec.id);
+		} else {
+			this.emitTerminal(record);
+			this.pruneTerminal();
+		}
 		return record;
 	}
 
@@ -345,6 +385,7 @@ export class JobManager {
 	}
 
 	private emitTerminal(record: JobRecord): void {
+		if (record.spec.parentSessionFile !== this.parentSessionFile) return;
 		runtimeEvents.record(this.pi, { type: "activate", source: { kind: "job", id: record.spec.id }, generation: record.spec.generation });
 		runtimeEvents.record(this.pi, {
 			type: "emit",
@@ -360,7 +401,6 @@ export class JobManager {
 				artifactRef: record.spec.artifactsDir,
 			},
 		});
-		chainCheckpoints.current?.due(`bounded job ${record.spec.id} settled`);
 		requestRuntimeDelivery();
 	}
 
@@ -388,8 +428,9 @@ export class JobManager {
 		});
 	}
 
-	private async waitOne(id: string, waitMs?: number, signal?: AbortSignal): Promise<JobRecord> {
-		const record = this.get(id);
+	private async waitOne(id: string, waitMs?: number, signal?: AbortSignal, includeHidden = false): Promise<JobRecord> {
+		const record = includeHidden ? this.records.get(id) : this.get(id);
+		if (!record) throw new Error(`Unknown job: ${id}`);
 		if (TERMINAL.has(record.runtime.status) || waitMs === 0) return record;
 		return new Promise<JobRecord>((resolve, reject) => {
 			let timer: NodeJS.Timeout | undefined;
@@ -398,7 +439,7 @@ export class JobManager {
 			const cleanup = (): void => { if (timer) clearTimeout(timer); this.events.off("change", listener); signal?.removeEventListener("abort", abort); };
 			this.events.on("change", listener);
 			signal?.addEventListener("abort", abort, { once: true });
-			if (waitMs !== undefined) timer = setTimeout(() => { cleanup(); resolve(this.get(id)); }, Math.max(0, waitMs));
+			if (waitMs !== undefined) timer = setTimeout(() => { cleanup(); resolve(record); }, Math.max(0, waitMs));
 			if (signal?.aborted) abort();
 		});
 	}

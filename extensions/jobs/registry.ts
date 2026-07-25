@@ -1,7 +1,7 @@
 import type { JobManager } from "./manager.ts";
 
-let manager: JobManager | undefined;
+const registry = globalThis as typeof globalThis & { __deevsPiKitJobManager?: JobManager };
 
-export function setJobManager(value: JobManager): void { manager = value; }
-export function clearJobManager(value: JobManager): void { if (manager === value) manager = undefined; }
-export function getJobManager(): JobManager | undefined { return manager; }
+export function setJobManager(value: JobManager): void { registry.__deevsPiKitJobManager = value; }
+export function clearJobManager(value: JobManager): void { if (registry.__deevsPiKitJobManager === value) delete registry.__deevsPiKitJobManager; }
+export function getJobManager(): JobManager | undefined { return registry.__deevsPiKitJobManager; }

@@ -13,16 +13,18 @@ export interface ChainCheckpointState {
 	lastSavedAt?: number;
 	lastLink?: string;
 	waiverReason?: string;
+	contextPressureHandled: boolean;
 }
 
 export type ChainCheckpointOperation =
 	| { type: "activate"; chain: string; branch: string; at: number }
 	| { type: "due"; reason: string; at: number }
 	| { type: "saved"; chain: string; branch: string; link?: string; at: number }
-	| { type: "waived"; reason: string; at: number };
+	| { type: "waived"; reason: string; at: number }
+	| { type: "context_reset"; at: number };
 
 export function emptyChainCheckpoint(): ChainCheckpointState {
-	return { version: 1, status: "idle", dueReasons: [], updatedAt: 0 };
+	return { version: 1, status: "idle", dueReasons: [], updatedAt: 0, contextPressureHandled: false };
 }
 
 export function reduceChainCheckpoint(state: ChainCheckpointState, operation: ChainCheckpointOperation): ChainCheckpointState {
@@ -32,7 +34,7 @@ export function reduceChainCheckpoint(state: ChainCheckpointState, operation: Ch
 	}
 	if (operation.type === "due") {
 		const dueReasons = [...new Set([...state.dueReasons, operation.reason])].slice(-6);
-		return { ...state, status: "due", dueReasons, waiverReason: undefined, updatedAt: operation.at };
+		return { ...state, status: "due", dueReasons, waiverReason: undefined, updatedAt: operation.at, contextPressureHandled: state.contextPressureHandled || operation.reason === "context usage reached 80%" };
 	}
 	if (operation.type === "saved") {
 		return {
@@ -47,7 +49,8 @@ export function reduceChainCheckpoint(state: ChainCheckpointState, operation: Ch
 			lastLink: operation.link,
 		};
 	}
-	return { ...state, status: "saved", dueReasons: [], waiverReason: operation.reason, updatedAt: operation.at };
+	if (operation.type === "waived") return { ...state, status: "saved", dueReasons: [], waiverReason: operation.reason, updatedAt: operation.at };
+	return { ...state, contextPressureHandled: false, updatedAt: operation.at };
 }
 
 export function replayChainCheckpoint(entries: readonly unknown[]): ChainCheckpointState {
@@ -110,9 +113,25 @@ export class ChainCheckpointService {
 	}
 
 	async detectGitMutation(cwd: string): Promise<void> {
+		const before = this.gitBeforeTurn;
 		const after = await gitFingerprint(this.pi, cwd);
-		if (this.gitBeforeTurn !== undefined && after !== undefined && after !== this.gitBeforeTurn) this.due("working tree changed");
+		if (before !== undefined && after !== undefined && after !== before && await headAdvanced(this.pi, cwd, before, after)) this.due("repository HEAD advanced");
 		this.gitBeforeTurn = undefined;
+	}
+
+	checkContextPressure(ctx: ExtensionContext): void {
+		const percent = ctx.getContextUsage()?.percent;
+		if (percent === null || percent === undefined) return;
+		if (percent < 80) {
+			if (this.state.contextPressureHandled) this.record({ type: "context_reset", at: Date.now() });
+			return;
+		}
+		if (this.state.contextPressureHandled) return;
+		this.due("context usage reached 80%");
+	}
+
+	contextCompacted(): void {
+		if (this.state.contextPressureHandled) this.record({ type: "context_reset", at: Date.now() });
 	}
 
 	beforeAgentStart(systemPrompt: string): string | undefined {
@@ -120,7 +139,10 @@ export class ChainCheckpointService {
 		this.remindNextTurn = false;
 		const target = this.state.chain ? `${this.state.chain}@${this.state.branch ?? "main"}` : "the relevant Chain";
 		const reasons = this.state.dueReasons.length ? ` Reasons: ${this.state.dueReasons.join("; ")}.` : "";
-		return `${systemPrompt}\n\nChain checkpoint: ${this.state.status === "due" ? "a durable checkpoint is due" : "resume with the active Chain"} for ${target}.${reasons} Load context before rediscovery and save a concise link after the next material milestone. Do not claim completion while a checkpoint is due unless it is explicitly waived with a reason.`;
+		const urgent = this.state.dueReasons.includes("context usage reached 80%")
+			? " Context is at least 80% full: save a concise Chain link before any other work."
+			: " Load context before rediscovery and save a concise link after the next material milestone.";
+		return `${systemPrompt}\n\nChain checkpoint: ${this.state.status === "due" ? "a durable checkpoint is due" : "resume with the active Chain"} for ${target}.${reasons}${urgent} Do not claim completion while a checkpoint is due unless it is explicitly waived with a reason.`;
 	}
 
 	clearStatus(): void {
@@ -134,8 +156,7 @@ export class ChainCheckpointService {
 			this.ctx.ui.setStatus("chains", undefined);
 			return;
 		}
-		const target = this.state.chain ? `${this.state.chain}@${this.state.branch ?? "main"}` : "unassigned";
-		this.ctx.ui.setStatus("chains", this.state.status === "due" ? `checkpoint due: ${target}` : undefined);
+		this.ctx.ui.setStatus("chains", this.state.status === "due" ? this.ctx.ui.theme?.fg("warning", "chain due") ?? "chain due" : undefined);
 	}
 }
 
@@ -157,7 +178,7 @@ export function registerChainCheckpoint(pi: ExtensionAPI, service: ChainCheckpoi
 	pi.on("session_tree", (_event, ctx) => service.restore(ctx, true));
 	pi.on("session_compact", (_event, ctx) => {
 		service.restore(ctx);
-		service.due("context compacted");
+		service.contextCompacted();
 	});
 	pi.on("turn_start", async (_event, ctx) => {
 		service.restore(ctx);
@@ -166,9 +187,11 @@ export function registerChainCheckpoint(pi: ExtensionAPI, service: ChainCheckpoi
 	pi.on("agent_settled", async (_event, ctx) => {
 		service.restore(ctx);
 		await service.detectGitMutation(ctx.cwd);
+		service.checkContextPressure(ctx);
 	});
 	pi.on("before_agent_start", (event, ctx) => {
 		service.restore(ctx);
+		service.checkContextPressure(ctx);
 		const systemPrompt = typeof event.systemPrompt === "string" ? event.systemPrompt : "";
 		const next = service.beforeAgentStart(systemPrompt);
 		return next ? { systemPrompt: next } : undefined;
@@ -196,7 +219,6 @@ export function registerChainCheckpoint(pi: ExtensionAPI, service: ChainCheckpoi
 			service.due("new Chain branch has no checkpoint");
 			return;
 		}
-		if (event.toolName === "edit" || event.toolName === "write") service.due(`${event.toolName} changed files`);
 		if (event.toolName === "mission_progress" && args?.checkpoint === true) service.due("Mission milestone recorded");
 	});
 	pi.on("session_shutdown", () => {
@@ -205,14 +227,18 @@ export function registerChainCheckpoint(pi: ExtensionAPI, service: ChainCheckpoi
 	});
 }
 
+async function headAdvanced(pi: ExtensionAPI, cwd: string, before: string, after: string): Promise<boolean> {
+	try {
+		return (await pi.exec("git", ["merge-base", "--is-ancestor", before, after], { cwd })).code === 0;
+	} catch {
+		return false;
+	}
+}
+
 async function gitFingerprint(pi: ExtensionAPI, cwd: string): Promise<string | undefined> {
 	try {
-		const [head, status] = await Promise.all([
-			pi.exec("git", ["rev-parse", "HEAD"], { cwd }),
-			pi.exec("git", ["status", "--porcelain=v1", "--untracked-files=all"], { cwd }),
-		]);
-		if (head.code !== 0 || status.code !== 0) return undefined;
-		return `${head.stdout.trim()}\n${status.stdout}`;
+		const head = await pi.exec("git", ["rev-parse", "HEAD"], { cwd });
+		return head.code === 0 ? head.stdout.trim() : undefined;
 	} catch {
 		return undefined;
 	}
@@ -225,6 +251,7 @@ function parseOperation(value: unknown): ChainCheckpointOperation | undefined {
 	if (operation.type === "due" && typeof operation.reason === "string") return operation as unknown as ChainCheckpointOperation;
 	if (operation.type === "saved" && typeof operation.chain === "string" && typeof operation.branch === "string") return operation as unknown as ChainCheckpointOperation;
 	if (operation.type === "waived" && typeof operation.reason === "string") return operation as unknown as ChainCheckpointOperation;
+	if (operation.type === "context_reset") return operation as unknown as ChainCheckpointOperation;
 	return undefined;
 }
 
@@ -232,4 +259,5 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 	return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
-export const chainCheckpoints = { current: undefined as ChainCheckpointService | undefined };
+const globalRegistry = globalThis as typeof globalThis & { __deevsPiKitChainCheckpoints?: { current?: ChainCheckpointService } };
+export const chainCheckpoints = globalRegistry.__deevsPiKitChainCheckpoints ??= {};

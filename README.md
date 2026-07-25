@@ -84,7 +84,7 @@ Tools: `chain_save`, `chain_load`, `chain_fork`, `chain_context`, `chain_list`, 
 
 Commands: `/chain-link`, `/chain-load`, `/chain-fork`, `/chain-list`, `/chain-search`.
 
-Pi session entries track active `saved` versus `checkpoint due` state across resume, mutation, Mission milestones, review, and compaction. See [`extensions/chains/README.md`](extensions/chains/README.md).
+Pi session entries track active `saved` versus `checkpoint due` state across resume, durable milestones, and a one-shot checkpoint forced at 80% context usage before compaction. See [`extensions/chains/README.md`](extensions/chains/README.md).
 
 ### Wiki
 

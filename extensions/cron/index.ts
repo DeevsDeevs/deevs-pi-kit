@@ -81,7 +81,7 @@ export default function cronExtension(pi: ExtensionAPI): void {
 			return manager.list().map((task) => task.id).filter((id) => id.startsWith(idPrefix)).map((id) => ({ value: deleting ? `delete ${id}` : id, label: id }));
 		},
 		handler: async (args, ctx) => {
-			const [action, id] = args.trim().split(/\s+/, 2);
+			let [action, id] = args.trim().split(/\s+/, 2);
 			if (action === "delete" && !id) {
 				ctx.ui.notify("Usage: /cron delete <id>", "warning");
 				return;
@@ -96,6 +96,25 @@ export default function cronExtension(pi: ExtensionAPI): void {
 				return;
 			}
 			const tasks = manager.list();
+			if (!action && ctx.mode === "tui") {
+				if (!tasks.length) return ctx.ui.notify("No cron tasks scheduled.", "info");
+				const choices = new Map<string, string>(tasks.map((task) => [`${task.recurring ? "recurring" : "one-shot"} · ${task.id} · ${task.cron}`, task.id]));
+				const chosen = await ctx.ui.select("Cron", [...choices.keys()]);
+				if (!chosen) return;
+				const chosenId = choices.get(chosen);
+				if (!chosenId) return;
+				action = chosenId;
+				id = chosenId;
+				const next = await ctx.ui.select(`Cron ${id}`, ["View details", "Delete task"]);
+				if (!next) return;
+				if (next === "Delete task") {
+					const confirm = await ctx.ui.select(`Delete Cron ${id}?`, ["Keep task", "Delete task"]);
+					if (confirm !== "Delete task") return;
+					manager.delete(id!);
+					ctx.ui.notify(`Deleted cron task ${id}.`, "info");
+					return;
+				}
+			}
 			const selected = action ? tasks.filter((task) => task.id === action || `${task.cron} ${task.prompt}`.toLowerCase().includes(action.toLowerCase())) : tasks;
 			if (!selected.length && ctx.mode === "tui") {
 				ctx.ui.notify(action ? `No cron tasks match ${JSON.stringify(action)}.` : "No cron tasks scheduled.", action ? "warning" : "info");

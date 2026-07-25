@@ -35,7 +35,7 @@ function setup(failReviewer = false) {
 	const service = new SubagentService(pi, executor, root);
 	service.setContext(ctx);
 	cleanup.push(() => service.dispose(), () => rmSync(root, { recursive: true, force: true }), () => rmSync(project, { recursive: true, force: true }));
-	return { service, ctx, branch };
+	return { service, ctx, branch, root, project, pi };
 }
 
 describe("SubagentService", () => {
@@ -45,6 +45,60 @@ describe("SubagentService", () => {
 		expect((defaulted as { spec: { limits: { wallMs: number; turns?: number } } }).spec.limits).toMatchObject({ wallMs: DEFAULT_TIMEOUT_MS });
 		const limited = await service.start({ agent: "explorer", task: "Inspect.", wallMs: 1_234, turns: 2 }, ctx);
 		expect((limited as { spec: { limits: { wallMs: number; turns?: number } } }).spec.limits).toMatchObject({ wallMs: 1_234, turns: 2 });
+	});
+
+	it("restores only runs owned by the exact parent Pi session", async () => {
+		const { service, ctx, root, project, pi } = setup();
+		const started = await service.start({ agent: "explorer", task: "Inspect." }, ctx) as { spec: { id: string } };
+		service.dispose();
+		const otherCtx = { ...ctx, cwd: project, sessionManager: { ...ctx.sessionManager, getSessionFile: () => "/tmp/other-parent.jsonl" } } as ExtensionContext;
+		await service.restore(otherCtx);
+		expect(service.list().runs).toEqual([]);
+		const otherExecutor = new DelegateExecutor({ artifactsRoot: root });
+		const otherService = new SubagentService(pi, otherExecutor, root);
+		cleanup.push(() => otherService.dispose());
+		await otherService.restore(otherCtx);
+		expect(otherService.list().runs).toEqual([]);
+		const originalExecutor = new DelegateExecutor({ artifactsRoot: root });
+		const originalService = new SubagentService(pi, originalExecutor, root);
+		cleanup.push(() => originalService.dispose());
+		await originalService.restore(ctx);
+		expect((await originalExecutor.wait(started.spec.id, 3_000)).runtime.status).toBe("completed");
+	});
+
+	it("does not adopt legacy groups without exact parent-session ownership", async () => {
+		const { service, ctx, root } = setup();
+		mkdirSync(path.join(root, "groups"), { recursive: true });
+		writeFileSync(path.join(root, "groups/legacy.json"), JSON.stringify({
+			version: 1, id: "legacy", generation: "generation", status: "completed", cwd: ctx.cwd,
+			createdAt: Date.now(), concurrency: 1, failFast: false, pending: [], children: [], active: [], launchFailures: [],
+		}));
+		await service.restore(ctx);
+		expect(service.list().groups).toEqual([]);
+	});
+
+	it("degrades an owned group with a missing child record instead of failing restore", async () => {
+		const { service, ctx, root } = setup();
+		mkdirSync(path.join(root, "groups"), { recursive: true });
+		writeFileSync(path.join(root, "groups/missing-child.json"), JSON.stringify({
+			version: 1,
+			id: "missing-child",
+			generation: "generation",
+			status: "running",
+			cwd: ctx.cwd,
+			createdAt: Date.now(),
+			concurrency: 1,
+			failFast: false,
+			pending: [],
+			children: ["absent-run"],
+			active: ["absent-run"],
+			launchFailures: [],
+			parentSessionFile: "/tmp/parent.jsonl",
+			childRoots: {},
+		}));
+		await expect(service.restore(ctx)).resolves.toBeUndefined();
+		const group = service.list().groups.find((candidate) => candidate.id === "missing-child");
+		expect(group).toMatchObject({ status: "failed", active: [], launchFailures: ["Missing child run record: absent-run"] });
 	});
 
 	it("runs a persisted bounded parallel group to quiescence", async () => {
@@ -60,6 +114,7 @@ describe("SubagentService", () => {
 
 		expect(result.status).toBe("completed");
 		expect(result.children).toHaveLength(2);
+		expect(Object.keys(result.childRoots ?? {})).toEqual(result.children);
 		expect(result.active).toEqual([]);
 		expect(result.pending).toEqual([]);
 		const emittedKinds = branch

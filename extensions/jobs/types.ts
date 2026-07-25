@@ -22,6 +22,8 @@ export interface JobSpec {
 	readyMode?: "substring" | "regex";
 	readyTimeoutMs?: number;
 	createdAt: number;
+	/** Exact parent Pi session that owns this durable Job. Legacy records may omit it. */
+	parentSessionFile?: string;
 	artifactsDir: string;
 	runtimePath: string;
 	logPath: string;

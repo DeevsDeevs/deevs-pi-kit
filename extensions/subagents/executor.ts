@@ -49,19 +49,27 @@ export class DelegateExecutor {
 		return [...this.runs.values()].filter((run) => includeTerminal || !TERMINAL.has(run.runtime.status)).sort((a, b) => b.runtime.startedAt - a.runtime.startedAt);
 	}
 
+	find(id: string): DelegateRun | undefined {
+		return this.runs.get(id);
+	}
+
 	get(id: string): DelegateRun {
-		const run = this.runs.get(id);
+		const run = this.find(id);
 		if (!run) throw new Error(`Unknown delegate run: ${id}`);
 		return run;
 	}
 
-	forget(id: string): boolean {
-		const run = this.runs.get(id);
-		if (!run || !TERMINAL.has(run.runtime.status)) return false;
+	detach(id: string): boolean {
+		if (!this.runs.has(id)) return false;
 		this.closeWatcher(id);
 		this.runs.delete(id);
 		this.roots.delete(id);
 		return true;
+	}
+
+	forget(id: string): boolean {
+		const run = this.runs.get(id);
+		return !!run && TERMINAL.has(run.runtime.status) && this.detach(id);
 	}
 
 	async start(input: DelegateStartInput): Promise<DelegateRun> {
@@ -87,6 +95,7 @@ export class DelegateExecutor {
 			model: input.model,
 			context: input.context ?? "fresh",
 			forkSessionFile: input.forkSessionFile,
+			parentSessionFile: input.parentSessionFile,
 			createdAt: now,
 			limits: limitsFrom(input),
 			...paths,
@@ -199,11 +208,15 @@ export class DelegateExecutor {
 		return this.accept({ spec: run.spec, runtime });
 	}
 
-	async restore(cwd: string): Promise<DelegateRun[]> {
+	async restore(cwd: string, parentSessionFile?: string): Promise<DelegateRun[]> {
 		const root = this.options.artifactsRoot ?? defaultDelegateRoot(cwd);
+		return this.restoreRoot(root, parentSessionFile);
+	}
+
+	async restoreRoot(root: string, parentSessionFile?: string): Promise<DelegateRun[]> {
 		for (const id of listRunIds(root)) {
 			const run = readRun(root, id);
-			if (!run) continue;
+			if (!run || (parentSessionFile !== undefined && run.spec.parentSessionFile !== parentSessionFile)) continue;
 			this.roots.set(id, root);
 			if (!TERMINAL.has(run.runtime.status)) {
 				const workerOwned = run.runtime.workerPid !== undefined && await ownsProcessIdentity(run.runtime.workerPid, run.runtime.workerIdentity);

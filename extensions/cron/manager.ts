@@ -252,7 +252,7 @@ export class CronManager {
 	}
 
 	private updateStatus(): void {
-		this.ctx?.ui.setStatus("cron", this.state?.pending ? "cron due" : undefined);
+		this.ctx?.ui.setStatus("cron", this.state?.pending ? this.ctx.ui.theme?.fg("warning", "cron due") ?? "cron due" : undefined);
 	}
 
 	private acknowledgeBranch(ctx: ExtensionContext): void {

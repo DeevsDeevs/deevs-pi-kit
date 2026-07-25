@@ -53,7 +53,7 @@ export class TextViewer implements Component {
 	render(width: number): string[] {
 		const safeWidth = Math.max(1, width);
 		const bodyWidth = Math.max(1, safeWidth - 4);
-		const lines = this.content.split(/\r?\n/).flatMap((line) => wrapTextWithAnsi(line || " ", bodyWidth));
+		const lines = this.content.replace(/(?:\r?\n)+$/, "").split(/\r?\n/).flatMap((line) => wrapTextWithAnsi(line || " ", bodyWidth));
 		const pageSize = this.getPageSize();
 		const maxOffset = Math.max(0, lines.length - pageSize);
 		this.offset = Math.min(this.offset, maxOffset);
