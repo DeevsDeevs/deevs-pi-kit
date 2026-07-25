@@ -1,6 +1,6 @@
 ---
 name: subagents
-description: Use owned curated Pi Kit personas for bounded exploration, review, testing, architecture, devops, language-specific review, and anti-slop passes.
+description: Use owned curated Pi Kit personas for bounded exploration, logic bug hunting, review, testing, architecture, devops, language-specific review, and anti-slop passes.
 ---
 
 # Subagents
@@ -10,6 +10,7 @@ Use `subagent` and `subagent_wait`. Pi Kit owns the persona catalog, policy, iso
 ## Delegate when useful
 
 - `explorer`: targeted non-trivial reconnaissance before editing.
+- `logic-hunter`: language-agnostic spec-vs-implementation and data/control-flow correctness hunting.
 - `reviewer`: fresh independent correctness/security/regression review.
 - `tester`: validation strategy and high-value missing cases.
 - `anti-slop`: remove unnecessary complexity after correctness is established.

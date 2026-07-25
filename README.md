@@ -46,7 +46,7 @@ Command: `/jobs` (`/jobs <id>`, `/jobs stop <id>`, `/jobs clear [id]`). On upgra
 
 ### Subagents
 
-Run focused staff agents in the background. Built-in agents include `explorer`, `architect`, `reviewer`, `tester`, `devops`, `python-dev`, `cpp-dev`, `rust-dev`, and `anti-slop`.
+Run focused staff agents in the background. Built-in agents include `explorer`, `architect`, `reviewer`, `tester`, `logic-hunter`, `devops`, `python-dev`, `cpp-dev`, `rust-dev`, and `anti-slop`.
 
 Tools: `subagent`, `subagent_wait`. Command: `/agents [run-or-group-id]`, `/agents stop <id>`, `/agents resume <id> <task>`, or `/agents clear [id]`.
 

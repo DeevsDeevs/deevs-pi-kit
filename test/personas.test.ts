@@ -7,6 +7,7 @@ const expectedAgents = [
   "cpp-dev",
   "devops",
   "explorer",
+  "logic-hunter",
   "python-dev",
   "reviewer",
   "rust-dev",
