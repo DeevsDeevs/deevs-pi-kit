@@ -1,6 +1,6 @@
 ---
 name: background-tasks
-description: Choose between bounded Pi Kit Jobs and Herdr-owned persistent or interactive processes. Never use shell detachment hacks.
+description: Choose between bounded Pi Kit Jobs, process-local session Cron, and Herdr-owned persistent or interactive processes. Never use shell detachment hacks.
 ---
 
 # Background Tasks
@@ -26,6 +26,10 @@ Workflow:
 
 Jobs use pipe stdio, close stdin after optional initial input, cap memory/log output, emit durable terminal events, and are killed or reconciled as lost when Pi ownership ends.
 
+## Use Cron when
+
+The user wants a reminder or recurring prompt in this exact Pi session. Use the `cron` tool with a five-field local-time expression. Cron fires only while the session process is open and idle, or coalesces missed occurrences when the same session is resumed manually. It cannot wake Pi or the machine.
+
 ## Use Herdr when
 
 The process is persistent or terminal-oriented:
@@ -36,7 +40,7 @@ The process is persistent or terminal-oriented:
 - unattended scheduling or reliable future wakeups;
 - anything requiring a pane or worktree lifecycle.
 
-Pi Kit intentionally does not own tmux, PTYs, persistent shells, panes, or daemon scheduling.
+Pi Kit intentionally does not own tmux, PTYs, persistent shells, panes, or daemon scheduling. Session Cron is not a reliable unattended wake mechanism.
 
 ## Use normal shell execution when
 

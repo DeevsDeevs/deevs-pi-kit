@@ -1,7 +1,7 @@
 {
   "name": "deevs-pi-kit",
   "version": "0.1.0",
-  "description": "Portable Pi package with bounded Jobs, curated Subagents, Missions, Chains, workflows, research tools, and skills",
+  "description": "Portable Pi package with bounded Jobs, curated Subagents, Missions, session Cron, Chains, workflows, research tools, and skills",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",

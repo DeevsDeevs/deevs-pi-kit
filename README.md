@@ -1,6 +1,6 @@
 # deevs-pi-kit
 
-Portable Pi package with bounded Jobs, process-isolated curated Subagents, trusted workflows, autonomous Missions, durable Chains, markdown wiki helpers, arXiv tools, session todos, and focused skills.
+Portable Pi package with bounded Jobs, process-isolated curated Subagents, trusted workflows, autonomous Missions, session Cron, durable Chains, markdown wiki helpers, arXiv tools, session todos, and focused skills.
 
 ## Install
 
@@ -23,6 +23,7 @@ extensions/jobs/        Bounded non-agent commands (`job_*`)
 extensions/subagents/   Owned curated personas and isolated runtime (`subagent*`)
 extensions/workflow/    Trusted-project JavaScript workflows (`workflow`)
 extensions/mission/     Autonomous branch-scoped objectives (`mission_*`)
+extensions/cron/        Process-local session schedules (`cron`, `/cron`)
 extensions/chains/      Durable markdown handoffs (`chain_*`)
 extensions/wiki/        Curated markdown wiki helpers (`wiki_*`)
 extensions/arxiv/       arXiv search, lookup, and BibTeX tools
@@ -37,7 +38,7 @@ skills/                 Agent behavior guidance
 
 ### Jobs
 
-Run bounded non-interactive commands with capped output, readiness checks, hard timeouts, durable terminal events, and process-tree cancellation. Persistent shells, servers, REPLs, panes, and unattended schedules belong in Herdr.
+Run bounded non-interactive commands with capped output, readiness checks, hard timeouts, durable terminal events, and process-tree cancellation. Persistent shells, servers, REPLs, panes, and reliable unattended schedules belong in Herdr.
 
 Tools: `job_start`, `job_wait`, `job_read`, `job_stop`.
 
@@ -66,6 +67,14 @@ Tools: `mission_get`, `mission_create`, `mission_update`, `mission_progress`, `m
 Commands: `/mission <objective> [--name short-title] [--req criterion] [--budget 200k] [--cost $2] [--chain name]`, `/mission status`, `/mission pause`, `/mission resume`, `/mission clear`, `/mission complete`/`end`/`stop`.
 
 Mission runtime state is reconstructed from the current Pi session branch; short title-derived slugs/chains avoid full-objective path spam; `.missions/<slug>/` stores human-readable generated artifacts including `mission.md`, `plan.md`, `audit.md`, and searchable `log.md`. See [`extensions/mission/README.md`](extensions/mission/README.md).
+
+### Cron
+
+Schedule a prompt for the current Pi session with a standard five-field local-time cron expression. Tasks persist by exact Pi session id, fire only while that session process is idle, boundedly coalesce missed recurring occurrences on resume, and advance only after Pi admits the generated `<cron-fire>` follow-up.
+
+Tool: `cron` with `create`, `list`, and `delete` actions. Command: `/cron` or `/cron delete <id>`.
+
+Cron is process-local: it cannot wake a closed Pi process or machine. Use Herdr/OS scheduling for reliable unattended wakeups. See [`extensions/cron/README.md`](extensions/cron/README.md).
 
 ### Chains
 
@@ -117,7 +126,7 @@ Commands: `/codex-fast`, `/codex-fast status`, `/codex-fast on`, `/codex-fast of
 
 Optional config: `.pi/codex-fast.json` or `~/.pi/agent/extensions/codex-fast.json` with `{ "enabled": false, "showStatus": true }`.
 
-Requires `/login` → ChatGPT Plus/Pro (Codex), and only applies to `openai-codex` GPT-5.4/GPT-5.5.
+Requires `/login` → ChatGPT Plus/Pro (Codex), and applies to any `openai-codex-responses` model instead of a version allowlist.
 
 ### Notifier
 
