@@ -9,6 +9,7 @@ explorer    targeted code/context reconnaissance
 architect   design and migration planning
 reviewer    correctness, security, and regression review
 tester      validation strategy and coverage gaps
+logic-hunter spec-vs-implementation logic bug hunting
 devops      runtime, config, and deployment investigation
 python-dev  Python-specific review
 cpp-dev     C++ correctness and performance review
@@ -24,6 +25,8 @@ Persona Markdown, metadata, discovery, model/tool/write policy, and tests live i
 subagent       fresh run, persistent resume, or bounded parallel group
 subagent_wait  status, wait, or cancellation with real settlement
 ```
+
+`subagent_wait` blocks until settlement by default. Prefer one bounded wait over repeated `waitMs: 0` status calls.
 
 ## Guarantees
 
