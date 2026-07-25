@@ -201,20 +201,30 @@ function isRuntimeEvent(value: unknown): value is RuntimeEvent {
 	const event = asRecord(value);
 	const source = asRecord(event?.source);
 	return event?.version === 1
-		&& typeof event.id === "string"
-		&& typeof event.dedupeKey === "string"
+		&& nonEmptyString(event.id)
+		&& nonEmptyString(event.dedupeKey)
 		&& isSourceIdentity(source)
-		&& typeof source.generation === "string"
+		&& nonEmptyString(source.generation)
 		&& (event.type === "attention" || event.type === "terminal")
-		&& typeof event.status === "string"
-		&& typeof event.createdAt === "number"
-		&& typeof event.summary === "string";
+		&& ["completed", "partial", "failed", "cancelled", "timeout", "limited", "blocked", "lost"].includes(String(event.status))
+		&& typeof event.createdAt === "number" && Number.isFinite(event.createdAt)
+		&& typeof event.summary === "string"
+		&& (event.usage === undefined || isRuntimeUsage(event.usage));
 }
 
 function isSourceIdentity(value: Record<string, unknown> | undefined): value is Record<string, unknown> & { kind: RuntimeSourceKind; id: string } {
 	return !!value
-		&& ["subagent", "subagent-group", "workflow", "job", "mission"].includes(String(value.kind))
-		&& typeof value.id === "string";
+		&& ["subagent", "subagent-group", "job", "mission"].includes(String(value.kind))
+		&& nonEmptyString(value.id);
+}
+
+function isRuntimeUsage(value: unknown): value is RuntimeUsage {
+	const usage = asRecord(value);
+	return !!usage && ["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "costUsd"].every((key) => typeof usage[key] === "number" && Number.isFinite(usage[key]) && Number(usage[key]) >= 0);
+}
+
+function nonEmptyString(value: unknown): value is string {
+	return typeof value === "string" && value.trim().length > 0;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

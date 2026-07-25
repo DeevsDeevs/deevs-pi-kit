@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstat, mkdir, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
+import { utf8Head } from "../shared/bytes.ts";
 import { basenameId, extractTitle, pageId, parseMetadata, parseTaxonomyTags, parseWikiLinks, sameDirCandidate, stripFrontmatter } from "./parser.ts";
 import type {
 	WikiAmbiguousLink,
@@ -368,7 +369,7 @@ async function markdownFiles(root: string): Promise<string[]> {
 
 async function readBounded(path: string): Promise<string> {
 	const content = await readFile(path, "utf8");
-	return Buffer.byteLength(content, "utf8") > MAX_FILE_BYTES ? fitUtf8(content, MAX_FILE_BYTES) : content;
+	return Buffer.byteLength(content, "utf8") > MAX_FILE_BYTES ? utf8Head(content, MAX_FILE_BYTES) : content;
 }
 
 async function assertEmptyOrMissing(path: string): Promise<void> {
@@ -434,15 +435,9 @@ function truncateText(value: string, maxBytes: number, label: string): { text: s
 	if (Buffer.byteLength(value, "utf8") <= maxBytes) return { text: value, truncated: false };
 	const suffix = `\n\n[${label} truncated to ${maxBytes} bytes]`;
 	const suffixBytes = Buffer.byteLength(suffix, "utf8");
-	return { text: `${fitUtf8(value, Math.max(0, maxBytes - suffixBytes))}${suffix}`, truncated: true };
+	return { text: `${utf8Head(value, Math.max(0, maxBytes - suffixBytes))}${suffix}`, truncated: true };
 }
 
-function fitUtf8(value: string, maxBytes: number): string {
-	if (maxBytes <= 0) return "";
-	let text = value;
-	while (Buffer.byteLength(text, "utf8") > maxBytes && text.length > 0) text = text.slice(0, -1);
-	return text;
-}
 
 function tokenize(text: string): string[] {
 	return text.toLowerCase().match(/[a-z0-9][a-z0-9_-]{1,}/g)?.map(stem).filter(Boolean) ?? [];

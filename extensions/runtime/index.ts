@@ -14,13 +14,9 @@ export default function runtimeExtension(pi: ExtensionAPI): void {
 		void runtimeDelivery.maybeDeliver();
 	});
 	pi.on("message_start", (event) => runtimeDelivery.acknowledgeMessage(event.message));
-	pi.on("before_agent_start", (_event, ctx) => {
-		runtimeDelivery.setContext(ctx);
-		runtimeDelivery.acknowledgeDelivered(ctx);
-	});
+	pi.on("before_agent_start", (_event, ctx) => runtimeDelivery.setContext(ctx));
 	pi.on("agent_settled", (_event, ctx) => {
 		runtimeDelivery.setContext(ctx);
-		runtimeDelivery.acknowledgeDelivered(ctx);
 		void runtimeDelivery.maybeDeliver();
 	});
 	pi.on("session_shutdown", () => runtimeDelivery.clearContext());

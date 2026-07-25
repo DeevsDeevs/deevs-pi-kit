@@ -50,7 +50,7 @@ Run focused staff agents in the background. Built-in agents include `explorer`, 
 
 Tools: `subagent`, `subagent_wait`. Command: `/agents [run-or-group-id]`, `/agents stop <id>`, `/agents resume <id> <task>`, or `/agents clear [id]`.
 
-Subagents are read-only unless `allowWrite: true` is explicitly authorized by the latest user message. Read-only personas receive `safe_read`, `safe_list`, and `safe_search`—never unrestricted `bash`. The process-isolated executor supports parallel groups, hard cancellation, exact per-run usage, detached recovery, persistent agent identity, and resume into the exact private Pi session. Omitted turn/token/cost limits are unbounded; wall time defaults to six hours and is capped at 24 hours. Explicit orchestrator limits always win. Project model/concurrency settings remain in `.pi/subagents.json`.
+Subagents are read-only unless `allowWrite: true` is requested and the user confirms the run in the TUI. Read-only personas receive `safe_read`, `safe_list`, and `safe_search`—never unrestricted `bash`. The process-isolated executor supports parallel groups, hard cancellation, exact per-run usage, detached recovery, persistent agent identity, and resume into the exact private Pi session. Omitted turn/token/cost limits are unbounded; wall time defaults to six hours and is capped at 24 hours. Explicit orchestrator limits always win. Project model/concurrency settings remain in `.pi/subagents.json`.
 
 ### Workflows
 
@@ -66,7 +66,7 @@ Tools: `mission_get`, `mission_create`, `mission_update`, `mission_progress`, `m
 
 Commands: `/mission <objective> [--name short-title] [--req criterion] [--budget 200k] [--cost $2] [--chain name]`, `/mission status`, `/mission pause`, `/mission resume`, `/mission clear`, `/mission complete`/`end`/`stop`.
 
-Mission runtime state is reconstructed from the current Pi session branch; short title-derived slugs/chains avoid full-objective path spam; `.missions/<slug>/` stores human-readable generated artifacts including `mission.md`, `plan.md`, `audit.md`, and searchable `log.md`. See [`extensions/mission/README.md`](extensions/mission/README.md).
+Mission runtime state is reconstructed from the current Pi session branch; short title-derived slugs/chains avoid full-objective path spam; `.missions/<slug>/` stores the canonical `mission.md` (including the completion audit) and searchable `log.md`. See [`extensions/mission/README.md`](extensions/mission/README.md).
 
 ### Cron
 
@@ -82,7 +82,7 @@ Save and search durable multi-session handoffs under `.chains/`.
 
 Tools: `chain_save`, `chain_load`, `chain_fork`, `chain_context`, `chain_list`, `chain_search`.
 
-Commands: `/chain-link`, `/chain-load`, `/chain-fork`, `/chain-list`, `/chain-search`.
+Commands: `/chains`, `/chain-link`, `/chain-load`, `/chain-fork`, `/chain-list`, `/chain-search`, `/chain-waive <reason>`.
 
 Pi session entries track active `saved` versus `checkpoint due` state across resume, durable milestones, and a one-shot checkpoint forced at 80% context usage before compaction. See [`extensions/chains/README.md`](extensions/chains/README.md).
 
@@ -154,4 +154,4 @@ npm install
 npm run check
 ```
 
-`npm run check` runs strict typechecking, the unit/integration/UI suite, reproducible RPC/print/JSON mode smokes, a production-dependency audit, and a package dry run against Pi 0.82.
+`npm run check` runs strict typechecking, the unit/integration/UI suite, reproducible RPC/print/JSON mode smokes, a full lockfile supply-chain audit (including Pi/TypeScript/Vitest development tooling), and a package dry run against Pi 0.82. The audit has one narrow, expiring exception for `GHSA-mh99-v99m-4gvg`: Pi 0.82.x's published shrinkwrap pins dev-only `brace-expansion@5.0.7` and prevents downstream selection of fixed 5.0.8; the exception expires 2026-08-15 and all other high-severity findings fail the gate.

@@ -76,9 +76,13 @@ describe("runtime event reducer", () => {
 		const state = replayRuntimeEventEntries([
 			{ type: "custom", customType: "other", data: operation },
 			{ type: "custom", customType: "deevs.runtime-event-op.v1", data: { type: "emit" } },
+			{ type: "custom", customType: "deevs.runtime-event-op.v1", data: { type: "activate", source: { kind: "workflow", id: "wf" }, generation: "g1" } },
+			{ type: "custom", customType: "deevs.runtime-event-op.v1", data: { type: "emit", event: { ...event(), id: "bad-status", status: "running" } } },
+			{ type: "custom", customType: "deevs.runtime-event-op.v1", data: { type: "emit", event: { ...event(), id: "bad-usage", usage: { inputTokens: -1 } } } },
 			{ type: "custom", customType: "deevs.runtime-event-op.v1", data: operation },
 		]);
 
 		expect(pendingRuntimeEvents(state).map((item) => item.id)).toEqual(["event-1"]);
+		expect(state.generations["workflow:wf"]).toBeUndefined();
 	});
 });

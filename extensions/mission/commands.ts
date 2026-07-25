@@ -1,12 +1,12 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { initializeMissionArtifacts, updateMissionSummaryArtifact, writeCompletionAudit } from "./artifacts.ts";
+import { initializeMissionArtifacts, updateMissionSummaryArtifact } from "./artifacts.ts";
 import type { MissionState } from "./state.ts";
-import { formatMission } from "./tools.ts";
-import type { MissionCreateInput, MissionStatus } from "./types.ts";
+import { completeMission, formatMission } from "./tools.ts";
+import type { MissionCompleteInput, MissionCreateInput, MissionStatus } from "./types.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
 import { chainCheckpoints } from "../chains/checkpoint.ts";
 
-export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, setContext: (ctx: ExtensionContext) => void, maybeContinue: (ctx: ExtensionContext) => void, hooks: { onCreated?: (ctx: ExtensionContext) => void; onChanged?: (ctx: ExtensionContext) => void; onCompleted?: (ctx: ExtensionContext) => void } = {}): void {
+export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, setContext: (ctx: ExtensionContext) => void, maybeContinue: (ctx: ExtensionContext) => void, hooks: { validateCompletion?: (input: MissionCompleteInput, ctx: ExtensionContext, directUserRequest?: boolean) => Promise<string[]> | string[]; onCreated?: (ctx: ExtensionContext) => void; onChanged?: (ctx: ExtensionContext) => void; onCompleted?: (ctx: ExtensionContext) => void } = {}): void {
 	pi.registerCommand("mission", {
 		description: "Create/manage a branch-scoped Mission.",
 		handler: async (args, ctx) => {
@@ -45,9 +45,13 @@ export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, s
 				return;
 			}
 			if (command === "complete" || command === "end" || command === "stop") {
-				if (await completeByUserRequest(pi, state, ctx, `/mission ${command}`)) {
-					chainCheckpoints.current?.due("Mission ended by user request");
-					hooks.onCompleted?.(ctx);
+				try {
+					const result = await completeMission(pi, state, ctx, { userRequested: true }, `/mission ${command}`, hooks, true);
+					if (result.alreadyComplete) ctx.ui.notify(`Mission already complete: ${result.mission!.title}`, "info");
+					else if (result.blockers?.length) ctx.ui.notify(`Mission completion blocked:\n${result.blockers.map((blocker) => `- ${blocker}`).join("\n")}`, "error");
+					else ctx.ui.notify(`${formatMission(result.mission, result.usage)}\nResume: /mission resume`, "info");
+				} catch (error) {
+					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 				}
 				return;
 			}
@@ -75,28 +79,6 @@ async function setStatus(pi: ExtensionAPI, state: MissionState, status: MissionS
 		ctx.ui.notify(formatMission(mission, state.readUsage()), "info");
 	} catch (error) {
 		ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
-	}
-}
-
-async function completeByUserRequest(pi: ExtensionAPI, state: MissionState, ctx: ExtensionContext, reason: string): Promise<boolean> {
-	try {
-		const existing = state.readAny();
-		if (existing?.status === "complete") {
-			ctx.ui.notify(`Mission already complete: ${existing.title}`, "info");
-			return false;
-		}
-		const summary = "Mission ended at explicit user request. Use /mission resume to continue if needed.";
-		const event = state.statusEvent("complete", reason, summary);
-		const mission = state.append(pi, event);
-		if (!mission) return false;
-		const usage = state.readUsage();
-		await writeCompletionAudit(mission, summary, [{ requirement: "User-requested mission end", evidence: "The user explicitly asked to end/complete the mission; this records closure without claiming all objective requirements are satisfied. Use /mission resume to continue if needed." }], usage);
-		await updateMissionSummaryArtifact(mission, usage);
-		ctx.ui.notify(`${formatMission(mission, usage)}\nResume: /mission resume`, "info");
-		return true;
-	} catch (error) {
-		ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
-		return false;
 	}
 }
 

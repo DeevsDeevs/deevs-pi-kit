@@ -81,11 +81,11 @@ export class MissionRuntime {
 		this.updateStatus();
 	}
 
-	async validateCompletion(input: MissionCompleteInput, ctx: ExtensionContext): Promise<string[]> {
+	async validateCompletion(input: MissionCompleteInput, ctx: ExtensionContext, directUserRequest = false): Promise<string[]> {
 		this.restore(ctx);
 		const mission = this.state.readAny();
 		if (!mission) return ["No Mission exists on this branch."];
-		if (input.userRequested) return hasExplicitUserEndRequest(ctx) ? [] : ["userRequested=true is not authorized by the latest real user message; use the ordinary completion evidence gate."];
+		if (input.userRequested) return directUserRequest || hasExplicitUserEndRequest(ctx) ? [] : ["userRequested=true is not authorized by the latest real user message; use the ordinary completion evidence gate."];
 		const blockers: string[] = [];
 		const audit = input.audit ?? [];
 		for (const requirement of mission.requirements) {
@@ -98,8 +98,12 @@ export class MissionRuntime {
 		if (!["clear", "skipped", "not_required"].includes(mission.reviewStatus ?? "not_required")) blockers.push(`Independent review is ${mission.reviewStatus ?? "due"}.`);
 		if (mission.reviewStatus === "skipped" && !mission.reviewSkippedReason) blockers.push("Review was skipped without a recorded reason.");
 		if (chainCheckpoints.current?.read().status === "due") blockers.push("The active Chain checkpoint is due.");
-		const activeChildren = this.activeChildren();
-		if (activeChildren.length) blockers.push(`Child execution has not settled: ${activeChildren.map((run) => run.spec.id).join(", ")}`);
+		try {
+			const activeChildren = this.activeChildren();
+			if (activeChildren.length) blockers.push(`Child execution has not settled: ${activeChildren.map((run) => run.spec.id).join(", ")}`);
+		} catch (error) {
+			blockers.push(`Cannot verify child settlement: ${error instanceof Error ? error.message : String(error)}`);
+		}
 		const activeJobs = this.activeJobs();
 		if (activeJobs.length) blockers.push(`Jobs have not settled: ${activeJobs.map((job) => job.spec.id).join(", ")}`);
 		return blockers;
@@ -164,7 +168,13 @@ export class MissionRuntime {
 		const mission = this.state.read();
 		if (this.disposed || !mission || mission.status !== "active" || this.continuationInFlight) return;
 		if (!ctx.isIdle() || ctx.hasPendingMessages() || !ctx.sessionManager.getSessionFile()) return;
-		if (this.state.budgetExceeded() || this.activeChildren().length || this.activeJobs().length || mission.reviewStatus === "running") return;
+		let activeChildren: DelegateRun[];
+		try {
+			activeChildren = this.activeChildren();
+		} catch {
+			return;
+		}
+		if (this.state.budgetExceeded() || activeChildren.length || this.activeJobs().length || mission.reviewStatus === "running") return;
 		const event = this.state.continuedEvent();
 		this.state.append(this.pi, event);
 		this.continuationInFlight = true;
@@ -312,7 +322,8 @@ export class MissionRuntime {
 		let run: DelegateRun;
 		try {
 			run = getSubagentService().executor.get(mission.reviewRunId);
-		} catch {
+		} catch (error) {
+			this.failReview(mission, `independent review run lost: ${error instanceof Error ? error.message : String(error)}`);
 			return;
 		}
 		if (["starting", "running", "stopping"].includes(run.runtime.status)) return;
@@ -337,11 +348,7 @@ export class MissionRuntime {
 	}
 
 	private activeChildren(excludeId?: string): DelegateRun[] {
-		try {
-			return getSubagentService().list().runs.filter((run) => run.spec.id !== excludeId && ["starting", "running", "stopping"].includes(run.runtime.status));
-		} catch {
-			return [];
-		}
+		return getSubagentService().list().runs.filter((run) => run.spec.id !== excludeId && ["starting", "running", "stopping"].includes(run.runtime.status));
 	}
 
 	private updateStatus(): void {
@@ -378,7 +385,7 @@ function continuationMessage(mission: MissionCurrent): string {
 		`Objective: ${mission.objective}`,
 		`Requirements: ${mission.requirements.map((item) => `• ${item}`).join(" ")}`,
 		`Review: ${mission.reviewStatus ?? "not_required"}${mission.reviewReason ? ` (${mission.reviewReason})` : ""}.`,
-		"Execute one reversible, verifiable slice. Make best judgments without routine questions. Stop for credentials, safety, irreversible operations, explicit approval boundaries, terminal error, or a genuine repeated blocker. Record milestone evidence with mission_progress. Completion requires validation, independent review convergence, child settlement, Chain checkpoint, and a requirement evidence audit.",
+		"Choose the highest-leverage next action toward the full objective; do not shrink scope to fit one turn, and work until a natural turn boundary. Make best judgments without routine questions. Stop for credentials, safety, irreversible operations, explicit approval boundaries, terminal error, or a genuine repeated blocker. Record milestone evidence with mission_progress. Completion requires validation, independent review convergence, child settlement, Chain checkpoint, and a requirement evidence audit.",
 	].join("\n");
 }
 

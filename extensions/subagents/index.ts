@@ -8,6 +8,7 @@ import { formatDuration, formatUsage } from "../shared/runtime-ui.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
 import { loadBuiltinAgents } from "./agents.ts";
 import { toToolUsage, type RuntimeUsage } from "../shared/runtime-events.ts";
+import { utf8Tail } from "../shared/bytes.ts";
 
 const TaskSchema = Type.Object({
 	agent: Type.String({ description: "Curated Pi Kit persona name" }),
@@ -103,18 +104,16 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			"Use fresh independent runs for review and refutation; resume only when continuity is required.",
 			"Keep scope concrete; omitted turn/token/cost limits are unbounded, while wall time defaults to six hours.",
 			"Set tighter limits when the orchestrator has a reason; never add arbitrary tiny defaults.",
-			"Never enable allowWrite unless the user explicitly requested delegated writes.",
+			"Never enable allowWrite unless the user explicitly requested delegated writes; Pi confirms each write-capable run in the TUI.",
 			"Use subagent_wait instead of polling output.",
 		],
 		parameters: SubagentSchema,
 		async execute(_toolCallId, params: SubagentStartRequest, signal, onUpdate, ctx) {
 			setContext(ctx);
 			if (signal?.aborted) throw signal.reason;
-			const writeRequested = params.allowWrite === true || params.tasks?.some((task) => task.allowWrite) === true || (params.resume ? service.executor.get(params.resume).spec.allowWrite : false);
-			if (writeRequested && !hasDelegatedWriteAuthorization(ctx)) throw new Error("Writing or resuming a write-capable Subagent requires fresh explicit authorization in the latest user message.");
 			const unsubscribeUpdate = service.executor.onChange((run) => onUpdate?.({ content: [{ type: "text", text: formatStart(run) }], details: run }));
 			try {
-				const result = await service.start({ ...params, writeAuthorized: writeRequested }, ctx);
+				const result = await service.start(params, ctx);
 				updateStatus();
 				return { content: [{ type: "text" as const, text: formatStart(result) }], details: result, usage: claimUsage([result]) };
 			} finally {
@@ -175,8 +174,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			if (action === "resume" && id) {
 				const task = rest.join(" ").trim();
 				if (!task) return context.ui.notify("Usage: /agents resume <run-id> <task>", "warning");
-				const writeAuthorized = hasDelegatedWriteAuthorization(context);
-				const resumed = await service.start({ resume: id, task, background: true, writeAuthorized }, context);
+				const resumed = await service.start({ resume: id, task, background: true }, context);
 				await showTextViewer(context, "Subagent resumed", formatStart(resumed));
 				return;
 			}
@@ -313,33 +311,13 @@ function browserTokens(run: DelegateRun): string {
 	return tokens >= 1_000_000 ? `${(tokens / 1_000_000).toFixed(1)}m` : tokens >= 1_000 ? `${(tokens / 1_000).toFixed(1)}k` : String(tokens);
 }
 
-export function hasDelegatedWriteAuthorization(ctx: ExtensionContext): boolean {
-	const branch = ctx.sessionManager.getBranch() as readonly unknown[];
-	for (let index = branch.length - 1; index >= 0; index--) {
-		const entry = branch[index] as { type?: string; message?: { role?: string; content?: unknown } } | undefined;
-		if (entry?.type !== "message" || entry.message?.role !== "user") continue;
-		const content = entry.message.content;
-		const text = typeof content === "string" ? content : Array.isArray(content)
-			? content.map((part) => part && typeof part === "object" && "text" in part ? String((part as { text: unknown }).text) : "").join(" ")
-			: "";
-		const normalized = text.toLowerCase().replace(/\s+/g, " ").trim();
-		if (normalized.includes("?") || /\b(do not|don't|dont|never)\b.{0,80}\b(delegate|subagent|agent)\b/.test(normalized)) return false;
-		const action = "(?:write|writing|edit|edits|implement|implementation|fix|change|changes|modify)";
-		return new RegExp(`^(?:please\\s+)?(?:authorize|allow|delegate|have|let)\\b.{0,100}\\b(?:subagent|agent)\\b.{0,100}\\b${action}\\b[.!]*$`).test(normalized)
-			|| new RegExp(`^(?:please\\s+)?delegate\\b.{0,100}\\b${action}\\b.{0,100}\\b(?:subagent|agent)\\b[.!]*$`).test(normalized);
-	}
-	return false;
-}
-
 function clampBytes(value: number | undefined): number {
 	return Number.isFinite(value) ? Math.max(1, Math.min(Math.floor(value!), 262_144)) : 65_536;
 }
 
 function truncateBytes(text: string, maxBytes: number): string {
 	if (Buffer.byteLength(text) <= maxBytes) return text;
-	let tail = text.slice(-maxBytes);
-	while (Buffer.byteLength(tail) > maxBytes) tail = tail.slice(1);
-	return `[truncated from start]\n${tail}`;
+	return `[truncated from start]\n${utf8Tail(text, maxBytes)}`;
 }
 
 function textContent(content: Array<{ type: string; text?: string }>): string {

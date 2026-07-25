@@ -353,7 +353,7 @@ export class ChainService {
 		const path = await this.safeLinkPath(chain, filename);
 		const handle = await open(path, "r");
 		try {
-			const buffer = Buffer.alloc(Math.max(1, maxBytes));
+			const buffer = Buffer.allocUnsafe(Math.max(1, maxBytes));
 			const { bytesRead } = await handle.read(buffer, 0, buffer.byteLength, 0);
 			return buffer.subarray(0, bytesRead).toString("utf8");
 		} finally {

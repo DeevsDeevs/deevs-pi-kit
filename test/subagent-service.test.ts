@@ -45,6 +45,8 @@ describe("SubagentService", () => {
 		expect((defaulted as { spec: { limits: { wallMs: number; turns?: number } } }).spec.limits).toMatchObject({ wallMs: DEFAULT_TIMEOUT_MS });
 		const limited = await service.start({ agent: "explorer", task: "Inspect.", wallMs: 1_234, turns: 2 }, ctx);
 		expect((limited as { spec: { limits: { wallMs: number; turns?: number } } }).spec.limits).toMatchObject({ wallMs: 1_234, turns: 2 });
+		const modeled = await service.start({ agent: "explorer", task: "Inspect.", model: "provider/model", background: false }, ctx);
+		expect((modeled as { spec: { model?: string } }).spec.model).toBe("provider/model");
 	});
 
 	it("restores only runs owned by the exact parent Pi session", async () => {
@@ -195,12 +197,14 @@ describe("SubagentService", () => {
 		expect(branch.some((entry) => (entry.data as { event?: { source?: { kind?: string; id?: string } } })?.event?.source?.kind === "subagent-group" && (entry.data as { event?: { source?: { id?: string } } }).event?.source?.id === group.id)).toBe(false);
 	});
 
-	it("enforces write authorization and persona tool policy at the service boundary", async () => {
+	it("enforces interactive write authorization and persona tool policy at the service boundary", async () => {
 		const { service, ctx } = setup();
-		await expect(service.start({ agent: "reviewer", task: "Edit it.", allowWrite: true }, ctx)).rejects.toThrow("explicit user authorization");
+		const deniedCtx = { ...ctx, mode: "tui", ui: { confirm: async () => false } } as unknown as ExtensionContext;
+		const approvedCtx = { ...ctx, mode: "tui", ui: { confirm: async () => true } } as unknown as ExtensionContext;
+		await expect(service.start({ agent: "reviewer", task: "Edit it.", allowWrite: true }, deniedCtx)).rejects.toThrow("not authorized");
 		await expect(service.start({ agent: "reviewer", task: "Edit it.", tools: ["edit"] }, ctx)).rejects.toThrow("not allowed");
-		const authorized = await service.start({ agent: "reviewer", task: "Edit it.", allowWrite: true, writeAuthorized: true, background: false }, ctx);
+		const authorized = await service.start({ agent: "reviewer", task: "Edit it.", allowWrite: true, background: false }, approvedCtx);
 		expect((authorized as { spec: { id: string; tools: string[] } }).spec.tools).toContain("edit");
-		await expect(service.start({ resume: (authorized as { spec: { id: string } }).spec.id, task: "Continue." }, ctx)).rejects.toThrow("fresh explicit user authorization");
+		await expect(service.start({ resume: (authorized as { spec: { id: string } }).spec.id, task: "Continue." }, deniedCtx)).rejects.toThrow("not authorized");
 	});
 });

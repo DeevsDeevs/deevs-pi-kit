@@ -12,7 +12,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "audit": "npm audit --omit=dev --audit-level=high",
+    "audit": "node scripts/audit.mjs",
     "smoke:modes": "node scripts/smoke-modes.mjs",
     "check": "npm run typecheck && npm test && npm run smoke:modes && npm run audit && npm pack --dry-run"
   },

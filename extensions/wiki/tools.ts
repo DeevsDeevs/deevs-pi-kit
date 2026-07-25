@@ -148,7 +148,7 @@ function wikiCall(action: string, target: string, theme: Theme): Text {
 	return new Text(theme.fg("toolTitle", theme.bold(`wiki ${action} `)) + theme.fg("muted", target.replace(/\s+/g, " ").slice(0, 90)), 0, 0);
 }
 
-function wikiResult(details: unknown, expanded: boolean, theme: Theme): Text {
+export function wikiResult(details: unknown, expanded: boolean, theme: Theme): Text {
 	const value = details as Record<string, unknown> | undefined;
 	if (!value) return new Text(theme.fg("dim", "Wiki operation complete"), 0, 0);
 	const path = typeof value.path === "string" ? value.path : "wiki";
@@ -162,7 +162,7 @@ function wikiResult(details: unknown, expanded: boolean, theme: Theme): Text {
 	const created = value.created as string[] | undefined;
 	if (created) return new Text(`${theme.fg("success", value.dryRun ? "preview" : "✓ created")} ${theme.fg("accent", path)} · ${created.length} file(s)`, 0, 0);
 	if (typeof value.pageCount === "number") return new Text(`${theme.fg("success", "✓")} ${theme.fg("accent", path)} · ${value.pageCount} pages`, 0, 0);
-	const included = value.includedPages as unknown[] | undefined;
+	const included = value.pages as unknown[] | undefined;
 	if (included) return new Text(`${theme.fg("success", "✓")} context from ${included.length} page(s)${expanded && typeof value.context === "string" ? `\n${value.context}` : ""}`, 0, 0);
 	return new Text(`${theme.fg("success", "✓")} ${theme.fg("accent", path)}`, 0, 0);
 }

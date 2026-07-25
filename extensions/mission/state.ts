@@ -34,6 +34,7 @@ export class MissionState {
 	loadFromSession(ctx: ExtensionContext): void {
 		const branch = ctx.sessionManager.getBranch() as Array<any>;
 		const rolling = zeroUsage();
+		let terminalUsage: MissionUsage | undefined;
 		const seenSubagents = new Set<string>();
 		this.current = undefined;
 		this.progress = [];
@@ -45,13 +46,16 @@ export class MissionState {
 					? { ...rawEvent, baselineMainTokens: rolling.mainTokens, baselineSubagentTokens: rolling.subagentTokens, baselineMainCostUsd: rolling.mainCostUsd, baselineSubagentCostUsd: rolling.subagentCostUsd }
 					: rawEvent;
 				this.applyEvent(event);
+				const status = (this.current as MissionCurrent | undefined)?.status;
+				if (["complete", "cleared", "budget_limited"].includes(status ?? "")) terminalUsage = { ...rolling };
 				continue;
 			}
 			addUsageFromEntry(rolling, entry, seenSubagents);
 		}
 		const current = this.current as MissionCurrent | undefined;
 		if (current) current.artifactDir = missionDir(ctx.cwd, current.slug);
-		this.usage = current ? computeUsage(branch, current) : zeroUsage();
+		const terminal = current && ["complete", "cleared", "budget_limited"].includes(current.status);
+		this.usage = current ? usageFromAggregate(terminal ? terminalUsage ?? rolling : rolling, current) : zeroUsage();
 	}
 
 	async create(input: MissionCreateInput, ctx: ExtensionContext): Promise<MissionEvent> {
@@ -357,9 +361,7 @@ function positiveInteger(value: number | undefined, name: string): number | unde
 	return positive === undefined ? undefined : Math.floor(positive);
 }
 
-function computeUsage(branch: Array<any>, mission: MissionCurrent): MissionUsage {
-	const cutoff = mission.status === "complete" || mission.status === "cleared" || mission.status === "budget_limited" ? mission.updatedAt : undefined;
-	const aggregate = aggregateUsage(branch, cutoff);
+function usageFromAggregate(aggregate: MissionUsage, mission: MissionCurrent): MissionUsage {
 	const usage: MissionUsage = {
 		mainTokens: Math.max(0, aggregate.mainTokens - mission.baselineMainTokens),
 		subagentTokens: Math.max(0, aggregate.subagentTokens - mission.baselineSubagentTokens),
@@ -413,7 +415,7 @@ function addMainUsage(target: MissionUsage, raw: any): void {
 }
 
 function addSubagentUsageFromDetails(target: MissionUsage, details: any, seen: Set<string>): void {
-	const runs = [details?.run, ...(Array.isArray(details?.runs) ? details.runs : []), ...(Array.isArray(details?.group?.children) ? [] : [])].filter(Boolean);
+	const runs = [details?.run, ...(Array.isArray(details?.runs) ? details.runs : [])].filter(Boolean);
 	if (details?.group?.usage && details.group.id && !seen.has(details.group.id)) {
 		seen.add(details.group.id);
 		target.subagentTokens += billableTokens(details.group.usage);

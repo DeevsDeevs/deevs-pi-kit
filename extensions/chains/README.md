@@ -20,6 +20,7 @@ chain_search   ranked, text, or regex search
 ```text
 /chain-link <chain> [--branch name] [--parent link.md]
 /chain-load <chain> [--branch name] [link.md]
+/chain-waive <reason>
 /chain-fork <chain> <new-branch> [--from link.md]
 /chain-list [--branches]
 /chain-search [chain] [--lookup|--text|--regex] <query>
