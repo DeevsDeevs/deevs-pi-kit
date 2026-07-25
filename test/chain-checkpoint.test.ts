@@ -50,7 +50,7 @@ describe("Chain checkpoint state", () => {
 
 		expect(service.read().status).toBe("due");
 		expect(service.read().dueReasons).toContain("working tree changed");
-		expect(statuses.at(-1)).toBe("chain ! kit@main");
+		expect(statuses.at(-1)).toBe("checkpoint due: kit@main");
 		expect(service.beforeAgentStart("base")).toContain("checkpoint is due");
 	});
 });

@@ -209,7 +209,7 @@ export class CronManager {
 				customType: CRON_MESSAGE_TYPE,
 				content: renderCronFire({ ...task, deliveryId: pending.deliveryId, coalescedCount: pending.coalescedCount, stale: pending.stale }),
 				display: true,
-				details: { version: 1, deliveryId: pending.deliveryId, taskId: task.id, cron: task.cron, recurring: task.recurring, coalescedCount: pending.coalescedCount, stale: pending.stale },
+				details: { version: 1, deliveryId: pending.deliveryId, taskId: task.id, cron: task.cron, prompt: task.prompt, recurring: task.recurring, coalescedCount: pending.coalescedCount, stale: pending.stale },
 			}, { triggerTurn: true, deliverAs: "followUp" });
 		} catch {
 			// The persisted pending delivery is retried below.

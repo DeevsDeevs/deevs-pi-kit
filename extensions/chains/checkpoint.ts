@@ -135,7 +135,7 @@ export class ChainCheckpointService {
 			return;
 		}
 		const target = this.state.chain ? `${this.state.chain}@${this.state.branch ?? "main"}` : "unassigned";
-		this.ctx.ui.setStatus("chains", this.state.status === "due" ? `chain ! ${target}` : `chain ${target}`);
+		this.ctx.ui.setStatus("chains", this.state.status === "due" ? `checkpoint due: ${target}` : undefined);
 	}
 }
 

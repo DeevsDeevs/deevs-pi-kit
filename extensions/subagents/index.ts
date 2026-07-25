@@ -17,10 +17,10 @@ const TaskSchema = Type.Object({
 	model: Type.Optional(Type.String()),
 	tools: Type.Optional(Type.Array(Type.String(), { description: "Optional narrowing of persona tools" })),
 	allowWrite: Type.Optional(Type.Boolean({ description: "Explicitly enable edit/write for this run" })),
-	wallMs: Type.Optional(Type.Number({ description: "Hard wall-clock limit" })),
-	turns: Type.Optional(Type.Number({ description: "Hard provider-turn limit" })),
-	tokens: Type.Optional(Type.Number({ description: "Hard aggregate token limit with at most one provider-call overshoot" })),
-	costUsd: Type.Optional(Type.Number({ description: "Hard cost limit in USD with at most one provider-call overshoot" })),
+	wallMs: Type.Optional(Type.Number({ description: "Hard wall-clock limit; defaults to 6 hours and is capped at 24 hours" })),
+	turns: Type.Optional(Type.Number({ description: "Optional provider-turn limit; omitted means unbounded" })),
+	tokens: Type.Optional(Type.Number({ description: "Optional aggregate token limit; omitted means unbounded, with at most one provider-call overshoot when set" })),
+	costUsd: Type.Optional(Type.Number({ description: "Optional USD cost limit; omitted means unbounded, with at most one provider-call overshoot when set" })),
 });
 
 const SubagentSchema = Type.Object({
@@ -33,10 +33,10 @@ const SubagentSchema = Type.Object({
 	model: Type.Optional(Type.String()),
 	tools: Type.Optional(Type.Array(Type.String())),
 	allowWrite: Type.Optional(Type.Boolean()),
-	wallMs: Type.Optional(Type.Number()),
-	turns: Type.Optional(Type.Number()),
-	tokens: Type.Optional(Type.Number()),
-	costUsd: Type.Optional(Type.Number()),
+	wallMs: Type.Optional(Type.Number({ description: "Hard wall-clock limit; defaults to 6 hours and is capped at 24 hours" })),
+	turns: Type.Optional(Type.Number({ description: "Optional provider-turn limit; omitted means unbounded" })),
+	tokens: Type.Optional(Type.Number({ description: "Optional aggregate token limit; omitted means unbounded" })),
+	costUsd: Type.Optional(Type.Number({ description: "Optional USD cost limit; omitted means unbounded" })),
 	tasks: Type.Optional(Type.Array(TaskSchema, { description: "Independent tasks for one bounded parallel group", maxItems: 16 })),
 	concurrency: Type.Optional(Type.Number({ description: "Parallel group concurrency" })),
 	failFast: Type.Optional(Type.Boolean()),
@@ -98,7 +98,8 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		promptSnippet: "Delegate focused exploration, review, testing, architecture, or specialist work to owned Pi Kit personas.",
 		promptGuidelines: [
 			"Use fresh independent runs for review and refutation; resume only when continuity is required.",
-			"Keep scope concrete and bounded.",
+			"Keep scope concrete; omitted turn/token/cost limits are unbounded, while wall time defaults to six hours.",
+			"Set tighter limits when the orchestrator has a reason; never add arbitrary tiny defaults.",
 			"Never enable allowWrite unless the user explicitly requested delegated writes.",
 			"Use subagent_wait instead of polling output.",
 		],
@@ -203,23 +204,45 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		service.dispose();
 		clearSubagentService(service);
 		usageClaims.clear();
+		latestCtx?.ui.setStatus("subagents", undefined);
 		latestCtx = undefined;
 	});
 }
 
 function formatAgentsBrowser(service: SubagentService, id: string): string {
 	const state = service.list();
+	const personas = loadBuiltinAgents();
 	if (id) {
 		const run = state.runs.find((candidate) => candidate.spec.id === id);
-		if (run) return `${formatWait(run, 65_536)}\n\nAgent identity: ${run.spec.agentId}\nGeneration: ${run.spec.generation}\nSession: ${run.runtime.sessionFile ?? "(pending)"}\nArtifacts: ${run.spec.artifactsDir}`;
+		if (run) return `${formatWait(run, 65_536)}\n\nAgent: ${run.spec.agentId}\nGeneration: ${run.spec.generation}\nSession: ${run.runtime.sessionFile ?? "pending"}\nArtifacts: ${run.spec.artifactsDir}`;
 		const group = state.groups.find((candidate) => candidate.id === id);
 		if (group) return `${formatWait(group, 65_536)}\nLaunch failures:\n${group.launchFailures.map((failure) => `- ${failure}`).join("\n") || "- none"}`;
-		return `Unknown Subagent id: ${id}`;
+		const persona = personas.find((candidate) => candidate.name === id);
+		if (persona) return `${persona.name}\n${persona.description}\n\nAccess: ${persona.write ? "write-capable" : "read-only"}\nTools: ${persona.tools.join(", ") || "none"}`;
+		return `Unknown Subagent id or persona: ${id}`;
 	}
-	const personas = loadBuiltinAgents().map((agent) => `- ${agent.name}: ${agent.description} [${agent.tools.join(",")}; ${agent.write ? "write-capable" : "read-only"}]`);
-	const runs = state.runs.slice(0, 20).map((run) => `- ${run.spec.id} [${run.runtime.status}] ${run.spec.persona} · ${formatDuration((run.runtime.endedAt ?? Date.now()) - run.runtime.startedAt)}`);
-	const groups = state.groups.slice(0, 10).map((group) => `- ${group.id} [${group.status}] ${group.children.length} child(ren) · ${group.pending.length} pending`);
-	return ["Curated personas", ...personas, "", "Recent runs", ...(runs.length ? runs : ["- none"]), "", "Groups", ...(groups.length ? groups : ["- none"]), "", "Use /agents <run-or-group-id> for details."].join("\n");
+	const active = state.runs.filter((run) => ["starting", "running", "stopping"].includes(run.runtime.status));
+	const recent = state.runs.filter((run) => !active.includes(run)).slice(0, 4);
+	const runLines = (run: DelegateRun): string[] => [
+		`${run.runtime.status} ${run.spec.persona} · ${formatDuration((run.runtime.endedAt ?? Date.now()) - run.runtime.startedAt)} · $${run.runtime.usage.costUsd.toFixed(4)}`,
+		`  ${run.spec.id} · ${browserTokens(run)} tok`,
+	];
+	const groups = state.groups.slice(0, 5).map((group) => `${group.status} ${group.id} · ${group.children.length} runs${group.pending.length ? ` · ${group.pending.length} pending` : ""}`);
+	const personaLines = Array.from({ length: Math.ceil(personas.length / 3) }, (_, index) => personas.slice(index * 3, index * 3 + 3).map((persona) => persona.name).join(" | "));
+	return [
+		`Active (${active.length})`,
+		...(active.length ? active.flatMap(runLines) : ["none"]),
+		"",
+		`Recent (${recent.length})`,
+		...(recent.length ? recent.flatMap(runLines) : ["none"]),
+		...(groups.length ? ["", "Groups", ...groups] : []),
+		"",
+		"Personas",
+		...personaLines,
+		"",
+		"Details: /agents <id|persona>",
+		"Cleanup: /agents clear",
+	].join("\n");
 }
 
 function formatStart(value: DelegateRun | SubagentGroup): string {
@@ -253,6 +276,11 @@ function isGroup(value: DelegateRun | SubagentGroup): value is SubagentGroup {
 
 function tokenTotal(run: DelegateRun): number {
 	return run.runtime.usage.inputTokens + run.runtime.usage.outputTokens + run.runtime.usage.cacheWriteTokens;
+}
+
+function browserTokens(run: DelegateRun): string {
+	const tokens = tokenTotal(run);
+	return tokens >= 1_000_000 ? `${(tokens / 1_000_000).toFixed(1)}m` : tokens >= 1_000 ? `${(tokens / 1_000).toFixed(1)}k` : String(tokens);
 }
 
 export function hasDelegatedWriteAuthorization(ctx: ExtensionContext): boolean {

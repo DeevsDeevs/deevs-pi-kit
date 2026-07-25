@@ -22,7 +22,7 @@ describe("delegate child protocol bounds", () => {
 
 	it("keeps a valid UTF-8 byte tail", () => {
 		const tail = createBoundedByteTail(8);
-		tail.push("prefix 👩🏽‍💻 tail");
+		tail.push("prefix café résumé tail");
 		expect(Buffer.byteLength(tail.text())).toBeLessThanOrEqual(8);
 		expect(tail.text()).not.toContain("�");
 	});

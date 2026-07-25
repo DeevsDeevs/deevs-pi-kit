@@ -1,5 +1,6 @@
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { Key, matchesKey, truncateToWidth, type Component } from "@earendil-works/pi-tui";
+import { truncateToWidth, type Component } from "@earendil-works/pi-tui";
+import { showTextViewer } from "../shared/text-viewer.ts";
 import type { TodoItem, TodoStats } from "./types.ts";
 
 const WIDGET_ID = "deevs-todos";
@@ -18,14 +19,7 @@ export function clearTodoWidget(ctx: ExtensionContext | undefined): void {
 }
 
 export async function showTodoOverlay(ctx: ExtensionContext, todos: TodoItem[], stats: TodoStats): Promise<void> {
-	if (ctx.mode !== "tui" || !ctx.hasUI) {
-		ctx.ui.notify(formatTodoText(todos, stats), "info");
-		return;
-	}
-	await ctx.ui.custom<void>((_tui, theme, _kb, done) => new TodoOverlay(todos, stats, theme, () => done(undefined)), {
-		overlay: true,
-		overlayOptions: { width: "70%", minWidth: 48, maxHeight: "80%", anchor: "center", margin: 1 },
-	});
+	await showTextViewer(ctx, "Todos", formatTodoText(todos, stats));
 }
 
 export function formatTodoText(todos: TodoItem[], stats: TodoStats): string {
@@ -48,25 +42,6 @@ export function renderTodoWidgetLines(todos: TodoItem[], stats: TodoStats, theme
 	return lines;
 }
 
-export function renderTodoOverlayLines(todos: TodoItem[], stats: TodoStats, theme: Theme, width: number): string[] {
-	const lines: string[] = [];
-	lines.push(truncateToWidth(todoOverlayHeader(width, theme), width));
-	lines.push("");
-	if (todos.length === 0) {
-		lines.push(truncateToWidth(`  ${theme.fg("dim", "No todos for this session.")}`, width));
-	} else {
-		lines.push(truncateToWidth(`  ${theme.fg("muted", `${stats.done}/${stats.total} done · ${stats.pending} pending · ${stats.inProgress} active · ${stats.blocked} blocked`)}`, width));
-		lines.push("");
-		for (const todo of todos) {
-			lines.push(truncateToWidth(formatTodoLine(todo, theme), width));
-			if (todo.notes) lines.push(truncateToWidth(`      ${theme.fg("dim", todo.notes)}`, width));
-		}
-	}
-	lines.push("");
-	lines.push(truncateToWidth(`  ${theme.fg("dim", "Press q or Escape to close · /todos clear to reset")}`, width));
-	return lines;
-}
-
 class TodoWidget implements Component {
 	private cachedWidth?: number;
 	private cachedLines?: string[];
@@ -85,37 +60,6 @@ class TodoWidget implements Component {
 		this.cachedWidth = undefined;
 		this.cachedLines = undefined;
 	}
-}
-
-class TodoOverlay implements Component {
-	private cachedWidth?: number;
-	private cachedLines?: string[];
-
-	constructor(private readonly todos: TodoItem[], private readonly stats: TodoStats, private readonly theme: Theme, private readonly done: () => void) {}
-
-	handleInput(data: string): void {
-		if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c")) || matchesKey(data, "q")) this.done();
-	}
-
-	render(width: number): string[] {
-		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
-		const lines = renderTodoOverlayLines(this.todos, this.stats, this.theme, width);
-		this.cachedWidth = width;
-		this.cachedLines = lines;
-		return lines;
-	}
-
-	invalidate(): void {
-		this.cachedWidth = undefined;
-		this.cachedLines = undefined;
-	}
-}
-
-function todoOverlayHeader(width: number, theme: Theme): string {
-	const title = theme.fg("accent", theme.bold(" Todo List "));
-	const left = theme.fg("borderMuted", "─".repeat(3));
-	const right = theme.fg("borderMuted", "─".repeat(Math.max(0, width - 16)));
-	return `${left}${title}${right}`;
 }
 
 function formatTodoLine(todo: TodoItem, theme: Theme): string {

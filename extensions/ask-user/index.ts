@@ -1,6 +1,7 @@
-import { DynamicBorder, type AgentToolResult, type ExtensionAPI, type ExtensionContext, type Theme, type ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI, ExtensionContext, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { Type } from "@earendil-works/pi-ai";
 import { Container, Editor, Key, matchesKey, SelectList, Spacer, Text, truncateToWidth, type Component, type Focusable, type SelectItem, type TUI } from "@earendil-works/pi-tui";
+import { framePanelLines } from "../shared/panel.ts";
 
 type AskOptionInput = string | { title: string; description?: string };
 
@@ -266,9 +267,7 @@ class MultiAskOverlay implements Component, Focusable {
 		const state = this.currentState();
 		if (state.editor) state.editor.focused = this.focused && state.mode === "freeform";
 		const container = new Container();
-		container.addChild(new DynamicBorder((text: string) => this.theme.fg("accent", text)));
-		container.addChild(new Text(this.theme.fg("accent", this.theme.bold("Ask User")) + this.theme.fg("dim", `  question ${this.currentIndex + 1}/${this.questions.length} · ${this.answeredCount()}/${this.questions.length} answered`), 1, 0));
-		container.addChild(new Text(this.progressLine(), 1, 0));
+		container.addChild(new Text(this.theme.fg("dim", `question ${this.currentIndex + 1}/${this.questions.length} · ${this.answeredCount()}/${this.questions.length} answered`), 1, 0));
 		container.addChild(new Text(this.theme.fg("text", this.theme.bold(question.question)), 1, 1));
 		if (state.answer) container.addChild(new Text(`${this.theme.fg("success", "Current answer:")} ${this.theme.fg("accent", state.answer.answer)}`, 1, 0));
 
@@ -281,23 +280,15 @@ class MultiAskOverlay implements Component, Focusable {
 		if (state.mode === "freeform") {
 			container.addChild(new Text(this.theme.fg("accent", this.theme.bold("Custom response")), 1, 0));
 			container.addChild(this.ensureEditor(state));
-			container.addChild(new Text(this.theme.fg("dim", this.currentItems().length > 0 ? "enter answer • esc options" : "enter answer • esc cancel"), 1, 0));
+			container.addChild(new Text(this.theme.fg("dim", this.currentItems().length > 0 ? "enter answer | esc options" : "enter answer | esc cancel"), 1, 0));
 		} else {
 			container.addChild(this.ensureList(state));
-			container.addChild(new Text(this.theme.fg("dim", "←/→ questions • ↑↓ options • esc cancel • enter answer"), 1, 0));
+			container.addChild(new Text(this.theme.fg("dim", "left/right questions | up/down options | esc cancel | enter answer"), 1, 0));
 		}
-		container.addChild(new DynamicBorder((text: string) => this.theme.fg("accent", text)));
-		return container.render(width).map((line) => truncateToWidth(line, width));
+		const innerWidth = Math.max(1, width - 2);
+		return framePanelLines("Ask User", container.render(innerWidth).map((line) => truncateToWidth(line, innerWidth)), this.theme, width);
 	}
 
-	private progressLine(): string {
-		return this.questions.map((_question, index) => {
-			const label = String(index + 1);
-			if (index === this.currentIndex) return this.theme.fg("accent", `[${label}]`);
-			if (this.states[index]?.answer) return this.theme.fg("success", `✓${label}`);
-			return this.theme.fg("dim", `○${label}`);
-		}).join(" ");
-	}
 }
 
 async function askMultiOverlay(ctx: ExtensionContext, questions: AskQuestionInput[], context: string | undefined, signal?: AbortSignal, timeoutMs?: number): Promise<AskAnswer[] | null> {
@@ -317,10 +308,10 @@ async function askMultiOverlay(ctx: ExtensionContext, questions: AskQuestionInpu
 			overlay: true,
 			overlayOptions: {
 				anchor: "center",
-				width: "92%",
+				width: "100%",
 				minWidth: 48,
 				maxHeight: "85%",
-				margin: 1,
+				margin: 0,
 			},
 		},
 		);

@@ -112,7 +112,7 @@ export class SubagentService {
 					runId: request.resume,
 					task: request.task,
 					detach: request.background !== false,
-					wallMs: request.wallMs,
+					wallMs: clampTimeoutMs(request.wallMs, settings),
 					turns: request.turns,
 					tokens: request.tokens,
 					costUsd: request.costUsd,

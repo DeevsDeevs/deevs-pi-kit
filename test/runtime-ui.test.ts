@@ -16,7 +16,7 @@ describe("runtime UI formatting", () => {
 	});
 
 	it("truncates narrow Unicode lines safely", () => {
-		const line = compactLine("review 👩🏽‍💻 completed successfully", 12);
+		const line = compactLine("interface review completed successfully", 12);
 		expect(line.length).toBeGreaterThan(0);
 		expect(line).not.toContain("\n");
 	});

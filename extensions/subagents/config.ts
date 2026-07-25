@@ -1,8 +1,8 @@
 import { loadProjectConfig } from "../shared/project-config.ts";
 import type { AgentsSettings } from "./catalog-types.ts";
 
-export const DEFAULT_TIMEOUT_MS = 300_000;
-export const MAX_TIMEOUT_MS = 900_000;
+export const DEFAULT_TIMEOUT_MS = 6 * 60 * 60_000;
+export const MAX_TIMEOUT_MS = 24 * 60 * 60_000;
 export const DEFAULT_PARALLEL_CONCURRENCY = 3;
 export const MAX_PARALLEL_CONCURRENCY = 6;
 
@@ -24,7 +24,7 @@ export function normalizeAgentsSettings(input: Partial<AgentsSettings>): AgentsS
 		? Object.fromEntries(Object.entries(input.modelsByAgent).filter((entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string"))
 		: {};
 	merged.defaultModel = typeof input.defaultModel === "string" && input.defaultModel.trim() ? input.defaultModel : undefined;
-	merged.maxTimeoutMs = clampNumber(input.maxTimeoutMs, 60_000, 3_600_000, MAX_TIMEOUT_MS);
+	merged.maxTimeoutMs = clampNumber(input.maxTimeoutMs, 60_000, MAX_TIMEOUT_MS, MAX_TIMEOUT_MS);
 	merged.defaultTimeoutMs = clampNumber(input.defaultTimeoutMs, 1_000, merged.maxTimeoutMs, DEFAULT_TIMEOUT_MS);
 	merged.parallelMaxConcurrency = clampNumber(input.parallelMaxConcurrency, 1, 12, MAX_PARALLEL_CONCURRENCY);
 	merged.parallelDefaultConcurrency = clampNumber(input.parallelDefaultConcurrency, 1, merged.parallelMaxConcurrency, DEFAULT_PARALLEL_CONCURRENCY);

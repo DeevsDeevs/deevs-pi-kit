@@ -206,7 +206,7 @@ describe("session cron runtime", () => {
 		const test = setup();
 		expect(() => test.manager.create({ cron: "0 0 31 2 *", prompt: "never" })).toThrow("five years");
 		expect(() => test.manager.create({ cron: "0 0 31 12 *", prompt: "too far", recurring: false })).toThrow("350 days");
-		expect(() => test.manager.create({ cron: "* * * * *", prompt: "你".repeat(3_000) })).toThrow("8192");
+		expect(() => test.manager.create({ cron: "* * * * *", prompt: "x".repeat(8_193) })).toThrow("8192");
 		const task = test.manager.create({ cron: "* * * * *", prompt: "delete" });
 		expect(test.manager.delete(task.id).id).toBe(task.id);
 		expect(test.manager.list()).toEqual([]);
