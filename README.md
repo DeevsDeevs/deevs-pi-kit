@@ -31,6 +31,7 @@ extensions/todos/       Session-scoped todo list (`todo_list`)
 extensions/ask-user/    Interactive clarification UI (`ask_user`)
 extensions/codex-fast/  OpenAI Codex Fast mode service tier (`/codex-fast`)
 extensions/notifier/    Ready-for-input terminal notifications
+extensions/runtime/     Idle delivery and rendering of terminal runtime events
 skills/                 Agent behavior guidance
 ```
 
