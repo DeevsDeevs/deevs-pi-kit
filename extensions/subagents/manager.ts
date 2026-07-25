@@ -5,11 +5,12 @@ import { ChainService } from "../chains/service.ts";
 import type { ProcessManager } from "../processes/manager.ts";
 import { resolveCwd } from "../processes/safety.ts";
 import type { ManagedProcessInfo, ReadResult } from "../processes/types.ts";
-import { clampConcurrency, clampReturnBytes, clampStatusTailBytes, clampTimeoutMs, defaultAgentsSettings } from "./config.ts";
+import { clampConcurrency, clampReadWaitMs, clampReturnBytes, clampStatusTailBytes, clampTimeoutMs, defaultAgentsSettings } from "./config.ts";
 import { findAgent, loadBuiltinAgents } from "./agents.ts";
 import { buildAgentSystemPrompt, buildTaskPrompt } from "./prompt.ts";
 import { createRunArtifactsDir, deleteArtifacts, readTextTail, writeJsonFile, writeTextFile } from "./logs.ts";
 import { compactAgentProcessLog } from "./log-compact.ts";
+import { ReadThrottle } from "./read-throttle.ts";
 import { extractFinalOutputFromRead, extractLiveOutputFromRead } from "./result.ts";
 import type {
 	AgentClearInput,
@@ -40,6 +41,7 @@ export class SubagentManager {
 	private readonly runs = new Map<string, AgentRunRecord>();
 	private readonly groups = new Map<string, AgentGroupRecord>();
 	private readonly changeListeners = new Set<() => void>();
+	private readonly readThrottle = new ReadThrottle();
 	private runCounter = 0;
 	private groupCounter = 0;
 	private lastCtx?: ExtensionContext;
@@ -137,15 +139,21 @@ export class SubagentManager {
 	}
 
 	async read(input: AgentReadInput, signal?: AbortSignal): Promise<AgentReadResult> {
+		const waitMs = clampReadWaitMs(input.waitMs);
+		this.refreshFromProcesses();
 		if (this.groups.has(input.id)) {
+			const group = this.getGroup(input.id);
+			if (group.status === "running") await this.readThrottle.wait(group.id, waitMs, signal);
 			this.refreshFromProcesses();
 			return this.readGroup(input);
 		}
+
 		const run = this.getRun(input.id);
 		const maxBytes = clampReturnBytes(input.maxBytes);
+		if (!TERMINAL_RUN_STATUSES.has(run.status)) await this.readThrottle.wait(run.id, waitMs, signal);
+		await this.refreshRun(run);
 		if (input.raw && run.procId) {
-			const raw = await this.processManager.readWait({ id: run.procId, afterSeq: input.afterSeq, waitMs: input.waitMs, maxBytes, stream: input.stream }, signal);
-			await this.refreshRun(run);
+			const raw = this.processManager.read({ id: run.procId, afterSeq: input.afterSeq, maxBytes, stream: input.stream });
 			return {
 				id: run.id,
 				type: "run",
@@ -157,19 +165,17 @@ export class SubagentManager {
 			};
 		}
 
-		await this.refreshRun(run);
 		if (run.finalOutput || !run.procId) {
 			const output = run.finalOutput || "(not started)";
 			return { id: run.id, type: "run", status: run.status, output: truncateBytes(output, maxBytes), nextSeq: run.lastSeq };
 		}
 
-		const read = await this.processManager.readWait({
+		const read = this.processManager.read({
 			id: run.procId,
 			afterSeq: input.afterSeq,
-			waitMs: input.waitMs,
 			maxBytes: this.processManager.getConfig().limits.maxBufferBytesPerProcess,
 			stream: input.stream,
-		}, signal);
+		});
 		run.lastSeq = read.nextSeq;
 		const output = this.formatLiveResult(run, read, input.stream);
 		const visibleOutput = truncateBytes(output, maxBytes);
@@ -266,6 +272,7 @@ export class SubagentManager {
 			if (run.groupId && this.groups.has(run.groupId)) throw new Error(`Run ${run.id} belongs to group ${run.groupId}; clear the group instead.`);
 			if (input.deleteArtifacts) deleteArtifacts(run);
 			this.runs.delete(run.id);
+			this.readThrottle.clear(run.id);
 			cleared.push(run.id);
 		};
 		const clearGroup = (group: AgentGroupRecord) => {
@@ -280,6 +287,7 @@ export class SubagentManager {
 			}
 			if (input.deleteArtifacts) deleteArtifacts(group);
 			this.groups.delete(group.id);
+			this.readThrottle.clear(group.id);
 			cleared.push(group.id);
 		};
 
