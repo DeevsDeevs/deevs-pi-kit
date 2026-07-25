@@ -47,7 +47,7 @@ Project settings persist to `.pi/processes.json`. See [`extensions/processes/REA
 
 ### Subagents
 
-Run focused staff agents in the background. Built-in agents include `explorer`, `architect`, `reviewer`, `tester`, `devops`, `python-dev`, `cpp-dev`, `rust-dev`, and `anti-slop`.
+Run focused staff agents in the background. Built-in agents include `explorer`, `architect`, `reviewer`, `tester`, `logic-hunter`, `devops`, `python-dev`, `cpp-dev`, `rust-dev`, and `anti-slop`.
 
 Tools: `agent_list`, `agent_start`, `agent_parallel_start`, `agent_read`, `agent_status`, `agent_stop`, `agent_logs`, `agent_clear`.
 

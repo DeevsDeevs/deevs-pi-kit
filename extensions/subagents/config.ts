@@ -9,6 +9,8 @@ export const STATUS_TAIL_BYTES = 4096;
 export const DEFAULT_PARALLEL_CONCURRENCY = 3;
 export const MAX_PARALLEL_CONCURRENCY = 6;
 export const MAX_COMPLETED_RECORDS = 64;
+export const DEFAULT_READ_WAIT_MS = 60_000;
+export const MAX_READ_WAIT_MS = 300_000;
 
 export const SUBAGENTS_CONFIG_FILE = "subagents.json";
 
@@ -71,6 +73,12 @@ export function clampTimeoutMs(value: number | undefined, settings: AgentsSettin
 	const timeout = value ?? settings.defaultTimeoutMs;
 	if (!Number.isFinite(timeout)) return settings.defaultTimeoutMs;
 	return Math.max(1_000, Math.min(Math.floor(timeout), settings.maxTimeoutMs));
+}
+
+export function clampReadWaitMs(value: number | undefined): number {
+	const waitMs = value ?? DEFAULT_READ_WAIT_MS;
+	if (!Number.isFinite(waitMs)) return DEFAULT_READ_WAIT_MS;
+	return Math.max(0, Math.min(Math.floor(waitMs), MAX_READ_WAIT_MS));
 }
 
 export function clampReturnBytes(value: number | undefined): number {
