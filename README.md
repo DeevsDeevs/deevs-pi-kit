@@ -84,7 +84,7 @@ Tools: `chain_save`, `chain_load`, `chain_fork`, `chain_context`, `chain_list`, 
 
 Commands: `/chains`, `/chain-link`, `/chain-load`, `/chain-fork`, `/chain-list`, `/chain-search`, `/chain-waive <reason>`.
 
-Pi session entries track active `saved` versus `checkpoint due` state across resume, durable milestones, and a one-shot checkpoint forced at 80% context usage before compaction. See [`extensions/chains/README.md`](extensions/chains/README.md).
+Pi session entries track active `saved` versus `checkpoint due` state across resume, durable milestones, and a one-shot checkpoint forced at 80% context usage before compaction, with other tools blocked and one hidden recovery turn if the reminder is ignored. See [`extensions/chains/README.md`](extensions/chains/README.md).
 
 ### Wiki
 
