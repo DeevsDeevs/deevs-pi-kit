@@ -72,6 +72,10 @@ export interface SubagentGroup {
 	children: string[];
 	active: string[];
 	launchFailures: string[];
+	/** Exact parent Pi session that owns this group. Legacy records may omit it. */
+	parentSessionFile?: string;
+	/** Artifact root for each child, needed when group tasks use different cwd values. */
+	childRoots?: Record<string, string>;
 }
 
 export class SubagentService {
@@ -180,15 +184,29 @@ export class SubagentService {
 
 	async restore(ctx: ExtensionContext): Promise<void> {
 		this.ctx = ctx;
-		const runs = await this.executor.restore(ctx.cwd);
+		const parentSessionFile = ctx.sessionManager.getSessionFile();
+		if (!parentSessionFile) return;
+		for (const run of this.executor.list()) if (run.spec.parentSessionFile !== parentSessionFile) {
+			this.executor.detach(run.spec.id);
+			this.terminalSeen.delete(run.spec.id);
+		}
+		for (const group of [...this.groups.values()]) if (group.parentSessionFile !== parentSessionFile) {
+			this.groups.delete(group.id);
+			this.roots.delete(group.id);
+			this.terminalSeen.delete(group.id);
+		}
 		const root = this.root(ctx.cwd);
-		this.restoreGroups(root);
-		for (const run of runs) {
+		await this.executor.restore(ctx.cwd, parentSessionFile);
+		this.restoreGroups(root, parentSessionFile);
+		const childRoots = new Set([...this.groups.values()].flatMap((group) => Object.values(group.childRoots ?? {})));
+		for (const childRoot of childRoots) if (childRoot !== root) await this.executor.restoreRoot(childRoot, parentSessionFile);
+		for (const run of this.executor.list()) {
 			this.activate(run);
 			if (isTerminal(run.runtime.status)) this.emitTerminal(run);
 		}
 		for (const group of this.groups.values()) {
 			this.reconcileGroup(group);
+			this.writeGroup(group);
 			if (group.status === "running") void this.fillGroup(group, ctx);
 			else this.emitGroupTerminal(group);
 		}
@@ -218,6 +236,7 @@ export class SubagentService {
 				cwd,
 				context: task.context ?? "fresh",
 				forkSessionFile: task.context === "fork" ? ctx.sessionManager.getSessionFile() : undefined,
+				parentSessionFile: ctx.sessionManager.getSessionFile(),
 				model,
 				tools: task.tools,
 				allowWrite: task.allowWrite === true,
@@ -261,6 +280,8 @@ export class SubagentService {
 			children: [],
 			active: [],
 			launchFailures: [],
+			parentSessionFile: ctx.sessionManager.getSessionFile(),
+			childRoots: {},
 		};
 		this.groups.set(group.id, group);
 		this.roots.set(group.id, this.root(ctx.cwd));
@@ -293,6 +314,7 @@ export class SubagentService {
 				const run = await this.startTask(task, ctx, true);
 				group.children.push(run.spec.id);
 				group.active.push(run.spec.id);
+				(group.childRoots ??= {})[run.spec.id] = path.dirname(path.dirname(run.spec.artifactsDir));
 				if (group.cancelRequestedAt) await this.executor.cancel(run.spec.id);
 			} catch (error) {
 				if (error instanceof ConcurrencyLimitError) {
@@ -411,7 +433,13 @@ export class SubagentService {
 			group.status = "running";
 			return;
 		}
-		const runs = group.children.map((id) => this.executor.get(id));
+		const runs = group.children.flatMap((id) => {
+			const run = this.executor.find(id);
+			if (run) return [run];
+			const failure = `Missing child run record: ${id}`;
+			if (!group.launchFailures.includes(failure)) group.launchFailures.push(failure);
+			return [];
+		});
 		group.active = runs.filter((run) => !isTerminal(run.runtime.status)).map((run) => run.spec.id);
 		if (group.pending.length || group.active.length) {
 			group.status = "running";
@@ -425,14 +453,15 @@ export class SubagentService {
 		group.endedAt ??= Date.now();
 	}
 
-	private restoreGroups(root: string): void {
+	private restoreGroups(root: string, parentSessionFile: string): void {
 		const dir = path.join(root, "groups");
 		if (!existsSync(dir)) return;
 		for (const file of readdirSync(dir).filter((name) => name.endsWith(".json"))) {
 			try {
 				const group = JSON.parse(readFileSync(path.join(dir, file), "utf8")) as SubagentGroup;
-				if (group.version !== 1 || !group.id) continue;
+				if (group.version !== 1 || !group.id || group.parentSessionFile !== parentSessionFile) continue;
 				group.launchFailures ??= [];
+				group.childRoots ??= {};
 				this.groups.set(group.id, group);
 				this.roots.set(group.id, root);
 			} catch {
@@ -454,7 +483,11 @@ export class SubagentService {
 	private emitGroupTerminal(group: SubagentGroup): void {
 		if (this.terminalSeen.has(group.id) || group.status === "running") return;
 		this.terminalSeen.add(group.id);
-		const runs = group.children.map((id) => this.executor.get(id));
+		const runs = group.children.flatMap((id) => {
+			const run = this.executor.find(id);
+			return run ? [run] : [];
+		});
+		const missing = group.children.length - runs.length;
 		const usage = runs.reduce((total, run) => ({
 			inputTokens: total.inputTokens + run.runtime.usage.inputTokens,
 			outputTokens: total.outputTokens + run.runtime.usage.outputTokens,
@@ -473,7 +506,7 @@ export class SubagentService {
 				type: "terminal",
 				status: group.status,
 				createdAt: group.endedAt ?? Date.now(),
-				summary: `${group.children.length} child run(s) settled`,
+				summary: missing ? `${runs.length}/${group.children.length} child run record(s) settled · ${missing} missing` : `${runs.length} child run(s) settled`,
 				artifactRef: path.join(this.roots.get(group.id) ?? this.root(group.cwd), "groups", `${group.id}.json`),
 				usage,
 			},

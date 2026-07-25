@@ -4,7 +4,7 @@ import { getSubagentService } from "../subagents/registry.ts";
 import { getJobManager } from "../jobs/registry.ts";
 import type { DelegateRun } from "../subagents/runtime-types.ts";
 import { runtimeEvents } from "../shared/runtime-events.ts";
-import { MissionState } from "./state.ts";
+import { MISSION_CUSTOM_TYPE, MissionState } from "./state.ts";
 import type { MissionCompleteInput, MissionCurrent, MissionProgressInput, MissionUpdateInput } from "./types.ts";
 
 interface MissionAgentMessage {
@@ -20,6 +20,8 @@ export class MissionRuntime {
 	private lastAgentMessages: MissionAgentMessage[] = [];
 	private mutatingCalls = new Set<string>();
 	private materialMutationSinceSettle = false;
+	private recoveryTimer?: NodeJS.Timeout;
+	private unsubscribeReview?: () => void;
 
 	constructor(private readonly pi: ExtensionAPI, readonly state: MissionState) {}
 
@@ -107,9 +109,12 @@ export class MissionRuntime {
 		this.pi.on("session_start", (_event, ctx) => {
 			this.disposed = false;
 			this.restore(ctx);
-			void this.maybeContinue(ctx);
+			this.scheduleRecovery(ctx);
 		});
-		this.pi.on("session_tree", (_event, ctx) => this.restore(ctx));
+		this.pi.on("session_tree", (_event, ctx) => {
+			this.restore(ctx);
+			this.scheduleRecovery(ctx);
+		});
 		this.pi.on("session_compact", (_event, ctx) => this.restore(ctx));
 		this.pi.on("turn_start", (_event, ctx) => this.restore(ctx));
 		this.pi.on("agent_end", (event, ctx) => {
@@ -142,6 +147,10 @@ export class MissionRuntime {
 		this.pi.on("session_shutdown", () => {
 			this.disposed = true;
 			this.continuationInFlight = false;
+			if (this.recoveryTimer) clearTimeout(this.recoveryTimer);
+			this.recoveryTimer = undefined;
+			this.unsubscribeReview?.();
+			this.unsubscribeReview = undefined;
 			this.lastAgentMessages = [];
 			this.mutatingCalls.clear();
 			this.materialMutationSinceSettle = false;
@@ -159,12 +168,48 @@ export class MissionRuntime {
 		const event = this.state.continuedEvent();
 		this.state.append(this.pi, event);
 		this.continuationInFlight = true;
-		this.pi.sendMessage({
-			customType: "mission",
-			content: continuationMessage(mission),
-			display: false,
-			details: { version: 2, missionId: mission.missionId, generation: mission.generation, objectiveVersion: mission.objectiveVersion },
-		}, { triggerTurn: true, deliverAs: "followUp" });
+		try {
+			this.pi.sendMessage({
+				customType: "mission",
+				content: continuationMessage(mission),
+				display: false,
+				details: { version: 2, missionId: mission.missionId, generation: mission.generation, objectiveVersion: mission.objectiveVersion },
+			}, { triggerTurn: true, deliverAs: "followUp" });
+		} catch {
+			this.continuationInFlight = false;
+			this.scheduleRecovery(ctx, 1_000);
+		}
+	}
+
+	private scheduleRecovery(ctx: ExtensionContext, delayMs = 0): void {
+		if (this.disposed) return;
+		if (this.recoveryTimer) clearTimeout(this.recoveryTimer);
+		this.recoveryTimer = setTimeout(() => {
+			this.recoveryTimer = undefined;
+			void this.recover(ctx);
+		}, delayMs);
+		this.recoveryTimer.unref?.();
+	}
+
+	private async recover(ctx: ExtensionContext): Promise<void> {
+		if (this.disposed) return;
+		this.restore(ctx);
+		this.bindReviewRecovery(ctx);
+		await this.reconcileReview();
+		await this.maybeContinue(ctx);
+	}
+
+	private bindReviewRecovery(ctx: ExtensionContext): void {
+		this.unsubscribeReview?.();
+		this.unsubscribeReview = undefined;
+		try {
+			this.unsubscribeReview = getSubagentService().executor.onChange((run) => {
+				const mission = this.state.read();
+				if (mission?.reviewStatus === "running" && mission.reviewRunId === run.spec.id && !["starting", "running", "stopping"].includes(run.runtime.status)) this.scheduleRecovery(ctx);
+			});
+		} catch {
+			// Subagents may not be registered yet; the next lifecycle recovery retries binding.
+		}
 	}
 
 	private async onSettled(ctx: ExtensionContext): Promise<void> {
@@ -233,18 +278,29 @@ export class MissionRuntime {
 		let service;
 		try {
 			service = getSubagentService();
-		} catch {
+		} catch (error) {
+			this.failReview(mission, `review admission failed: ${error instanceof Error ? error.message : String(error)}`);
+			this.scheduleRecovery(ctx, 1_000);
 			return;
 		}
-		const run = await service.start({
-			agent: "reviewer",
-			task: `Fresh independent Mission review. Inspect the current git diff and relevant files only. Mission: ${mission.title}. Objective: ${mission.objective}. Requirements: ${mission.requirements.join(" | ")}. Return the reviewer persona verdict and evidence. Do not edit files.`,
-			cwd: ctx.cwd,
-			context: "fresh",
-			allowWrite: false,
-			background: true,
-			wallMs: 10 * 60_000,
-		}, ctx);
+		const paths = missionReviewPaths(mission);
+		const scope = paths.length ? `Review only these Mission-owned files: ${paths.join(", ")}.` : "Review only files directly required by this Mission.";
+		let run;
+		try {
+			run = await service.start({
+				agent: "reviewer",
+				task: `Fresh independent Mission review. ${scope} Ignore unrelated pre-existing working-tree changes. Mission: ${mission.title}. Objective: ${mission.objective}. Requirements: ${mission.requirements.join(" | ")}. Return the reviewer persona verdict and evidence. Do not edit files.`,
+				cwd: ctx.cwd,
+				context: "fresh",
+				allowWrite: false,
+				background: true,
+				wallMs: 10 * 60_000,
+			}, ctx);
+		} catch (error) {
+			this.failReview(mission, `review admission failed: ${error instanceof Error ? error.message : String(error)}`);
+			this.scheduleRecovery(ctx, 1_000);
+			return;
+		}
 		if ("children" in run) return;
 		this.state.append(this.pi, this.state.reviewEvent("running", { runId: run.spec.id, reason: mission.reviewReason }));
 		this.updateStatus();
@@ -262,11 +318,17 @@ export class MissionRuntime {
 		if (["starting", "running", "stopping"].includes(run.runtime.status)) return;
 		const output = run.runtime.output ?? "";
 		if (run.runtime.status !== "completed") {
-			this.state.append(this.pi, this.state.reviewEvent("due", { reason: run.runtime.error || "independent review failed" }));
+			this.failReview(mission, run.runtime.error || "independent review failed");
 			return;
 		}
 		const suggested = /##\s*Verdict[\s\S]{0,120}\b(Block|changes requested)\b/i.test(output) || /severity:\s*(blocker|major)/i.test(output) ? "changes_requested" : "clear";
 		this.state.append(this.pi, this.state.reviewEvent("awaiting_adjudication", { runId: run.spec.id, reason: `Independent review settled; parent must adjudicate suggested verdict ${suggested}.` }));
+		this.updateStatus();
+	}
+
+	private failReview(mission: MissionCurrent, reason: string): void {
+		if (reviewFailureCount(this.ctx, mission.missionId) >= 2) this.state.append(this.pi, this.state.statusEvent("blocked", "independent review failed three times", reason));
+		else this.state.append(this.pi, this.state.reviewEvent("due", { reason }));
 		this.updateStatus();
 	}
 
@@ -289,9 +351,24 @@ export class MissionRuntime {
 			this.ctx.ui.setStatus("mission", undefined);
 			return;
 		}
+		const theme = this.ctx.ui.theme;
+		if (mission.status !== "active") {
+			const color = ["blocked", "terminal_error", "budget_limited", "usage_limited"].includes(mission.status) ? "error" : "warning";
+			const text = `mission ${mission.status.replace("_", " ")}`;
+			this.ctx.ui.setStatus("mission", theme?.fg(color, text) ?? text);
+			return;
+		}
+		const review = mission.reviewStatus;
+		if (review === "due") return this.ctx.ui.setStatus("mission", theme?.fg("warning", "review due") ?? "review due");
+		if (review === "running") return this.ctx.ui.setStatus("mission", theme?.fg("accent", "review running") ?? "review running");
+		if (review === "awaiting_adjudication") return this.ctx.ui.setStatus("mission", theme?.fg("warning", "review ready") ?? "review ready");
+		if (review === "changes_requested") return this.ctx.ui.setStatus("mission", theme?.fg("error", "review changes") ?? "review changes");
 		const usage = this.state.readUsage();
-		const review = mission.reviewStatus && mission.reviewStatus !== "not_required" ? ` · review ${mission.reviewStatus}` : "";
-		this.ctx.ui.setStatus("mission", `mission ${mission.status} · ${compact(usage.totalTokens)}${mission.tokenBudget ? `/${compact(mission.tokenBudget)}` : ""}${review}`);
+		if (mission.tokenBudget && usage.totalTokens / mission.tokenBudget >= 0.8) {
+			const text = `mission ${compact(usage.totalTokens)}/${compact(mission.tokenBudget)}`;
+			return this.ctx.ui.setStatus("mission", theme?.fg("warning", text) ?? text);
+		}
+		this.ctx.ui.setStatus("mission", undefined);
 	}
 }
 
@@ -362,6 +439,21 @@ function blockerFingerprint(text: string): string | undefined {
 
 function normalize(value: string): string {
 	return value.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function missionReviewPaths(mission: MissionCurrent): string[] {
+	return [...new Set(`${mission.objective}\n${mission.requirements.join("\n")}`.match(/\b(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+\.[A-Za-z0-9]+\b/g) ?? [])];
+}
+
+function reviewFailureCount(ctx: ExtensionContext | undefined, missionId: string): number {
+	if (!ctx) return 0;
+	return (ctx.sessionManager.getBranch() as readonly unknown[]).filter((entry) => {
+		const record = asRecord(entry);
+		const event = asRecord(record?.data);
+		return record?.type === "custom" && record.customType === MISSION_CUSTOM_TYPE
+			&& event?.kind === "review_changed" && event.missionId === missionId && event.reviewStatus === "due"
+			&& typeof event.reviewReason === "string" && /failed|timeout|limit|cancel|lost/i.test(event.reviewReason);
+	}).length;
 }
 
 function compact(value: number): string {

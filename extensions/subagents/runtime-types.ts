@@ -32,6 +32,8 @@ export interface DelegateRunSpec {
 	forkSessionFile?: string;
 	resumeSessionFile?: string;
 	createdAt: number;
+	/** Exact parent Pi session that owns this durable run. Legacy records may omit it. */
+	parentSessionFile?: string;
 	limits: {
 		wallMs: number;
 		turns?: number;
@@ -89,6 +91,7 @@ export interface DelegateStartInput {
 	model?: string;
 	context?: "fresh" | "fork";
 	forkSessionFile?: string;
+	parentSessionFile?: string;
 	detach?: boolean;
 	wallMs?: number;
 	turns?: number;

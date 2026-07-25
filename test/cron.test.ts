@@ -240,6 +240,41 @@ describe("session cron runtime", () => {
 });
 
 describe("cron extension surface", () => {
+	it("confirms interactive deletion before removing a task", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-kit-cron-extension-"));
+		const previous = process.env.PI_CODING_AGENT_DIR;
+		process.env.PI_CODING_AGENT_DIR = root;
+		cleanups.push(() => { process.env.PI_CODING_AGENT_DIR = previous; rmSync(root, { recursive: true, force: true }); });
+		let tool: { execute: (...args: any[]) => Promise<any> } | undefined;
+		let command: { handler: (args: string, ctx: ExtensionContext) => Promise<void> } | undefined;
+		let start: ((event: unknown, ctx: ExtensionContext) => void) | undefined;
+		let shutdown: (() => void) | undefined;
+		const pi = {
+			registerTool(value: typeof tool) { tool = value; },
+			registerCommand(_name: string, value: typeof command) { command = value; },
+			registerMessageRenderer() {},
+			on(event: string, handler: any) { if (event === "session_start") start = handler; if (event === "session_shutdown") shutdown = handler; },
+			sendMessage() {},
+		} as unknown as ExtensionAPI;
+		cronExtension(pi);
+		const answers: string[] = [];
+		const ctx = {
+			cwd: "/tmp/project", mode: "tui", isIdle: () => true, hasPendingMessages: () => false,
+			sessionManager: { getSessionId: () => "cron-ui", getSessionFile: () => "/tmp/cron-ui.jsonl", getBranch: () => [] },
+			ui: { select: async () => answers.shift(), notify() {}, setStatus() {} },
+		} as unknown as ExtensionContext;
+		start?.({}, ctx);
+		await tool!.execute("call", { action: "create", cron: "0 0 1 1 *", prompt: "probe" });
+		const task = (await tool!.execute("call", { action: "list" })).details.tasks[0];
+		answers.push(`recurring · ${task.id} · ${task.cron}`, "Delete task", "Keep task");
+		await command!.handler("", ctx);
+		expect((await tool!.execute("call", { action: "list" })).details.tasks).toHaveLength(1);
+		answers.push(`recurring · ${task.id} · ${task.cron}`, "Delete task", "Delete task");
+		await command!.handler("", ctx);
+		expect((await tool!.execute("call", { action: "list" })).details.tasks).toEqual([]);
+		shutdown?.();
+	});
+
 	it("registers one compact model tool and one command", () => {
 		const tools: string[] = [];
 		const commands: string[] = [];

@@ -15,7 +15,7 @@ function setup() {
 	process.env.PI_CODING_AGENT_DIR = root;
 	const branch: Array<Record<string, unknown>> = [];
 	const pi = { appendEntry(customType: string, data: unknown) { branch.push({ type: "custom", customType, data }); } } as unknown as ExtensionAPI;
-	const ctx = { cwd: project, ui: { setStatus: () => undefined } } as unknown as ExtensionContext;
+	const ctx = { cwd: project, ui: { setStatus: () => undefined }, sessionManager: { getSessionFile: () => "/tmp/jobs-parent.jsonl" } } as unknown as ExtensionContext;
 	const manager = new JobManager(pi);
 	cleanups.push(() => { process.env.PI_CODING_AGENT_DIR = previous; }, () => rmSync(root, { recursive: true, force: true }), () => rmSync(project, { recursive: true, force: true }), () => { void manager.shutdown(); });
 	return { manager, ctx, branch };
@@ -44,6 +44,61 @@ describe("bounded Jobs", () => {
 		expect(restored.clearTerminal(started.spec.id)).toBe(1);
 		expect(() => restored.get(started.spec.id)).toThrow("Unknown job");
 		await restored.shutdown();
+	});
+
+	it("restores Jobs only for their exact parent Pi session", async () => {
+		const { manager, ctx } = setup();
+		const started = await manager.start({ name: "owned", argv: [process.execPath, "-e", "console.log('done')"] }, ctx);
+		await manager.wait([started.spec.id]);
+		const other = new JobManager({ appendEntry() {} } as unknown as ExtensionAPI);
+		const otherCtx = { ...ctx, sessionManager: { getSessionFile: () => "/tmp/other-jobs-parent.jsonl" } } as ExtensionContext;
+		await manager.restore(otherCtx);
+		expect(manager.list()).toEqual([]);
+		await other.restore(otherCtx);
+		expect(other.list()).toEqual([]);
+		const spec = JSON.parse(readFileSync(path.join(started.spec.artifactsDir, "spec.json"), "utf8")) as Record<string, unknown>;
+		delete spec.parentSessionFile;
+		writeFileSync(path.join(started.spec.artifactsDir, "spec.json"), JSON.stringify(spec));
+		const legacy = new JobManager({ appendEntry() {} } as unknown as ExtensionAPI);
+		await legacy.restore(ctx);
+		expect(legacy.list()).toEqual([]);
+		await Promise.all([other.shutdown(), legacy.shutdown()]);
+	});
+
+	it("hides and quiesces an active Job when the same manager switches parent sessions", async () => {
+		const { manager, ctx, branch } = setup();
+		const started = await manager.start({ name: "active-owned", argv: [process.execPath, "-e", "setInterval(()=>{},1000)"] }, ctx);
+		const otherCtx = { ...ctx, sessionManager: { getSessionFile: () => "/tmp/other-jobs-parent.jsonl" } } as ExtensionContext;
+		await manager.restore(otherCtx);
+		expect(manager.list()).toEqual([]);
+		const runtime = JSON.parse(readFileSync(started.spec.runtimePath, "utf8")) as { status: string };
+		expect(runtime.status).toBe("cancelled");
+		const oldTerminalEvents = branch.filter((entry) => {
+			const operation = entry.data as { type?: string; event?: { source?: { id?: string } } };
+			return operation.type === "emit" && operation.event?.source?.id === started.spec.id;
+		});
+		expect(oldTerminalEvents).toEqual([]);
+	});
+
+	it("does not postpone SIGKILL when stop is requested repeatedly", async () => {
+		const { manager, ctx } = setup();
+		const started = await manager.start({ name: "repeat-stop", argv: [process.execPath, "-e", "process.on('SIGTERM',()=>{}); setInterval(()=>{},1000)"] }, ctx);
+		const internal = manager as unknown as { active: Map<string, { killTimer?: NodeJS.Timeout }> };
+		const first = manager.stop(started.spec.id);
+		const killTimer = internal.active.get(started.spec.id)?.killTimer;
+		const second = manager.stop(started.spec.id);
+		expect(internal.active.get(started.spec.id)?.killTimer).toBe(killTimer);
+		await Promise.all([first, second]);
+	});
+
+	it("resolves an internal hidden-job wait timeout from its captured record", async () => {
+		const { manager, ctx } = setup();
+		const started = await manager.start({ name: "hidden-wait", argv: [process.execPath, "-e", "console.log('done')"] }, ctx);
+		await manager.wait([started.spec.id]);
+		started.runtime.status = "stopping";
+		const internal = manager as unknown as { hidden: Set<string>; waitOne: (id: string, waitMs: number, signal: undefined, includeHidden: boolean) => Promise<typeof started> };
+		internal.hidden.add(started.spec.id);
+		await expect(internal.waitOne(started.spec.id, 1, undefined, true)).resolves.toBe(started);
 	});
 
 	it("preserves the configured output cap and cursor drops after restore", async () => {

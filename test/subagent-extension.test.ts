@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import subagentsExtension, { hasDelegatedWriteAuthorization } from "../extensions/subagents/index.ts";
+import { getSubagentService } from "../extensions/subagents/registry.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 describe("Subagent extension surface", () => {
@@ -20,6 +21,24 @@ describe("Subagent extension surface", () => {
 		expect(tools).toEqual(["subagent", "subagent_wait"]);
 		expect(commands).toEqual(["agents"]);
 		for (const handler of handlers.get("session_shutdown") ?? []) await handler();
+	});
+
+	it("keeps the newest runtime registered when an older reload instance shuts down", async () => {
+		const shutdowns: Array<() => void> = [];
+		const makePi = () => ({
+			registerTool() {},
+			registerCommand() {},
+			on(event: string, handler: () => void) { if (event === "session_shutdown") shutdowns.push(handler); },
+		}) as unknown as ExtensionAPI;
+		subagentsExtension(makePi());
+		const first = getSubagentService();
+		subagentsExtension(makePi());
+		const second = getSubagentService();
+		expect(second).not.toBe(first);
+		await shutdowns[0]?.();
+		expect(getSubagentService()).toBe(second);
+		await shutdowns[1]?.();
+		expect(() => getSubagentService()).toThrow("not initialized");
 	});
 
 	it("requires explicit delegated-write authorization from the latest user message", () => {

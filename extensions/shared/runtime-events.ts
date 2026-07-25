@@ -150,27 +150,31 @@ export function replayRuntimeEventEntries(entries: readonly unknown[]): RuntimeE
 	return state;
 }
 
+interface RuntimeEventStateHolder { state: RuntimeEventState }
+
 export class RuntimeEventJournal {
-	private state = emptyRuntimeEventState();
+	constructor(private readonly holder: RuntimeEventStateHolder = { state: emptyRuntimeEventState() }) {}
 
 	restore(entries: readonly unknown[]): void {
-		this.state = replayRuntimeEventEntries(entries);
+		this.holder.state = replayRuntimeEventEntries(entries);
 	}
 
 	read(): RuntimeEventState {
-		return this.state;
+		return this.holder.state;
 	}
 
 	record(pi: ExtensionAPI, operation: RuntimeEventOperation): boolean {
-		const next = reduceRuntimeEvent(this.state, operation);
-		if (next === this.state) return false;
+		const next = reduceRuntimeEvent(this.holder.state, operation);
+		if (next === this.holder.state) return false;
 		pi.appendEntry(RUNTIME_EVENT_ENTRY, operation);
-		this.state = next;
+		this.holder.state = next;
 		return true;
 	}
 }
 
-export const runtimeEvents = new RuntimeEventJournal();
+const globalRegistry = globalThis as typeof globalThis & { __deevsPiKitRuntimeEventState?: RuntimeEventStateHolder };
+const runtimeEventState = globalRegistry.__deevsPiKitRuntimeEventState ??= { state: emptyRuntimeEventState() };
+export const runtimeEvents = new RuntimeEventJournal(runtimeEventState);
 
 export function pendingRuntimeEvents(state: RuntimeEventState): RuntimeEvent[] {
 	return Object.values(state.events)

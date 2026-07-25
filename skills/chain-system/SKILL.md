@@ -157,7 +157,8 @@ subagent({
 
 `extensions/chains` tracks branch-local `saved` versus `checkpoint due` state:
 
-- mutation, compaction, Mission milestones, pause/completion, review adjudication, and new branches mark a checkpoint due;
+- 80% context usage forces one immediate checkpoint before further work; compaction resets that one-shot threshold;
+- descendant HEAD advances, Mission lifecycle/milestones, review adjudication, new branches, and write-enabled Subagent settlement mark a checkpoint due; ordinary edits and bounded Jobs do not;
 - `chain_save` clears due state; an explicit persisted waiver can also clear it with a reason;
 - `/chains` browses active state and saved links; `/chains <query>` searches them;
 - it never auto-saves because durable links need handoff-quality summaries.

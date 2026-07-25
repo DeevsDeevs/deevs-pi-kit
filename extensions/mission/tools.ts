@@ -191,6 +191,8 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 			setContext(ctx);
 			state.loadFromSession(ctx);
 			const userRequested = params.userRequested === true;
+			const existing = state.readAny();
+			if (existing?.status === "complete") return { content: [{ type: "text" as const, text: `Mission already complete: ${existing.title}` }], details: { mission: existing, usage: state.readUsage(), alreadyComplete: true } };
 			if (hooks.validateCompletion) {
 				const blockers = await hooks.validateCompletion(params, ctx);
 				if (blockers.length) return { content: [{ type: "text" as const, text: `Mission completion blocked:\n${blockers.map((blocker) => `- ${blocker}`).join("\n")}` }], details: { mission: state.readAny(), usage: state.readUsage(), blockers } };
@@ -215,12 +217,12 @@ function missionCall(action: string, target: string, theme: Theme): Text {
 }
 
 function missionResult(details: unknown, expanded: boolean, theme: Theme, isError = false): Text {
-	const value = details as { mission?: ReturnType<MissionState["readAny"]>; usage?: ReturnType<MissionState["readUsage"]>; blockers?: string[]; results?: unknown[] } | undefined;
+	const value = details as { mission?: ReturnType<MissionState["readAny"]>; usage?: ReturnType<MissionState["readUsage"]>; blockers?: string[]; results?: unknown[]; alreadyComplete?: boolean } | undefined;
 	if (value?.blockers?.length) return new Text(`${theme.fg("error", "completion blocked")} · ${value.blockers.length} blocker(s)${expanded ? `\n${value.blockers.map((blocker) => `- ${blocker}`).join("\n")}` : ""}`, 0, 0);
 	if (value?.mission) {
 		const mission = value.mission;
 		const color = isError ? "error" : mission.status === "complete" ? "success" : mission.status === "active" ? "warning" : "muted";
-		let text = `${theme.fg(color, mission.status)} ${theme.fg("accent", mission.title)} ${theme.fg("muted", mission.missionId)}`;
+		let text = `${theme.fg(color, value.alreadyComplete ? "already complete" : mission.status)} ${theme.fg("accent", mission.title)} ${theme.fg("muted", mission.missionId)}`;
 		if (mission.reviewStatus && mission.reviewStatus !== "not_required") text += ` · review ${mission.reviewStatus}`;
 		if (value.usage) text += ` · ${value.usage.totalTokens} tokens`;
 		if (expanded) text += `\n${mission.objective}`;

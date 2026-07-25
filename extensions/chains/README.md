@@ -34,7 +34,7 @@ Pi custom entries track:
 - concrete due reasons;
 - latest saved link or explicit waiver reason.
 
-Checkpoint state is restored after resume/tree navigation and re-armed after compaction. Successful Chain tools update it directly. File mutation is detected from successful write/edit tools and before/after Git fingerprints rather than prompt classification or shell-command regexes. Mission creation, objective changes, review/milestones, write-enabled Subagents, and bounded Jobs also mark checkpoints due.
+Checkpoint state is restored after resume/tree navigation. At 80% context usage, Pi must save one concise Chain link before any other work; compaction resets that one-shot threshold. Successful Chain tools update state directly. Descendant advances of repository HEAD are detected without parsing shell commands, while sideways checkouts and resets are ignored. Mission lifecycle changes, explicit Mission milestones/review adjudication, Chain forks, and write-enabled Subagents also mark checkpoints due. Ordinary edits and bounded Jobs do not: activity is not automatically a durable milestone.
 
 The footer stays quiet while saved and shows `checkpoint due: name@branch` only when attention is needed. Before the next agent turn, a due/resume reminder is injected from state. Mission completion vetoes a due checkpoint unless it is explicitly waived with a reason.
 

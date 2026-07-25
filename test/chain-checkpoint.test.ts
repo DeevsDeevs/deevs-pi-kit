@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { registerChainCommands } from "../extensions/chains/commands.ts";
+import type { ChainService } from "../extensions/chains/service.ts";
 import {
 	CHAIN_CHECKPOINT_ENTRY,
 	ChainCheckpointService,
@@ -27,16 +29,15 @@ describe("Chain checkpoint state", () => {
 		expect(replayed).toMatchObject({ chain: "kit", branch: "main", status: "due", dueReasons: ["review adjudicated"] });
 	});
 
-	it("detects repository mutation without parsing shell commands", async () => {
+	it("marks a new repository commit without treating ordinary edits as milestones", async () => {
 		const branch: Array<Record<string, unknown>> = [];
 		const statuses: Array<string | undefined> = [];
-		let statusCalls = 0;
+		const heads = ["before\n", "before\n", "before\n", "after\n"];
 		const pi = {
 			appendEntry(customType: string, data: unknown) { branch.push({ type: "custom", customType, data }); },
-			exec: async (_command: string, args: string[]) => {
-				if (args[0] === "rev-parse") return { code: 0, stdout: "head\n", stderr: "" };
-				return { code: 0, stdout: statusCalls++ === 0 ? "" : " M src/file.ts\n", stderr: "" };
-			},
+			exec: async (_command: string, args: string[]) => args[0] === "merge-base"
+				? { code: 0, stdout: "", stderr: "" }
+				: { code: 0, stdout: heads.shift() ?? "after\n", stderr: "" },
 		} as unknown as ExtensionAPI;
 		const ctx = {
 			sessionManager: { getBranch: () => branch },
@@ -47,10 +48,69 @@ describe("Chain checkpoint state", () => {
 		service.activate("kit", "main");
 		await service.captureGitBeforeTurn("/tmp/project");
 		await service.detectGitMutation("/tmp/project");
+		expect(service.read().status).toBe("idle");
+		await service.captureGitBeforeTurn("/tmp/project");
+		await service.detectGitMutation("/tmp/project");
 
 		expect(service.read().status).toBe("due");
-		expect(service.read().dueReasons).toContain("working tree changed");
-		expect(statuses.at(-1)).toBe("checkpoint due: kit@main");
+		expect(service.read().dueReasons).toContain("repository HEAD advanced");
+		expect(statuses.at(-1)).toBe("chain due");
 		expect(service.beforeAgentStart("base")).toContain("checkpoint is due");
+	});
+
+	it("forces one immediate Chain checkpoint when context reaches 80 percent", () => {
+		const branch: Array<Record<string, unknown>> = [];
+		let percent = 79;
+		const pi = { appendEntry(customType: string, data: unknown) { branch.push({ type: "custom", customType, data }); } } as unknown as ExtensionAPI;
+		const ctx = {
+			getContextUsage: () => ({ tokens: 80, contextWindow: 100, percent }),
+			sessionManager: { getBranch: () => branch },
+			ui: { setStatus() {} },
+		} as unknown as ExtensionContext;
+		const service = new ChainCheckpointService(pi);
+		service.activate("kit", "main");
+		service.checkContextPressure(ctx);
+		expect(service.read().status).toBe("idle");
+		percent = 80;
+		service.checkContextPressure(ctx);
+		expect(service.read().dueReasons).toEqual(["context usage reached 80%"]);
+		expect(service.beforeAgentStart("base")).toContain("before any other work");
+		service.saved("kit", "main", "checkpoint.md");
+		percent = 95;
+		const reloaded = new ChainCheckpointService(pi);
+		reloaded.restore(ctx);
+		reloaded.checkContextPressure(ctx);
+		expect(reloaded.read().status).toBe("saved");
+		reloaded.contextCompacted();
+		reloaded.checkContextPressure(ctx);
+		expect(reloaded.read().status).toBe("due");
+	});
+
+	it("keeps colliding truncated Chain labels separately selectable", async () => {
+		let command: { handler: (args: string, ctx: ExtensionContext) => Promise<void> } | undefined;
+		const pi = { registerCommand(name: string, value: typeof command) { if (name === "chains") command = value; } } as unknown as ExtensionAPI;
+		const chains = ["abcdefghijklmno-one-zzzzzz", "abcdefghijklmno-two-zzzzzz"].map((chain) => ({ chain, count: 1, branches: ["main"], latest: { branch: "main" } }));
+		registerChainCommands(pi, { list: async () => chains } as unknown as ChainService);
+		let labels: string[] = [];
+		const ctx = { mode: "tui", ui: { select: async (_title: string, options: string[]) => { labels = options; return undefined; } } } as unknown as ExtensionContext;
+		await command!.handler("", ctx);
+		expect(labels).toHaveLength(2);
+		expect(new Set(labels).size).toBe(2);
+	});
+
+	it("does not checkpoint a sideways or backward HEAD move", async () => {
+		const branch: Array<Record<string, unknown>> = [];
+		const heads = ["before\n", "after\n"];
+		const pi = {
+			appendEntry(customType: string, data: unknown) { branch.push({ type: "custom", customType, data }); },
+			exec: async (_command: string, args: string[]) => args[0] === "merge-base"
+				? { code: 1, stdout: "", stderr: "" }
+				: { code: 0, stdout: heads.shift() ?? "after\n", stderr: "" },
+		} as unknown as ExtensionAPI;
+		const service = new ChainCheckpointService(pi);
+		service.activate("kit", "main");
+		await service.captureGitBeforeTurn("/tmp/project");
+		await service.detectGitMutation("/tmp/project");
+		expect(service.read().status).toBe("idle");
 	});
 });

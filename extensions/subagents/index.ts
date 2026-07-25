@@ -62,7 +62,10 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		}
 	};
 	const claimUsage = (values: Array<DelegateRun | SubagentGroup>) => {
-		const runs = values.flatMap((value) => "children" in value ? value.children.map((id) => service.executor.get(id)) : [value]);
+		const runs = values.flatMap((value) => "children" in value ? value.children.flatMap((id) => {
+			const run = service.executor.find(id);
+			return run ? [run] : [];
+		}) : [value]);
 		const usage = runs.reduce((total, run) => {
 			const key = `${run.spec.id}:${run.spec.generation}`;
 			if (["starting", "running", "stopping"].includes(run.runtime.status) || usageClaims.has(key)) return total;
@@ -87,7 +90,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		const state = service.list();
 		const activeRuns = state.runs.filter((run) => ["starting", "running", "stopping"].includes(run.runtime.status)).length;
 		const activeGroups = state.groups.filter((group) => group.status === "running").length;
-		latestCtx.ui.setStatus("subagents", activeRuns ? `agents ${activeRuns}${activeGroups ? ` · groups ${activeGroups}` : ""}` : undefined);
+		latestCtx.ui.setStatus("subagents", activeRuns ? latestCtx.ui.theme?.fg("accent", `agents ${activeRuns}${activeGroups ? `/${activeGroups}` : ""}`) ?? `agents ${activeRuns}${activeGroups ? `/${activeGroups}` : ""}` : undefined);
 	};
 	const unsubscribe = service.executor.onChange(updateStatus);
 
@@ -178,6 +181,33 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				return;
 			}
 			const target = action === "stop" ? id : action;
+			if (!target && context.mode === "tui") {
+				const state = service.list();
+				const choices = new Map<string, string>();
+				for (const run of state.runs) choices.set(`${run.runtime.status} ${run.spec.persona} · ${run.spec.id.slice(-8)}`, run.spec.id);
+				for (const group of state.groups) choices.set(`${group.status} group · ${group.id.slice(-8)}`, group.id);
+				for (const persona of loadBuiltinAgents()) choices.set(`persona · ${persona.name}`, persona.name);
+				const selected = await context.ui.select("Subagents", [...choices.keys()]);
+				if (!selected) return;
+				const selectedId = choices.get(selected) ?? "";
+				const selectedRun = state.runs.find((run) => run.spec.id === selectedId);
+				const selectedGroup = state.groups.find((group) => group.id === selectedId);
+				const terminal = selectedRun ? !["starting", "running", "stopping"].includes(selectedRun.runtime.status) : selectedGroup?.status !== "running";
+				const actions = ["View details", ...(selectedRun || selectedGroup ? terminal ? ["Clear record"] : ["Cancel"] : [])];
+				const selectedAction = await context.ui.select(selectedId, actions);
+				if (!selectedAction) return;
+				if (selectedAction === "Cancel") {
+					await service.wait({ ids: [selectedId], cancel: true });
+					context.ui.notify(`Cancelled ${selectedId}.`, "info");
+					return;
+				}
+				if (selectedAction === "Clear record") {
+					context.ui.notify(`Cleared ${service.clearTerminal(selectedId)} record.`, "info");
+					return;
+				}
+				await showTextViewer(context, "Subagents", formatAgentsBrowser(service, selectedId));
+				return;
+			}
 			await showTextViewer(context, "Subagents", formatAgentsBrowser(service, target ?? ""));
 		},
 	});

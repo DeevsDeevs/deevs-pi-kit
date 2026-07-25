@@ -33,7 +33,7 @@ export default function jobsExtension(pi: ExtensionAPI): void {
 	const updateStatus = (): void => {
 		if (!ctx) return;
 		const active = manager.list().filter((job) => ["starting", "running", "stopping"].includes(job.runtime.status)).length;
-		ctx.ui.setStatus("jobs", active ? `jobs ${active}` : undefined);
+		ctx.ui.setStatus("jobs", active ? ctx.ui.theme?.fg("accent", `jobs ${active}`) ?? `jobs ${active}` : undefined);
 	};
 	const unsubscribe = manager.onChange(updateStatus);
 
@@ -116,7 +116,27 @@ export default function jobsExtension(pi: ExtensionAPI): void {
 			}
 			if (action === "stop" && id) await manager.stop(id);
 			const jobs = manager.list();
-			const exact = jobs.find((job) => job.spec.id === action);
+			let exact = jobs.find((job) => job.spec.id === action);
+			if (!action && context.mode === "tui") {
+				if (!jobs.length) return context.ui.notify("No Jobs.", "info");
+				const choices = new Map(jobs.map((job) => [`${job.runtime.status} · ${job.spec.name} · ${job.spec.id.slice(-8)}`, job]));
+				const selected = await context.ui.select("Jobs", [...choices.keys()]);
+				if (!selected) return;
+				exact = choices.get(selected);
+				if (!exact) return;
+				const terminal = !["starting", "running", "stopping"].includes(exact.runtime.status);
+				const selectedAction = await context.ui.select(exact.spec.name, ["View details", terminal ? "Clear record" : "Stop"]);
+				if (!selectedAction) return;
+				if (selectedAction === "Stop") {
+					await manager.stop(exact.spec.id);
+					context.ui.notify(`Stopped ${exact.spec.id}.`, "info");
+					return;
+				}
+				if (selectedAction === "Clear record") {
+					context.ui.notify(`Cleared ${manager.clearTerminal(exact.spec.id)} record.`, "info");
+					return;
+				}
+			}
 			const selected = exact ? [exact] : action && action !== "stop" ? jobs.filter((job) => `${job.spec.id} ${job.spec.name}`.toLowerCase().includes(action.toLowerCase())) : jobs;
 			const content = selected.map((job) => `${formatJob(job)}\n  ${job.spec.command ?? job.spec.argv?.join(" ") ?? ""}\n${exact ? formatRead(manager.read({ id: job.spec.id, maxBytes: 32_768 })) : `  log: ${job.spec.logPath}`}`).join("\n\n");
 			await showTextViewer(context, exact ? `Job ${exact.spec.id}` : "Jobs", content || "No Jobs.");
@@ -133,7 +153,11 @@ export default function jobsExtension(pi: ExtensionAPI): void {
 		}
 		updateStatus();
 	});
-	pi.on("session_tree", (_event, context) => { ctx = context; updateStatus(); });
+	pi.on("session_tree", async (_event, context) => {
+		ctx = context;
+		await manager.restore(context);
+		updateStatus();
+	});
 	pi.on("session_shutdown", async () => {
 		unsubscribe();
 		clearJobManager(manager);

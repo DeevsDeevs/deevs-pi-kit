@@ -4,6 +4,10 @@ import { MissionState } from "../extensions/mission/state.ts";
 import { MissionRuntime } from "../extensions/mission/runtime.ts";
 import { clearJobManager, setJobManager } from "../extensions/jobs/registry.ts";
 import type { JobManager } from "../extensions/jobs/manager.ts";
+import { clearSubagentService, getSubagentService, setSubagentService } from "../extensions/subagents/registry.ts";
+import type { SubagentService } from "../extensions/subagents/service.ts";
+import type { DelegateRun } from "../extensions/subagents/runtime-types.ts";
+import type { MissionCurrent } from "../extensions/mission/types.ts";
 
 async function setup(options: { pending?: boolean } = {}) {
 	const branch: Array<Record<string, unknown>> = [];
@@ -28,7 +32,7 @@ async function setup(options: { pending?: boolean } = {}) {
 	runtime.register();
 	const emit = async (event: string, value: unknown = {}) => {
 		for (const handler of handlers.get(event) ?? []) await handler(value as never, ctx);
-		await new Promise((resolve) => setImmediate(resolve));
+		await new Promise((resolve) => setTimeout(resolve, 5));
 	};
 	return { branch, messages, handlers, pi, ctx, state, runtime, emit };
 }
@@ -92,6 +96,90 @@ describe("Mission runtime", () => {
 		test.state.append(test.pi, test.state.reviewEvent("awaiting_adjudication", { runId: "review-1", reason: "review settled" }));
 		test.runtime.onProgress({ summary: "Adjudicated", reviewRunId: "review-1", reviewVerdict: "clear", reviewReason: "Verified the reviewer evidence and no findings remain." }, test.ctx);
 		expect(test.state.read()?.reviewStatus).toBe("clear");
+	});
+
+	it("recovers automatically when a review settles without a parent agent turn", async () => {
+		const test = await setup();
+		const run = { spec: { id: "review-recovery" }, runtime: { status: "running", output: "" } } as unknown as DelegateRun;
+		let listener: ((candidate: DelegateRun) => void) | undefined;
+		const service = {
+			list: () => ({ runs: [], groups: [] }),
+			executor: { get: () => run, onChange: (value: (candidate: DelegateRun) => void) => { listener = value; return () => undefined; } },
+		} as unknown as SubagentService;
+		setSubagentService(service);
+		try {
+			test.state.append(test.pi, test.state.reviewEvent("running", { runId: run.spec.id, reason: "reviewing" }));
+			await test.emit("session_start", { reason: "resume" });
+			expect(test.messages).toEqual([]);
+			run.runtime.status = "completed";
+			run.runtime.output = "## Verdict\nClear";
+			listener?.(run);
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			expect(test.state.read()?.reviewStatus).toBe("awaiting_adjudication");
+			expect(test.messages).toHaveLength(1);
+		} finally {
+			clearSubagentService(service);
+		}
+	});
+
+	it("persists and schedules recovery when reviewer admission fails", async () => {
+		const test = await setup();
+		const service = {
+			list: () => ({ runs: [], groups: [] }),
+			start: async () => { throw new Error("synthetic concurrency rejection"); },
+			executor: { onChange: () => () => undefined },
+		} as unknown as SubagentService;
+		setSubagentService(service);
+		try {
+			const mission = test.state.read()!;
+			test.state.append(test.pi, test.state.reviewEvent("due", { reason: "files changed" }));
+			const internal = test.runtime as unknown as { startReview: (ctx: ExtensionContext, mission: MissionCurrent) => Promise<void>; recoveryTimer?: NodeJS.Timeout };
+			await internal.startReview(test.ctx, mission);
+			expect(test.state.read()?.reviewStatus).toBe("due");
+			expect(test.state.read()?.reviewReason).toContain("review admission failed");
+			expect(internal.recoveryTimer).toBeDefined();
+			await test.emit("session_shutdown");
+		} finally {
+			clearSubagentService(service);
+		}
+	});
+
+	it("counts unavailable Subagent runtime as bounded review admission failures", async () => {
+		const test = await setup();
+		let existing: SubagentService | undefined;
+		try { existing = getSubagentService(); clearSubagentService(existing); } catch { /* already unavailable */ }
+		try {
+			test.runtime.restore(test.ctx);
+			const mission = test.state.read()!;
+			const internal = test.runtime as unknown as { startReview: (ctx: ExtensionContext, mission: MissionCurrent) => Promise<void> };
+			await internal.startReview(test.ctx, mission);
+			await internal.startReview(test.ctx, mission);
+			await internal.startReview(test.ctx, mission);
+			expect(test.state.readAny()?.status).toBe("blocked");
+			await test.emit("session_shutdown");
+		} finally {
+			if (existing) setSubagentService(existing);
+		}
+	});
+
+	it("blocks after three failed review runs instead of retrying forever", async () => {
+		const test = await setup();
+		const run = { spec: { id: "review-third-failure" }, runtime: { status: "timeout", output: "", error: "Wall limit reached" } } as unknown as DelegateRun;
+		const service = {
+			list: () => ({ runs: [], groups: [] }),
+			executor: { get: () => run, onChange: () => () => undefined },
+		} as unknown as SubagentService;
+		setSubagentService(service);
+		try {
+			test.state.append(test.pi, test.state.reviewEvent("due", { reason: "first review timeout" }));
+			test.state.append(test.pi, test.state.reviewEvent("due", { reason: "second review limit" }));
+			test.state.append(test.pi, test.state.reviewEvent("running", { runId: run.spec.id, reason: "third review" }));
+			await test.emit("session_start", { reason: "resume" });
+			expect(test.state.readAny()?.status).toBe("blocked");
+			expect(test.messages).toEqual([]);
+		} finally {
+			clearSubagentService(service);
+		}
 	});
 
 	it("vetoes completion until evidence, validation, and review converge", async () => {

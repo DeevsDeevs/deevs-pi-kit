@@ -46,7 +46,21 @@ export function registerWikiCommands(pi: ExtensionAPI, service: WikiService): vo
 		handler: async (args, ctx) => {
 			const parsed = parseSearchArgs(args);
 			if (!parsed) return ctx.ui.notify("Usage: /wiki:search <path> [--lookup|--text|--regex] <query>", "warning");
-			try { await showTextViewer(ctx, "Wiki search", formatSearch(await service.search(parsed))); } catch (error) { ctx.ui.notify(message(error), "error"); }
+			try {
+				const result = await service.search(parsed);
+				if (ctx.mode === "tui" && result.matches.length) {
+					const choices = new Map<string, number>([["Results overview", -1]]);
+					result.matches.forEach((match, index) => choices.set(`${match.page.relativePath}:${match.line}`, index));
+					const selected = await ctx.ui.select("Wiki search", [...choices.keys()]);
+					if (!selected) return;
+					const index = choices.get(selected);
+					if (index !== undefined && index >= 0) {
+						const match = result.matches[index]!;
+						return showTextViewer(ctx, match.page.relativePath, `Line ${match.line}${match.score === undefined ? "" : ` · score ${match.score.toFixed(3)}`}\n\n${match.snippet}`);
+					}
+				}
+				await showTextViewer(ctx, "Wiki search", formatSearch(result));
+			} catch (error) { ctx.ui.notify(message(error), "error"); }
 		},
 	});
 
