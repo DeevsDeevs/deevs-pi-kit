@@ -210,9 +210,9 @@ export default function codexFastExtension(pi: ExtensionAPI): void {
 				}
 			}
 
-			if (action === "on" || action === "enable") state.override = "on";
-			else if (action === "off" || action === "disable") state.override = "off";
-			else if (action === "auto" || action === "default") {
+			if (action === "on") state.override = "on";
+			else if (action === "off") state.override = "off";
+			else if (action === "auto") {
 				state.override = "auto";
 				state.config = loadConfig(ctx.cwd);
 			} else if (action === "toggle") state.override = isFastEnabled(state) ? "off" : "on";

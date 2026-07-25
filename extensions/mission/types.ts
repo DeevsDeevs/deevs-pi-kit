@@ -1,5 +1,6 @@
-export type MissionStatus = "active" | "paused" | "budget_limited" | "complete" | "stuck" | "cleared";
-export type MissionEventKind = "created" | "status_changed" | "continued" | "completed" | "progress" | "artifact_updated";
+export type MissionStatus = "active" | "paused" | "blocked" | "terminal_error" | "budget_limited" | "usage_limited" | "complete" | "cleared";
+export type MissionReviewStatus = "not_required" | "due" | "running" | "awaiting_adjudication" | "changes_requested" | "clear" | "skipped";
+export type MissionEventKind = "created" | "status_changed" | "continued" | "completed" | "progress" | "objective_updated" | "review_changed" | "settled";
 
 export interface MissionUsage {
 	mainTokens: number;
@@ -34,6 +35,17 @@ export interface MissionEvent {
 	baselineSubagentTokens?: number;
 	baselineMainCostUsd?: number;
 	baselineSubagentCostUsd?: number;
+	generation?: string;
+	objectiveVersion?: number;
+	turnBudget?: number;
+	wallDeadlineAt?: number;
+	reviewStatus?: MissionReviewStatus;
+	reviewRunId?: string;
+	reviewReason?: string;
+	reviewSkippedReason?: string;
+	blockerFingerprint?: string;
+	blockerCount?: number;
+	turnCount?: number;
 }
 
 export interface MissionProgressRecord {
@@ -67,6 +79,17 @@ export interface MissionCurrent {
 	lastReason?: string;
 	lastSummary?: string;
 	lastContinuationAt?: number;
+	generation?: string;
+	objectiveVersion?: number;
+	turnBudget?: number;
+	wallDeadlineAt?: number;
+	reviewStatus?: MissionReviewStatus;
+	reviewRunId?: string;
+	reviewReason?: string;
+	reviewSkippedReason?: string;
+	blockerFingerprint?: string;
+	blockerCount?: number;
+	turnCount?: number;
 }
 
 export interface MissionCreateInput {
@@ -75,8 +98,16 @@ export interface MissionCreateInput {
 	requirements?: string[];
 	tokenBudget?: number;
 	costBudgetUsd?: number;
+	turnBudget?: number;
+	wallDeadlineMs?: number;
 	chain?: string;
 	chainBranch?: string;
+}
+
+export interface MissionUpdateInput {
+	objective?: string;
+	requirements?: string[];
+	reason: string;
 }
 
 export interface MissionProgressInput {
@@ -85,6 +116,10 @@ export interface MissionProgressInput {
 	remaining?: string[];
 	validation?: string[];
 	checkpoint?: boolean;
+	reviewSkipReason?: string;
+	reviewVerdict?: "clear" | "changes_requested";
+	reviewRunId?: string;
+	reviewReason?: string;
 }
 
 export interface MissionSearchInput {

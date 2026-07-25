@@ -99,7 +99,7 @@ Requirements:
 - title, subtitle, diagram, and notes
 - write to the user path or `docs/diagrams/<slug>.html`
 
-Do not start a preview server unless the user asks. If needed, use `proc_start`, bind to `127.0.0.1`, and stop it when done.
+Do not start a preview server unless the user asks. Use Herdr for persistent server ownership; use a bounded Job only for a short smoke check.
 
 ## Quality checks
 

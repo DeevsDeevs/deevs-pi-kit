@@ -1,0 +1,176 @@
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { JobManager } from "../extensions/jobs/manager.ts";
+
+const cleanups: Array<() => void> = [];
+afterEach(() => cleanups.splice(0).reverse().forEach((cleanup) => cleanup()));
+
+function setup() {
+	const root = mkdtempSync(path.join(tmpdir(), "jobs-test-"));
+	const project = mkdtempSync(path.join(tmpdir(), "jobs-project-"));
+	const previous = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = root;
+	const branch: Array<Record<string, unknown>> = [];
+	const pi = { appendEntry(customType: string, data: unknown) { branch.push({ type: "custom", customType, data }); } } as unknown as ExtensionAPI;
+	const ctx = { cwd: project, ui: { setStatus: () => undefined } } as unknown as ExtensionContext;
+	const manager = new JobManager(pi);
+	cleanups.push(() => { process.env.PI_CODING_AGENT_DIR = previous; }, () => rmSync(root, { recursive: true, force: true }), () => rmSync(project, { recursive: true, force: true }), () => { void manager.shutdown(); });
+	return { manager, ctx, branch };
+}
+
+describe("bounded Jobs", () => {
+	it("captures cursor output and settles after process close", async () => {
+		const { manager, ctx, branch } = setup();
+		const started = await manager.start({ name: "echo", argv: [process.execPath, "-e", "console.log('hello'); console.error('warn'); setTimeout(()=>{},100)"], env: { SECRET_TOKEN: "do-not-persist" }, stdin: "private-input" }, ctx);
+		const [job] = await manager.wait([started.spec.id]);
+		const output = manager.read({ id: started.spec.id });
+
+		expect(job?.runtime.status).toBe("completed");
+		expect(output.chunks.map((chunk) => chunk.text).join("")).toContain("hello");
+		expect(output.chunks.map((chunk) => chunk.text).join("")).toContain("warn");
+		expect(branch.some((entry) => (entry.data as { type?: string })?.type === "emit")).toBe(true);
+		const persistedSpec = readFileSync(path.join(started.spec.artifactsDir, "spec.json"), "utf8");
+		expect(persistedSpec).not.toContain("do-not-persist");
+		expect(persistedSpec).not.toContain("private-input");
+		expect(job?.runtime.processIdentity).toBeTruthy();
+		expect(job?.runtime.heartbeatAt).toBeTypeOf("number");
+
+		const restored = new JobManager({ appendEntry() {} } as unknown as ExtensionAPI);
+		await restored.restore(ctx);
+		expect(restored.read({ id: started.spec.id }).chunks.map((chunk) => chunk.text).join("")).toContain("hello");
+		expect(restored.clearTerminal(started.spec.id)).toBe(1);
+		expect(() => restored.get(started.spec.id)).toThrow("Unknown job");
+		await restored.shutdown();
+	});
+
+	it("preserves the configured output cap and cursor drops after restore", async () => {
+		const { manager, ctx } = setup();
+		const script = `let i=0;const timer=setInterval(()=>{console.log(String(i++).repeat(2_000));if(i===5)clearInterval(timer)},10);`;
+		const started = await manager.start({ name: "capped", argv: [process.execPath, "-e", script], maxBytes: 1_024 }, ctx);
+		await manager.wait([started.spec.id]);
+		const before = manager.read({ id: started.spec.id, maxBytes: 10_000 });
+		expect(before.job.spec.maxBufferBytes).toBe(1_024);
+		expect(before.job.runtime.bufferedBytes).toBeLessThanOrEqual(1_024);
+		expect(before.earliestSeq).toBeGreaterThan(1);
+		expect(statSync(started.spec.spoolPath).size).toBeLessThan(2_048);
+		const metadata = JSON.parse(readFileSync(started.spec.spoolPath, "utf8").split("\n")[0]!) as { nextSeq: number; droppedBytes: number };
+		expect(metadata.nextSeq).toBe(before.earliestSeq);
+		expect(metadata.droppedBytes).toBeGreaterThan(0);
+
+		const restored = new JobManager({ appendEntry() {} } as unknown as ExtensionAPI);
+		await restored.restore(ctx);
+		const after = restored.read({ id: started.spec.id, maxBytes: 10_000 });
+		expect(after.job.runtime.bufferedBytes).toBeLessThanOrEqual(1_024);
+		expect(after.job.runtime.droppedBytes).toBe(before.job.runtime.droppedBytes);
+		expect(after.earliestSeq).toBe(before.earliestSeq);
+		expect(after.chunks.map((chunk) => chunk.text)).toEqual(before.chunks.map((chunk) => chunk.text));
+		expect(after.droppedBeforeSeq).toBe(before.earliestSeq - 1);
+		await restored.shutdown();
+	});
+
+	it("waits for readiness without treating the live process as terminal", async () => {
+		const { manager, ctx } = setup();
+		const ready = await manager.start({
+			name: "ready",
+			argv: [process.execPath, "-e", "process.stdout.write('REA'); setTimeout(()=>console.log('DY'),10); setTimeout(()=>{},100)"],
+			readyPattern: "READY",
+			readyTimeoutMs: 1_000,
+		}, ctx);
+		expect(ready.runtime.ready).toBe(true);
+		expect(ready.runtime.status).toBe("running");
+		const [settled] = await manager.wait([ready.spec.id]);
+		expect(settled?.runtime.status).toBe("completed");
+	});
+
+	it("does not arm a timeout after readiness arrived during identity lookup", async () => {
+		const { manager, ctx } = setup();
+		const ready = await manager.start({
+			name: "immediately-ready",
+			argv: [process.execPath, "-e", "console.log('READY'); setTimeout(()=>{},300)"],
+			readyPattern: "READY",
+			readyTimeoutMs: 50,
+		}, ctx);
+		expect(ready.runtime.ready).toBe(true);
+		const [settled] = await manager.wait([ready.spec.id]);
+		expect(settled?.runtime.status).toBe("completed");
+	});
+
+	it("keeps live owned jobs intact during restore and cancels readiness waits on abort", async () => {
+		const { manager, ctx } = setup();
+		const live = await manager.start({ name: "live", argv: [process.execPath, "-e", "setTimeout(()=>{},300)"], timeoutMs: 2_000 }, ctx);
+		await manager.restore(ctx);
+		expect(manager.get(live.spec.id).runtime.status).toBe("running");
+
+		const staleRuntime = JSON.parse(readFileSync(live.spec.runtimePath, "utf8")) as typeof live.runtime;
+		writeFileSync(live.spec.runtimePath, JSON.stringify({ ...staleRuntime, processIdentity: "reused-pid" }));
+		const restored = new JobManager({ appendEntry() {} } as unknown as ExtensionAPI);
+		await restored.restore(ctx);
+		expect(restored.get(live.spec.id).runtime.status).toBe("lost");
+		expect(isAlive(live.runtime.pid!)).toBe(true);
+		await restored.shutdown();
+		await manager.stop(live.spec.id);
+
+		const controller = new AbortController();
+		setTimeout(() => controller.abort(new Error("cancel readiness")), 50);
+		await expect(manager.start({
+			name: "never-ready",
+			argv: [process.execPath, "-e", "setInterval(()=>{},1000)"],
+			readyPattern: "READY",
+			readyTimeoutMs: 5_000,
+		}, ctx, controller.signal)).rejects.toThrow("cancel readiness");
+		expect(manager.list().find((job) => job.spec.name === "never-ready")?.runtime.status).toBe("cancelled");
+	});
+
+	it("captures output and exit status from zero-delay Jobs", async () => {
+		const { manager, ctx } = setup();
+		for (let index = 0; index < 5; index++) {
+			const started = await manager.start({ name: `true-${index}`, argv: ["/usr/bin/true"], timeoutMs: 2_000 }, ctx);
+			const [settled] = await manager.wait([started.spec.id]);
+			expect(settled!.runtime.status).toBe("completed");
+		}
+		const echo = await manager.start({ name: "echo", argv: ["/bin/echo", "hello"], timeoutMs: 2_000 }, ctx);
+		const [settled] = await manager.wait([echo.spec.id]);
+		expect(settled!.runtime.status).toBe("completed");
+		expect(manager.read({ id: echo.spec.id }).chunks.map((chunk) => chunk.text).join("")).toContain("hello");
+	});
+
+	it("rejects a wait whose signal is already aborted", async () => {
+		const { manager, ctx } = setup();
+		const started = await manager.start({ name: "waiting", argv: [process.execPath, "-e", "setTimeout(()=>{},300)"], timeoutMs: 2_000 }, ctx);
+		const controller = new AbortController();
+		controller.abort(new Error("already cancelled"));
+		await expect(manager.wait([started.spec.id], undefined, controller.signal)).rejects.toThrow("already cancelled");
+		await manager.stop(started.spec.id);
+	});
+
+	it("enforces timeout and process-tree cancellation", async () => {
+		const { manager, ctx } = setup();
+		const started = await manager.start({ name: "hang", argv: [process.execPath, "-e", "setInterval(()=>{},1000)"], timeoutMs: 100 }, ctx);
+		const [timedOut] = await manager.wait([started.spec.id]);
+		expect(timedOut?.runtime.status).toBe("timeout");
+
+		const second = await manager.start({ name: "cancel", argv: [process.execPath, "-e", "setInterval(()=>{},1000)"], timeoutMs: 5_000 }, ctx);
+		const cancelled = await manager.stop(second.spec.id);
+		expect(cancelled.runtime.status).toBe("cancelled");
+
+		const pidFile = path.join(ctx.cwd, "job-descendant.pid");
+		const stubborn = await manager.start({
+			name: "stubborn-tree",
+			argv: [process.execPath, "-e", `const {spawn}=require('node:child_process');const fs=require('node:fs');const child=spawn(process.execPath,['-e',\"process.on('SIGTERM',()=>{});setInterval(()=>{},1000)\"],{stdio:'ignore'});fs.writeFileSync(${JSON.stringify(pidFile)},String(child.pid));console.log('DESCENDANT_READY');process.on('SIGTERM',()=>process.exit(0));setInterval(()=>{},1000);`],
+			readyPattern: "DESCENDANT_READY",
+			readyTimeoutMs: 1_000,
+			timeoutMs: 5_000,
+		}, ctx);
+		const treeStopped = await manager.stop(stubborn.spec.id);
+		const descendantPid = Number(readFileSync(pidFile, "utf8"));
+		expect(treeStopped.runtime.status).toBe("cancelled");
+		expect(isAlive(descendantPid)).toBe(false);
+	});
+});
+
+function isAlive(pid: number): boolean {
+	try { process.kill(pid, 0); return true; } catch { return false; }
+}

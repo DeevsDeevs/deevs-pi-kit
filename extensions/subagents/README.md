@@ -1,66 +1,39 @@
 # Subagents
 
-Curated background agents for focused exploration, review, testing, architecture, DevOps, and language-specific feedback. Subagents run as managed background processes.
+Owned curated Pi Kit personas executed through a process-isolated runtime.
 
-## Staff
+## Personas
 
 ```text
-explorer    code/context reconnaissance
+explorer    targeted code/context reconnaissance
 architect   design and migration planning
-reviewer    correctness, security, and performance review
+reviewer    correctness, security, and regression review
 tester      validation strategy and coverage gaps
 devops      runtime, config, and deployment investigation
 python-dev  Python-specific review
 cpp-dev     C++ correctness and performance review
-rust-dev    Rust ownership, async, and API review
+rust-dev    Rust correctness and idioms
 anti-slop   simplify overbuilt or noisy changes
 ```
 
-## Defaults
+Persona Markdown, metadata, discovery, model/tool/write policy, and tests live in this repository. `agent-system` is legacy and not a runtime dependency.
 
-- read-only unless `allowWrite: true` is explicitly passed
-- completion, failure, and timeout wake the parent agent
-- backing process alerts are suppressed to avoid duplicates
-- active runs show a compact footer status
-- optional `chainContext` is loaded by the parent and prepended to the task
-- optional `tokenBudget` and `costBudgetUsd` are passed as advisory task constraints and reconciled from child Pi session usage when available
-
-## Tools
+## Model tools
 
 ```text
-agent_list            list available staff agents
-agent_start           start one subagent
-agent_parallel_start  start a parallel group
-agent_read            read friendly output or raw process chunks
-agent_status          inspect runs and groups
-agent_stop            stop a run or group
-agent_logs            inspect artifacts or compact process logs
-agent_clear           clear completed records and artifacts
+subagent       fresh run, persistent resume, or bounded parallel group
+subagent_wait  status, wait, or cancellation with real settlement
 ```
 
-Use `agent_read` first. Use `agent_logs` when you need artifacts, metadata, or raw process logs. Terminal run metadata includes parsed usage and budget status when the child session recorded usage.
+## Guarantees
 
-## Commands
+- read-only unless `allowWrite: true` is explicit;
+- requested tools may narrow but never broaden persona capability;
+- detached worker owns the private Pi child and durable artifacts;
+- parent reload restoration, stale-worker reconciliation, bounded JSONL/stderr, partial output, and process-group cancellation;
+- persistent agent identity resumes the exact private Pi session in a new run/generation;
+- wall, provider-turn, token, and cost enforcement with at most one provider-call token/cost overshoot;
+- terminal state is withheld until the child process group actually quiesces;
+- stable terminal events, exact per-run usage, grouped completion, user-priority wake admission, and Chain/Mission integration.
 
-```text
-/agents                       dashboard if runs exist, catalog otherwise
-/agents:catalog               staff browser
-/agents:list                  text staff list
-/agents:run <agent> -- <task>
-/agents:parallel a,b -- <task>
-/agents:status
-/agents:read <id> [--raw]
-/agents:logs <id> [source] [--raw]
-/agents:stop <id>
-/agents:clear <id|--completed> [--delete-artifacts]
-/agents:dock [show|hide|toggle]
-/agents:settings [status|reset|...]
-```
-
-Log sources: `result`, `task`, `system-prompt`, `metadata`, `combined`, `stdout`, `stderr`. Process-log sources are compact by default; use `--raw` only for debugging the child process stream.
-
-## Project settings
-
-Settings persist to `.pi/subagents.json` when changed through `/agents:settings`, `/agents:dock`, or the settings overlay.
-
-Persisted settings include models, timeouts, concurrency, dock preferences, wake-up behavior, and the write default. `defaultAllowWrite` defaults to `false`; persist `true` only deliberately.
+Project settings in `.pi/subagents.json` cover allowed/default models, per-persona models, timeout bounds, and group concurrency.

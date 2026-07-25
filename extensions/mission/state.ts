@@ -1,8 +1,9 @@
+import { randomUUID } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ChainService } from "../chains/service.ts";
 import { slugify } from "../chains/parser.ts";
 import { missionDir } from "./artifacts.ts";
-import type { MissionCreateInput, MissionCurrent, MissionEvent, MissionProgressInput, MissionProgressRecord, MissionStatus, MissionUsage } from "./types.ts";
+import type { MissionCreateInput, MissionCurrent, MissionEvent, MissionProgressInput, MissionProgressRecord, MissionReviewStatus, MissionStatus, MissionUpdateInput, MissionUsage } from "./types.ts";
 
 export const MISSION_CUSTOM_TYPE = "deevs-mission-state";
 const DEFAULT_CHAIN_BRANCH = "main";
@@ -48,7 +49,9 @@ export class MissionState {
 			}
 			addUsageFromEntry(rolling, entry, seenSubagents);
 		}
-		this.usage = this.current ? computeUsage(branch, this.current) : zeroUsage();
+		const current = this.current as MissionCurrent | undefined;
+		if (current) current.artifactDir = missionDir(ctx.cwd, current.slug);
+		this.usage = current ? computeUsage(branch, current) : zeroUsage();
 	}
 
 	async create(input: MissionCreateInput, ctx: ExtensionContext): Promise<MissionEvent> {
@@ -56,13 +59,15 @@ export class MissionState {
 		if (!objective) throw new Error("Mission objective must not be empty.");
 		const requirements = normalizeRequirements(input.requirements?.length ? input.requirements : inferRequirements(objective));
 		const title = normalizeTitle(input.title) || deriveMissionTitle(objective, requirements);
-		const slug = slugify(title).slice(0, 50) || "mission";
-		const chain = input.chain?.trim() || await chooseDefaultChain(ctx.cwd, title, slug);
+		const baseSlug = slugify(title).slice(0, 42) || "mission";
+		const chain = input.chain?.trim() || await chooseDefaultChain(ctx.cwd, title, baseSlug);
 		const now = Date.now();
+		const missionId = `m_${now.toString(36)}_${randomUUID().slice(0, 6)}`;
+		const slug = `${baseSlug}-${missionId.slice(-6)}`;
 		const baseline = aggregateUsage(ctx.sessionManager.getBranch() as Array<any>);
 		return {
 			kind: "created",
-			missionId: `m_${now.toString(36)}`,
+			missionId,
 			at: now,
 			objective,
 			title,
@@ -78,6 +83,13 @@ export class MissionState {
 			baselineSubagentTokens: baseline.subagentTokens,
 			baselineMainCostUsd: baseline.mainCostUsd,
 			baselineSubagentCostUsd: baseline.subagentCostUsd,
+			generation: randomUUID(),
+			objectiveVersion: 1,
+			turnBudget: positiveInteger(input.turnBudget, "turnBudget"),
+			wallDeadlineAt: input.wallDeadlineMs === undefined ? undefined : now + positiveNumber(input.wallDeadlineMs, "wallDeadlineMs")!,
+			reviewStatus: "not_required",
+			blockerCount: 0,
+			turnCount: 0,
 		};
 	}
 
@@ -89,12 +101,59 @@ export class MissionState {
 
 	statusEvent(status: MissionStatus, reason?: string, summary?: string): MissionEvent {
 		const mission = this.requireCurrent();
-		return { kind: status === "complete" ? "completed" : "status_changed", missionId: mission.missionId, at: Date.now(), status, reason, summary };
+		return { kind: status === "complete" ? "completed" : "status_changed", missionId: mission.missionId, generation: mission.generation, at: Date.now(), status, reason, summary };
 	}
 
 	continuedEvent(): MissionEvent {
 		const mission = this.requireCurrent();
-		return { kind: "continued", missionId: mission.missionId, at: Date.now(), status: mission.status };
+		return { kind: "continued", missionId: mission.missionId, generation: mission.generation, at: Date.now(), status: mission.status, turnCount: (mission.turnCount ?? 0) + 1 };
+	}
+
+	objectiveUpdateEvent(input: MissionUpdateInput): MissionEvent {
+		const mission = this.requireCurrent();
+		const objective = input.objective?.trim() || mission.objective;
+		const requirements = input.requirements?.length ? normalizeRequirements(input.requirements) : mission.requirements;
+		if (!input.reason.trim()) throw new Error("Mission objective updates require a reason.");
+		return {
+			kind: "objective_updated",
+			missionId: mission.missionId,
+			generation: mission.generation,
+			at: Date.now(),
+			objective,
+			requirements,
+			objectiveVersion: (mission.objectiveVersion ?? 1) + 1,
+			reason: input.reason.trim(),
+			reviewStatus: "due",
+			reviewReason: "Mission objective changed",
+		};
+	}
+
+	reviewEvent(status: MissionReviewStatus, input: { runId?: string; reason?: string; skippedReason?: string } = {}): MissionEvent {
+		const mission = this.requireCurrent();
+		if (status === "skipped" && !input.skippedReason?.trim()) throw new Error("Skipping Mission review requires a reason.");
+		return {
+			kind: "review_changed",
+			missionId: mission.missionId,
+			generation: mission.generation,
+			at: Date.now(),
+			reviewStatus: status,
+			reviewRunId: input.runId,
+			reviewReason: input.reason,
+			reviewSkippedReason: input.skippedReason?.trim(),
+		};
+	}
+
+	settledEvent(input: { blockerFingerprint?: string; madeProgress: boolean }): MissionEvent {
+		const mission = this.requireCurrent();
+		const sameBlocker = input.blockerFingerprint && input.blockerFingerprint === mission.blockerFingerprint;
+		return {
+			kind: "settled",
+			missionId: mission.missionId,
+			generation: mission.generation,
+			at: Date.now(),
+			blockerFingerprint: input.blockerFingerprint,
+			blockerCount: input.madeProgress ? 0 : sameBlocker ? (mission.blockerCount ?? 0) + 1 : input.blockerFingerprint ? 1 : 0,
+		};
 	}
 
 	progressEvent(input: MissionProgressInput): MissionEvent {
@@ -104,6 +163,7 @@ export class MissionState {
 		return {
 			kind: "progress",
 			missionId: mission.missionId,
+			generation: mission.generation,
 			at: Date.now(),
 			summary: summary.slice(0, 1200),
 			evidence: normalizeProgressList(input.evidence, 20),
@@ -113,11 +173,13 @@ export class MissionState {
 		};
 	}
 
-	budgetExceeded(): "token" | "cost" | null {
+	budgetExceeded(): "token" | "cost" | "turn" | "wall" | null {
 		const mission = this.current;
 		if (!mission || mission.status !== "active") return null;
 		if (mission.tokenBudget !== undefined && this.usage.totalTokens >= mission.tokenBudget) return "token";
 		if (mission.costBudgetUsd !== undefined && this.usage.totalCostUsd >= mission.costBudgetUsd) return "cost";
+		if (mission.turnBudget !== undefined && (mission.turnCount ?? 0) >= mission.turnBudget) return "turn";
+		if (mission.wallDeadlineAt !== undefined && Date.now() >= mission.wallDeadlineAt) return "wall";
 		return null;
 	}
 
@@ -149,15 +211,43 @@ export class MissionState {
 				baselineSubagentTokens: event.baselineSubagentTokens ?? 0,
 				baselineMainCostUsd: event.baselineMainCostUsd ?? 0,
 				baselineSubagentCostUsd: event.baselineSubagentCostUsd ?? 0,
+				generation: event.generation ?? `legacy-${event.missionId}`,
+				objectiveVersion: event.objectiveVersion ?? 1,
+				turnBudget: event.turnBudget,
+				wallDeadlineAt: event.wallDeadlineAt,
+				reviewStatus: event.reviewStatus ?? "not_required",
+				reviewRunId: event.reviewRunId,
+				reviewReason: event.reviewReason,
+				reviewSkippedReason: event.reviewSkippedReason,
+				blockerFingerprint: event.blockerFingerprint,
+				blockerCount: event.blockerCount ?? 0,
+				turnCount: event.turnCount ?? 0,
 			};
 			return;
 		}
 		if (!this.current || this.current.missionId !== event.missionId) return;
+		if (event.generation && this.current.generation && event.generation !== this.current.generation) return;
 		this.current.updatedAt = event.at;
 		if (event.status) this.current.status = event.status;
 		if (event.reason) this.current.lastReason = event.reason;
 		if (event.summary) this.current.lastSummary = event.summary;
-		if (event.kind === "continued") this.current.lastContinuationAt = event.at;
+		if (event.kind === "continued") {
+			this.current.lastContinuationAt = event.at;
+			this.current.turnCount = event.turnCount ?? (this.current.turnCount ?? 0) + 1;
+		}
+		if (event.kind === "objective_updated") {
+			if (event.objective) this.current.objective = event.objective;
+			if (event.requirements) this.current.requirements = normalizeRequirements(event.requirements);
+			this.current.objectiveVersion = event.objectiveVersion ?? (this.current.objectiveVersion ?? 1) + 1;
+		}
+		if (event.reviewStatus) this.current.reviewStatus = event.reviewStatus;
+		if (event.reviewRunId !== undefined) this.current.reviewRunId = event.reviewRunId;
+		if (event.reviewReason !== undefined) this.current.reviewReason = event.reviewReason;
+		if (event.reviewSkippedReason !== undefined) this.current.reviewSkippedReason = event.reviewSkippedReason;
+		if (event.kind === "settled") {
+			this.current.blockerFingerprint = event.blockerFingerprint;
+			this.current.blockerCount = event.blockerCount ?? 0;
+		}
 		if (event.kind === "progress" && event.summary) {
 			this.progress.push({
 				missionId: event.missionId,
@@ -262,6 +352,11 @@ function positiveNumber(value: number | undefined, name: string): number | undef
 	return value;
 }
 
+function positiveInteger(value: number | undefined, name: string): number | undefined {
+	const positive = positiveNumber(value, name);
+	return positive === undefined ? undefined : Math.floor(positive);
+}
+
 function computeUsage(branch: Array<any>, mission: MissionCurrent): MissionUsage {
 	const cutoff = mission.status === "complete" || mission.status === "cleared" || mission.status === "budget_limited" ? mission.updatedAt : undefined;
 	const aggregate = aggregateUsage(branch, cutoff);
@@ -292,6 +387,15 @@ function aggregateUsage(branch: Array<any>, cutoffMs?: number): MissionUsage {
 
 function addUsageFromEntry(usage: MissionUsage, entry: any, seenSubagents: Set<string>): void {
 	if (entry.type === "message" && entry.message?.role === "assistant" && entry.message.usage) addMainUsage(usage, entry.message.usage);
+	const runtimeEvent = entry.type === "custom" && entry.customType === "deevs.runtime-event-op.v1" && entry.data?.type === "emit" ? entry.data.event : undefined;
+	if (runtimeEvent?.source?.kind === "subagent" && runtimeEvent.usage) {
+		const key = `${runtimeEvent.source.id}:${runtimeEvent.source.generation ?? "legacy"}`;
+		if (!seenSubagents.has(key)) {
+			seenSubagents.add(key);
+			usage.subagentTokens += numberValue(runtimeEvent.usage.inputTokens) + numberValue(runtimeEvent.usage.outputTokens) + numberValue(runtimeEvent.usage.cacheWriteTokens);
+			usage.subagentCostUsd += numberValue(runtimeEvent.usage.costUsd);
+		}
+	}
 	const details = entry.type === "custom_message" && entry.customType === "subagents" ? entry.details : entry.type === "message" && entry.message?.role === "toolResult" ? entry.message.details : undefined;
 	addSubagentUsageFromDetails(usage, details, seenSubagents);
 	usage.totalTokens = usage.mainTokens + usage.subagentTokens;

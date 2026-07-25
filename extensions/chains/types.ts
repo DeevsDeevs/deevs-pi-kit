@@ -62,7 +62,6 @@ export interface ChainSearchInput {
 	maxResults?: number;
 	contextLines?: number;
 	mode?: "lookup" | "text" | "regex";
-	regex?: boolean;
 	caseSensitive?: boolean;
 	recencyHalfLifeDays?: number;
 	recencyWeight?: number;

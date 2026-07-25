@@ -140,7 +140,8 @@ export class ChainService {
 		const maxResults = clamp(input.maxResults ?? DEFAULT_MAX_RESULTS, 1, MAX_RESULTS);
 		const contextLines = clamp(input.contextLines ?? 1, 0, 5);
 		const chains = input.chain ? [{ chain: validateChainName(input.chain), count: 0, latest: null }] : await this.list();
-		const matcher = createMatcher(query, Boolean(input.regex), Boolean(input.caseSensitive));
+		const regex = input.mode === "regex";
+		const matcher = createMatcher(query, regex, Boolean(input.caseSensitive));
 		const matches: ChainSearchMatch[] = [];
 
 		for (const item of chains) {
@@ -151,11 +152,11 @@ export class ChainService {
 				for (let index = 0; index < lines.length; index++) {
 					if (!matcher(lines[index]!)) continue;
 					matches.push({ link, line: index + 1, snippet: snippet(lines, index, contextLines) });
-					if (matches.length >= maxResults) return { query, matches, truncated: true, regex: Boolean(input.regex) };
+					if (matches.length >= maxResults) return { query, matches, truncated: true, regex };
 				}
 			}
 		}
-		return { query, matches, truncated: false, regex: Boolean(input.regex) };
+		return { query, matches, truncated: false, regex };
 	}
 
 	async rankedSearch(input: RankedSearchInput): Promise<RankedSearchResult> {
@@ -247,7 +248,7 @@ export class ChainService {
 				searchMatches = lookup.matches.map((match) => ({ link: match.link, line: Number(match.snippet.split(":", 1)[0]) || 1, snippet: match.snippet }));
 				if (lookup.matches.length > 0) append(`\n## Relevant hits for ${JSON.stringify(input.searchQuery)}\n${lookup.matches.map((match) => `### ${match.link.filename} score=${match.score.toFixed(3)}\n${match.snippet}`).join("\n\n")}\n`);
 			} else {
-				const search = await this.search({ chain: loaded.link.chain, branch: loaded.link.branch, query: input.searchQuery, maxResults: input.maxSearchMatches ?? DEFAULT_CONTEXT_SEARCH_MATCHES, contextLines: 1, regex: searchMode === "regex" });
+				const search = await this.search({ chain: loaded.link.chain, branch: loaded.link.branch, query: input.searchQuery, maxResults: input.maxSearchMatches ?? DEFAULT_CONTEXT_SEARCH_MATCHES, contextLines: 1, mode: searchMode });
 				searchMatches = search.matches;
 				if (searchMatches.length > 0) append(`\n## Search hits for ${JSON.stringify(input.searchQuery)}\n${searchMatches.map((match) => `### ${match.link.filename}:${match.line}\n${match.snippet}`).join("\n\n")}\n`);
 			}

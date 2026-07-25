@@ -10,12 +10,11 @@ export function missionDir(cwd: string, slug: string): string {
 	return join(missionRoot(cwd), slug);
 }
 
-export async function initializeMissionArtifacts(cwd: string, mission: MissionCurrent, usage?: MissionUsage): Promise<void> {
+export async function initializeMissionArtifacts(mission: MissionCurrent, usage?: MissionUsage): Promise<void> {
 	await mkdir(mission.artifactDir, { recursive: true });
 	await Promise.all([
 		writeFile(join(mission.artifactDir, "mission.md"), formatMissionMarkdown(mission, usage), "utf8"),
 		writeFile(join(mission.artifactDir, "plan.md"), formatPlanMarkdown(mission), "utf8"),
-		writeFile(join(mission.artifactDir, "decisions.md"), formatDecisionsMarkdown(mission), "utf8"),
 		writeFile(join(mission.artifactDir, "audit.md"), formatAuditMarkdown(mission), "utf8"),
 		writeFile(join(mission.artifactDir, "log.md"), formatProgressLogMarkdown(mission, []), "utf8"),
 	]);
@@ -121,10 +120,6 @@ function formatPlanMarkdown(mission: MissionCurrent): string {
 		"Before completing, update `audit.md` with requirement-to-evidence mapping and confirm no required work remains.",
 		"",
 	].join("\n");
-}
-
-function formatDecisionsMarkdown(mission: MissionCurrent): string {
-	return [`# Decisions: ${mission.title}`, "", `Objective: ${mission.objective}`, "", "Append important architecture/product decisions here.", ""].join("\n");
 }
 
 function escapeTableCell(value: string): string {

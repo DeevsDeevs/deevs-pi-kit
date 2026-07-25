@@ -1,7 +1,7 @@
 ---
 name: python-dev
 description: Python specialist for idioms, packaging, typing, async, data, and testability.
-tools: read,bash
+tools: safe_read,safe_list,safe_search
 mode: advisory
 write: false
 tags: python,typing,pytest

@@ -3,7 +3,6 @@ import { Key, matchesKey, truncateToWidth, type Component } from "@earendil-work
 import type { TodoItem, TodoStats } from "./types.ts";
 
 const WIDGET_ID = "deevs-todos";
-const MAX_WIDGET_TODOS = 8;
 
 export function updateTodoWidget(ctx: ExtensionContext | undefined, todos: TodoItem[], stats: TodoStats): void {
 	if (!ctx?.hasUI) return;
@@ -11,7 +10,7 @@ export function updateTodoWidget(ctx: ExtensionContext | undefined, todos: TodoI
 		ctx.ui.setWidget(WIDGET_ID, undefined);
 		return;
 	}
-	ctx.ui.setWidget(WIDGET_ID, (_tui: any, theme: Theme) => new TodoWidget(todos, stats, theme));
+	ctx.ui.setWidget(WIDGET_ID, (_tui, theme) => new TodoWidget(todos, stats, theme));
 }
 
 export function clearTodoWidget(ctx: ExtensionContext | undefined): void {
@@ -19,11 +18,11 @@ export function clearTodoWidget(ctx: ExtensionContext | undefined): void {
 }
 
 export async function showTodoOverlay(ctx: ExtensionContext, todos: TodoItem[], stats: TodoStats): Promise<void> {
-	if (!ctx.hasUI) {
+	if (ctx.mode !== "tui" || !ctx.hasUI) {
 		ctx.ui.notify(formatTodoText(todos, stats), "info");
 		return;
 	}
-	await ctx.ui.custom<void>((_tui: any, theme: Theme, _kb: any, done) => new TodoOverlay(todos, stats, theme, () => done(undefined)), {
+	await ctx.ui.custom<void>((_tui, theme, _kb, done) => new TodoOverlay(todos, stats, theme, () => done(undefined)), {
 		overlay: true,
 		overlayOptions: { width: "70%", minWidth: 48, maxHeight: "80%", anchor: "center", margin: 1 },
 	});
@@ -44,8 +43,8 @@ export function renderTodoWidgetLines(todos: TodoItem[], stats: TodoStats, theme
 	const active = stats.inProgress ? `, ${stats.inProgress} active` : "";
 	const blocked = stats.blocked ? `, ${stats.blocked} blocked` : "";
 	lines.push(truncateToWidth(`${theme.fg("accent", " Todos ")} ${theme.fg("muted", `${stats.done}/${stats.total} done${active}${blocked}`)}`, width));
-	for (const todo of todos.slice(0, MAX_WIDGET_TODOS)) lines.push(truncateToWidth(formatTodoLine(todo, theme), width));
-	if (todos.length > MAX_WIDGET_TODOS) lines.push(truncateToWidth(theme.fg("dim", `  … ${todos.length - MAX_WIDGET_TODOS} more`), width));
+	const visible = [todos.find((todo) => todo.status === "in_progress"), todos.find((todo) => todo.status === "blocked")].filter((todo, index, values): todo is TodoItem => !!todo && values.indexOf(todo) === index);
+	for (const todo of visible) lines.push(truncateToWidth(formatTodoLine(todo, theme), width));
 	return lines;
 }
 

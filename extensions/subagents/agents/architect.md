@@ -1,7 +1,7 @@
 ---
 name: architect
 description: Design-focused planner for boundaries, tradeoffs, migration steps, and maintainable architecture.
-tools: read,bash
+tools: safe_read,safe_list,safe_search
 mode: advisory
 write: false
 tags: architecture,design,planning

@@ -1,20 +1,20 @@
 import { lstat, mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 
-export type ConfigNormalizer<T> = (input: Partial<T>) => T;
+type ConfigNormalizer<T> = (input: Partial<T>) => T;
 
-export function projectConfigPath(cwd: string, filename: string): string {
+function projectConfigPath(cwd: string, filename: string): string {
 	if (!/^[A-Za-z0-9_.-]+\.json$/.test(filename)) throw new Error(`Invalid project config filename: ${filename}`);
 	return resolve(cwd, ".pi", filename);
 }
 
-export function assertInsideProjectConfig(cwd: string, path: string): void {
+function assertInsideProjectConfig(cwd: string, path: string): void {
 	const root = resolve(cwd, ".pi");
 	const rel = relative(root, resolve(path));
 	if (rel.startsWith("..") || isAbsolute(rel)) throw new Error(`Project config path escapes .pi/: ${path}`);
 }
 
-export async function readProjectConfig<T extends object>(cwd: string, filename: string): Promise<Partial<T>> {
+async function readProjectConfig<T extends object>(cwd: string, filename: string): Promise<Partial<T>> {
 	const path = projectConfigPath(cwd, filename);
 	try {
 		await ensureSafeProjectConfigTarget(cwd, path, false);
@@ -61,21 +61,6 @@ async function ensureSafeProjectConfigTarget(cwd: string, path: string, rejectEx
 	}
 }
 
-export function stripUndefined<T extends object>(value: T): Record<string, unknown> {
+function stripUndefined<T extends object>(value: T): Record<string, unknown> {
 	return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined));
-}
-
-export function mergeDeep<T extends object>(base: T, patch: unknown): T {
-	if (!patch || typeof patch !== "object" || Array.isArray(patch)) return structuredClone(base);
-	const output: Record<string, unknown> = structuredClone(base) as Record<string, unknown>;
-	for (const [key, value] of Object.entries(patch)) {
-		if (value === undefined) continue;
-		const current = output[key];
-		if (current && typeof current === "object" && !Array.isArray(current) && value && typeof value === "object" && !Array.isArray(value)) {
-			output[key] = mergeDeep(current as Record<string, unknown>, value);
-		} else {
-			output[key] = value;
-		}
-	}
-	return output as T;
 }

@@ -139,29 +139,28 @@ Chains are a context bus, not an automatic subagent memory system.
 Recommended pattern:
 
 1. Save or load a focused branch link.
-2. Prefer passing `chainContext` to `agent_start` / per-task `agent_parallel_start` so the parent loads a bounded context pack.
-3. Alternatively, call `chain_context` and paste the formatted excerpt into the task.
-4. When the subagent returns, save a new link that references its run/group IDs and decision impact.
+2. Call `chain_context` for a bounded context pack.
+3. Include the formatted excerpt in the `subagent` task.
+4. When the Subagent returns, save a new link that references its run/group IDs and decision impact.
 
 Example subagent task wording:
 
 ```text
-agent_start({
+subagent({
   agent: "reviewer",
-  task: "Focus only on search/index design and return migration risks.",
-  chainContext: { chain: "deevs-pi-kit", branch: "semantic-search", mode: "pack", includeParents: 2, searchQuery: "index design", searchMode: "lookup", maxBytes: 12000 }
+  task: "Focus only on search/index design and return migration risks.\n\nChain context:\n<bounded chain_context output>",
+  background: true
 })
 ```
 
-## Extension discipline hooks
+## Extension checkpoint hooks
 
-`extensions/chains` may add extra runtime discipline beyond this skill:
+`extensions/chains` tracks branch-local `saved` versus `checkpoint due` state:
 
-- default `nudge` mode appends reminders for resumed/durable project prompts and may notify after meaningful unsaved work;
-- optional `guarded` mode can block mutating tools until `chain_search`, `chain_load`, `chain_context`, or `chain_list` has run;
-- `/chain-discipline` shows or persists project-level mode/settings in `.pi/chain-discipline.json`;
-- it never auto-saves chain links because durable links need handoff-quality summaries;
-- respect explicit user wording such as “do not use chains” or “no chains”.
+- mutation, compaction, Mission milestones, pause/completion, review adjudication, and new branches mark a checkpoint due;
+- `chain_save` clears due state; an explicit persisted waiver can also clear it with a reason;
+- `/chains` browses active state and saved links; `/chains <query>` searches them;
+- it never auto-saves because durable links need handoff-quality summaries.
 
 ## Guardrails
 

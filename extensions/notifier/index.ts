@@ -90,7 +90,7 @@ function runCommand(command: string[], ctx: ExtensionContext, config: ResolvedCo
 
 async function appendJsonl(path: string, ctx: ExtensionContext, config: ResolvedConfig): Promise<void> {
 	const event = {
-		event: "pi.agent_end",
+		event: "pi.agent_settled",
 		title: config.title,
 		body: config.body,
 		cwd: ctx.cwd,
@@ -128,6 +128,12 @@ async function saveConfig(cwd: string, config: ResolvedConfig): Promise<string> 
 	return saveProjectConfig(cwd, NOTIFIER_CONFIG_FILE, config);
 }
 
+export function trustedNotifierConfig(ctx: ExtensionContext, config: ResolvedConfig): ResolvedConfig {
+	if (ctx.isProjectTrusted()) return config;
+	const { command: _command, jsonl: _jsonl, ...safe } = config;
+	return safe;
+}
+
 async function notify(ctx: ExtensionContext, config: ResolvedConfig, debugFanout = false): Promise<void> {
 	if (!config.enabled) return;
 
@@ -143,10 +149,10 @@ export default function (pi: ExtensionAPI): void {
 	let lastNotificationAt = 0;
 
 	pi.on("session_start", async (_event, ctx) => {
-		config = await loadConfig(ctx.cwd);
+		config = trustedNotifierConfig(ctx, await loadConfig(ctx.cwd));
 	});
 
-	pi.on("agent_end", async (_event, ctx) => {
+	pi.on("agent_settled", async (_event, ctx) => {
 		const now = Date.now();
 		if (now - lastNotificationAt < config.minIntervalMs) return;
 		lastNotificationAt = now;
@@ -157,7 +163,13 @@ export default function (pi: ExtensionAPI): void {
 		description: "Show or persist project notifier settings",
 		handler: async (args, ctx) => {
 			try {
-				config = await applyNotifierSettingsCommand(args, ctx.cwd, config);
+				let action = args.trim();
+				if (!action && ctx.mode === "tui") {
+					const selected = await ctx.ui.select("Notifier settings", ["status", "enable", "disable", "reset"]);
+					if (!selected) return;
+					action = selected;
+				}
+				config = trustedNotifierConfig(ctx, await applyNotifierSettingsCommand(action, ctx.cwd, config));
 				ctx.ui.notify(`${formatConfig(config)}\nProject config: .pi/notifier.json`, "info");
 			} catch (error) {
 				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
@@ -168,7 +180,7 @@ export default function (pi: ExtensionAPI): void {
 	pi.registerCommand("notifier:test", {
 		description: "Send a test ready notification using extensions/notifier.",
 		handler: async (_args, ctx) => {
-			config = await loadConfig(ctx.cwd);
+			config = trustedNotifierConfig(ctx, await loadConfig(ctx.cwd));
 			await notify(ctx, config, true);
 			ctx.ui.notify(
 				`Notifier test sent (TERM=${process.env.TERM ?? ""}, TERM_PROGRAM=${process.env.TERM_PROGRAM ?? ""}, tty=${process.stdout.isTTY ? "yes" : "no"})`,
