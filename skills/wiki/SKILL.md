@@ -157,8 +157,8 @@ When answering a question from the wiki:
 1. Use `wiki_context` or `wiki_search` to find relevant pages.
 2. Read `index.md`, relevant schema notes, pages, and source notes when precision matters.
 3. Answer with wiki citations, e.g. `[[page-a]]`, `[[page-b]]`.
-5. If the answer is a substantial synthesis that would be painful to recreate, ask whether to file it under `queries/` or `comparisons/`.
-6. Log filed queries; do not log every trivial lookup unless the user asks for exhaustive history.
+4. If the answer is a substantial synthesis that would be painful to recreate, ask whether to file it under `queries/` or `comparisons/`.
+5. Log filed queries; do not log every trivial lookup unless the user asks for exhaustive history.
 
 ## Linting / health check
 

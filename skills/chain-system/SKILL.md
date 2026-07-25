@@ -16,7 +16,7 @@ New links include frontmatter metadata for branching:
 ```yaml
 chain: my-feature
 branch: main
-parent: 2026-04-28-1200-previous.md
+parent: 2026-04-28-120000000-previous.md
 created: 2026-04-28T12:30:00.000Z
 ```
 
@@ -27,11 +27,13 @@ Older links without metadata are treated as branch `main`.
 Human commands:
 
 ```text
+/chains [query]
 /chain-link <chain> [--branch name] [--parent link.md]
 /chain-load <chain> [--branch name] [link.md]
 /chain-fork <chain> <new-branch> [--from link.md] [--from-branch name]
 /chain-list [--branches]
 /chain-search [chain] [--branch name] [--lookup|--text|--regex] <query>
+/chain-waive <reason>
 ```
 
 Model tools:
@@ -72,7 +74,7 @@ During work:
 
 With subagents:
 
-- Before spawning subagents on ongoing project work, prefer `chainContext` so each child receives a bounded, parent-loaded context pack.
+- Before spawning subagents on ongoing project work, prefer `chain_context` so each child receives a bounded, parent-loaded context pack.
 - After subagents return, save a link only if their findings changed decisions, exposed risks, or created follow-up work.
 
 Do not save when:
