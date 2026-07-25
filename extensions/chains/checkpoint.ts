@@ -4,14 +4,12 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 export const CHAIN_CHECKPOINT_ENTRY = "deevs.chain-checkpoint.v1";
 
 export interface ChainCheckpointState {
-	version: 1;
 	chain?: string;
 	branch?: string;
 	status: "idle" | "saved" | "due";
 	dueReasons: string[];
 	updatedAt: number;
 	lastSavedAt?: number;
-	lastLink?: string;
 	waiverReason?: string;
 	contextPressureHandled: boolean;
 }
@@ -24,7 +22,7 @@ export type ChainCheckpointOperation =
 	| { type: "context_reset"; at: number };
 
 export function emptyChainCheckpoint(): ChainCheckpointState {
-	return { version: 1, status: "idle", dueReasons: [], updatedAt: 0, contextPressureHandled: false };
+	return { status: "idle", dueReasons: [], updatedAt: 0, contextPressureHandled: false };
 }
 
 export function reduceChainCheckpoint(state: ChainCheckpointState, operation: ChainCheckpointOperation): ChainCheckpointState {
@@ -46,7 +44,6 @@ export function reduceChainCheckpoint(state: ChainCheckpointState, operation: Ch
 			waiverReason: undefined,
 			updatedAt: operation.at,
 			lastSavedAt: operation.at,
-			lastLink: operation.link,
 		};
 	}
 	if (operation.type === "waived") return { ...state, status: "saved", dueReasons: [], waiverReason: operation.reason, updatedAt: operation.at };
@@ -69,6 +66,7 @@ export class ChainCheckpointService {
 	private ctx?: ExtensionContext;
 	private remindNextTurn = false;
 	private gitBeforeTurn?: string;
+	private forcedWakeAt?: number;
 
 	constructor(private readonly pi: ExtensionAPI) {}
 
@@ -134,6 +132,27 @@ export class ChainCheckpointService {
 		if (this.state.contextPressureHandled) this.record({ type: "context_reset", at: Date.now() });
 	}
 
+	immediateCheckpointDue(): boolean {
+		return this.state.status === "due" && this.state.dueReasons.includes("context usage reached 80%");
+	}
+
+	blockTool(toolName: string): string | undefined {
+		return this.immediateCheckpointDue() && toolName !== "chain_save"
+			? "Context is at least 80% full. Save the required Chain checkpoint with chain_save before using any other tool, or ask the user to waive it with /chain-waive <reason>."
+			: undefined;
+	}
+
+	forceCheckpointTurn(ctx: ExtensionContext): void {
+		if (!this.immediateCheckpointDue() || this.forcedWakeAt === this.state.updatedAt || !ctx.isIdle() || ctx.hasPendingMessages()) return;
+		this.pi.sendMessage({
+			customType: "chain-checkpoint",
+			content: "Context is at least 80% full and the required Chain checkpoint is still due. Call chain_save now before any other work. If the user explicitly waives it, they can run /chain-waive <reason>.",
+			display: false,
+			details: { version: 1, updatedAt: this.state.updatedAt },
+		}, { triggerTurn: true, deliverAs: "followUp" });
+		this.forcedWakeAt = this.state.updatedAt;
+	}
+
 	beforeAgentStart(systemPrompt: string): string | undefined {
 		if (this.state.status !== "due" && !this.remindNextTurn) return undefined;
 		this.remindNextTurn = false;
@@ -188,6 +207,7 @@ export function registerChainCheckpoint(pi: ExtensionAPI, service: ChainCheckpoi
 		service.restore(ctx);
 		await service.detectGitMutation(ctx.cwd);
 		service.checkContextPressure(ctx);
+		service.forceCheckpointTurn(ctx);
 	});
 	pi.on("before_agent_start", (event, ctx) => {
 		service.restore(ctx);
@@ -195,6 +215,12 @@ export function registerChainCheckpoint(pi: ExtensionAPI, service: ChainCheckpoi
 		const systemPrompt = typeof event.systemPrompt === "string" ? event.systemPrompt : "";
 		const next = service.beforeAgentStart(systemPrompt);
 		return next ? { systemPrompt: next } : undefined;
+	});
+	pi.on("tool_call", (event, ctx) => {
+		service.restore(ctx);
+		service.checkContextPressure(ctx);
+		const reason = service.blockTool(event.toolName);
+		return reason ? { block: true, reason } : undefined;
 	});
 	pi.on("tool_execution_start", (event) => {
 		toolArgs.set(event.toolCallId, event.args);

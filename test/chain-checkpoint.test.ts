@@ -18,10 +18,10 @@ describe("Chain checkpoint state", () => {
 		state = reduceChainCheckpoint(state, { type: "due", reason: "files changed", at: 2 });
 		expect(state.status).toBe("due");
 		state = reduceChainCheckpoint(state, { type: "saved", chain: "kit", branch: "main", link: "checkpoint.md", at: 3 });
-		expect(state).toMatchObject({ status: "saved", lastLink: "checkpoint.md", dueReasons: [] });
+		expect(state).toMatchObject({ status: "saved", dueReasons: [] });
 		state = reduceChainCheckpoint(state, { type: "due", reason: "new decision", at: 4 });
 		state = reduceChainCheckpoint(state, { type: "saved", chain: "kit", branch: "main", link: "stale.md", at: 2 });
-		expect(state).toMatchObject({ status: "due", lastLink: "checkpoint.md", dueReasons: ["new decision"] });
+		expect(state).toMatchObject({ status: "due", dueReasons: ["new decision"] });
 
 		const replayed = replayChainCheckpoint([
 			{ type: "custom", customType: CHAIN_CHECKPOINT_ENTRY, data: { type: "activate", chain: "kit", branch: "main", at: 1 } },
@@ -61,12 +61,18 @@ describe("Chain checkpoint state", () => {
 
 	it("forces one immediate Chain checkpoint when context reaches 80 percent", () => {
 		const branch: Array<Record<string, unknown>> = [];
+		const messages: Array<{ message: unknown; options: unknown }> = [];
 		let percent = 79;
-		const pi = { appendEntry(customType: string, data: unknown) { branch.push({ type: "custom", customType, data }); } } as unknown as ExtensionAPI;
+		const pi = {
+			appendEntry(customType: string, data: unknown) { branch.push({ type: "custom", customType, data }); },
+			sendMessage(message: unknown, options: unknown) { messages.push({ message, options }); },
+		} as unknown as ExtensionAPI;
 		const ctx = {
 			getContextUsage: () => ({ tokens: 80, contextWindow: 100, percent }),
 			sessionManager: { getBranch: () => branch },
 			ui: { setStatus() {} },
+			isIdle: () => true,
+			hasPendingMessages: () => false,
 		} as unknown as ExtensionContext;
 		const service = new ChainCheckpointService(pi);
 		service.activate("kit", "main");
@@ -76,7 +82,14 @@ describe("Chain checkpoint state", () => {
 		service.checkContextPressure(ctx);
 		expect(service.read().dueReasons).toEqual(["context usage reached 80%"]);
 		expect(service.beforeAgentStart("base")).toContain("before any other work");
+		expect(service.blockTool("read")).toContain("chain_save before using any other tool");
+		expect(service.blockTool("chain_save")).toBeUndefined();
+		service.forceCheckpointTurn(ctx);
+		service.forceCheckpointTurn(ctx);
+		expect(messages).toHaveLength(1);
+		expect(messages[0]?.options).toEqual({ triggerTurn: true, deliverAs: "followUp" });
 		service.saved("kit", "main", "checkpoint.md");
+		expect(service.blockTool("read")).toBeUndefined();
 		percent = 95;
 		const reloaded = new ChainCheckpointService(pi);
 		reloaded.restore(ctx);

@@ -3,7 +3,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export const RUNTIME_EVENT_ENTRY = "deevs.runtime-event-op.v1";
 
-export type RuntimeSourceKind = "subagent" | "subagent-group" | "job" | "mission";
+export const RUNTIME_SOURCE_KINDS = ["subagent", "subagent-group", "job", "mission"] as const;
+export type RuntimeSourceKind = typeof RUNTIME_SOURCE_KINDS[number];
 export type RuntimeEventType = "attention" | "terminal";
 export type RuntimeTerminalStatus = "completed" | "partial" | "failed" | "cancelled" | "timeout" | "limited" | "blocked" | "lost";
 export type RuntimeDeliveryStatus = "pending" | "claimed" | "acked";
@@ -214,7 +215,7 @@ function isRuntimeEvent(value: unknown): value is RuntimeEvent {
 
 function isSourceIdentity(value: Record<string, unknown> | undefined): value is Record<string, unknown> & { kind: RuntimeSourceKind; id: string } {
 	return !!value
-		&& ["subagent", "subagent-group", "job", "mission"].includes(String(value.kind))
+		&& (RUNTIME_SOURCE_KINDS as readonly string[]).includes(String(value.kind))
 		&& nonEmptyString(value.id);
 }
 
