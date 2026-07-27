@@ -6,15 +6,19 @@ import { Text } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { getSubagentService } from "../subagents/registry.ts";
 import type { DelegateRun } from "../subagents/runtime-types.ts";
+import { ownsProcessIdentity, quiesceProcessGroup } from "../shared/process-group.ts";
 import { toToolUsage } from "../shared/runtime-events.ts";
 import { formatDuration, formatUsage } from "../shared/runtime-ui.ts";
-import { WorkflowWidget } from "./ui.ts";
+import { WorkflowFleetWidget } from "./ui.ts";
 
 const WORKER_URL = new URL("./worker.ts", import.meta.url);
 const MAX_SOURCE_BYTES = 64 * 1024;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_TIMEOUT_MS = 300_000;
 const MAX_AGENT_CONCURRENCY = 3;
+const WORKFLOW_FLEETS = Symbol.for("deevs.pi-kit.workflow-fleets.v1");
+
+type WorkflowFleetRegistry = Map<string, Map<string, WorkflowDetails>>;
 
 const WorkflowSchema = Type.Object({
 	source: Type.String({ description: "Trusted JavaScript function body. Use await agent({agent, task, ...}) and return structured-cloneable data." }),
@@ -41,7 +45,31 @@ export interface WorkflowDetails {
 	error?: string;
 }
 
+function workflowFleetRegistry(): WorkflowFleetRegistry {
+	const global = globalThis as typeof globalThis & { [WORKFLOW_FLEETS]?: WorkflowFleetRegistry };
+	return global[WORKFLOW_FLEETS] ??= new Map();
+}
+
+function workflowSessionKey(ctx: ExtensionContext): string {
+	return ctx.sessionManager.getSessionId();
+}
+
+function workflowFleet(ctx: ExtensionContext): Map<string, WorkflowDetails> {
+	const registry = workflowFleetRegistry();
+	const key = workflowSessionKey(ctx);
+	let fleet = registry.get(key);
+	if (!fleet) { fleet = new Map(); registry.set(key, fleet); }
+	return fleet;
+}
+
 export default function workflowExtension(pi: ExtensionAPI): void {
+	const updateWorkflowWidget = (ctx: ExtensionContext): void => {
+		if (!ctx.hasUI) return;
+		const workflows = [...workflowFleet(ctx).values()];
+		if (workflows.length) ctx.ui.setWidget("workflow:fleet", (_tui, theme) => new WorkflowFleetWidget(workflows, theme), { placement: "belowEditor" });
+		else ctx.ui.setWidget("workflow:fleet", undefined);
+	};
+
 	pi.registerTool({
 		name: "workflow",
 		label: "Workflow",
@@ -62,10 +90,10 @@ export default function workflowExtension(pi: ExtensionAPI): void {
 			const id = `wf_${Date.now().toString(36)}_${randomUUID().replaceAll("-", "").slice(0, 8)}`;
 			const timeoutMs = clampTimeout(params.timeoutMs);
 			const details: WorkflowDetails = { id, status: "running", startedAt: Date.now(), activeAgents: 0, completedAgents: 0, runs: [], agents: [] };
-			const widgetKey = `workflow:${id}`;
+			workflowFleet(ctx).set(id, details);
 			const update = (): void => {
 				onUpdate?.({ content: [{ type: "text", text: formatWorkflow(details) }], details });
-				if (ctx.hasUI) ctx.ui.setWidget(widgetKey, (_tui, theme) => new WorkflowWidget(details, theme), { placement: "belowEditor" });
+				updateWorkflowWidget(ctx);
 			};
 			update();
 
@@ -82,7 +110,10 @@ export default function workflowExtension(pi: ExtensionAPI): void {
 				for (const agent of details.agents) if (agent.status === "running") { agent.status = details.status; agent.endedAt = details.endedAt; }
 				return { content: [{ type: "text" as const, text: formatWorkflow(details) }], details, usage: toToolUsage(sumUsage(details.runs)) };
 			} finally {
-				if (ctx.hasUI) ctx.ui.setWidget(widgetKey, undefined);
+				const fleet = workflowFleet(ctx);
+				fleet.delete(id);
+				updateWorkflowWidget(ctx);
+				if (!fleet.size) workflowFleetRegistry().delete(workflowSessionKey(ctx));
 			}
 		},
 		renderCall(args: WorkflowInput, theme: Theme) {
@@ -130,8 +161,42 @@ async function runWorkflow(
 	const releaseQueue = (): void => {
 		for (const releaseWaiting of queue.splice(0)) releaseWaiting();
 	};
-	const cancelChildren = async (): Promise<void> => {
-		if (activeIds.size) await service.wait({ ids: [...activeIds], cancel: true, waitMs: 3_000 });
+	const emergencyQuiesce = async (ids: string[]): Promise<void> => {
+		for (const id of ids) {
+			let run: DelegateRun;
+			try { run = service.executor.get(id); } catch { continue; }
+			for (const [pid, identity] of [[run.runtime.childPid, run.runtime.childIdentity], [run.runtime.workerPid, run.runtime.workerIdentity]] as const) {
+				if (pid && await ownsProcessIdentity(pid, identity)) await quiesceProcessGroup(pid, { graceful: false });
+			}
+		}
+	};
+	const cancelIds = async (ids: string[]): Promise<void> => {
+		if (!ids.length) return;
+		try {
+			await service.wait({ ids, cancel: true, waitMs: 3_000 });
+		} catch (error) {
+			const fallback = await Promise.allSettled(ids.map((id) => service.executor.cancel(id)));
+			const failed = fallback.find((result) => result.status === "rejected");
+			if (failed?.status === "rejected") {
+				await emergencyQuiesce(ids);
+				throw failed.reason;
+			}
+			throw error;
+		}
+	};
+	const cancelChildren = (): Promise<void> => cancelIds([...activeIds]);
+	const settleRequests = async (): Promise<void> => {
+		const tasks = [...requestTasks];
+		if (!tasks.length) return;
+		let timer: NodeJS.Timeout | undefined;
+		try {
+			await Promise.race([
+				Promise.allSettled(tasks),
+				new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("Workflow request cleanup timed out.")), 5_000); timer.unref?.(); }),
+			]);
+		} finally {
+			if (timer) clearTimeout(timer);
+		}
 	};
 
 	return new Promise<unknown>((resolve, reject) => {
@@ -141,11 +206,16 @@ async function runWorkflow(
 			clearTimeout(timer);
 			signal?.removeEventListener("abort", abort);
 			releaseQueue();
-			if (error) await cancelChildren();
-			await Promise.allSettled([...requestTasks]);
-			if (error) await cancelChildren();
-			await worker.terminate();
-			if (error) reject(error);
+			let terminalError = error;
+			const cleanup = async (operation: () => Promise<unknown>): Promise<void> => {
+				try { await operation(); }
+				catch (cleanupError) { terminalError ??= cleanupError instanceof Error ? cleanupError : new Error(String(cleanupError)); }
+			};
+			if (error) await cleanup(cancelChildren);
+			if (error) await cleanup(cancelChildren);
+			await cleanup(settleRequests);
+			await cleanup(() => worker.terminate());
+			if (terminalError) reject(terminalError);
 			else resolve(workflowResult);
 		};
 		const maybeFinish = (): void => {
@@ -207,7 +277,7 @@ async function runWorkflow(
 					details.activeAgents = activeIds.size;
 					update();
 					if (settled) {
-						await service.wait({ ids: [startedId], cancel: true, waitMs: 3_000 });
+						await cancelIds([startedId]);
 						return;
 					}
 					const [run] = await service.wait({ ids: [startedId] });

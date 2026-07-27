@@ -55,7 +55,7 @@ Subagents are read-only unless `allowWrite: true` is requested and the user conf
 
 ### Workflows
 
-Run foreground JavaScript function bodies in a terminable worker with `await agent({ agent, task })`. Workflows require a trusted project, force child agents read-only, cap concurrency, aggregate real usage, and settle children before returning. Trusted workflow JavaScript is **not** a security sandbox.
+Run foreground JavaScript function bodies in a terminable worker with `await agent({ agent, task })`. Workflows require a trusted project, force child agents read-only, cap concurrency, aggregate real usage, and settle children before returning. Concurrent Workflows share one bounded below-editor dashboard: a single run shows agent detail, while multiple runs collapse to capped per-Workflow progress rows. Trusted workflow JavaScript is **not** a security sandbox.
 
 Tool: `workflow`.
 

@@ -6,7 +6,7 @@ import { AgentsDashboard } from "../extensions/subagents/ui.ts";
 import { JobsDashboard } from "../extensions/jobs/ui.ts";
 import { MissionDashboard } from "../extensions/mission/ui.ts";
 import { ChainsDashboard } from "../extensions/chains/ui.ts";
-import { renderWorkflowWidget } from "../extensions/workflow/ui.ts";
+import { renderWorkflowFleet, renderWorkflowWidget } from "../extensions/workflow/ui.ts";
 import type { WorkflowDetails } from "../extensions/workflow/index.ts";
 import type { SubagentService } from "../extensions/subagents/service.ts";
 import type { JobManager } from "../extensions/jobs/manager.ts";
@@ -103,6 +103,18 @@ describe("bespoke dashboards", () => {
 		expect(renderWorkflowWidget(details, theme, 20).every((line) => visibleWidth(line) <= 20)).toBe(true);
 		expect(lines.join("\n")).toContain("queued");
 		expect(lines.join("\n")).toContain("running");
+	});
+
+	it("combines concurrent Workflows into one bounded fleet view", () => {
+		const workflows = Array.from({ length: 9 }, (_, index) => ({
+			id: `wf_test_${String(index).padStart(8, "0")}`, status: "running", startedAt: Date.now() - 1000, activeAgents: 1, completedAgents: 0, runs: [],
+			agents: [{ id: `a_${index}`, persona: "tester", status: index === 0 ? "failed" : "running", startedAt: Date.now() - 1000 }],
+		})) as WorkflowDetails[];
+		const lines = renderWorkflowFleet(workflows, theme, 48);
+		expect(lines).toHaveLength(8);
+		expect(lines.every((line) => visibleWidth(line) <= 48)).toBe(true);
+		expect(lines.join("\n")).toContain("Workflows 9 active");
+		expect(lines.at(-1)).toContain("3 more workflows");
 	});
 
 	it("renders bounded textual progress bars", () => {
