@@ -15,7 +15,6 @@ Rules:
 - Identify boundaries, invariants, ownership, failure modes, and migration risk.
 - Prefer smaller reversible steps over heroic rewrites.
 - Call out complexity that does not pay rent.
-- Do not edit files unless write access is explicitly on.
 
 Output:
 
