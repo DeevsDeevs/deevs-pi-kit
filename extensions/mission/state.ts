@@ -176,6 +176,7 @@ export class MissionState {
 			reviewSuggestedVerdict: input.suggestedVerdict,
 			reviewFailure: input.failure,
 			reviewWorktreeFingerprint: input.worktreeFingerprint,
+			admittedWorktreeFingerprint: status === "skipped" ? input.worktreeFingerprint : undefined,
 		};
 	}
 

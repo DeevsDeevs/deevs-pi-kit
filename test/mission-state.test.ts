@@ -211,7 +211,7 @@ describe("Mission state", () => {
 		test.state.append(test.pi, await test.state.create({ objective: "Do work", chain: "kit" }, test.ctx));
 		const tools = new Map<string, { execute: (...args: unknown[]) => Promise<unknown> }>();
 		const pi = { ...test.pi, registerTool(tool: unknown) { const value = tool as { name: string; execute: (...args: unknown[]) => Promise<unknown> }; tools.set(value.name, value); } } as unknown as ExtensionAPI;
-		registerMissionTools(pi, test.state, () => undefined);
+		registerMissionTools(pi, test.state, () => undefined, { workspaceFingerprint: async () => "waiver-fingerprint" });
 		await expect(tools.get("mission_update")!.execute("call", { objective: "Changed", reason: "scope" }, undefined, undefined, test.ctx)).rejects.toThrow("trusted direct command");
 		const denied = { ...test.ctx, hasUI: true, ui: { confirm: async () => false } } as unknown as ExtensionContext;
 		await expect(tools.get("mission_update")!.execute("call", { objective: "Changed", reason: "scope" }, undefined, undefined, denied)).rejects.toThrow("not authorized");
@@ -219,6 +219,8 @@ describe("Mission state", () => {
 		await tools.get("mission_update")!.execute("call", { objective: "Changed", reason: "scope" }, undefined, undefined, approved);
 		expect(test.state.read()?.objective).toBe("Changed");
 		await expect(tools.get("mission_progress")!.execute("call", { summary: "waive", reviewSkip: true }, undefined, undefined, approved)).rejects.toThrow("non-empty reviewSkipReason");
+		await tools.get("mission_progress")!.execute("call", { summary: "waived", reviewSkip: true, reviewSkipReason: "trusted waiver" }, undefined, undefined, approved);
+		expect(test.state.read()).toMatchObject({ reviewStatus: "skipped", reviewWorktreeFingerprint: "waiver-fingerprint", admittedWorktreeFingerprint: "waiver-fingerprint" });
 	});
 
 	it("refuses clear adjudication without a structured reviewer verdict", async () => {

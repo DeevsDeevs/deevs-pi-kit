@@ -17,20 +17,25 @@ export function detectDetachedShell(command: string): string | undefined {
 }
 
 export function detectDetachedArgv(argv: string[]): string | undefined {
+	return detectDetachedArgvInternal(argv, false);
+}
+
+function detectDetachedArgvInternal(argv: string[], rejectDynamicExecutable: boolean): string | undefined {
 	if (!argv.length) return undefined;
+	if (rejectDynamicExecutable && isDynamicExecutable(argv[0]!)) return DETACH_ERROR;
 	const executable = executableName(argv[0]!);
 	if (DETACH_EXECUTABLES.has(executable)) return DETACH_ERROR;
 	if (SHELL_EXECUTABLES.has(executable)) {
 		const command = shellCommand(argv.slice(1));
 		return command ? detectDetachedShell(command) : undefined;
 	}
-	if (executable === "env") return detectEnvArgv(argv.slice(1));
-	if (executable === "time") return detectTimeArgv(argv.slice(1));
-	if (executable === "nice") return detectNiceArgv(argv.slice(1));
-	if (executable === "timeout") return detectTimeoutArgv(argv.slice(1));
-	if (executable === "stdbuf") return detectStdbufArgv(argv.slice(1));
-	if (executable === "sudo") return detectSudoArgv(argv.slice(1));
-	if (executable === "command") return detectCommandArgv(argv.slice(1));
+	if (executable === "env") return detectEnvArgv(argv.slice(1), 0, rejectDynamicExecutable);
+	if (executable === "time") return detectTimeArgv(argv.slice(1), rejectDynamicExecutable);
+	if (executable === "nice") return detectNiceArgv(argv.slice(1), rejectDynamicExecutable);
+	if (executable === "timeout") return detectTimeoutArgv(argv.slice(1), rejectDynamicExecutable);
+	if (executable === "stdbuf") return detectStdbufArgv(argv.slice(1), rejectDynamicExecutable);
+	if (executable === "sudo") return detectSudoArgv(argv.slice(1), rejectDynamicExecutable);
+	if (executable === "command") return detectCommandArgv(argv.slice(1), rejectDynamicExecutable);
 	return undefined;
 }
 
@@ -53,23 +58,25 @@ function segmentDetached(words: string[]): boolean {
 	let index = 0;
 	while (isAssignment(words[index])) index++;
 	if (index >= words.length) return false;
-	const executable = executableName(words[index]!);
+	const commandWord = words[index]!;
+	if (isDynamicExecutable(commandWord)) return true;
+	const executable = executableName(commandWord);
 	const argv = words.slice(index + 1);
 	if (DETACH_EXECUTABLES.has(executable)) return true;
 	if (COMMAND_PREFIXES.has(executable)) return segmentDetached(argv);
 	if (executable === "exec") return segmentDetached(execCommand(argv));
 	if (executable === "eval") return shellHasDetached(argv.join(" "));
-	if (executable === "time") return detectTimeArgv(argv) !== undefined;
-	if (executable === "nice") return detectNiceArgv(argv) !== undefined;
-	if (executable === "timeout") return detectTimeoutArgv(argv) !== undefined;
-	if (executable === "stdbuf") return detectStdbufArgv(argv) !== undefined;
+	if (executable === "time") return detectTimeArgv(argv, true) !== undefined;
+	if (executable === "nice") return detectNiceArgv(argv, true) !== undefined;
+	if (executable === "timeout") return detectTimeoutArgv(argv, true) !== undefined;
+	if (executable === "stdbuf") return detectStdbufArgv(argv, true) !== undefined;
 	if (SHELL_EXECUTABLES.has(executable)) {
 		const command = shellCommand(argv);
 		return command ? shellHasDetached(command) : false;
 	}
-	if (executable === "env") return detectEnvArgv(argv) !== undefined;
-	if (executable === "sudo") return detectSudoArgv(argv) !== undefined;
-	if (executable === "command") return detectCommandArgv(argv) !== undefined;
+	if (executable === "env") return detectEnvArgv(argv, 0, true) !== undefined;
+	if (executable === "sudo") return detectSudoArgv(argv, true) !== undefined;
+	if (executable === "command") return detectCommandArgv(argv, true) !== undefined;
 	return false;
 }
 
@@ -85,25 +92,25 @@ function execCommand(argv: string[]): string[] {
 	return argv.slice(index);
 }
 
-function detectEnvArgv(argv: string[], splitDepth = 0): string | undefined {
+function detectEnvArgv(argv: string[], splitDepth = 0, rejectDynamicExecutable = false): string | undefined {
 	if (splitDepth > 8) return DETACH_ERROR;
 	let index = 0;
 	while (index < argv.length) {
 		const value = argv[index]!;
 		if (value === "--") { index++; break; }
-		if (value === "-S" || value === "--split-string") return detectEnvSplit(argv[index + 1] ?? "", argv.slice(index + 2), splitDepth);
-		if (value.startsWith("-S") && value.length > 2) return detectEnvSplit(value.slice(2), argv.slice(index + 1), splitDepth);
-		if (value.startsWith("--split-string=")) return detectEnvSplit(value.slice("--split-string=".length), argv.slice(index + 1), splitDepth);
+		if (value === "-S" || value === "--split-string") return detectEnvSplit(argv[index + 1] ?? "", argv.slice(index + 2), splitDepth, rejectDynamicExecutable);
+		if (value.startsWith("-S") && value.length > 2) return detectEnvSplit(value.slice(2), argv.slice(index + 1), splitDepth, rejectDynamicExecutable);
+		if (value.startsWith("--split-string=")) return detectEnvSplit(value.slice("--split-string=".length), argv.slice(index + 1), splitDepth, rejectDynamicExecutable);
 		if (ENV_VALUE_OPTIONS.has(value)) { index += 2; continue; }
 		if (value.startsWith("-") || isAssignment(value)) { index++; continue; }
 		break;
 	}
-	return detectDetachedArgv(argv.slice(index));
+	return detectDetachedArgvInternal(argv.slice(index), rejectDynamicExecutable);
 }
 
-function detectEnvSplit(source: string, trailing: string[], splitDepth: number): string | undefined {
+function detectEnvSplit(source: string, trailing: string[], splitDepth: number, rejectDynamicExecutable: boolean): string | undefined {
 	const words = splitEnvString(source);
-	return words ? detectEnvArgv([...words, ...trailing], splitDepth + 1) : DETACH_ERROR;
+	return words ? detectEnvArgv([...words, ...trailing], splitDepth + 1, rejectDynamicExecutable) : DETACH_ERROR;
 }
 
 function splitEnvString(source: string): string[] | undefined {
@@ -132,7 +139,7 @@ function splitEnvString(source: string): string[] | undefined {
 	return result;
 }
 
-function detectTimeArgv(argv: string[]): string | undefined {
+function detectTimeArgv(argv: string[], rejectDynamicExecutable = false): string | undefined {
 	let index = 0;
 	while (index < argv.length) {
 		const value = argv[index]!;
@@ -142,10 +149,10 @@ function detectTimeArgv(argv: string[]): string | undefined {
 		if (value.startsWith("-")) { index++; continue; }
 		break;
 	}
-	return detectDetachedArgv(argv.slice(index));
+	return detectDetachedArgvInternal(argv.slice(index), rejectDynamicExecutable);
 }
 
-function detectNiceArgv(argv: string[]): string | undefined {
+function detectNiceArgv(argv: string[], rejectDynamicExecutable = false): string | undefined {
 	let index = 0;
 	while (index < argv.length) {
 		const value = argv[index]!;
@@ -155,10 +162,10 @@ function detectNiceArgv(argv: string[]): string | undefined {
 		if (value.startsWith("-")) { index++; continue; }
 		break;
 	}
-	return detectDetachedArgv(argv.slice(index));
+	return detectDetachedArgvInternal(argv.slice(index), rejectDynamicExecutable);
 }
 
-function detectTimeoutArgv(argv: string[]): string | undefined {
+function detectTimeoutArgv(argv: string[], rejectDynamicExecutable = false): string | undefined {
 	let index = 0;
 	while (index < argv.length) {
 		const value = argv[index]!;
@@ -169,10 +176,10 @@ function detectTimeoutArgv(argv: string[]): string | undefined {
 		break;
 	}
 	if (index < argv.length) index++; // duration follows options, including after --
-	return detectDetachedArgv(argv.slice(index));
+	return detectDetachedArgvInternal(argv.slice(index), rejectDynamicExecutable);
 }
 
-function detectStdbufArgv(argv: string[]): string | undefined {
+function detectStdbufArgv(argv: string[], rejectDynamicExecutable = false): string | undefined {
 	let index = 0;
 	while (index < argv.length) {
 		const value = argv[index]!;
@@ -182,25 +189,37 @@ function detectStdbufArgv(argv: string[]): string | undefined {
 		if (value.startsWith("-")) { index++; continue; }
 		break;
 	}
-	return detectDetachedArgv(argv.slice(index));
+	return detectDetachedArgvInternal(argv.slice(index), rejectDynamicExecutable);
 }
 
-function detectSudoArgv(argv: string[]): string | undefined {
+function detectSudoArgv(argv: string[], rejectDynamicExecutable = false): string | undefined {
 	let index = 0;
 	while (index < argv.length) {
 		const value = argv[index]!;
 		if (value === "--") { index++; break; }
 		if (value === "-b" || value === "--background") return DETACH_ERROR;
 		if (SUDO_VALUE_OPTIONS.has(value)) { index += 2; continue; }
-		if (value.startsWith("-")) { index++; continue; }
+		if (value.startsWith("-") || isAssignment(value)) { index++; continue; }
 		break;
 	}
-	return detectDetachedArgv(argv.slice(index));
+	while (isAssignment(argv[index])) index++;
+	return detectDetachedArgvInternal(argv.slice(index), rejectDynamicExecutable);
 }
 
-function detectCommandArgv(argv: string[]): string | undefined {
-	if (argv.some((value) => value === "-v" || value === "-V")) return undefined;
-	return detectDetachedArgv(argv.filter((value) => value !== "--" && value !== "-p"));
+function detectCommandArgv(argv: string[], rejectDynamicExecutable = false): string | undefined {
+	let index = 0;
+	while (index < argv.length) {
+		const value = argv[index]!;
+		if (value === "--") { index++; break; }
+		if (value === "-v" || value === "-V" || (/^-[pVv]+$/.test(value) && /[Vv]/.test(value))) return undefined;
+		if (value === "-p") { index++; continue; }
+		break;
+	}
+	return detectDetachedArgvInternal(argv.slice(index), rejectDynamicExecutable);
+}
+
+function isDynamicExecutable(value: string): boolean {
+	return value.includes("$") || value.includes("`");
 }
 
 function shellCommand(argv: string[]): string | undefined {

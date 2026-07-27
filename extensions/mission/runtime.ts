@@ -59,6 +59,11 @@ export class MissionRuntime {
 		this.updateStatus();
 	}
 
+	async workspaceFingerprint(ctx: ExtensionContext): Promise<string | undefined> {
+		this.restore(ctx);
+		return worktreeFingerprint(this.pi, ctx.cwd, this.state.read());
+	}
+
 	onObjectiveUpdated(_input: MissionUpdateInput, ctx: ExtensionContext): void {
 		this.restore(ctx);
 		chainCheckpoints.current?.due("Mission objective updated", "mission_control");
