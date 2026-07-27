@@ -5,13 +5,13 @@ import { Text } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { initializeMissionArtifacts, missionRoot, updateMissionSummaryArtifact, writeCompletionAudit, writeMissionProgressArtifacts } from "./artifacts.ts";
 import type { MissionState } from "./state.ts";
-import type { MissionCompleteInput, MissionCreateInput, MissionProgressInput, MissionSearchInput, MissionUpdateInput } from "./types.ts";
+import type { MissionCompleteInput, MissionCreateInput, MissionCurrent, MissionProgressInput, MissionSearchInput, MissionUpdateInput } from "./types.ts";
 
 const CreateSchema = Type.Object({
 	objective: Type.String({ description: "Mission objective/user request" }),
 	title: Type.Optional(Type.String({ description: "Short mission name" })),
 	requirements: Type.Optional(Type.Array(Type.String(), { description: "Success criteria" })),
-	paths: Type.Optional(Type.Array(Type.String(), { description: "Explicit project-relative paths owned by the Mission" })),
+	paths: Type.Optional(Type.Array(Type.String(), { description: "Explicit cwd-relative paths owned by the Mission; required to select repositories when cwd is not itself a Git repository" })),
 	tokenBudget: Type.Optional(Type.Number({ description: "Token budget" })),
 	costBudgetUsd: Type.Optional(Type.Number({ description: "USD budget" })),
 	turnBudget: Type.Optional(Type.Number({ description: "Provider-turn budget" })),
@@ -49,7 +49,7 @@ const ProgressSchema = Type.Object({
 const UpdateSchema = Type.Object({
 	objective: Type.Optional(Type.String({ description: "Revised Mission objective" })),
 	requirements: Type.Optional(Type.Array(Type.String(), { description: "Replacement success criteria" })),
-	paths: Type.Optional(Type.Array(Type.String(), { description: "Replacement project-relative review scope" })),
+	paths: Type.Optional(Type.Array(Type.String(), { description: "Replacement cwd-relative review scope and Git repository selection" })),
 	tokenBudget: Type.Optional(Type.Union([Type.Null(), Type.Number()], { description: "Replacement token budget; null removes the cap" })),
 	costBudgetUsd: Type.Optional(Type.Union([Type.Null(), Type.Number()], { description: "Replacement USD budget; null removes the cap" })),
 	turnBudget: Type.Optional(Type.Union([Type.Null(), Type.Number()], { description: "Replacement provider-turn budget; null removes the cap" })),
@@ -86,6 +86,21 @@ interface MissionToolHooks extends MissionCompletionHooks {
 }
 
 const USER_END_SUMMARY = "Mission ended at explicit user request. Use /mission resume to continue if needed.";
+
+export async function resumeMission(pi: ExtensionAPI, state: MissionState, reason: string): Promise<MissionCurrent> {
+	const explanation = reason.trim();
+	if (!explanation) throw new Error("Resuming a Mission requires a reason.");
+	const current = state.readAny();
+	if (!current) throw new Error("No Mission exists on this branch.");
+	const remainingLimit = state.limitExceeded();
+	if (remainingLimit) throw new Error(`Mission cannot resume while its ${remainingLimit} limit is exhausted; revise that limit with mission_update first.`);
+	if (current.status === "active") return current;
+	if (!["paused", "blocked", "terminal_error", "budget_limited", "usage_limited", "ended"].includes(current.status)) throw new Error(`Mission cannot resume from ${current.status}.`);
+	const mission = state.append(pi, state.statusEvent("active", explanation))!;
+	await updateMissionSummaryArtifact(mission, state.readUsage());
+	return mission;
+}
+
 const USER_END_AUDIT = [{ requirementIndex: 0, evidence: "The user explicitly asked to end/complete the mission; this records closure without claiming all objective requirements are satisfied. Use /mission resume to continue if needed." }];
 
 export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setContext: (ctx: ExtensionContext) => void, hooks: MissionToolHooks = {}): void {
@@ -128,11 +143,7 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 			if (!current) throw new Error("No Mission exists on this branch.");
 			if (current.status === "active") return { content: [{ type: "text" as const, text: `Mission already active: ${current.title}` }], details: { mission: current, usage: state.readUsage() } };
 			if (!params.reason.trim()) throw new Error("Resuming a Mission requires a reason.");
-			const remainingLimit = state.limitExceeded();
-			if (remainingLimit) throw new Error(`Mission cannot resume while its ${remainingLimit} limit is exhausted; revise that limit with mission_update first.`);
-			if (!["paused", "blocked", "terminal_error", "budget_limited", "usage_limited", "ended"].includes(current.status)) throw new Error(`Mission cannot resume from ${current.status}.`);
-			const mission = state.append(pi, state.statusEvent("active", params.reason.trim()))!;
-			await updateMissionSummaryArtifact(mission, state.readUsage());
+			const mission = await resumeMission(pi, state, params.reason.trim());
 			hooks.onResumed?.(ctx);
 			return { content: [{ type: "text" as const, text: `Mission resumed: ${mission.title}\n${formatMissionLocation(mission)}` }], details: { mission, usage: state.readUsage() } };
 		},

@@ -128,6 +128,13 @@ describe("DelegateExecutor", () => {
 		expect(run.runtime.error).toContain("credentials required");
 	});
 
+	it("does not infer partial status from prose output without typed settlement", async () => {
+		const executor = setup(() => `const message={role:'assistant',content:[{type:'text',text:'unfinished prose'}],usage:{input:1,output:1,cost:{total:0}}}; console.log(JSON.stringify({type:'message_end',message})); process.exit(1);`);
+		const run = await executor.start(input());
+		expect(run.runtime.output).toBe("unfinished prose");
+		expect(run.runtime.status).toBe("failed");
+	});
+
 	it("enforces token limits after one documented provider-call overshoot", async () => {
 		const executor = setup(() => `const message={role:'assistant',content:[{type:'text',text:'partial'}],usage:{input:80,output:30,cost:{total:0.1}}}; console.log(JSON.stringify({type:'message_end',message})); console.log(JSON.stringify({type:'turn_end',message,toolResults:[]})); setInterval(()=>{},1000);`);
 		const run = await executor.start(input({ tokens: 50 }));

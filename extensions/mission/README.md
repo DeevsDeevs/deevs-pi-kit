@@ -36,6 +36,7 @@ mission_complete
 - Paused/blocked state is injected into every model turn with the exact Chain, artifact path, and recorded next work. `mission_resume` lets the agent resume only after explicit user authorization or resolution of the recorded blocker.
 - The dashboard intentionally omits a one-key destructive End action; type `/mission end` for the explicit human confirmation path.
 - Objective edits create a new objective version and require a reason.
+- Mission `paths` are typed cwd-relative ownership scope. When cwd is a non-Git workspace containing several repositories, each path resolves to its canonical containing Git root; fingerprints combine scoped HEAD/diff/untracked state per root, and missing/escaping/non-Git paths fail review and completion closed.
 - Wall, provider-turn, token, and cost limits are supported. Token usage is unbounded by default; USD cost defaults to $1,000 unless explicitly set. `mission_update` can revise or remove token/cost/turn caps and wall deadlines with a recorded reason. Limit arrival permits one bounded handoff/checkpoint wrap-up, not new substantive work.
 - Individual Subagent terminal events contribute exact per-run usage without double-counting group/workflow aggregates.
 
