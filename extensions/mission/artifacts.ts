@@ -47,7 +47,7 @@ export async function writeCompletionAudit(mission: MissionCurrent, summary: str
 		"### Requirement Evidence",
 		"",
 	];
-	if (audit?.length) for (const item of audit) lines.push(`- [${item.requirementIndex}] ${mission.requirements[item.requirementIndex] ?? "(unknown requirement)"}: ${item.evidence}`);
+	if (audit?.length) for (const item of audit) lines.push(`- [${item.requirementIndex}] ${mission.requirements[item.requirementIndex] ?? "(unknown requirement)"}: ${item.evidence.trim()}`);
 	else lines.push("- (Model did not provide a structured audit. See final conversation turn for evidence.)");
 	lines.push("");
 	await writeFile(join(mission.artifactDir, "mission.md"), lines.join("\n"), "utf8");

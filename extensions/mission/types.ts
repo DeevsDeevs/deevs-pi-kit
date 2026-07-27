@@ -12,7 +12,7 @@ export interface MissionValidationRecord extends MissionValidationInput {
 	objectiveVersion: number;
 }
 
-export type MissionEventKind = "created" | "status_changed" | "continued" | "completed" | "progress" | "objective_updated" | "review_changed" | "settled";
+export type MissionEventKind = "created" | "status_changed" | "continued" | "completed" | "progress" | "objective_updated" | "review_changed" | "workspace_fingerprinted" | "settled";
 
 export interface MissionUsage {
 	mainTokens: number;
@@ -61,6 +61,7 @@ export interface MissionEvent {
 	reviewSuggestedVerdict?: "clear" | "changes_requested" | "unknown";
 	reviewFailure?: boolean;
 	reviewWorktreeFingerprint?: string;
+	admittedWorktreeFingerprint?: string;
 	blockerFingerprint?: string;
 	blockerCount?: number;
 	turnCount?: number;
@@ -111,6 +112,7 @@ export interface MissionCurrent {
 	reviewSuggestedVerdict?: "clear" | "changes_requested" | "unknown";
 	reviewFailure?: boolean;
 	reviewWorktreeFingerprint?: string;
+	admittedWorktreeFingerprint?: string;
 	blockerFingerprint?: string;
 	blockerCount?: number;
 	turnCount?: number;

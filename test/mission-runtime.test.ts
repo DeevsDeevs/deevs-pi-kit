@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, truncateSync
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { MissionState } from "../extensions/mission/state.ts";
 import { MissionRuntime } from "../extensions/mission/runtime.ts";
@@ -34,7 +34,7 @@ function createGitRepo(parent: string, name: string): string {
 	execFileSync("git", ["init", "-q"], { cwd: repo });
 	writeFileSync(join(repo, "tracked.txt"), `${name}\n`);
 	execFileSync("git", ["add", "tracked.txt"], { cwd: repo });
-	execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "initial"], { cwd: repo });
+	execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "initial"], { cwd: repo });
 	return repo;
 }
 
@@ -77,7 +77,7 @@ describe("Mission runtime", () => {
 	it("continues only from idle lifecycle admission using a triggering follow-up", async () => {
 		const test = await setup();
 		await test.emit("session_start", { reason: "resume" });
-		expect(test.messages).toHaveLength(1);
+		await vi.waitFor(() => expect(test.messages).toHaveLength(1), { timeout: 500 });
 		expect(test.messages[0]?.options).toEqual({ triggerTurn: true, deliverAs: "followUp" });
 		const wake = test.messages[0]?.message as { content?: string };
 		expect(wake.content).toContain("do not shrink scope to fit one turn");
@@ -209,8 +209,7 @@ describe("Mission runtime", () => {
 			run.runtime.output = "human explanation in any language";
 			writeFileSync(join(artifactsDir, "review-report.json"), JSON.stringify({ version: 1, verdict: "clear", findings: [] }));
 			listener?.(run);
-			await new Promise((resolve) => setTimeout(resolve, 10));
-			expect(test.state.read()?.reviewStatus).toBe("awaiting_adjudication");
+			await vi.waitFor(() => expect(test.state.read()?.reviewStatus).toBe("awaiting_adjudication"), { timeout: 500 });
 			expect(test.state.read()?.reviewSuggestedVerdict).toBe("clear");
 			expect(test.messages).toHaveLength(1);
 		} finally {
@@ -238,8 +237,7 @@ describe("Mission runtime", () => {
 			run.runtime.status = "completed";
 			writeFileSync(join(artifactsDir, "review-report.json"), JSON.stringify({ version: 1, verdict: "clear", findings: [] }));
 			listener?.(run);
-			await new Promise((resolve) => setTimeout(resolve, 10));
-			expect(test.state.read()?.reviewStatus).toBe("due");
+			await vi.waitFor(() => expect(test.state.read()?.reviewStatus).toBe("due"), { timeout: 500 });
 			expect(test.state.read()?.reviewReason).toContain("worktree changed while independent review was running");
 		} finally {
 			rmSync(artifactsDir, { recursive: true, force: true });
@@ -387,7 +385,26 @@ describe("Mission runtime", () => {
 			await test.emit("turn_start");
 			writeFileSync(join(repoA, "tracked.txt"), "changed\n");
 			const blockers = await test.runtime.validateCompletion({ audit: [{ requirementIndex: 0, evidence: "recorded" }] }, test.ctx);
-			expect(blockers).toContain("Worktree changed during this turn before independent review admission.");
+			expect(blockers).toContain("Worktree differs from the last durable admitted workspace fingerprint.");
+		} finally {
+			await test.emit("session_shutdown");
+			rmSync(parent, { recursive: true, force: true });
+		}
+	});
+
+	it("detects workspace changes between turns from a durable admitted fingerprint", async () => {
+		const parent = mkdtempSync(join(tmpdir(), "mission-interturn-workspace-"));
+		const repo = createGitRepo(parent, "repo");
+		const test = await setup({ cwd: parent, exec: actualGitExec });
+		try {
+			test.state.append(test.pi, test.state.objectiveUpdateEvent({ reason: "typed workspace", paths: ["repo"] }));
+			test.state.append(test.pi, test.state.reviewEvent("not_required"));
+			await test.emit("turn_start");
+			expect(test.state.read()?.admittedWorktreeFingerprint).toBeTruthy();
+			writeFileSync(join(repo, "tracked.txt"), "external change\n");
+			await test.emit("session_start", { reason: "resume" });
+			await vi.waitFor(() => expect(test.state.read()?.reviewStatus).toBe("due"), { timeout: 1_000 });
+			expect(test.state.read()?.reviewReason).toContain("last admitted fingerprint");
 		} finally {
 			await test.emit("session_shutdown");
 			rmSync(parent, { recursive: true, force: true });
@@ -399,7 +416,7 @@ describe("Mission runtime", () => {
 		const repo = createGitRepo(parent, "repo");
 		writeFileSync(join(repo, "other.txt"), "other\n");
 		execFileSync("git", ["add", "other.txt"], { cwd: repo });
-		execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "other"], { cwd: repo });
+		execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "other"], { cwd: repo });
 		const test = await setup({ cwd: parent, exec: actualGitExec });
 		try {
 			test.state.append(test.pi, test.state.objectiveUpdateEvent({ reason: "typed scope", paths: ["repo/tracked.txt"] }));
@@ -408,7 +425,7 @@ describe("Mission runtime", () => {
 			await test.emit("turn_start");
 			writeFileSync(join(repo, "other.txt"), "unrelated change\n");
 			execFileSync("git", ["add", "other.txt"], { cwd: repo });
-			execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "unrelated commit"], { cwd: repo });
+			execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "unrelated commit"], { cwd: repo });
 			const blockers = await test.runtime.validateCompletion({ audit: [{ requirementIndex: 0, evidence: "recorded" }] }, test.ctx);
 			expect(blockers).not.toContain("Worktree changed during this turn before independent review admission.");
 		} finally {
@@ -488,6 +505,54 @@ describe("Mission runtime", () => {
 		}
 	});
 
+	it("reviews the whole repository for a path-less Mission started in a subdirectory", async () => {
+		const parent = mkdtempSync(join(tmpdir(), "mission-pathless-subdir-"));
+		const repo = createGitRepo(parent, "repo");
+		const subdir = join(repo, "nested");
+		mkdirSync(subdir);
+		const test = await setup({ cwd: subdir, exec: actualGitExec });
+		let started: { cwd?: string; task?: string } | undefined;
+		const service = {
+			list: () => ({ runs: [], groups: [] }),
+			start: async (input: { cwd?: string; task?: string }) => {
+				started = input;
+				return { spec: { id: "pathless-review" }, runtime: { status: "running", startedAt: Date.now() } } as DelegateRun;
+			},
+			executor: { onChange: () => () => undefined },
+		} as unknown as SubagentService;
+		setSubagentService(service);
+		try {
+			const internal = test.runtime as unknown as { startReview: (ctx: ExtensionContext, mission: MissionCurrent) => Promise<void> };
+			await internal.startReview(test.ctx, test.state.read()!);
+			expect(started?.cwd).toBe(realpathSync(repo));
+			expect(started?.task).toContain("workspace paths: .");
+			expect(started?.task).not.toContain("nested");
+		} finally {
+			await test.emit("session_shutdown");
+			clearSubagentService(service);
+			rmSync(parent, { recursive: true, force: true });
+		}
+	});
+
+	it("excludes generated Mission artifacts from a path-less whole-repository fingerprint", async () => {
+		const parent = mkdtempSync(join(tmpdir(), "mission-pathless-artifacts-"));
+		const repo = createGitRepo(parent, "repo");
+		const test = await setup({ cwd: repo, exec: actualGitExec });
+		try {
+			test.state.append(test.pi, test.state.progressEvent({ summary: "Validated", validation: [{ command: "npm test", exitCode: 0 }] }));
+			await test.emit("turn_start");
+			const artifactDir = test.state.read()!.artifactDir;
+			mkdirSync(artifactDir, { recursive: true });
+			writeFileSync(join(artifactDir, "log.md"), "generated progress\n");
+			const blockers = await test.runtime.validateCompletion({ audit: [{ requirementIndex: 0, evidence: "recorded" }] }, test.ctx);
+			expect(blockers).not.toContain("Worktree differs from the last durable admitted workspace fingerprint.");
+			expect(blockers).not.toContain("Mission workspace could not be fingerprinted; ensure explicit Mission paths exist, stay inside cwd, and resolve to Git repositories.");
+		} finally {
+			await test.emit("session_shutdown");
+			rmSync(parent, { recursive: true, force: true });
+		}
+	});
+
 	it("rejects missing typed paths instead of widening to their nearest directory", async () => {
 		const parent = mkdtempSync(join(tmpdir(), "mission-missing-path-"));
 		createGitRepo(parent, "repo");
@@ -544,7 +609,7 @@ describe("Mission runtime", () => {
 		await test.emit("turn_start");
 		fingerprint = "mutated";
 		const blockers = await test.runtime.validateCompletion({ audit: [{ requirementIndex: 0, evidence: "recorded" }] }, test.ctx);
-		expect(blockers).toContain("Worktree changed during this turn before independent review admission.");
+		expect(blockers).toContain("Worktree differs from the last durable admitted workspace fingerprint.");
 	});
 
 	it("invalidates review admission after a clean HEAD change", async () => {
@@ -561,8 +626,13 @@ describe("Mission runtime", () => {
 		const test = await setup();
 		test.state.append(test.pi, test.state.reviewEvent("due", { reason: "files changed" }));
 		let blockers = await test.runtime.validateCompletion({ audit: [] }, test.ctx);
-		expect(blockers.some((blocker) => blocker.includes("Missing evidence"))).toBe(true);
+		expect(blockers.some((blocker) => blocker.includes("Missing non-empty evidence"))).toBe(true);
 		expect(blockers.some((blocker) => blocker.includes("review"))).toBe(true);
+		blockers = await test.runtime.validateCompletion({ audit: [{ requirementIndex: 0, evidence: "   " }] }, test.ctx);
+		expect(blockers.some((blocker) => blocker.includes("Missing non-empty evidence"))).toBe(true);
+		expect(blockers).toContain("Requirement audit contains empty evidence.");
+		blockers = await test.runtime.validateCompletion({ audit: [{ requirementIndex: 0, evidence: "one" }, { requirementIndex: 0, evidence: "two" }] }, test.ctx);
+		expect(blockers).toContain("Requirement audit contains duplicate requirementIndex entries.");
 
 		test.state.append(test.pi, test.state.progressEvent({ summary: "Failed check", validation: [{ command: "npm test", exitCode: 1 }] }));
 		blockers = await test.runtime.validateCompletion({ audit: [{ requirementIndex: 99, evidence: "wrong id" }] }, test.ctx);

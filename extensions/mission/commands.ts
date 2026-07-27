@@ -93,16 +93,18 @@ async function showMissionDashboard(
 			const mission = state.readAny();
 			if (!mission) return;
 			const status: MissionStatus = mission.status === "active" ? "paused" : "active";
-			const transition = status === "active"
-				? resumeMission(pi, state, "/resume").then((resumed) => { ctx.ui.notify(formatMission(resumed, state.readUsage()), "info"); })
-				: setStatus(pi, state, status, ctx, "/pause");
-			void transition.then(() => {
+			void (async () => {
+				if (status === "active" && !await ctx.ui.confirm("Resume Mission?", `Resume autonomous work on ${mission.title}?`)) return;
+				if (status === "active") {
+					const resumed = await resumeMission(pi, state, "/resume");
+					ctx.ui.notify(formatMission(resumed, state.readUsage()), "info");
+				} else await setStatus(pi, state, status, ctx, "/pause");
 				setContext(ctx);
 				if (status === "paused") chainCheckpoints.current?.due("Mission paused", "mission_control");
 				hooks.onChanged?.(ctx);
 				if (status === "active") maybeContinue(ctx);
 				render();
-			}).catch((error) => ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"));
+			})().catch((error) => ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"));
 		});
 	}, { overlay: true, overlayOptions: FULL_SCREEN_OVERLAY });
 }

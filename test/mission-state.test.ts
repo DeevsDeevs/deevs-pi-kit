@@ -41,6 +41,18 @@ describe("Mission state", () => {
 		expect(mission.reviewSkippedReason).toBe("Documentation-only change");
 	});
 
+	it("rejects live replacement and oversized control lists instead of truncating", async () => {
+		const test = setup();
+		test.state.append(test.pi, await test.state.create({ objective: "First", chain: "kit" }, test.ctx));
+		await expect(test.state.create({ objective: "Second", chain: "kit" }, test.ctx)).rejects.toThrow("Mission already exists");
+		const fresh = new MissionState();
+		const first = fresh.create({ objective: "Concurrent first", chain: "kit" }, test.ctx);
+		await expect(fresh.create({ objective: "Concurrent second", chain: "kit" }, test.ctx)).rejects.toThrow("being created");
+		fresh.append(test.pi, await first);
+		expect(() => test.state.objectiveUpdateEvent({ reason: "too many", requirements: Array.from({ length: 13 }, (_, index) => `req-${index}`) })).toThrow("requirements are limited to 12");
+		expect(() => test.state.objectiveUpdateEvent({ reason: "too many", paths: Array.from({ length: 101 }, (_, index) => `path-${index}`) })).toThrow("paths are limited to 100");
+	});
+
 	it("keeps explicit display titles and stable Chain names while using Mission-ID artifact suffixes", async () => {
 		const ctx = { ...setup().ctx, cwd: `/tmp/mission-${randomUUID()}` };
 		const first = await new MissionState().create({ objective: "First objective", title: "  Readable   Mission Name  " }, ctx);
@@ -194,6 +206,21 @@ describe("Mission state", () => {
 		expect(test.state.readProgressSinceContinuation().map((item) => item.summary)).toEqual(["after"]);
 	});
 
+	it("requires trusted confirmation for Mission updates and nonempty review waivers", async () => {
+		const test = setup();
+		test.state.append(test.pi, await test.state.create({ objective: "Do work", chain: "kit" }, test.ctx));
+		const tools = new Map<string, { execute: (...args: unknown[]) => Promise<unknown> }>();
+		const pi = { ...test.pi, registerTool(tool: unknown) { const value = tool as { name: string; execute: (...args: unknown[]) => Promise<unknown> }; tools.set(value.name, value); } } as unknown as ExtensionAPI;
+		registerMissionTools(pi, test.state, () => undefined);
+		await expect(tools.get("mission_update")!.execute("call", { objective: "Changed", reason: "scope" }, undefined, undefined, test.ctx)).rejects.toThrow("trusted direct command");
+		const denied = { ...test.ctx, hasUI: true, ui: { confirm: async () => false } } as unknown as ExtensionContext;
+		await expect(tools.get("mission_update")!.execute("call", { objective: "Changed", reason: "scope" }, undefined, undefined, denied)).rejects.toThrow("not authorized");
+		const approved = { ...test.ctx, hasUI: true, ui: { confirm: async () => true } } as unknown as ExtensionContext;
+		await tools.get("mission_update")!.execute("call", { objective: "Changed", reason: "scope" }, undefined, undefined, approved);
+		expect(test.state.read()?.objective).toBe("Changed");
+		await expect(tools.get("mission_progress")!.execute("call", { summary: "waive", reviewSkip: true }, undefined, undefined, approved)).rejects.toThrow("non-empty reviewSkipReason");
+	});
+
 	it("refuses clear adjudication without a structured reviewer verdict", async () => {
 		const test = setup();
 		test.state.append(test.pi, await test.state.create({ objective: "Do work", chain: "kit" }, test.ctx));
@@ -201,18 +228,25 @@ describe("Mission state", () => {
 		let progressTool: { execute: (...args: unknown[]) => Promise<unknown> } | undefined;
 		const pi = { ...test.pi, registerTool(tool: unknown) { const value = tool as { name: string; execute: (...args: unknown[]) => Promise<unknown> }; if (value.name === "mission_progress") progressTool = value; } } as unknown as ExtensionAPI;
 		registerMissionTools(pi, test.state, () => undefined);
-		await expect(progressTool!.execute("call", { summary: "Adjudicate", reviewVerdict: "clear", reviewRunId: "review-1" }, undefined, undefined, test.ctx)).rejects.toThrow("structured review_report");
+		const before = test.branch.length;
+		await expect(progressTool!.execute("call", { summary: "Adjudicate", reviewVerdict: "clear", reviewRunId: "review-1", reviewReason: "report evidence" }, undefined, undefined, test.ctx)).rejects.toThrow("structured review_report");
+		expect(test.branch).toHaveLength(before);
+		expect(test.state.readProgress()).toEqual([]);
+		await expect(progressTool!.execute("call", { summary: "Invalid mixed control", reviewSkip: true, reviewSkipReason: "waive", reviewVerdict: "changes_requested", reviewRunId: "review-1", reviewReason: "report evidence" }, undefined, undefined, test.ctx)).rejects.toThrow("mutually exclusive");
+		expect(test.branch).toHaveLength(before);
 	});
 
 	it("records user-requested closure as ended rather than achieved", async () => {
 		const test = setup();
 		test.state.append(test.pi, await test.state.create({ objective: "Do work", title: "Probe", chain: "kit" }, test.ctx));
-		let completeTool: { execute: (...args: unknown[]) => Promise<{ details?: { mission?: { status?: string } } }> } | undefined;
+		let completeTool: { execute: (...args: unknown[]) => Promise<{ details?: { mission?: { status?: string }; audit?: Array<{ requirementIndex: number; evidence: string }> } }> } | undefined;
 		const pi = { ...test.pi, registerTool(tool: unknown) { const value = tool as typeof completeTool & { name?: string }; if (value?.name === "mission_complete") completeTool = value; } } as unknown as ExtensionAPI;
 		registerMissionTools(pi, test.state, () => undefined);
 		const ctx = { ...test.ctx, hasUI: true, ui: { confirm: async () => true } } as unknown as ExtensionContext;
-		const result = await completeTool!.execute("call", { userRequested: true }, undefined, undefined, ctx);
+		const result = await completeTool!.execute("call", { userRequested: true, audit: [{ requirementIndex: 0, evidence: "   " }, { requirementIndex: 0, evidence: "duplicate" }] }, undefined, undefined, ctx);
 		expect(result.details?.mission?.status).toBe("ended");
+		expect(result.details?.audit).toHaveLength(1);
+		expect(result.details?.audit?.[0]?.evidence.trim()).toBeTruthy();
 		expect(test.state.read()).toBeUndefined();
 		expect(test.state.readAny()?.status).toBe("ended");
 	});
@@ -257,6 +291,32 @@ describe("Mission state", () => {
 		expect(test.branch).toHaveLength(before);
 		expect(completed).toBe(0);
 		expect(notices).toEqual(["Mission already complete: Probe"]);
+	});
+
+	it("requires trusted confirmation before dashboard resume", async () => {
+		const test = setup();
+		test.state.append(test.pi, await test.state.create({ objective: "Do work", title: "Probe", chain: "kit" }, test.ctx));
+		test.state.append(test.pi, test.state.statusEvent("paused", "pause"));
+		let command: { handler: (args: string, ctx: ExtensionContext) => Promise<void> } | undefined;
+		let dashboard: { handleInput: (data: string) => void } | undefined;
+		let confirmations = 0;
+		const pi = { ...test.pi, registerCommand(_name: string, value: typeof command) { command = value; } } as unknown as ExtensionAPI;
+		registerMissionCommands(pi, test.state, () => undefined, () => undefined);
+		const ctx = {
+			...test.ctx,
+			mode: "tui",
+			hasUI: true,
+			ui: {
+				confirm: async () => { confirmations++; return false; },
+				notify: () => undefined,
+				custom: async (factory: (...args: unknown[]) => unknown) => { dashboard = factory({ requestRender: () => undefined, terminal: { rows: 24 } }, {}, {}, () => undefined) as typeof dashboard; },
+			},
+		} as unknown as ExtensionContext;
+		await command!.handler("", ctx);
+		dashboard!.handleInput("p");
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(confirmations).toBe(1);
+		expect(test.state.read()?.status).toBe("paused");
 	});
 
 	it("routes the direct end command through the shared completion validator", async () => {
