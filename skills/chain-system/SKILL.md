@@ -5,22 +5,21 @@ description: Create, fork, search, list, and load multi-session chain links unde
 
 # Chain System
 
-Use chains to preserve durable work context across Pi sessions. A chain is a set of markdown links:
+Chains preserve durable work context across Pi sessions as markdown links:
 
 ```text
 .chains/<chain-name>/<timestamp>-<slug>.md
 ```
 
-New links include frontmatter metadata for branching:
+Frontmatter (links without it are treated as branch `main`; `nextStep` comes from the typed `chain_save` field, never parsed from prose):
 
 ```yaml
 chain: my-feature
 branch: main
 parent: 2026-04-28-120000000-previous.md
+nextStep: Wire the new parser into service.ts
 created: 2026-04-28T12:30:00.000Z
 ```
-
-Older links without metadata are treated as branch `main`.
 
 ## Commands and tools
 
@@ -39,83 +38,36 @@ Human commands:
 Model tools:
 
 ```text
-chain_save    save a markdown link; supports branch and parent
+chain_save    save a markdown link; supports branch, parent, nextStep
 chain_load    load latest/specific link, optionally by branch
 chain_fork    resolve a parent for a new branch; follow with chain_save
 chain_context pack latest/parent/recent/search context for subagents or resume
 chain_list    list chains, optionally branch/link metadata
-chain_search  universal search: ranked lookup by default, exact text, or regex
+chain_search  ranked lookup by default; mode text/regex for exact matching
 ```
 
-## When to use
+## When to load and save
 
-- Before ending a long or complex session; do not save links for trivial one-step tasks.
-- When the user says to save context, continue later, create a handoff, or chain link.
-- At the start of resumed work, use `chain_load` or `/chain-load`.
-- When looking for old decisions, files, bugs, or next steps, use `chain_search`; default lookup mode is relevance-ranked, while `mode: "text"` / `--text` and `mode: "regex"` / `--regex` are exact matching modes.
-- When work diverges, use `chain_fork` or `/chain-fork` and save follow-up links on the new branch.
-- When delegating to subagents, load/search the relevant chain branch and include the focused context in the subagent task.
-
-## Proactive chain triggers
-
-Use chains without waiting for an explicit reminder when the work is clearly durable. Keep this lightweight; chains are for handoff-quality memory, not chat logs.
-
-At the start of work:
-
-- If the user says "continue", "resume", "pick up", "where were we", or references prior work, call `chain_load` for the named chain if known; otherwise use `chain_list`/`chain_search`.
-- If the task is non-trivial and likely tied to an existing project, run a quick `chain_search` for the project/topic before rediscovering old decisions.
-- If loaded context is stale, ambiguous, or conflicts with source files, state the uncertainty and verify against current files.
-
-During work:
-
-- Save after meaningful milestones: implemented feature, validated fix, design decision, failed/rejected approach worth remembering, or completed review.
-- Save before context may be lost: long session, compaction risk, switching tasks, handing off to another agent, or stopping with pending work.
-- For research tasks, save selected sources/queries/IDs only when findings affect future decisions.
-
-With subagents:
-
-- Before spawning subagents on ongoing project work, prefer `chain_context` so each child receives a bounded, parent-loaded context pack.
+- On "continue", "resume", "pick up", or references to prior work: `chain_load` the named chain if known, else `chain_list`/`chain_search`.
+- Before non-trivial work likely tied to an existing project: quick `chain_search` before rediscovering old decisions.
+- Save after meaningful milestones (implemented feature, validated fix, design decision, rejected approach worth remembering, completed review) and before context may be lost (long session, compaction risk, task switch, handoff, stopping with pending work).
+- For research, save selected sources/queries/IDs only when findings affect future decisions.
 - After subagents return, save a link only if their findings changed decisions, exposed risks, or created follow-up work.
+- Treat stale (>7 days), ambiguous, or conflicting loaded context as questions to verify against current files before proceeding.
+- Do not save for one-shot answers, tiny edits, links that would only repeat visible git diff, or when the user asks not to persist context.
 
-Do not save when:
+Chains are handoff-quality memory, not chat logs.
 
-- the task is a one-shot answer, tiny edit, or throwaway command;
-- the link would only repeat visible git diff with no decisions or next steps;
-- the user asks not to persist context.
+## Branching
 
-## Branching model
-
-- Default branch is `main`.
-- A fork is a new branch whose first link has `parent` set to the source link filename.
-- Use branches for experiments, UI alternatives, subagent research tracks, or parallel implementation approaches.
-- Do not create branches for trivial one-off notes.
-
-Branch when the work has a different hypothesis or merge policy from the current line:
-
-- competing designs or implementations;
-- risky refactors or experiments that may be abandoned;
-- focused subagent/research tracks that should not pollute `main` until accepted;
-- user-requested alternatives, spikes, or comparisons.
-
-Stay on the current branch when:
-
-- continuing the same implementation/review;
-- adding validation results or follow-up fixes for the same decision line;
-- saving a normal end-of-session handoff.
-
-When creating a branch:
-
-1. Use `chain_fork` to resolve and validate the parent link.
-2. Save the first branch link with `branch` and `parent` metadata.
-3. State branch scope, why it exists, and what would merge back.
-4. When the branch is accepted/rejected, save a link on the parent branch (usually `main`) summarizing the outcome and the branch links that matter.
-
-Typical flow:
+- Default branch is `main`. A fork is a new branch whose first link has `parent` set to the source link filename.
+- Branch when the work has a different hypothesis or merge policy: competing designs, risky experiments that may be abandoned, focused subagent/research tracks that should not pollute `main`, user-requested alternatives or spikes.
+- Stay on the current branch for continuations, follow-up fixes, validation results, and normal end-of-session handoffs. No branches for trivial one-off notes.
+- Creating a branch: `chain_fork` to resolve the parent, save the first link with `branch` and `parent` metadata, and state the branch scope and what would merge back. When the branch is accepted/rejected, save an outcome link on the parent branch.
 
 ```text
 /chain-fork project-work experiment --from-branch main
 /chain-link project-work --branch experiment
-/chain-load project-work --branch experiment
 ```
 
 ## Link content rubric
@@ -132,20 +84,11 @@ Use the concise default rubric below. For important handoffs, load and follow `l
 8. Current Work
 9. Next Step
 
-Include exact file paths, command results, subagent run/group IDs, background process IDs, and unresolved errors when they matter. Skip noise and routine tool chatter.
+Include exact file paths, command results, subagent run/group IDs, background process IDs, and unresolved errors when they matter. Skip routine tool chatter.
 
 ## Subagent context passing
 
-Chains are a context bus, not an automatic subagent memory system.
-
-Recommended pattern:
-
-1. Save or load a focused branch link.
-2. Call `chain_context` for a bounded context pack.
-3. Include the formatted excerpt in the `subagent` task.
-4. When the Subagent returns, save a new link that references its run/group IDs and decision impact.
-
-Example subagent task wording:
+Chains are a context bus, not automatic subagent memory: save or load a focused branch link, call `chain_context` for a bounded pack, include the formatted excerpt directly in the `subagent` task text, and after the run save a link referencing its run/group IDs and decision impact.
 
 ```text
 subagent({
@@ -169,4 +112,3 @@ subagent({
 
 - Use `chain_save`; do not hand-roll writes into `.chains` unless the tool is unavailable.
 - Chain and branch names must be simple names without slashes.
-- On load, treat stale links (>7 days), ambiguous next steps, or missing referenced context as questions to clarify before proceeding.
