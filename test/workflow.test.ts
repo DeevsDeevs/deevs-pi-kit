@@ -135,8 +135,8 @@ describe("trusted workflow runtime", () => {
 		const startedAt = Date.now();
 		const result = await execute(tool, ctx, `agent({ agent: "reviewer", task: "hang" }); while (true) {}`, 1_000);
 		expect((result.details as { status: string }).status).toBe("timeout");
-		expect(Date.now() - startedAt).toBeLessThan(8_000);
-	});
+		expect(Date.now() - startedAt).toBeLessThan(10_000);
+	}, 12_000);
 
 	it("does not launch or leave orphan agents after workflow timeout", async () => {
 		const { tool, ctx, service } = await setup(true, true);

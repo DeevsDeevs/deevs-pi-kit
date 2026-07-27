@@ -21,6 +21,7 @@ describe("built-in personas", () => {
     expect(agents.map((agent) => agent.name)).toEqual(expectedAgents);
     expect(agents.every((agent) => agent.body.length > 0)).toBe(true);
     expect(agents.every((agent) => agent.tags.length > 0)).toBe(true);
+    expect(findAgent(agents, "tester")?.body).not.toContain("run targeted validation commands through bash");
   });
 
   it("keeps advisory personas read-only by default", () => {
