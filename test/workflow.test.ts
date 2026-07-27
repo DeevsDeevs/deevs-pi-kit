@@ -15,6 +15,7 @@ async function setup(trusted = true, hangAgents = false) {
 	const root = mkdtempSync(path.join(tmpdir(), "workflow-test-"));
 	const project = mkdtempSync(path.join(tmpdir(), "workflow-project-"));
 	const branch: Array<Record<string, unknown>> = [];
+	const widgetUpdates: Array<{ key: string; value: unknown }> = [];
 	let tool: { execute: (...args: unknown[]) => Promise<{ details?: unknown; isError?: boolean; usage?: { totalTokens: number; cost: { total: number } } }> } | undefined;
 	const pi = {
 		registerTool(value: typeof tool) { tool = value; },
@@ -22,10 +23,12 @@ async function setup(trusted = true, hangAgents = false) {
 	} as unknown as ExtensionAPI;
 	const ctx = {
 		cwd: project,
+		hasUI: true,
+		ui: { setWidget: (key: string, value: unknown) => widgetUpdates.push({ key, value }), setStatus() {} },
 		isProjectTrusted: () => trusted,
 		isIdle: () => false,
 		hasPendingMessages: () => false,
-		sessionManager: { getSessionFile: () => "/tmp/parent.jsonl", getBranch: () => branch },
+		sessionManager: { getSessionId: () => "parent-session", getSessionFile: () => "/tmp/parent.jsonl", getBranch: () => branch },
 	} as unknown as ExtensionContext;
 	const executor = new DelegateExecutor({
 		artifactsRoot: root,
@@ -41,7 +44,7 @@ async function setup(trusted = true, hangAgents = false) {
 	workflowExtension(pi);
 	cleanups.push(() => { clearSubagentService(service); service.dispose(); }, () => rmSync(root, { recursive: true, force: true }), () => rmSync(project, { recursive: true, force: true }));
 	if (!tool) throw new Error("workflow tool was not registered");
-	return { tool, ctx, service, branch };
+	return { tool, ctx, service, branch, widgetUpdates, reload: () => { workflowExtension(pi); return tool!; } };
 }
 
 async function execute(tool: { execute: (...args: unknown[]) => Promise<{ details?: unknown; isError?: boolean; usage?: { totalTokens: number; cost: { total: number } } }> }, ctx: ExtensionContext, source: string, timeoutMs = 2_000) {
@@ -62,6 +65,45 @@ describe("trusted workflow runtime", () => {
 		expect(branch.some((entry) => JSON.stringify(entry).includes('"type":"emit"'))).toBe(false);
 	});
 
+	it("uses one race-safe widget for concurrent Workflows", async () => {
+		const { tool, ctx, widgetUpdates } = await setup();
+		await Promise.all([
+			execute(tool, ctx, `await new Promise(resolve => setTimeout(resolve, 80)); return "one";`),
+			execute(tool, ctx, `await new Promise(resolve => setTimeout(resolve, 120)); return "two";`),
+		]);
+		expect(new Set(widgetUpdates.map((update) => update.key))).toEqual(new Set(["workflow:fleet"]));
+		expect(widgetUpdates.filter((update) => update.value === undefined)).toHaveLength(1);
+		expect(widgetUpdates.at(-1)?.value).toBeUndefined();
+	});
+
+	it("isolates fleet state between unsaved sessions in the same cwd", async () => {
+		const { tool, ctx, widgetUpdates } = await setup();
+		const otherCtx = { ...ctx, sessionManager: { ...ctx.sessionManager, getSessionId: () => "other-session", getSessionFile: () => undefined } } as ExtensionContext;
+		const unsavedCtx = { ...ctx, sessionManager: { ...ctx.sessionManager, getSessionId: () => "unsaved-session", getSessionFile: () => undefined } } as ExtensionContext;
+		await Promise.all([
+			execute(tool, unsavedCtx, `await new Promise(resolve => setTimeout(resolve, 80)); return "one";`),
+			execute(tool, otherCtx, `await new Promise(resolve => setTimeout(resolve, 120)); return "two";`),
+		]);
+		const theme = { fg: (_color: string, text: string) => text };
+		const renderedHeaders = widgetUpdates.flatMap((update) => {
+			if (typeof update.value !== "function") return [];
+			const component = update.value({}, theme);
+			return [component.render(80)[0]];
+		});
+		expect(renderedHeaders.every((line) => line.includes("◆ Workflow ") && !line.includes("◆ Workflows "))).toBe(true);
+	});
+
+	it("does not let an older hot-reload generation clear a newer Workflow widget", async () => {
+		const { tool: oldTool, ctx, widgetUpdates, reload } = await setup();
+		const oldRun = execute(oldTool, ctx, `await new Promise(resolve => setTimeout(resolve, 80)); return "old";`);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		const newTool = reload();
+		const newRun = execute(newTool, ctx, `await new Promise(resolve => setTimeout(resolve, 140)); return "new";`);
+		await Promise.all([oldRun, newRun]);
+		expect(widgetUpdates.filter((update) => update.value === undefined)).toHaveLength(1);
+		expect(widgetUpdates.at(-1)?.value).toBeUndefined();
+	});
+
 	it("rejects untrusted projects before evaluating JavaScript", async () => {
 		const { tool, ctx } = await setup(false);
 		await expect(execute(tool, ctx, `throw new Error("should not run")`)).rejects.toThrow("trusted project");
@@ -74,6 +116,26 @@ describe("trusted workflow runtime", () => {
 		expect(result.isError).toBeUndefined();
 		expect(details.status).toBe("timeout");
 		expect(details.error).toContain("timed out");
+	});
+
+	it("settles and quiesces through executor fallback when service cancellation rejects", async () => {
+		const { tool, ctx, service } = await setup(true, true);
+		const originalWait = service.wait.bind(service);
+		service.wait = ((request, signal) => request.cancel ? Promise.reject(new Error("synthetic service cancellation failure")) : originalWait(request, signal)) as typeof service.wait;
+		const result = await execute(tool, ctx, `agent({ agent: "reviewer", task: "hang" }); while (true) {}`, 1_000);
+		expect((result.details as { status: string }).status).toBe("timeout");
+		expect(service.list().runs.filter((run) => ["starting", "running", "stopping"].includes(run.runtime.status))).toEqual([]);
+	});
+
+	it("cannot hang when both cancellation APIs reject", async () => {
+		const { tool, ctx, service } = await setup(true, true);
+		const originalWait = service.wait.bind(service);
+		service.wait = ((request, signal) => request.cancel ? Promise.reject(new Error("synthetic service cancellation failure")) : originalWait(request, signal)) as typeof service.wait;
+		service.executor.cancel = (async () => { throw new Error("synthetic executor cancellation failure"); }) as typeof service.executor.cancel;
+		const startedAt = Date.now();
+		const result = await execute(tool, ctx, `agent({ agent: "reviewer", task: "hang" }); while (true) {}`, 1_000);
+		expect((result.details as { status: string }).status).toBe("timeout");
+		expect(Date.now() - startedAt).toBeLessThan(8_000);
 	});
 
 	it("does not launch or leave orphan agents after workflow timeout", async () => {
