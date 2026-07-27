@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -78,6 +78,28 @@ describe("DelegateExecutor", () => {
 		expect(existsSync(run.spec.transcriptPath)).toBe(true);
 	});
 
+	it("does not overwrite a fast worker terminal state while establishing process identity", async () => {
+		const root = mkdtempSync(path.join(tmpdir(), "delegate-slow-identity-"));
+		roots.push(root);
+		const marker = path.join(root, "first-ps");
+		const bin = path.join(root, "bin");
+		mkdirSync(bin);
+		const ps = path.join(bin, "ps");
+		writeFileSync(ps, `#!/bin/sh\nif mkdir ${JSON.stringify(marker)} 2>/dev/null; then sleep 1; fi\nexec /bin/ps "$@"\n`);
+		chmodSync(ps, 0o755);
+		const previousPath = process.env.PATH;
+		process.env.PATH = `${bin}:${previousPath ?? ""}`;
+		try {
+			const executor = setup(() => completedScript("fast"));
+			const run = await executor.start(input({ wallMs: 4_000 }));
+			expect(run.runtime.status).toBe("completed");
+			expect(run.runtime.output).toBe("fast");
+			expect(run.runtime.workerPid).toBeTypeOf("number");
+		} finally {
+			process.env.PATH = previousPath;
+		}
+	});
+
 	it("does not publish a requested limit as terminal before child close", async () => {
 		const executor = setup(() => `process.on('SIGTERM',()=>setTimeout(()=>process.exit(0),200)); const message={role:'assistant',content:[{type:'text',text:'partial'}],usage:{input:80,output:30,cost:{total:0.1}}}; console.log(JSON.stringify({type:'message_end',message})); console.log(JSON.stringify({type:'turn_end',message,toolResults:[]})); setInterval(()=>{},1000);`);
 		const startedAt = Date.now();
@@ -99,10 +121,10 @@ describe("DelegateExecutor", () => {
 		expect(isAlive(descendantPid)).toBe(false);
 	});
 
-	it("returns structured needs_attention for credential or approval boundaries", async () => {
+	it("does not infer terminal status from English stderr prose", async () => {
 		const executor = setup(() => `console.error('credentials required: sign in'); setTimeout(()=>process.exit(1),100);`);
 		const run = await executor.start(input());
-		expect(run.runtime.status).toBe("needs_attention");
+		expect(run.runtime.status).toBe("failed");
 		expect(run.runtime.error).toContain("credentials required");
 	});
 

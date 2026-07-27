@@ -9,6 +9,7 @@ import {
 	emptyChainCheckpoint,
 	reduceChainCheckpoint,
 	replayChainCheckpoint,
+	registerChainCheckpoint,
 } from "../extensions/chains/checkpoint.ts";
 
 describe("Chain checkpoint state", () => {
@@ -57,12 +58,16 @@ describe("Chain checkpoint state", () => {
 		expect(service.read().dueReasons).toContain("repository HEAD advanced");
 		expect(statuses.at(-1)).toBe("chain due");
 		expect(service.beforeAgentStart("base")).toContain("checkpoint is due");
+		service.due("Mission milestone recorded");
+		expect(service.beforeAgentStart("base")).toContain("call chain_save before starting further substantive work");
 	});
 
 	it("forces one immediate Chain checkpoint when context reaches 80 percent", () => {
 		const branch: Array<Record<string, unknown>> = [];
 		const messages: Array<{ message: unknown; options: unknown }> = [];
+		let compactCalls = 0;
 		let percent = 79;
+		let idle = true;
 		const pi = {
 			appendEntry(customType: string, data: unknown) { branch.push({ type: "custom", customType, data }); },
 			sendMessage(message: unknown, options: unknown) { messages.push({ message, options }); },
@@ -71,8 +76,9 @@ describe("Chain checkpoint state", () => {
 			getContextUsage: () => ({ tokens: 80, contextWindow: 100, percent }),
 			sessionManager: { getBranch: () => branch },
 			ui: { setStatus() {} },
-			isIdle: () => true,
-			hasPendingMessages: () => false,
+			isIdle: () => idle,
+			hasPendingMessages: () => !idle,
+			compact: () => { compactCalls++; },
 		} as unknown as ExtensionContext;
 		const service = new ChainCheckpointService(pi);
 		service.activate("kit", "main");
@@ -90,6 +96,12 @@ describe("Chain checkpoint state", () => {
 		expect(messages[0]?.options).toEqual({ triggerTurn: true, deliverAs: "followUp" });
 		service.saved("kit", "main", "checkpoint.md");
 		expect(service.blockTool("read")).toBeUndefined();
+		percent = 90;
+		idle = false;
+		expect(service.maybeAutoCompact(ctx)).toBe(false);
+		expect(service.maybeAutoCompact(ctx, true)).toBe(true);
+		expect(service.maybeAutoCompact(ctx, true)).toBe(false);
+		expect(compactCalls).toBe(1);
 		percent = 95;
 		const reloaded = new ChainCheckpointService(pi);
 		reloaded.restore(ctx);
@@ -100,16 +112,66 @@ describe("Chain checkpoint state", () => {
 		expect(reloaded.read().status).toBe("due");
 	});
 
-	it("keeps colliding truncated Chain labels separately selectable", async () => {
+	it("compacts immediately after the 80% checkpoint is saved during an active turn", () => {
+		const branch: Array<Record<string, unknown>> = [];
+		const handlers = new Map<string, (...args: any[]) => unknown>();
+		let compactCalls = 0;
+		let percent = 80;
+		const pi = {
+			appendEntry(customType: string, data: unknown) { branch.push({ type: "custom", customType, data }); },
+			on(name: string, handler: (...args: any[]) => unknown) { handlers.set(name, handler); },
+			registerEntryRenderer() {},
+		} as unknown as ExtensionAPI;
+		const ctx = {
+			getContextUsage: () => ({ tokens: percent, contextWindow: 100, percent }),
+			sessionManager: { getBranch: () => branch },
+			ui: { setStatus() {} }, isIdle: () => false, hasPendingMessages: () => true,
+			compact: () => { compactCalls++; },
+		} as unknown as ExtensionContext;
+		const service = new ChainCheckpointService(pi);
+		registerChainCheckpoint(pi, service);
+		service.activate("kit", "main");
+		service.checkContextPressure(ctx);
+		handlers.get("tool_execution_start")!({ toolCallId: "save-1", args: { chain: "kit", branch: "main" } });
+		percent = 90;
+		handlers.get("tool_execution_end")!({ toolCallId: "save-1", toolName: "chain_save", isError: false, result: { details: { link: { filename: "checkpoint.md" } } } }, ctx);
+		expect(service.read().status).toBe("saved");
+		expect(compactCalls).toBe(1);
+	});
+
+	it("does not auto-compact a waived context-pressure checkpoint", () => {
+		const branch: Array<Record<string, unknown>> = [];
+		let compactCalls = 0;
+		const pi = { appendEntry(customType: string, data: unknown) { branch.push({ type: "custom", customType, data }); } } as unknown as ExtensionAPI;
+		const ctx = {
+			getContextUsage: () => ({ tokens: 90, contextWindow: 100, percent: 90 }),
+			sessionManager: { getBranch: () => branch },
+			ui: { setStatus() {} }, isIdle: () => true, hasPendingMessages: () => false,
+			compact: () => { compactCalls++; },
+		} as unknown as ExtensionContext;
+		const service = new ChainCheckpointService(pi);
+		service.activate("kit", "main");
+		service.checkContextPressure(ctx);
+		service.waive("user accepted risk");
+		service.maybeAutoCompact(ctx);
+		expect(compactCalls).toBe(0);
+	});
+
+	it("keeps colliding long Chain names separately visible in the dashboard", async () => {
 		let command: { handler: (args: string, ctx: ExtensionContext) => Promise<void> } | undefined;
 		const pi = { registerCommand(name: string, value: typeof command) { if (name === "chains") command = value; } } as unknown as ExtensionAPI;
-		const chains = ["abcdefghijklmno-one-zzzzzz", "abcdefghijklmno-two-zzzzzz"].map((chain) => ({ chain, count: 1, branches: ["main"], latest: { branch: "main" } }));
+		const chains = ["abcdefghijklmno-one-zzzzzz", "abcdefghijklmno-two-zzzzzz"].map((chain) => ({ chain, count: 1, branches: [], latest: { chain, branch: "main", filename: "latest.md", title: chain, nextStep: null, parent: null, createdAt: null, ageDays: 0, stale: false, bytes: 1 } }));
 		registerChainCommands(pi, { list: async () => chains } as unknown as ChainService);
-		let labels: string[] = [];
-		const ctx = { mode: "tui", ui: { select: async (_title: string, options: string[]) => { labels = options; return undefined; } } } as unknown as ExtensionContext;
+		let rendered = "";
+		const theme = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, bold: (text: string) => text };
+		const ctx = {
+			mode: "tui",
+			hasUI: true,
+			ui: { custom: async (factory: any) => { rendered = factory({ terminal: { rows: 30 }, requestRender() {} }, theme, {}, () => undefined).render(100).join("\n"); } },
+		} as unknown as ExtensionContext;
 		await command!.handler("", ctx);
-		expect(labels).toHaveLength(2);
-		expect(new Set(labels).size).toBe(2);
+		expect(rendered).toContain(chains[0]!.chain);
+		expect(rendered).toContain(chains[1]!.chain);
 	});
 
 	it("exposes an explicit reasoned checkpoint waiver command", async () => {

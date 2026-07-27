@@ -1,4 +1,4 @@
-import { open, readdir, readFile, realpath, stat } from "node:fs/promises";
+import { open, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import { isToolCallEventType, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -51,6 +51,29 @@ export default function childSafetyRuntime(pi: ExtensionAPI): void {
 			const root = await projectPath(input.path);
 			const files = await walk(root, Math.floor(input.maxDepth ?? 4), Math.floor(input.maxResults ?? 500));
 			return result(files.length ? files.join("\n") : "No files found.", { files });
+		},
+	});
+
+	pi.registerTool({
+		name: "review_report",
+		label: "Submit structured review",
+		description: "Persist the review verdict as schema-validated data. Prose is explanatory only.",
+		parameters: Type.Object({
+			verdict: Type.Union([Type.Literal("clear"), Type.Literal("changes_requested")]),
+			overallExplanation: Type.String(),
+			findings: Type.Array(Type.Object({
+				severity: Type.Union([Type.Literal("blocker"), Type.Literal("major"), Type.Literal("minor"), Type.Literal("nit")]),
+				summary: Type.String(),
+				path: Type.Optional(Type.String()),
+				line: Type.Optional(Type.Integer({ minimum: 1 })),
+			})),
+		}),
+		async execute(_id, input) {
+			const artifacts = process.env.DEEVS_PI_SUBAGENT_ARTIFACTS;
+			if (!artifacts) throw new Error("Review artifact directory is unavailable.");
+			const report = { version: 1, ...input, submittedAt: Date.now() };
+			await writeFile(path.join(artifacts, "review-report.json"), `${JSON.stringify(report, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+			return result(`Structured review recorded: ${input.verdict}`, report);
 		},
 	});
 

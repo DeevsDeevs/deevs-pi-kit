@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { isAbsolute, normalize as normalizePath } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ChainService } from "../chains/service.ts";
 import { slugify } from "../chains/parser.ts";
 import { missionDir } from "./artifacts.ts";
-import type { MissionCreateInput, MissionCurrent, MissionEvent, MissionProgressInput, MissionProgressRecord, MissionReviewStatus, MissionStatus, MissionUpdateInput, MissionUsage } from "./types.ts";
+import type { MissionCreateInput, MissionCurrent, MissionEvent, MissionProgressInput, MissionProgressRecord, MissionReviewStatus, MissionStatus, MissionUpdateInput, MissionUsage, MissionValidationInput, MissionValidationRecord } from "./types.ts";
 
 export const MISSION_CUSTOM_TYPE = "deevs-mission-state";
 const DEFAULT_CHAIN_BRANCH = "main";
@@ -14,7 +15,7 @@ export class MissionState {
 	private progress: MissionProgressRecord[] = [];
 
 	read(): MissionCurrent | undefined {
-		if (!this.current || this.current.status === "cleared" || this.current.status === "complete") return undefined;
+		if (!this.current || this.current.status === "cleared" || this.current.status === "complete" || this.current.status === "ended") return undefined;
 		return { ...this.current };
 	}
 
@@ -28,7 +29,7 @@ export class MissionState {
 	}
 
 	readProgress(): MissionProgressRecord[] {
-		return this.progress.map((item) => ({ ...item, evidence: [...item.evidence], remaining: [...item.remaining], validation: [...item.validation] }));
+		return this.progress.map((item) => ({ ...item, evidence: [...item.evidence], remaining: [...item.remaining], validation: item.validation.map((value) => ({ ...value })) }));
 	}
 
 	loadFromSession(ctx: ExtensionContext): void {
@@ -47,14 +48,14 @@ export class MissionState {
 					: rawEvent;
 				this.applyEvent(event);
 				const status = (this.current as MissionCurrent | undefined)?.status;
-				if (["complete", "cleared", "budget_limited"].includes(status ?? "")) terminalUsage = { ...rolling };
+				if (["complete", "ended", "cleared", "budget_limited"].includes(status ?? "")) terminalUsage = { ...rolling };
 				continue;
 			}
 			addUsageFromEntry(rolling, entry, seenSubagents);
 		}
 		const current = this.current as MissionCurrent | undefined;
 		if (current) current.artifactDir = missionDir(ctx.cwd, current.slug);
-		const terminal = current && ["complete", "cleared", "budget_limited"].includes(current.status);
+		const terminal = current && ["complete", "ended", "cleared", "budget_limited"].includes(current.status);
 		this.usage = current ? usageFromAggregate(terminal ? terminalUsage ?? rolling : rolling, current) : zeroUsage();
 	}
 
@@ -81,8 +82,9 @@ export class MissionState {
 			chain,
 			chainBranch: input.chainBranch?.trim() || DEFAULT_CHAIN_BRANCH,
 			artifactDir: missionDir(ctx.cwd, slug),
+			paths: normalizePaths(input.paths),
 			tokenBudget: positiveNumber(input.tokenBudget, "tokenBudget"),
-			costBudgetUsd: positiveNumber(input.costBudgetUsd, "costBudgetUsd"),
+			costBudgetUsd: positiveNumber(input.costBudgetUsd ?? 1_000, "costBudgetUsd"),
 			baselineMainTokens: baseline.mainTokens,
 			baselineSubagentTokens: baseline.subagentTokens,
 			baselineMainCostUsd: baseline.mainCostUsd,
@@ -127,14 +129,18 @@ export class MissionState {
 			requirements,
 			objectiveVersion: (mission.objectiveVersion ?? 1) + 1,
 			reason: input.reason.trim(),
+			...(input.paths !== undefined ? { paths: normalizePaths(input.paths) } : {}),
+			...(input.tokenBudget !== undefined ? { tokenBudget: input.tokenBudget === null || input.tokenBudget === 0 ? null : positiveNumber(input.tokenBudget, "tokenBudget") } : {}),
+			...(input.costBudgetUsd !== undefined ? { costBudgetUsd: input.costBudgetUsd === null || input.costBudgetUsd === 0 ? null : positiveNumber(input.costBudgetUsd, "costBudgetUsd") } : {}),
+			...(input.turnBudget !== undefined ? { turnBudget: input.turnBudget === null || input.turnBudget === 0 ? null : positiveInteger(input.turnBudget, "turnBudget") } : {}),
+			...(input.wallDeadlineMs !== undefined ? { wallDeadlineAt: input.wallDeadlineMs === null || input.wallDeadlineMs === 0 ? null : Date.now() + positiveNumber(input.wallDeadlineMs, "wallDeadlineMs")! } : {}),
 			reviewStatus: "due",
 			reviewReason: "Mission objective changed",
 		};
 	}
 
-	reviewEvent(status: MissionReviewStatus, input: { runId?: string; reason?: string; skippedReason?: string } = {}): MissionEvent {
+	reviewEvent(status: MissionReviewStatus, input: { runId?: string; reason?: string; skippedReason?: string; suggestedVerdict?: "clear" | "changes_requested" | "unknown"; failure?: boolean; worktreeFingerprint?: string } = {}): MissionEvent {
 		const mission = this.requireCurrent();
-		if (status === "skipped" && !input.skippedReason?.trim()) throw new Error("Skipping Mission review requires a reason.");
 		return {
 			kind: "review_changed",
 			missionId: mission.missionId,
@@ -144,6 +150,9 @@ export class MissionState {
 			reviewRunId: input.runId,
 			reviewReason: input.reason,
 			reviewSkippedReason: input.skippedReason?.trim(),
+			reviewSuggestedVerdict: input.suggestedVerdict,
+			reviewFailure: input.failure,
+			reviewWorktreeFingerprint: input.worktreeFingerprint,
 		};
 	}
 
@@ -164,6 +173,8 @@ export class MissionState {
 		const mission = this.requireCurrent();
 		const summary = input.summary.trim();
 		if (!summary) throw new Error("mission_progress summary must not be empty.");
+		const blockerId = input.blockerId?.trim();
+		if (input.blocked && !blockerId) throw new Error("blocked Mission progress requires blockerId.");
 		return {
 			kind: "progress",
 			missionId: mission.missionId,
@@ -172,19 +183,25 @@ export class MissionState {
 			summary: summary.slice(0, 1200),
 			evidence: normalizeProgressList(input.evidence, 20),
 			remaining: normalizeProgressList(input.remaining, 20),
-			validation: normalizeProgressList(input.validation, 20),
+			validation: normalizeValidation(input.validation, mission.objectiveVersion ?? 1),
 			checkpoint: input.checkpoint === true,
+			blocked: input.blocked === true,
+			blockerId: blockerId?.slice(0, 160),
 		};
 	}
 
-	budgetExceeded(): "token" | "cost" | "turn" | "wall" | null {
+	limitExceeded(): "token" | "cost" | "turn" | "wall" | null {
 		const mission = this.current;
-		if (!mission || mission.status !== "active") return null;
+		if (!mission) return null;
 		if (mission.tokenBudget !== undefined && this.usage.totalTokens >= mission.tokenBudget) return "token";
 		if (mission.costBudgetUsd !== undefined && this.usage.totalCostUsd >= mission.costBudgetUsd) return "cost";
 		if (mission.turnBudget !== undefined && (mission.turnCount ?? 0) >= mission.turnBudget) return "turn";
 		if (mission.wallDeadlineAt !== undefined && Date.now() >= mission.wallDeadlineAt) return "wall";
 		return null;
+	}
+
+	budgetExceeded(): "token" | "cost" | "turn" | "wall" | null {
+		return this.current?.status === "active" ? this.limitExceeded() : null;
 	}
 
 	private requireCurrent(): MissionCurrent {
@@ -209,16 +226,17 @@ export class MissionState {
 				chain: event.chain,
 				chainBranch: event.chainBranch ?? DEFAULT_CHAIN_BRANCH,
 				artifactDir: event.artifactDir,
-				tokenBudget: event.tokenBudget,
-				costBudgetUsd: event.costBudgetUsd,
+				paths: normalizePaths(event.paths),
+				tokenBudget: event.tokenBudget ?? undefined,
+				costBudgetUsd: event.costBudgetUsd ?? undefined,
 				baselineMainTokens: event.baselineMainTokens ?? 0,
 				baselineSubagentTokens: event.baselineSubagentTokens ?? 0,
 				baselineMainCostUsd: event.baselineMainCostUsd ?? 0,
 				baselineSubagentCostUsd: event.baselineSubagentCostUsd ?? 0,
 				generation: event.generation ?? `legacy-${event.missionId}`,
 				objectiveVersion: event.objectiveVersion ?? 1,
-				turnBudget: event.turnBudget,
-				wallDeadlineAt: event.wallDeadlineAt,
+				turnBudget: event.turnBudget ?? undefined,
+				wallDeadlineAt: event.wallDeadlineAt ?? undefined,
 				reviewStatus: event.reviewStatus ?? "not_required",
 				reviewRunId: event.reviewRunId,
 				reviewReason: event.reviewReason,
@@ -242,12 +260,20 @@ export class MissionState {
 		if (event.kind === "objective_updated") {
 			if (event.objective) this.current.objective = event.objective;
 			if (event.requirements) this.current.requirements = normalizeRequirements(event.requirements);
+			if (event.paths !== undefined) this.current.paths = normalizePaths(event.paths);
+			if (event.tokenBudget !== undefined) this.current.tokenBudget = event.tokenBudget ?? undefined;
+			if (event.costBudgetUsd !== undefined) this.current.costBudgetUsd = event.costBudgetUsd ?? undefined;
+			if (event.turnBudget !== undefined) this.current.turnBudget = event.turnBudget ?? undefined;
+			if (event.wallDeadlineAt !== undefined) this.current.wallDeadlineAt = event.wallDeadlineAt ?? undefined;
 			this.current.objectiveVersion = event.objectiveVersion ?? (this.current.objectiveVersion ?? 1) + 1;
 		}
 		if (event.reviewStatus) this.current.reviewStatus = event.reviewStatus;
 		if (event.reviewRunId !== undefined) this.current.reviewRunId = event.reviewRunId;
 		if (event.reviewReason !== undefined) this.current.reviewReason = event.reviewReason;
 		if (event.reviewSkippedReason !== undefined) this.current.reviewSkippedReason = event.reviewSkippedReason;
+		if (event.reviewSuggestedVerdict !== undefined) this.current.reviewSuggestedVerdict = event.reviewSuggestedVerdict;
+		if (event.reviewFailure !== undefined) this.current.reviewFailure = event.reviewFailure;
+		if (event.reviewWorktreeFingerprint !== undefined) this.current.reviewWorktreeFingerprint = event.reviewWorktreeFingerprint;
 		if (event.kind === "settled") {
 			this.current.blockerFingerprint = event.blockerFingerprint;
 			this.current.blockerCount = event.blockerCount ?? 0;
@@ -259,8 +285,10 @@ export class MissionState {
 				summary: event.summary,
 				evidence: normalizeProgressList(event.evidence, 20),
 				remaining: normalizeProgressList(event.remaining, 20),
-				validation: normalizeProgressList(event.validation, 20),
+				validation: normalizeValidation(event.validation, this.current.objectiveVersion ?? 1),
 				checkpoint: event.checkpoint === true,
+				blocked: event.blocked === true,
+				blockerId: event.blockerId,
 			});
 		}
 	}
@@ -273,10 +301,8 @@ async function chooseDefaultChain(cwd: string, title: string, slug: string): Pro
 	return `mission-${slug}`.slice(0, 60);
 }
 
-function chainMatches(chain: string, title: string, slug: string): boolean {
-	const normalizedChain = chain.toLowerCase();
-	const normalizedTitle = title.toLowerCase();
-	return normalizedChain === slug || slug.includes(normalizedChain) || normalizedTitle.includes(normalizedChain.replace(/-/g, " "));
+function chainMatches(chain: string, _title: string, slug: string): boolean {
+	return chain.toLowerCase() === slug;
 }
 
 function normalizeTitle(value: string | undefined): string | undefined {
@@ -285,13 +311,7 @@ function normalizeTitle(value: string | undefined): string | undefined {
 }
 
 function inferRequirements(objective: string): string[] {
-	const text = objective.replace(/\r/g, "\n");
-	const rawParts = text
-		.split(/\n+|(?:^|\s)[-*]\s+|;|,(?=\s*\w)|\s+and\s+(?=\w)/i)
-		.map((part) => part.trim())
-		.filter(Boolean);
-	const parts = rawParts.length > 1 ? rawParts : [objective.trim()];
-	return normalizeRequirements(parts);
+	return normalizeRequirements([objective]);
 }
 
 function normalizeProgressList(values: string[] | undefined, maxItems: number): string[] {
@@ -307,6 +327,28 @@ function normalizeProgressList(values: string[] | undefined, maxItems: number): 
 		if (result.length >= maxItems) break;
 	}
 	return result;
+}
+
+function normalizePaths(values: string[] | undefined): string[] {
+	const result: string[] = [];
+	for (const value of values ?? []) {
+		const path = normalizePath(value.trim()).replaceAll("\\", "/");
+		if (!path || path === "." || isAbsolute(path) || path === ".." || path.startsWith("../")) throw new Error(`Mission path must stay relative to the project: ${value}`);
+		if (!result.includes(path)) result.push(path);
+		if (result.length >= 100) break;
+	}
+	return result;
+}
+
+function normalizeValidation(values: Array<MissionValidationInput | MissionValidationRecord> | undefined, objectiveVersion: number): MissionValidationRecord[] {
+	return (values ?? []).slice(0, 20).flatMap((value) => {
+		const command = value.command?.trim().replace(/\s+/g, " ").slice(0, 500);
+		if (!command || !Number.isInteger(value.exitCode)) return [];
+		const summary = value.summary?.trim().replace(/\s+/g, " ").slice(0, 500);
+		const artifact = value.artifact?.trim().slice(0, 500);
+		const version = "objectiveVersion" in value && Number.isInteger(value.objectiveVersion) ? value.objectiveVersion : objectiveVersion;
+		return [{ command, exitCode: value.exitCode, objectiveVersion: version, ...(summary ? { summary } : {}), ...(artifact ? { artifact } : {}) }];
+	});
 }
 
 function normalizeRequirements(values: string[]): string[] {
@@ -325,25 +367,10 @@ function normalizeRequirements(values: string[]): string[] {
 }
 
 function deriveMissionTitle(objective: string, requirements: string[]): string {
-	const phrases = (requirements.length ? requirements : [objective]).map(keywordPhrase).filter(Boolean);
-	const words: string[] = [];
-	for (const phrase of phrases) {
-		for (const word of phrase.split(/\s+/)) {
-			if (!words.includes(word)) words.push(word);
-			if (words.length >= 6) break;
-		}
-		if (words.length >= 6) break;
-	}
-	const title = words.length ? words.map(titleCaseWord).join(" ") : "Mission";
+	const source = requirements[0] ?? objective;
+	const words = source.normalize("NFKC").match(/[\p{L}\p{N}][\p{L}\p{N}_-]*/gu) ?? [];
+	const title = words.length ? words.slice(0, 6).map(titleCaseWord).join(" ") : "Mission";
 	return title.slice(0, 80);
-}
-
-function keywordPhrase(value: string): string {
-	const stop = new Set(["a", "an", "the", "our", "my", "this", "that", "these", "those", "to", "for", "of", "in", "on", "with", "proper", "properly"]);
-	const action = new Set(["check", "analyze", "analyse", "optimize", "improve", "fix", "update", "review", "test", "benchmark", "make", "create", "build", "do"]);
-	const words = value.toLowerCase().match(/[a-z0-9]+/g) ?? [];
-	while (words.length && (action.has(words[0]!) || stop.has(words[0]!))) words.shift();
-	return words.filter((word) => !stop.has(word)).slice(0, 4).join(" ");
 }
 
 function titleCaseWord(word: string): string {

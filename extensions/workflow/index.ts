@@ -8,6 +8,7 @@ import { getSubagentService } from "../subagents/registry.ts";
 import type { DelegateRun } from "../subagents/runtime-types.ts";
 import { toToolUsage } from "../shared/runtime-events.ts";
 import { formatDuration, formatUsage } from "../shared/runtime-ui.ts";
+import { WorkflowWidget } from "./ui.ts";
 
 const WORKER_URL = new URL("./worker.ts", import.meta.url);
 const MAX_SOURCE_BYTES = 64 * 1024;
@@ -27,7 +28,7 @@ interface WorkflowInput {
 	timeoutMs?: number;
 }
 
-interface WorkflowDetails {
+export interface WorkflowDetails {
 	id: string;
 	status: "running" | "completed" | "failed" | "cancelled" | "timeout";
 	startedAt: number;
@@ -35,6 +36,7 @@ interface WorkflowDetails {
 	activeAgents: number;
 	completedAgents: number;
 	runs: DelegateRun[];
+	agents: Array<{ id: string; persona: string; status: string; startedAt: number; endedAt?: number }>;
 	result?: unknown;
 	error?: string;
 }
@@ -59,8 +61,12 @@ export default function workflowExtension(pi: ExtensionAPI): void {
 			service.setContext(ctx);
 			const id = `wf_${Date.now().toString(36)}_${randomUUID().replaceAll("-", "").slice(0, 8)}`;
 			const timeoutMs = clampTimeout(params.timeoutMs);
-			const details: WorkflowDetails = { id, status: "running", startedAt: Date.now(), activeAgents: 0, completedAgents: 0, runs: [] };
-			const update = (): void => onUpdate?.({ content: [{ type: "text", text: formatWorkflow(details) }], details });
+			const details: WorkflowDetails = { id, status: "running", startedAt: Date.now(), activeAgents: 0, completedAgents: 0, runs: [], agents: [] };
+			const widgetKey = `workflow:${id}`;
+			const update = (): void => {
+				onUpdate?.({ content: [{ type: "text", text: formatWorkflow(details) }], details });
+				if (ctx.hasUI) ctx.ui.setWidget(widgetKey, (_tui, theme) => new WorkflowWidget(details, theme), { placement: "belowEditor" });
+			};
 			update();
 
 			try {
@@ -73,7 +79,10 @@ export default function workflowExtension(pi: ExtensionAPI): void {
 				details.status = signal?.aborted ? "cancelled" : error instanceof WorkflowTimeoutError ? "timeout" : "failed";
 				details.error = error instanceof Error ? error.message : String(error);
 				details.endedAt = Date.now();
+				for (const agent of details.agents) if (agent.status === "running") { agent.status = details.status; agent.endedAt = details.endedAt; }
 				return { content: [{ type: "text" as const, text: formatWorkflow(details) }], details, usage: toToolUsage(sumUsage(details.runs)) };
+			} finally {
+				if (ctx.hasUI) ctx.ui.setWidget(widgetKey, undefined);
 			}
 		},
 		renderCall(args: WorkflowInput, theme: Theme) {
@@ -161,13 +170,18 @@ async function runWorkflow(
 				return;
 			}
 			if (value?.type !== "agent_request" || typeof value.requestId !== "string" || settled) return;
+			const queuedRequest = record(value.request);
+			if (queuedRequest && typeof queuedRequest.agent === "string") {
+				details.agents.push({ id: `queued:${value.requestId}`, persona: queuedRequest.agent, status: "queued", startedAt: Date.now() });
+				update();
+			}
 			let task!: Promise<void>;
 			task = (async () => {
 				await acquire();
 				let startedId: string | undefined;
 				try {
 					if (settled) return;
-					const request = record(value.request);
+					const request = queuedRequest;
 					if (!request || typeof request.agent !== "string" || typeof request.task !== "string") throw new Error("Invalid workflow agent request.");
 					const cwd = resolveWorkflowCwd(ctx.cwd, typeof request.cwd === "string" ? request.cwd : undefined);
 					const started = await service.start({
@@ -187,6 +201,9 @@ async function runWorkflow(
 					if ("children" in started) throw new Error("Nested workflow groups are not supported.");
 					startedId = started.spec.id;
 					activeIds.add(startedId);
+					const queued = details.agents.find((agent) => agent.id === `queued:${value.requestId}`);
+					if (queued) { queued.id = startedId; queued.status = "running"; queued.startedAt = started.runtime.startedAt; }
+					else details.agents.push({ id: startedId, persona: started.spec.persona, status: "running", startedAt: started.runtime.startedAt });
 					details.activeAgents = activeIds.size;
 					update();
 					if (settled) {
@@ -197,13 +214,18 @@ async function runWorkflow(
 					if (!run || "children" in run) throw new Error("Workflow agent result was unavailable.");
 					details.runs.push(run);
 					details.completedAgents++;
+					const progress = details.agents.find((agent) => agent.id === run.spec.id);
+					if (progress) { progress.status = run.runtime.status; progress.endedAt = run.runtime.endedAt ?? Date.now(); }
 					activeIds.delete(run.spec.id);
 					details.activeAgents = activeIds.size;
 					update();
 					if (!settled) worker.postMessage({ type: "agent_result", requestId: value.requestId, ok: run.runtime.status === "completed", result: compactRun(run), error: run.runtime.error });
 				} catch (error) {
 					if (startedId) activeIds.delete(startedId);
+					const progress = details.agents.find((agent) => agent.id === (startedId ?? `queued:${value.requestId}`));
+					if (progress) { progress.status = "failed"; progress.endedAt = Date.now(); }
 					details.activeAgents = activeIds.size;
+					update();
 					if (!settled) worker.postMessage({ type: "agent_result", requestId: value.requestId, ok: false, error: error instanceof Error ? error.message : String(error) });
 				} finally {
 					release();

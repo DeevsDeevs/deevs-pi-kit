@@ -1,7 +1,8 @@
 import type { Dirent } from "node:fs";
 import { lstat, mkdir, open, readdir, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { extractNextStep, extractTitle, parseCreatedAt, parseMetadata, slugify, stripFrontmatter, truncateText, withMetadata } from "./parser.ts";
+import { extractTitle, parseCreatedAt, parseMetadata, slugify, stripFrontmatter, truncateText, withMetadata } from "./parser.ts";
+import { unicodeTerms } from "../shared/terms.ts";
 import type {
 	ChainBranchInfo,
 	ChainContextInput,
@@ -56,7 +57,7 @@ export class ChainService {
 		const parent = input.parent ? validateLinkName(input.parent) : latest?.filename;
 		const dir = await this.ensureChainDir(chain, true);
 
-		const content = withMetadata(rawContent, { chain, branch, parent, created: new Date().toISOString() });
+		const content = withMetadata(rawContent, { chain, branch, parent, nextStep: input.nextStep?.trim().slice(0, 1_000), created: new Date().toISOString() });
 		for (let attempt = 0; attempt < 10; attempt++) {
 			const suffix = attempt === 0 ? "" : `-${attempt + 1}`;
 			const filename = `${timestamp()}-${slug}${suffix}.md`;
@@ -388,7 +389,7 @@ export class ChainService {
 			filename: safeFilename,
 			path,
 			title: extractTitle(content, safeFilename),
-			nextStep: extractNextStep(content),
+			nextStep: metadata.nextStep ?? null,
 			parent: metadata.parent && isValidLinkName(metadata.parent) ? metadata.parent : null,
 			createdAt: created.iso,
 			ageDays: created.ageDays,
@@ -411,7 +412,7 @@ export function validateBranchName(value: string): string {
 }
 
 function isValidSimpleName(name: string): boolean {
-	return /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(name) && !name.includes("..") && !name.startsWith(".");
+	return /^[\p{L}\p{N}][\p{L}\p{N}._-]{0,79}$/u.test(name) && !name.includes("..") && !name.startsWith(".");
 }
 
 export function validateLinkName(value: string): string {
@@ -421,7 +422,7 @@ export function validateLinkName(value: string): string {
 }
 
 function isValidLinkName(name: string): boolean {
-	return /^[a-zA-Z0-9][a-zA-Z0-9._-]*\.md$/.test(name) && !name.includes("..");
+	return /^[\p{L}\p{N}][\p{L}\p{N}._-]*\.md$/u.test(name) && !name.includes("..");
 }
 
 function normalizeContent(content: string): string {
@@ -493,34 +494,16 @@ interface LookupDocument {
 }
 
 function tokenize(value: string): string[] {
-	return value
-		.toLowerCase()
-		.normalize("NFKD")
-		.replace(/[\u0300-\u036f]/g, "")
-		.split(/[^a-z0-9]+/g)
-		.map(stem)
-		.filter((term) => term.length >= 2 && !STOP_WORDS.has(term));
+	return unicodeTerms(value);
 }
-
-function stem(term: string): string {
-	if (term.length > 5 && term.endsWith("ing")) return term.slice(0, -3);
-	if (term.length > 4 && term.endsWith("ied")) return `${term.slice(0, -3)}y`;
-	if (term.length > 4 && term.endsWith("ed")) return term.slice(0, -2);
-	if (term.length > 4 && term.endsWith("es") && !/(ses|xes|zes)$/.test(term)) return term.slice(0, -2);
-	if (term.length > 3 && term.endsWith("s") && !/(ss|us|is)$/.test(term)) return term.slice(0, -1);
-	return term;
-}
-
-const STOP_WORDS = new Set(["the", "and", "for", "that", "this", "with", "from", "into", "onto", "have", "has", "had", "are", "was", "were", "will", "would", "could", "should", "not", "but", "you", "your", "our", "out"]);
 
 function weightedText(text: string, weight: number): string {
 	return Array.from({ length: Math.max(1, Math.floor(weight)) }, () => text).join("\n");
 }
 
 function preferredSections(content: string): string {
-	return content.split(/(?=^##\s+)/m)
-		.filter((part) => /^##\s+(?:\d+\.\s*)?(Work Completed|Decisions|Files|Unresolved|Pending|Current Work|Next Step|Key Technical Concepts)/i.test(part.trim()))
-		.join("\n\n");
+	const sections = content.split(/(?=^##\s+)/m).map((part) => part.trim()).filter(Boolean);
+	return [...new Set([...sections.slice(0, 4), ...sections.slice(-2)])].join("\n\n");
 }
 
 function bm25Score(doc: LookupDocument, terms: string[], df: Map<string, number>, totalDocs: number, averageLength: number): number {
@@ -587,8 +570,7 @@ function formatLinkBlock(label: string, link: ChainLinkInfo, content: string): s
 function compactMarkdown(content: string): string {
 	const body = stripFrontmatter(content).trim();
 	const sections = body.split(/(?=^##\s+)/m).map((part) => part.trim()).filter(Boolean);
-	const preferred = sections.filter((part) => /^##\s+(?:\d+\.\s*)?(Work Completed|Decisions|Files|Unresolved|Pending|Current Work|Next Step)/i.test(part));
-	const picked = preferred.length > 0 ? preferred : sections.slice(0, 4);
+	const picked = [...new Set([...sections.slice(0, 3), ...sections.slice(-1)])];
 	return picked.join("\n\n").replace(/\n{3,}/g, "\n\n") || body;
 }
 

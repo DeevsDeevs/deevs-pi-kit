@@ -8,6 +8,7 @@ const SaveSchema = Type.Object({
 	chain: Type.String({ description: "Chain name; stored under .chains/<chain>" }),
 	content: Type.String({ description: "Markdown chain link content to save" }),
 	title: Type.Optional(Type.String({ description: "Readable title; defaults to first markdown heading" })),
+	nextStep: Type.Optional(Type.String({ description: "Structured next action; prose headings are never parsed for control" })),
 	slug: Type.Optional(Type.String({ description: "Filename slug; defaults to title slug" })),
 	branch: Type.Optional(Type.String({ description: "Branch name; defaults to main" })),
 	parent: Type.Optional(Type.String({ description: "Parent link filename; defaults to latest link on branch" })),

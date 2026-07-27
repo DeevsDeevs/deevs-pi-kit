@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { JobBuffer } from "../extensions/jobs/buffer.ts";
 import { JobManager } from "../extensions/jobs/manager.ts";
+import { claimJobManager, clearJobManager, releaseJobManager, setJobManager } from "../extensions/jobs/registry.ts";
 
 const cleanups: Array<() => void> = [];
 afterEach(() => cleanups.splice(0).reverse().forEach((cleanup) => cleanup()));
@@ -17,11 +19,24 @@ function setup() {
 	const pi = { appendEntry(customType: string, data: unknown) { branch.push({ type: "custom", customType, data }); } } as unknown as ExtensionAPI;
 	const ctx = { cwd: project, ui: { setStatus: () => undefined }, sessionManager: { getSessionFile: () => "/tmp/jobs-parent.jsonl" } } as unknown as ExtensionContext;
 	const manager = new JobManager(pi);
-	cleanups.push(() => { process.env.PI_CODING_AGENT_DIR = previous; }, () => rmSync(root, { recursive: true, force: true }), () => rmSync(project, { recursive: true, force: true }), () => { void manager.shutdown(); });
+	cleanups.push(() => { process.env.PI_CODING_AGENT_DIR = previous; }, () => rmSync(root, { recursive: true, force: true }), () => rmSync(project, { recursive: true, force: true }), () => { clearJobManager(manager); void manager.shutdown(); });
 	return { manager, ctx, branch };
 }
 
 describe("bounded Jobs", () => {
+	it("retains a bounded tail and advances the cursor for one oversized output chunk", () => {
+		const buffer = new JobBuffer(1_024);
+		buffer.append("stdout", Buffer.alloc(5_000, "x"));
+		const job = { spec: { id: "oversized" }, runtime: {} } as unknown as Parameters<JobBuffer["read"]>[0];
+		const result = buffer.read(job, 0, 2_048);
+		expect(buffer.bufferedBytes).toBeLessThanOrEqual(1_024);
+		expect(result.chunks).toHaveLength(1);
+		expect(result.chunks[0]?.text).toMatch(/^\[job chunk truncated: earlier bytes omitted\]/);
+		expect(result.chunks[0]?.text).toMatch(/x+$/);
+		expect(result.nextSeq).toBe(1);
+		expect(result.earliestSeq).toBe(1);
+	});
+
 	it("captures cursor output and settles after process close", async () => {
 		const { manager, ctx, branch } = setup();
 		const started = await manager.start({ name: "echo", argv: [process.execPath, "-e", "console.log('hello'); console.error('warn'); setTimeout(()=>{},100)"], env: { SECRET_TOKEN: "do-not-persist" }, stdin: "private-input" }, ctx);
@@ -44,6 +59,34 @@ describe("bounded Jobs", () => {
 		expect(restored.clearTerminal(started.spec.id)).toBe(1);
 		expect(() => restored.get(started.spec.id)).toThrow("Unknown job");
 		await restored.shutdown();
+	});
+
+	it("keeps an active Job alive when a new hot-reload generation claims its manager", async () => {
+		const { manager, ctx } = setup();
+		const firstPi = { appendEntry() {} } as unknown as ExtensionAPI;
+		setJobManager(manager);
+		const first = claimJobManager(firstPi);
+		const started = await first.manager.start({ name: "reload", argv: [process.execPath, "-e", "setTimeout(()=>{},3000)"], timeoutMs: 5_000 }, ctx);
+		releaseJobManager(first.owner);
+		const registry = (globalThis as typeof globalThis & { __deevsPiKitJobs?: { shutdownTimer?: NodeJS.Timeout } }).__deevsPiKitJobs;
+		expect(registry?.shutdownTimer?.hasRef()).toBe(false);
+
+		const second = claimJobManager({ appendEntry() {} } as unknown as ExtensionAPI);
+		expect(second.manager).toBe(first.manager);
+		await second.manager.restore(ctx);
+		await new Promise((resolve) => setTimeout(resolve, 1_100));
+		expect(second.manager.get(started.spec.id).runtime.status).toBe("running");
+		await second.manager.stop(started.spec.id);
+		clearJobManager(second.manager);
+	});
+
+	it("synchronously kills active process groups as a real-exit backstop", async () => {
+		const { manager, ctx } = setup();
+		const started = await manager.start({ name: "exit-backstop", argv: [process.execPath, "-e", "setInterval(()=>{},1000)"], timeoutMs: 5_000 }, ctx);
+		manager.terminateActiveSync();
+		const [settled] = await manager.wait([started.spec.id], 3_000);
+		expect(settled.runtime.status).toBe("failed");
+		expect(settled.runtime.exitSignal).toBe("SIGKILL");
 	});
 
 	it("restores Jobs only for their exact parent Pi session", async () => {

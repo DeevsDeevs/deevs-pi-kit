@@ -31,7 +31,7 @@ export async function writeMissionProgressArtifacts(mission: MissionCurrent, pro
 	]);
 }
 
-export async function writeCompletionAudit(mission: MissionCurrent, summary: string | undefined, audit: Array<{ requirement: string; evidence: string }> | undefined, usage: MissionUsage, progress: MissionProgressRecord[] = []): Promise<void> {
+export async function writeCompletionAudit(mission: MissionCurrent, summary: string | undefined, audit: Array<{ requirementIndex: number; evidence: string }> | undefined, usage: MissionUsage, progress: MissionProgressRecord[] = []): Promise<void> {
 	await mkdir(mission.artifactDir, { recursive: true });
 	const lines = [
 		formatMissionMarkdown(mission, usage, progress).trimEnd(),
@@ -47,7 +47,7 @@ export async function writeCompletionAudit(mission: MissionCurrent, summary: str
 		"### Requirement Evidence",
 		"",
 	];
-	if (audit?.length) for (const item of audit) lines.push(`- ${item.requirement}: ${item.evidence}`);
+	if (audit?.length) for (const item of audit) lines.push(`- [${item.requirementIndex}] ${mission.requirements[item.requirementIndex] ?? "(unknown requirement)"}: ${item.evidence}`);
 	else lines.push("- (Model did not provide a structured audit. See final conversation turn for evidence.)");
 	lines.push("");
 	await writeFile(join(mission.artifactDir, "mission.md"), lines.join("\n"), "utf8");
@@ -80,7 +80,10 @@ function formatMissionMarkdown(mission: MissionCurrent, usage?: MissionUsage, pr
 		mission.objective,
 		"",
 		"## Requirements",
-		...(mission.requirements.length ? mission.requirements.map((item) => `- ${item}`) : ["- (not decomposed)"]),
+		...(mission.requirements.length ? mission.requirements.map((item, index) => `- [${index}] ${item}`) : ["- (not decomposed)"]),
+		"",
+		"## Owned Paths",
+		...(mission.paths.length ? mission.paths.map((item) => `- ${item}`) : ["- (not specified)"]),
 		"",
 		"## Current Reason",
 		mission.lastReason ?? "(none)",
@@ -105,7 +108,7 @@ function formatProgressLogMarkdown(mission: MissionCurrent, progress: MissionPro
 	for (const item of progress) {
 		lines.push(`## ${new Date(item.at).toISOString()}${item.checkpoint ? " checkpoint" : ""}`, "", item.summary, "");
 		if (item.evidence.length) lines.push("Evidence:", ...item.evidence.map((value) => `- ${value}`), "");
-		if (item.validation.length) lines.push("Validation:", ...item.validation.map((value) => `- ${value}`), "");
+		if (item.validation.length) lines.push("Validation:", ...item.validation.map((value) => `- ${value.command} → ${value.exitCode}${value.summary ? ` · ${value.summary}` : ""}${value.artifact ? ` · ${value.artifact}` : ""}`), "");
 		if (item.remaining.length) lines.push("Remaining:", ...item.remaining.map((value) => `- ${value}`), "");
 	}
 	return lines.join("\n");

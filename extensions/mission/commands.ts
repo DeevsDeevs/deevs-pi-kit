@@ -5,6 +5,8 @@ import { completeMission, formatMission } from "./tools.ts";
 import type { MissionCompleteInput, MissionCreateInput, MissionStatus } from "./types.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
 import { chainCheckpoints } from "../chains/checkpoint.ts";
+import { FULL_SCREEN_OVERLAY } from "../shared/dashboard.ts";
+import { MissionDashboard } from "./ui.ts";
 
 export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, setContext: (ctx: ExtensionContext) => void, maybeContinue: (ctx: ExtensionContext) => void, hooks: { validateCompletion?: (input: MissionCompleteInput, ctx: ExtensionContext, directUserRequest?: boolean) => Promise<string[]> | string[]; onCreated?: (ctx: ExtensionContext) => void; onChanged?: (ctx: ExtensionContext) => void; onCompleted?: (ctx: ExtensionContext) => void } = {}): void {
 	pi.registerCommand("mission", {
@@ -12,26 +14,11 @@ export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, s
 		handler: async (args, ctx) => {
 			setContext(ctx);
 			state.loadFromSession(ctx);
-			let trimmed = args.trim();
-			if (!trimmed && ctx.mode === "tui") {
-				const mission = state.readAny();
-				if (!mission) return ctx.ui.notify("No active Mission.", "info");
-				const lifecycle = mission.status === "active" ? "Pause" : mission.status === "complete" ? "Reopen mission" : "Resume";
-				const choices = ["View status", lifecycle, ...(mission.status === "complete" ? [] : ["End mission"])];
-				const selected = await ctx.ui.select("Mission", choices);
-				if (!selected) return;
-				if (selected === "View status") {
-					await showTextViewer(ctx, "Mission", formatMission(mission, state.readUsage()));
-					return;
-				}
-				if (selected === "End mission") {
-					const confirm = await ctx.ui.select("End Mission?", ["Keep Mission", "End Mission"]);
-					if (confirm !== "End Mission") return;
-					trimmed = "end";
-				} else trimmed = selected === "Reopen mission" ? "resume" : selected.toLowerCase();
-			}
+			const trimmed = args.trim();
 			if (!trimmed || trimmed === "status" || trimmed === "show") {
-				await showTextViewer(ctx, "Mission", formatMission(state.readAny(), state.readUsage()));
+				if (ctx.mode === "tui" && ctx.hasUI && state.readAny()) {
+					await showMissionDashboard(pi, state, ctx, setContext, maybeContinue, hooks);
+				} else await showTextViewer(ctx, "Mission", formatMission(state.readAny(), state.readUsage()));
 				return;
 			}
 
@@ -39,7 +26,7 @@ export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, s
 			if (["pause", "resume", "clear"].includes(command)) {
 				const status = command === "pause" ? "paused" : command === "resume" ? "active" : "cleared";
 				await setStatus(pi, state, status, ctx, `/${command}`);
-				if (status === "paused") chainCheckpoints.current?.due("Mission paused");
+				if (status === "paused") chainCheckpoints.current?.due("Mission paused", "mission_control");
 				hooks.onChanged?.(ctx);
 				if (status === "active") maybeContinue(ctx);
 				return;
@@ -80,6 +67,31 @@ async function setStatus(pi: ExtensionAPI, state: MissionState, status: MissionS
 	} catch (error) {
 		ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 	}
+}
+
+async function showMissionDashboard(
+	pi: ExtensionAPI,
+	state: MissionState,
+	ctx: ExtensionContext,
+	setContext: (ctx: ExtensionContext) => void,
+	maybeContinue: (ctx: ExtensionContext) => void,
+	hooks: { onChanged?: (ctx: ExtensionContext) => void },
+): Promise<void> {
+	await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
+		const render = () => tui.requestRender();
+		return new MissionDashboard(state, theme, () => done(undefined), render, () => Math.max(4, tui.terminal.rows - 2), () => {
+			const mission = state.readAny();
+			if (!mission) return;
+			const status: MissionStatus = mission.status === "active" ? "paused" : "active";
+			void setStatus(pi, state, status, ctx, status === "paused" ? "/pause" : "/resume").then(() => {
+				setContext(ctx);
+				if (status === "paused") chainCheckpoints.current?.due("Mission paused", "mission_control");
+				hooks.onChanged?.(ctx);
+				if (status === "active") maybeContinue(ctx);
+				render();
+			}).catch((error) => ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"));
+		});
+	}, { overlay: true, overlayOptions: FULL_SCREEN_OVERLAY });
 }
 
 function parseCreateArgs(input: string): MissionCreateInput {

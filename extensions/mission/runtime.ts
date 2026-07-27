@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { chainCheckpoints } from "../chains/checkpoint.ts";
 import { getSubagentService } from "../subagents/registry.ts";
@@ -20,6 +23,7 @@ export class MissionRuntime {
 	private lastAgentMessages: MissionAgentMessage[] = [];
 	private mutatingCalls = new Set<string>();
 	private materialMutationSinceSettle = false;
+	private worktreeBeforeTurn?: string;
 	private recoveryTimer?: NodeJS.Timeout;
 	private unsubscribeReview?: () => void;
 
@@ -36,7 +40,7 @@ export class MissionRuntime {
 		const mission = this.state.readAny();
 		if (!mission) return;
 		chainCheckpoints.current?.activate(mission.chain, mission.chainBranch);
-		chainCheckpoints.current?.due("Mission created");
+		chainCheckpoints.current?.due("Mission created", "mission_control");
 		void this.maybeContinue(ctx);
 	}
 
@@ -49,14 +53,14 @@ export class MissionRuntime {
 			}
 			if (!input.reviewReason?.trim()) throw new Error("Review adjudication requires an evidence-based reason.");
 			this.state.append(this.pi, this.state.reviewEvent(input.reviewVerdict, { runId: input.reviewRunId, reason: input.reviewReason }));
-			chainCheckpoints.current?.due(`Mission review adjudicated: ${input.reviewVerdict}`);
+			chainCheckpoints.current?.due(`Mission review adjudicated: ${input.reviewVerdict}`, "mission_milestone");
 		}
 		this.updateStatus();
 	}
 
 	onObjectiveUpdated(_input: MissionUpdateInput, ctx: ExtensionContext): void {
 		this.restore(ctx);
-		chainCheckpoints.current?.due("Mission objective updated");
+		chainCheckpoints.current?.due("Mission objective updated", "mission_control");
 		this.updateStatus();
 	}
 
@@ -64,7 +68,7 @@ export class MissionRuntime {
 		this.restore(ctx);
 		const mission = this.state.readAny();
 		if (!mission) return;
-		chainCheckpoints.current?.due("Mission completed");
+		chainCheckpoints.current?.due(mission.status === "ended" ? "Mission ended" : "Mission completed", "mission_control");
 		runtimeEvents.record(this.pi, {
 			type: "emit",
 			event: {
@@ -73,7 +77,7 @@ export class MissionRuntime {
 				dedupeKey: `mission:${mission.missionId}:${mission.generation}:terminal`,
 				source: { kind: "mission", id: mission.missionId, generation: mission.generation ?? `legacy-${mission.missionId}` },
 				type: "terminal",
-				status: "completed",
+				status: mission.status === "ended" ? "cancelled" : "completed",
 				createdAt: mission.updatedAt,
 				summary: mission.lastSummary || mission.title,
 			},
@@ -81,22 +85,26 @@ export class MissionRuntime {
 		this.updateStatus();
 	}
 
-	async validateCompletion(input: MissionCompleteInput, ctx: ExtensionContext, directUserRequest = false): Promise<string[]> {
+	async validateCompletion(input: MissionCompleteInput, ctx: ExtensionContext, _directUserRequest = false): Promise<string[]> {
 		this.restore(ctx);
 		const mission = this.state.readAny();
 		if (!mission) return ["No Mission exists on this branch."];
-		if (input.userRequested) return directUserRequest || hasExplicitUserEndRequest(ctx) ? [] : ["userRequested=true is not authorized by the latest real user message; use the ordinary completion evidence gate."];
+		if (input.userRequested) return [];
 		const blockers: string[] = [];
 		const audit = input.audit ?? [];
-		for (const requirement of mission.requirements) {
-			const item = audit.find((candidate) => normalize(candidate.requirement) === normalize(requirement));
-			if (!item?.evidence.trim()) blockers.push(`Missing evidence for requirement: ${requirement}`);
+		for (const [requirementIndex, requirement] of mission.requirements.entries()) {
+			const item = audit.find((candidate) => candidate.requirementIndex === requirementIndex);
+			if (!item) blockers.push(`Missing evidence record for requirement [${requirementIndex}]: ${requirement}`);
 		}
+		if (audit.some((item) => item.requirementIndex < 0 || item.requirementIndex >= mission.requirements.length)) blockers.push("Requirement audit contains an unknown requirementIndex.");
 		const validation = this.state.readProgress().flatMap((progress) => progress.validation);
-		const auditMentionsValidation = audit.some((item) => /\b(test|validation|check|command|smoke|build)\b/i.test(`${item.requirement} ${item.evidence}`));
-		if (!validation.length && !auditMentionsValidation) blockers.push("No validation evidence is recorded.");
+		if (!validation.some((item) => item.exitCode === 0 && item.objectiveVersion === (mission.objectiveVersion ?? 1))) blockers.push("No successful structured validation is recorded for the current objectiveVersion.");
 		if (!["clear", "skipped", "not_required"].includes(mission.reviewStatus ?? "not_required")) blockers.push(`Independent review is ${mission.reviewStatus ?? "due"}.`);
-		if (mission.reviewStatus === "skipped" && !mission.reviewSkippedReason) blockers.push("Review was skipped without a recorded reason.");
+		if (mission.reviewStatus === "clear" || mission.reviewStatus === "not_required" || mission.reviewStatus === "skipped") {
+			const fingerprint = await worktreeFingerprint(this.pi, ctx.cwd);
+			if (mission.reviewStatus === "clear" && (!fingerprint || fingerprint !== mission.reviewWorktreeFingerprint)) blockers.push("Worktree differs from the schema-validated reviewed snapshot.");
+			if ((mission.reviewStatus === "not_required" || mission.reviewStatus === "skipped") && this.worktreeBeforeTurn !== undefined && fingerprint !== this.worktreeBeforeTurn) blockers.push("Worktree changed during this turn before independent review admission.");
+		}
 		if (chainCheckpoints.current?.read().status === "due") blockers.push("The active Chain checkpoint is due.");
 		try {
 			const activeChildren = this.activeChildren();
@@ -120,7 +128,10 @@ export class MissionRuntime {
 			this.scheduleRecovery(ctx);
 		});
 		this.pi.on("session_compact", (_event, ctx) => this.restore(ctx));
-		this.pi.on("turn_start", (_event, ctx) => this.restore(ctx));
+		this.pi.on("turn_start", async (_event, ctx) => {
+			this.restore(ctx);
+			this.worktreeBeforeTurn = await worktreeFingerprint(this.pi, ctx.cwd);
+		});
 		this.pi.on("agent_end", (event, ctx) => {
 			this.lastAgentMessages = [...event.messages];
 			this.restore(ctx);
@@ -136,9 +147,10 @@ export class MissionRuntime {
 		});
 		this.pi.on("before_agent_start", (event, ctx) => {
 			this.restore(ctx);
-			const mission = this.state.read();
-			if (!mission || mission.status !== "active") return undefined;
+			const mission = this.state.readAny();
+			if (!mission || mission.status === "complete" || mission.status === "ended") return undefined;
 			const systemPrompt = typeof event.systemPrompt === "string" ? event.systemPrompt : "";
+			if (mission.status !== "active") return { systemPrompt: `${systemPrompt}\n\n${suspendedMissionContext(mission, this.state.readProgress().at(-1))}` };
 			const staleWake = latestMissionWakeIsStale(ctx, mission);
 			const wakeGuard = staleWake ? "\n\nThis Mission continuation wake is stale after a pause/objective/generation change. Do not perform substantive work; report the stale wake and settle immediately." : "";
 			return { systemPrompt: `${systemPrompt}\n\n${missionContext(mission, this.state.readUsage())}${wakeGuard}` };
@@ -158,6 +170,7 @@ export class MissionRuntime {
 			this.lastAgentMessages = [];
 			this.mutatingCalls.clear();
 			this.materialMutationSinceSettle = false;
+			this.worktreeBeforeTurn = undefined;
 			this.ctx?.ui.setStatus("mission", undefined);
 			this.ctx = undefined;
 		});
@@ -225,6 +238,12 @@ export class MissionRuntime {
 	private async onSettled(ctx: ExtensionContext): Promise<void> {
 		let mission = this.state.read();
 		if (!mission || mission.status !== "active") return;
+		const after = await worktreeFingerprint(this.pi, ctx.cwd);
+		if (this.worktreeBeforeTurn !== undefined && after !== undefined && this.worktreeBeforeTurn !== after) {
+			this.materialMutationSinceSettle = true;
+			this.markReviewDue("worktree changed during turn");
+		}
+		this.worktreeBeforeTurn = undefined;
 		const interrupted = this.lastAgentMessages.some((message) => message.role === "assistant" && message.stopReason === "aborted");
 		if (interrupted) {
 			this.state.append(this.pi, this.state.statusEvent("paused", "explicit interruption paused Mission autonomy"));
@@ -238,15 +257,16 @@ export class MissionRuntime {
 			return;
 		}
 
-		const latestText = latestAssistantText(this.lastAgentMessages);
-		const blocker = blockerFingerprint(latestText);
-		const madeProgress = this.materialMutationSinceSettle || this.state.readProgress().some((progress) => progress.at >= (mission!.lastContinuationAt ?? mission!.createdAt));
+		const recentProgress = this.state.readProgress().filter((progress) => progress.at >= (mission!.lastContinuationAt ?? mission!.createdAt));
+		const latestProgress = recentProgress.at(-1);
+		const blocker = latestProgress?.blocked ? latestProgress.blockerId : undefined;
+		const madeProgress = this.materialMutationSinceSettle || recentProgress.some((progress) => !progress.blocked && (progress.evidence.length > 0 || progress.validation.length > 0));
 		this.state.append(this.pi, this.state.settledEvent({ blockerFingerprint: blocker, madeProgress: madeProgress || !blocker }));
 		this.materialMutationSinceSettle = false;
 		this.lastAgentMessages = [];
 		mission = this.state.read()!;
 		if ((mission.blockerCount ?? 0) >= 3) {
-			this.state.append(this.pi, this.state.statusEvent("blocked", `same blocker recurred ${mission.blockerCount} autonomous turns`, latestText.slice(0, 500)));
+			this.state.append(this.pi, this.state.statusEvent("blocked", `same blocker recurred ${mission.blockerCount} autonomous turns`, latestProgress?.summary.slice(0, 500)));
 			this.updateStatus();
 			return;
 		}
@@ -267,10 +287,13 @@ export class MissionRuntime {
 		}
 
 		const chain = chainCheckpoints.current?.read();
-		if (chain?.status === "due" && chain.dueReasons.some((reason) => /changed|write-enabled|objective/i.test(reason))) this.markReviewDue(chain.dueReasons.at(-1) ?? "material mutation");
+		if (chain?.status === "due" && chain.dueCodes.includes("material_change")) this.markReviewDue(chain.dueReasons.at(-1) ?? "material mutation");
 		await this.reconcileReview();
 		mission = this.state.read()!;
 		if (mission.reviewStatus === "due") {
+			try {
+				if (this.activeChildren().length || this.activeJobs().length) return;
+			} catch { return; }
 			await this.startReview(ctx, mission);
 			return;
 		}
@@ -293,13 +316,25 @@ export class MissionRuntime {
 			this.scheduleRecovery(ctx, 1_000);
 			return;
 		}
+		try {
+			if (service.list().runs.some((run) => ["starting", "running", "stopping"].includes(run.runtime.status)) || this.activeJobs().length) return;
+		} catch (error) {
+			this.failReview(mission, `review admission failed: ${error instanceof Error ? error.message : String(error)}`);
+			this.scheduleRecovery(ctx, 1_000);
+			return;
+		}
+		const reviewWorktreeFingerprint = await worktreeFingerprint(this.pi, ctx.cwd);
+		if (!reviewWorktreeFingerprint) {
+			this.failReview(mission, "could not fingerprint worktree before independent review");
+			return;
+		}
 		const paths = missionReviewPaths(mission);
 		const scope = paths.length ? `Review only these Mission-owned files: ${paths.join(", ")}.` : "Review only files directly required by this Mission.";
 		let run;
 		try {
 			run = await service.start({
 				agent: "reviewer",
-				task: `Fresh independent Mission review. ${scope} Ignore unrelated pre-existing working-tree changes. Mission: ${mission.title}. Objective: ${mission.objective}. Requirements: ${mission.requirements.join(" | ")}. Return the reviewer persona verdict and evidence. Do not edit files.`,
+				task: `Fresh independent Mission review. ${scope} Ignore unrelated pre-existing working-tree changes. Mission: ${mission.title}. Objective: ${mission.objective}. Requirements: ${mission.requirements.join(" | ")}. Review normally, call the schema-validated review_report tool exactly once, then summarize for the parent. Do not edit files.`,
 				cwd: ctx.cwd,
 				context: "fresh",
 				allowWrite: false,
@@ -312,7 +347,7 @@ export class MissionRuntime {
 			return;
 		}
 		if ("children" in run) return;
-		this.state.append(this.pi, this.state.reviewEvent("running", { runId: run.spec.id, reason: mission.reviewReason }));
+		this.state.append(this.pi, this.state.reviewEvent("running", { runId: run.spec.id, reason: mission.reviewReason, worktreeFingerprint: reviewWorktreeFingerprint }));
 		this.updateStatus();
 	}
 
@@ -327,19 +362,32 @@ export class MissionRuntime {
 			return;
 		}
 		if (["starting", "running", "stopping"].includes(run.runtime.status)) return;
-		const output = run.runtime.output ?? "";
 		if (run.runtime.status !== "completed") {
 			this.failReview(mission, run.runtime.error || "independent review failed");
 			return;
 		}
-		const suggested = /##\s*Verdict[\s\S]{0,120}\b(Block|changes requested)\b/i.test(output) || /severity:\s*(blocker|major)/i.test(output) ? "changes_requested" : "clear";
-		this.state.append(this.pi, this.state.reviewEvent("awaiting_adjudication", { runId: run.spec.id, reason: `Independent review settled; parent must adjudicate suggested verdict ${suggested}.` }));
+		const suggested = await readReviewVerdict(run);
+		if (suggested === "unknown") {
+			this.failReview(mission, "independent reviewer did not submit a valid review_report artifact");
+			return;
+		}
+		const fingerprint = this.ctx ? await worktreeFingerprint(this.pi, this.ctx.cwd) : undefined;
+		if (!fingerprint) {
+			this.failReview(mission, "could not fingerprint reviewed worktree");
+			return;
+		}
+		if (!mission.reviewWorktreeFingerprint || fingerprint !== mission.reviewWorktreeFingerprint) {
+			this.state.append(this.pi, this.state.reviewEvent("due", { reason: "worktree changed while independent review was running" }));
+			this.updateStatus();
+			return;
+		}
+		this.state.append(this.pi, this.state.reviewEvent("awaiting_adjudication", { runId: run.spec.id, reason: "Independent review settled; parent must adjudicate the structured reviewer result.", suggestedVerdict: suggested, worktreeFingerprint: fingerprint }));
 		this.updateStatus();
 	}
 
 	private failReview(mission: MissionCurrent, reason: string): void {
 		if (reviewFailureCount(this.ctx, mission.missionId) >= 2) this.state.append(this.pi, this.state.statusEvent("blocked", "independent review failed three times", reason));
-		else this.state.append(this.pi, this.state.reviewEvent("due", { reason }));
+		else this.state.append(this.pi, this.state.reviewEvent("due", { reason, failure: true }));
 		this.updateStatus();
 	}
 
@@ -393,41 +441,21 @@ function missionContext(mission: MissionCurrent, usage: ReturnType<MissionState[
 	return [`Active Mission: ${mission.title}`, `Objective v${mission.objectiveVersion ?? 1}: ${mission.objective}`, `State: ${mission.status}; review ${mission.reviewStatus ?? "not_required"}; usage ${usage.totalTokens} tokens / $${usage.totalCostUsd.toFixed(4)}.`, "Active Mission authorization permits reversible best judgment and autonomous continuation, but never bypasses tool approval, credentials, safety, or irreversible boundaries."].join("\n");
 }
 
-function latestAssistantText(messages: MissionAgentMessage[]): string {
-	for (let index = messages.length - 1; index >= 0; index--) {
-		const message = messages[index];
-		if (message?.role !== "assistant") continue;
-		if (typeof message.content === "string") return message.content;
-		if (Array.isArray(message.content)) return message.content.map(asRecord).filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => String(part!.text)).join("\n");
-	}
-	return "";
+function suspendedMissionContext(mission: MissionCurrent, progress: ReturnType<MissionState["readProgress"]>[number] | undefined): string {
+	const resumable = ["paused", "blocked", "terminal_error", "ended"].includes(mission.status);
+	return [
+		`Mission control state: ${mission.status.toUpperCase()} — ${mission.title}`,
+		`Reason: ${mission.lastReason ?? "not recorded"}${mission.lastSummary ? ` · ${mission.lastSummary}` : ""}`,
+		`Resume target: ${mission.chain}@${mission.chainBranch}; artifacts .missions/${mission.slug}.`,
+		...(progress?.remaining.length ? [`Recorded next work: ${progress.remaining.join(" | ")}`] : []),
+		resumable
+			? "Do not silently continue Mission work. If the current user explicitly asks to continue/resume or directly resolves this pause/blocker, call mission_resume with that concrete reason before substantive work. Otherwise honor the suspension and report the exact resume target."
+			: "Do not resume or perform substantive Mission work. This limit requires an explicit Mission/budget decision from the user.",
+	].join("\n");
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
 	return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
-}
-
-function hasExplicitUserEndRequest(ctx: ExtensionContext): boolean {
-	const branch = ctx.sessionManager.getBranch() as readonly unknown[];
-	for (let index = branch.length - 1; index >= 0; index--) {
-		const entry = asRecord(branch[index]);
-		const message = asRecord(entry?.message);
-		if (entry?.type !== "message" || message?.role !== "user") continue;
-		const text = typeof message.content === "string"
-			? message.content
-			: Array.isArray(message.content)
-				? message.content.map(asRecord).filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => String(part!.text)).join(" ")
-				: "";
-		const normalized = normalize(text);
-		if (normalized.includes("?")) return false;
-		if (/\b(do not|don't|dont|never|no need to|should not|shouldn't|i do not want (you )?to|i don't want (you )?to)\b.{0,40}\b(end|stop|cancel|complete|terminate)\b/.test(normalized)) return false;
-		const action = "(?:end|stop|cancel|complete|terminate)";
-		const target = "(?:this\\s+|the\\s+)?mission";
-		const suffix = "(?:\\s+(?:now|anyway|regardless))?[.!]*";
-		return new RegExp(`^(?:please\\s+)?${action}\\s+${target}${suffix}$`).test(normalized)
-			|| new RegExp(`^(?:please\\s+)?(?:go ahead and|you can|i want you to|i am asking you to|i'm asking you to)\\s+${action}\\s+${target}${suffix}$`).test(normalized);
-	}
-	return false;
 }
 
 function latestMissionWakeIsStale(ctx: ExtensionContext, mission: MissionCurrent): boolean {
@@ -439,17 +467,15 @@ function latestMissionWakeIsStale(ctx: ExtensionContext, mission: MissionCurrent
 	return details?.missionId !== mission.missionId || details?.generation !== mission.generation || details?.objectiveVersion !== mission.objectiveVersion;
 }
 
-function blockerFingerprint(text: string): string | undefined {
-	if (!/\b(blocked|cannot continue|need (approval|credentials?|access)|missing credentials?|hard boundary)\b/i.test(text)) return undefined;
-	return normalize(text).slice(0, 180);
-}
-
-function normalize(value: string): string {
-	return value.toLowerCase().replace(/\s+/g, " ").trim();
+async function readReviewVerdict(run: DelegateRun): Promise<"clear" | "changes_requested" | "unknown"> {
+	try {
+		const report = JSON.parse(await readFile(join(run.spec.artifactsDir, "review-report.json"), "utf8")) as { version?: unknown; verdict?: unknown };
+		return report.version === 1 && (report.verdict === "clear" || report.verdict === "changes_requested") ? report.verdict : "unknown";
+	} catch { return "unknown"; }
 }
 
 function missionReviewPaths(mission: MissionCurrent): string[] {
-	return [...new Set(`${mission.objective}\n${mission.requirements.join("\n")}`.match(/\b(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+\.[A-Za-z0-9]+\b/g) ?? [])];
+	return mission.paths;
 }
 
 function reviewFailureCount(ctx: ExtensionContext | undefined, missionId: string): number {
@@ -459,8 +485,24 @@ function reviewFailureCount(ctx: ExtensionContext | undefined, missionId: string
 		const event = asRecord(record?.data);
 		return record?.type === "custom" && record.customType === MISSION_CUSTOM_TYPE
 			&& event?.kind === "review_changed" && event.missionId === missionId && event.reviewStatus === "due"
-			&& typeof event.reviewReason === "string" && /failed|timeout|limit|cancel|lost/i.test(event.reviewReason);
+			&& event.reviewFailure === true;
 	}).length;
+}
+
+async function worktreeFingerprint(pi: ExtensionAPI, cwd: string): Promise<string | undefined> {
+	try {
+		const [diff, untracked] = await Promise.all([
+			pi.exec("git", ["diff", "--binary", "--no-ext-diff", "HEAD", "--"], { cwd }),
+			pi.exec("git", ["ls-files", "--others", "--exclude-standard", "-z"], { cwd }),
+		]);
+		if (diff.code !== 0 || untracked.code !== 0) return undefined;
+		const hash = createHash("sha256").update(diff.stdout).update("\0");
+		for (const relative of untracked.stdout.split("\0").filter(Boolean).sort()) {
+			hash.update(relative).update("\0");
+			try { hash.update(await readFile(join(cwd, relative))); } catch { hash.update("[unreadable]"); }
+		}
+		return hash.digest("hex");
+	} catch { return undefined; }
 }
 
 function compact(value: number): string {

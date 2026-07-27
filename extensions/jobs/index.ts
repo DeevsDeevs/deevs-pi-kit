@@ -1,12 +1,13 @@
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { JobManager } from "./manager.ts";
 import type { JobReadInput, JobReadResult, JobRecord, JobStartInput } from "./types.ts";
 import { formatDuration } from "../shared/runtime-ui.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
-import { clearJobManager, setJobManager } from "./registry.ts";
+import { claimJobManager, releaseJobManager } from "./registry.ts";
 import { legacyProcessStateFiles } from "./legacy.ts";
+import { FULL_SCREEN_OVERLAY } from "../shared/dashboard.ts";
+import { JobsDashboard } from "./ui.ts";
 
 const StartSchema = Type.Object({
 	name: Type.String({ description: "Short human-readable job name" }),
@@ -26,8 +27,7 @@ const ReadSchema = Type.Object({ id: Type.String(), afterSeq: Type.Optional(Type
 const StopSchema = Type.Object({ id: Type.String() });
 
 export default function jobsExtension(pi: ExtensionAPI): void {
-	const manager = new JobManager(pi);
-	setJobManager(manager);
+	const { manager, owner } = claimJobManager(pi);
 	let ctx: ExtensionContext | undefined;
 	let legacyWarningShown = false;
 	const updateStatus = (): void => {
@@ -117,25 +117,26 @@ export default function jobsExtension(pi: ExtensionAPI): void {
 			if (action === "stop" && id) await manager.stop(id);
 			const jobs = manager.list();
 			let exact = jobs.find((job) => job.spec.id === action);
-			if (!action && context.mode === "tui") {
-				if (!jobs.length) return context.ui.notify("No Jobs.", "info");
-				const choices = new Map(jobs.map((job) => [`${job.runtime.status} · ${job.spec.name} · ${job.spec.id.slice(-8)}`, job]));
-				const selected = await context.ui.select("Jobs", [...choices.keys()]);
-				if (!selected) return;
-				exact = choices.get(selected);
-				if (!exact) return;
-				const terminal = !["starting", "running", "stopping"].includes(exact.runtime.status);
-				const selectedAction = await context.ui.select(exact.spec.name, ["View details", terminal ? "Clear record" : "Stop"]);
-				if (!selectedAction) return;
-				if (selectedAction === "Stop") {
-					await manager.stop(exact.spec.id);
-					context.ui.notify(`Stopped ${exact.spec.id}.`, "info");
-					return;
+			if (!action && context.mode === "tui" && context.hasUI) {
+				let unsubscribeDashboard: () => void = () => {};
+				try {
+					await context.ui.custom<void>((tui, theme, _keybindings, done) => {
+						const render = () => tui.requestRender();
+						unsubscribeDashboard = manager.onChange(render);
+						return new JobsDashboard(
+							manager,
+							theme,
+							() => done(undefined),
+							render,
+							() => Math.max(4, tui.terminal.rows - 2),
+							(id) => void manager.stop(id).then(() => { context.ui.notify(`Stopped ${id}.`, "info"); render(); }).catch((error) => context.ui.notify(error instanceof Error ? error.message : String(error), "error")),
+							(id) => { context.ui.notify(`Cleared ${manager.clearTerminal(id)} record.`, "info"); render(); },
+						);
+					}, { overlay: true, overlayOptions: FULL_SCREEN_OVERLAY });
+				} finally {
+					unsubscribeDashboard();
 				}
-				if (selectedAction === "Clear record") {
-					context.ui.notify(`Cleared ${manager.clearTerminal(exact.spec.id)} record.`, "info");
-					return;
-				}
+				return;
 			}
 			const selected = exact ? [exact] : action && action !== "stop" ? jobs.filter((job) => `${job.spec.id} ${job.spec.name}`.toLowerCase().includes(action.toLowerCase())) : jobs;
 			const content = selected.map((job) => `${formatJob(job)}\n  ${job.spec.command ?? job.spec.argv?.join(" ") ?? ""}\n${exact ? formatRead(manager.read({ id: job.spec.id, maxBytes: 32_768 })) : `  log: ${job.spec.logPath}`}`).join("\n\n");
@@ -158,10 +159,9 @@ export default function jobsExtension(pi: ExtensionAPI): void {
 		await manager.restore(context);
 		updateStatus();
 	});
-	pi.on("session_shutdown", async () => {
+	pi.on("session_shutdown", () => {
 		unsubscribe();
-		clearJobManager(manager);
-		await manager.shutdown();
+		releaseJobManager(owner);
 		ctx?.ui.setStatus("jobs", undefined);
 		ctx = undefined;
 	});

@@ -72,6 +72,7 @@ export interface DelegateRunRuntime {
 	error?: string;
 	limitReason?: DelegateLimitReason;
 	sessionFile?: string;
+	chainCheckpointRecordedAt?: number;
 }
 
 export interface DelegateRun {

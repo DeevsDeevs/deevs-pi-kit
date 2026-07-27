@@ -1,3 +1,4 @@
+import { utf8Tail } from "../shared/bytes.ts";
 import type { JobChunk, JobReadResult, JobRecord, JobStream } from "./types.ts";
 
 export class JobBuffer {
@@ -10,9 +11,12 @@ export class JobBuffer {
 
 	append(stream: JobStream, value: Buffer | string): JobChunk {
 		const raw = Buffer.isBuffer(value) ? value : Buffer.from(value);
-		const clipped = raw.subarray(0, this.maxChunkBytes);
-		const suffix = raw.length > clipped.length ? `\n[job chunk truncated: ${raw.length - clipped.length} bytes omitted]\n` : "";
-		const text = `${clipped.toString("utf8")}${suffix}`;
+		const limit = Math.min(this.maxChunkBytes, this.maxBytes);
+		const prefix = raw.length > limit ? "[job chunk truncated: earlier bytes omitted]\n" : "";
+		const prefixBytes = Buffer.byteLength(prefix);
+		const text = prefixBytes >= limit
+			? utf8Tail(prefix, limit)
+			: `${prefix}${utf8Tail(raw.toString("utf8"), limit - prefixBytes)}`;
 		const chunk = { seq: this.next++, at: Date.now(), stream, text, bytes: Buffer.byteLength(text) };
 		this.chunks.push(chunk);
 		this.bytes += chunk.bytes;
@@ -50,7 +54,7 @@ export class JobBuffer {
 		return {
 			job,
 			chunks,
-			nextSeq: chunks.at(-1)?.seq ?? afterSeq,
+			nextSeq: chunks.at(-1)?.seq ?? Math.max(afterSeq, earliestSeq - 1),
 			earliestSeq,
 			truncated,
 			droppedBeforeSeq: afterSeq < earliestSeq - 1 ? earliestSeq - 1 : undefined,

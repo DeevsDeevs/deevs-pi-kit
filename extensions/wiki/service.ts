@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { lstat, mkdir, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { utf8Head } from "../shared/bytes.ts";
+import { unicodeTerms } from "../shared/terms.ts";
 import { basenameId, extractTitle, pageId, parseMetadata, parseTaxonomyTags, parseWikiLinks, sameDirCandidate, stripFrontmatter } from "./parser.ts";
 import type {
 	WikiAmbiguousLink,
@@ -440,11 +441,7 @@ function truncateText(value: string, maxBytes: number, label: string): { text: s
 
 
 function tokenize(text: string): string[] {
-	return text.toLowerCase().match(/[a-z0-9][a-z0-9_-]{1,}/g)?.map(stem).filter(Boolean) ?? [];
-}
-
-function stem(term: string): string {
-	return term.replace(/(?:ing|ed|es|s)$/i, "");
+	return unicodeTerms(text);
 }
 
 function bestLine(lines: string[], terms: string[]): number {

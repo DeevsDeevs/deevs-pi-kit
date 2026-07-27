@@ -36,7 +36,11 @@ export class JobManager {
 	private readonly events = new EventEmitter();
 	private parentSessionFile?: string;
 
-	constructor(private readonly pi: ExtensionAPI) {}
+	constructor(private pi: ExtensionAPI) {}
+
+	setExtensionApi(pi: ExtensionAPI): void {
+		this.pi = pi;
+	}
 
 	onChange(listener: (job: JobRecord) => void): () => void {
 		this.events.on("change", listener);
@@ -275,6 +279,10 @@ export class JobManager {
 		for (const timer of this.staleTimers.values()) clearTimeout(timer);
 		this.staleTimers.clear();
 		this.events.removeAllListeners();
+	}
+
+	terminateActiveSync(): void {
+		for (const active of this.active.values()) if (active.child.pid) trySignalGroup(active.child.pid, "SIGKILL");
 	}
 
 	private append(id: string, stream: JobStream, data: Buffer): void {

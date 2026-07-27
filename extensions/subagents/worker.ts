@@ -86,6 +86,8 @@ function enforceUsageLimits(): void {
 }
 
 async function main(): Promise<void> {
+	persist({ workerPid: process.pid, workerIdentity: await readProcessIdentity(process.pid) });
+	await publishReady();
 	const stdout = createBoundedLineReader({
 		stream: "stdout",
 		maxPendingLineBytes: spec.limits.maxProtocolLineBytes,
@@ -100,6 +102,7 @@ async function main(): Promise<void> {
 			DEEVS_PI_SUBAGENT: "1",
 			DEEVS_PI_SUBAGENT_ID: spec.id,
 			DEEVS_PI_SUBAGENT_AGENT: spec.persona,
+			DEEVS_PI_SUBAGENT_ARTIFACTS: spec.artifactsDir,
 			DEEVS_PI_SUBAGENT_DEPTH: "1",
 		},
 		detached: true,
@@ -135,8 +138,7 @@ async function main(): Promise<void> {
 	}
 	if (killTimer) clearTimeout(killTimer);
 	const stderrText = stderr.text().trim();
-	const needsAttention = /\b(approval|permission|credentials?|authentication|sign[ -]?in|user action|required input)\b/i.test(stderrText);
-	const status = runtime.settled && requested?.status === "limited" ? "completed" : requested?.status ?? (code === 0 && runtime.settled ? "completed" : needsAttention ? "needs_attention" : runtime.output ? "partial" : "failed");
+	const status = runtime.settled && requested?.status === "limited" ? "completed" : requested?.status ?? (code === 0 && runtime.settled ? "completed" : runtime.output ? "partial" : "failed");
 	const error = requested?.error ?? (["failed", "partial", "needs_attention"].includes(status) ? stderrText || `Child exited with code ${code ?? "?"}.` : undefined);
 	const sessionFile = findLatestSessionFile(spec.sessionDir);
 	persist({ status, endedAt: Date.now(), exitCode: code, exitSignal: signal, currentTool: undefined, error, limitReason: requested?.reason, sessionFile });
@@ -152,6 +154,15 @@ main().catch((error) => {
 	writePrivateText(spec.resultPath, runtime.error || "Delegate worker failed.");
 	process.exitCode = 1;
 });
+
+async function publishReady(): Promise<void> {
+	if (!process.send) return;
+	await new Promise<void>((resolve, reject) => process.send!({ type: "delegate_worker_ready" }, (error) => {
+		process.disconnect?.();
+		if (error) reject(error);
+		else resolve();
+	}));
+}
 
 function record(value: unknown): Record<string, unknown> | undefined {
 	return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;

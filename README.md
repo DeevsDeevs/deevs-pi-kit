@@ -63,11 +63,11 @@ Tool: `workflow`.
 
 Create a branch-scoped objective with `agent_settled` autonomous continuation, user-priority admission, wall/turn/token/cost limits, objective versions, independent review convergence, child-settlement and Chain completion vetoes, and durable artifacts under `.missions/`.
 
-Tools: `mission_get`, `mission_create`, `mission_update`, `mission_progress`, `mission_search`, `mission_complete`.
+Tools: `mission_get`, `mission_resume`, `mission_create`, `mission_update`, `mission_progress`, `mission_search`, `mission_complete`.
 
 Commands: `/mission <objective> [--name short-title] [--req criterion] [--budget 200k] [--cost $2] [--chain name]`, `/mission status`, `/mission pause`, `/mission resume`, `/mission clear`, `/mission complete`/`end`/`stop`.
 
-Mission runtime state is reconstructed from the current Pi session branch; short title-derived slugs/chains avoid full-objective path spam; `.missions/<slug>/` stores the canonical `mission.md` (including the completion audit) and searchable `log.md`. See [`extensions/mission/README.md`](extensions/mission/README.md).
+Mission runtime state is reconstructed from the current Pi session branch. Requirements use stable indexes in completion audits, validation uses command/exit-code records, blockers use explicit IDs, reviewer verdicts come from a schema-validated child tool, and TUI end/resume/review-waiver actions require typed confirmations. Prose remains display-only. `.missions/<slug>/` stores the canonical `mission.md` and searchable `log.md`. See [`extensions/mission/README.md`](extensions/mission/README.md).
 
 ### Cron
 
@@ -85,7 +85,7 @@ Tools: `chain_save`, `chain_load`, `chain_fork`, `chain_context`, `chain_list`, 
 
 Commands: `/chains`, `/chain-link`, `/chain-load`, `/chain-fork`, `/chain-list`, `/chain-search`, `/chain-waive <reason>`.
 
-Pi session entries track active `saved` versus `checkpoint due` state across resume, durable milestones, and a one-shot checkpoint forced at 80% context usage before compaction, with other tools blocked and one hidden recovery turn if the reminder is ignored. See [`extensions/chains/README.md`](extensions/chains/README.md).
+Pi session entries track active `saved` versus `checkpoint due` state across resume and typed durable milestones. At 80% context usage, other tools are blocked until `chain_save`; after a saved checkpoint, 90% usage triggers native Pi compaction while idle so the next turn does not remain over threshold. See [`extensions/chains/README.md`](extensions/chains/README.md).
 
 ### Wiki
 
