@@ -13,7 +13,11 @@ import type { SubagentService } from "../extensions/subagents/service.ts";
 import type { DelegateRun } from "../extensions/subagents/runtime-types.ts";
 import type { MissionCurrent } from "../extensions/mission/types.ts";
 
-async function setup(options: { pending?: boolean; fingerprint?: () => string } = {}) {
+function expectedFingerprint(diff = "", head = "head"): string {
+	return createHash("sha256").update(head).update("\0").update(diff).update("\0").digest("hex");
+}
+
+async function setup(options: { pending?: boolean; fingerprint?: () => string; head?: () => string } = {}) {
 	const branch: Array<Record<string, unknown>> = [];
 	const messages: Array<{ message: unknown; options: unknown }> = [];
 	const handlers = new Map<string, Array<(event: never, ctx: ExtensionContext) => unknown>>();
@@ -21,7 +25,7 @@ async function setup(options: { pending?: boolean; fingerprint?: () => string } 
 		appendEntry(customType: string, data: unknown) { branch.push({ type: "custom", customType, data }); },
 		sendMessage(message: unknown, sendOptions: unknown) { messages.push({ message, options: sendOptions }); },
 		on(event: string, handler: (event: never, ctx: ExtensionContext) => unknown) { handlers.set(event, [...(handlers.get(event) ?? []), handler]); },
-		exec: async (_command: string, args: string[]) => ({ code: 0, stdout: args[0] === "diff" ? options.fingerprint?.() ?? "" : "", stderr: "" }),
+		exec: async (_command: string, args: string[]) => ({ code: 0, stdout: args[0] === "rev-parse" ? options.head?.() ?? "head" : args[0] === "diff" ? options.fingerprint?.() ?? "" : "", stderr: "" }),
 	} as unknown as ExtensionAPI;
 	const ctx = {
 		cwd: "/tmp/mission-runtime",
@@ -148,7 +152,7 @@ describe("Mission runtime", () => {
 		} as unknown as SubagentService;
 		setSubagentService(service);
 		try {
-			test.state.append(test.pi, test.state.reviewEvent("running", { runId: run.spec.id, reason: "reviewing", worktreeFingerprint: createHash("sha256").update("\0").digest("hex") }));
+			test.state.append(test.pi, test.state.reviewEvent("running", { runId: run.spec.id, reason: "reviewing", worktreeFingerprint: expectedFingerprint() }));
 			await test.emit("session_start", { reason: "resume" });
 			expect(test.messages).toEqual([]);
 			run.runtime.status = "completed";
@@ -177,7 +181,7 @@ describe("Mission runtime", () => {
 		} as unknown as SubagentService;
 		setSubagentService(service);
 		try {
-			const launchFingerprint = createHash("sha256").update(fingerprint).update("\0").digest("hex");
+			const launchFingerprint = expectedFingerprint(fingerprint);
 			test.state.append(test.pi, test.state.reviewEvent("running", { runId: run.spec.id, worktreeFingerprint: launchFingerprint }));
 			await test.emit("session_start", { reason: "resume" });
 			fingerprint = "after";
@@ -280,6 +284,16 @@ describe("Mission runtime", () => {
 		expect(blockers).toContain("Worktree changed during this turn before independent review admission.");
 	});
 
+	it("invalidates review admission after a clean HEAD change", async () => {
+		let head = "reviewed-head";
+		const test = await setup({ head: () => head });
+		test.state.append(test.pi, test.state.progressEvent({ summary: "Validated", validation: [{ command: "npm test", exitCode: 0 }] }));
+		test.state.append(test.pi, test.state.reviewEvent("clear", { worktreeFingerprint: expectedFingerprint("", head) }));
+		head = "new-head";
+		const blockers = await test.runtime.validateCompletion({ audit: [{ requirementIndex: 0, evidence: "recorded" }] }, test.ctx);
+		expect(blockers).toContain("Worktree differs from the schema-validated reviewed snapshot.");
+	});
+
 	it("vetoes completion until evidence, validation, and review converge", async () => {
 		const test = await setup();
 		test.state.append(test.pi, test.state.reviewEvent("due", { reason: "files changed" }));
@@ -297,7 +311,7 @@ describe("Mission runtime", () => {
 		blockers = await test.runtime.validateCompletion({ audit: [{ requirementIndex: 0, evidence: "old output" }] }, test.ctx);
 		expect(blockers).toContain("No successful structured validation is recorded for the current objectiveVersion.");
 		test.state.append(test.pi, test.state.progressEvent({ summary: "Validated", validation: [{ command: "npm test", exitCode: 0, summary: "passed" }] }));
-		test.state.append(test.pi, test.state.reviewEvent("clear", { reason: "review clear", worktreeFingerprint: createHash("sha256").update("\0").digest("hex") }));
+		test.state.append(test.pi, test.state.reviewEvent("clear", { reason: "review clear", worktreeFingerprint: expectedFingerprint() }));
 		blockers = await test.runtime.validateCompletion({ audit: [{ requirementIndex: 0, evidence: "test output and implementation diff" }] }, test.ctx);
 		expect(blockers).toEqual([]);
 	});
