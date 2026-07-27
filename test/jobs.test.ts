@@ -6,6 +6,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { JobBuffer } from "../extensions/jobs/buffer.ts";
 import { JobManager } from "../extensions/jobs/manager.ts";
 import { claimJobManager, clearJobManager, releaseJobManager, setJobManager } from "../extensions/jobs/registry.ts";
+import { detectDetachedArgv } from "../extensions/shared/process-safety.ts";
 
 const cleanups: Array<() => void> = [];
 afterEach(() => cleanups.splice(0).reverse().forEach((cleanup) => cleanup()));
@@ -68,7 +69,21 @@ describe("bounded Jobs", () => {
 		await expect(manager.start({ name: "argv-shell-detach", argv: ["bash", "-lc", "nohup node worker.js &"] }, ctx)).rejects.toThrow("Detached process launch");
 		await expect(manager.start({ name: "argv-env-detach", argv: ["env", "MODE=test", "setsid", "node", "worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
 		await expect(manager.start({ name: "argv-env-unset-detach", argv: ["env", "-u", "FOO", "setsid", "node", "worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
+		await expect(manager.start({ name: "argv-env-split-detach", argv: ["env", "-S", "setsid node worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
+		await expect(manager.start({ name: "argv-env-chdir-detach", argv: ["env", "-C", "/tmp", "setsid", "node", "worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
+		await expect(manager.start({ name: "argv-assignment-detach", argv: ["bash", "-lc", "FOO=x setsid node worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
+		await expect(manager.start({ name: "argv-substitution-detach", argv: ["bash", "-lc", "echo \"$(setsid node worker.js)\""] }, ctx)).rejects.toThrow("Detached process launch");
+		await expect(manager.start({ name: "argv-exec-detach", argv: ["bash", "-lc", "exec setsid node worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
+		await expect(manager.start({ name: "argv-eval-detach", argv: ["bash", "-lc", "eval 'setsid node worker.js'"] }, ctx)).rejects.toThrow("Detached process launch");
+		await expect(manager.start({ name: "argv-control-detach", argv: ["bash", "-lc", "if true; then nohup node worker.js; fi"] }, ctx)).rejects.toThrow("Detached process launch");
 		await expect(manager.start({ name: "argv-fish-detach", argv: ["fish", "--command=setsid node worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
+		expect(detectDetachedArgv(["rg", "nohup", "."])).toBeUndefined();
+		expect(detectDetachedArgv(["bash", "-lc", "rg nohup ."])).toBeUndefined();
+		expect(detectDetachedArgv(["bash", "-lc", "printf '%s' '; setsid'"])).toBeUndefined();
+		expect(detectDetachedArgv(["bash", "-lc", "printf '%s' '`setsid node`'"])).toBeUndefined();
+		expect(detectDetachedArgv(["bash", "-lc", "echo message |& rg setsid ."])).toBeUndefined();
+		expect(detectDetachedArgv(["env", "MODE=test", "rg", "setsid", "."])).toBeUndefined();
+		expect(detectDetachedArgv(["sudo", "-u", "root", "setsid", "node", "worker.js"])).toContain("Detached process launch");
 	});
 
 	it("keeps an active Job alive when a new hot-reload generation claims its manager", async () => {

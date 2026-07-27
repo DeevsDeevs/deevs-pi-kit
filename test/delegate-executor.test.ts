@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -51,18 +51,21 @@ describe("DelegateExecutor", () => {
 		expect(run.spec.limits.turns).toBeUndefined();
 		expect(run.spec.limits.tokens).toBeUndefined();
 		expect(run.spec.limits.costUsd).toBeUndefined();
+		expect(readFileSync(run.spec.systemPromptPath, "utf8")).toContain("Provider-turn limit: unbounded");
 	});
 
 	it("never falls back to default tools for read-only or empty tool selections", async () => {
 		const executor = setup(() => completedScript());
 		await expect(executor.start(input({ tools: [] }))).rejects.toThrow("tools must not be empty");
-		const run = await executor.start(input());
+		await expect(executor.start(input({ tools: ["read"] }))).rejects.toThrow("Allowed tools: safe_list, safe_read, safe_search");
+		const run = await executor.start(input({ turns: 2 }));
 		expect(run.spec.tools).not.toContain("bash");
 		expect(run.spec.tools).not.toContain("read");
 		const command = buildPiCommand(run.spec);
 		const extensionPath = command.args[command.args.indexOf("--extension") + 1]!;
 		expect(path.basename(extensionPath)).toBe("child-safety-runtime.ts");
 		expect(existsSync(extensionPath)).toBe(true);
+		expect(readFileSync(run.spec.systemPromptPath, "utf8")).toContain("Provider-turn limit: 2");
 	});
 
 	it("settles only after the isolated child exits and records exact run usage", async () => {
@@ -211,13 +214,14 @@ describe("DelegateExecutor", () => {
 			return completedScript(spec.context);
 		});
 		const first = await executor.start(input());
-		const resumed = await executor.resume({ runId: first.spec.id, task: "Review the fixes.", detach: false, wallMs: 2_000 });
+		const resumed = await executor.resume({ runId: first.spec.id, task: "Review the fixes.", detach: false, wallMs: 2_000, turns: 2 });
 
 		expect(resumed.spec.id).not.toBe(first.spec.id);
 		expect(resumed.spec.agentId).toBe(first.spec.agentId);
 		expect(resumed.spec.personaVersion).toBe(first.spec.personaVersion);
 		expect(resumed.spec.context).toBe("resume");
 		expect(resumed.runtime.output).toBe("resume");
+		expect(readFileSync(resumed.spec.systemPromptPath, "utf8")).toContain("Provider-turn limit: 2");
 	});
 });
 

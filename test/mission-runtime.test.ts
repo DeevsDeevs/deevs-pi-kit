@@ -149,6 +149,15 @@ describe("Mission runtime", () => {
 		}
 	});
 
+	it("keeps a running review active when edits occur so fingerprint reconciliation can count churn", async () => {
+		const test = await setup();
+		test.state.append(test.pi, test.state.reviewEvent("running", { runId: "review-active", worktreeFingerprint: expectedFingerprint() }));
+		await test.emit("tool_execution_start", { toolName: "edit", toolCallId: "edit-1" });
+		await test.emit("tool_execution_end", { toolName: "edit", toolCallId: "edit-1", isError: false });
+		expect(test.state.read()?.reviewStatus).toBe("running");
+		expect(test.state.read()?.reviewRunId).toBe("review-active");
+	});
+
 	it("guards stale continuation wakes and requires parent review adjudication", async () => {
 		const test = await setup();
 		const mission = test.state.read()!;
@@ -212,6 +221,36 @@ describe("Mission runtime", () => {
 			await new Promise((resolve) => setTimeout(resolve, 10));
 			expect(test.state.read()?.reviewStatus).toBe("due");
 			expect(test.state.read()?.reviewReason).toContain("worktree changed while independent review was running");
+		} finally {
+			rmSync(artifactsDir, { recursive: true, force: true });
+			clearSubagentService(service);
+		}
+	});
+
+	it("blocks after three review-time fingerprint changes instead of requeueing forever", async () => {
+		let fingerprint = "before";
+		const test = await setup({ fingerprint: () => fingerprint });
+		const artifactsDir = mkdtempSync(join(tmpdir(), "mission-review-churn-"));
+		const run = { spec: { id: "review-churn", artifactsDir }, runtime: { status: "running", output: "" } } as unknown as DelegateRun;
+		let listener: ((candidate: DelegateRun) => void) | undefined;
+		const service = {
+			list: () => ({ runs: [], groups: [] }),
+			executor: { get: () => run, onChange: (value: (candidate: DelegateRun) => void) => { listener = value; return () => undefined; } },
+		} as unknown as SubagentService;
+		setSubagentService(service);
+		try {
+			test.state.append(test.pi, test.state.reviewEvent("due", { reason: "first churn", failure: true }));
+			test.state.append(test.pi, test.state.reviewEvent("due", { reason: "second churn", failure: true }));
+			test.state.append(test.pi, test.state.reviewEvent("running", { runId: run.spec.id, worktreeFingerprint: expectedFingerprint(fingerprint) }));
+			await test.emit("session_start", { reason: "resume" });
+			fingerprint = "after";
+			run.runtime.status = "completed";
+			writeFileSync(join(artifactsDir, "review-report.json"), JSON.stringify({ version: 1, verdict: "clear", findings: [] }));
+			listener?.(run);
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			expect(test.state.readAny()?.status).toBe("blocked");
+			expect(test.state.readAny()?.reviewStatus).toBe("due");
+			expect(test.state.readAny()?.lastSummary).toContain("worktree changed while independent review was running");
 		} finally {
 			rmSync(artifactsDir, { recursive: true, force: true });
 			clearSubagentService(service);

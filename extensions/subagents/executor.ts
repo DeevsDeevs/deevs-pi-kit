@@ -129,7 +129,12 @@ export class DelegateExecutor {
 			limits: limitsFrom(input),
 			execution: { command: "", args: [] },
 		};
-		writePrivateText(spec.systemPromptPath, readFileSync(previous.spec.systemPromptPath, "utf8"));
+		const previousPrompt = readFileSync(previous.spec.systemPromptPath, "utf8");
+		const turnLimit = spec.limits.turns === undefined ? "unbounded" : String(spec.limits.turns);
+		const systemPrompt = /^Provider-turn limit:.*$/m.test(previousPrompt)
+			? previousPrompt.replace(/^Provider-turn limit:.*$/m, `Provider-turn limit: ${turnLimit}`)
+			: previousPrompt.replace("\n\nRules:", `\nProvider-turn limit: ${turnLimit}\n\nRules:`);
+		writePrivateText(spec.systemPromptPath, systemPrompt);
 		writePrivateText(spec.taskPath, taskPrompt(input.task));
 		return this.launch(root, spec, input.detach ?? true);
 	}
@@ -339,7 +344,8 @@ function taskPrompt(task: string): string {
 }
 
 function buildSystemPrompt(spec: DelegateRunSpec, personaBody: string): string {
-	return `You are a delegated Deevs staff subagent.\n\nAgent: ${spec.persona}\nWorking directory: ${spec.cwd}\nContext mode: ${spec.context}\nWrite access: ${spec.allowWrite ? "on" : "off"}\nEnabled tools: ${spec.tools.join(", ") || "none"}\n\nRules:\n- Stay within the assigned persona and task.\n- Be concrete and evidence-based.\n- Do not spawn other subagents.\n- Do not edit unless write access is on.\n- Do not run destructive or persistent background commands.\n- Return uncertainty explicitly.\n\nPersona:\n${personaBody.trim()}\n`;
+	const turnLimit = spec.limits.turns === undefined ? "unbounded" : String(spec.limits.turns);
+	return `You are a delegated Deevs staff subagent.\n\nAgent: ${spec.persona}\nWorking directory: ${spec.cwd}\nContext mode: ${spec.context}\nWrite access: ${spec.allowWrite ? "on" : "off"}\nEnabled tools: ${spec.tools.join(", ") || "none"}\nProvider-turn limit: ${turnLimit}\n\nRules:\n- Stay within the assigned persona and task.\n- Be concrete and evidence-based.\n- Do not spawn other subagents.\n- Do not edit unless write access is on.\n- Do not run destructive or persistent background commands.\n- If provider turns are bounded, return a usable conclusion before the final allowed turn.\n- Return uncertainty explicitly.\n\nPersona:\n${personaBody.trim()}\n`;
 }
 
 function resolveTools(personaTools: string[], requested: string[] | undefined, allowWrite: boolean): string[] {
@@ -353,7 +359,7 @@ function resolveTools(personaTools: string[], requested: string[] | undefined, a
 	}
 	if (requested && !requested.some((tool) => tool.trim())) throw new Error("tools must not be empty; omit it to use the persona's read-only tools.");
 	const selected = requested ? requested.map((tool) => tool.trim()).filter(Boolean) : [...allowed];
-	for (const tool of selected) if (!allowed.has(tool)) throw new Error(`Tool ${tool} is not allowed by the ${allowWrite ? "write-enabled" : "read-only"} persona policy.`);
+	for (const tool of selected) if (!allowed.has(tool)) throw new Error(`Tool ${tool} is not allowed by the ${allowWrite ? "write-enabled" : "read-only"} persona policy. Allowed tools: ${[...allowed].sort().join(", ") || "none"}.`);
 	if (!allowWrite && (selected.includes("edit") || selected.includes("write"))) throw new Error("Write tools require allowWrite=true.");
 	return [...new Set(selected)].sort();
 }

@@ -18,12 +18,12 @@ const TaskSchema = Type.Object({
 	cwd: Type.Optional(Type.String({ description: "Working directory; defaults to the parent cwd" })),
 	context: Type.Optional(StringEnum(["fresh", "fork"] as const)),
 	model: Type.Optional(Type.String()),
-	tools: Type.Optional(Type.Array(Type.String(), { description: "Optional narrowing of persona tools" })),
+	tools: Type.Optional(Type.Array(Type.String(), { description: "Optional narrowing using persona-local names such as safe_read, safe_list, and safe_search" })),
 	allowWrite: Type.Optional(Type.Boolean({ description: "Explicitly enable edit/write for this run" })),
-	wallMs: Type.Optional(Type.Number({ description: "Hard wall-clock limit; defaults to 6 hours and is capped at 24 hours" })),
-	turns: Type.Optional(Type.Number({ description: "Optional provider-turn limit; omitted means unbounded" })),
-	tokens: Type.Optional(Type.Number({ description: "Optional aggregate token limit; omitted means unbounded, with at most one provider-call overshoot when set" })),
-	costUsd: Type.Optional(Type.Number({ description: "Optional USD cost limit; omitted means unbounded, with at most one provider-call overshoot when set" })),
+	wallMs: Type.Optional(Type.Integer({ minimum: 1_000, maximum: 86_400_000, description: "Hard wall-clock limit; defaults to 6 hours and is capped at 24 hours" })),
+	turns: Type.Optional(Type.Integer({ minimum: 1, description: "Optional provider-turn limit; omitted means unbounded" })),
+	tokens: Type.Optional(Type.Integer({ minimum: 1, description: "Optional aggregate token limit; omitted means unbounded, with at most one provider-call overshoot when set" })),
+	costUsd: Type.Optional(Type.Number({ exclusiveMinimum: 0, description: "Optional USD cost limit; omitted means unbounded, with at most one provider-call overshoot when set" })),
 });
 
 const SubagentSchema = Type.Object({
@@ -34,14 +34,14 @@ const SubagentSchema = Type.Object({
 	cwd: Type.Optional(Type.String()),
 	context: Type.Optional(StringEnum(["fresh", "fork"] as const)),
 	model: Type.Optional(Type.String()),
-	tools: Type.Optional(Type.Array(Type.String())),
+	tools: Type.Optional(Type.Array(Type.String(), { description: "Optional narrowing using persona-local names such as safe_read, safe_list, and safe_search" })),
 	allowWrite: Type.Optional(Type.Boolean()),
-	wallMs: Type.Optional(Type.Number({ description: "Hard wall-clock limit; defaults to 6 hours and is capped at 24 hours" })),
-	turns: Type.Optional(Type.Number({ description: "Optional provider-turn limit; omitted means unbounded" })),
-	tokens: Type.Optional(Type.Number({ description: "Optional aggregate token limit; omitted means unbounded" })),
-	costUsd: Type.Optional(Type.Number({ description: "Optional USD cost limit; omitted means unbounded" })),
+	wallMs: Type.Optional(Type.Integer({ minimum: 1_000, maximum: 86_400_000, description: "Hard wall-clock limit; defaults to 6 hours and is capped at 24 hours" })),
+	turns: Type.Optional(Type.Integer({ minimum: 1, description: "Optional provider-turn limit; omitted means unbounded" })),
+	tokens: Type.Optional(Type.Integer({ minimum: 1, description: "Optional aggregate token limit; omitted means unbounded" })),
+	costUsd: Type.Optional(Type.Number({ exclusiveMinimum: 0, description: "Optional USD cost limit; omitted means unbounded" })),
 	tasks: Type.Optional(Type.Array(TaskSchema, { description: "Independent tasks for one bounded parallel group", maxItems: 16 })),
-	concurrency: Type.Optional(Type.Number({ description: "Parallel group concurrency" })),
+	concurrency: Type.Optional(Type.Integer({ minimum: 1, description: "Parallel group concurrency" })),
 	failFast: Type.Optional(Type.Boolean()),
 });
 
@@ -104,8 +104,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		promptSnippet: "Delegate focused exploration, review, testing, architecture, or specialist work to owned Pi Kit personas.",
 		promptGuidelines: [
 			"Use fresh independent runs for review and refutation; resume only when continuity is required.",
-			"Keep scope concrete; omitted turn/token/cost limits are unbounded, while wall time defaults to six hours.",
-			"Set tighter limits when the orchestrator has a reason; never add arbitrary tiny defaults.",
+			"Keep scope concrete. Omitted turn/token/cost limits are unbounded and wall time defaults to six hours; tighten only with a reason, never arbitrary tiny defaults.",
 			"Never enable allowWrite unless the user explicitly requested delegated writes; Pi confirms each write-capable run in the TUI.",
 			"Use subagent_wait instead of polling output.",
 		],

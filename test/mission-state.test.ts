@@ -121,6 +121,20 @@ describe("Mission state", () => {
 		expect(test.state.readUsage()).toMatchObject({ totalTokens: 7, totalCostUsd: 0.01 });
 	});
 
+	it("checks resume admission before opening confirmation UI", async () => {
+		const test = setup();
+		let resumeTool: { execute: (...args: unknown[]) => Promise<{ content: Array<{ text?: string }> }> } | undefined;
+		const pi = { ...test.pi, registerTool(tool: unknown) { const value = tool as { name: string; execute: (...args: unknown[]) => Promise<{ content: Array<{ text?: string }> }> }; if (value.name === "mission_resume") resumeTool = value; } } as unknown as ExtensionAPI;
+		registerMissionTools(pi, test.state, () => undefined);
+		let confirmations = 0;
+		const ctx = { ...test.ctx, hasUI: true, ui: { confirm: async () => { confirmations++; return true; } } } as unknown as ExtensionContext;
+		await expect(resumeTool!.execute("call", { reason: "Nothing to resume" }, undefined, undefined, ctx)).rejects.toThrow("No Mission exists");
+		test.state.append(test.pi, await test.state.create({ objective: "Do work", chain: "kit" }, test.ctx));
+		const result = await resumeTool!.execute("call", { reason: "Already running" }, undefined, undefined, ctx);
+		expect(result.content[0]?.text).toContain("already active");
+		expect(confirmations).toBe(0);
+	});
+
 	it("lets the agent explicitly resume a paused Mission with a recorded reason", async () => {
 		const test = setup();
 		const created = await test.state.create({ objective: "Do work", title: "Probe", chain: "kit" }, test.ctx);

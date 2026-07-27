@@ -12,10 +12,10 @@ const CreateSchema = Type.Object({
 	title: Type.Optional(Type.String({ description: "Short mission name" })),
 	requirements: Type.Optional(Type.Array(Type.String(), { description: "Success criteria" })),
 	paths: Type.Optional(Type.Array(Type.String(), { description: "Explicit cwd-relative paths owned by the Mission; required to select repositories when cwd is not itself a Git repository" })),
-	tokenBudget: Type.Optional(Type.Number({ description: "Token budget" })),
-	costBudgetUsd: Type.Optional(Type.Number({ description: "USD budget" })),
-	turnBudget: Type.Optional(Type.Number({ description: "Provider-turn budget" })),
-	wallDeadlineMs: Type.Optional(Type.Number({ description: "Wall deadline from creation in milliseconds" })),
+	tokenBudget: Type.Optional(Type.Integer({ minimum: 1, description: "Token budget" })),
+	costBudgetUsd: Type.Optional(Type.Number({ exclusiveMinimum: 0, description: "USD budget" })),
+	turnBudget: Type.Optional(Type.Integer({ minimum: 1, description: "Provider-turn budget" })),
+	wallDeadlineMs: Type.Optional(Type.Integer({ minimum: 1, description: "Wall deadline from creation in milliseconds" })),
 	chain: Type.Optional(Type.String({ description: "Chain name" })),
 	chainBranch: Type.Optional(Type.String({ description: "Chain branch; default main" })),
 });
@@ -50,10 +50,10 @@ const UpdateSchema = Type.Object({
 	objective: Type.Optional(Type.String({ description: "Revised Mission objective" })),
 	requirements: Type.Optional(Type.Array(Type.String(), { description: "Replacement success criteria" })),
 	paths: Type.Optional(Type.Array(Type.String(), { description: "Replacement cwd-relative review scope and Git repository selection" })),
-	tokenBudget: Type.Optional(Type.Union([Type.Null(), Type.Number()], { description: "Replacement token budget; null removes the cap" })),
-	costBudgetUsd: Type.Optional(Type.Union([Type.Null(), Type.Number()], { description: "Replacement USD budget; null removes the cap" })),
-	turnBudget: Type.Optional(Type.Union([Type.Null(), Type.Number()], { description: "Replacement provider-turn budget; null removes the cap" })),
-	wallDeadlineMs: Type.Optional(Type.Union([Type.Null(), Type.Number()], { description: "Replacement wall deadline from now in milliseconds; null removes the deadline" })),
+	tokenBudget: Type.Optional(Type.Union([Type.Null(), Type.Integer({ minimum: 1 })], { description: "Replacement token budget; null removes the cap" })),
+	costBudgetUsd: Type.Optional(Type.Union([Type.Null(), Type.Number({ exclusiveMinimum: 0 })], { description: "Replacement USD budget; null removes the cap" })),
+	turnBudget: Type.Optional(Type.Union([Type.Null(), Type.Integer({ minimum: 1 })], { description: "Replacement provider-turn budget; null removes the cap" })),
+	wallDeadlineMs: Type.Optional(Type.Union([Type.Null(), Type.Integer({ minimum: 1 })], { description: "Replacement wall deadline from now in milliseconds; null removes the deadline" })),
 	reason: Type.String({ description: "Why the Mission specification changed" }),
 });
 
@@ -135,15 +135,19 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 		renderCall: (args: { reason: string }, theme: Theme) => missionCall("resume", args.reason, theme),
 		renderResult: (result: { details?: unknown }, options: { expanded: boolean }, theme: Theme) => missionResult(result.details, options.expanded, theme),
 		async execute(_toolCallId: string, params: { reason: string }, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
-			if (!ctx.hasUI) throw new Error("Headless Mission resume requires the trusted /mission resume command.");
-			if (!await ctx.ui.confirm("Resume Mission?", `Resume autonomous work because: ${params.reason.trim() || "(no reason)"}`)) throw new Error("Mission resume was not authorized by the user.");
 			setContext(ctx);
 			state.loadFromSession(ctx);
 			const current = state.readAny();
 			if (!current) throw new Error("No Mission exists on this branch.");
 			if (current.status === "active") return { content: [{ type: "text" as const, text: `Mission already active: ${current.title}` }], details: { mission: current, usage: state.readUsage() } };
-			if (!params.reason.trim()) throw new Error("Resuming a Mission requires a reason.");
-			const mission = await resumeMission(pi, state, params.reason.trim());
+			const explanation = params.reason.trim();
+			if (!explanation) throw new Error("Resuming a Mission requires a reason.");
+			const remainingLimit = state.limitExceeded();
+			if (remainingLimit) throw new Error(`Mission cannot resume while its ${remainingLimit} limit is exhausted; revise that limit with mission_update first.`);
+			if (!["paused", "blocked", "terminal_error", "budget_limited", "usage_limited", "ended"].includes(current.status)) throw new Error(`Mission cannot resume from ${current.status}.`);
+			if (!ctx.hasUI) throw new Error("Headless Mission resume requires the trusted /mission resume command.");
+			if (!await ctx.ui.confirm("Resume Mission?", `Resume autonomous work because: ${explanation}`)) throw new Error("Mission resume was not authorized by the user.");
+			const mission = await resumeMission(pi, state, explanation);
 			hooks.onResumed?.(ctx);
 			return { content: [{ type: "text" as const, text: `Mission resumed: ${mission.title}\n${formatMissionLocation(mission)}` }], details: { mission, usage: state.readUsage() } };
 		},

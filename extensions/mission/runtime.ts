@@ -303,7 +303,7 @@ export class MissionRuntime {
 
 	private markReviewDue(reason: string): void {
 		const mission = this.state.read();
-		if (!mission || mission.status !== "active") return;
+		if (!mission || mission.status !== "active" || mission.reviewStatus === "running") return;
 		this.state.append(this.pi, this.state.reviewEvent("due", { reason }));
 		this.updateStatus();
 	}
@@ -380,8 +380,7 @@ export class MissionRuntime {
 			return;
 		}
 		if (!mission.reviewWorktreeFingerprint || fingerprint !== mission.reviewWorktreeFingerprint) {
-			this.state.append(this.pi, this.state.reviewEvent("due", { reason: "worktree changed while independent review was running" }));
-			this.updateStatus();
+			this.failReview(mission, "worktree changed while independent review was running");
 			return;
 		}
 		this.state.append(this.pi, this.state.reviewEvent("awaiting_adjudication", { runId: run.spec.id, reason: "Independent review settled; parent must adjudicate the structured reviewer result.", suggestedVerdict: suggested, worktreeFingerprint: fingerprint }));
@@ -389,8 +388,9 @@ export class MissionRuntime {
 	}
 
 	private failReview(mission: MissionCurrent, reason: string): void {
-		if (reviewFailureCount(this.ctx, mission.missionId) >= 2) this.state.append(this.pi, this.state.statusEvent("blocked", "independent review failed three times", reason));
-		else this.state.append(this.pi, this.state.reviewEvent("due", { reason, failure: true }));
+		const shouldBlock = reviewFailureCount(this.ctx, mission.missionId) >= 2;
+		this.state.append(this.pi, this.state.reviewEvent("due", { reason, failure: true }));
+		if (shouldBlock) this.state.append(this.pi, this.state.statusEvent("blocked", "independent review failed three times", reason));
 		this.updateStatus();
 	}
 
@@ -445,7 +445,7 @@ function missionContext(mission: MissionCurrent, usage: ReturnType<MissionState[
 }
 
 function suspendedMissionContext(mission: MissionCurrent, progress: ReturnType<MissionState["readProgress"]>[number] | undefined): string {
-	const resumable = ["paused", "blocked", "terminal_error", "ended"].includes(mission.status);
+	const resumable = ["paused", "blocked", "terminal_error"].includes(mission.status);
 	return [
 		`Mission control state: ${mission.status.toUpperCase()} — ${mission.title}`,
 		`Reason: ${mission.lastReason ?? "not recorded"}${mission.lastSummary ? ` · ${mission.lastSummary}` : ""}`,
