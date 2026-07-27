@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { MissionState } from "../extensions/mission/state.ts";
 import type { MissionEvent } from "../extensions/mission/types.ts";
-import { registerMissionTools } from "../extensions/mission/tools.ts";
+import { completeMission, registerMissionTools } from "../extensions/mission/tools.ts";
 import { registerMissionCommands } from "../extensions/mission/commands.ts";
 
 function setup() {
@@ -253,6 +253,16 @@ describe("Mission state", () => {
 		registerMissionTools(pi, test.state, () => undefined, { onProgress: (input) => { if (input.reviewVerdict) test.state.append(test.pi, test.state.reviewEvent(input.reviewVerdict, { runId: input.reviewRunId, reason: input.reviewReason })); } });
 		const result = await progressTool!.execute("call", { summary: "Adjudicated", reviewVerdict: "clear", reviewRunId: "review-clear", reviewReason: "structured report clear" }, undefined, undefined, test.ctx);
 		expect(result.details?.mission?.reviewStatus).toBe("clear");
+	});
+
+	it("keeps Mission active when completion side effects fail and retries cleanly", async () => {
+		const test = setup();
+		test.state.append(test.pi, await test.state.create({ objective: "Do work", requirements: ["Works"], chain: "kit" }, test.ctx));
+		const input = { summary: "done", audit: [{ requirementIndex: 0, evidence: "tests" }] };
+		await expect(completeMission(test.pi as unknown as ExtensionAPI, test.state, test.ctx, input, "complete", { onCompleted: () => { throw new Error("synthetic side effect failure"); } })).rejects.toThrow("synthetic side effect failure");
+		expect(test.state.read()?.status).toBe("active");
+		const completed = await completeMission(test.pi as unknown as ExtensionAPI, test.state, test.ctx, input, "complete", { onCompleted: () => undefined });
+		expect(completed.mission?.status).toBe("complete");
 	});
 
 	it("records user-requested closure as ended rather than achieved", async () => {

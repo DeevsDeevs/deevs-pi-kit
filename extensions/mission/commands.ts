@@ -2,13 +2,13 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { initializeMissionArtifacts, updateMissionSummaryArtifact } from "./artifacts.ts";
 import type { MissionState } from "./state.ts";
 import { completeMission, formatMission, resumeMission } from "./tools.ts";
-import type { MissionCompleteInput, MissionCreateInput, MissionStatus } from "./types.ts";
+import type { MissionCompleteInput, MissionCreateInput, MissionCurrent, MissionStatus } from "./types.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
 import { chainCheckpoints } from "../chains/checkpoint.ts";
 import { FULL_SCREEN_OVERLAY } from "../shared/dashboard.ts";
 import { MissionDashboard } from "./ui.ts";
 
-export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, setContext: (ctx: ExtensionContext) => void, maybeContinue: (ctx: ExtensionContext) => void, hooks: { validateCompletion?: (input: MissionCompleteInput, ctx: ExtensionContext, directUserRequest?: boolean) => Promise<string[]> | string[]; onCreated?: (ctx: ExtensionContext) => void; onChanged?: (ctx: ExtensionContext) => void; onCompleted?: (ctx: ExtensionContext) => void } = {}): void {
+export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, setContext: (ctx: ExtensionContext) => void, maybeContinue: (ctx: ExtensionContext) => void, hooks: { validateCompletion?: (input: MissionCompleteInput, ctx: ExtensionContext, directUserRequest?: boolean) => Promise<string[]> | string[]; onCreated?: (ctx: ExtensionContext) => void; onChanged?: (ctx: ExtensionContext) => void; onCompleted?: (ctx: ExtensionContext, mission: MissionCurrent) => Promise<void> | void } = {}): void {
 	pi.registerCommand("mission", {
 		description: "Create/manage a branch-scoped Mission.",
 		handler: async (args, ctx) => {

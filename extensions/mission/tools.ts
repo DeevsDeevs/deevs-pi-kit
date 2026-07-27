@@ -75,7 +75,7 @@ const CompleteSchema = Type.Object({
 
 export interface MissionCompletionHooks {
 	validateCompletion?: (input: MissionCompleteInput, ctx: ExtensionContext, directUserRequest?: boolean) => Promise<string[]> | string[];
-	onCompleted?: (ctx: ExtensionContext) => void;
+	onCompleted?: (ctx: ExtensionContext, mission: MissionCurrent) => Promise<void> | void;
 }
 
 interface MissionToolHooks extends MissionCompletionHooks {
@@ -306,10 +306,13 @@ export async function completeMission(
 	const userRequested = input.userRequested === true;
 	const summary = input.summary ?? (userRequested ? USER_END_SUMMARY : undefined);
 	const audit = userRequested ? USER_END_AUDIT : input.audit?.length ? input.audit : undefined;
-	const mission = state.append(pi, state.statusEvent(userRequested ? "ended" : "complete", reason, summary))!;
+	const status = userRequested ? "ended" : "complete";
+	const event = state.statusEvent(status, reason, summary);
+	const stagedMission: MissionCurrent = { ...existing!, status, updatedAt: event.at, lastReason: reason, ...(summary ? { lastSummary: summary } : {}) };
 	const completedUsage = state.readUsage();
-	await writeCompletionAudit(mission, summary, audit, completedUsage, state.readProgress());
-	hooks.onCompleted?.(ctx);
+	await writeCompletionAudit(stagedMission, summary, audit, completedUsage, state.readProgress());
+	await hooks.onCompleted?.(ctx, stagedMission);
+	const mission = state.append(pi, event)!;
 	return { mission, usage: completedUsage, audit, userRequested };
 }
 

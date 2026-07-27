@@ -70,9 +70,10 @@ export class MissionRuntime {
 		this.updateStatus();
 	}
 
-	onCompleted(ctx: ExtensionContext): void {
-		this.restore(ctx);
-		const mission = this.state.readAny();
+	onCompleted(ctx: ExtensionContext, completedMission?: MissionCurrent): void {
+		if (completedMission) this.ctx = ctx;
+		else this.restore(ctx);
+		const mission = completedMission ?? this.state.readAny();
 		if (!mission) return;
 		chainCheckpoints.current?.due(mission.status === "ended" ? "Mission ended" : "Mission completed", "mission_control");
 		runtimeEvents.record(this.pi, {
@@ -88,7 +89,8 @@ export class MissionRuntime {
 				summary: mission.lastSummary || mission.title,
 			},
 		});
-		this.updateStatus();
+		if (completedMission) ctx.ui.setStatus("mission", undefined);
+		else this.updateStatus();
 	}
 
 	async validateCompletion(input: MissionCompleteInput, ctx: ExtensionContext, _directUserRequest = false): Promise<string[]> {
