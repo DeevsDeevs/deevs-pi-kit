@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { initializeMissionArtifacts, updateMissionSummaryArtifact } from "./artifacts.ts";
 import type { MissionState } from "./state.ts";
-import { completeMission, formatMission } from "./tools.ts";
+import { completeMission, formatMission, resumeMission } from "./tools.ts";
 import type { MissionCompleteInput, MissionCreateInput, MissionStatus } from "./types.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
 import { chainCheckpoints } from "../chains/checkpoint.ts";
@@ -24,11 +24,21 @@ export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, s
 
 			const command = trimmed.toLowerCase();
 			if (["pause", "resume", "clear"].includes(command)) {
-				const status = command === "pause" ? "paused" : command === "resume" ? "active" : "cleared";
+				if (command === "resume") {
+					try {
+						const mission = await resumeMission(pi, state, "/resume");
+						ctx.ui.notify(formatMission(mission, state.readUsage()), "info");
+						hooks.onChanged?.(ctx);
+						maybeContinue(ctx);
+					} catch (error) {
+						ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+					}
+					return;
+				}
+				const status = command === "pause" ? "paused" : "cleared";
 				await setStatus(pi, state, status, ctx, `/${command}`);
 				if (status === "paused") chainCheckpoints.current?.due("Mission paused", "mission_control");
 				hooks.onChanged?.(ctx);
-				if (status === "active") maybeContinue(ctx);
 				return;
 			}
 			if (command === "complete" || command === "end" || command === "stop") {
@@ -83,7 +93,10 @@ async function showMissionDashboard(
 			const mission = state.readAny();
 			if (!mission) return;
 			const status: MissionStatus = mission.status === "active" ? "paused" : "active";
-			void setStatus(pi, state, status, ctx, status === "paused" ? "/pause" : "/resume").then(() => {
+			const transition = status === "active"
+				? resumeMission(pi, state, "/resume").then((resumed) => { ctx.ui.notify(formatMission(resumed, state.readUsage()), "info"); })
+				: setStatus(pi, state, status, ctx, "/pause");
+			void transition.then(() => {
 				setContext(ctx);
 				if (status === "paused") chainCheckpoints.current?.due("Mission paused", "mission_control");
 				hooks.onChanged?.(ctx);

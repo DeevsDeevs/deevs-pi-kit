@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -14,21 +15,41 @@ import type { DelegateRun } from "../extensions/subagents/runtime-types.ts";
 import type { MissionCurrent } from "../extensions/mission/types.ts";
 
 function expectedFingerprint(diff = "", head = "head"): string {
-	return createHash("sha256").update(head).update("\0").update(diff).update("\0").digest("hex");
+	return createHash("sha256").update(".").update("\0\0").update(head).update("\0").update(diff).update("\0").digest("hex");
 }
 
-async function setup(options: { pending?: boolean; fingerprint?: () => string; head?: () => string } = {}) {
+async function actualGitExec(command: string, args: string[], options: { cwd?: string }): Promise<{ code: number; stdout: string; stderr: string }> {
+	try {
+		return { code: 0, stdout: execFileSync(command, args, { cwd: options.cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }), stderr: "" };
+	} catch (error) {
+		const failure = error as { status?: number; stdout?: string; stderr?: string };
+		return { code: failure.status ?? 1, stdout: failure.stdout ?? "", stderr: failure.stderr ?? "" };
+	}
+}
+
+function createGitRepo(parent: string, name: string): string {
+	const repo = join(parent, name);
+	mkdirSync(repo);
+	execFileSync("git", ["init", "-q"], { cwd: repo });
+	writeFileSync(join(repo, "tracked.txt"), `${name}\n`);
+	execFileSync("git", ["add", "tracked.txt"], { cwd: repo });
+	execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "initial"], { cwd: repo });
+	return repo;
+}
+
+async function setup(options: { pending?: boolean; fingerprint?: () => string; head?: () => string; cwd?: string; exec?: (command: string, args: string[], options: { cwd?: string }) => Promise<{ code: number; stdout: string; stderr: string }> } = {}) {
 	const branch: Array<Record<string, unknown>> = [];
+	const cwd = options.cwd ?? realpathSync("/tmp");
 	const messages: Array<{ message: unknown; options: unknown }> = [];
 	const handlers = new Map<string, Array<(event: never, ctx: ExtensionContext) => unknown>>();
 	const pi = {
 		appendEntry(customType: string, data: unknown) { branch.push({ type: "custom", customType, data }); },
 		sendMessage(message: unknown, sendOptions: unknown) { messages.push({ message, options: sendOptions }); },
 		on(event: string, handler: (event: never, ctx: ExtensionContext) => unknown) { handlers.set(event, [...(handlers.get(event) ?? []), handler]); },
-		exec: async (_command: string, args: string[]) => ({ code: 0, stdout: args[0] === "rev-parse" ? options.head?.() ?? "head" : args[0] === "diff" ? options.fingerprint?.() ?? "" : "", stderr: "" }),
+		exec: options.exec ?? (async (_command: string, args: string[]) => ({ code: 0, stdout: args[0] === "rev-parse" && args[1] === "--show-toplevel" ? cwd : args[0] === "rev-parse" ? options.head?.() ?? "head" : args[0] === "diff" ? options.fingerprint?.() ?? "" : "", stderr: "" })),
 	} as unknown as ExtensionAPI;
 	const ctx = {
-		cwd: "/tmp/mission-runtime",
+		cwd,
 		isIdle: () => true,
 		hasPendingMessages: () => options.pending === true,
 		sessionManager: { getBranch: () => branch, getSessionFile: () => "/tmp/session.jsonl" },
@@ -271,6 +292,141 @@ describe("Mission runtime", () => {
 			expect(test.messages).toEqual([]);
 		} finally {
 			clearSubagentService(service);
+		}
+	});
+
+	it("does not reset recurring blockers from prose evidence or failed validation", async () => {
+		const test = await setup();
+		test.state.append(test.pi, test.state.progressEvent({ summary: "Still blocked", blocked: true, blockerId: "dependency", evidence: ["human claim"], validation: [{ command: "npm test", exitCode: 1 }] }));
+		await test.emit("agent_settled");
+		expect(test.state.readAny()?.blockerCount).toBe(1);
+		await test.emit("agent_settled");
+		expect(test.state.readAny()?.blockerCount).toBe(1);
+		for (let attempt = 0; attempt < 2; attempt++) {
+			test.state.append(test.pi, test.state.progressEvent({ summary: "Still blocked", blocked: true, blockerId: "dependency", evidence: ["human claim"], validation: [{ command: "npm test", exitCode: 1 }] }));
+			await test.emit("agent_settled");
+		}
+		expect(test.state.readAny()?.blockerCount).toBe(3);
+		expect(test.state.readAny()?.status).toBe("blocked");
+	});
+
+	it("fingerprints explicit repositories from a non-Git parent workspace", async () => {
+		const parent = mkdtempSync(join(tmpdir(), "mission-workspace-"));
+		const repoA = createGitRepo(parent, "repo-a");
+		createGitRepo(parent, "repo-b");
+		const test = await setup({ cwd: parent, exec: actualGitExec });
+		try {
+			test.state.append(test.pi, test.state.objectiveUpdateEvent({ reason: "typed workspace", paths: ["repo-a", "repo-b"] }));
+			test.state.append(test.pi, test.state.progressEvent({ summary: "Validated", validation: [{ command: "npm test", exitCode: 0 }] }));
+			test.state.append(test.pi, test.state.reviewEvent("skipped", { skippedReason: "test" }));
+			await test.emit("turn_start");
+			writeFileSync(join(repoA, "tracked.txt"), "changed\n");
+			const blockers = await test.runtime.validateCompletion({ audit: [{ requirementIndex: 0, evidence: "recorded" }] }, test.ctx);
+			expect(blockers).toContain("Worktree changed during this turn before independent review admission.");
+		} finally {
+			await test.emit("session_shutdown");
+			rmSync(parent, { recursive: true, force: true });
+		}
+	});
+
+	it("ignores changes outside an explicit path scope in the same repository", async () => {
+		const parent = mkdtempSync(join(tmpdir(), "mission-scoped-workspace-"));
+		const repo = createGitRepo(parent, "repo");
+		writeFileSync(join(repo, "other.txt"), "other\n");
+		execFileSync("git", ["add", "other.txt"], { cwd: repo });
+		execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "other"], { cwd: repo });
+		const test = await setup({ cwd: parent, exec: actualGitExec });
+		try {
+			test.state.append(test.pi, test.state.objectiveUpdateEvent({ reason: "typed scope", paths: ["repo/tracked.txt"] }));
+			test.state.append(test.pi, test.state.progressEvent({ summary: "Validated", validation: [{ command: "npm test", exitCode: 0 }] }));
+			test.state.append(test.pi, test.state.reviewEvent("skipped", { skippedReason: "test" }));
+			await test.emit("turn_start");
+			writeFileSync(join(repo, "other.txt"), "unrelated change\n");
+			const blockers = await test.runtime.validateCompletion({ audit: [{ requirementIndex: 0, evidence: "recorded" }] }, test.ctx);
+			expect(blockers).not.toContain("Worktree changed during this turn before independent review admission.");
+		} finally {
+			await test.emit("session_shutdown");
+			rmSync(parent, { recursive: true, force: true });
+		}
+	});
+
+	it("scopes automatic review to typed repositories from their shared parent", async () => {
+		const parent = mkdtempSync(join(tmpdir(), "mission-review-workspace-"));
+		createGitRepo(parent, "repo-a");
+		createGitRepo(parent, "repo-b");
+		const test = await setup({ cwd: parent, exec: actualGitExec });
+		let started: { cwd?: string; task?: string } | undefined;
+		const service = {
+			list: () => ({ runs: [], groups: [] }),
+			start: async (input: { cwd?: string; task?: string }) => {
+				started = input;
+				return { spec: { id: "workspace-review" }, runtime: { status: "running", startedAt: Date.now() } } as DelegateRun;
+			},
+			executor: { onChange: () => () => undefined },
+		} as unknown as SubagentService;
+		setSubagentService(service);
+		try {
+			test.state.append(test.pi, test.state.objectiveUpdateEvent({ reason: "typed workspace", paths: ["repo-a", "repo-b"] }));
+			const internal = test.runtime as unknown as { startReview: (ctx: ExtensionContext, mission: MissionCurrent) => Promise<void> };
+			await internal.startReview(test.ctx, test.state.read()!);
+			expect(started).toBeDefined();
+			expect(started?.cwd).toBe(parent);
+			expect(started?.task).toContain("repo-a");
+			expect(started?.task).toContain("repo-b");
+			expect(test.state.read()?.reviewStatus).toBe("running");
+		} finally {
+			await test.emit("session_shutdown");
+			clearSubagentService(service);
+			rmSync(parent, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects missing typed paths instead of widening to their nearest directory", async () => {
+		const parent = mkdtempSync(join(tmpdir(), "mission-missing-path-"));
+		createGitRepo(parent, "repo");
+		const test = await setup({ cwd: parent, exec: actualGitExec });
+		try {
+			test.state.append(test.pi, test.state.objectiveUpdateEvent({ reason: "typed workspace", paths: ["repo/missing.txt"] }));
+			test.state.append(test.pi, test.state.progressEvent({ summary: "Validated", validation: [{ command: "npm test", exitCode: 0 }] }));
+			test.state.append(test.pi, test.state.reviewEvent("skipped", { skippedReason: "test" }));
+			const blockers = await test.runtime.validateCompletion({ audit: [{ requirementIndex: 0, evidence: "recorded" }] }, test.ctx);
+			expect(blockers).toContain("Mission workspace could not be fingerprinted; ensure explicit Mission paths exist, stay inside cwd, and resolve to Git repositories.");
+		} finally {
+			await test.emit("session_shutdown");
+			rmSync(parent, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects typed paths that escape the workspace through symlinks", async () => {
+		const parent = mkdtempSync(join(tmpdir(), "mission-symlink-workspace-"));
+		const outside = mkdtempSync(join(tmpdir(), "mission-symlink-repo-"));
+		const outsideRepo = createGitRepo(outside, "repo");
+		symlinkSync(outsideRepo, join(parent, "outside-repo"));
+		const test = await setup({ cwd: parent, exec: actualGitExec });
+		try {
+			test.state.append(test.pi, test.state.objectiveUpdateEvent({ reason: "typed workspace", paths: ["outside-repo"] }));
+			test.state.append(test.pi, test.state.progressEvent({ summary: "Validated", validation: [{ command: "npm test", exitCode: 0 }] }));
+			test.state.append(test.pi, test.state.reviewEvent("skipped", { skippedReason: "test" }));
+			const blockers = await test.runtime.validateCompletion({ audit: [{ requirementIndex: 0, evidence: "recorded" }] }, test.ctx);
+			expect(blockers).toContain("Mission workspace could not be fingerprinted; ensure explicit Mission paths exist, stay inside cwd, and resolve to Git repositories.");
+		} finally {
+			await test.emit("session_shutdown");
+			rmSync(parent, { recursive: true, force: true });
+			rmSync(outside, { recursive: true, force: true });
+		}
+	});
+
+	it("fails closed without typed paths in a non-Git workspace", async () => {
+		const parent = mkdtempSync(join(tmpdir(), "mission-nongit-"));
+		const test = await setup({ cwd: parent, exec: actualGitExec });
+		try {
+			test.state.append(test.pi, test.state.progressEvent({ summary: "Validated", validation: [{ command: "npm test", exitCode: 0 }] }));
+			test.state.append(test.pi, test.state.reviewEvent("skipped", { skippedReason: "test" }));
+			const blockers = await test.runtime.validateCompletion({ audit: [{ requirementIndex: 0, evidence: "recorded" }] }, test.ctx);
+			expect(blockers).toContain("Mission workspace could not be fingerprinted; ensure explicit Mission paths exist, stay inside cwd, and resolve to Git repositories.");
+		} finally {
+			await test.emit("session_shutdown");
+			rmSync(parent, { recursive: true, force: true });
 		}
 	});
 

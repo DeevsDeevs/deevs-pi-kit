@@ -164,8 +164,8 @@ export class MissionState {
 			missionId: mission.missionId,
 			generation: mission.generation,
 			at: Date.now(),
-			blockerFingerprint: input.blockerFingerprint,
-			blockerCount: input.madeProgress ? 0 : sameBlocker ? (mission.blockerCount ?? 0) + 1 : input.blockerFingerprint ? 1 : 0,
+			blockerFingerprint: input.madeProgress ? undefined : input.blockerFingerprint ?? mission.blockerFingerprint,
+			blockerCount: input.madeProgress ? 0 : sameBlocker ? (mission.blockerCount ?? 0) + 1 : input.blockerFingerprint ? 1 : mission.blockerCount ?? 0,
 		};
 	}
 

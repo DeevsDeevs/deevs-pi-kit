@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile, realpath, stat } from "node:fs/promises";
+import { dirname, join, relative, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { chainCheckpoints } from "../chains/checkpoint.ts";
 import { getSubagentService } from "../subagents/registry.ts";
@@ -101,9 +101,10 @@ export class MissionRuntime {
 		if (!validation.some((item) => item.exitCode === 0 && item.objectiveVersion === (mission.objectiveVersion ?? 1))) blockers.push("No successful structured validation is recorded for the current objectiveVersion.");
 		if (!["clear", "skipped", "not_required"].includes(mission.reviewStatus ?? "not_required")) blockers.push(`Independent review is ${mission.reviewStatus ?? "due"}.`);
 		if (mission.reviewStatus === "clear" || mission.reviewStatus === "not_required" || mission.reviewStatus === "skipped") {
-			const fingerprint = await worktreeFingerprint(this.pi, ctx.cwd);
-			if (mission.reviewStatus === "clear" && (!fingerprint || fingerprint !== mission.reviewWorktreeFingerprint)) blockers.push("Worktree differs from the schema-validated reviewed snapshot.");
-			if ((mission.reviewStatus === "not_required" || mission.reviewStatus === "skipped") && this.worktreeBeforeTurn !== undefined && fingerprint !== this.worktreeBeforeTurn) blockers.push("Worktree changed during this turn before independent review admission.");
+			const fingerprint = await worktreeFingerprint(this.pi, ctx.cwd, mission);
+			if (!fingerprint) blockers.push("Mission workspace could not be fingerprinted; ensure explicit Mission paths exist, stay inside cwd, and resolve to Git repositories.");
+			else if (mission.reviewStatus === "clear" && fingerprint !== mission.reviewWorktreeFingerprint) blockers.push("Worktree differs from the schema-validated reviewed snapshot.");
+			else if ((mission.reviewStatus === "not_required" || mission.reviewStatus === "skipped") && this.worktreeBeforeTurn !== undefined && fingerprint !== this.worktreeBeforeTurn) blockers.push("Worktree changed during this turn before independent review admission.");
 		}
 		if (chainCheckpoints.current?.read().status === "due") blockers.push("The active Chain checkpoint is due.");
 		try {
@@ -130,7 +131,7 @@ export class MissionRuntime {
 		this.pi.on("session_compact", (_event, ctx) => this.restore(ctx));
 		this.pi.on("turn_start", async (_event, ctx) => {
 			this.restore(ctx);
-			this.worktreeBeforeTurn = await worktreeFingerprint(this.pi, ctx.cwd);
+			this.worktreeBeforeTurn = await worktreeFingerprint(this.pi, ctx.cwd, this.state.read());
 		});
 		this.pi.on("agent_end", (event, ctx) => {
 			this.lastAgentMessages = [...event.messages];
@@ -238,7 +239,7 @@ export class MissionRuntime {
 	private async onSettled(ctx: ExtensionContext): Promise<void> {
 		let mission = this.state.read();
 		if (!mission || mission.status !== "active") return;
-		const after = await worktreeFingerprint(this.pi, ctx.cwd);
+		const after = await worktreeFingerprint(this.pi, ctx.cwd, mission);
 		if (this.worktreeBeforeTurn !== undefined && after !== undefined && this.worktreeBeforeTurn !== after) {
 			this.materialMutationSinceSettle = true;
 			this.markReviewDue("worktree changed during turn");
@@ -260,8 +261,8 @@ export class MissionRuntime {
 		const recentProgress = this.state.readProgress().filter((progress) => progress.at >= (mission!.lastContinuationAt ?? mission!.createdAt));
 		const latestProgress = recentProgress.at(-1);
 		const blocker = latestProgress?.blocked ? latestProgress.blockerId : undefined;
-		const madeProgress = this.materialMutationSinceSettle || recentProgress.some((progress) => !progress.blocked && (progress.evidence.length > 0 || progress.validation.length > 0));
-		this.state.append(this.pi, this.state.settledEvent({ blockerFingerprint: blocker, madeProgress: madeProgress || !blocker }));
+		const madeProgress = this.materialMutationSinceSettle || recentProgress.some((progress) => progress.validation.some((validation) => validation.exitCode === 0 && validation.objectiveVersion === (mission!.objectiveVersion ?? 1)));
+		this.state.append(this.pi, this.state.settledEvent({ blockerFingerprint: blocker, madeProgress }));
 		this.materialMutationSinceSettle = false;
 		this.lastAgentMessages = [];
 		mission = this.state.read()!;
@@ -323,19 +324,21 @@ export class MissionRuntime {
 			this.scheduleRecovery(ctx, 1_000);
 			return;
 		}
-		const reviewWorktreeFingerprint = await worktreeFingerprint(this.pi, ctx.cwd);
-		if (!reviewWorktreeFingerprint) {
-			this.failReview(mission, "could not fingerprint worktree before independent review");
+		const workspace = await resolveMissionWorkspace(this.pi, ctx.cwd, mission.paths);
+		const reviewWorktreeFingerprint = workspace ? await workspaceFingerprint(this.pi, ctx.cwd, workspace) : undefined;
+		if (!reviewWorktreeFingerprint || !workspace) {
+			this.failReview(mission, "could not resolve and fingerprint the Mission Git workspace; ensure explicit Mission paths exist, stay inside cwd, and resolve to Git repositories");
 			return;
 		}
-		const paths = missionReviewPaths(mission);
-		const scope = paths.length ? `Review only these Mission-owned files: ${paths.join(", ")}.` : "Review only files directly required by this Mission.";
+		const reviewCwd = workspace.length === 1 ? workspace[0]!.root : ctx.cwd;
+		const paths = reviewPaths(reviewCwd, workspace);
+		const scope = `Review only these typed Mission workspace paths: ${paths.join(", ")}.`;
 		let run;
 		try {
 			run = await service.start({
 				agent: "reviewer",
 				task: `Fresh independent Mission review. ${scope} Ignore unrelated pre-existing working-tree changes. Mission: ${mission.title}. Objective: ${mission.objective}. Requirements: ${mission.requirements.join(" | ")}. Review normally, call the schema-validated review_report tool exactly once, then summarize for the parent. Do not edit files.`,
-				cwd: ctx.cwd,
+				cwd: reviewCwd,
 				context: "fresh",
 				allowWrite: false,
 				background: true,
@@ -371,7 +374,7 @@ export class MissionRuntime {
 			this.failReview(mission, "independent reviewer did not submit a valid review_report artifact");
 			return;
 		}
-		const fingerprint = this.ctx ? await worktreeFingerprint(this.pi, this.ctx.cwd) : undefined;
+		const fingerprint = this.ctx ? await worktreeFingerprint(this.pi, this.ctx.cwd, mission) : undefined;
 		if (!fingerprint) {
 			this.failReview(mission, "could not fingerprint reviewed worktree");
 			return;
@@ -474,8 +477,60 @@ async function readReviewVerdict(run: DelegateRun): Promise<"clear" | "changes_r
 	} catch { return "unknown"; }
 }
 
-function missionReviewPaths(mission: MissionCurrent): string[] {
-	return mission.paths;
+interface MissionWorkspaceRoot {
+	root: string;
+	scopes: string[];
+}
+
+async function resolveMissionWorkspace(pi: ExtensionAPI, cwd: string, paths: string[]): Promise<MissionWorkspaceRoot[] | undefined> {
+	const candidates = paths.length ? paths.map((item) => resolve(cwd, item)) : [resolve(cwd)];
+	const canonicalCwd = await canonicalPath(resolve(cwd));
+	if (!canonicalCwd) return undefined;
+	const roots = new Map<string, Set<string>>();
+	for (const candidate of candidates) {
+		const canonicalCandidate = await canonicalPath(candidate);
+		if (!canonicalCandidate) return undefined;
+		const ownedPath = relative(canonicalCwd, canonicalCandidate).replaceAll("\\", "/");
+		if (ownedPath === ".." || ownedPath.startsWith("../")) return undefined;
+		const canonicalStart = await nearestDirectory(canonicalCandidate);
+		if (!canonicalStart) return undefined;
+		const result = await pi.exec("git", ["rev-parse", "--show-toplevel"], { cwd: canonicalStart }).catch(() => undefined);
+		if (!result || result.code !== 0 || !result.stdout.trim()) return undefined;
+		const root = await realpath(resolve(result.stdout.trim())).catch(() => resolve(result.stdout.trim()));
+		const scope = relative(root, canonicalCandidate).replaceAll("\\", "/");
+		if (scope === ".." || scope.startsWith("../")) return undefined;
+		const scopes = roots.get(root) ?? new Set<string>();
+		if (!scope) scopes.clear();
+		else if (scopes.size || !roots.has(root)) scopes.add(scope);
+		roots.set(root, scopes);
+	}
+	return [...roots.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([root, scopes]) => ({ root, scopes: [...scopes].sort() }));
+}
+
+async function canonicalPath(candidate: string): Promise<string | undefined> {
+	return realpath(resolve(candidate)).catch(() => undefined);
+}
+
+async function nearestDirectory(candidate: string): Promise<string | undefined> {
+	let current = candidate;
+	while (true) {
+		try {
+			const info = await stat(current);
+			return info.isDirectory() ? current : dirname(current);
+		} catch {
+			const parent = dirname(current);
+			if (parent === current) return undefined;
+			current = parent;
+		}
+	}
+}
+
+function reviewPaths(reviewCwd: string, workspace: MissionWorkspaceRoot[]): string[] {
+	return workspace.flatMap(({ root, scopes }) => {
+		const prefix = relative(reviewCwd, root).replaceAll("\\", "/");
+		if (!scopes.length) return [prefix || "."];
+		return scopes.map((scope) => [prefix, scope].filter(Boolean).join("/"));
+	});
 }
 
 function reviewFailureCount(ctx: ExtensionContext | undefined, missionId: string): number {
@@ -489,18 +544,32 @@ function reviewFailureCount(ctx: ExtensionContext | undefined, missionId: string
 	}).length;
 }
 
-async function worktreeFingerprint(pi: ExtensionAPI, cwd: string): Promise<string | undefined> {
+async function worktreeFingerprint(pi: ExtensionAPI, cwd: string, mission: MissionCurrent | undefined): Promise<string | undefined> {
+	if (!mission) return undefined;
+	const workspace = await resolveMissionWorkspace(pi, cwd, mission.paths);
+	return workspace ? workspaceFingerprint(pi, cwd, workspace) : undefined;
+}
+
+async function workspaceFingerprint(pi: ExtensionAPI, cwd: string, workspace: MissionWorkspaceRoot[]): Promise<string | undefined> {
 	try {
-		const [head, diff, untracked] = await Promise.all([
-			pi.exec("git", ["rev-parse", "HEAD"], { cwd }),
-			pi.exec("git", ["diff", "--binary", "--no-ext-diff", "HEAD", "--"], { cwd }),
-			pi.exec("git", ["ls-files", "--others", "--exclude-standard", "-z"], { cwd }),
-		]);
-		if (head.code !== 0 || diff.code !== 0 || untracked.code !== 0) return undefined;
-		const hash = createHash("sha256").update(head.stdout.trim()).update("\0").update(diff.stdout).update("\0");
-		for (const relative of untracked.stdout.split("\0").filter(Boolean).sort()) {
-			hash.update(relative).update("\0");
-			try { hash.update(await readFile(join(cwd, relative))); } catch { hash.update("[unreadable]"); }
+		const hash = createHash("sha256");
+		const canonicalCwd = await canonicalPath(cwd);
+		if (!canonicalCwd) return undefined;
+		for (const { root, scopes } of workspace) {
+			const literalScopes = scopes.map((scope) => `:(literal)${scope}`);
+			const pathspec = literalScopes.length ? ["--", ...literalScopes] : [];
+			const [head, diff, untracked] = await Promise.all([
+				pi.exec("git", ["rev-parse", "HEAD"], { cwd: root }),
+				pi.exec("git", ["diff", "--binary", "--no-ext-diff", "HEAD", "--", ...literalScopes], { cwd: root }),
+				pi.exec("git", ["ls-files", "--others", "--exclude-standard", "-z", ...pathspec], { cwd: root }),
+			]);
+			if (head.code !== 0 || diff.code !== 0 || untracked.code !== 0) return undefined;
+			hash.update(relative(canonicalCwd, root) || ".").update("\0").update(scopes.join("\0")).update("\0");
+			hash.update(head.stdout.trim()).update("\0").update(diff.stdout).update("\0");
+			for (const path of untracked.stdout.split("\0").filter(Boolean).sort()) {
+				hash.update(path).update("\0");
+				try { hash.update(await readFile(join(root, path))); } catch { hash.update("[unreadable]"); }
+			}
 		}
 		return hash.digest("hex");
 	} catch { return undefined; }

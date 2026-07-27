@@ -148,6 +148,23 @@ describe("Mission state", () => {
 		expect(resumed).toBe(1);
 	});
 
+	it("does not resume a limited Mission through the direct command", async () => {
+		const test = setup();
+		test.state.append(test.pi, await test.state.create({ objective: "Do work", chain: "kit", turnBudget: 1 }, test.ctx));
+		test.state.append(test.pi, test.state.continuedEvent());
+		test.state.append(test.pi, test.state.statusEvent("usage_limited", "turn limit exhausted"));
+		let command: { handler: (args: string, ctx: ExtensionContext) => Promise<void> } | undefined;
+		let continuations = 0;
+		const pi = { ...test.pi, registerCommand(_name: string, value: typeof command) { command = value; } } as unknown as ExtensionAPI;
+		registerMissionCommands(pi, test.state, () => undefined, () => { continuations++; });
+		const notices: string[] = [];
+		const ctx = { ...test.ctx, ui: { notify: (message: string) => { notices.push(message); } } } as unknown as ExtensionContext;
+		await command!.handler("resume", ctx);
+		expect(test.state.readAny()?.status).toBe("usage_limited");
+		expect(continuations).toBe(0);
+		expect(notices[0]).toContain("turn limit is exhausted");
+	});
+
 	it("refuses clear adjudication without a structured reviewer verdict", async () => {
 		const test = setup();
 		test.state.append(test.pi, await test.state.create({ objective: "Do work", chain: "kit" }, test.ctx));

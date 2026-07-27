@@ -61,7 +61,7 @@ Tool: `workflow`.
 
 ### Mission
 
-Create a branch-scoped objective with `agent_settled` autonomous continuation, user-priority admission, wall/turn/token/cost limits, objective versions, independent review convergence, child-settlement and Chain completion vetoes, and durable artifacts under `.missions/`.
+Create a branch-scoped objective with `agent_settled` autonomous continuation, user-priority admission, wall/turn/token/cost limits, objective versions, independent review convergence, child-settlement and Chain completion vetoes, and durable artifacts under `.missions/`. In a non-Git workspace containing several repositories, pass explicit cwd-relative Mission `paths`; review and mutation fingerprints then cover each selected Git root independently.
 
 Tools: `mission_get`, `mission_resume`, `mission_create`, `mission_update`, `mission_progress`, `mission_search`, `mission_complete`.
 
