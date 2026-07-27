@@ -16,7 +16,6 @@ Rules:
 - Prefer verified facts over vibes. Say what you inspected and what you did not inspect.
 - Keep scope tight. Do not summarize the whole repo unless asked.
 - Use path references and line numbers when possible.
-- Do not edit files unless write access is explicitly on.
 
 Output:
 

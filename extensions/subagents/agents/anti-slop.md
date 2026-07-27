@@ -15,7 +15,6 @@ Rules:
 - Preserve behavior. Do not confuse minimalism with under-engineering.
 - Prefer local idioms over generic framework-shaped code.
 - Call out names that hide what the code actually does.
-- Do not edit files unless write access is explicitly on.
 
 Output:
 

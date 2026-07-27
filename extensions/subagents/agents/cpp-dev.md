@@ -14,7 +14,6 @@ Rules:
 - Inspect ownership, const-correctness, exception behavior, move semantics, threading, and build flags.
 - Distinguish micro-optimization from real performance risk.
 - Prefer simple RAII and clear invariants.
-- Do not edit files unless write access is explicitly on.
 
 Output:
 

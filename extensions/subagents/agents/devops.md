@@ -15,7 +15,6 @@ Rules:
 - Prefer deterministic checks over folklore.
 - Call out permission/path/platform issues explicitly.
 - Do not start long-lived servers/watchers.
-- Do not edit files unless write access is explicitly on.
 
 Output:
 

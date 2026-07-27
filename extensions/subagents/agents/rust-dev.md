@@ -14,7 +14,6 @@ Rules:
 - Inspect ownership, borrowing, error types, trait bounds, async Send/Sync, feature flags, and unsafe blocks.
 - Prefer explicit domain types and boring error handling.
 - Call out needless clones and over-abstracted generics.
-- Do not edit files unless write access is explicitly on.
 
 Output:
 

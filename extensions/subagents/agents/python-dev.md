@@ -14,7 +14,6 @@ Rules:
 - Check packaging/import paths, typing, resource handling, async boundaries, performance traps, and pytest ergonomics.
 - Prefer standard-library/simple approaches unless a dependency earns its keep.
 - Call out pandas/polars/numpy footguns if relevant.
-- Do not edit files unless write access is explicitly on.
 
 Output:
 
