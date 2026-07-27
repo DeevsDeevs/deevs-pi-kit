@@ -8,12 +8,15 @@ import type { MissionCreateInput, MissionCurrent, MissionEvent, MissionProgressI
 
 export const MISSION_CUSTOM_TYPE = "deevs-mission-state";
 const DEFAULT_CHAIN_BRANCH = "main";
+const MAX_REQUIREMENTS = 12;
+const MAX_PATHS = 100;
 
 export class MissionState {
 	private current: MissionCurrent | undefined;
 	private usage: MissionUsage = zeroUsage();
 	private progress: MissionProgressRecord[] = [];
 	private continuationProgressIndex = 0;
+	private creationPending = false;
 
 	read(): MissionCurrent | undefined {
 		if (!this.current || this.current.status === "cleared" || this.current.status === "complete" || this.current.status === "ended") return undefined;
@@ -66,49 +69,62 @@ export class MissionState {
 	}
 
 	async create(input: MissionCreateInput, ctx: ExtensionContext): Promise<MissionEvent> {
-		const objective = input.objective.trim();
-		if (!objective) throw new Error("Mission objective must not be empty.");
-		const requirements = normalizeRequirements(input.requirements?.length ? input.requirements : inferRequirements(objective));
-		const title = normalizeTitle(input.title) || deriveMissionTitle(objective, requirements);
-		const baseSlug = slugify(title).slice(0, 42) || "mission";
-		const chain = input.chain?.trim() || await chooseDefaultChain(ctx.cwd, title, baseSlug);
-		const now = Date.now();
-		const missionId = `m_${now.toString(36)}_${randomUUID().slice(0, 6)}`;
-		const slug = `${baseSlug}-${missionId.slice(-6)}`;
-		const baseline = aggregateUsage(ctx.sessionManager.getBranch() as Array<any>);
-		return {
-			kind: "created",
-			missionId,
-			at: now,
-			objective,
-			title,
-			requirements,
-			status: "active",
-			slug,
-			chain,
-			chainBranch: input.chainBranch?.trim() || DEFAULT_CHAIN_BRANCH,
-			artifactDir: missionDir(ctx.cwd, slug),
-			paths: normalizePaths(input.paths),
-			tokenBudget: positiveNumber(input.tokenBudget, "tokenBudget"),
-			costBudgetUsd: positiveNumber(input.costBudgetUsd ?? 1_000, "costBudgetUsd"),
-			baselineMainTokens: baseline.mainTokens,
-			baselineSubagentTokens: baseline.subagentTokens,
-			baselineMainCostUsd: baseline.mainCostUsd,
-			baselineSubagentCostUsd: baseline.subagentCostUsd,
-			generation: randomUUID(),
-			objectiveVersion: 1,
-			turnBudget: positiveInteger(input.turnBudget, "turnBudget"),
-			wallDeadlineAt: input.wallDeadlineMs === undefined ? undefined : now + positiveNumber(input.wallDeadlineMs, "wallDeadlineMs")!,
-			reviewStatus: "not_required",
-			blockerCount: 0,
-			turnCount: 0,
-		};
+		const existing = this.readAny();
+		if (this.creationPending || (existing && existing.status !== "complete" && existing.status !== "ended")) throw new Error(`Mission already exists${existing ? `: ${existing.title}` : " or is being created"}. End or clear it before creating another.`);
+		this.creationPending = true;
+		try {
+			assertInputLimits(input.requirements, input.paths);
+			const objective = input.objective.trim();
+			if (!objective) throw new Error("Mission objective must not be empty.");
+			const requirements = normalizeRequirements(input.requirements?.length ? input.requirements : inferRequirements(objective));
+			const title = normalizeTitle(input.title) || deriveMissionTitle(objective, requirements);
+			const baseSlug = slugify(title).slice(0, 42) || "mission";
+			const chain = input.chain?.trim() || await chooseDefaultChain(ctx.cwd, title, baseSlug);
+			const now = Date.now();
+			const missionId = `m_${now.toString(36)}_${randomUUID().slice(0, 6)}`;
+			const slug = `${baseSlug}-${missionId.slice(-6)}`;
+			const baseline = aggregateUsage(ctx.sessionManager.getBranch() as Array<any>);
+			return {
+				kind: "created",
+				missionId,
+				at: now,
+				objective,
+				title,
+				requirements,
+				status: "active",
+				slug,
+				chain,
+				chainBranch: input.chainBranch?.trim() || DEFAULT_CHAIN_BRANCH,
+				artifactDir: missionDir(ctx.cwd, slug),
+				paths: normalizePaths(input.paths),
+				tokenBudget: positiveNumber(input.tokenBudget, "tokenBudget"),
+				costBudgetUsd: positiveNumber(input.costBudgetUsd ?? 1_000, "costBudgetUsd"),
+				baselineMainTokens: baseline.mainTokens,
+				baselineSubagentTokens: baseline.subagentTokens,
+				baselineMainCostUsd: baseline.mainCostUsd,
+				baselineSubagentCostUsd: baseline.subagentCostUsd,
+				generation: randomUUID(),
+				objectiveVersion: 1,
+				turnBudget: positiveInteger(input.turnBudget, "turnBudget"),
+				wallDeadlineAt: input.wallDeadlineMs === undefined ? undefined : now + positiveNumber(input.wallDeadlineMs, "wallDeadlineMs")!,
+				reviewStatus: "not_required",
+				blockerCount: 0,
+				turnCount: 0,
+			};
+		} catch (error) {
+			this.creationPending = false;
+			throw error;
+		}
 	}
 
 	append(pi: { appendEntry<T = unknown>(customType: string, data?: T): void }, event: MissionEvent): MissionCurrent | undefined {
-		pi.appendEntry(MISSION_CUSTOM_TYPE, event);
-		this.applyEvent(event);
-		return this.readAny();
+		try {
+			pi.appendEntry(MISSION_CUSTOM_TYPE, event);
+			this.applyEvent(event);
+			return this.readAny();
+		} finally {
+			if (event.kind === "created") this.creationPending = false;
+		}
 	}
 
 	statusEvent(status: MissionStatus, reason?: string, summary?: string): MissionEvent {
@@ -123,6 +139,7 @@ export class MissionState {
 
 	objectiveUpdateEvent(input: MissionUpdateInput): MissionEvent {
 		const mission = this.requireCurrent();
+		assertInputLimits(input.requirements, input.paths);
 		const objective = input.objective?.trim() || mission.objective;
 		const requirements = input.requirements?.length ? normalizeRequirements(input.requirements) : mission.requirements;
 		if (!input.reason.trim()) throw new Error("Mission objective updates require a reason.");
@@ -160,6 +177,11 @@ export class MissionState {
 			reviewFailure: input.failure,
 			reviewWorktreeFingerprint: input.worktreeFingerprint,
 		};
+	}
+
+	workspaceFingerprintEvent(fingerprint: string): MissionEvent {
+		const mission = this.requireCurrent();
+		return { kind: "workspace_fingerprinted", missionId: mission.missionId, generation: mission.generation, at: Date.now(), admittedWorktreeFingerprint: fingerprint };
 	}
 
 	settledEvent(input: { blockerFingerprint?: string; madeProgress: boolean }): MissionEvent {
@@ -248,6 +270,7 @@ export class MissionState {
 				reviewRunId: event.reviewRunId,
 				reviewReason: event.reviewReason,
 				reviewSkippedReason: event.reviewSkippedReason,
+				admittedWorktreeFingerprint: event.admittedWorktreeFingerprint,
 				blockerFingerprint: event.blockerFingerprint,
 				blockerCount: event.blockerCount ?? 0,
 				turnCount: event.turnCount ?? 0,
@@ -283,6 +306,7 @@ export class MissionState {
 		if (event.reviewSuggestedVerdict !== undefined) this.current.reviewSuggestedVerdict = event.reviewSuggestedVerdict;
 		if (event.reviewFailure !== undefined) this.current.reviewFailure = event.reviewFailure;
 		if (event.reviewWorktreeFingerprint !== undefined) this.current.reviewWorktreeFingerprint = event.reviewWorktreeFingerprint;
+		if (event.admittedWorktreeFingerprint !== undefined) this.current.admittedWorktreeFingerprint = event.admittedWorktreeFingerprint;
 		if (event.kind === "settled") {
 			this.current.blockerFingerprint = event.blockerFingerprint;
 			this.current.blockerCount = event.blockerCount ?? 0;
@@ -342,13 +366,17 @@ function normalizeProgressList(values: string[] | undefined, maxItems: number): 
 	return result;
 }
 
+function assertInputLimits(requirements: string[] | undefined, paths: string[] | undefined): void {
+	if ((requirements?.length ?? 0) > MAX_REQUIREMENTS) throw new Error(`Mission requirements are limited to ${MAX_REQUIREMENTS}.`);
+	if ((paths?.length ?? 0) > MAX_PATHS) throw new Error(`Mission paths are limited to ${MAX_PATHS}.`);
+}
+
 function normalizePaths(values: string[] | undefined): string[] {
 	const result: string[] = [];
 	for (const value of values ?? []) {
 		const path = normalizePath(value.trim()).replaceAll("\\", "/");
 		if (!path || path === "." || isAbsolute(path) || path === ".." || path.startsWith("../")) throw new Error(`Mission path must stay relative to the project: ${value}`);
 		if (!result.includes(path)) result.push(path);
-		if (result.length >= 100) break;
 	}
 	return result;
 }
@@ -374,7 +402,6 @@ function normalizeRequirements(values: string[]): string[] {
 		if (seen.has(key)) continue;
 		seen.add(key);
 		result.push(cleaned);
-		if (result.length >= 12) break;
 	}
 	return result;
 }

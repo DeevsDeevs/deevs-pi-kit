@@ -70,6 +70,16 @@ describe("bounded Jobs", () => {
 		await expect(manager.start({ name: "argv-env-detach", argv: ["env", "MODE=test", "setsid", "node", "worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
 		await expect(manager.start({ name: "argv-env-unset-detach", argv: ["env", "-u", "FOO", "setsid", "node", "worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
 		await expect(manager.start({ name: "argv-env-split-detach", argv: ["env", "-S", "setsid node worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
+		await expect(manager.start({ name: "argv-env-attached-split-detach", argv: ["env", "-Ssetsid node worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
+		await expect(manager.start({ name: "argv-env-split-options-detach", argv: ["env", "-S", "", "-u", "FOO", "setsid", "node", "worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
+		await expect(manager.start({ name: "argv-env-split-escape-detach", argv: ["env", "-S", "setsid\\_node worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
+		await expect(manager.start({ name: "argv-env-split-dynamic", argv: ["env", "-S", "${COMMAND} worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
+		await expect(manager.start({ name: "argv-time-detach", argv: ["/usr/bin/time", "-p", "setsid", "node", "worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
+		await expect(manager.start({ name: "argv-nice-detach", argv: ["/usr/bin/nice", "-n", "5", "setsid", "node", "worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
+		await expect(manager.start({ name: "shell-nice-detach", command: "nice -5 setsid node worker.js" }, ctx)).rejects.toThrow("Detached process launch");
+		await expect(manager.start({ name: "argv-timeout-detach", argv: ["timeout", "5s", "setsid", "node", "worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
+		await expect(manager.start({ name: "argv-timeout-double-dash-detach", argv: ["timeout", "--", "5s", "setsid", "node", "worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
+		await expect(manager.start({ name: "argv-stdbuf-detach", argv: ["stdbuf", "-oL", "setsid", "node", "worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
 		await expect(manager.start({ name: "argv-env-chdir-detach", argv: ["env", "-C", "/tmp", "setsid", "node", "worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
 		await expect(manager.start({ name: "argv-assignment-detach", argv: ["bash", "-lc", "FOO=x setsid node worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
 		await expect(manager.start({ name: "argv-substitution-detach", argv: ["bash", "-lc", "echo \"$(setsid node worker.js)\""] }, ctx)).rejects.toThrow("Detached process launch");
@@ -83,6 +93,13 @@ describe("bounded Jobs", () => {
 		expect(detectDetachedArgv(["bash", "-lc", "printf '%s' '`setsid node`'"])).toBeUndefined();
 		expect(detectDetachedArgv(["bash", "-lc", "echo message |& rg setsid ."])).toBeUndefined();
 		expect(detectDetachedArgv(["env", "MODE=test", "rg", "setsid", "."])).toBeUndefined();
+		expect(detectDetachedArgv(["env", "-Srg setsid ."])).toBeUndefined();
+		expect(detectDetachedArgv(["env", "-S", "rg", "setsid", "."])).toBeUndefined();
+		expect(detectDetachedArgv(["env", "-S", "rg '; setsid'"])).toBeUndefined();
+		expect(detectDetachedArgv(["env", "-S", "echo \\${COMMAND}"])).toBeUndefined();
+		expect(detectDetachedArgv(["env", "-S", "", "setsid", "node"])).toContain("Detached process launch");
+		expect(detectDetachedArgv(["/usr/bin/time", "-f", "setsid", "rg", "nohup", "."])).toBeUndefined();
+		expect(detectDetachedArgv(["nice", "-n", "5", "rg", "setsid", "."])).toBeUndefined();
 		expect(detectDetachedArgv(["sudo", "-u", "root", "setsid", "node", "worker.js"])).toContain("Detached process launch");
 	});
 

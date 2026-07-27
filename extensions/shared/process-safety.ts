@@ -25,6 +25,10 @@ export function detectDetachedArgv(argv: string[]): string | undefined {
 		return command ? detectDetachedShell(command) : undefined;
 	}
 	if (executable === "env") return detectEnvArgv(argv.slice(1));
+	if (executable === "time") return detectTimeArgv(argv.slice(1));
+	if (executable === "nice") return detectNiceArgv(argv.slice(1));
+	if (executable === "timeout") return detectTimeoutArgv(argv.slice(1));
+	if (executable === "stdbuf") return detectStdbufArgv(argv.slice(1));
 	if (executable === "sudo") return detectSudoArgv(argv.slice(1));
 	if (executable === "command") return detectCommandArgv(argv.slice(1));
 	return undefined;
@@ -55,7 +59,10 @@ function segmentDetached(words: string[]): boolean {
 	if (COMMAND_PREFIXES.has(executable)) return segmentDetached(argv);
 	if (executable === "exec") return segmentDetached(execCommand(argv));
 	if (executable === "eval") return shellHasDetached(argv.join(" "));
-	if (executable === "time") return segmentDetached(argv.filter((value) => value !== "-p" && !value.startsWith("--format")));
+	if (executable === "time") return detectTimeArgv(argv) !== undefined;
+	if (executable === "nice") return detectNiceArgv(argv) !== undefined;
+	if (executable === "timeout") return detectTimeoutArgv(argv) !== undefined;
+	if (executable === "stdbuf") return detectStdbufArgv(argv) !== undefined;
 	if (SHELL_EXECUTABLES.has(executable)) {
 		const command = shellCommand(argv);
 		return command ? shellHasDetached(command) : false;
@@ -78,15 +85,101 @@ function execCommand(argv: string[]): string[] {
 	return argv.slice(index);
 }
 
-function detectEnvArgv(argv: string[]): string | undefined {
+function detectEnvArgv(argv: string[], splitDepth = 0): string | undefined {
+	if (splitDepth > 8) return DETACH_ERROR;
 	let index = 0;
 	while (index < argv.length) {
 		const value = argv[index]!;
 		if (value === "--") { index++; break; }
-		if (value === "-S" || value === "--split-string") return detectDetachedShell(argv[index + 1] ?? "");
-		if (value.startsWith("--split-string=")) return detectDetachedShell(value.slice("--split-string=".length));
+		if (value === "-S" || value === "--split-string") return detectEnvSplit(argv[index + 1] ?? "", argv.slice(index + 2), splitDepth);
+		if (value.startsWith("-S") && value.length > 2) return detectEnvSplit(value.slice(2), argv.slice(index + 1), splitDepth);
+		if (value.startsWith("--split-string=")) return detectEnvSplit(value.slice("--split-string=".length), argv.slice(index + 1), splitDepth);
 		if (ENV_VALUE_OPTIONS.has(value)) { index += 2; continue; }
 		if (value.startsWith("-") || isAssignment(value)) { index++; continue; }
+		break;
+	}
+	return detectDetachedArgv(argv.slice(index));
+}
+
+function detectEnvSplit(source: string, trailing: string[], splitDepth: number): string | undefined {
+	const words = splitEnvString(source);
+	return words ? detectEnvArgv([...words, ...trailing], splitDepth + 1) : DETACH_ERROR;
+}
+
+function splitEnvString(source: string): string[] | undefined {
+	const result: string[] = [];
+	let word = "";
+	let quote: "'" | "\"" | undefined;
+	const flush = () => { if (word) { result.push(word); word = ""; } };
+	for (let index = 0; index < source.length; index++) {
+		const char = source[index]!;
+		if (char === "\\" && quote !== "'") {
+			const escaped = source[++index];
+			if (escaped === undefined) return undefined;
+			if (escaped === "c") break;
+			if (escaped === "_") { if (quote) word += " "; else flush(); continue; }
+			if ("fnrtv".includes(escaped)) { if (quote) word += " "; else flush(); continue; }
+			word += escaped;
+			continue;
+		}
+		if (char === "$" && quote !== "'" && source[index + 1] === "{") return undefined;
+		if ((char === "'" || char === "\"") && (!quote || quote === char)) { quote = quote ? undefined : char; continue; }
+		if (!quote && /\s/.test(char)) { flush(); continue; }
+		word += char;
+	}
+	if (quote) return undefined;
+	flush();
+	return result;
+}
+
+function detectTimeArgv(argv: string[]): string | undefined {
+	let index = 0;
+	while (index < argv.length) {
+		const value = argv[index]!;
+		if (value === "--") { index++; break; }
+		if (value === "-f" || value === "--format" || value === "-o" || value === "--output") { index += 2; continue; }
+		if (value.startsWith("--format=") || value.startsWith("--output=") || /^-[fo].+/.test(value)) { index++; continue; }
+		if (value.startsWith("-")) { index++; continue; }
+		break;
+	}
+	return detectDetachedArgv(argv.slice(index));
+}
+
+function detectNiceArgv(argv: string[]): string | undefined {
+	let index = 0;
+	while (index < argv.length) {
+		const value = argv[index]!;
+		if (value === "--") { index++; break; }
+		if (value === "-n" || value === "--adjustment") { index += 2; continue; }
+		if (value.startsWith("--adjustment=") || /^-\d+$/.test(value)) { index++; continue; }
+		if (value.startsWith("-")) { index++; continue; }
+		break;
+	}
+	return detectDetachedArgv(argv.slice(index));
+}
+
+function detectTimeoutArgv(argv: string[]): string | undefined {
+	let index = 0;
+	while (index < argv.length) {
+		const value = argv[index]!;
+		if (value === "--") { index++; break; }
+		if (value === "-k" || value === "--kill-after" || value === "-s" || value === "--signal") { index += 2; continue; }
+		if (value.startsWith("--kill-after=") || value.startsWith("--signal=") || value.startsWith("-k") || value.startsWith("-s")) { index++; continue; }
+		if (value.startsWith("-")) { index++; continue; }
+		break;
+	}
+	if (index < argv.length) index++; // duration follows options, including after --
+	return detectDetachedArgv(argv.slice(index));
+}
+
+function detectStdbufArgv(argv: string[]): string | undefined {
+	let index = 0;
+	while (index < argv.length) {
+		const value = argv[index]!;
+		if (value === "--") { index++; break; }
+		if (value === "-i" || value === "--input" || value === "-o" || value === "--output" || value === "-e" || value === "--error") { index += 2; continue; }
+		if (/^-[ioe].+/.test(value) || value.startsWith("--input=") || value.startsWith("--output=") || value.startsWith("--error=")) { index++; continue; }
+		if (value.startsWith("-")) { index++; continue; }
 		break;
 	}
 	return detectDetachedArgv(argv.slice(index));

@@ -10,8 +10,8 @@ import type { MissionCompleteInput, MissionCreateInput, MissionCurrent, MissionP
 const CreateSchema = Type.Object({
 	objective: Type.String({ description: "Mission objective/user request" }),
 	title: Type.Optional(Type.String({ description: "Short mission name" })),
-	requirements: Type.Optional(Type.Array(Type.String(), { description: "Success criteria" })),
-	paths: Type.Optional(Type.Array(Type.String(), { description: "Explicit cwd-relative paths owned by the Mission; required to select repositories when cwd is not itself a Git repository" })),
+	requirements: Type.Optional(Type.Array(Type.String(), { maxItems: 12, description: "Success criteria" })),
+	paths: Type.Optional(Type.Array(Type.String(), { maxItems: 100, description: "Explicit cwd-relative paths owned by the Mission; required to select repositories when cwd is not itself a Git repository" })),
 	tokenBudget: Type.Optional(Type.Integer({ minimum: 1, description: "Token budget" })),
 	costBudgetUsd: Type.Optional(Type.Number({ exclusiveMinimum: 0, description: "USD budget" })),
 	turnBudget: Type.Optional(Type.Integer({ minimum: 1, description: "Provider-turn budget" })),
@@ -48,8 +48,8 @@ const ProgressSchema = Type.Object({
 
 const UpdateSchema = Type.Object({
 	objective: Type.Optional(Type.String({ description: "Revised Mission objective" })),
-	requirements: Type.Optional(Type.Array(Type.String(), { description: "Replacement success criteria" })),
-	paths: Type.Optional(Type.Array(Type.String(), { description: "Replacement cwd-relative review scope and Git repository selection" })),
+	requirements: Type.Optional(Type.Array(Type.String(), { maxItems: 12, description: "Replacement success criteria" })),
+	paths: Type.Optional(Type.Array(Type.String(), { maxItems: 100, description: "Replacement cwd-relative review scope and Git repository selection" })),
 	tokenBudget: Type.Optional(Type.Union([Type.Null(), Type.Integer({ minimum: 1 })], { description: "Replacement token budget; null removes the cap" })),
 	costBudgetUsd: Type.Optional(Type.Union([Type.Null(), Type.Number({ exclusiveMinimum: 0 })], { description: "Replacement USD budget; null removes the cap" })),
 	turnBudget: Type.Optional(Type.Union([Type.Null(), Type.Integer({ minimum: 1 })], { description: "Replacement provider-turn budget; null removes the cap" })),
@@ -64,7 +64,7 @@ const SearchSchema = Type.Object({
 
 const AuditItemSchema = Type.Object({
 	requirementIndex: Type.Integer({ minimum: 0, description: "Zero-based Mission requirement index" }),
-	evidence: Type.String({ description: "Evidence for that requirement" }),
+	evidence: Type.String({ minLength: 1, description: "Evidence for that requirement" }),
 });
 
 const CompleteSchema = Type.Object({
@@ -192,17 +192,21 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 		renderCall: (args: MissionProgressInput, theme: Theme) => missionCall("progress", args.summary, theme),
 		renderResult: (result: { details?: unknown }, options: { expanded: boolean }, theme: Theme) => missionResult(result.details, options.expanded, theme),
 		async execute(_toolCallId: string, params: MissionProgressInput, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
-			if (params.reviewSkip && !ctx.hasUI) throw new Error("Headless review waiver requires a trusted direct command.");
-			if (params.reviewSkip && !await ctx.ui.confirm("Skip Mission review?", `Record this review waiver: ${params.reviewSkipReason?.trim() || "(no explanation)"}`)) throw new Error("Mission review waiver was not authorized by the user.");
 			setContext(ctx);
 			state.loadFromSession(ctx);
 			const currentMission = state.read();
+			if (params.reviewSkip && params.reviewVerdict) throw new Error("Review waiver and adjudication are mutually exclusive.");
+			if (!params.reviewVerdict && (params.reviewRunId || params.reviewReason)) throw new Error("reviewRunId and reviewReason require reviewVerdict.");
+			if (params.reviewSkip && !params.reviewSkipReason?.trim()) throw new Error("Review waiver requires a non-empty reviewSkipReason.");
 			if (params.reviewSkip && currentMission?.reviewStatus === "running") throw new Error("Cannot skip review while the reviewer is still running; cancel and settle it first.");
 			if (params.reviewVerdict) {
 				const current = currentMission;
 				if (!current || current.reviewStatus !== "awaiting_adjudication" || !params.reviewRunId || params.reviewRunId !== current.reviewRunId) throw new Error("Review adjudication requires the exact awaiting reviewer run id.");
+				if (!params.reviewReason?.trim()) throw new Error("Review adjudication requires an evidence-based reason.");
 				if (params.reviewVerdict === "clear" && current.reviewSuggestedVerdict !== "clear" && current.reviewSuggestedVerdict !== "changes_requested") throw new Error("Cannot clear a review without a valid structured review_report.");
 			}
+			if (params.reviewSkip && !ctx.hasUI) throw new Error("Headless review waiver requires a trusted direct command.");
+			if (params.reviewSkip && !await ctx.ui.confirm("Skip Mission review?", `Record this review waiver: ${params.reviewSkipReason!.trim()}`)) throw new Error("Mission review waiver was not authorized by the user.");
 			const event = state.progressEvent(params);
 			let mission = state.append(pi, event)!;
 			if (params.reviewSkip) mission = state.append(pi, state.reviewEvent("skipped", { skippedReason: params.reviewSkipReason }))!;
@@ -224,7 +228,11 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 		async execute(_toolCallId: string, params: MissionUpdateInput, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
 			setContext(ctx);
 			state.loadFromSession(ctx);
-			const mission = state.append(pi, state.objectiveUpdateEvent(params))!;
+			const event = state.objectiveUpdateEvent(params);
+			if (!ctx.hasUI) throw new Error("Headless Mission updates require a trusted direct command.");
+			const fields = [params.objective !== undefined && "objective", params.requirements !== undefined && "requirements", params.paths !== undefined && "paths", params.tokenBudget !== undefined && "token budget", params.costBudgetUsd !== undefined && "cost budget", params.turnBudget !== undefined && "turn budget", params.wallDeadlineMs !== undefined && "wall deadline"].filter(Boolean).join(", ") || "objective version";
+			if (!await ctx.ui.confirm("Update Mission control?", `Change ${fields}. Reason: ${params.reason.trim()}`)) throw new Error("Mission update was not authorized by the user.");
+			const mission = state.append(pi, event)!;
 			await updateMissionSummaryArtifact(mission, state.readUsage());
 			hooks.onObjectiveUpdated?.(params, ctx);
 			return { content: [{ type: "text" as const, text: `Mission updated: ${mission.title}\nObjective version: ${mission.objectiveVersion}` }], details: { mission, usage: state.readUsage() } };
@@ -293,7 +301,7 @@ export async function completeMission(
 	if (blockers.length) return { mission: existing, usage, blockers, userRequested: input.userRequested === true };
 	const userRequested = input.userRequested === true;
 	const summary = input.summary ?? (userRequested ? USER_END_SUMMARY : undefined);
-	const audit = input.audit?.length ? input.audit : userRequested ? USER_END_AUDIT : undefined;
+	const audit = userRequested ? USER_END_AUDIT : input.audit?.length ? input.audit : undefined;
 	const mission = state.append(pi, state.statusEvent(userRequested ? "ended" : "complete", reason, summary))!;
 	const completedUsage = state.readUsage();
 	await writeCompletionAudit(mission, summary, audit, completedUsage, state.readProgress());
