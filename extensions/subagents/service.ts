@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { clampConcurrency, clampTimeoutMs, loadAgentsSettings } from "./config.ts";
@@ -119,6 +119,12 @@ export class SubagentService {
 					tokens: request.tokens,
 					costUsd: request.costUsd,
 				});
+				try {
+					this.recordRunRoot(run, ctx);
+				} catch (error) {
+					await this.executor.cancel(run.spec.id).catch(() => undefined);
+					throw error;
+				}
 				this.activate(run);
 				return run;
 			} finally {
@@ -199,6 +205,7 @@ export class SubagentService {
 		}
 		const root = this.root(ctx.cwd);
 		await this.executor.restore(ctx.cwd, parentSessionFile);
+		for (const indexedRoot of this.readRunRoots(root, parentSessionFile)) if (indexedRoot !== root) await this.executor.restoreRoot(indexedRoot, parentSessionFile);
 		this.restoreGroups(root, parentSessionFile);
 		const childRoots = new Set([...this.groups.values()].flatMap((group) => Object.values(group.childRoots ?? {})));
 		for (const childRoot of childRoots) if (childRoot !== root) await this.executor.restoreRoot(childRoot, parentSessionFile);
@@ -249,6 +256,12 @@ export class SubagentService {
 				tokens: task.tokens,
 				costUsd: task.costUsd,
 			});
+			try {
+				this.recordRunRoot(run, ctx);
+			} catch (error) {
+				await this.executor.cancel(run.spec.id).catch(() => undefined);
+				throw error;
+			}
 			this.activate(run);
 			return run;
 		} finally {
@@ -459,6 +472,40 @@ export class SubagentService {
 			: statuses.some((status) => status === "completed") ? "partial"
 			: "failed";
 		group.endedAt ??= Date.now();
+	}
+
+	private recordRunRoot(run: DelegateRun, ctx: ExtensionContext): void {
+		const parentSessionFile = ctx.sessionManager.getSessionFile();
+		if (!parentSessionFile) throw new Error("Subagent runs require a durable parent session file.");
+		const parentRoot = this.root(ctx.cwd);
+		const runRoot = path.dirname(path.dirname(run.spec.artifactsDir));
+		if (runRoot === parentRoot) return;
+		const target = this.runRootsPath(parentRoot, parentSessionFile);
+		const roots = new Set(this.readRunRoots(parentRoot, parentSessionFile));
+		roots.add(runRoot);
+		mkdirSync(path.dirname(target), { recursive: true });
+		const temp = `${target}.${process.pid}.tmp`;
+		writeFileSync(temp, `${JSON.stringify({ version: 1, parentSessionFile, roots: [...roots].sort() }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+		renameSync(temp, target);
+	}
+
+	private readRunRoots(parentRoot: string, parentSessionFile: string): string[] {
+		const target = this.runRootsPath(parentRoot, parentSessionFile);
+		if (!existsSync(target)) return [];
+		let value: { version?: unknown; parentSessionFile?: unknown; roots?: unknown };
+		try {
+			value = JSON.parse(readFileSync(target, "utf8")) as typeof value;
+		} catch {
+			throw new Error(`Corrupted Subagent root index: ${target}`);
+		}
+		if (value.version !== 1 || value.parentSessionFile !== parentSessionFile || !Array.isArray(value.roots)) throw new Error(`Invalid Subagent root index: ${target}`);
+		if (!value.roots.every((root) => typeof root === "string" && path.isAbsolute(root))) throw new Error(`Invalid Subagent root path in index: ${target}`);
+		return value.roots as string[];
+	}
+
+	private runRootsPath(parentRoot: string, parentSessionFile: string): string {
+		const key = createHash("sha256").update(parentSessionFile).digest("hex").slice(0, 24);
+		return path.join(parentRoot, "roots", `${key}.json`);
 	}
 
 	private restoreGroups(root: string, parentSessionFile: string): void {

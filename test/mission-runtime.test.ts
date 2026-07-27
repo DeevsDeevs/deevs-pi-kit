@@ -612,6 +612,18 @@ describe("Mission runtime", () => {
 		expect(blockers).toContain("Worktree differs from the last durable admitted workspace fingerprint.");
 	});
 
+	it("allows completion after an authorized waiver admits the mutated workspace", async () => {
+		let fingerprint = "before";
+		const test = await setup({ fingerprint: () => fingerprint });
+		await test.emit("turn_start");
+		fingerprint = "after";
+		const admitted = expectedFingerprint("after");
+		test.state.append(test.pi, test.state.progressEvent({ summary: "Validated", validation: [{ command: "npm test", exitCode: 0 }] }));
+		test.state.append(test.pi, test.state.reviewEvent("skipped", { skippedReason: "trusted waiver", worktreeFingerprint: admitted }));
+		const blockers = await test.runtime.validateCompletion({ audit: [{ requirementIndex: 0, evidence: "recorded" }] }, test.ctx);
+		expect(blockers).toEqual([]);
+	});
+
 	it("invalidates review admission after a clean HEAD change", async () => {
 		let head = "reviewed-head";
 		const test = await setup({ head: () => head });

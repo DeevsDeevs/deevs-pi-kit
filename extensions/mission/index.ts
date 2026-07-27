@@ -21,6 +21,7 @@ export default function missionExtension(pi: ExtensionAPI): void {
 		validateCompletion: (input, ctx) => runtime.validateCompletion(input, ctx),
 		onCreated: (ctx) => runtime.onCreated(ctx),
 		onProgress: (input, ctx) => runtime.onProgress(input, ctx),
+		workspaceFingerprint: (ctx) => runtime.workspaceFingerprint(ctx),
 		onObjectiveUpdated: (input, ctx) => runtime.onObjectiveUpdated(input, ctx),
 		onResumed: (ctx) => { runtime.restore(ctx); void runtime.maybeContinue(ctx); },
 		onCompleted: (ctx) => runtime.onCompleted(ctx),

@@ -81,6 +81,7 @@ export interface MissionCompletionHooks {
 interface MissionToolHooks extends MissionCompletionHooks {
 	onCreated?: (ctx: ExtensionContext) => void;
 	onProgress?: (input: MissionProgressInput, ctx: ExtensionContext) => void;
+	workspaceFingerprint?: (ctx: ExtensionContext) => Promise<string | undefined>;
 	onObjectiveUpdated?: (input: MissionUpdateInput, ctx: ExtensionContext) => void;
 	onResumed?: (ctx: ExtensionContext) => void;
 }
@@ -207,9 +208,11 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 			}
 			if (params.reviewSkip && !ctx.hasUI) throw new Error("Headless review waiver requires a trusted direct command.");
 			if (params.reviewSkip && !await ctx.ui.confirm("Skip Mission review?", `Record this review waiver: ${params.reviewSkipReason!.trim()}`)) throw new Error("Mission review waiver was not authorized by the user.");
+			const waiverFingerprint = params.reviewSkip ? await hooks.workspaceFingerprint?.(ctx) : undefined;
+			if (params.reviewSkip && !waiverFingerprint) throw new Error("Mission review waiver could not fingerprint the typed workspace.");
 			const event = state.progressEvent(params);
 			let mission = state.append(pi, event)!;
-			if (params.reviewSkip) mission = state.append(pi, state.reviewEvent("skipped", { skippedReason: params.reviewSkipReason }))!;
+			if (params.reviewSkip) mission = state.append(pi, state.reviewEvent("skipped", { skippedReason: params.reviewSkipReason, worktreeFingerprint: waiverFingerprint }))!;
 			const usage = state.readUsage();
 			await writeMissionProgressArtifacts(mission, state.readProgress(), usage);
 			hooks.onProgress?.(params, ctx);

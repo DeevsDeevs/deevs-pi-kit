@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -92,6 +92,31 @@ describe("SubagentService", () => {
 		cleanup.push(() => originalService.dispose());
 		await originalService.restore(ctx);
 		expect((await originalExecutor.wait(started.spec.id, 3_000)).runtime.status).toBe("completed");
+	});
+
+	it("restores a standalone alternate-cwd run through the durable parent root index", async () => {
+		const parentRoot = mkdtempSync(path.join(tmpdir(), "subagent-parent-root-"));
+		const childRoot = mkdtempSync(path.join(tmpdir(), "subagent-child-root-"));
+		const parentCwd = mkdtempSync(path.join(tmpdir(), "subagent-parent-cwd-"));
+		const childCwd = mkdtempSync(path.join(tmpdir(), "subagent-child-cwd-"));
+		const parentSessionFile = "/tmp/alternate-parent.jsonl";
+		const pi = { appendEntry: () => undefined } as unknown as ExtensionAPI;
+		const ctx = { cwd: parentCwd, sessionManager: { getSessionFile: () => parentSessionFile, getBranch: () => [] }, isIdle: () => false, hasPendingMessages: () => false } as unknown as ExtensionContext;
+		const message = { role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1, cost: { total: 0 } } };
+		const command = () => ({ command: process.execPath, args: ["-e", `const m=${JSON.stringify(message)};console.log(JSON.stringify({type:'message_end',message:m}));console.log(JSON.stringify({type:'turn_end',message:m,toolResults:[]}));console.log(JSON.stringify({type:'agent_settled'}));`] });
+		const service = new SubagentService(pi, new DelegateExecutor({ artifactsRoot: childRoot, command }), parentRoot);
+		cleanup.push(() => service.dispose(), ...[parentRoot, childRoot, parentCwd, childCwd].map((root) => () => rmSync(root, { recursive: true, force: true })));
+		const run = await service.start({ agent: "explorer", task: "Inspect.", cwd: childCwd }, ctx) as DelegateRun;
+		await service.wait({ ids: [run.spec.id], waitMs: 3_000 });
+		expect(readdirSync(path.join(parentRoot, "roots"))).toHaveLength(1);
+		service.dispose();
+		const restoredExecutor = new DelegateExecutor({ artifactsRoot: parentRoot });
+		const restoreRoot = vi.spyOn(restoredExecutor, "restoreRoot");
+		const restored = new SubagentService(pi, restoredExecutor, parentRoot);
+		cleanup.push(() => restored.dispose());
+		await restored.restore(ctx);
+		expect(restoreRoot).toHaveBeenCalledWith(childRoot, parentSessionFile);
+		expect(restored.list().runs.some((candidate) => candidate.spec.id === run.spec.id)).toBe(true);
 	});
 
 	it("does not adopt legacy groups without exact parent-session ownership", async () => {
