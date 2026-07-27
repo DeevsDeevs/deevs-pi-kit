@@ -107,7 +107,7 @@ async function showMissionDashboard(
 	}, { overlay: true, overlayOptions: FULL_SCREEN_OVERLAY });
 }
 
-function parseCreateArgs(input: string): MissionCreateInput {
+export function parseCreateArgs(input: string): MissionCreateInput {
 	const tokens = input.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
 	const objectiveParts: string[] = [];
 	const result: MissionCreateInput = { objective: "" };
@@ -123,6 +123,8 @@ function parseCreateArgs(input: string): MissionCreateInput {
 		else if (token === "--requirement" || token === "--req") (result.requirements ??= []).push(unquote(tokens[++i] ?? ""));
 		else if (token.startsWith("--requirement=")) (result.requirements ??= []).push(token.slice("--requirement=".length));
 		else if (token.startsWith("--req=")) (result.requirements ??= []).push(token.slice("--req=".length));
+		else if (token === "--path") (result.paths ??= []).push(parsePath(tokens[++i], true));
+		else if (token.startsWith("--path=")) (result.paths ??= []).push(parsePath(token.slice("--path=".length), false));
 		else if (token === "--chain") result.chain = unquote(tokens[++i] ?? "");
 		else if (token.startsWith("--chain=")) result.chain = token.slice("--chain=".length);
 		else if (token === "--branch" || token === "--chain-branch") result.chainBranch = unquote(tokens[++i] ?? "");
@@ -130,6 +132,12 @@ function parseCreateArgs(input: string): MissionCreateInput {
 	}
 	result.objective = objectiveParts.join(" ").trim();
 	return result;
+}
+
+function parsePath(raw: string | undefined, rejectOption: boolean): string {
+	const value = raw ? unquote(raw).trim() : "";
+	if (!value || (rejectOption && value.startsWith("--"))) throw new Error("--path requires a value");
+	return value;
 }
 
 function parseBudget(raw: string | undefined, flag: string): number {

@@ -65,7 +65,7 @@ Create a branch-scoped objective with `agent_settled` autonomous continuation, u
 
 Tools: `mission_get`, `mission_resume`, `mission_create`, `mission_update`, `mission_progress`, `mission_search`, `mission_complete`.
 
-Commands: `/mission <objective> [--name short-title] [--req criterion] [--budget 200k] [--cost $2] [--chain name]`, `/mission status`, `/mission pause`, `/mission resume`, `/mission clear`, `/mission complete`/`end`/`stop`.
+Commands: `/mission <objective> [--name short-title] [--req criterion] [--path cwd-relative-scope] [--budget 200k] [--cost $2] [--chain name]` (`--path` is repeatable), `/mission status`, `/mission pause`, `/mission resume`, `/mission clear`, `/mission complete`/`end`/`stop`.
 
 Mission runtime state is reconstructed from the current Pi session branch. Requirements use stable indexes in completion audits, validation uses command/exit-code records, blockers use explicit IDs, reviewer verdicts come from a schema-validated child tool, and TUI end/resume/review-waiver actions require typed confirmations. Prose remains display-only. `.missions/<slug>/` stores the canonical `mission.md` and searchable `log.md`. See [`extensions/mission/README.md`](extensions/mission/README.md).
 

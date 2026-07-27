@@ -1,5 +1,6 @@
-import { createHash } from "node:crypto";
-import { readFile, realpath, stat } from "node:fs/promises";
+import { createHash, type Hash } from "node:crypto";
+import { constants } from "node:fs";
+import { lstat, open, readFile, readlink, realpath, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { chainCheckpoints } from "../chains/checkpoint.ts";
@@ -89,8 +90,8 @@ export class MissionRuntime {
 		this.restore(ctx);
 		const mission = this.state.readAny();
 		if (!mission) return ["No Mission exists on this branch."];
-		if (input.userRequested) return [];
-		const blockers: string[] = [];
+		const blockers = this.settlementBlockers();
+		if (input.userRequested) return blockers;
 		const audit = input.audit ?? [];
 		for (const [requirementIndex, requirement] of mission.requirements.entries()) {
 			const item = audit.find((candidate) => candidate.requirementIndex === requirementIndex);
@@ -107,14 +108,6 @@ export class MissionRuntime {
 			else if ((mission.reviewStatus === "not_required" || mission.reviewStatus === "skipped") && this.worktreeBeforeTurn !== undefined && fingerprint !== this.worktreeBeforeTurn) blockers.push("Worktree changed during this turn before independent review admission.");
 		}
 		if (chainCheckpoints.current?.read().status === "due") blockers.push("The active Chain checkpoint is due.");
-		try {
-			const activeChildren = this.activeChildren();
-			if (activeChildren.length) blockers.push(`Child execution has not settled: ${activeChildren.map((run) => run.spec.id).join(", ")}`);
-		} catch (error) {
-			blockers.push(`Cannot verify child settlement: ${error instanceof Error ? error.message : String(error)}`);
-		}
-		const activeJobs = this.activeJobs();
-		if (activeJobs.length) blockers.push(`Jobs have not settled: ${activeJobs.map((job) => job.spec.id).join(", ")}`);
 		return blockers;
 	}
 
@@ -182,13 +175,13 @@ export class MissionRuntime {
 		const mission = this.state.read();
 		if (this.disposed || !mission || mission.status !== "active" || this.continuationInFlight) return;
 		if (!ctx.isIdle() || ctx.hasPendingMessages() || !ctx.sessionManager.getSessionFile()) return;
-		let activeChildren: DelegateRun[];
+		let activeSubagents: ReturnType<MissionRuntime["activeSubagentWork"]>;
 		try {
-			activeChildren = this.activeChildren();
+			activeSubagents = this.activeSubagentWork();
 		} catch {
 			return;
 		}
-		if (this.state.budgetExceeded() || activeChildren.length || this.activeJobs().length || mission.reviewStatus === "running") return;
+		if (this.state.budgetExceeded() || activeSubagents.runs.length || activeSubagents.groupIds.length || activeSubagents.launchReservations || this.activeJobs().length || mission.reviewStatus === "running") return;
 		const event = this.state.continuedEvent();
 		this.state.append(this.pi, event);
 		this.continuationInFlight = true;
@@ -258,7 +251,7 @@ export class MissionRuntime {
 			return;
 		}
 
-		const recentProgress = this.state.readProgress().filter((progress) => progress.at >= (mission!.lastContinuationAt ?? mission!.createdAt));
+		const recentProgress = this.state.readProgressSinceContinuation();
 		const latestProgress = recentProgress.at(-1);
 		const blocker = latestProgress?.blocked ? latestProgress.blockerId : undefined;
 		const madeProgress = this.materialMutationSinceSettle || recentProgress.some((progress) => progress.validation.some((validation) => validation.exitCode === 0 && validation.objectiveVersion === (mission!.objectiveVersion ?? 1)));
@@ -293,7 +286,8 @@ export class MissionRuntime {
 		mission = this.state.read()!;
 		if (mission.reviewStatus === "due") {
 			try {
-				if (this.activeChildren().length || this.activeJobs().length) return;
+				const active = this.activeSubagentWork();
+				if (active.runs.length || active.groupIds.length || active.launchReservations || this.activeJobs().length) return;
 			} catch { return; }
 			await this.startReview(ctx, mission);
 			return;
@@ -318,7 +312,8 @@ export class MissionRuntime {
 			return;
 		}
 		try {
-			if (service.list().runs.some((run) => ["starting", "running", "stopping"].includes(run.runtime.status)) || this.activeJobs().length) return;
+			const listed = service.list();
+			if (listed.runs.some((run) => ["starting", "running", "stopping"].includes(run.runtime.status)) || listed.groups.some((group) => group.status === "running") || (service.activeLaunchReservations?.() ?? 0) || this.activeJobs().length) return;
 		} catch (error) {
 			this.failReview(mission, `review admission failed: ${error instanceof Error ? error.message : String(error)}`);
 			this.scheduleRecovery(ctx, 1_000);
@@ -398,8 +393,29 @@ export class MissionRuntime {
 		return getJobManager()?.list().filter((job) => ["starting", "running", "stopping"].includes(job.runtime.status)) ?? [];
 	}
 
-	private activeChildren(excludeId?: string): DelegateRun[] {
-		return getSubagentService().list().runs.filter((run) => run.spec.id !== excludeId && ["starting", "running", "stopping"].includes(run.runtime.status));
+	private activeSubagentWork(excludeId?: string): { runs: DelegateRun[]; groupIds: string[]; launchReservations: number } {
+		const service = getSubagentService();
+		const listed = service.list();
+		return {
+			runs: listed.runs.filter((run) => run.spec.id !== excludeId && ["starting", "running", "stopping"].includes(run.runtime.status)),
+			groupIds: listed.groups.filter((group) => group.status === "running").map((group) => group.id),
+			launchReservations: service.activeLaunchReservations?.() ?? 0,
+		};
+	}
+
+	private settlementBlockers(): string[] {
+		const blockers: string[] = [];
+		try {
+			const active = this.activeSubagentWork();
+			if (active.runs.length) blockers.push(`Child execution has not settled: ${active.runs.map((run) => run.spec.id).join(", ")}`);
+			if (active.groupIds.length) blockers.push(`Subagent groups have not settled: ${active.groupIds.join(", ")}`);
+			if (active.launchReservations) blockers.push(`Subagent launches have not settled: ${active.launchReservations}`);
+		} catch (error) {
+			blockers.push(`Cannot verify child settlement: ${error instanceof Error ? error.message : String(error)}`);
+		}
+		const activeJobs = this.activeJobs();
+		if (activeJobs.length) blockers.push(`Jobs have not settled: ${activeJobs.map((job) => job.spec.id).join(", ")}`);
+		return blockers;
 	}
 
 	private updateStatus(): void {
@@ -482,6 +498,9 @@ interface MissionWorkspaceRoot {
 	scopes: string[];
 }
 
+const MAX_UNTRACKED_FILE_BYTES = 16 * 1024 * 1024;
+const MAX_UNTRACKED_TOTAL_BYTES = 64 * 1024 * 1024;
+
 async function resolveMissionWorkspace(pi: ExtensionAPI, cwd: string, paths: string[]): Promise<MissionWorkspaceRoot[] | undefined> {
 	const candidates = paths.length ? paths.map((item) => resolve(cwd, item)) : [resolve(cwd)];
 	const canonicalCwd = await canonicalPath(resolve(cwd));
@@ -555,24 +574,63 @@ async function workspaceFingerprint(pi: ExtensionAPI, cwd: string, workspace: Mi
 		const hash = createHash("sha256");
 		const canonicalCwd = await canonicalPath(cwd);
 		if (!canonicalCwd) return undefined;
+		let untrackedBytes = 0;
 		for (const { root, scopes } of workspace) {
 			const literalScopes = scopes.map((scope) => `:(literal)${scope}`);
 			const pathspec = literalScopes.length ? ["--", ...literalScopes] : [];
-			const [head, diff, untracked] = await Promise.all([
-				pi.exec("git", ["rev-parse", "HEAD"], { cwd: root }),
+			const [baseline, diff, untracked] = await Promise.all([
+				scopes.length
+					? pi.exec("git", ["ls-tree", "-r", "--full-tree", "HEAD", "--", ...literalScopes], { cwd: root })
+					: pi.exec("git", ["rev-parse", "HEAD"], { cwd: root }),
 				pi.exec("git", ["diff", "--binary", "--no-ext-diff", "HEAD", "--", ...literalScopes], { cwd: root }),
 				pi.exec("git", ["ls-files", "--others", "--exclude-standard", "-z", ...pathspec], { cwd: root }),
 			]);
-			if (head.code !== 0 || diff.code !== 0 || untracked.code !== 0) return undefined;
+			if (baseline.code !== 0 || diff.code !== 0 || untracked.code !== 0) return undefined;
 			hash.update(relative(canonicalCwd, root) || ".").update("\0").update(scopes.join("\0")).update("\0");
-			hash.update(head.stdout.trim()).update("\0").update(diff.stdout).update("\0");
+			hash.update(scopes.length ? "scoped-tree\0" : "whole-head\0").update(baseline.stdout.trim()).update("\0").update(diff.stdout).update("\0");
 			for (const path of untracked.stdout.split("\0").filter(Boolean).sort()) {
-				hash.update(path).update("\0");
-				try { hash.update(await readFile(join(root, path))); } catch { hash.update("[unreadable]"); }
+				const consumed = await hashUntrackedPath(hash, join(root, path), path, untrackedBytes);
+				if (consumed === undefined) return undefined;
+				untrackedBytes += consumed;
 			}
 		}
 		return hash.digest("hex");
 	} catch { return undefined; }
+}
+
+async function hashUntrackedPath(hash: Hash, target: string, path: string, totalBytes: number): Promise<number | undefined> {
+	const info = await lstat(target).catch(() => undefined);
+	if (!info) return undefined;
+	hash.update(path).update("\0");
+	if (info.isSymbolicLink()) {
+		const link = await readlink(target).catch(() => undefined);
+		if (link === undefined) return undefined;
+		hash.update("symlink\0").update(link).update("\0");
+		return 0;
+	}
+	if (!info.isFile() || info.size > MAX_UNTRACKED_FILE_BYTES || totalBytes + info.size > MAX_UNTRACKED_TOTAL_BYTES) return undefined;
+	const handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK).catch(() => undefined);
+	if (!handle) return undefined;
+	try {
+		const opened = await handle.stat();
+		if (!opened.isFile() || opened.size > MAX_UNTRACKED_FILE_BYTES || totalBytes + opened.size > MAX_UNTRACKED_TOTAL_BYTES) return undefined;
+		hash.update("file\0").update(String(opened.size)).update("\0");
+		const buffer = Buffer.allocUnsafe(64 * 1024);
+		let position = 0;
+		while (position < opened.size) {
+			const length = Math.min(buffer.length, opened.size - position);
+			const { bytesRead } = await handle.read(buffer, 0, length, position);
+			if (bytesRead <= 0) return undefined;
+			hash.update(buffer.subarray(0, bytesRead));
+			position += bytesRead;
+		}
+		const final = await handle.stat();
+		if (final.size !== opened.size) return undefined;
+		hash.update("\0");
+		return opened.size;
+	} finally {
+		await handle.close();
+	}
 }
 
 function compact(value: number): string {

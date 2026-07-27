@@ -179,6 +179,21 @@ describe("Mission state", () => {
 		expect(notices[0]).toContain("turn limit is exhausted");
 	});
 
+	it("tracks progress after continuation by event order rather than timestamp", async () => {
+		const test = setup();
+		test.state.append(test.pi, await test.state.create({ objective: "Do work", chain: "kit" }, test.ctx));
+		const before = test.state.progressEvent({ summary: "before" });
+		const continued = test.state.continuedEvent();
+		continued.at = before.at;
+		test.state.append(test.pi, before);
+		test.state.append(test.pi, continued);
+		expect(test.state.readProgressSinceContinuation()).toEqual([]);
+		const after = test.state.progressEvent({ summary: "after" });
+		after.at = continued.at;
+		test.state.append(test.pi, after);
+		expect(test.state.readProgressSinceContinuation().map((item) => item.summary)).toEqual(["after"]);
+	});
+
 	it("refuses clear adjudication without a structured reviewer verdict", async () => {
 		const test = setup();
 		test.state.append(test.pi, await test.state.create({ objective: "Do work", chain: "kit" }, test.ctx));

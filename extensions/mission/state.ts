@@ -13,6 +13,7 @@ export class MissionState {
 	private current: MissionCurrent | undefined;
 	private usage: MissionUsage = zeroUsage();
 	private progress: MissionProgressRecord[] = [];
+	private continuationProgressIndex = 0;
 
 	read(): MissionCurrent | undefined {
 		if (!this.current || this.current.status === "cleared" || this.current.status === "complete" || this.current.status === "ended") return undefined;
@@ -29,7 +30,11 @@ export class MissionState {
 	}
 
 	readProgress(): MissionProgressRecord[] {
-		return this.progress.map((item) => ({ ...item, evidence: [...item.evidence], remaining: [...item.remaining], validation: item.validation.map((value) => ({ ...value })) }));
+		return cloneProgress(this.progress);
+	}
+
+	readProgressSinceContinuation(): MissionProgressRecord[] {
+		return cloneProgress(this.progress.slice(this.continuationProgressIndex));
 	}
 
 	loadFromSession(ctx: ExtensionContext): void {
@@ -39,6 +44,7 @@ export class MissionState {
 		const seenSubagents = new Set<string>();
 		this.current = undefined;
 		this.progress = [];
+		this.continuationProgressIndex = 0;
 		for (const entry of branch) {
 			if (entry.type === "custom" && entry.customType === MISSION_CUSTOM_TYPE) {
 				const rawEvent = entry.data as MissionEvent | undefined;
@@ -214,6 +220,7 @@ export class MissionState {
 			if (!event.objective || !event.slug || !event.chain || !event.artifactDir) return;
 			const requirements = normalizeRequirements(event.requirements?.length ? event.requirements : inferRequirements(event.objective));
 			this.progress = [];
+			this.continuationProgressIndex = 0;
 			this.current = {
 				missionId: event.missionId,
 				objective: event.objective,
@@ -256,8 +263,10 @@ export class MissionState {
 		if (event.kind === "continued") {
 			this.current.lastContinuationAt = event.at;
 			this.current.turnCount = event.turnCount ?? (this.current.turnCount ?? 0) + 1;
+			this.continuationProgressIndex = this.progress.length;
 		}
 		if (event.kind === "objective_updated") {
+			this.continuationProgressIndex = this.progress.length;
 			if (event.objective) this.current.objective = event.objective;
 			if (event.requirements) this.current.requirements = normalizeRequirements(event.requirements);
 			if (event.paths !== undefined) this.current.paths = normalizePaths(event.paths);
@@ -292,6 +301,10 @@ export class MissionState {
 			});
 		}
 	}
+}
+
+function cloneProgress(progress: MissionProgressRecord[]): MissionProgressRecord[] {
+	return progress.map((item) => ({ ...item, evidence: [...item.evidence], remaining: [...item.remaining], validation: item.validation.map((value) => ({ ...value })) }));
 }
 
 async function chooseDefaultChain(cwd: string, title: string, slug: string): Promise<string> {
