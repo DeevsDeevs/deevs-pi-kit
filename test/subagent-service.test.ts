@@ -212,6 +212,20 @@ describe("SubagentService", () => {
 		await service.executor.cancel((run as { spec: { id: string } }).spec.id);
 	});
 
+	it("waits for capacity changes instead of spinning a pending group", async () => {
+		const { service, ctx } = setup();
+		mkdirSync(path.join(ctx.cwd, ".pi"), { recursive: true });
+		writeFileSync(path.join(ctx.cwd, ".pi/subagents.json"), JSON.stringify({ parallelMaxConcurrency: 1 }));
+		const first = await service.start({ agent: "explorer", task: "Occupy capacity." }, ctx) as DelegateRun;
+		const group = await service.start({ tasks: [{ agent: "reviewer", task: "Run after capacity." }], concurrency: 1 }, ctx) as SubagentGroup;
+		expect(group.pending).toHaveLength(1);
+		expect(group.active).toEqual([]);
+		const [settled] = await service.wait({ ids: [group.id], waitMs: 3_000 });
+		expect((settled as SubagentGroup).status).toBe("completed");
+		expect((settled as SubagentGroup).children).toHaveLength(1);
+		expect(service.executor.get(first.spec.id).runtime.status).toBe("completed");
+	});
+
 	it("serializes cancellation with an in-flight group launch", async () => {
 		const { service, ctx } = setup();
 		const originalStart = service.executor.start.bind(service.executor);

@@ -84,6 +84,8 @@ export class SubagentService {
 	private readonly terminalSeen = new Set<string>();
 	private readonly groupFills = new Map<string, Promise<void>>();
 	private startingRuns = 0;
+	private capacityVersion = 0;
+	private readonly capacityWaiters = new Set<() => void>();
 	private ctx?: ExtensionContext;
 	private unsubscribe: () => void;
 	private readonly artifactsRoot?: string;
@@ -92,7 +94,10 @@ export class SubagentService {
 		this.pi = pi;
 		this.executor = executor;
 		this.artifactsRoot = artifactsRoot;
-		this.unsubscribe = executor.onChange((run) => void this.onRunChange(run));
+		this.unsubscribe = executor.onChange((run) => {
+			this.signalCapacityChange();
+			void this.onRunChange(run);
+		});
 	}
 
 	setContext(ctx: ExtensionContext): void {
@@ -129,6 +134,7 @@ export class SubagentService {
 				return run;
 			} finally {
 				this.startingRuns--;
+				this.signalCapacityChange();
 			}
 		}
 		if (!request.agent || !request.task) throw new Error("A persona and task are required for a fresh subagent run.");
@@ -266,6 +272,7 @@ export class SubagentService {
 			return run;
 		} finally {
 			this.startingRuns--;
+			this.signalCapacityChange();
 		}
 	}
 
@@ -435,8 +442,12 @@ export class SubagentService {
 			if (remaining === 0) break;
 			const active = group.active[0];
 			if (!active) {
+				const inFlightFill = this.groupFills.get(group.id);
+				if (inFlightFill) { await inFlightFill; continue; }
 				if (group.pending.length && this.ctx) {
+					const observedCapacity = this.capacityVersion;
 					await this.fillGroup(group, this.ctx);
+					if (!group.active.length && group.pending.length) await this.waitForCapacityChange(observedCapacity, remaining, signal);
 					continue;
 				}
 				break;
@@ -447,6 +458,34 @@ export class SubagentService {
 			this.reconcileGroup(group);
 		}
 		return group;
+	}
+
+	private signalCapacityChange(): void {
+		this.capacityVersion++;
+		for (const waiter of [...this.capacityWaiters]) waiter();
+	}
+
+	private waitForCapacityChange(observedVersion: number, waitMs?: number, signal?: AbortSignal): Promise<void> {
+		if (this.capacityVersion !== observedVersion) return Promise.resolve();
+		return new Promise((resolve, reject) => {
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			const finish = (error?: unknown) => {
+				this.capacityWaiters.delete(onCapacity);
+				if (timer) clearTimeout(timer);
+				signal?.removeEventListener("abort", onAbort);
+				if (error) reject(error);
+				else resolve();
+			};
+			const onCapacity = () => finish();
+			const onAbort = () => finish(signal?.reason instanceof Error ? signal.reason : new Error("Subagent group wait aborted."));
+			this.capacityWaiters.add(onCapacity);
+			if (this.capacityVersion !== observedVersion) return finish();
+			if (waitMs !== undefined) {
+				timer = setTimeout(() => finish(), waitMs);
+				timer.unref?.();
+			}
+			signal?.addEventListener("abort", onAbort, { once: true });
+		});
 	}
 
 	private reconcileGroup(group: SubagentGroup): void {

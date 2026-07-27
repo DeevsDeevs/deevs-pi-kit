@@ -41,6 +41,12 @@ describe("Mission state", () => {
 		expect(mission.reviewSkippedReason).toBe("Documentation-only change");
 	});
 
+	it("preserves meaningful leading digits while stripping explicit list markers", async () => {
+		const test = setup();
+		const mission = test.state.append(test.pi, await test.state.create({ objective: "Coverage", chain: "kit", requirements: ["100% coverage", "1. First check", "- Second check", "1.2 stays"] }, test.ctx));
+		expect(mission?.requirements).toEqual(["100% coverage", "First check", "Second check", "1.2 stays"]);
+	});
+
 	it("rejects live replacement and oversized control lists instead of truncating", async () => {
 		const test = setup();
 		test.state.append(test.pi, await test.state.create({ objective: "First", chain: "kit" }, test.ctx));
@@ -238,6 +244,17 @@ describe("Mission state", () => {
 		expect(test.branch).toHaveLength(before);
 	});
 
+	it("returns post-adjudication Mission state after the progress hook", async () => {
+		const test = setup();
+		test.state.append(test.pi, await test.state.create({ objective: "Do work", chain: "kit" }, test.ctx));
+		test.state.append(test.pi, test.state.reviewEvent("awaiting_adjudication", { runId: "review-clear", suggestedVerdict: "clear" }));
+		let progressTool: { execute: (...args: unknown[]) => Promise<{ details?: { mission?: { reviewStatus?: string } } }> } | undefined;
+		const pi = { ...test.pi, registerTool(tool: unknown) { const value = tool as typeof progressTool & { name?: string }; if (value?.name === "mission_progress") progressTool = value; } } as unknown as ExtensionAPI;
+		registerMissionTools(pi, test.state, () => undefined, { onProgress: (input) => { if (input.reviewVerdict) test.state.append(test.pi, test.state.reviewEvent(input.reviewVerdict, { runId: input.reviewRunId, reason: input.reviewReason })); } });
+		const result = await progressTool!.execute("call", { summary: "Adjudicated", reviewVerdict: "clear", reviewRunId: "review-clear", reviewReason: "structured report clear" }, undefined, undefined, test.ctx);
+		expect(result.details?.mission?.reviewStatus).toBe("clear");
+	});
+
 	it("records user-requested closure as ended rather than achieved", async () => {
 		const test = setup();
 		test.state.append(test.pi, await test.state.create({ objective: "Do work", title: "Probe", chain: "kit" }, test.ctx));
@@ -251,6 +268,15 @@ describe("Mission state", () => {
 		expect(result.details?.audit?.[0]?.evidence.trim()).toBeTruthy();
 		expect(test.state.read()).toBeUndefined();
 		expect(test.state.readAny()?.status).toBe("ended");
+	});
+
+	it("keeps completed Missions terminal under pause, progress, and update builders", async () => {
+		const test = setup();
+		test.state.append(test.pi, await test.state.create({ objective: "Do work", chain: "kit" }, test.ctx));
+		test.state.append(test.pi, test.state.statusEvent("complete", "done"));
+		expect(() => test.state.statusEvent("paused", "invalid reopen")).toThrow("cannot transition from complete to paused");
+		expect(() => test.state.progressEvent({ summary: "late progress" })).toThrow("terminal and cannot be mutated");
+		expect(() => test.state.objectiveUpdateEvent({ reason: "late update", objective: "changed" })).toThrow("terminal and cannot be mutated");
 	});
 
 	it("treats repeated completion as idempotent", async () => {

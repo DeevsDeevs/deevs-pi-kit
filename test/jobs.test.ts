@@ -84,6 +84,8 @@ describe("bounded Jobs", () => {
 		await expect(manager.start({ name: "argv-assignment-detach", argv: ["bash", "-lc", "FOO=x setsid node worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
 		await expect(manager.start({ name: "argv-substitution-detach", argv: ["bash", "-lc", "echo \"$(setsid node worker.js)\""] }, ctx)).rejects.toThrow("Detached process launch");
 		await expect(manager.start({ name: "argv-dynamic-executable-detach", argv: ["bash", "-lc", "runner=setsid; $runner node worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
+		await expect(manager.start({ name: "argv-glob-executable-detach", argv: ["bash", "-lc", "/usr/bin/setsi? node worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
+		await expect(manager.start({ name: "argv-brace-executable-detach", argv: ["bash", "-lc", "{setsid,echo} node worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
 		await expect(manager.start({ name: "argv-backtick-executable-detach", argv: ["bash", "-lc", "`printf setsid` node worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
 		await expect(manager.start({ name: "argv-env-dynamic-executable", argv: ["bash", "-lc", "runner=setsid; env $runner node worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
 		await expect(manager.start({ name: "argv-nice-dynamic-executable", argv: ["bash", "-lc", "runner=setsid; nice $runner node worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
@@ -104,6 +106,7 @@ describe("bounded Jobs", () => {
 		expect(detectDetachedArgv(["bash", "-lc", "printf '%s' '; setsid'"])).toBeUndefined();
 		expect(detectDetachedArgv(["bash", "-lc", "printf '%s' '`setsid node`'"])).toBeUndefined();
 		expect(detectDetachedArgv(["bash", "-lc", "printf '%s' '$runner setsid'"])).toBeUndefined();
+		expect(detectDetachedArgv(["bash", "-lc", "printf '%s' 'setsi? {setsid,echo}'"])).toBeUndefined();
 		expect(detectDetachedArgv(["bash", "-lc", "echo message |& rg setsid ."])).toBeUndefined();
 		expect(detectDetachedArgv(["env", "MODE=test", "rg", "setsid", "."])).toBeUndefined();
 		expect(detectDetachedArgv(["env", "-Srg setsid ."])).toBeUndefined();

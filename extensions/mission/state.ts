@@ -10,6 +10,17 @@ export const MISSION_CUSTOM_TYPE = "deevs-mission-state";
 const DEFAULT_CHAIN_BRANCH = "main";
 const MAX_REQUIREMENTS = 12;
 const MAX_PATHS = 100;
+const STATUS_TRANSITIONS: Record<MissionStatus, readonly MissionStatus[]> = {
+	active: ["paused", "blocked", "terminal_error", "budget_limited", "usage_limited", "complete", "ended", "cleared"],
+	paused: ["active", "ended", "cleared"],
+	blocked: ["active", "ended", "cleared"],
+	terminal_error: ["active", "ended", "cleared"],
+	budget_limited: ["active", "ended", "cleared"],
+	usage_limited: ["active", "ended", "cleared"],
+	complete: ["cleared"],
+	ended: ["active", "cleared"],
+	cleared: [],
+};
 
 export class MissionState {
 	private current: MissionCurrent | undefined;
@@ -129,16 +140,17 @@ export class MissionState {
 
 	statusEvent(status: MissionStatus, reason?: string, summary?: string): MissionEvent {
 		const mission = this.requireCurrent();
+		if (!STATUS_TRANSITIONS[mission.status].includes(status)) throw new Error(`Mission cannot transition from ${mission.status} to ${status}.`);
 		return { kind: status === "complete" ? "completed" : "status_changed", missionId: mission.missionId, generation: mission.generation, at: Date.now(), status, reason, summary };
 	}
 
 	continuedEvent(): MissionEvent {
-		const mission = this.requireCurrent();
+		const mission = this.requireActive();
 		return { kind: "continued", missionId: mission.missionId, generation: mission.generation, at: Date.now(), status: mission.status, turnCount: (mission.turnCount ?? 0) + 1 };
 	}
 
 	objectiveUpdateEvent(input: MissionUpdateInput): MissionEvent {
-		const mission = this.requireCurrent();
+		const mission = this.requireMutable();
 		assertInputLimits(input.requirements, input.paths);
 		const objective = input.objective?.trim() || mission.objective;
 		const requirements = input.requirements?.length ? normalizeRequirements(input.requirements) : mission.requirements;
@@ -163,7 +175,7 @@ export class MissionState {
 	}
 
 	reviewEvent(status: MissionReviewStatus, input: { runId?: string; reason?: string; skippedReason?: string; suggestedVerdict?: "clear" | "changes_requested" | "unknown"; failure?: boolean; worktreeFingerprint?: string } = {}): MissionEvent {
-		const mission = this.requireCurrent();
+		const mission = this.requireActive();
 		return {
 			kind: "review_changed",
 			missionId: mission.missionId,
@@ -181,12 +193,12 @@ export class MissionState {
 	}
 
 	workspaceFingerprintEvent(fingerprint: string): MissionEvent {
-		const mission = this.requireCurrent();
+		const mission = this.requireActive();
 		return { kind: "workspace_fingerprinted", missionId: mission.missionId, generation: mission.generation, at: Date.now(), admittedWorktreeFingerprint: fingerprint };
 	}
 
 	settledEvent(input: { blockerFingerprint?: string; madeProgress: boolean }): MissionEvent {
-		const mission = this.requireCurrent();
+		const mission = this.requireActive();
 		const sameBlocker = input.blockerFingerprint && input.blockerFingerprint === mission.blockerFingerprint;
 		return {
 			kind: "settled",
@@ -199,7 +211,7 @@ export class MissionState {
 	}
 
 	progressEvent(input: MissionProgressInput): MissionEvent {
-		const mission = this.requireCurrent();
+		const mission = this.requireMutable();
 		const summary = input.summary.trim();
 		if (!summary) throw new Error("mission_progress summary must not be empty.");
 		const blockerId = input.blockerId?.trim();
@@ -236,6 +248,18 @@ export class MissionState {
 	private requireCurrent(): MissionCurrent {
 		if (!this.current || this.current.status === "cleared") throw new Error("No mission is active on this branch.");
 		return this.current;
+	}
+
+	private requireMutable(): MissionCurrent {
+		const mission = this.requireCurrent();
+		if (mission.status === "complete" || mission.status === "ended") throw new Error(`Mission ${mission.status} is terminal and cannot be mutated.`);
+		return mission;
+	}
+
+	private requireActive(): MissionCurrent {
+		const mission = this.requireMutable();
+		if (mission.status !== "active") throw new Error(`Mission must be active, not ${mission.status}.`);
+		return mission;
 	}
 
 	private applyEvent(event: MissionEvent): void {
@@ -397,7 +421,7 @@ function normalizeRequirements(values: string[]): string[] {
 	const seen = new Set<string>();
 	const result: string[] = [];
 	for (const value of values) {
-		const cleaned = value.trim().replace(/^[-*\d.)\s]+/, "").replace(/\s+/g, " ").slice(0, 240);
+		const cleaned = value.trim().replace(/^(?:[-*]\s+|\d+[.)]\s+)/, "").replace(/\s+/g, " ").slice(0, 240);
 		if (!cleaned) continue;
 		const key = cleaned.toLowerCase();
 		if (seen.has(key)) continue;
