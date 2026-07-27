@@ -177,6 +177,24 @@ describe("SubagentService", () => {
 		expect(emittedKinds).toContain("subagent-group");
 	});
 
+	it("does not let already-terminal fast children stall pending group tasks", async () => {
+		const { service, ctx } = setup();
+		const originalStart = service.executor.start.bind(service.executor);
+		vi.spyOn(service.executor, "start").mockImplementation(async (input) => {
+			const run = await originalStart(input);
+			await service.executor.cancel(run.spec.id);
+			run.runtime.status = "completed";
+			run.runtime.endedAt = Date.now();
+			writeFileSync(run.spec.runtimePath, JSON.stringify(run.runtime));
+			return run;
+		});
+		const group = await service.start({ tasks: [{ agent: "explorer", task: "Fast one." }, { agent: "reviewer", task: "Fast two." }], concurrency: 1 }, ctx) as SubagentGroup;
+		expect(group.children).toHaveLength(2);
+		expect(group.pending).toEqual([]);
+		expect(group.active).toEqual([]);
+		expect(group.status).not.toBe("running");
+	});
+
 	it("waits for active children and emits a terminal partial group after launch failure", async () => {
 		const { service, ctx, branch } = setup(true);
 		const result = await service.start({

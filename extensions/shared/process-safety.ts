@@ -290,7 +290,7 @@ function shellTokens(source: string): ShellToken[] {
 	};
 	for (let index = 0; index < source.length; index++) {
 		const char = source[index]!;
-		if (escaped) { word += char; escaped = false; continue; }
+		if (escaped) { if (char !== "\n") word += char; escaped = false; continue; }
 		if (quote) {
 			if (char === quote) quote = undefined;
 			else if (char === "\\" && quote === "\"") escaped = true;

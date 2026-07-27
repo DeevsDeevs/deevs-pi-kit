@@ -335,7 +335,7 @@ export class SubagentService {
 			try {
 				const run = await this.startTask(task, ctx, true);
 				group.children.push(run.spec.id);
-				group.active.push(run.spec.id);
+				if (!isTerminal(run.runtime.status)) group.active.push(run.spec.id);
 				(group.childRoots ??= {})[run.spec.id] = path.dirname(path.dirname(run.spec.artifactsDir));
 				if (group.cancelRequestedAt) await this.executor.cancel(run.spec.id);
 			} catch (error) {

@@ -85,6 +85,8 @@ describe("bounded Jobs", () => {
 		await expect(manager.start({ name: "argv-substitution-detach", argv: ["bash", "-lc", "echo \"$(setsid node worker.js)\""] }, ctx)).rejects.toThrow("Detached process launch");
 		await expect(manager.start({ name: "argv-dynamic-executable-detach", argv: ["bash", "-lc", "runner=setsid; $runner node worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
 		await expect(manager.start({ name: "argv-glob-executable-detach", argv: ["bash", "-lc", "/usr/bin/setsi? node worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
+		await expect(manager.start({ name: "argv-line-continuation-detach", argv: ["bash", "-lc", "set\\\nsid node worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
+		await expect(manager.start({ name: "shell-line-continuation-detach", command: "set\\\nsid node worker.js" }, ctx)).rejects.toThrow("Detached process launch");
 		await expect(manager.start({ name: "argv-brace-executable-detach", argv: ["bash", "-lc", "{setsid,echo} node worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
 		await expect(manager.start({ name: "argv-backtick-executable-detach", argv: ["bash", "-lc", "`printf setsid` node worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
 		await expect(manager.start({ name: "argv-env-dynamic-executable", argv: ["bash", "-lc", "runner=setsid; env $runner node worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
