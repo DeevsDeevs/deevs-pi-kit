@@ -61,6 +61,16 @@ describe("bounded Jobs", () => {
 		await restored.shutdown();
 	});
 
+	it("rejects explicit detached-process syntax for shell and argv Jobs", async () => {
+		const { manager, ctx } = setup();
+		await expect(manager.start({ name: "shell-detach", command: "setsid node worker.js" }, ctx)).rejects.toThrow("Detached process launch");
+		await expect(manager.start({ name: "argv-detach", argv: ["/usr/bin/setsid", "node", "worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
+		await expect(manager.start({ name: "argv-shell-detach", argv: ["bash", "-lc", "nohup node worker.js &"] }, ctx)).rejects.toThrow("Detached process launch");
+		await expect(manager.start({ name: "argv-env-detach", argv: ["env", "MODE=test", "setsid", "node", "worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
+		await expect(manager.start({ name: "argv-env-unset-detach", argv: ["env", "-u", "FOO", "setsid", "node", "worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
+		await expect(manager.start({ name: "argv-fish-detach", argv: ["fish", "--command=setsid node worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
+	});
+
 	it("keeps an active Job alive when a new hot-reload generation claims its manager", async () => {
 		const { manager, ctx } = setup();
 		const firstPi = { appendEntry() {} } as unknown as ExtensionAPI;

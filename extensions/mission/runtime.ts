@@ -491,12 +491,13 @@ function reviewFailureCount(ctx: ExtensionContext | undefined, missionId: string
 
 async function worktreeFingerprint(pi: ExtensionAPI, cwd: string): Promise<string | undefined> {
 	try {
-		const [diff, untracked] = await Promise.all([
+		const [head, diff, untracked] = await Promise.all([
+			pi.exec("git", ["rev-parse", "HEAD"], { cwd }),
 			pi.exec("git", ["diff", "--binary", "--no-ext-diff", "HEAD", "--"], { cwd }),
 			pi.exec("git", ["ls-files", "--others", "--exclude-standard", "-z"], { cwd }),
 		]);
-		if (diff.code !== 0 || untracked.code !== 0) return undefined;
-		const hash = createHash("sha256").update(diff.stdout).update("\0");
+		if (head.code !== 0 || diff.code !== 0 || untracked.code !== 0) return undefined;
+		const hash = createHash("sha256").update(head.stdout.trim()).update("\0").update(diff.stdout).update("\0");
 		for (const relative of untracked.stdout.split("\0").filter(Boolean).sort()) {
 			hash.update(relative).update("\0");
 			try { hash.update(await readFile(join(cwd, relative))); } catch { hash.update("[unreadable]"); }

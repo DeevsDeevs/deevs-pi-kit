@@ -5,7 +5,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { detectDetachedShell } from "../shared/process-safety.ts";
+import { detectDetachedArgv, detectDetachedShell } from "../shared/process-safety.ts";
 import { ownsProcessIdentity, quiesceProcessGroup, readProcessIdentity, trySignalGroup } from "../shared/process-group.ts";
 import { requestRuntimeDelivery } from "../shared/runtime-delivery.ts";
 import { runtimeEvents } from "../shared/runtime-events.ts";
@@ -76,10 +76,8 @@ export class JobManager {
 		validateStart(input);
 		const parentSessionFile = ctx.sessionManager.getSessionFile();
 		await this.switchSession(parentSessionFile);
-		if (input.command) {
-			const reason = detectDetachedShell(input.command);
-			if (reason) throw new Error(reason);
-		}
+		const detachedReason = input.command ? detectDetachedShell(input.command) : detectDetachedArgv(input.argv ?? []);
+		if (detachedReason) throw new Error(detachedReason);
 		const id = `j_${Date.now().toString(36)}_${randomUUID().replaceAll("-", "").slice(0, 8)}`;
 		const generation = randomUUID();
 		const root = jobsRoot(ctx.cwd);
