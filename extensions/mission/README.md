@@ -5,7 +5,7 @@ Branch-scoped autonomous objectives using Pi 0.82 lifecycle and session entries.
 ## Commands
 
 ```text
-/mission <objective> [--name title] [--req criterion] [--budget 200k] [--cost $2] [--chain name]
+/mission <objective> [--name title] [--req criterion] [--path cwd-relative-scope]... [--budget 200k] [--cost $2] [--chain name]
 /mission status
 /mission pause
 /mission resume

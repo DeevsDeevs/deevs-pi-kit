@@ -158,6 +158,10 @@ export class SubagentService {
 		return { runs: this.executor.list(), groups: [...this.groups.values()].sort((a, b) => b.createdAt - a.createdAt) };
 	}
 
+	activeLaunchReservations(): number {
+		return this.startingRuns;
+	}
+
 	clearTerminal(id?: string): number {
 		let cleared = 0;
 		for (const group of [...this.groups.values()]) {
