@@ -22,11 +22,11 @@ describe("Mission artifacts", () => {
 		await initializeMissionArtifacts(mission, state.readUsage());
 		expect(readdirSync(mission.artifactDir).sort()).toEqual(["log.md", "mission.md"]);
 
-		state.append(pi, state.progressEvent({ summary: "Checked files", evidence: ["directory listing"], validation: ["artifact test"] }));
+		state.append(pi, state.progressEvent({ summary: "Checked files", evidence: ["directory listing"], validation: [{ command: "artifact-test", exitCode: 0 }] }));
 		await writeMissionProgressArtifacts(state.read()!, state.readProgress(), state.readUsage());
 		state.append(pi, state.statusEvent("complete", "validated", "Artifacts complete"));
 		mission = state.readAny()!;
-		await writeCompletionAudit(mission, "Artifacts complete", [{ requirement: "Artifacts are minimal", evidence: "Only mission.md and log.md exist" }], state.readUsage(), state.readProgress());
+		await writeCompletionAudit(mission, "Artifacts complete", [{ requirementIndex: 0, evidence: "Only mission.md and log.md exist" }], state.readUsage(), state.readProgress());
 		const summary = readFileSync(path.join(mission.artifactDir, "mission.md"), "utf8");
 		expect(summary).toContain("## Completion Audit");
 		expect(summary).toContain("Artifacts are minimal: Only mission.md and log.md exist");

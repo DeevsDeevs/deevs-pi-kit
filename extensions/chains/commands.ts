@@ -3,6 +3,8 @@ import { showTextViewer } from "../shared/text-viewer.ts";
 import { validateBranchName, validateChainName, validateLinkName, type ChainService } from "./service.ts";
 import { formatList, formatLoad, formatRankedSearch, formatSearch } from "./tools.ts";
 import { chainCheckpoints } from "./checkpoint.ts";
+import { FULL_SCREEN_OVERLAY } from "../shared/dashboard.ts";
+import { ChainsDashboard } from "./ui.ts";
 
 interface ChainLinkArgs {
 	chain: string;
@@ -19,28 +21,21 @@ export function registerChainCommands(pi: ExtensionAPI, service: ChainService): 
 				const query = args.trim();
 				const checkpoint = chainCheckpoints.current?.read();
 				const state = checkpoint?.chain ? `Checkpoint: ${checkpoint.chain}@${checkpoint.branch ?? "main"} · ${checkpoint.status}${checkpoint.dueReasons.length ? ` · ${checkpoint.dueReasons.at(-1)}` : ""}\n\n` : "";
-				if (!query && ctx.mode === "tui") {
-					const chains = await service.list({ includeBranches: true });
-					if (!chains.length) return ctx.ui.notify("No Chains found.", "info");
-					const choices = new Map<string, (typeof chains)[number]>();
-					for (const [index, chain] of chains.entries()) {
-						const name = chain.chain.length > 24 ? `${chain.chain.slice(0, 15)}...${chain.chain.slice(-6)}` : chain.chain;
-						const label = `${name} · ${chain.count} links`;
-						choices.set(choices.has(label) ? `${label} · ${index + 1}` : label, chain);
-					}
-					const selected = await ctx.ui.select("Chains", [...choices.keys()]);
-					if (!selected) return;
-					const chain = choices.get(selected);
-					if (!chain) return;
-					const action = await ctx.ui.select(chain.chain, ["View latest", "Load into next turn"]);
-					if (!action) return;
-					const loaded = await service.load({ chain: chain.chain, branch: chain.latest?.branch, maxBytes: 196_608 });
-					if (action === "Load into next turn") {
-						pi.sendUserMessage(chainLoadPrompt(loaded), { deliverAs: "followUp" });
-						ctx.ui.notify(`Loaded ${loaded.link.chain}/${loaded.link.filename} into the next turn.`, "info");
-						return;
-					}
-					await showTextViewer(ctx, `Chain ${chain.chain}`, `${state}${formatLoad(loaded)}`);
+				if (!query && ctx.mode === "tui" && ctx.hasUI) {
+					const chains = await service.list({ includeBranches: true, includeLinks: true });
+					await ctx.ui.custom<void>((tui, theme, _keybindings, done) => new ChainsDashboard(
+						chains,
+						checkpoint,
+						theme,
+						() => done(undefined),
+						() => tui.requestRender(),
+						() => Math.max(4, tui.terminal.rows - 2),
+						async (chain, branch) => formatLoad(await service.load({ chain, branch, maxBytes: 196_608 })),
+						(chain, branch) => void service.load({ chain, branch, maxBytes: 196_608 }).then((loaded) => {
+							pi.sendUserMessage(chainLoadPrompt(loaded), { deliverAs: "followUp" });
+							ctx.ui.notify(`Loaded ${loaded.link.chain}/${loaded.link.filename} into the next turn.`, "info");
+						}).catch((error) => ctx.ui.notify(error instanceof Error ? error.message : String(error), "error")),
+					), { overlay: true, overlayOptions: FULL_SCREEN_OVERLAY });
 					return;
 				}
 				const content = query ? formatRankedSearch(await service.rankedSearch({ query, maxResults: 30 })) : formatList(await service.list({ includeBranches: true }));

@@ -17,6 +17,7 @@ Branch-scoped autonomous objectives using Pi 0.82 lifecycle and session entries.
 
 ```text
 mission_get
+mission_resume
 mission_create
 mission_update
 mission_progress
@@ -32,21 +33,23 @@ mission_complete
 - Session start/tree recovery reconciles already-settled reviews, and the Subagent executor wakes Mission directly when its reviewer settles; no parent model turn or polling is required.
 - A failed synchronous follow-up admission gets one delayed retry. Mission does not use Cron or polling loops: session Cron cannot recover a closed Pi process, while reopening the exact session re-arms Mission from durable state.
 - Interrupt pauses; retryable provider behavior remains Pi-owned; terminal errors, recurring blockers, budget limits, and usage limits have distinct states.
+- Paused/blocked state is injected into every model turn with the exact Chain, artifact path, and recorded next work. `mission_resume` lets the agent resume only after explicit user authorization or resolution of the recorded blocker.
+- The dashboard intentionally omits a one-key destructive End action; type `/mission end` for the explicit human confirmation path.
 - Objective edits create a new objective version and require a reason.
-- Wall, provider-turn, token, and cost limits are supported. Limit arrival permits one bounded handoff/checkpoint wrap-up, not new substantive work.
+- Wall, provider-turn, token, and cost limits are supported. Token usage is unbounded by default; USD cost defaults to $1,000 unless explicitly set. `mission_update` can revise or remove token/cost/turn caps and wall deadlines with a recorded reason. Limit arrival permits one bounded handoff/checkpoint wrap-up, not new substantive work.
 - Individual Subagent terminal events contribute exact per-run usage without double-counting group/workflow aggregates.
 
 ## Completion gate
 
-Material mutation sets independent review due. Mission launches a fresh read-only `reviewer`, records its run, adjudicates the structured verdict, and requires focused fresh re-review after fixes. Completion is vetoed until:
+Material worktree mutation sets independent review due. Mission launches a fresh read-only `reviewer`; the child submits its verdict through the schema-validated `review_report` tool, and the parent adjudicates that exact run. Missing or malformed reports remain `unknown`, never implicit clearance. Completion is vetoed until:
 
-- every requirement has concrete audit evidence;
-- validation evidence exists;
+- every ordered requirement index has concrete audit evidence;
+- at least one structured validation record has `exitCode: 0`;
 - review is clear or explicitly skipped with a recorded reason;
 - all child execution has settled;
 - the active Chain checkpoint is saved or explicitly waived.
 
-`userRequested: true` is accepted only when the latest real user message explicitly requests ending the Mission. `/mission end|stop|complete` is the trusted direct human path.
+`userRequested: true` is a recoverable control transition governed by the model tool contract: call it only for an explicit user request, and record remaining work without claiming objective completion. `/mission end|stop|complete` is the direct human path.
 
 ## Naming contract
 

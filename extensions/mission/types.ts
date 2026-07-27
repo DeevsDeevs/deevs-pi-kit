@@ -1,5 +1,17 @@
-export type MissionStatus = "active" | "paused" | "blocked" | "terminal_error" | "budget_limited" | "usage_limited" | "complete" | "cleared";
+export type MissionStatus = "active" | "paused" | "blocked" | "terminal_error" | "budget_limited" | "usage_limited" | "complete" | "ended" | "cleared";
 export type MissionReviewStatus = "not_required" | "due" | "running" | "awaiting_adjudication" | "changes_requested" | "clear" | "skipped";
+
+export interface MissionValidationInput {
+	command: string;
+	exitCode: number;
+	summary?: string;
+	artifact?: string;
+}
+
+export interface MissionValidationRecord extends MissionValidationInput {
+	objectiveVersion: number;
+}
+
 export type MissionEventKind = "created" | "status_changed" | "continued" | "completed" | "progress" | "objective_updated" | "review_changed" | "settled";
 
 export interface MissionUsage {
@@ -23,26 +35,32 @@ export interface MissionEvent {
 	summary?: string;
 	evidence?: string[];
 	remaining?: string[];
-	validation?: string[];
+	validation?: MissionValidationRecord[];
 	checkpoint?: boolean;
+	blocked?: boolean;
+	blockerId?: string;
 	slug?: string;
 	chain?: string;
 	chainBranch?: string;
 	artifactDir?: string;
-	tokenBudget?: number;
-	costBudgetUsd?: number;
+	paths?: string[];
+	tokenBudget?: number | null;
+	costBudgetUsd?: number | null;
 	baselineMainTokens?: number;
 	baselineSubagentTokens?: number;
 	baselineMainCostUsd?: number;
 	baselineSubagentCostUsd?: number;
 	generation?: string;
 	objectiveVersion?: number;
-	turnBudget?: number;
-	wallDeadlineAt?: number;
+	turnBudget?: number | null;
+	wallDeadlineAt?: number | null;
 	reviewStatus?: MissionReviewStatus;
 	reviewRunId?: string;
 	reviewReason?: string;
 	reviewSkippedReason?: string;
+	reviewSuggestedVerdict?: "clear" | "changes_requested" | "unknown";
+	reviewFailure?: boolean;
+	reviewWorktreeFingerprint?: string;
 	blockerFingerprint?: string;
 	blockerCount?: number;
 	turnCount?: number;
@@ -54,8 +72,10 @@ export interface MissionProgressRecord {
 	summary: string;
 	evidence: string[];
 	remaining: string[];
-	validation: string[];
+	validation: MissionValidationRecord[];
 	checkpoint: boolean;
+	blocked: boolean;
+	blockerId?: string;
 }
 
 export interface MissionCurrent {
@@ -70,6 +90,7 @@ export interface MissionCurrent {
 	chain: string;
 	chainBranch: string;
 	artifactDir: string;
+	paths: string[];
 	tokenBudget?: number;
 	costBudgetUsd?: number;
 	baselineMainTokens: number;
@@ -87,6 +108,9 @@ export interface MissionCurrent {
 	reviewRunId?: string;
 	reviewReason?: string;
 	reviewSkippedReason?: string;
+	reviewSuggestedVerdict?: "clear" | "changes_requested" | "unknown";
+	reviewFailure?: boolean;
+	reviewWorktreeFingerprint?: string;
 	blockerFingerprint?: string;
 	blockerCount?: number;
 	turnCount?: number;
@@ -96,6 +120,7 @@ export interface MissionCreateInput {
 	objective: string;
 	title?: string;
 	requirements?: string[];
+	paths?: string[];
 	tokenBudget?: number;
 	costBudgetUsd?: number;
 	turnBudget?: number;
@@ -107,6 +132,11 @@ export interface MissionCreateInput {
 export interface MissionUpdateInput {
 	objective?: string;
 	requirements?: string[];
+	paths?: string[];
+	tokenBudget?: number | null;
+	costBudgetUsd?: number | null;
+	turnBudget?: number | null;
+	wallDeadlineMs?: number | null;
 	reason: string;
 }
 
@@ -114,8 +144,11 @@ export interface MissionProgressInput {
 	summary: string;
 	evidence?: string[];
 	remaining?: string[];
-	validation?: string[];
+	validation?: MissionValidationInput[];
 	checkpoint?: boolean;
+	blocked?: boolean;
+	blockerId?: string;
+	reviewSkip?: boolean;
 	reviewSkipReason?: string;
 	reviewVerdict?: "clear" | "changes_requested";
 	reviewRunId?: string;
@@ -129,6 +162,6 @@ export interface MissionSearchInput {
 
 export interface MissionCompleteInput {
 	summary?: string;
-	audit?: Array<{ requirement: string; evidence: string }>;
+	audit?: Array<{ requirementIndex: number; evidence: string }>;
 	userRequested?: boolean;
 }

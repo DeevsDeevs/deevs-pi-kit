@@ -64,9 +64,12 @@ describe("Mission state", () => {
 			requirements: ["Human-readable Mission names", "Stable Chain storage"],
 		}, ctx);
 
-		expect(inferred.title).toBe("Flaky Mission Naming Storage");
-		expect(inferred.chain).toBe("mission-flaky-mission-naming-storage");
-		expect(explicit.title).toBe("Human Readable Mission Names Stable Chain");
+		expect(inferred.title).toBe("Fix Flaky Mission Naming And Test");
+		expect(inferred.chain).toBe("mission-fix-flaky-mission-naming-and-test");
+		expect(explicit.title).toBe("Human-readable Mission Names");
+		const multilingual = await new MissionState().create({ objective: "日本語の目標を完了する" }, ctx);
+		expect(multilingual.title).toBe("日本語の目標を完了する");
+		expect(multilingual.chain).toBe("mission-日本語の目標を完了する");
 	});
 
 	it("rejects stale generation outcomes and blocks after three repeated blockers", async () => {
@@ -118,6 +121,56 @@ describe("Mission state", () => {
 		expect(test.state.readUsage()).toMatchObject({ totalTokens: 7, totalCostUsd: 0.01 });
 	});
 
+	it("lets the agent explicitly resume a paused Mission with a recorded reason", async () => {
+		const test = setup();
+		const created = await test.state.create({ objective: "Do work", title: "Probe", chain: "kit" }, test.ctx);
+		test.state.append(test.pi, created);
+		test.state.append(test.pi, test.state.statusEvent("paused", "waiting for approval"));
+		let resumeTool: { execute: (...args: unknown[]) => Promise<{ content: Array<{ text?: string }>; details?: unknown }> } | undefined;
+		let resumed = 0;
+		const pi = {
+			...test.pi,
+			registerTool(tool: unknown) {
+				const value = tool as { name: string; execute: (...args: unknown[]) => Promise<{ content: Array<{ text?: string }>; details?: unknown }> };
+				if (value.name === "mission_resume") resumeTool = value;
+			},
+		} as unknown as ExtensionAPI;
+		registerMissionTools(pi, test.state, () => undefined, { onResumed: () => { resumed++; } });
+		await expect(resumeTool!.execute("call", { reason: "Headless" }, undefined, undefined, test.ctx)).rejects.toThrow("trusted /mission resume");
+		const deniedCtx = { ...test.ctx, hasUI: true, ui: { confirm: async () => false } } as unknown as ExtensionContext;
+		await expect(resumeTool!.execute("call", { reason: "Unconfirmed" }, undefined, undefined, deniedCtx)).rejects.toThrow("not authorized");
+		expect(test.state.read()?.status).toBe("paused");
+		const approvedCtx = { ...test.ctx, hasUI: true, ui: { confirm: async () => true } } as unknown as ExtensionContext;
+		const result = await resumeTool!.execute("call", { reason: "User supplied approval" }, undefined, undefined, approvedCtx);
+		expect(result.content[0]?.text).toContain("Mission resumed");
+		expect(test.state.read()?.status).toBe("active");
+		expect(test.state.read()?.lastReason).toBe("User supplied approval");
+		expect(resumed).toBe(1);
+	});
+
+	it("refuses clear adjudication without a structured reviewer verdict", async () => {
+		const test = setup();
+		test.state.append(test.pi, await test.state.create({ objective: "Do work", chain: "kit" }, test.ctx));
+		test.state.append(test.pi, test.state.reviewEvent("awaiting_adjudication", { runId: "review-1" }));
+		let progressTool: { execute: (...args: unknown[]) => Promise<unknown> } | undefined;
+		const pi = { ...test.pi, registerTool(tool: unknown) { const value = tool as { name: string; execute: (...args: unknown[]) => Promise<unknown> }; if (value.name === "mission_progress") progressTool = value; } } as unknown as ExtensionAPI;
+		registerMissionTools(pi, test.state, () => undefined);
+		await expect(progressTool!.execute("call", { summary: "Adjudicate", reviewVerdict: "clear", reviewRunId: "review-1" }, undefined, undefined, test.ctx)).rejects.toThrow("structured review_report");
+	});
+
+	it("records user-requested closure as ended rather than achieved", async () => {
+		const test = setup();
+		test.state.append(test.pi, await test.state.create({ objective: "Do work", title: "Probe", chain: "kit" }, test.ctx));
+		let completeTool: { execute: (...args: unknown[]) => Promise<{ details?: { mission?: { status?: string } } }> } | undefined;
+		const pi = { ...test.pi, registerTool(tool: unknown) { const value = tool as typeof completeTool & { name?: string }; if (value?.name === "mission_complete") completeTool = value; } } as unknown as ExtensionAPI;
+		registerMissionTools(pi, test.state, () => undefined);
+		const ctx = { ...test.ctx, hasUI: true, ui: { confirm: async () => true } } as unknown as ExtensionContext;
+		const result = await completeTool!.execute("call", { userRequested: true }, undefined, undefined, ctx);
+		expect(result.details?.mission?.status).toBe("ended");
+		expect(test.state.read()).toBeUndefined();
+		expect(test.state.readAny()?.status).toBe("ended");
+	});
+
 	it("treats repeated completion as idempotent", async () => {
 		const test = setup();
 		const created = await test.state.create({ objective: "Do work", title: "Probe", chain: "kit" }, test.ctx);
@@ -133,7 +186,8 @@ describe("Mission state", () => {
 		} as unknown as ExtensionAPI;
 		registerMissionTools(pi, test.state, () => undefined);
 		const before = test.branch.length;
-		const result = await completeTool!.execute("call", { userRequested: true }, undefined, undefined, test.ctx);
+		const approvedCtx = { ...test.ctx, hasUI: true, ui: { confirm: async () => true } } as unknown as ExtensionContext;
+		const result = await completeTool!.execute("call", { userRequested: true }, undefined, undefined, approvedCtx);
 		expect(result.content[0]?.text).toContain("already complete");
 		expect(test.branch).toHaveLength(before);
 	});
@@ -181,6 +235,27 @@ describe("Mission state", () => {
 		expect(test.state.read()?.status).toBe("active");
 		expect(completed).toBe(0);
 		expect(notices[0]).toContain("synthetic blocker");
+	});
+
+	it("defaults cost to $1,000 and lets a reasoned update remove the token cap", async () => {
+		const test = setup();
+		const created = await test.state.create({ objective: "Do work", chain: "kit", tokenBudget: 10, wallDeadlineMs: 10 }, test.ctx);
+		test.state.append(test.pi, created);
+		expect(test.state.read()).toMatchObject({ tokenBudget: 10, costBudgetUsd: 1_000 });
+		test.state.append(test.pi, test.state.objectiveUpdateEvent({ tokenBudget: null, costBudgetUsd: 2_000, turnBudget: null, wallDeadlineMs: null, reason: "User revised Mission limits" }));
+		expect(test.state.read()?.tokenBudget).toBeUndefined();
+		expect(test.state.read()?.costBudgetUsd).toBe(2_000);
+		expect(test.state.read()?.wallDeadlineAt).toBeUndefined();
+	});
+
+	it("detects exhausted limits even while Mission status is limited", async () => {
+		const test = setup();
+		test.state.append(test.pi, await test.state.create({ objective: "Do work", chain: "kit", tokenBudget: 1 }, test.ctx));
+		test.branch.push({ type: "message", message: { role: "assistant", usage: { input: 2, output: 0, cost: { total: 0 } } } });
+		test.state.append(test.pi, test.state.statusEvent("budget_limited", "token exhausted"));
+		test.state.loadFromSession(test.ctx);
+		expect(test.state.budgetExceeded()).toBeNull();
+		expect(test.state.limitExceeded()).toBe("token");
 	});
 
 	it("counts continuation turns against the turn budget", async () => {

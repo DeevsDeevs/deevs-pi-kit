@@ -3,11 +3,14 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 
 export const CHAIN_CHECKPOINT_ENTRY = "deevs.chain-checkpoint.v1";
 
+export type ChainDueCode = "context_pressure" | "material_change" | "mission_milestone" | "mission_control" | "branch_created" | "other";
+
 export interface ChainCheckpointState {
 	chain?: string;
 	branch?: string;
 	status: "idle" | "saved" | "due";
 	dueReasons: string[];
+	dueCodes: ChainDueCode[];
 	updatedAt: number;
 	lastSavedAt?: number;
 	waiverReason?: string;
@@ -16,13 +19,13 @@ export interface ChainCheckpointState {
 
 export type ChainCheckpointOperation =
 	| { type: "activate"; chain: string; branch: string; at: number }
-	| { type: "due"; reason: string; at: number }
+	| { type: "due"; reason: string; code?: ChainDueCode; at: number }
 	| { type: "saved"; chain: string; branch: string; link?: string; at: number }
 	| { type: "waived"; reason: string; at: number }
 	| { type: "context_reset"; at: number };
 
 export function emptyChainCheckpoint(): ChainCheckpointState {
-	return { status: "idle", dueReasons: [], updatedAt: 0, contextPressureHandled: false };
+	return { status: "idle", dueReasons: [], dueCodes: [], updatedAt: 0, contextPressureHandled: false };
 }
 
 export function reduceChainCheckpoint(state: ChainCheckpointState, operation: ChainCheckpointOperation): ChainCheckpointState {
@@ -31,8 +34,10 @@ export function reduceChainCheckpoint(state: ChainCheckpointState, operation: Ch
 		return { ...state, chain: operation.chain, branch: operation.branch, updatedAt: operation.at };
 	}
 	if (operation.type === "due") {
+		const code = operation.code ?? "other";
 		const dueReasons = [...new Set([...state.dueReasons, operation.reason])].slice(-6);
-		return { ...state, status: "due", dueReasons, waiverReason: undefined, updatedAt: operation.at, contextPressureHandled: state.contextPressureHandled || operation.reason === "context usage reached 80%" };
+		const dueCodes = [...new Set([...state.dueCodes, code])].slice(-6);
+		return { ...state, status: "due", dueReasons, dueCodes, waiverReason: undefined, updatedAt: operation.at, contextPressureHandled: state.contextPressureHandled || code === "context_pressure" };
 	}
 	if (operation.type === "saved") {
 		return {
@@ -41,12 +46,13 @@ export function reduceChainCheckpoint(state: ChainCheckpointState, operation: Ch
 			branch: operation.branch,
 			status: "saved",
 			dueReasons: [],
+			dueCodes: [],
 			waiverReason: undefined,
 			updatedAt: operation.at,
 			lastSavedAt: operation.at,
 		};
 	}
-	if (operation.type === "waived") return { ...state, status: "saved", dueReasons: [], waiverReason: operation.reason, updatedAt: operation.at };
+	if (operation.type === "waived") return { ...state, status: "saved", dueReasons: [], dueCodes: [], waiverReason: operation.reason, updatedAt: operation.at };
 	return { ...state, contextPressureHandled: false, updatedAt: operation.at };
 }
 
@@ -67,6 +73,7 @@ export class ChainCheckpointService {
 	private remindNextTurn = false;
 	private gitBeforeTurn?: string;
 	private forcedWakeAt?: number;
+	private autoCompactionPending = false;
 
 	constructor(private readonly pi: ExtensionAPI) {}
 
@@ -93,8 +100,8 @@ export class ChainCheckpointService {
 		this.record({ type: "activate", chain, branch, at: Date.now() });
 	}
 
-	due(reason: string): void {
-		this.record({ type: "due", reason, at: Date.now() });
+	due(reason: string, code: ChainDueCode = "other"): void {
+		this.record({ type: "due", reason, code, at: Date.now() });
 	}
 
 	saved(chain: string, branch = "main", link?: string): void {
@@ -113,7 +120,7 @@ export class ChainCheckpointService {
 	async detectGitMutation(cwd: string): Promise<void> {
 		const before = this.gitBeforeTurn;
 		const after = await gitFingerprint(this.pi, cwd);
-		if (before !== undefined && after !== undefined && after !== before && await headAdvanced(this.pi, cwd, before, after)) this.due("repository HEAD advanced");
+		if (before !== undefined && after !== undefined && after !== before && await headAdvanced(this.pi, cwd, before, after)) this.due("repository HEAD advanced", "material_change");
 		this.gitBeforeTurn = undefined;
 	}
 
@@ -125,15 +132,35 @@ export class ChainCheckpointService {
 			return;
 		}
 		if (this.state.contextPressureHandled) return;
-		this.due("context usage reached 80%");
+		this.due("context usage reached 80%", "context_pressure");
 	}
 
 	contextCompacted(): void {
+		this.autoCompactionPending = false;
 		if (this.state.contextPressureHandled) this.record({ type: "context_reset", at: Date.now() });
 	}
 
+	compactionRequired(ctx: ExtensionContext): boolean {
+		const percent = ctx.getContextUsage()?.percent;
+		return percent !== null && percent !== undefined && percent >= 90
+			&& this.state.status === "saved" && !this.state.waiverReason && this.state.contextPressureHandled;
+	}
+
+	maybeAutoCompact(ctx: ExtensionContext, force = false): boolean {
+		if (!this.compactionRequired(ctx) || this.autoCompactionPending) return false;
+		if (!force && (!ctx.isIdle() || ctx.hasPendingMessages())) return false;
+		this.autoCompactionPending = true;
+		const target = this.state.chain ? `${this.state.chain}@${this.state.branch ?? "main"}` : "the saved Chain checkpoint";
+		ctx.compact({
+			customInstructions: `Preserve the latest durable ${target} checkpoint, active Mission/Todos, decisions, validation, modified files, blockers, and exact next step. Prefer the saved Chain link over rediscovery.`,
+			onComplete: () => { this.autoCompactionPending = false; },
+			onError: () => { this.autoCompactionPending = false; },
+		});
+		return true;
+	}
+
 	immediateCheckpointDue(): boolean {
-		return this.state.status === "due" && this.state.dueReasons.includes("context usage reached 80%");
+		return this.state.status === "due" && this.state.dueCodes.includes("context_pressure");
 	}
 
 	blockTool(toolName: string): string | undefined {
@@ -158,10 +185,12 @@ export class ChainCheckpointService {
 		this.remindNextTurn = false;
 		const target = this.state.chain ? `${this.state.chain}@${this.state.branch ?? "main"}` : "the relevant Chain";
 		const reasons = this.state.dueReasons.length ? ` Reasons: ${this.state.dueReasons.join("; ")}.` : "";
-		const urgent = this.state.dueReasons.includes("context usage reached 80%")
-			? " Context is at least 80% full: save a concise Chain link before any other work."
-			: " Load context before rediscovery and save a concise link after the next material milestone.";
-		return `${systemPrompt}\n\nChain checkpoint: ${this.state.status === "due" ? "a durable checkpoint is due" : "resume with the active Chain"} for ${target}.${reasons}${urgent} Do not claim completion while a checkpoint is due unless it is explicitly waived with a reason.`;
+		const instruction = this.state.status === "due"
+			? this.state.dueCodes.includes("context_pressure")
+				? " Context is at least 80% full: call chain_save before any other work."
+				: " The milestone already created this obligation: call chain_save before starting further substantive work."
+			: " Load this Chain before rediscovery and continue from its recorded next step.";
+		return `${systemPrompt}\n\nChain checkpoint: ${this.state.status === "due" ? "a durable checkpoint is due" : "resume with the active Chain"} for ${target}.${reasons}${instruction} Do not claim completion while a checkpoint is due unless it is explicitly waived with a reason.`;
 	}
 
 	clearStatus(): void {
@@ -208,6 +237,7 @@ export function registerChainCheckpoint(pi: ExtensionAPI, service: ChainCheckpoi
 		await service.detectGitMutation(ctx.cwd);
 		service.checkContextPressure(ctx);
 		service.forceCheckpointTurn(ctx);
+		service.maybeAutoCompact(ctx);
 	});
 	pi.on("before_agent_start", (event, ctx) => {
 		service.restore(ctx);
@@ -220,7 +250,10 @@ export function registerChainCheckpoint(pi: ExtensionAPI, service: ChainCheckpoi
 		service.restore(ctx);
 		service.checkContextPressure(ctx);
 		const reason = service.blockTool(event.toolName);
-		return reason ? { block: true, reason } : undefined;
+		if (reason) return { block: true, reason };
+		if (!service.compactionRequired(ctx)) return undefined;
+		service.maybeAutoCompact(ctx, true);
+		return { block: true, reason: "Context is at least 90% full and the required Chain checkpoint is saved. Compaction started; retry after it completes." };
 	});
 	pi.on("tool_execution_start", (event) => {
 		toolArgs.set(event.toolCallId, event.args);
@@ -234,6 +267,7 @@ export function registerChainCheckpoint(pi: ExtensionAPI, service: ChainCheckpoi
 		if (event.toolName === "chain_save" && typeof args?.chain === "string") {
 			const link = asRecord(details?.link);
 			service.saved(args.chain, typeof args.branch === "string" ? args.branch : "main", typeof link?.filename === "string" ? link.filename : undefined);
+			service.maybeAutoCompact(ctx, true);
 			return;
 		}
 		if ((event.toolName === "chain_load" || event.toolName === "chain_context") && typeof args?.chain === "string") {
@@ -242,10 +276,10 @@ export function registerChainCheckpoint(pi: ExtensionAPI, service: ChainCheckpoi
 		}
 		if (event.toolName === "chain_fork" && typeof args?.chain === "string" && typeof args.branch === "string") {
 			service.activate(args.chain, args.branch);
-			service.due("new Chain branch has no checkpoint");
+			service.due("new Chain branch has no checkpoint", "branch_created");
 			return;
 		}
-		if (event.toolName === "mission_progress" && args?.checkpoint === true) service.due("Mission milestone recorded");
+		if (event.toolName === "mission_progress" && args?.checkpoint === true) service.due("Mission milestone recorded", "mission_milestone");
 	});
 	pi.on("session_shutdown", () => {
 		toolArgs.clear();
@@ -274,7 +308,10 @@ function parseOperation(value: unknown): ChainCheckpointOperation | undefined {
 	const operation = asRecord(value);
 	if (!operation || typeof operation.type !== "string" || typeof operation.at !== "number") return undefined;
 	if (operation.type === "activate" && typeof operation.chain === "string" && typeof operation.branch === "string") return operation as unknown as ChainCheckpointOperation;
-	if (operation.type === "due" && typeof operation.reason === "string") return operation as unknown as ChainCheckpointOperation;
+	if (operation.type === "due" && typeof operation.reason === "string") {
+		const codes: ChainDueCode[] = ["context_pressure", "material_change", "mission_milestone", "mission_control", "branch_created", "other"];
+		return { type: "due", reason: operation.reason, code: typeof operation.code === "string" && codes.includes(operation.code as ChainDueCode) ? operation.code as ChainDueCode : "other", at: operation.at };
+	}
 	if (operation.type === "saved" && typeof operation.chain === "string" && typeof operation.branch === "string") return operation as unknown as ChainCheckpointOperation;
 	if (operation.type === "waived" && typeof operation.reason === "string") return operation as unknown as ChainCheckpointOperation;
 	if (operation.type === "context_reset") return operation as unknown as ChainCheckpointOperation;

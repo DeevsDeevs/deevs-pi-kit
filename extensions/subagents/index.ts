@@ -9,6 +9,8 @@ import { showTextViewer } from "../shared/text-viewer.ts";
 import { loadBuiltinAgents } from "./agents.ts";
 import { toToolUsage, type RuntimeUsage } from "../shared/runtime-events.ts";
 import { utf8Tail } from "../shared/bytes.ts";
+import { FULL_SCREEN_OVERLAY } from "../shared/dashboard.ts";
+import { AgentsDashboard } from "./ui.ts";
 
 const TaskSchema = Type.Object({
 	agent: Type.String({ description: "Curated Pi Kit persona name" }),
@@ -179,31 +181,25 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				return;
 			}
 			const target = action === "stop" ? id : action;
-			if (!target && context.mode === "tui") {
-				const state = service.list();
-				const choices = new Map<string, string>();
-				for (const run of state.runs) choices.set(`${run.runtime.status} ${run.spec.persona} · ${run.spec.id.slice(-8)}`, run.spec.id);
-				for (const group of state.groups) choices.set(`${group.status} group · ${group.id.slice(-8)}`, group.id);
-				for (const persona of loadBuiltinAgents()) choices.set(`persona · ${persona.name}`, persona.name);
-				const selected = await context.ui.select("Subagents", [...choices.keys()]);
-				if (!selected) return;
-				const selectedId = choices.get(selected) ?? "";
-				const selectedRun = state.runs.find((run) => run.spec.id === selectedId);
-				const selectedGroup = state.groups.find((group) => group.id === selectedId);
-				const terminal = selectedRun ? !["starting", "running", "stopping"].includes(selectedRun.runtime.status) : selectedGroup?.status !== "running";
-				const actions = ["View details", ...(selectedRun || selectedGroup ? terminal ? ["Clear record"] : ["Cancel"] : [])];
-				const selectedAction = await context.ui.select(selectedId, actions);
-				if (!selectedAction) return;
-				if (selectedAction === "Cancel") {
-					await service.wait({ ids: [selectedId], cancel: true });
-					context.ui.notify(`Cancelled ${selectedId}.`, "info");
-					return;
+			if (!target && context.mode === "tui" && context.hasUI) {
+				let unsubscribeDashboard: () => void = () => {};
+				try {
+					await context.ui.custom<void>((tui, theme, _keybindings, done) => {
+						const render = () => tui.requestRender();
+						unsubscribeDashboard = service.executor.onChange(render);
+						return new AgentsDashboard(
+							service,
+							theme,
+							() => done(undefined),
+							render,
+							() => Math.max(4, tui.terminal.rows - 2),
+							(id) => void service.wait({ ids: [id], cancel: true }).then(() => { context.ui.notify(`Cancelled ${id}.`, "info"); render(); }).catch((error) => context.ui.notify(error instanceof Error ? error.message : String(error), "error")),
+							(id) => { context.ui.notify(`Cleared ${service.clearTerminal(id)} record.`, "info"); render(); },
+						);
+					}, { overlay: true, overlayOptions: FULL_SCREEN_OVERLAY });
+				} finally {
+					unsubscribeDashboard();
 				}
-				if (selectedAction === "Clear record") {
-					context.ui.notify(`Cleared ${service.clearTerminal(selectedId)} record.`, "info");
-					return;
-				}
-				await showTextViewer(context, "Subagents", formatAgentsBrowser(service, selectedId));
 				return;
 			}
 			await showTextViewer(context, "Subagents", formatAgentsBrowser(service, target ?? ""));

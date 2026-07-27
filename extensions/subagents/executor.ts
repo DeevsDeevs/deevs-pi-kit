@@ -4,7 +4,7 @@ import { existsSync, readFileSync, watch, type FSWatcher } from "node:fs";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import * as path from "node:path";
-import { ownsProcessIdentity, quiesceProcessGroup, readProcessIdentity } from "../shared/process-group.ts";
+import { ownsProcessIdentity, quiesceProcessGroup } from "../shared/process-group.ts";
 import { DEFAULT_TIMEOUT_MS } from "./config.ts";
 import {
 	createDelegatePaths,
@@ -258,20 +258,26 @@ export class DelegateExecutor {
 		const worker = spawn(process.execPath, [WORKER_PATH, path.join(spec.artifactsDir, "spec.json")], {
 			cwd: spec.cwd,
 			detached: true,
-			stdio: "ignore",
+			stdio: ["ignore", "ignore", "ignore", "ipc"],
+		});
+		const ready = new Promise<void>((resolve, reject) => {
+			worker.on("message", (message: unknown) => {
+				if (typeof message === "object" && message !== null && "type" in message && message.type === "delegate_worker_ready") resolve();
+			});
+			worker.once("exit", () => resolve());
+			worker.once("error", reject);
 		});
 		await new Promise<void>((resolve, reject) => {
 			worker.once("spawn", resolve);
 			worker.once("error", reject);
 		});
 		if (!worker.pid) throw new Error("Delegate worker spawned without a pid.");
+		await ready;
 		worker.unref();
-		runtime.workerPid = worker.pid;
-		runtime.workerIdentity = await readProcessIdentity(worker.pid);
-		writeRunRuntime(spec, runtime);
 		this.roots.set(spec.id, root);
-		const run = this.accept({ spec, runtime });
-		this.watchRun(run);
+		const run = readRun(root, spec.id) ?? { spec, runtime };
+		this.accept(run);
+		if (!TERMINAL.has(run.runtime.status)) this.watchRun(run);
 		return detach ? run : this.wait(spec.id);
 	}
 

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -13,7 +13,7 @@ describe("read-only child tools", () => {
 			on() {},
 		} as unknown as ExtensionAPI;
 		childSafetyRuntime(pi);
-		expect([...tools.keys()]).toEqual(["safe_read", "safe_list", "safe_search"]);
+		expect([...tools.keys()]).toEqual(["safe_read", "safe_list", "review_report", "safe_search"]);
 		const read = await tools.get("safe_read")!.execute("call", { path: "package.json", maxBytes: 200 });
 		expect(read.content[0]?.text).toContain("deevs-pi-kit");
 		const listed = await tools.get("safe_list")!.execute("call", { path: "extensions/subagents", maxDepth: 1, maxResults: 20 });
@@ -23,7 +23,12 @@ describe("read-only child tools", () => {
 
 		const local = path.join(process.cwd(), `.safe-read-test-${process.pid}`);
 		const outside = mkdtempSync(path.join(tmpdir(), "safe-read-outside-"));
+		const artifacts = mkdtempSync(path.join(tmpdir(), "review-report-"));
+		const previousArtifacts = process.env.DEEVS_PI_SUBAGENT_ARTIFACTS;
 		try {
+			process.env.DEEVS_PI_SUBAGENT_ARTIFACTS = artifacts;
+			await tools.get("review_report")!.execute("call", { verdict: "clear", overallExplanation: "ok", findings: [] });
+			expect(JSON.parse(readFileSync(path.join(artifacts, "review-report.json"), "utf8"))).toMatchObject({ version: 1, verdict: "clear" });
 			mkdirSync(local);
 			writeFileSync(path.join(local, "large.txt"), "x".repeat(300_000));
 			writeFileSync(path.join(outside, "secret.txt"), "secret");
@@ -33,8 +38,11 @@ describe("read-only child tools", () => {
 			expect(bounded.content[0]?.text.length).toBeLessThan(200);
 			await expect(tools.get("safe_read")!.execute("call", { path: path.relative(process.cwd(), path.join(local, "escape.txt")) })).rejects.toThrow("outside");
 		} finally {
+			if (previousArtifacts === undefined) delete process.env.DEEVS_PI_SUBAGENT_ARTIFACTS;
+			else process.env.DEEVS_PI_SUBAGENT_ARTIFACTS = previousArtifacts;
 			rmSync(local, { recursive: true, force: true });
 			rmSync(outside, { recursive: true, force: true });
+			rmSync(artifacts, { recursive: true, force: true });
 		}
 		await expect(tools.get("safe_list")!.execute("call", { path: ".." })).rejects.toThrow("outside");
 	});

@@ -31,6 +31,7 @@ export interface ChainSaveInput {
 	chain: string;
 	content: string;
 	title?: string;
+	nextStep?: string;
 	slug?: string;
 	branch?: string;
 	parent?: string;

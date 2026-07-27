@@ -11,6 +11,7 @@ const CreateSchema = Type.Object({
 	objective: Type.String({ description: "Mission objective/user request" }),
 	title: Type.Optional(Type.String({ description: "Short mission name" })),
 	requirements: Type.Optional(Type.Array(Type.String(), { description: "Success criteria" })),
+	paths: Type.Optional(Type.Array(Type.String(), { description: "Explicit project-relative paths owned by the Mission" })),
 	tokenBudget: Type.Optional(Type.Number({ description: "Token budget" })),
 	costBudgetUsd: Type.Optional(Type.Number({ description: "USD budget" })),
 	turnBudget: Type.Optional(Type.Number({ description: "Provider-turn budget" })),
@@ -21,13 +22,25 @@ const CreateSchema = Type.Object({
 
 const GetSchema = Type.Object({});
 
+const ResumeSchema = Type.Object({
+	reason: Type.String({ description: "Why the paused or blocked Mission can continue now" }),
+});
+
 const ProgressSchema = Type.Object({
 	summary: Type.String({ description: "Progress/blocker summary" }),
 	evidence: Type.Optional(Type.Array(Type.String(), { description: "Evidence/files/decisions" })),
 	remaining: Type.Optional(Type.Array(Type.String(), { description: "Remaining work/blockers" })),
-	validation: Type.Optional(Type.Array(Type.String(), { description: "Checks run/results" })),
+	validation: Type.Optional(Type.Array(Type.Object({
+		command: Type.String({ description: "Executed validation command or check identifier" }),
+		exitCode: Type.Integer({ description: "Process/check exit code; zero means success" }),
+		summary: Type.Optional(Type.String({ description: "Short human-readable result" })),
+		artifact: Type.Optional(Type.String({ description: "Optional retained evidence path or id" })),
+	}), { description: "Structured validation results" })),
 	checkpoint: Type.Optional(Type.Boolean({ description: "Meaningful checkpoint" })),
-	reviewSkipReason: Type.Optional(Type.String({ description: "Explicit reason to skip otherwise-required independent review" })),
+	blocked: Type.Optional(Type.Boolean({ description: "Current progress ended at a genuine blocker" })),
+	blockerId: Type.Optional(Type.String({ description: "Stable language-neutral blocker identifier; required when blocked=true" })),
+	reviewSkip: Type.Optional(Type.Boolean({ description: "Typed request to waive otherwise-required independent review" })),
+	reviewSkipReason: Type.Optional(Type.String({ description: "Display-only explanation for the review waiver" })),
 	reviewVerdict: Type.Optional(Type.Union([Type.Literal("clear"), Type.Literal("changes_requested")], { description: "Parent adjudication of the completed independent review" })),
 	reviewRunId: Type.Optional(Type.String({ description: "Exact independent reviewer run being adjudicated" })),
 	reviewReason: Type.Optional(Type.String({ description: "Evidence-based adjudication reason" })),
@@ -36,6 +49,11 @@ const ProgressSchema = Type.Object({
 const UpdateSchema = Type.Object({
 	objective: Type.Optional(Type.String({ description: "Revised Mission objective" })),
 	requirements: Type.Optional(Type.Array(Type.String(), { description: "Replacement success criteria" })),
+	paths: Type.Optional(Type.Array(Type.String(), { description: "Replacement project-relative review scope" })),
+	tokenBudget: Type.Optional(Type.Union([Type.Null(), Type.Number()], { description: "Replacement token budget; null removes the cap" })),
+	costBudgetUsd: Type.Optional(Type.Union([Type.Null(), Type.Number()], { description: "Replacement USD budget; null removes the cap" })),
+	turnBudget: Type.Optional(Type.Union([Type.Null(), Type.Number()], { description: "Replacement provider-turn budget; null removes the cap" })),
+	wallDeadlineMs: Type.Optional(Type.Union([Type.Null(), Type.Number()], { description: "Replacement wall deadline from now in milliseconds; null removes the deadline" })),
 	reason: Type.String({ description: "Why the Mission specification changed" }),
 });
 
@@ -44,9 +62,9 @@ const SearchSchema = Type.Object({
 	maxResults: Type.Optional(Type.Number({ description: "Max matches; default 8" })),
 });
 
-const AuditItemSchema = Type.Object({ 
-	requirement: Type.String({ description: "Requirement" }),
-	evidence: Type.String({ description: "Evidence" }),
+const AuditItemSchema = Type.Object({
+	requirementIndex: Type.Integer({ minimum: 0, description: "Zero-based Mission requirement index" }),
+	evidence: Type.String({ description: "Evidence for that requirement" }),
 });
 
 const CompleteSchema = Type.Object({
@@ -64,10 +82,11 @@ interface MissionToolHooks extends MissionCompletionHooks {
 	onCreated?: (ctx: ExtensionContext) => void;
 	onProgress?: (input: MissionProgressInput, ctx: ExtensionContext) => void;
 	onObjectiveUpdated?: (input: MissionUpdateInput, ctx: ExtensionContext) => void;
+	onResumed?: (ctx: ExtensionContext) => void;
 }
 
 const USER_END_SUMMARY = "Mission ended at explicit user request. Use /mission resume to continue if needed.";
-const USER_END_AUDIT = [{ requirement: "User-requested mission end", evidence: "The user explicitly asked to end/complete the mission; this records closure without claiming all objective requirements are satisfied. Use /mission resume to continue if needed." }];
+const USER_END_AUDIT = [{ requirementIndex: 0, evidence: "The user explicitly asked to end/complete the mission; this records closure without claiming all objective requirements are satisfied. Use /mission resume to continue if needed." }];
 
 export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setContext: (ctx: ExtensionContext) => void, hooks: MissionToolHooks = {}): void {
 	pi.registerTool({
@@ -84,6 +103,38 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 			const mission = state.readAny();
 			const usage = state.readUsage();
 			return { content: [{ type: "text" as const, text: formatMission(mission, usage) }], details: { mission, usage } };
+		},
+	});
+
+	pi.registerTool({
+		name: "mission_resume",
+		label: "Resume Mission",
+		description: "Resume a paused or blocked Mission when the user authorizes continuation or resolves its recorded blocker.",
+		promptSnippet: "Resume an authorized paused Mission before substantive work.",
+		promptGuidelines: [
+			"Call before substantive Mission work when the current user explicitly asks to continue/resume or directly resolves the recorded pause/blocker.",
+			"Do not resume from unrelated chat, and do not bypass budget or usage limits.",
+			"Record the concrete authorization or resolved blocker in reason.",
+		],
+		parameters: ResumeSchema,
+		renderCall: (args: { reason: string }, theme: Theme) => missionCall("resume", args.reason, theme),
+		renderResult: (result: { details?: unknown }, options: { expanded: boolean }, theme: Theme) => missionResult(result.details, options.expanded, theme),
+		async execute(_toolCallId: string, params: { reason: string }, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
+			if (!ctx.hasUI) throw new Error("Headless Mission resume requires the trusted /mission resume command.");
+			if (!await ctx.ui.confirm("Resume Mission?", `Resume autonomous work because: ${params.reason.trim() || "(no reason)"}`)) throw new Error("Mission resume was not authorized by the user.");
+			setContext(ctx);
+			state.loadFromSession(ctx);
+			const current = state.readAny();
+			if (!current) throw new Error("No Mission exists on this branch.");
+			if (current.status === "active") return { content: [{ type: "text" as const, text: `Mission already active: ${current.title}` }], details: { mission: current, usage: state.readUsage() } };
+			if (!params.reason.trim()) throw new Error("Resuming a Mission requires a reason.");
+			const remainingLimit = state.limitExceeded();
+			if (remainingLimit) throw new Error(`Mission cannot resume while its ${remainingLimit} limit is exhausted; revise that limit with mission_update first.`);
+			if (!["paused", "blocked", "terminal_error", "budget_limited", "usage_limited", "ended"].includes(current.status)) throw new Error(`Mission cannot resume from ${current.status}.`);
+			const mission = state.append(pi, state.statusEvent("active", params.reason.trim()))!;
+			await updateMissionSummaryArtifact(mission, state.readUsage());
+			hooks.onResumed?.(ctx);
+			return { content: [{ type: "text" as const, text: `Mission resumed: ${mission.title}\n${formatMissionLocation(mission)}` }], details: { mission, usage: state.readUsage() } };
 		},
 	});
 
@@ -120,23 +171,26 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 			"Use when durable progress, evidence, validation, remaining work, or blockers change.",
 			"Not for every tiny result; prefer over manual artifact edits.",
 			"checkpoint=true only for milestones, handoffs, cleanup, or final validation.",
+			"Use blocked=true with a stable blockerId for a genuine blocker; runtime never infers blockers from prose.",
 		],
 		parameters: ProgressSchema,
 		renderCall: (args: MissionProgressInput, theme: Theme) => missionCall("progress", args.summary, theme),
 		renderResult: (result: { details?: unknown }, options: { expanded: boolean }, theme: Theme) => missionResult(result.details, options.expanded, theme),
 		async execute(_toolCallId: string, params: MissionProgressInput, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
+			if (params.reviewSkip && !ctx.hasUI) throw new Error("Headless review waiver requires a trusted direct command.");
+			if (params.reviewSkip && !await ctx.ui.confirm("Skip Mission review?", `Record this review waiver: ${params.reviewSkipReason?.trim() || "(no explanation)"}`)) throw new Error("Mission review waiver was not authorized by the user.");
 			setContext(ctx);
 			state.loadFromSession(ctx);
 			const currentMission = state.read();
-			if (params.reviewSkipReason?.trim() && currentMission?.reviewStatus === "running") throw new Error("Cannot skip review while the reviewer is still running; cancel and settle it first.");
+			if (params.reviewSkip && currentMission?.reviewStatus === "running") throw new Error("Cannot skip review while the reviewer is still running; cancel and settle it first.");
 			if (params.reviewVerdict) {
 				const current = currentMission;
 				if (!current || current.reviewStatus !== "awaiting_adjudication" || !params.reviewRunId || params.reviewRunId !== current.reviewRunId) throw new Error("Review adjudication requires the exact awaiting reviewer run id.");
-				if (!params.reviewReason?.trim()) throw new Error("Review adjudication requires an evidence-based reason.");
+				if (params.reviewVerdict === "clear" && current.reviewSuggestedVerdict !== "clear" && current.reviewSuggestedVerdict !== "changes_requested") throw new Error("Cannot clear a review without a valid structured review_report.");
 			}
 			const event = state.progressEvent(params);
 			let mission = state.append(pi, event)!;
-			if (params.reviewSkipReason?.trim()) mission = state.append(pi, state.reviewEvent("skipped", { skippedReason: params.reviewSkipReason }))!;
+			if (params.reviewSkip) mission = state.append(pi, state.reviewEvent("skipped", { skippedReason: params.reviewSkipReason }))!;
 			const usage = state.readUsage();
 			await writeMissionProgressArtifacts(mission, state.readProgress(), usage);
 			hooks.onProgress?.(params, ctx);
@@ -194,6 +248,8 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 		renderCall: (args: MissionCompleteInput, theme: Theme) => missionCall(args.userRequested ? "end" : "complete", args.summary ?? "", theme),
 		renderResult: (result: { details?: unknown }, options: { expanded: boolean }, theme: Theme) => missionResult(result.details, options.expanded, theme, Array.isArray((result.details as { blockers?: unknown } | undefined)?.blockers)),
 		async execute(_toolCallId: string, params: MissionCompleteInput, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
+			if (params.userRequested && !ctx.hasUI) throw new Error("Headless Mission end requires the trusted /mission end command.");
+			if (params.userRequested && !await ctx.ui.confirm("End Mission?", "End this Mission without claiming its remaining requirements are complete?")) throw new Error("Mission end was not authorized by the user.");
 			setContext(ctx);
 			const result = await completeMission(pi, state, ctx, params, params.userRequested ? "mission_complete called by explicit user request" : "mission_complete called", hooks);
 			if (result.alreadyComplete) return { content: [{ type: "text" as const, text: `Mission already complete: ${result.mission!.title}` }], details: result };
@@ -217,13 +273,13 @@ export async function completeMission(
 	state.loadFromSession(ctx);
 	const existing = state.readAny();
 	const usage = state.readUsage();
-	if (existing?.status === "complete") return { mission: existing, usage, alreadyComplete: true, userRequested: input.userRequested === true };
+	if (existing?.status === "complete" || existing?.status === "ended") return { mission: existing, usage, alreadyComplete: true, userRequested: input.userRequested === true };
 	const blockers = hooks.validateCompletion ? await hooks.validateCompletion(input, ctx, directUserRequest) : [];
 	if (blockers.length) return { mission: existing, usage, blockers, userRequested: input.userRequested === true };
 	const userRequested = input.userRequested === true;
 	const summary = input.summary ?? (userRequested ? USER_END_SUMMARY : undefined);
 	const audit = input.audit?.length ? input.audit : userRequested ? USER_END_AUDIT : undefined;
-	const mission = state.append(pi, state.statusEvent("complete", reason, summary))!;
+	const mission = state.append(pi, state.statusEvent(userRequested ? "ended" : "complete", reason, summary))!;
 	const completedUsage = state.readUsage();
 	await writeCompletionAudit(mission, summary, audit, completedUsage, state.readProgress());
 	hooks.onCompleted?.(ctx);

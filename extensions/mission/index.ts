@@ -22,6 +22,7 @@ export default function missionExtension(pi: ExtensionAPI): void {
 		onCreated: (ctx) => runtime.onCreated(ctx),
 		onProgress: (input, ctx) => runtime.onProgress(input, ctx),
 		onObjectiveUpdated: (input, ctx) => runtime.onObjectiveUpdated(input, ctx),
+		onResumed: (ctx) => { runtime.restore(ctx); void runtime.maybeContinue(ctx); },
 		onCompleted: (ctx) => runtime.onCompleted(ctx),
 	});
 	registerMissionCommands(pi, state, (ctx) => runtime.restore(ctx), (ctx) => void runtime.maybeContinue(ctx), {

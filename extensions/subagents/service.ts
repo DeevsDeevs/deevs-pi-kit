@@ -174,7 +174,7 @@ export class SubagentService {
 			if ((id && run.spec.id !== id) || !isTerminal(run.runtime.status) || referenced.has(run.spec.id)) continue;
 			rmSync(run.spec.artifactsDir, { recursive: true, force: true });
 			this.executor.forget(run.spec.id);
-			this.terminalSeen.delete(run.spec.id);
+			this.terminalSeen.delete(runTerminalKey(run));
 			cleared++;
 		}
 		return cleared;
@@ -186,7 +186,7 @@ export class SubagentService {
 		if (!parentSessionFile) return;
 		for (const run of this.executor.list()) if (run.spec.parentSessionFile !== parentSessionFile) {
 			this.executor.detach(run.spec.id);
-			this.terminalSeen.delete(run.spec.id);
+			this.terminalSeen.delete(runTerminalKey(run));
 		}
 		for (const group of [...this.groups.values()]) if (group.parentSessionFile !== parentSessionFile) {
 			this.groups.delete(group.id);
@@ -359,10 +359,16 @@ export class SubagentService {
 	}
 
 	private emitTerminal(run: DelegateRun): void {
-		if (this.terminalSeen.has(run.spec.id)) return;
-		this.terminalSeen.add(run.spec.id);
+		const terminalKey = runTerminalKey(run);
+		if (this.terminalSeen.has(terminalKey)) return;
+		this.terminalSeen.add(terminalKey);
 		this.activate(run);
-		if (run.spec.allowWrite) chainCheckpoints.current?.due(`write-enabled subagent ${run.spec.id} settled`);
+		const terminalDedupeKey = `subagent:${run.spec.id}:${run.spec.generation}:terminal`;
+		if (run.spec.allowWrite && !run.runtime.chainCheckpointRecordedAt) {
+			if (!runtimeEvents.read().dedupe[terminalDedupeKey]) chainCheckpoints.current?.due(`write-enabled subagent ${run.spec.id} settled`, "material_change");
+			run.runtime.chainCheckpointRecordedAt = Date.now();
+			writeFileSync(run.spec.runtimePath, JSON.stringify(run.runtime));
+		}
 		if (run.spec.deliverTerminal === false) {
 			this.pruneTerminal();
 			return;
@@ -372,7 +378,7 @@ export class SubagentService {
 			event: {
 				version: 1,
 				id: `terminal:${run.spec.id}:${run.spec.generation}`,
-				dedupeKey: `subagent:${run.spec.id}:${run.spec.generation}:terminal`,
+				dedupeKey: terminalDedupeKey,
 				source: { kind: "subagent", id: run.spec.id, generation: run.spec.generation },
 				type: run.runtime.status === "needs_attention" ? "attention" : "terminal",
 				status: terminalStatus(run.runtime.status),
@@ -530,6 +536,10 @@ async function authorizeDelegatedWrite(ctx: ExtensionContext, request: SubagentS
 	if (ctx.mode !== "tui") return false;
 	const target = request.tasks?.length ? `${request.tasks.length} Subagents` : request.resume ? `resumed Subagent ${request.resume}` : `${request.agent ?? "Subagent"} persona`;
 	return ctx.ui.confirm("Authorize delegated writes?", `${target} will receive edit/write tools and shell access for this run.`);
+}
+
+function runTerminalKey(run: DelegateRun): string {
+	return `${run.spec.id}:${run.spec.generation}`;
 }
 
 function isTerminal(status: DelegateRunStatus): boolean {
