@@ -94,6 +94,18 @@ describe("SubagentService", () => {
 		expect((await originalExecutor.wait(started.spec.id, 3_000)).runtime.status).toBe("completed");
 	});
 
+	it("detaches prior-session runs and groups when the current session is unsaved", async () => {
+		const { service, ctx } = setup();
+		await service.start({ agent: "explorer", task: "Inspect.", background: false }, ctx);
+		await service.start({ tasks: [{ agent: "reviewer", task: "Review." }], background: false }, ctx);
+		expect(service.list().runs.length).toBeGreaterThan(0);
+		expect(service.list().groups.length).toBeGreaterThan(0);
+
+		const unsavedCtx = { ...ctx, sessionManager: { ...ctx.sessionManager, getSessionFile: () => undefined } } as ExtensionContext;
+		await service.restore(unsavedCtx);
+		expect(service.list()).toEqual({ runs: [], groups: [] });
+	});
+
 	it("restores a standalone alternate-cwd run through the durable parent root index", async () => {
 		const parentRoot = mkdtempSync(path.join(tmpdir(), "subagent-parent-root-"));
 		const childRoot = mkdtempSync(path.join(tmpdir(), "subagent-child-root-"));

@@ -318,7 +318,7 @@ function shellTokens(source: string): ShellToken[] {
 }
 
 function isAssignment(value: string | undefined): boolean {
-	return value !== undefined && /^[A-Za-z_]\w*=/.test(value);
+	return value !== undefined && /^[A-Za-z_]\w*\+?=/.test(value);
 }
 
 function executableName(value: string): string {

@@ -162,8 +162,10 @@ export class DelegateExecutor {
 			};
 			this.events.on("change", done);
 			signal?.addEventListener("abort", abort, { once: true });
+			if (signal?.aborted) { abort(); return; }
+			const refreshed = this.refresh(id);
+			if (TERMINAL.has(refreshed.runtime.status)) { done(refreshed); return; }
 			if (waitMs !== undefined) timer = setTimeout(() => { cleanup(); resolve(this.refresh(id)); }, Math.max(0, waitMs));
-			if (signal?.aborted) abort();
 		});
 	}
 

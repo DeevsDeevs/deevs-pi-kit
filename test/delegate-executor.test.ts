@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildPiCommand, DelegateExecutor } from "../extensions/subagents/executor.ts";
 import { DEFAULT_TIMEOUT_MS } from "../extensions/subagents/config.ts";
 import type { DelegateRunSpec, DelegateStartInput } from "../extensions/subagents/runtime-types.ts";
@@ -176,6 +176,18 @@ describe("DelegateExecutor", () => {
 		const settled = await restoredExecutor.wait(started.spec.id);
 		expect(settled.runtime.status).toBe("completed");
 		expect(settled.runtime.output).toBe("restored");
+	});
+
+	it("rechecks terminal state after subscribing to wait events", async () => {
+		const executor = new DelegateExecutor();
+		executors.push(executor);
+		const running = { spec: { id: "race" }, runtime: { status: "running", startedAt: 0 } };
+		const completed = { spec: { id: "race" }, runtime: { status: "completed", startedAt: 0, endedAt: 1 } };
+		(executor as any).runs.set("race", running);
+		const refresh = vi.spyOn(executor as any, "refresh").mockReturnValueOnce(running).mockReturnValue(completed);
+
+		await expect(executor.wait("race", 100)).resolves.toBe(completed);
+		expect(refresh).toHaveBeenCalledTimes(2);
 	});
 
 	it("does not signal processes whose persisted identity no longer matches", async () => {

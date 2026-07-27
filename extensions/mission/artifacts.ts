@@ -1,5 +1,6 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { constants } from "node:fs";
+import { lstat, mkdir, open } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { MissionCurrent, MissionProgressRecord, MissionUsage } from "./types.ts";
 
 export function missionRoot(cwd: string): string {
@@ -11,28 +12,28 @@ export function missionDir(cwd: string, slug: string): string {
 }
 
 export async function initializeMissionArtifacts(mission: MissionCurrent, usage?: MissionUsage): Promise<void> {
-	await mkdir(mission.artifactDir, { recursive: true });
+	await prepareArtifactDirectory(mission.artifactDir);
 	await Promise.all([
-		writeFile(join(mission.artifactDir, "mission.md"), formatMissionMarkdown(mission, usage), "utf8"),
-		writeFile(join(mission.artifactDir, "log.md"), formatProgressLogMarkdown(mission, []), "utf8"),
+		writeArtifactFile(join(mission.artifactDir, "mission.md"), formatMissionMarkdown(mission, usage)),
+		writeArtifactFile(join(mission.artifactDir, "log.md"), formatProgressLogMarkdown(mission, [])),
 	]);
 }
 
 export async function updateMissionSummaryArtifact(mission: MissionCurrent, usage?: MissionUsage): Promise<void> {
-	await mkdir(mission.artifactDir, { recursive: true });
-	await writeFile(join(mission.artifactDir, "mission.md"), formatMissionMarkdown(mission, usage), "utf8");
+	await prepareArtifactDirectory(mission.artifactDir);
+	await writeArtifactFile(join(mission.artifactDir, "mission.md"), formatMissionMarkdown(mission, usage));
 }
 
 export async function writeMissionProgressArtifacts(mission: MissionCurrent, progress: MissionProgressRecord[], usage?: MissionUsage): Promise<void> {
-	await mkdir(mission.artifactDir, { recursive: true });
+	await prepareArtifactDirectory(mission.artifactDir);
 	await Promise.all([
-		writeFile(join(mission.artifactDir, "log.md"), formatProgressLogMarkdown(mission, progress), "utf8"),
-		writeFile(join(mission.artifactDir, "mission.md"), formatMissionMarkdown(mission, usage, progress), "utf8"),
+		writeArtifactFile(join(mission.artifactDir, "log.md"), formatProgressLogMarkdown(mission, progress)),
+		writeArtifactFile(join(mission.artifactDir, "mission.md"), formatMissionMarkdown(mission, usage, progress)),
 	]);
 }
 
 export async function writeCompletionAudit(mission: MissionCurrent, summary: string | undefined, audit: Array<{ requirementIndex: number; evidence: string }> | undefined, usage: MissionUsage, progress: MissionProgressRecord[] = []): Promise<void> {
-	await mkdir(mission.artifactDir, { recursive: true });
+	await prepareArtifactDirectory(mission.artifactDir);
 	const lines = [
 		formatMissionMarkdown(mission, usage, progress).trimEnd(),
 		"",
@@ -50,7 +51,40 @@ export async function writeCompletionAudit(mission: MissionCurrent, summary: str
 	if (audit?.length) for (const item of audit) lines.push(`- [${item.requirementIndex}] ${mission.requirements[item.requirementIndex] ?? "(unknown requirement)"}: ${item.evidence.trim()}`);
 	else lines.push("- (Model did not provide a structured audit. See final conversation turn for evidence.)");
 	lines.push("");
-	await writeFile(join(mission.artifactDir, "mission.md"), lines.join("\n"), "utf8");
+	await writeArtifactFile(join(mission.artifactDir, "mission.md"), lines.join("\n"));
+}
+
+async function prepareArtifactDirectory(artifactDir: string): Promise<void> {
+	await ensureDirectory(dirname(artifactDir));
+	await ensureDirectory(artifactDir);
+}
+
+async function ensureDirectory(directory: string): Promise<void> {
+	try {
+		await mkdir(directory);
+	} catch (error) {
+		if (!isNodeError(error) || error.code !== "EEXIST") throw error;
+	}
+	const info = await lstat(directory);
+	if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(`Mission artifact path is not a real directory: ${directory}`);
+}
+
+async function writeArtifactFile(filePath: string, content: string): Promise<void> {
+	const existing = await lstat(filePath).catch((error: unknown) => {
+		if (isNodeError(error) && error.code === "ENOENT") return undefined;
+		throw error;
+	});
+	if (existing?.isSymbolicLink()) throw new Error(`Mission artifact path is a symlink: ${filePath}`);
+	const handle = await open(filePath, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
+	try {
+		await handle.writeFile(content, "utf8");
+	} finally {
+		await handle.close();
+	}
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+	return error instanceof Error && "code" in error;
 }
 
 function formatMissionMarkdown(mission: MissionCurrent, usage?: MissionUsage, progress: MissionProgressRecord[] = []): string {

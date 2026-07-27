@@ -199,16 +199,16 @@ export class SubagentService {
 	async restore(ctx: ExtensionContext): Promise<void> {
 		this.ctx = ctx;
 		const parentSessionFile = ctx.sessionManager.getSessionFile();
-		if (!parentSessionFile) return;
-		for (const run of this.executor.list()) if (run.spec.parentSessionFile !== parentSessionFile) {
+		for (const run of this.executor.list()) if (!parentSessionFile || run.spec.parentSessionFile !== parentSessionFile) {
 			this.executor.detach(run.spec.id);
 			this.terminalSeen.delete(runTerminalKey(run));
 		}
-		for (const group of [...this.groups.values()]) if (group.parentSessionFile !== parentSessionFile) {
+		for (const group of [...this.groups.values()]) if (!parentSessionFile || group.parentSessionFile !== parentSessionFile) {
 			this.groups.delete(group.id);
 			this.roots.delete(group.id);
 			this.terminalSeen.delete(group.id);
 		}
+		if (!parentSessionFile) return;
 		const root = this.root(ctx.cwd);
 		await this.executor.restore(ctx.cwd, parentSessionFile);
 		for (const indexedRoot of this.readRunRoots(root, parentSessionFile)) if (indexedRoot !== root) await this.executor.restoreRoot(indexedRoot, parentSessionFile);
