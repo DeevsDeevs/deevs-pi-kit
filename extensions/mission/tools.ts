@@ -213,9 +213,10 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 			const event = state.progressEvent(params);
 			let mission = state.append(pi, event)!;
 			if (params.reviewSkip) mission = state.append(pi, state.reviewEvent("skipped", { skippedReason: params.reviewSkipReason, worktreeFingerprint: waiverFingerprint }))!;
+			hooks.onProgress?.(params, ctx);
+			mission = state.readAny() ?? mission;
 			const usage = state.readUsage();
 			await writeMissionProgressArtifacts(mission, state.readProgress(), usage);
-			hooks.onProgress?.(params, ctx);
 			return { content: [{ type: "text" as const, text: `Mission progress recorded: ${mission.title}\nLog: .missions/${mission.slug}/log.md` }], details: { mission, progress: state.readProgress().at(-1), usage } };
 		},
 	});

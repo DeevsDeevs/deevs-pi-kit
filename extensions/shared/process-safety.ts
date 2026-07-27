@@ -219,7 +219,7 @@ function detectCommandArgv(argv: string[], rejectDynamicExecutable = false): str
 }
 
 function isDynamicExecutable(value: string): boolean {
-	return value.includes("$") || value.includes("`");
+	return /[$`*?\[\]{}]/.test(value);
 }
 
 function shellCommand(argv: string[]): string | undefined {
@@ -302,7 +302,8 @@ function shellTokens(source: string): ShellToken[] {
 		if (char === "\n") { flush(); tokens.push({ value: "\n", operator: true }); continue; }
 		if (/\s/.test(char)) { flush(); continue; }
 		if (char === "&" && (source[index + 1] === ">" || (word.endsWith(">") && /\d/.test(source[index + 1] ?? "")))) { word += char; continue; }
-		if (";&|(){}".includes(char)) {
+		const structuralBrace = "{}".includes(char) && word.length === 0 && /(?:\s|;|$)/.test(source[index + 1] ?? "");
+		if (";&|()".includes(char) || structuralBrace) {
 			flush();
 			const pair = char + (source[index + 1] ?? "");
 			if (pair === "&&" || pair === "||" || pair === "|&") index++;
