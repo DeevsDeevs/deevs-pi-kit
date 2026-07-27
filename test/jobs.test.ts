@@ -82,6 +82,8 @@ describe("bounded Jobs", () => {
 		await expect(manager.start({ name: "argv-stdbuf-detach", argv: ["stdbuf", "-oL", "setsid", "node", "worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
 		await expect(manager.start({ name: "argv-env-chdir-detach", argv: ["env", "-C", "/tmp", "setsid", "node", "worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
 		await expect(manager.start({ name: "argv-assignment-detach", argv: ["bash", "-lc", "FOO=x setsid node worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
+		await expect(manager.start({ name: "argv-append-assignment-detach", argv: ["bash", "-lc", "FOO+=x setsid node worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
+		await expect(manager.start({ name: "argv-env-append-assignment-detach", argv: ["env", "FOO+=x", "setsid", "node"] }, ctx)).rejects.toThrow("Detached process launch");
 		await expect(manager.start({ name: "argv-substitution-detach", argv: ["bash", "-lc", "echo \"$(setsid node worker.js)\""] }, ctx)).rejects.toThrow("Detached process launch");
 		await expect(manager.start({ name: "argv-dynamic-executable-detach", argv: ["bash", "-lc", "runner=setsid; $runner node worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
 		await expect(manager.start({ name: "argv-glob-executable-detach", argv: ["bash", "-lc", "/usr/bin/setsi? node worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
@@ -94,6 +96,7 @@ describe("bounded Jobs", () => {
 		await expect(manager.start({ name: "argv-command-dynamic-executable", argv: ["bash", "-lc", "runner=setsid; command $runner -v node"] }, ctx)).rejects.toThrow("Detached process launch");
 		await expect(manager.start({ name: "argv-sudo-assignment-dynamic-executable", argv: ["bash", "-lc", "runner=setsid; sudo FOO=x $runner node"] }, ctx)).rejects.toThrow("Detached process launch");
 		await expect(manager.start({ name: "argv-sudo-assignment-detach", argv: ["sudo", "FOO=x", "setsid", "node"] }, ctx)).rejects.toThrow("Detached process launch");
+		await expect(manager.start({ name: "argv-sudo-append-assignment-detach", argv: ["sudo", "FOO+=x", "setsid", "node"] }, ctx)).rejects.toThrow("Detached process launch");
 		await expect(manager.start({ name: "argv-sudo-option-consecutive-assignments", argv: ["sudo", "-u", "root", "FOO=x", "BAR=y", "setsid", "node"] }, ctx)).rejects.toThrow("Detached process launch");
 		await expect(manager.start({ name: "argv-sudo-double-dash-assignment-detach", argv: ["sudo", "--", "FOO=x", "BAR=y", "setsid", "node"] }, ctx)).rejects.toThrow("Detached process launch");
 		await expect(manager.start({ name: "argv-sudo-double-dash-dynamic", argv: ["bash", "-lc", "runner=setsid; sudo -- FOO=x BAR=y $runner node"] }, ctx)).rejects.toThrow("Detached process launch");
