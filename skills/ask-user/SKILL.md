@@ -5,49 +5,39 @@ description: Use the interactive ask_user UI when 1-5 concrete clarifications or
 
 # Ask User
 
-Use this skill to collect explicit user input through the interactive `ask_user` overlay before making material assumptions.
-
-This is a **clarification and decision gate**, not general conversation. The UI supports searchable option lists, option descriptions, context display, and freeform answers. Batched questions use one overlay with progress tabs; `←`/`→` switch questions in option-list mode.
+Collect explicit user input through the interactive `ask_user` overlay before making material assumptions. A clarification and decision gate, not general conversation. The UI supports searchable option lists, descriptions, context display, freeform answers, and batched questions with progress tabs (`←`/`→` switch in option-list mode).
 
 ## When to use
 
-Call `ask_user` — instead of asking inline in normal chat — when you have **1-5 focused questions** and at least one is true:
+Call `ask_user` — instead of asking inline — with 1–5 focused questions when at least one holds:
 
-- requirements, acceptance criteria, or success conditions are ambiguous
-- multiple valid implementation paths exist and the trade-off is preference-dependent
+- requirements or acceptance criteria are ambiguous
+- multiple valid paths exist and the trade-off is preference-dependent
 - the next step changes architecture, schema, API contracts, deployment, security, or destructive behavior
-- scope must be cut or prioritized
-- you are about to assume something that would materially affect implementation
+- scope must be cut or prioritized, or you are about to assume something material
 
-Do not use it when:
-
-- a file, command, test, doc, chain, or existing context can answer the question
-- the choice is trivial formatting/polish
-- asking would only defer obvious next work
-- the user already made the exact decision
+Not when a file, command, test, chain, or existing context can answer; the choice is trivial polish; asking only defers obvious work; or the user already decided.
 
 ## Protocol
 
-1. **Gather evidence first** using available tools. Do not ask blind.
-2. **Batch related questions** into one `ask_user` call, usually 1-3 questions, never more than 5.
-3. **Keep each question decision-shaped**: one concrete choice or missing fact.
-4. **Use options when helpful**: 2-5 short choices with trade-off descriptions.
-5. **Allow freeform** unless the answer must be one of the provided options.
-6. **After the tool returns**, restate the decision/answers and proceed.
-7. **If cancelled or incomplete**, stop when the missing answer is high-impact; report what is blocked.
+1. Gather evidence first — never ask blind.
+2. Batch related questions into one call (usually 1–3, never more than 5), each decision-shaped: one concrete choice or missing fact.
+3. Offer 2–5 short options with trade-off descriptions when helpful; allow freeform unless the answer must be one of the options.
+4. After the tool returns, restate the decisions and proceed.
+5. On cancel: for high-stakes or irreversible choices, stop and say what decision is required; for low-risk ambiguity, proceed only if the user explicitly delegated the choice, else ask inline.
 
-## Good payload shape
+## Payload shape
 
 ```json
 {
-  "context": "Ghostty config enables desktop notifications and bell audio. The notifier can rely on terminal sequences only, or retain native fallbacks.",
+  "context": "The notifier can rely on terminal sequences only, or retain native fallbacks.",
   "questions": [
     {
       "id": "notification-path",
       "question": "Which notification path should the plugin ship with?",
       "options": [
-        { "title": "Terminal protocols only", "description": "Simpler; relies on Ghostty/terminal config" },
-        { "title": "Keep macOS fallback", "description": "More reliable on macOS, but less terminal-native" }
+        { "title": "Terminal protocols only", "description": "Simpler; relies on terminal config" },
+        { "title": "Keep macOS fallback", "description": "More reliable on macOS, less terminal-native" }
       ],
       "allowFreeform": true
     }
@@ -57,27 +47,6 @@ Do not use it when:
 
 ## Question quality
 
-Prefer:
+"Which storage model should v1 use?" beats "Any thoughts?". One decision per question; never ask the user to repeat facts present in the repo; state your recommendation when evidence points clearly one way.
 
-- “Which storage model should v1 use?”
-- “Should this be project-local only for MVP?”
-- “Which behavior is acceptable when the process is not attached to a TTY?”
-
-Avoid:
-
-- “Any thoughts?”
-- multiple unrelated decisions in one question
-- asking the user to repeat facts present in the repo
-- hiding your recommendation when evidence points clearly one way
-
-## Cancellation policy
-
-If the user cancels:
-
-- For high-stakes or irreversible choices: stop and say what decision is required.
-- For low-risk ambiguity only: proceed only if the user explicitly delegated choice elsewhere; otherwise ask inline before continuing.
-
-## Relationship to `grill-me`
-
-- Use `ask-user` to collect explicit choices during implementation.
-- Use `grill-me` for a broader one-question-at-a-time pressure test before a plan is ready.
+Use `ask-user` to collect explicit choices during implementation; use `grill-me` for the broader one-question-at-a-time pressure test before a plan is ready.

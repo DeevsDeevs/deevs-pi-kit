@@ -5,97 +5,34 @@ description: Run a bounded test and review pass for completed or proposed change
 
 # Validation Review
 
-Use this skill to answer: **is this change good enough to ship under the user's review budget?**
-
-This is post-change validation, not open-ended debugging or architecture exploration. If checks expose a concrete failure, report it in the verdict; switch to `diagnose` only when the user asks to root-cause or fix it.
+Answer one question: **is this change good enough to ship under the user's review budget?** This is post-change validation, not open-ended debugging — if checks expose a concrete failure, report it in the verdict; switch to `diagnose` only when asked to root-cause.
 
 ## 1. Set the budget
 
-Identify or ask for:
-
-```text
-Scope: files/diff/branch/feature under review
-Budget: max time, commands, subagents, and e2e depth
-Required evidence: unit/integration/e2e/manual smoke/reviewer signoff
-```
-
-If no budget is given, use compact default:
-
-- inspect diff and nearby tests
-- run narrow relevant checks only
-- use at most one focused subagent if it adds a distinct perspective
-- ask before full-workspace, expensive, destructive, or full-e2e runs
+Identify or ask for scope (files/diff/branch), budget (max time, commands, subagents, e2e depth), and required evidence (unit/integration/e2e/manual smoke/signoff). Default budget when none given: inspect the diff and nearby tests, run narrow relevant checks, at most one focused subagent, and ask before full-workspace, expensive, destructive, or full-e2e runs.
 
 ## 2. Review matrix
 
-Check four angles:
+Four angles — for each, know what evidence would change the verdict:
 
-1. **Requirements** — does it satisfy the request and acceptance criteria?
+1. **Requirements** — satisfies the request and acceptance criteria?
 2. **Logic** — edge cases, invariants, errors, state, concurrency, security.
-3. **Evidence** — tests/e2e/smoke checks that prove behavior.
+3. **Evidence** — tests/e2e/smoke that prove behavior.
 4. **Slop** — overbuild, fake confidence, brittle mocks, ignored failures, noisy docs.
-
-For each angle, know what evidence would change the verdict.
 
 ## 3. Inspect and run checks
 
-Use project-native facts: changed files, callers, tests, fixtures, project instructions, CI conventions, specs/issues/chains supplied by the user.
+Use project-native facts (changed files, callers, tests, CI conventions, specs/chains) and the narrowest meaningful command — e.g. `cargo check -p <crate>`, `cargo test -p <crate> <filter>`, `cargo clippy -p <crate> --all-targets` — full workspace or e2e only when budget and conventions justify it.
 
-Prefer the narrowest meaningful command.
+For servers/browsers/e2e: Herdr for persistent processes; `job_start` with readiness watches for bounded commands; run the smoke action with real assertions; capture concise evidence; `job_stop` when done. No large log dumps.
 
-Rust examples:
+## 4. Perspectives
 
-```bash
-cargo check -p <crate>
-cargo test -p <crate> <filter> -- --nocapture
-cargo nextest run -p <crate> <filter>
-cargo clippy -p <crate> --all-targets --all-features
-```
-
-Use clippy/full workspace/e2e only when budget and project conventions justify it.
-
-For servers, browsers, workers, or e2e flows:
-
-- use Herdr for persistent servers/watchers; use `job_start` only for bounded commands
-- wait for bounded readiness with `job_start` readiness watches
-- run the smoke/e2e action with real assertions
-- capture concise evidence
-- stop bounded Jobs with `job_stop`
-
-Do not dump large logs unless needed.
-
-## 4. Use multiple perspectives
-
-Use subagents only within the user's budget. Scope every task with `cwd`, exact files/diff, command limits, exclusions, and output shape.
-
-Useful perspectives:
-
-- `tester` — missing tests, test quality, e2e/smoke plan
-- `reviewer` — requirements, correctness, maintainability
-- `anti-slop` — overbuild, fake tests, ignored failures, vague docs
-- `rust-dev` — Rust ownership, async, traits, feature flags, errors
-- `devops` — CI, runtime config, deployment/process concerns
-
-Prefer separate `subagent` calls with explicit `cwd` when cwd matters. Use `subagent_wait` for settlement/output and `/agents <run-id>` for artifact details.
-
-Do not delegate what one local command or one file read can prove.
+Subagents only within budget, each scoped with `cwd`, exact files/diff, command limits, and output shape; settle with `subagent_wait`. Useful: `tester` (missing tests, e2e plan), `reviewer` (requirements, correctness), `anti-slop` (overbuild, fake tests), `rust-dev`, `devops`. Never delegate what one local command or file read proves.
 
 ## 5. Judge test quality
 
-Good evidence:
-
-- exercises observable behavior through the right public seam
-- would catch the regression or requirement gap
-- is deterministic and appropriately narrow
-- checks meaningful assertions, not just “does not crash”
-
-Bad evidence:
-
-- tests implementation details only
-- snapshots/goldens updated without explanation
-- mocks bypass the risky path
-- e2e clicks/requests without assertions
-- green checks unrelated to changed code
+Good evidence exercises observable behavior through the right public seam, would catch the regression, is deterministic, and asserts meaning — not just "does not crash". Bad evidence: implementation-detail tests, unexplained snapshot updates, mocks bypassing the risky path, e2e actions without assertions, green checks unrelated to the change.
 
 ## Verdict format
 
@@ -112,27 +49,16 @@ Review findings
 - Blocker/Major/Minor/Nit — file/path — issue — recommended fix
 
 Subagent perspectives
-- tester/reviewer/anti-slop/rust-dev/devops: key finding or “not used: reason”
+- persona: key finding or "not used: reason"
 
-Remaining risk
-- ...
-
-Next action
+Remaining risk / Next action
 - ...
 ```
 
-Severity:
-
-- **Blocker** — wrong behavior, data loss, security issue, or failing required check.
-- **Major** — requirement gap, important edge case, or untested risky path.
-- **Minor** — maintainability/cleanup issue.
-- **Nit** — optional polish; never blocks shipping.
+Severity: **Blocker** wrong behavior, data loss, security, failing required check · **Major** requirement gap or untested risky path · **Minor** maintainability · **Nit** optional polish, never blocks.
 
 ## Pitfalls
 
-- Do not treat “tests pass” as proof requirements are met.
-- Do not run expensive checks just to look thorough.
-- Do not ignore failed commands.
-- Do not create fake e2e coverage with unasserted actions.
-- Do not let subagents broaden scope beyond budget.
-- Do not ship with hidden uncertainty; name remaining risk.
+- "Tests pass" is not proof requirements are met.
+- Never run expensive checks just to look thorough, ignore failed commands, or fake e2e coverage with unasserted actions.
+- Keep subagents inside budget; name remaining risk instead of shipping hidden uncertainty.
