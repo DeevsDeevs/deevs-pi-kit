@@ -32,6 +32,7 @@ export default function missionExtension(pi: ExtensionAPI): void {
 		onCreated: (ctx) => runtime.onCreated(ctx),
 		onTakenOver: (ctx, mission) => runtime.onTakenOver(ctx, mission),
 		onChanged: (ctx) => runtime.restore(ctx),
+		onObjectiveUpdated: (input, ctx) => runtime.onObjectiveUpdated(input, ctx),
 		onCompleted: (ctx, mission) => runtime.onCompleted(ctx, mission),
 	});
 	runtime.register();

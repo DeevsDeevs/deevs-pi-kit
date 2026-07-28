@@ -172,7 +172,7 @@ describe("Mission takeover", () => {
 		expect(firstState.readPersistenceError()).toContain("not a real directory");
 	});
 
-	it("keeps a recovered stale lock exclusive and recomputes usage totals", async () => {
+	it("recovers a crashed holder's stale lock but keeps a live lock exclusive", async () => {
 		const cwd = mkdtempSync(path.join(tmpdir(), "mission-stale-lock-"));
 		cleanup.push(cwd);
 		const source = await sourceMission(cwd);
@@ -181,10 +181,11 @@ describe("Mission takeover", () => {
 		mkdirSync(lock, { recursive: true });
 		const old = new Date(Date.now() - 60_000);
 		utimesSync(lock, old, old);
-		expect(() => withMissionLock(cwd, slug, () => undefined, true)).toThrow("Mission state is busy");
-		rmSync(lock, { recursive: true });
+		// A lock left behind by a SIGKILLed holder (stale by age, no live owner) must be reclaimed, not brick the Mission forever.
+		expect(withMissionLock(cwd, slug, () => "ran")).toBe("ran");
+		// A freshly-held live lock is still exclusive.
 		withMissionLock(cwd, slug, () => {
-			expect(() => withMissionLock(cwd, slug, () => undefined, true)).toThrow("Mission state is busy");
+			expect(() => withMissionLock(cwd, slug, () => undefined)).toThrow("Mission state is busy");
 		});
 
 		const snapshotFile = path.join(cwd, ".missions", ".state", `${slug}.json`);

@@ -9,6 +9,7 @@ import { getJobManager } from "../jobs/registry.ts";
 import type { DelegateRun } from "../subagents/runtime-types.ts";
 import { runtimeEvents } from "../shared/runtime-events.ts";
 import { MissionState } from "./state.ts";
+import { missionRoot } from "./artifacts.ts";
 import type { MissionCompleteInput, MissionCurrent, MissionProgressInput, MissionUpdateInput } from "./types.ts";
 
 interface MissionAgentMessage {
@@ -203,7 +204,8 @@ export class MissionRuntime {
 		} catch {
 			return;
 		}
-		if (this.state.budgetExceeded() || activeSubagents.runs.length || activeSubagents.groupIds.length || activeSubagents.launchReservations || this.activeJobs().length || mission.reviewStatus === "running") return;
+		// Block on "due" as well as "running": a continuation turn during the review-admission window would mutate the worktree while a reviewer is about to start, guaranteeing a review failure and wasting a strike.
+		if (this.state.budgetExceeded() || activeSubagents.runs.length || activeSubagents.groupIds.length || activeSubagents.launchReservations || this.activeJobs().length || mission.reviewStatus === "running" || mission.reviewStatus === "due") return;
 		const event = this.state.continuedEvent();
 		this.state.append(this.pi, event);
 		this.continuationInFlight = true;
@@ -232,11 +234,16 @@ export class MissionRuntime {
 
 	private async recover(ctx: ExtensionContext): Promise<void> {
 		if (this.disposed) return;
-		this.restore(ctx);
-		await this.reconcileWorkspaceFingerprint(ctx);
-		this.bindReviewRecovery(ctx);
-		await this.reconcileReview();
-		await this.maybeContinue(ctx);
+		try {
+			this.restore(ctx);
+			await this.reconcileWorkspaceFingerprint(ctx);
+			this.bindReviewRecovery(ctx);
+			await this.reconcileReview();
+			await this.maybeContinue(ctx);
+		} catch (error) {
+			this.ctx?.ui.notify(`Mission recovery deferred: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			this.scheduleRecovery(ctx, 5_000);
+		}
 	}
 
 	private bindReviewRecovery(ctx: ExtensionContext): void {
@@ -336,7 +343,7 @@ export class MissionRuntime {
 
 	private markReviewDue(reason: string): void {
 		const mission = this.state.read();
-		if (!mission || mission.status !== "active" || mission.reviewStatus === "running") return;
+		if (!mission || mission.status !== "active" || mission.reviewStatus === "running" || mission.reviewStatus === "due") return;
 		this.state.append(this.pi, this.state.reviewEvent("due", { reason }));
 		this.updateStatus();
 	}
@@ -359,7 +366,7 @@ export class MissionRuntime {
 			return;
 		}
 		const workspace = await resolveMissionWorkspace(this.pi, ctx.cwd, mission.paths);
-		const reviewWorktreeFingerprint = workspace ? await workspaceFingerprint(this.pi, ctx.cwd, workspace, [mission.artifactDir]) : undefined;
+		const reviewWorktreeFingerprint = workspace ? await workspaceFingerprint(this.pi, ctx.cwd, workspace, missionIgnoredPaths(ctx.cwd)) : undefined;
 		if (!reviewWorktreeFingerprint || !workspace) {
 			this.failReview(mission, "could not resolve and fingerprint the Mission Git workspace; ensure explicit Mission paths exist, stay inside cwd, and resolve to Git repositories");
 			return;
@@ -390,7 +397,8 @@ export class MissionRuntime {
 
 	private async reconcileReview(): Promise<void> {
 		const mission = this.state.read();
-		if (!mission?.reviewRunId || mission.reviewStatus !== "running") return;
+		// Only an active Mission may transition review state; reviewEvent()/failReview() call requireActive() and would throw on a paused/blocked Mission whose reviewer settled after the pause.
+		if (!mission?.reviewRunId || mission.reviewStatus !== "running" || mission.status !== "active") return;
 		let run: DelegateRun;
 		try {
 			run = getSubagentService().executor.get(mission.reviewRunId);
@@ -592,10 +600,15 @@ function reviewPaths(reviewCwd: string, workspace: MissionWorkspaceRoot[]): stri
 	});
 }
 
+// Exclude all Mission and Chain durable state: their snapshot/link writes mutate the tree every turn and would otherwise churn the fingerprint into a permanent review-due loop. Admission and completion must use the identical list or their fingerprints can never match.
+function missionIgnoredPaths(cwd: string): string[] {
+	return [missionRoot(cwd), join(cwd, ".chains")];
+}
+
 async function worktreeFingerprint(pi: ExtensionAPI, cwd: string, mission: MissionCurrent | undefined): Promise<string | undefined> {
 	if (!mission) return undefined;
 	const workspace = await resolveMissionWorkspace(pi, cwd, mission.paths);
-	return workspace ? workspaceFingerprint(pi, cwd, workspace, [mission.artifactDir]) : undefined;
+	return workspace ? workspaceFingerprint(pi, cwd, workspace, missionIgnoredPaths(cwd)) : undefined;
 }
 
 async function workspaceFingerprint(pi: ExtensionAPI, cwd: string, workspace: MissionWorkspaceRoot[], ignoredPaths: string[]): Promise<string | undefined> {
@@ -611,8 +624,8 @@ async function workspaceFingerprint(pi: ExtensionAPI, cwd: string, workspace: Mi
 				const path = relative(root, canonicalIgnored).replaceAll("\\", "/");
 				return path && path !== ".." && !path.startsWith("../") ? [`:(top,exclude,literal)${path}/`] : [];
 			});
-			const selected = literalScopes.length ? literalScopes : exclusions.length ? [":(top,literal)."] : [];
-			const gitPathspecs = [...selected, ...exclusions];
+			// No positive sentinel for the pathless case: `:(top,literal).` matches nothing (literal magic), silently blinding the fingerprint. An exclusion-only pathspec means "everything except", and an empty pathspec means the whole repo.
+			const gitPathspecs = [...literalScopes, ...exclusions];
 			const pathspec = gitPathspecs.length ? ["--", ...gitPathspecs] : [];
 			const [baseline, diff, untracked] = await Promise.all([
 				scopes.length

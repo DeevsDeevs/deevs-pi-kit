@@ -8,6 +8,7 @@ Single-controller autonomous objectives using Pi 0.82 lifecycle, durable workspa
 /mission <objective> [--name title] [--req criterion] [--path cwd-relative-scope]... [--budget 200k] [--cost $2] [--chain name]
 /mission status
 /mission takeover [mission-id-or-artifact-slug]
+/mission update [--objective ...] [--req ...] [--path ...] [--budget 400k|none] [--cost $5|none] [--turns 40|none] [--deadline <ms>|none] [--reason ...]
 /mission pause
 /mission resume
 /mission clear
@@ -43,7 +44,7 @@ mission_complete
 - The dashboard intentionally omits a one-key destructive End action; type `/mission end` for the explicit human confirmation path.
 - Objective edits create a new objective version and require a reason.
 - Mission `paths` are typed cwd-relative ownership scope. When cwd is a non-Git workspace containing several repositories, each path resolves to its canonical containing Git root; fingerprints combine scoped HEAD/diff/untracked state per root, and missing/escaping/non-Git paths fail review and completion closed. A path-less Mission in a Git repository intentionally fingerprints the whole repository; use explicit paths when concurrent sessions edit unrelated scopes. Three review-time fingerprint changes block rather than requeue forever.
-- Wall, provider-turn, token, and cost limits are supported. Token usage is unbounded by default; USD cost defaults to $1,000 unless explicitly set. `mission_update` can revise or remove token/cost/turn caps and wall deadlines with a recorded reason. Limit arrival permits one bounded handoff/checkpoint wrap-up, not new substantive work.
+- Wall, provider-turn, token, and cost limits are supported. Token usage is unbounded by default; USD cost defaults to $1,000 unless explicitly set. `mission_update` (or the trusted `/mission update` command when headless) revises or removes token/cost/turn caps and wall deadlines with a recorded reason; raise the exhausted limit before `mission_resume`. Limit arrival permits one bounded handoff/checkpoint wrap-up, not new substantive work.
 - Individual Subagent terminal events contribute exact per-run usage without double-counting group/workflow aggregates.
 
 ## Completion gate

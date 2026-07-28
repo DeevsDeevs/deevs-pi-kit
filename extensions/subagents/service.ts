@@ -529,17 +529,16 @@ export class SubagentService {
 	}
 
 	private readRunRoots(parentRoot: string, parentSessionFile: string): string[] {
+		// A corrupt index degrades to empty rather than throwing: throwing here would abort restore (fail-open, hiding active alt-root runs) and permanently block every future alt-cwd launch (fail-closed). recordRunRoot rewrites a fresh index on the next launch. The atomic temp+rename write makes real corruption practically unreachable.
 		const target = this.runRootsPath(parentRoot, parentSessionFile);
 		if (!existsSync(target)) return [];
-		let value: { version?: unknown; parentSessionFile?: unknown; roots?: unknown };
 		try {
-			value = JSON.parse(readFileSync(target, "utf8")) as typeof value;
+			const value = JSON.parse(readFileSync(target, "utf8")) as { version?: unknown; parentSessionFile?: unknown; roots?: unknown };
+			if (value.version !== 1 || value.parentSessionFile !== parentSessionFile || !Array.isArray(value.roots)) return [];
+			return value.roots.filter((root): root is string => typeof root === "string" && path.isAbsolute(root));
 		} catch {
-			throw new Error(`Corrupted Subagent root index: ${target}`);
+			return [];
 		}
-		if (value.version !== 1 || value.parentSessionFile !== parentSessionFile || !Array.isArray(value.roots)) throw new Error(`Invalid Subagent root index: ${target}`);
-		if (!value.roots.every((root) => typeof root === "string" && path.isAbsolute(root))) throw new Error(`Invalid Subagent root path in index: ${target}`);
-		return value.roots as string[];
 	}
 
 	private runRootsPath(parentRoot: string, parentSessionFile: string): string {

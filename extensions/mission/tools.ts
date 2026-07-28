@@ -5,7 +5,7 @@ import { Text } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { initializeMissionArtifacts, missionRoot, updateMissionSummaryArtifact, writeCompletionAudit, writeMissionProgressArtifacts } from "./artifacts.ts";
 import type { MissionState } from "./state.ts";
-import { discoverMissionTakeoverCandidates, selectMissionTakeoverCandidate } from "./takeover.ts";
+import { discoverMissionTakeoverCandidates, listSnapshotTakeoverCandidates, selectMissionTakeoverCandidate } from "./takeover.ts";
 import type { MissionCompleteInput, MissionCreateInput, MissionCurrent, MissionProgressInput, MissionSearchInput, MissionTakeoverCandidate, MissionTakeoverInput, MissionUpdateInput } from "./types.ts";
 
 const CreateSchema = Type.Object({
@@ -102,11 +102,19 @@ export async function resumeMission(pi: ExtensionAPI, state: MissionState, reaso
 	const current = state.readAny();
 	if (!current) throw new Error("No Mission exists on this branch.");
 	const remainingLimit = state.limitExceeded();
-	if (remainingLimit) throw new Error(`Mission cannot resume while its ${remainingLimit} limit is exhausted; revise that limit with mission_update first.`);
+	if (remainingLimit) throw new Error(`Mission cannot resume while its ${remainingLimit} limit is exhausted; raise it with mission_update (or "/mission update --${remainingLimit === "token" ? "budget" : remainingLimit === "cost" ? "cost" : remainingLimit === "turn" ? "turns" : "deadline"} ..." when headless) first.`);
 	if (current.status === "active") return current;
 	if (!["paused", "blocked", "terminal_error", "budget_limited", "usage_limited", "ended"].includes(current.status)) throw new Error(`Mission cannot resume from ${current.status}.`);
 	const mission = state.append(pi, state.statusEvent("active", explanation))!;
 	await updateMissionSummaryArtifact(mission, state.readUsage());
+	return mission;
+}
+
+export async function updateMission(pi: ExtensionAPI, state: MissionState, ctx: ExtensionContext, params: MissionUpdateInput, hooks: Pick<MissionToolHooks, "onObjectiveUpdated"> = {}): Promise<MissionCurrent> {
+	state.loadFromSession(ctx);
+	const mission = state.append(pi, state.objectiveUpdateEvent(params))!;
+	await updateMissionSummaryArtifact(mission, state.readUsage());
+	hooks.onObjectiveUpdated?.(params, ctx);
 	return mission;
 }
 
@@ -160,7 +168,7 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 			state.loadFromSession(ctx);
 			const mission = state.readAny();
 			const usage = state.readUsage();
-			const candidates = mission ? [] : await (hooks.discoverTakeoverCandidates ?? discoverMissionTakeoverCandidates)(ctx);
+			const candidates = mission ? [] : listSnapshotTakeoverCandidates(ctx);
 			const takeover = candidates.length ? `\nTakeover available: ${candidates.map((candidate) => `${candidate.snapshot.mission.missionId} (${candidate.snapshot.mission.title})`).join(", ")}` : "";
 			const error = state.readPersistenceError();
 			const text = `${formatMission(mission, usage)}${takeover}${error ? `\nState error: ${error}` : ""}`;
@@ -237,8 +245,10 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 		async execute(_toolCallId: string, params: MissionCreateInput, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
 			setContext(ctx);
 			state.loadFromSession(ctx);
-			const takeoverCandidates = await (hooks.discoverTakeoverCandidates ?? discoverMissionTakeoverCandidates)(ctx);
-			if (!state.readAny() && takeoverCandidates.length) throw new Error(`A Mission already exists in another session: ${takeoverCandidates.map((candidate) => candidate.snapshot.mission.missionId).join(", ")}. Take it over instead of creating a replacement.`);
+			if (!state.readAny()) {
+				const takeoverCandidates = listSnapshotTakeoverCandidates(ctx);
+				if (takeoverCandidates.length) throw new Error(`A Mission already exists in another session: ${takeoverCandidates.map((candidate) => candidate.snapshot.mission.missionId).join(", ")}. Take it over instead of creating a replacement.`);
+			}
 			const event = await state.create(params, ctx);
 			const mission = state.append(pi, event)!;
 			try { hooks.onCreated?.(ctx); }
@@ -277,7 +287,7 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 				if (!params.reviewReason?.trim()) throw new Error("Review adjudication requires an evidence-based reason.");
 				if (params.reviewVerdict === "clear" && current.reviewSuggestedVerdict !== "clear" && current.reviewSuggestedVerdict !== "changes_requested") throw new Error("Cannot clear a review without a valid structured review_report.");
 			}
-			if (params.reviewSkip && !ctx.hasUI) throw new Error("Headless review waiver requires a trusted direct command.");
+			if (params.reviewSkip && !ctx.hasUI) throw new Error("Headless sessions cannot waive independent review. Let the reviewer subagent run and adjudicate its result with reviewVerdict, or end the Mission with /mission end.");
 			if (params.reviewSkip && !await ctx.ui.confirm("Skip Mission review?", `Record this review waiver: ${params.reviewSkipReason!.trim()}`)) throw new Error("Mission review waiver was not authorized by the user.");
 			const waiverFingerprint = params.reviewSkip ? await hooks.workspaceFingerprint?.(ctx) : undefined;
 			if (params.reviewSkip && !waiverFingerprint) throw new Error("Mission review waiver could not fingerprint the typed workspace.");
@@ -303,13 +313,11 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 		async execute(_toolCallId: string, params: MissionUpdateInput, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
 			setContext(ctx);
 			state.loadFromSession(ctx);
-			const event = state.objectiveUpdateEvent(params);
-			if (!ctx.hasUI) throw new Error("Headless Mission updates require a trusted direct command.");
+			state.objectiveUpdateEvent(params); // validate before prompting
+			if (!ctx.hasUI) throw new Error("Headless Mission updates require the trusted /mission update command.");
 			const fields = [params.objective !== undefined && "objective", params.requirements !== undefined && "requirements", params.paths !== undefined && "paths", params.tokenBudget !== undefined && "token budget", params.costBudgetUsd !== undefined && "cost budget", params.turnBudget !== undefined && "turn budget", params.wallDeadlineMs !== undefined && "wall deadline"].filter(Boolean).join(", ") || "objective version";
 			if (!await ctx.ui.confirm("Update Mission control?", `Change ${fields}. Reason: ${params.reason.trim()}`)) throw new Error("Mission update was not authorized by the user.");
-			const mission = state.append(pi, event)!;
-			await updateMissionSummaryArtifact(mission, state.readUsage());
-			hooks.onObjectiveUpdated?.(params, ctx);
+			const mission = await updateMission(pi, state, ctx, params, hooks);
 			return { content: [{ type: "text" as const, text: `Mission updated: ${mission.title}\nObjective version: ${mission.objectiveVersion}` }], details: { mission, usage: state.readUsage() } };
 		},
 	});
@@ -378,12 +386,15 @@ export async function completeMission(
 	const summary = input.summary ?? (userRequested ? USER_END_SUMMARY : undefined);
 	const audit = userRequested ? USER_END_AUDIT : input.audit?.length ? input.audit : undefined;
 	const status = userRequested ? "ended" : "complete";
-	const event = state.statusEvent(status, reason, summary);
-	const stagedMission: MissionCurrent = { ...existing!, status, updatedAt: event.at, lastReason: reason, ...(summary ? { lastSummary: summary } : {}) };
+	// Commit the terminal status FIRST, so an ownership/revision conflict (e.g. a concurrent takeover during the long validateCompletion window) cannot leak a false completion audit or terminal runtime event.
+	const mission = state.append(pi, state.statusEvent(status, reason, summary))!;
 	const completedUsage = state.readUsage();
-	await writeCompletionAudit(stagedMission, summary, audit, completedUsage, state.readProgress());
-	await hooks.onCompleted?.(ctx, stagedMission);
-	const mission = state.append(pi, event)!;
+	try {
+		await writeCompletionAudit(mission, summary, audit, completedUsage, state.readProgress());
+		await hooks.onCompleted?.(ctx, mission);
+	} catch (error) {
+		ctx.ui?.notify?.(`Mission completed; artifact/notification step failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
+	}
 	return { mission, usage: completedUsage, audit, userRequested };
 }
 
