@@ -48,7 +48,7 @@ chain_search  ranked lookup by default; mode text/regex for exact matching
 
 ## When to load and save
 
-- On "continue", "resume", "pick up", or references to prior work: `chain_load` the named chain if known, else `chain_list`/`chain_search`.
+- On "continue", "resume", "pick up", or references to prior work: `chain_load` the named chain if known, else `chain_list`/`chain_search`. If a durable Mission is controlled by a stopped/broken session, use the typed Mission takeover flow rather than treating the Chain alone as control authority.
 - Before non-trivial work likely tied to an existing project: quick `chain_search` before rediscovering old decisions.
 - Save after meaningful milestones (implemented feature, validated fix, design decision, rejected approach worth remembering, completed review) and before context may be lost (long session, compaction risk, task switch, handoff, stopping with pending work).
 - For research, save selected sources/queries/IDs only when findings affect future decisions.
@@ -103,7 +103,7 @@ subagent({
 `extensions/chains` tracks branch-local `saved` versus `checkpoint due` state:
 
 - 80% context usage forces one immediate checkpoint before further work; non-`chain_save` tools are blocked and one hidden recovery turn follows an ignored reminder; after saving, 90% usage immediately triggers native Pi compaction and stops further same-turn tools, then resets that one-shot threshold;
-- descendant HEAD advances, Mission lifecycle/milestones, review adjudication, new branches, and write-enabled Subagent settlement mark a checkpoint due; ordinary edits and bounded Jobs do not;
+- descendant HEAD advances, Mission lifecycle/milestones (including cross-session takeover), review adjudication, new branches, and write-enabled Subagent settlement mark a checkpoint due; ordinary edits and bounded Jobs do not;
 - `chain_save` clears due state; an explicit persisted waiver can also clear it with a reason;
 - `/chains` browses active state and saved links; `/chains <query>` searches them;
 - it never auto-saves because durable links need handoff-quality summaries.

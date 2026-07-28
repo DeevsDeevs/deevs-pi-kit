@@ -97,6 +97,8 @@ function formatMissionMarkdown(mission: MissionCurrent, usage?: MissionUsage, pr
 	return [
 		`# Mission: ${mission.title}`,
 		"",
+		"> Generated projection. Canonical machine state is stored in the workspace `.missions/.state/` registry.",
+		"",
 		`Mission ID: ${mission.missionId}`,
 		`Status: ${mission.status}`,
 		`Chain: ${mission.chain}@${mission.chainBranch}`,

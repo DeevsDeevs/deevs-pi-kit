@@ -4,7 +4,8 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ChainService } from "../chains/service.ts";
 import { slugify } from "../chains/parser.ts";
 import { missionDir } from "./artifacts.ts";
-import type { MissionCreateInput, MissionCurrent, MissionEvent, MissionProgressInput, MissionProgressRecord, MissionReviewStatus, MissionStatus, MissionUpdateInput, MissionUsage, MissionValidationInput, MissionValidationRecord } from "./types.ts";
+import { currentMissionOwner, listMissionSnapshots, readMissionSnapshot, withMissionLock, withMissionWorkspaceLock, writeMissionSnapshot } from "./persistence.ts";
+import type { MissionCreateInput, MissionCurrent, MissionEvent, MissionOwner, MissionProgressInput, MissionProgressRecord, MissionReviewStatus, MissionSnapshot, MissionStatus, MissionTakeoverCandidate, MissionUpdateInput, MissionUsage, MissionValidationInput, MissionValidationRecord } from "./types.ts";
 
 export const MISSION_CUSTOM_TYPE = "deevs-mission-state";
 const DEFAULT_CHAIN_BRANCH = "main";
@@ -25,9 +26,17 @@ const STATUS_TRANSITIONS: Record<MissionStatus, readonly MissionStatus[]> = {
 export class MissionState {
 	private current: MissionCurrent | undefined;
 	private usage: MissionUsage = zeroUsage();
+	private carriedUsage: MissionUsage = zeroUsage();
 	private progress: MissionProgressRecord[] = [];
 	private continuationProgressIndex = 0;
+	private reviewFailureCount = 0;
+	private usageComplete = true;
 	private creationPending = false;
+	private cwd?: string;
+	private owner?: MissionOwner;
+	private snapshotRevision?: number;
+	private ownershipConflict?: { missionId: string; ownerSessionId: string };
+	private persistenceError?: string;
 
 	read(): MissionCurrent | undefined {
 		if (!this.current || this.current.status === "cleared" || this.current.status === "complete" || this.current.status === "ended") return undefined;
@@ -51,22 +60,182 @@ export class MissionState {
 		return cloneProgress(this.progress.slice(this.continuationProgressIndex));
 	}
 
+	readOwner(): MissionOwner | undefined {
+		return this.owner ? { ...this.owner } : undefined;
+	}
+
+	readOwnershipConflict(): { missionId: string; ownerSessionId: string } | undefined {
+		return this.ownershipConflict ? { ...this.ownershipConflict } : undefined;
+	}
+
+	readPersistenceError(): string | undefined {
+		return this.persistenceError;
+	}
+
+	readReviewFailureCount(): number {
+		return this.reviewFailureCount;
+	}
+
 	loadFromSession(ctx: ExtensionContext): void {
 		const branch = ctx.sessionManager.getBranch() as Array<any>;
+		const owner = currentMissionOwner(ctx);
+		this.cwd = ctx.cwd;
+		this.owner = owner;
+		this.ownershipConflict = undefined;
+		this.persistenceError = undefined;
+		this.loadBranch(branch, ctx.cwd);
+		if (!owner) return;
+		const anchor = latestMissionAnchor(branch);
+		try {
+			const snapshots = listMissionSnapshots(ctx.cwd);
+			const snapshot = anchor
+				? snapshots.find((candidate) => candidate.mission.missionId === anchor.missionId && candidate.mission.slug === anchor.slug)
+				: onlyOwnedMission(snapshots, owner.sessionId);
+			if (snapshot) {
+				if (snapshot.owner.sessionId !== owner.sessionId) {
+					this.clearLoadedState();
+					this.ownershipConflict = { missionId: snapshot.mission.missionId, ownerSessionId: snapshot.owner.sessionId };
+					return;
+				}
+				this.restoreSnapshot(snapshot, branch, ctx.cwd);
+				return;
+			}
+			if (anchor?.kind === "taken_over") {
+				this.clearLoadedState();
+				this.persistenceError = `Canonical Mission state is missing for ${anchor.missionId}.`;
+				return;
+			}
+			if (!anchor && !this.current) {
+				const foreign = snapshots.filter((candidate) => candidate.owner.sessionId !== owner.sessionId && !["complete", "ended", "cleared"].includes(candidate.mission.status));
+				if (foreign.length === 1) this.ownershipConflict = { missionId: foreign[0]!.mission.missionId, ownerSessionId: foreign[0]!.owner.sessionId };
+				else if (foreign.length > 1) this.persistenceError = `Multiple takeover candidates exist: ${foreign.map((candidate) => candidate.mission.missionId).join(", ")}`;
+				if (foreign.length) return;
+			}
+			if (this.current) this.bootstrapSnapshot(owner);
+		} catch (error) {
+			this.clearLoadedState();
+			this.persistenceError = error instanceof Error ? error.message : String(error);
+		}
+	}
+
+	loadLegacyBranch(branch: Array<any>, cwd: string): void {
+		this.cwd = cwd;
+		this.owner = undefined;
+		this.snapshotRevision = undefined;
+		this.ownershipConflict = undefined;
+		this.persistenceError = undefined;
+		this.carriedUsage = zeroUsage();
+		this.usageComplete = true;
+		this.loadBranch(branch, cwd);
+	}
+
+	exportSnapshot(owner: MissionOwner, usageComplete = this.usageComplete): MissionSnapshot {
+		if (!this.current) throw new Error("No Mission state is available to persist.");
+		return {
+			version: 1,
+			revision: this.snapshotRevision ?? 0,
+			owner: { ...owner },
+			mission: { ...this.current },
+			progress: cloneProgress(this.progress),
+			continuationProgressIndex: this.continuationProgressIndex,
+			carriedUsage: { ...this.carriedUsage },
+			usage: { ...this.usage },
+			reviewFailureCount: this.reviewFailureCount,
+			usageComplete,
+		};
+	}
+
+	takeover(pi: { appendEntry<T = unknown>(customType: string, data?: T): void }, candidate: MissionTakeoverCandidate, ctx: ExtensionContext, reason: string): MissionCurrent {
+		const owner = currentMissionOwner(ctx);
+		if (!owner) throw new Error("Mission takeover requires a persisted Pi session.");
+		const explanation = reason.trim();
+		if (!explanation) throw new Error("Mission takeover requires a reason.");
+		this.loadFromSession(ctx);
+		if (this.readAny()) throw new Error(`This session already controls Mission ${this.current!.missionId}.`);
+		const source = candidate.snapshot;
+		const cwd = ctx.cwd;
+		const branch = ctx.sessionManager.getBranch() as Array<any>;
+		const currentAggregate = aggregateUsage(branch);
+		let taken!: MissionSnapshot;
+		const transfer = () => withMissionLock(cwd, source.mission.slug, () => {
+			const stored = readMissionSnapshot(cwd, source.mission.slug);
+			if (stored && (stored.revision !== source.revision || stored.owner.sessionId !== source.owner.sessionId)) throw new Error("Mission ownership changed; inspect the latest controller before retrying takeover.");
+			if (!stored && candidate.source === "snapshot") throw new Error("Mission canonical state disappeared before takeover.");
+			const now = Date.now();
+			const mission: MissionCurrent = {
+				...source.mission,
+				status: takeoverStatus(source),
+				updatedAt: now,
+				artifactDir: missionDir(cwd, source.mission.slug),
+				generation: randomUUID(),
+				lastReason: explanation,
+				baselineMainTokens: currentAggregate.mainTokens,
+				baselineSubagentTokens: currentAggregate.subagentTokens,
+				baselineMainCostUsd: currentAggregate.mainCostUsd,
+				baselineSubagentCostUsd: currentAggregate.subagentCostUsd,
+				reviewStatus: "due",
+				reviewReason: "Mission ownership changed; fresh independent review required.",
+				reviewRunId: undefined,
+				reviewSuggestedVerdict: undefined,
+				reviewFailure: undefined,
+				reviewWorktreeFingerprint: undefined,
+				admittedWorktreeFingerprint: undefined,
+			};
+			taken = {
+				...source,
+				revision: (stored?.revision ?? source.revision) + 1,
+				owner,
+				mission,
+				continuationProgressIndex: source.progress.length,
+				carriedUsage: { ...source.usage },
+				usage: { ...source.usage },
+				usageComplete: source.usageComplete,
+				reviewFailureCount: 0,
+			};
+			writeMissionSnapshot(cwd, taken);
+		}, true);
+		if (candidate.source === "legacy_session") {
+			withMissionWorkspaceLock(cwd, () => {
+				const existing = listMissionSnapshots(cwd).filter((snapshot) => !["complete", "ended", "cleared"].includes(snapshot.mission.status));
+				if (existing.length) throw new Error(`A Mission already exists in this workspace: ${existing.map((snapshot) => snapshot.mission.missionId).join(", ")}.`);
+				transfer();
+			});
+		} else transfer();
+		this.ownershipConflict = undefined;
+		this.persistenceError = undefined;
+		this.restoreSnapshot(taken, branch, cwd);
+		try {
+			pi.appendEntry(MISSION_CUSTOM_TYPE, {
+				kind: "taken_over",
+				missionId: taken.mission.missionId,
+				generation: taken.mission.generation,
+				at: taken.mission.updatedAt,
+				status: taken.mission.status,
+				slug: taken.mission.slug,
+				ownerSessionId: owner.sessionId,
+				previousOwnerSessionId: source.owner.sessionId,
+				reason: explanation,
+			} satisfies MissionEvent);
+		} catch {
+			// Canonical ownership already transferred; the session mirror is repairable on reload.
+		}
+		return this.readAny()!;
+	}
+
+	private loadBranch(branch: Array<any>, cwd: string): void {
 		const rolling = zeroUsage();
 		let terminalUsage: MissionUsage | undefined;
 		const seenSubagents = new Set<string>();
-		this.current = undefined;
-		this.progress = [];
-		this.continuationProgressIndex = 0;
+		this.clearLoadedState();
 		for (const entry of branch) {
 			if (entry.type === "custom" && entry.customType === MISSION_CUSTOM_TYPE) {
 				const rawEvent = entry.data as MissionEvent | undefined;
-				if (!rawEvent?.missionId) continue;
+				if (!rawEvent?.missionId || rawEvent.kind === "taken_over") continue;
 				const event = rawEvent.kind === "created" && rawEvent.baselineMainTokens === undefined
 					? { ...rawEvent, baselineMainTokens: rolling.mainTokens, baselineSubagentTokens: rolling.subagentTokens, baselineMainCostUsd: rolling.mainCostUsd, baselineSubagentCostUsd: rolling.subagentCostUsd }
 					: rawEvent;
 				this.applyEvent(event);
+				if (event.reviewFailure) this.reviewFailureCount++;
 				const status = (this.current as MissionCurrent | undefined)?.status;
 				if (["complete", "ended", "cleared", "budget_limited"].includes(status ?? "")) terminalUsage = { ...rolling };
 				continue;
@@ -74,12 +243,60 @@ export class MissionState {
 			addUsageFromEntry(rolling, entry, seenSubagents);
 		}
 		const current = this.current as MissionCurrent | undefined;
-		if (current) current.artifactDir = missionDir(ctx.cwd, current.slug);
+		if (current) current.artifactDir = missionDir(cwd, current.slug);
 		const terminal = current && ["complete", "ended", "cleared", "budget_limited"].includes(current.status);
 		this.usage = current ? usageFromAggregate(terminal ? terminalUsage ?? rolling : rolling, current) : zeroUsage();
 	}
 
+	private clearLoadedState(): void {
+		this.current = undefined;
+		this.usage = zeroUsage();
+		this.carriedUsage = zeroUsage();
+		this.progress = [];
+		this.continuationProgressIndex = 0;
+		this.reviewFailureCount = 0;
+		this.usageComplete = true;
+		this.snapshotRevision = undefined;
+	}
+
+	private restoreSnapshot(snapshot: MissionSnapshot, branch: Array<any>, cwd: string, includeBranchUsage = true): void {
+		this.current = { ...snapshot.mission, artifactDir: missionDir(cwd, snapshot.mission.slug) };
+		this.progress = cloneProgress(snapshot.progress);
+		this.continuationProgressIndex = snapshot.continuationProgressIndex;
+		this.reviewFailureCount = snapshot.reviewFailureCount;
+		this.usageComplete = snapshot.usageComplete;
+		this.carriedUsage = { ...snapshot.carriedUsage };
+		this.snapshotRevision = snapshot.revision;
+		this.owner = { ...snapshot.owner };
+		const terminal = ["complete", "ended", "cleared", "budget_limited"].includes(snapshot.mission.status);
+		this.usage = terminal || !includeBranchUsage
+			? { ...snapshot.usage }
+			: addUsage(this.carriedUsage, usageFromAggregate(aggregateUsage(branch), this.current));
+	}
+
+	private bootstrapSnapshot(owner: MissionOwner): void {
+		if (!this.current || !this.cwd) return;
+		withMissionWorkspaceLock(this.cwd, () => {
+			const existing = listMissionSnapshots(this.cwd!).filter((snapshot) => !["complete", "ended", "cleared"].includes(snapshot.mission.status) && snapshot.mission.missionId !== this.current!.missionId);
+			if (existing.length) throw new Error(`A Mission is already controlled in this workspace: ${existing.map((snapshot) => snapshot.mission.missionId).join(", ")}.`);
+			withMissionLock(this.cwd!, this.current!.slug, () => {
+				const stored = readMissionSnapshot(this.cwd!, this.current!.slug);
+				if (stored) {
+					if (stored.owner.sessionId !== owner.sessionId) throw new Error("Mission is already controlled by another Pi session.");
+					this.restoreSnapshot(stored, [], this.cwd!, false);
+					return;
+				}
+				const snapshot = this.exportSnapshot(owner);
+				snapshot.revision = 1;
+				writeMissionSnapshot(this.cwd!, snapshot);
+				this.snapshotRevision = 1;
+			});
+		});
+	}
+
 	async create(input: MissionCreateInput, ctx: ExtensionContext): Promise<MissionEvent> {
+		if (this.persistenceError) throw new Error(this.persistenceError);
+		if (this.ownershipConflict) throw new Error(`Mission ${this.ownershipConflict.missionId} is controlled by another session; take it over or finish it before creating a replacement.`);
 		const existing = this.readAny();
 		if (this.creationPending || (existing && existing.status !== "complete" && existing.status !== "ended")) throw new Error(`Mission already exists${existing ? `: ${existing.title}` : " or is being created"}. End or clear it before creating another.`);
 		this.creationPending = true;
@@ -130,8 +347,37 @@ export class MissionState {
 
 	append(pi: { appendEntry<T = unknown>(customType: string, data?: T): void }, event: MissionEvent): MissionCurrent | undefined {
 		try {
+			if (!this.cwd || !this.owner) {
+				pi.appendEntry(MISSION_CUSTOM_TYPE, event);
+				this.applyEvent(event);
+				if (event.reviewFailure) this.reviewFailureCount++;
+				return this.readAny();
+			}
+			const persist = () => withMissionLock(this.cwd!, event.slug ?? this.current?.slug ?? "", () => {
+				const stored = readMissionSnapshot(this.cwd!, event.slug ?? this.current!.slug);
+				if (event.kind === "created" && stored) throw new Error(`Mission artifact state already exists: ${event.slug}`);
+				if (event.kind !== "created") {
+					if (!stored || stored.owner.sessionId !== this.owner!.sessionId) throw new Error("Mission is controlled by another Pi session.");
+					if (stored.revision !== this.snapshotRevision) throw new Error("Mission state changed concurrently; reload before retrying.");
+					const currentUsage = this.usage;
+					this.restoreSnapshot(stored, [], this.cwd!, false);
+					this.usage = currentUsage;
+				}
+				this.applyEvent(event);
+				if (event.reviewFailure) this.reviewFailureCount++;
+				const snapshot = this.exportSnapshot(this.owner!);
+				snapshot.revision = (stored?.revision ?? 0) + 1;
+				writeMissionSnapshot(this.cwd!, snapshot);
+				this.snapshotRevision = snapshot.revision;
+			});
+			if (event.kind === "created") {
+				withMissionWorkspaceLock(this.cwd, () => {
+					const existing = listMissionSnapshots(this.cwd!).filter((snapshot) => !["complete", "ended", "cleared"].includes(snapshot.mission.status));
+					if (existing.length) throw new Error(`A Mission already exists in this workspace: ${existing.map((snapshot) => snapshot.mission.missionId).join(", ")}.`);
+					persist();
+				});
+			} else persist();
 			pi.appendEntry(MISSION_CUSTOM_TYPE, event);
-			this.applyEvent(event);
 			return this.readAny();
 		} finally {
 			if (event.kind === "created") this.creationPending = false;
@@ -246,7 +492,9 @@ export class MissionState {
 	}
 
 	private requireCurrent(): MissionCurrent {
-		if (!this.current || this.current.status === "cleared") throw new Error("No mission is active on this branch.");
+		if (this.persistenceError) throw new Error(this.persistenceError);
+		if (this.ownershipConflict) throw new Error(`Mission ${this.ownershipConflict.missionId} is controlled by session ${this.ownershipConflict.ownerSessionId}; use mission_takeover only with explicit user confirmation.`);
+		if (!this.current || this.current.status === "cleared") throw new Error("No Mission is controlled by this session.");
 		return this.current;
 	}
 
@@ -350,6 +598,39 @@ export class MissionState {
 			});
 		}
 	}
+}
+
+function takeoverStatus(snapshot: MissionSnapshot): MissionStatus {
+	const mission = snapshot.mission;
+	if ((mission.tokenBudget !== undefined && snapshot.usage.totalTokens >= mission.tokenBudget) || (mission.costBudgetUsd !== undefined && snapshot.usage.totalCostUsd >= mission.costBudgetUsd)) return "budget_limited";
+	if ((mission.turnBudget !== undefined && (mission.turnCount ?? 0) >= mission.turnBudget) || (mission.wallDeadlineAt !== undefined && Date.now() >= mission.wallDeadlineAt)) return "usage_limited";
+	return "active";
+}
+
+function latestMissionAnchor(branch: Array<any>): { kind: "created" | "taken_over"; missionId: string; slug: string } | undefined {
+	for (let index = branch.length - 1; index >= 0; index--) {
+		const entry = branch[index];
+		const event = entry?.type === "custom" && entry.customType === MISSION_CUSTOM_TYPE ? entry.data as MissionEvent | undefined : undefined;
+		if ((event?.kind === "created" || event?.kind === "taken_over") && event.missionId && event.slug) return { kind: event.kind, missionId: event.missionId, slug: event.slug };
+	}
+	return undefined;
+}
+
+function onlyOwnedMission(snapshots: MissionSnapshot[], sessionId: string): MissionSnapshot | undefined {
+	const owned = snapshots.filter((snapshot) => snapshot.owner.sessionId === sessionId && !["complete", "cleared"].includes(snapshot.mission.status));
+	if (owned.length > 1) throw new Error(`Session controls multiple nonterminal Missions: ${owned.map((snapshot) => snapshot.mission.missionId).join(", ")}`);
+	return owned[0];
+}
+
+function addUsage(left: MissionUsage, right: MissionUsage): MissionUsage {
+	return {
+		mainTokens: left.mainTokens + right.mainTokens,
+		subagentTokens: left.subagentTokens + right.subagentTokens,
+		totalTokens: left.totalTokens + right.totalTokens,
+		mainCostUsd: left.mainCostUsd + right.mainCostUsd,
+		subagentCostUsd: left.subagentCostUsd + right.subagentCostUsd,
+		totalCostUsd: left.totalCostUsd + right.totalCostUsd,
+	};
 }
 
 function cloneProgress(progress: MissionProgressRecord[]): MissionProgressRecord[] {

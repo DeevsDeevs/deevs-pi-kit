@@ -18,7 +18,13 @@ Use `subagent` and `subagent_wait`. Pi Kit owns the persona catalog, policy, iso
 - `devops`: runtime, process, config, deployment, and log failures.
 - `python-dev`, `cpp-dev`, `rust-dev`: language-specific review.
 
-Do not delegate a trivial one-file answer. Use `tasks` for genuinely independent parallel perspectives, never parallel writers in one worktree.
+Do not delegate a trivial one-file answer. Never run parallel writers in one worktree.
+
+## Parallel-first orchestration
+
+Before launching, separate dependency gates from independent work. Put independent runs in one `subagent` call using `tasks` with bounded `concurrency`, then settle the group with one `subagent_wait`; do not launch and wait for independent perspectives one by one.
+
+Keep work sequential only when one result changes the next task's input, multiple tasks mutate the same resource, the diff must be frozen before review, or an early cheap gate should prevent expensive work. Once the diff is frozen, independent reviewer/tester/security perspectives should normally launch together. The parent may continue unrelated work while a background group runs.
 
 ## Scope every run
 
@@ -35,6 +41,7 @@ Do not delegate a trivial one-file answer. Use `tasks` for genuinely independent
 3. Pass `waitMs: 0` for a status-only projection.
 4. Pass `cancel: true` to stop and wait for actual worker/child quiescence.
 5. Terminal details include exact per-run usage, bounded output, session identity, and artifacts.
+6. Before cross-session Mission takeover, settle or explicitly cancel known Jobs/Subagents in the old session; takeover does not adopt, signal, or kill them.
 
 Detached runs are owned by a dedicated worker and can be restored after parent reload. Resume starts a new run/generation in the exact private child Pi session; it does not claim to resurrect a dead process.
 

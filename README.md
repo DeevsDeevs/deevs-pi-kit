@@ -22,7 +22,7 @@ Reload Pi after installing or editing:
 extensions/jobs/        Bounded non-agent commands (`job_*`)
 extensions/subagents/   Owned curated personas and isolated runtime (`subagent*`)
 extensions/workflow/    Trusted-project JavaScript workflows (`workflow`)
-extensions/mission/     Autonomous branch-scoped objectives (`mission_*`)
+extensions/mission/     Autonomous single-controller objectives (`mission_*`)
 extensions/cron/        Process-local session schedules (`cron`, `/cron`)
 extensions/chains/      Durable markdown handoffs (`chain_*`)
 extensions/wiki/        Curated markdown wiki helpers (`wiki_*`)
@@ -61,13 +61,13 @@ Tool: `workflow`.
 
 ### Mission
 
-Create a branch-scoped objective with `agent_settled` autonomous continuation, user-priority admission, wall/turn/token/cost limits, objective versions, independent review convergence, child-settlement and Chain completion vetoes, and durable artifacts under `.missions/`. In a non-Git workspace containing several repositories, pass explicit cwd-relative Mission `paths`; review and mutation fingerprints then cover each selected Git root independently. Path-less Missions cover the whole current repository, so concurrent sessions should use explicit paths; three review-time fingerprint changes block instead of requeueing forever.
+Create a single-controller workspace objective with `agent_settled` autonomous continuation, user-priority admission, wall/turn/token/cost limits, objective versions, independent review convergence, child-settlement and Chain completion vetoes, and durable state under `.missions/`. A stopped or broken Pi session can hand control to a new same-cwd session through an explicit, confirmed takeover; Missions never use collaborative multi-writer merging. In a non-Git workspace containing several repositories, pass explicit cwd-relative Mission `paths`; review and mutation fingerprints then cover each selected Git root independently. Path-less Missions cover the whole current repository, so concurrent sessions should use explicit paths; three review-time fingerprint changes block instead of requeueing forever.
 
-Tools: `mission_get`, `mission_resume`, `mission_create`, `mission_update`, `mission_progress`, `mission_search`, `mission_complete`.
+Tools: `mission_get`, `mission_takeover`, `mission_resume`, `mission_create`, `mission_update`, `mission_progress`, `mission_search`, `mission_complete`.
 
-Commands: `/mission <objective> [--name short-title] [--req criterion] [--path cwd-relative-scope] [--budget 200k] [--cost $2] [--chain name]` (`--path` is repeatable), `/mission status`, `/mission pause`, `/mission resume`, `/mission clear`, `/mission complete`/`end`/`stop`.
+Commands: `/mission <objective> [--name short-title] [--req criterion] [--path cwd-relative-scope] [--budget 200k] [--cost $2] [--chain name]` (`--path` is repeatable), `/mission status`, `/mission takeover [mission-id-or-slug]`, `/mission pause`, `/mission resume`, `/mission clear`, `/mission complete`/`end`/`stop`.
 
-Mission runtime state is reconstructed from the current Pi session branch. Requirements use stable indexes in completion audits, validation uses command/exit-code records, blockers use explicit IDs, reviewer verdicts come from a schema-validated child tool, and TUI end/resume/review-waiver actions require typed confirmations. Prose remains display-only. `.missions/<slug>/` stores the canonical `mission.md` and searchable `log.md`. See [`extensions/mission/README.md`](extensions/mission/README.md).
+Canonical Mission state is a validated, revisioned snapshot in `.missions/.state/<slug>.json`; Pi custom session entries remain transcript mirrors. Every mutation verifies the controlling session under an exclusive local-filesystem lock. Takeover imports exact same-cwd legacy session state when needed, carries usage/progress, creates a new generation, requires fresh review, and resumes immediately when limits permit. It does not stop the old Pi process or its children, so confirmation requires that the old session is already stopped. Requirements use stable indexes, validation uses command/exit-code records, blockers use explicit IDs, and reviewer verdicts come from a schema-validated child tool. `mission.md` and `log.md` are generated human/search projections. See [`extensions/mission/README.md`](extensions/mission/README.md).
 
 ### Cron
 
@@ -145,7 +145,7 @@ Skills provide progressive guidance for when and how to use the tools:
 background-tasks  subagents       chain-system    wiki
 concept-diagrams  arxiv           todos           ask-user
 datadog-pup       grill-me        diagnose        codebase-orientation
-validation-review
+validation-review missions
 ```
 
 ## Development

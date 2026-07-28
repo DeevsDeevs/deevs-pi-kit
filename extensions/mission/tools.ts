@@ -5,7 +5,8 @@ import { Text } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { initializeMissionArtifacts, missionRoot, updateMissionSummaryArtifact, writeCompletionAudit, writeMissionProgressArtifacts } from "./artifacts.ts";
 import type { MissionState } from "./state.ts";
-import type { MissionCompleteInput, MissionCreateInput, MissionCurrent, MissionProgressInput, MissionSearchInput, MissionUpdateInput } from "./types.ts";
+import { discoverMissionTakeoverCandidates, selectMissionTakeoverCandidate } from "./takeover.ts";
+import type { MissionCompleteInput, MissionCreateInput, MissionCurrent, MissionProgressInput, MissionSearchInput, MissionTakeoverCandidate, MissionTakeoverInput, MissionUpdateInput } from "./types.ts";
 
 const CreateSchema = Type.Object({
 	objective: Type.String({ description: "Mission objective/user request" }),
@@ -24,6 +25,11 @@ const GetSchema = Type.Object({});
 
 const ResumeSchema = Type.Object({
 	reason: Type.String({ description: "Why the paused or blocked Mission can continue now" }),
+});
+
+const TakeoverSchema = Type.Object({
+	missionId: Type.String({ description: "Exact Mission id or artifact slug to take over" }),
+	reason: Type.String({ description: "Why the previous session can no longer control this Mission" }),
 });
 
 const ProgressSchema = Type.Object({
@@ -80,6 +86,8 @@ export interface MissionCompletionHooks {
 
 interface MissionToolHooks extends MissionCompletionHooks {
 	onCreated?: (ctx: ExtensionContext) => void;
+	onTakenOver?: (ctx: ExtensionContext, mission: MissionCurrent) => void;
+	discoverTakeoverCandidates?: (ctx: ExtensionContext) => Promise<MissionTakeoverCandidate[]>;
 	onProgress?: (input: MissionProgressInput, ctx: ExtensionContext) => void;
 	workspaceFingerprint?: (ctx: ExtensionContext) => Promise<string | undefined>;
 	onObjectiveUpdated?: (input: MissionUpdateInput, ctx: ExtensionContext) => void;
@@ -102,6 +110,40 @@ export async function resumeMission(pi: ExtensionAPI, state: MissionState, reaso
 	return mission;
 }
 
+export async function takeoverMission(
+	pi: ExtensionAPI,
+	state: MissionState,
+	ctx: ExtensionContext,
+	input: MissionTakeoverInput,
+	hooks: Pick<MissionToolHooks, "onTakenOver" | "discoverTakeoverCandidates"> = {},
+	directUserRequest = false,
+): Promise<MissionCurrent> {
+	state.loadFromSession(ctx);
+	if (state.readAny()) throw new Error(`This session already controls Mission ${state.readAny()!.missionId}.`);
+	const reason = input.reason.trim();
+	if (!reason) throw new Error("Mission takeover requires a reason.");
+	const discover = hooks.discoverTakeoverCandidates ?? discoverMissionTakeoverCandidates;
+	const candidates = await discover(ctx);
+	const candidate = selectMissionTakeoverCandidate(candidates, input.missionId);
+	const source = candidate.snapshot;
+	if (!directUserRequest && !ctx.hasUI) throw new Error("Headless Mission takeover requires the trusted /mission takeover command.");
+	const warning = [
+		`${source.mission.title} (${source.mission.missionId})`,
+		`Previous controller: ${source.owner.sessionId}`,
+		"Takeover resumes autonomy immediately when limits permit, invalidates prior review admission, and does not stop the old Pi process or its children. Confirm only after the old session is stopped.",
+	].join("\n");
+	if (!directUserRequest && !await ctx.ui.confirm("Take over Mission?", warning)) throw new Error("Mission takeover was not authorized by the user.");
+	const refreshed = selectMissionTakeoverCandidate(await discover(ctx), source.mission.missionId);
+	if (refreshed.snapshot.owner.sessionId !== source.owner.sessionId || refreshed.snapshot.owner.sessionFile !== source.owner.sessionFile || refreshed.snapshot.revision !== source.revision || refreshed.snapshot.mission.generation !== source.mission.generation) throw new Error("Mission ownership changed after confirmation; inspect the new controller and confirm takeover again.");
+	if (!refreshed.snapshot.usageComplete && (refreshed.snapshot.mission.tokenBudget !== undefined || refreshed.snapshot.mission.costBudgetUsd !== undefined || refreshed.snapshot.mission.turnBudget !== undefined)) throw new Error("Cannot safely take over a bounded Mission without its exact source session usage; resume the source session or recover its session file first.");
+	const mission = state.takeover(pi, refreshed, ctx, reason);
+	try { hooks.onTakenOver?.(ctx, mission); }
+	catch (error) { if (ctx.hasUI) ctx.ui.notify(`Mission control transferred, but runtime activation reported: ${error instanceof Error ? error.message : String(error)}`, "warning"); }
+	try { await writeMissionProgressArtifacts(mission, state.readProgress(), state.readUsage()); }
+	catch (error) { if (ctx.hasUI) ctx.ui.notify(`Mission control transferred, but generated artifacts could not be refreshed: ${error instanceof Error ? error.message : String(error)}`, "warning"); }
+	return mission;
+}
+
 const USER_END_AUDIT = [{ requirementIndex: 0, evidence: "The user explicitly asked to end/complete the mission; this records closure without claiming all objective requirements are satisfied. Use /mission resume to continue if needed." }];
 
 export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setContext: (ctx: ExtensionContext) => void, hooks: MissionToolHooks = {}): void {
@@ -118,7 +160,32 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 			state.loadFromSession(ctx);
 			const mission = state.readAny();
 			const usage = state.readUsage();
-			return { content: [{ type: "text" as const, text: formatMission(mission, usage) }], details: { mission, usage } };
+			const candidates = mission ? [] : await (hooks.discoverTakeoverCandidates ?? discoverMissionTakeoverCandidates)(ctx);
+			const takeover = candidates.length ? `\nTakeover available: ${candidates.map((candidate) => `${candidate.snapshot.mission.missionId} (${candidate.snapshot.mission.title})`).join(", ")}` : "";
+			const error = state.readPersistenceError();
+			const text = `${formatMission(mission, usage)}${takeover}${error ? `\nState error: ${error}` : ""}`;
+			return { content: [{ type: "text" as const, text }], details: { mission, usage, takeoverCandidates: candidates.map((candidate) => ({ mission: candidate.snapshot.mission, owner: candidate.snapshot.owner, source: candidate.source })), persistenceError: error } };
+		},
+	});
+
+	pi.registerTool({
+		name: "mission_takeover",
+		label: "Take Over Mission",
+		description: "Take control of a Mission whose previous Pi session is stopped or broken, then resume it immediately when limits permit.",
+		promptSnippet: "Take over a stopped session's Mission after explicit user confirmation.",
+		promptGuidelines: [
+			"Call mission_takeover only when the user explicitly asks to continue a Mission from another stopped or broken Pi session.",
+			"Mission takeover resumes autonomy immediately when limits permit, forces fresh review, and never stops the old process; confirm that the old session is no longer working first.",
+			"Use the exact Mission id reported by mission_get or mission_search and record the concrete takeover reason.",
+		],
+		parameters: TakeoverSchema,
+		renderCall: (args: MissionTakeoverInput, theme: Theme) => missionCall("takeover", args.missionId, theme),
+		renderResult: (result: { details?: unknown }, options: { expanded: boolean }, theme: Theme) => missionResult(result.details, options.expanded, theme),
+		async execute(_toolCallId: string, params: MissionTakeoverInput, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
+			setContext(ctx);
+			const mission = await takeoverMission(pi, state, ctx, params, hooks);
+			const outcome = mission.status === "active" ? "taken over and resumed" : `taken over in ${mission.status} state`;
+			return { content: [{ type: "text" as const, text: `Mission ${outcome}: ${mission.title}\n${formatMissionLocation(mission)}` }], details: { mission, usage: state.readUsage() } };
 		},
 	});
 
@@ -157,7 +224,7 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 	pi.registerTool({
 		name: "mission_create",
 		label: "Create Mission",
-		description: "Create a persistent branch-scoped Mission when explicitly requested.",
+		description: "Create a persistent single-controller workspace Mission when explicitly requested.",
 		promptSnippet: "Create a Mission.",
 		promptGuidelines: [
 			"Only when the user/system/developer asks for a continuing mission/goal.",
@@ -170,10 +237,14 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 		async execute(_toolCallId: string, params: MissionCreateInput, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
 			setContext(ctx);
 			state.loadFromSession(ctx);
+			const takeoverCandidates = await (hooks.discoverTakeoverCandidates ?? discoverMissionTakeoverCandidates)(ctx);
+			if (!state.readAny() && takeoverCandidates.length) throw new Error(`A Mission already exists in another session: ${takeoverCandidates.map((candidate) => candidate.snapshot.mission.missionId).join(", ")}. Take it over instead of creating a replacement.`);
 			const event = await state.create(params, ctx);
 			const mission = state.append(pi, event)!;
-			await initializeMissionArtifacts(mission, state.readUsage());
-			hooks.onCreated?.(ctx);
+			try { hooks.onCreated?.(ctx); }
+			catch (error) { if (ctx.hasUI) ctx.ui.notify(`Mission created, but runtime activation reported: ${error instanceof Error ? error.message : String(error)}`, "warning"); }
+			try { await initializeMissionArtifacts(mission, state.readUsage()); }
+			catch (error) { if (ctx.hasUI) ctx.ui.notify(`Mission created, but generated artifacts could not be initialized: ${error instanceof Error ? error.message : String(error)}`, "warning"); }
 			return { content: [{ type: "text" as const, text: `Mission created: ${mission.title}\n${formatMissionLocation(mission)}` }], details: { mission, usage: state.readUsage() } };
 		},
 	});
@@ -381,7 +452,7 @@ function formatMissionSearchResults(results: MissionSearchResult[]): string {
 }
 
 export function formatMission(mission: ReturnType<MissionState["readAny"]>, usage: ReturnType<MissionState["readUsage"]>): string {
-	if (!mission) return "No active mission on this branch.";
+	if (!mission) return "No Mission is controlled by this session.";
 	const budget = [
 		mission.tokenBudget ? `${usage.totalTokens}/${mission.tokenBudget} tokens` : `${usage.totalTokens} tokens`,
 		mission.costBudgetUsd ? `$${usage.totalCostUsd.toFixed(4)}/$${mission.costBudgetUsd}` : `$${usage.totalCostUsd.toFixed(4)}`,
