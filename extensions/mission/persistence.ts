@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { missionDir, missionRoot } from "./artifacts.ts";
 import type { MissionCurrent, MissionOwner, MissionProgressRecord, MissionSnapshot, MissionUsage } from "./types.ts";
 
 const SNAPSHOT_VERSION = 1;
+// Lock holds are synchronous sub-second operations, so a lock older than this — or one whose owner pid is gone — is a crashed holder, not live contention.
+const STALE_LOCK_MS = 30_000;
 const STATUSES = new Set(["active", "paused", "blocked", "terminal_error", "budget_limited", "usage_limited", "complete", "ended", "cleared"]);
 const REVIEW_STATUSES = new Set(["not_required", "due", "running", "awaiting_adjudication", "changes_requested", "clear", "skipped"]);
 
@@ -36,7 +38,7 @@ export function listMissionSnapshots(cwd: string): MissionSnapshot[] {
 	return snapshots.sort((a, b) => b.mission.updatedAt - a.mission.updatedAt);
 }
 
-export function withMissionLock<T>(cwd: string, slug: string, operation: () => T, _recoverStale = false): T {
+export function withMissionLock<T>(cwd: string, slug: string, operation: () => T): T {
 	if (!validSlug(slug)) throw new Error(`Invalid Mission slug: ${slug}`);
 	const stateDir = prepareStateDirectory(cwd);
 	const locks = join(stateDir, ".locks");
@@ -97,17 +99,49 @@ function ensureDirectory(directory: string): void {
 }
 
 function withLockPath<T>(lock: string, busyMessage: string, operation: () => T): T {
-	try {
-		mkdirSync(lock, { mode: 0o700 });
-	} catch (error) {
-		if (isNodeError(error) && error.code === "EEXIST") throw new Error(busyMessage);
-		throw error;
-	}
+	acquireLock(lock, busyMessage);
 	try {
 		return operation();
 	} finally {
 		rmSync(lock, { recursive: true, force: true });
 	}
+}
+
+function acquireLock(lock: string, busyMessage: string): void {
+	for (let attempt = 0; attempt < 50; attempt++) {
+		try {
+			mkdirSync(lock, { mode: 0o700 });
+			try { writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid: process.pid, startedAt: Date.now() }), { encoding: "utf8", mode: 0o600 }); } catch { /* the directory itself is the lock; owner metadata only aids stale recovery. */ }
+			return;
+		} catch (error) {
+			if (!isNodeError(error) || error.code !== "EEXIST") throw error;
+		}
+		// A crashed holder leaves the lock dir forever; reclaim it so a SIGKILL cannot permanently brick the Mission. Reclaim is an atomic rename-aside — only one racer's rename wins, losers get ENOENT and simply retry mkdir, so exclusion holds.
+		if (!reclaimIfStale(lock)) throw new Error(busyMessage);
+	}
+	throw new Error(busyMessage);
+}
+
+function reclaimIfStale(lock: string): boolean {
+	let stale: boolean;
+	try {
+		const owner = JSON.parse(readFileSync(join(lock, "owner.json"), "utf8")) as { pid?: unknown; startedAt?: unknown };
+		const startedAt = typeof owner.startedAt === "number" ? owner.startedAt : statSync(lock).mtimeMs;
+		stale = !isPidAlive(owner.pid) || Date.now() - startedAt >= STALE_LOCK_MS;
+	} catch {
+		// Missing owner.json is the tiny window between mkdir and the metadata write, so fall back to directory age; a vanished lock just means retry mkdir.
+		try { stale = Date.now() - statSync(lock).mtimeMs >= STALE_LOCK_MS; } catch { return true; }
+	}
+	if (!stale) return false;
+	const aside = `${lock}.stale.${process.pid}.${randomUUID()}`;
+	try { renameSync(lock, aside); } catch { return true; }
+	try { rmSync(aside, { recursive: true, force: true }); } catch { /* the reclaimed corpse is inert; a leftover is harmless litter. */ }
+	return true;
+}
+
+function isPidAlive(pid: unknown): boolean {
+	if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return false;
+	try { process.kill(pid, 0); return true; } catch (error) { return isNodeError(error) && error.code === "EPERM"; }
 }
 
 function writeAtomicJson(file: string, value: unknown): void {

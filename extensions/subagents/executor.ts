@@ -165,7 +165,8 @@ export class DelegateExecutor {
 			if (signal?.aborted) { abort(); return; }
 			const refreshed = this.refresh(id);
 			if (TERMINAL.has(refreshed.runtime.status)) { done(refreshed); return; }
-			if (waitMs !== undefined) timer = setTimeout(() => { cleanup(); resolve(this.refresh(id)); }, Math.max(0, waitMs));
+			// refresh(id) throws if the run was detached (e.g. a concurrent restore for another session) while this timed wait was pending; fall back to the last-known state rather than throwing uncaught inside the timer callback.
+			if (waitMs !== undefined) timer = setTimeout(() => { cleanup(); try { resolve(this.refresh(id)); } catch { resolve(refreshed); } }, Math.max(0, waitMs));
 		});
 	}
 

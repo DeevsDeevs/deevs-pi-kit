@@ -3,6 +3,15 @@ import { listMissionSnapshots } from "./persistence.ts";
 import { MissionState } from "./state.ts";
 import type { MissionTakeoverCandidate } from "./types.ts";
 
+// Cheap hint/guard listing for hot paths (mission_get, mission_create): reads only the small validated snapshots, never opens or replays session files. Marks usageComplete=false so any takeover attempted from a hint still fails closed on bounded budgets until the full scan derives exact usage.
+export function listSnapshotTakeoverCandidates(ctx: ExtensionContext): MissionTakeoverCandidate[] {
+	const currentSessionId = ctx.sessionManager.getSessionId();
+	return listMissionSnapshots(ctx.cwd)
+		.filter((snapshot) => snapshot.owner.sessionId !== currentSessionId && !["complete", "ended", "cleared"].includes(snapshot.mission.status))
+		.map((snapshot) => ({ snapshot: { ...snapshot, usageComplete: false }, source: "snapshot" as const }))
+		.sort((a, b) => b.snapshot.mission.updatedAt - a.snapshot.mission.updatedAt);
+}
+
 export async function discoverMissionTakeoverCandidates(ctx: ExtensionContext): Promise<MissionTakeoverCandidate[]> {
 	const currentSessionId = ctx.sessionManager.getSessionId();
 	const currentSessionFile = ctx.sessionManager.getSessionFile();
@@ -22,7 +31,8 @@ export async function discoverMissionTakeoverCandidates(ctx: ExtensionContext): 
 				const manager = SessionManager.open(sourceSession.path);
 				const state = new MissionState();
 				state.loadFromSession({ cwd: ctx.cwd, sessionManager: manager } as unknown as ExtensionContext);
-				if (state.readAny()?.missionId === snapshot.mission.missionId) current = state.exportSnapshot(snapshot.owner, true);
+				// Do not force usageComplete: a full replay of a readable source is complete only if the snapshot it restored was itself complete. Forcing true would let carried incompleteness (from an earlier takeover of an unreadable source) silently pass the bounded-budget gate.
+				if (state.readAny()?.missionId === snapshot.mission.missionId) current = state.exportSnapshot(snapshot.owner);
 			}
 		} catch {
 			// The canonical checkpoint remains usable, but bounded usage may be incomplete.

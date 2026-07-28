@@ -1,11 +1,12 @@
 import { basename } from "node:path";
 
-const DETACH_EXECUTABLES = new Set(["disown", "nohup", "setsid"]);
-const SHELL_EXECUTABLES = new Set(["bash", "dash", "fish", "ksh", "sh", "zsh"]);
+const DETACH_EXECUTABLES = new Set(["disown", "nohup", "setsid", "coproc"]);
+const SHELL_EXECUTABLES = new Set(["bash", "dash", "fish", "ksh", "sh", "zsh", "csh", "tcsh", "ash", "mksh", "rbash"]);
+const TEST_COMMANDS = new Set(["[", "[[", "]", "]]"]);
 const ENV_VALUE_OPTIONS = new Set(["-a", "--argv0", "-C", "--chdir", "-u", "--unset"]);
 const SUDO_VALUE_OPTIONS = new Set(["-C", "-D", "-g", "-h", "-p", "-R", "-r", "-T", "-t", "-u", "--chdir", "--close-from", "--group", "--host", "--prompt", "--role", "--type", "--user"]);
 const COMMAND_PREFIXES = new Set(["!", "builtin", "do", "elif", "else", "if", "then", "until", "while"]);
-const DETACH_ERROR = "Detached process launch detected. Use Herdr for persistent or independently owned processes.";
+const DETACH_ERROR = "Detached process launch or dynamically-computed command detected (backgrounding, nohup/setsid/disown, or a command name that cannot be statically verified). Use a literal command, or Herdr for persistent or independently owned processes.";
 
 interface ShellToken {
 	value: string;
@@ -41,8 +42,11 @@ function detectDetachedArgvInternal(argv: string[], rejectDynamicExecutable: boo
 
 function shellHasDetached(source: string): boolean {
 	if (substitutionHasDetached(source)) return true;
+	const { tokens, unbalanced } = shellTokens(source);
+	// Fail closed on an unterminated quote: an unpaired quote (e.g. in a comment or heredoc body) puts a real shell into quote mode and hides any trailing `&`/nohup from static analysis.
+	if (unbalanced) return true;
 	let segment: string[] = [];
-	for (const token of shellTokens(source)) {
+	for (const token of tokens) {
 		if (!token.operator) {
 			segment.push(token.value);
 			continue;
@@ -129,7 +133,7 @@ function splitEnvString(source: string): string[] | undefined {
 			word += escaped;
 			continue;
 		}
-		if (char === "$" && quote !== "'" && source[index + 1] === "{") return undefined;
+		if (char === "$" && quote !== "'") return undefined;
 		if ((char === "'" || char === "\"") && (!quote || quote === char)) { quote = quote ? undefined : char; continue; }
 		if (!quote && /\s/.test(char)) { flush(); continue; }
 		word += char;
@@ -198,6 +202,8 @@ function detectSudoArgv(argv: string[], rejectDynamicExecutable = false): string
 		const value = argv[index]!;
 		if (value === "--") { index++; break; }
 		if (value === "-b" || value === "--background") return DETACH_ERROR;
+		// `sudo -s`/`-i` run the remainder as a shell command line, not an argv.
+		if (value === "-s" || value === "-i") return detectDetachedShell(argv.slice(index + 1).join(" "));
 		if (SUDO_VALUE_OPTIONS.has(value)) { index += 2; continue; }
 		if (value.startsWith("-") || isAssignment(value)) { index++; continue; }
 		break;
@@ -219,7 +225,9 @@ function detectCommandArgv(argv: string[], rejectDynamicExecutable = false): str
 }
 
 function isDynamicExecutable(value: string): boolean {
-	return /[$`*?\[\]{}]/.test(value);
+	// `[` / `[[` are the test builtins, not glob/dynamic executables; exempt them so ordinary guard clauses like `[ -f x ] && ...` are not blocked.
+	if (TEST_COMMANDS.has(value)) return false;
+	return /[$`*?[\]{}]/.test(value);
 }
 
 function shellCommand(argv: string[]): string | undefined {
@@ -252,6 +260,12 @@ function substitutionHasDetached(source: string): boolean {
 			index = end;
 			continue;
 		}
+		if (char === "$" && source[index + 1] === "(" && source[index + 2] === "(") {
+			// Arithmetic $((...)): `&` here is bitwise-AND, not a command separator; skip the whole expression.
+			const end = closingParen(source, index + 2);
+			if (end !== undefined) index = closingParen(source, index + 1) ?? end;
+			continue;
+		}
 		if (char === "$" && source[index + 1] === "(") {
 			const end = closingParen(source, index + 1);
 			if (end !== undefined && shellHasDetached(source.slice(index + 2, end))) return true;
@@ -278,7 +292,7 @@ function closingParen(source: string, open: number): number | undefined {
 	return undefined;
 }
 
-function shellTokens(source: string): ShellToken[] {
+function shellTokens(source: string): { tokens: ShellToken[]; unbalanced: boolean } {
 	const tokens: ShellToken[] = [];
 	let word = "";
 	let quote: "'" | "\"" | undefined;
@@ -297,11 +311,24 @@ function shellTokens(source: string): ShellToken[] {
 			else word += char;
 			continue;
 		}
+		// A `#` at a word boundary starts a comment to end of line (bash rule); mid-word `#` is literal.
+		if (char === "#" && word.length === 0) { while (index + 1 < source.length && source[index + 1] !== "\n") index++; continue; }
+		// Consume arithmetic $((...)) as one opaque word so its bitwise `&` is not mistaken for backgrounding.
+		if (char === "$" && source[index + 1] === "(" && source[index + 2] === "(") {
+			const end = closingParen(source, index + 2) !== undefined ? closingParen(source, index + 1) : undefined;
+			if (end !== undefined) { word += source.slice(index, end + 1); index = end; continue; }
+		}
 		if (char === "'" || char === "\"") { quote = char; continue; }
 		if (char === "\\") { escaped = true; continue; }
 		if (char === "\n") { flush(); tokens.push({ value: "\n", operator: true }); continue; }
 		if (/\s/.test(char)) { flush(); continue; }
-		if (char === "&" && (source[index + 1] === ">" || (word.endsWith(">") && /\d/.test(source[index + 1] ?? "")))) { word += char; continue; }
+		// `&` continues the current word when it forms a redirection: `&>`, `>&`, `>&2`, `>&-` are not backgrounding.
+		if (char === "&" && (source[index + 1] === ">" || word.endsWith(">"))) { word += char; continue; }
+		// Contiguous `((...))` is an arithmetic command (or C-style for header), not a subshell; nothing inside can background a real process, so consume it opaquely and keep its `&`/`;` out of the operator stream.
+		if (char === "(" && source[index + 1] === "(") {
+			const end = closingParen(source, index);
+			if (end !== undefined) { flush(); index = end; continue; }
+		}
 		const structuralBrace = "{}".includes(char) && word.length === 0 && /(?:\s|;|$)/.test(source[index + 1] ?? "");
 		if (";&|()".includes(char) || structuralBrace) {
 			flush();
@@ -314,7 +341,7 @@ function shellTokens(source: string): ShellToken[] {
 	}
 	if (escaped) word += "\\";
 	flush();
-	return tokens;
+	return { tokens, unbalanced: quote !== undefined };
 }
 
 function isAssignment(value: string | undefined): boolean {

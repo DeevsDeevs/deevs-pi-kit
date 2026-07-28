@@ -193,7 +193,7 @@ export class MissionState {
 				reviewFailureCount: 0,
 			};
 			writeMissionSnapshot(cwd, taken);
-		}, true);
+		});
 		if (candidate.source === "legacy_session") {
 			withMissionWorkspaceLock(cwd, () => {
 				const existing = listMissionSnapshots(cwd).filter((snapshot) => !["complete", "ended", "cleared"].includes(snapshot.mission.status));
@@ -356,23 +356,33 @@ export class MissionState {
 			const persist = () => withMissionLock(this.cwd!, event.slug ?? this.current?.slug ?? "", () => {
 				const stored = readMissionSnapshot(this.cwd!, event.slug ?? this.current!.slug);
 				if (event.kind === "created" && stored) throw new Error(`Mission artifact state already exists: ${event.slug}`);
+				const currentUsage = this.usage;
 				if (event.kind !== "created") {
 					if (!stored || stored.owner.sessionId !== this.owner!.sessionId) throw new Error("Mission is controlled by another Pi session.");
 					if (stored.revision !== this.snapshotRevision) throw new Error("Mission state changed concurrently; reload before retrying.");
-					const currentUsage = this.usage;
 					this.restoreSnapshot(stored, [], this.cwd!, false);
 					this.usage = currentUsage;
 				}
+				// Apply to in-memory state, then commit to disk. If the durable write fails, roll the in-memory state back so read()/readAny() never report an event that was never persisted.
 				this.applyEvent(event);
 				if (event.reviewFailure) this.reviewFailureCount++;
-				const snapshot = this.exportSnapshot(this.owner!);
-				snapshot.revision = (stored?.revision ?? 0) + 1;
-				writeMissionSnapshot(this.cwd!, snapshot);
-				this.snapshotRevision = snapshot.revision;
+				try {
+					const snapshot = this.exportSnapshot(this.owner!);
+					snapshot.revision = (stored?.revision ?? 0) + 1;
+					writeMissionSnapshot(this.cwd!, snapshot);
+					this.snapshotRevision = snapshot.revision;
+				} catch (error) {
+					if (stored) { this.restoreSnapshot(stored, [], this.cwd!, false); this.usage = currentUsage; }
+					else this.clearLoadedState();
+					throw error;
+				}
 			});
-			if (event.kind === "created") {
+			// Resuming an `ended` Mission re-enters the active set, so it needs the same single-active-Mission admission as creation; `ended` is otherwise filtered out of the workspace exclusivity check.
+			const needsWorkspaceAdmission = event.kind === "created" || (event.kind === "status_changed" && event.status === "active" && this.current?.status === "ended");
+			if (needsWorkspaceAdmission) {
+				const selfId = event.missionId ?? this.current?.missionId;
 				withMissionWorkspaceLock(this.cwd, () => {
-					const existing = listMissionSnapshots(this.cwd!).filter((snapshot) => !["complete", "ended", "cleared"].includes(snapshot.mission.status));
+					const existing = listMissionSnapshots(this.cwd!).filter((snapshot) => snapshot.mission.missionId !== selfId && !["complete", "ended", "cleared"].includes(snapshot.mission.status));
 					if (existing.length) throw new Error(`A Mission already exists in this workspace: ${existing.map((snapshot) => snapshot.mission.missionId).join(", ")}.`);
 					persist();
 				});
@@ -573,6 +583,8 @@ export class MissionState {
 			this.current.objectiveVersion = event.objectiveVersion ?? (this.current.objectiveVersion ?? 1) + 1;
 		}
 		if (event.reviewStatus) this.current.reviewStatus = event.reviewStatus;
+		// A review that reaches the reviewer or clears wipes the transient failure streak, so weeks-apart intermittent reviewer failures cannot accumulate into a permanent three-strike block.
+		if (event.reviewStatus === "awaiting_adjudication" || event.reviewStatus === "clear") this.reviewFailureCount = 0;
 		if (event.reviewRunId !== undefined) this.current.reviewRunId = event.reviewRunId;
 		if (event.reviewReason !== undefined) this.current.reviewReason = event.reviewReason;
 		if (event.reviewSkippedReason !== undefined) this.current.reviewSkippedReason = event.reviewSkippedReason;
