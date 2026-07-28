@@ -1,5 +1,6 @@
 import { Type } from "@earendil-works/pi-ai";
-import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
+import type { AgentToolResult, ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import type { ChainService } from "./service.ts";
 import type { ChainContextInput, ChainForkInput, ChainListInput, ChainLoadInput, ChainSaveInput, ChainSearchInput, ChainSearchResult } from "./types.ts";
 
@@ -7,6 +8,7 @@ const SaveSchema = Type.Object({
 	chain: Type.String({ description: "Chain name; stored under .chains/<chain>" }),
 	content: Type.String({ description: "Markdown chain link content to save" }),
 	title: Type.Optional(Type.String({ description: "Readable title; defaults to first markdown heading" })),
+	nextStep: Type.Optional(Type.String({ description: "Structured next action; prose headings are never parsed for control" })),
 	slug: Type.Optional(Type.String({ description: "Filename slug; defaults to title slug" })),
 	branch: Type.Optional(Type.String({ description: "Branch name; defaults to main" })),
 	parent: Type.Optional(Type.String({ description: "Parent link filename; defaults to latest link on branch" })),
@@ -52,7 +54,6 @@ const SearchSchema = Type.Object({
 	maxResults: Type.Optional(Type.Number({ description: "Maximum matches to return" })),
 	contextLines: Type.Optional(Type.Number({ description: "Snippet context lines for text/regex mode" })),
 	mode: Type.Optional(Type.String({ description: "lookup for ranked BM25-style results, text for exact text, regex for regex; default lookup" })),
-	regex: Type.Optional(Type.Boolean({ description: "Legacy alias for mode=regex" })),
 	caseSensitive: Type.Optional(Type.Boolean({ description: "Case-sensitive text/regex search" })),
 	recencyHalfLifeDays: Type.Optional(Type.Number({ description: "Lookup recency decay half-life in days; default 30" })),
 	recencyWeight: Type.Optional(Type.Number({ description: "Lookup recency blend from 0 to 1; default 0.15" })),
@@ -74,6 +75,8 @@ export function registerChainTools(pi: ExtensionAPI, service: ChainService): voi
 			const result = await service.save(params);
 			return { content: [{ type: "text", text: `Saved chain link: ${result.link.path}` }], details: result };
 		},
+		renderCall: (args: ChainSaveInput, theme: Theme) => chainCall("save", `${args.chain}@${args.branch ?? "main"}`, theme),
+		renderResult: (result, options, theme) => chainResult(result.details, options.expanded, theme),
 	});
 
 	pi.registerTool({
@@ -87,6 +90,8 @@ export function registerChainTools(pi: ExtensionAPI, service: ChainService): voi
 			const result = await service.load(params);
 			return { content: [{ type: "text", text: formatLoad(result) }], details: result };
 		},
+		renderCall: (args: ChainLoadInput, theme: Theme) => chainCall("load", `${args.chain}@${args.branch ?? "main"}`, theme),
+		renderResult: (result, options, theme) => chainResult(result.details, options.expanded, theme),
 	});
 
 	pi.registerTool({
@@ -99,6 +104,8 @@ export function registerChainTools(pi: ExtensionAPI, service: ChainService): voi
 			const chains = await service.list(params);
 			return { content: [{ type: "text", text: formatList(chains) }], details: { chains } };
 		},
+		renderCall: (_args: ChainListInput, theme: Theme) => chainCall("list", "", theme),
+		renderResult: (result, options, theme) => chainResult(result.details, options.expanded, theme),
 	});
 
 	pi.registerTool({
@@ -112,6 +119,8 @@ export function registerChainTools(pi: ExtensionAPI, service: ChainService): voi
 			const result = await service.fork(params);
 			return { content: [{ type: "text", text: `Fork ${result.chain}/${result.branch} from ${result.parent.filename}\n${result.prompt}` }], details: result };
 		},
+		renderCall: (args: ChainForkInput, theme: Theme) => chainCall("fork", `${args.chain}@${args.branch}`, theme),
+		renderResult: (result, options, theme) => chainResult(result.details, options.expanded, theme),
 	});
 
 	pi.registerTool({
@@ -119,31 +128,60 @@ export function registerChainTools(pi: ExtensionAPI, service: ChainService): voi
 		label: "Format Chain Context",
 		description: "Load and pack chain links into bounded context for subagent tasks or handoffs.",
 		promptSnippet: "Format chain context for passing to subagents.",
-		promptGuidelines: ["Use chain_context before agent_start/agent_parallel_start when a subagent needs focused chain context."],
+		promptGuidelines: ["Use chain_context before subagent when a delegate needs focused Chain context."],
 		parameters: ContextSchema,
 		async execute(_toolCallId, params: ChainContextInput) {
 			const result = await service.context(params);
 			return { content: [{ type: "text", text: result.context }], details: result };
 		},
+		renderCall: (args, theme) => chainCall("context", `${args.chain}@${args.branch ?? "main"}`, theme),
+		renderResult: (result, options, theme) => chainResult(result.details, options.expanded, theme),
 	});
 
 	pi.registerTool({
 		name: "chain_search",
 		label: "Search Chains",
-		description: "Universal chain search: ranked lookup by default, exact text with mode=text, regex with mode=regex or regex=true.",
+		description: "Universal chain search: ranked lookup by default, exact text with mode=text, regex with mode=regex.",
 		promptSnippet: "Search durable work chains by relevance, exact text, or regex.",
 		promptGuidelines: ["Use default lookup mode for ideas/topics; use mode=text or mode=regex for exact matching."],
 		parameters: SearchSchema,
+		renderCall: (args, theme) => chainCall("search", args.query, theme),
+		renderResult: (result, options, theme) => chainResult(result.details, options.expanded, theme),
 		async execute(_toolCallId, params: ChainSearchInput): Promise<AgentToolResult<ChainSearchResult | Awaited<ReturnType<ChainService["rankedSearch"]>>>> {
-			const mode = params.mode ?? (params.regex ? "regex" : "lookup");
+			const mode = params.mode ?? "lookup";
 			if (mode === "lookup") {
 				const result = await service.rankedSearch(params);
 				return { content: [{ type: "text", text: formatRankedSearch(result) }], details: result };
 			}
-			const result = await service.search({ ...params, regex: mode === "regex" });
+			const result = await service.search(params);
 			return { content: [{ type: "text", text: formatSearch(result) }], details: result };
 		},
 	});
+}
+
+function chainCall(action: string, target: string, theme: Theme): Text {
+	return new Text(theme.fg("toolTitle", theme.bold(`chain ${action} `)) + theme.fg("muted", target), 0, 0);
+}
+
+function chainResult(details: unknown, expanded: boolean, theme: Theme): Text {
+	const value = details as Record<string, unknown> | undefined;
+	const link = value?.link as { chain?: string; branch?: string; filename?: string; title?: string } | undefined;
+	if (link) {
+		let text = `${theme.fg("success", "✓")} ${theme.fg("accent", `${link.chain ?? "chain"}@${link.branch ?? "main"}`)} ${theme.fg("muted", link.filename ?? "")}`;
+		if (expanded && link.title) text += `\n${link.title}`;
+		return new Text(text, 0, 0);
+	}
+	const chains = value?.chains as Array<{ chain: string; count: number }> | undefined;
+	if (chains) {
+		const visible = expanded ? chains : chains.slice(0, 5);
+		return new Text(visible.length ? visible.map((chain) => `${theme.fg("accent", chain.chain)} ${theme.fg("muted", `${chain.count} link(s)`)}`).join("\n") : theme.fg("dim", "No chains"), 0, 0);
+	}
+	const matches = value?.matches as unknown[] | undefined;
+	if (matches) return new Text(`${theme.fg("success", "✓")} ${matches.length} match(es)`, 0, 0);
+	const included = value?.includedLinks as unknown[] | undefined;
+	if (included) return new Text(`${theme.fg("success", "✓")} context packed from ${included.length} link(s)`, 0, 0);
+	if (typeof value?.chain === "string" && typeof value.branch === "string") return new Text(`${theme.fg("success", "✓")} ${theme.fg("accent", `${value.chain}@${value.branch}`)}`, 0, 0);
+	return new Text(theme.fg("dim", "Chain operation complete"), 0, 0);
 }
 
 export function formatList(chains: Awaited<ReturnType<ChainService["list"]>>): string {

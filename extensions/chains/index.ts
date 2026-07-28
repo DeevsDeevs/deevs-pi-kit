@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerChainCommands } from "./commands.ts";
-import { registerChainDiscipline } from "./discipline.ts";
+import { ChainCheckpointService, chainCheckpoints, registerChainCheckpoint } from "./checkpoint.ts";
 import { ChainService } from "./service.ts";
 import { registerChainTools } from "./tools.ts";
 
@@ -22,15 +22,18 @@ export default function chainsExtension(pi: ExtensionAPI): void {
 	globalState[SURFACE_KEY] = surfaceState;
 
 	const service = new ChainService(process.cwd());
+	const checkpoints = new ChainCheckpointService(pi);
+	chainCheckpoints.current = checkpoints;
 	registerChainTools(pi, service);
 	registerChainCommands(pi, service);
-	registerChainDiscipline(pi);
+	registerChainCheckpoint(pi, checkpoints);
 
 	pi.on("session_start", async (_event, ctx) => {
 		service.setCwd(ctx.cwd);
 	});
 
 	pi.on("session_shutdown", async () => {
+		if (chainCheckpoints.current === checkpoints) chainCheckpoints.current = undefined;
 		surfaceState.active = false;
 	});
 }

@@ -1,6 +1,10 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { showTextViewer } from "../shared/text-viewer.ts";
 import { validateBranchName, validateChainName, validateLinkName, type ChainService } from "./service.ts";
 import { formatList, formatLoad, formatRankedSearch, formatSearch } from "./tools.ts";
+import { chainCheckpoints } from "./checkpoint.ts";
+import { FULL_SCREEN_OVERLAY } from "../shared/dashboard.ts";
+import { ChainsDashboard } from "./ui.ts";
 
 interface ChainLinkArgs {
 	chain: string;
@@ -9,6 +13,39 @@ interface ChainLinkArgs {
 }
 
 export function registerChainCommands(pi: ExtensionAPI, service: ChainService): void {
+	pi.registerCommand("chains", {
+		description: "Browse Chains or search them with /chains <query>",
+		getArgumentCompletions: async (prefix) => completeChains(service, prefix),
+		handler: async (args, ctx) => {
+			try {
+				const query = args.trim();
+				const checkpoint = chainCheckpoints.current?.read();
+				const state = checkpoint?.chain ? `Checkpoint: ${checkpoint.chain}@${checkpoint.branch ?? "main"} · ${checkpoint.status}${checkpoint.dueReasons.length ? ` · ${checkpoint.dueReasons.at(-1)}` : ""}\n\n` : "";
+				if (!query && ctx.mode === "tui" && ctx.hasUI) {
+					const chains = await service.list({ includeBranches: true, includeLinks: true });
+					await ctx.ui.custom<void>((tui, theme, _keybindings, done) => new ChainsDashboard(
+						chains,
+						checkpoint,
+						theme,
+						() => done(undefined),
+						() => tui.requestRender(),
+						() => Math.max(4, tui.terminal.rows - 2),
+						async (chain, branch) => formatLoad(await service.load({ chain, branch, maxBytes: 196_608 })),
+						(chain, branch) => void service.load({ chain, branch, maxBytes: 196_608 }).then((loaded) => {
+							pi.sendUserMessage(chainLoadPrompt(loaded), { deliverAs: "followUp" });
+							ctx.ui.notify(`Loaded ${loaded.link.chain}/${loaded.link.filename} into the next turn.`, "info");
+						}).catch((error) => ctx.ui.notify(error instanceof Error ? error.message : String(error), "error")),
+					), { overlay: true, overlayOptions: FULL_SCREEN_OVERLAY });
+					return;
+				}
+				const content = query ? formatRankedSearch(await service.rankedSearch({ query, maxResults: 30 })) : formatList(await service.list({ includeBranches: true }));
+				await showTextViewer(ctx, query ? `Chains: ${query}` : "Chains", `${state}${content}`);
+			} catch (error) {
+				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+			}
+		},
+	});
+
 	pi.registerCommand("chain-link", {
 		description: "Create a durable work handoff in .chains/<name>",
 		getArgumentCompletions: async (prefix) => completeChains(service, prefix),
@@ -51,7 +88,22 @@ export function registerChainCommands(pi: ExtensionAPI, service: ChainService): 
 		description: "List chains in .chains",
 		handler: async (args, ctx) => {
 			try {
-				ctx.ui.notify(formatList(await service.list({ includeBranches: args.includes("--branches") || args.includes("--all") })), "info");
+				await showTextViewer(ctx, "Chains", formatList(await service.list({ includeBranches: args.includes("--branches") || args.includes("--all") })));
+			} catch (error) {
+				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+			}
+		},
+	});
+
+	pi.registerCommand("chain-waive", {
+		description: "Waive the current Chain checkpoint with an explicit reason",
+		handler: async (args, ctx) => {
+			const reason = args.trim();
+			if (!reason) return ctx.ui.notify("Usage: /chain-waive <reason>", "warning");
+			try {
+				if (!chainCheckpoints.current) throw new Error("Chain checkpoint service is unavailable.");
+				chainCheckpoints.current.waive(reason);
+				ctx.ui.notify(`Chain checkpoint waived: ${reason}`, "info");
 			} catch (error) {
 				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 			}
@@ -87,8 +139,8 @@ export function registerChainCommands(pi: ExtensionAPI, service: ChainService): 
 				return;
 			}
 			try {
-				const mode = parsed.mode ?? (parsed.regex ? "regex" : "lookup");
-				ctx.ui.notify(mode === "lookup" ? formatRankedSearch(await service.rankedSearch(parsed)) : formatSearch(await service.search({ ...parsed, regex: mode === "regex" })), "info");
+				const mode = parsed.mode ?? "lookup";
+				await showTextViewer(ctx, "Chain search", mode === "lookup" ? formatRankedSearch(await service.rankedSearch(parsed)) : formatSearch(await service.search(parsed)));
 			} catch (error) {
 				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 			}
@@ -185,7 +237,7 @@ function parseForkArgs(args: string): { chain: string; branch: string; from?: st
 	return parsed;
 }
 
-async function parseSearchArgs(service: ChainService, args: string): Promise<{ chain?: string; branch?: string; query: string; mode?: "lookup" | "text" | "regex"; regex?: boolean; maxResults?: number; recencyHalfLifeDays?: number }> {
+async function parseSearchArgs(service: ChainService, args: string): Promise<{ chain?: string; branch?: string; query: string; mode?: "lookup" | "text" | "regex"; maxResults?: number; recencyHalfLifeDays?: number }> {
 	const parts = args.trim().split(/\s+/).filter(Boolean);
 	if (parts.length === 0) return { query: "" };
 	let chain: string | undefined;
@@ -211,9 +263,9 @@ async function parseSearchArgs(service: ChainService, args: string): Promise<{ c
 		else if (parts[index] === "--text") { mode = "text"; parts.splice(index, 1); }
 		else if (parts[index] === "--lookup") { mode = "lookup"; parts.splice(index, 1); }
 	}
-	if (parts.length === 0) return { chain, branch, query: "", mode, regex: mode === "regex", maxResults, recencyHalfLifeDays };
-	if (chain) return { chain, branch, query: parts.join(" "), mode, regex: mode === "regex", maxResults, recencyHalfLifeDays };
-	if (parts.length === 1) return { branch, query: parts[0]!, mode, regex: mode === "regex", maxResults, recencyHalfLifeDays };
+	if (parts.length === 0) return { chain, branch, query: "", mode, maxResults, recencyHalfLifeDays };
+	if (chain) return { chain, branch, query: parts.join(" "), mode, maxResults, recencyHalfLifeDays };
+	if (parts.length === 1) return { branch, query: parts[0]!, mode, maxResults, recencyHalfLifeDays };
 	const chains = new Set((await service.list()).map((item) => item.chain));
-	return chains.has(parts[0]!) ? { chain: parts[0], branch, query: parts.slice(1).join(" "), mode, regex: mode === "regex", maxResults, recencyHalfLifeDays } : { branch, query: parts.join(" "), mode, regex: mode === "regex", maxResults, recencyHalfLifeDays };
+	return chains.has(parts[0]!) ? { chain: parts[0], branch, query: parts.slice(1).join(" "), mode, maxResults, recencyHalfLifeDays } : { branch, query: parts.join(" "), mode, maxResults, recencyHalfLifeDays };
 }

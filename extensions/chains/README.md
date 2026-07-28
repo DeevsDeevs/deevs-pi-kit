@@ -2,7 +2,7 @@
 
 Durable work handoffs stored as markdown links under project-local `.chains/`.
 
-Use chains when work may span sessions, needs resumable context, or should be handed to subagents. Chains are deliberate summaries; the extension never auto-saves model notes.
+Chains remain deliberate human-readable summaries; Pi Kit never auto-generates noisy links.
 
 ## Tools
 
@@ -10,7 +10,7 @@ Use chains when work may span sessions, needs resumable context, or should be ha
 chain_save     save a markdown handoff link
 chain_load     load the latest or a selected link
 chain_fork     create a branch from an existing link
-chain_context  pack bounded context for resume or subagents
+chain_context  pack bounded context for resume or Subagents
 chain_list     list chains and branches
 chain_search   ranked, text, or regex search
 ```
@@ -18,13 +18,27 @@ chain_search   ranked, text, or regex search
 ## Commands
 
 ```text
+/chains [query]
 /chain-link <chain> [--branch name] [--parent link.md]
 /chain-load <chain> [--branch name] [link.md]
+/chain-waive <reason>
 /chain-fork <chain> <new-branch> [--from link.md]
 /chain-list [--branches]
 /chain-search [chain] [--lookup|--text|--regex] <query>
-/chain-discipline [status|mode|default-chain|enable|disable|reset|set]
 ```
+
+## State-aware checkpoint discipline
+
+Pi custom entries track:
+
+- the active Chain and branch;
+- `saved` versus `checkpoint due`;
+- concrete due reasons;
+- latest saved link or explicit waiver reason.
+
+Checkpoint state is restored after resume/tree navigation. At 80% context usage, Pi must save one concise Chain link before any other work: non-`chain_save` tools are blocked and an ignored reminder receives one hidden follow-up turn. After the checkpoint is saved, 90% usage immediately triggers native Pi compaction and stops the active turn before more tools run; compaction resets the one-shot threshold. Successful Chain tools update state directly. Descendant advances of repository HEAD are detected without parsing shell commands, while sideways checkouts and resets are ignored. Mission lifecycle changes, explicit Mission milestones/review adjudication, Chain forks, and write-enabled Subagents also mark checkpoints due. Ordinary edits and bounded Jobs do not: activity is not automatically a durable milestone.
+
+The footer stays quiet while saved and shows `chain due` only when attention is needed. Before the next agent turn, a due/resume reminder is injected from state. Mission completion vetoes a due checkpoint unless it is explicitly waived with a reason.
 
 ## Storage
 
@@ -32,26 +46,4 @@ chain_search   ranked, text, or regex search
 .chains/<chain>/<timestamp>-<slug>.md
 ```
 
-Links include frontmatter for chain, branch, parent, and creation time. Older links without metadata are treated as branch `main`.
-
-## Chain discipline
-
-Chain discipline adds reminders so durable work checks existing context and saves useful handoffs.
-
-Modes:
-
-```text
-off       disabled
-nudge     reminders only; default
-guarded   block mutating tools on high-confidence resumed work until context is checked
-strict    harder opt-in guarding; can be noisy
-```
-
-Project settings live in `.pi/chain-discipline.json` and can be changed with `/chain-discipline`. Environment variables can override project settings:
-
-```text
-DEEVS_CHAIN_DISCIPLINE_MODE=off|nudge|guarded|strict
-DEEVS_CHAIN_DISCIPLINE_ENABLED=true|false
-```
-
-Use wording like “no chains” or “do not use chains” to bypass for a single prompt.
+Links include frontmatter for chain, branch, parent, and creation time. Older links without metadata are treated as branch `main`. Checkpoint operations live in Pi session entries; `.chains` remains the cross-session/cross-harness content format.

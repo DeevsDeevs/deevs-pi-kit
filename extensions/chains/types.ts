@@ -31,6 +31,7 @@ export interface ChainSaveInput {
 	chain: string;
 	content: string;
 	title?: string;
+	nextStep?: string;
 	slug?: string;
 	branch?: string;
 	parent?: string;
@@ -62,7 +63,6 @@ export interface ChainSearchInput {
 	maxResults?: number;
 	contextLines?: number;
 	mode?: "lookup" | "text" | "regex";
-	regex?: boolean;
 	caseSensitive?: boolean;
 	recencyHalfLifeDays?: number;
 	recencyWeight?: number;

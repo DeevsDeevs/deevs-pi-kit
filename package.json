@@ -1,10 +1,21 @@
 {
   "name": "deevs-pi-kit",
   "version": "0.1.0",
-  "description": "Portable Pi package with managed processes, subagents, chains, wiki helpers, research tools, and skills",
+  "description": "Portable Pi package with bounded Jobs, curated Subagents, Missions, session Cron, Chains, workflows, research tools, and skills",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "audit": "node scripts/audit.mjs",
+    "smoke:modes": "node scripts/smoke-modes.mjs",
+    "check": "npm run typecheck && npm test && npm run smoke:modes && npm run audit && npm pack --dry-run"
+  },
   "keywords": [
     "pi-package",
     "pi",
@@ -13,22 +24,23 @@
   ],
   "pi": {
     "extensions": [
-      "./extensions/*.ts",
       "./extensions/*/index.ts"
     ],
     "skills": [
       "./skills"
-    ],
-    "prompts": [
-      "./prompts/*.md"
     ]
   },
-  "optionalDependencies": {
-    "node-pty": "^1.1.0"
-  },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*"
+    "@earendil-works/pi-ai": ">=0.82.0",
+    "@earendil-works/pi-coding-agent": ">=0.82.0",
+    "@earendil-works/pi-tui": ">=0.82.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.82.0",
+    "@earendil-works/pi-coding-agent": "0.82.0",
+    "@earendil-works/pi-tui": "0.82.0",
+    "@types/node": "^22.19.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10"
   }
 }

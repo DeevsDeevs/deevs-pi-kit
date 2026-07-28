@@ -1,5 +1,6 @@
 import { Type } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
+import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import type { WikiService } from "./service.ts";
 import type { WikiContextInput, WikiGraphInput, WikiInitInput, WikiLintInput, WikiSearchInput, WikiStatusInput } from "./types.ts";
 
@@ -66,6 +67,8 @@ export function registerWikiTools(pi: ExtensionAPI, service: WikiService): void 
 			const result = await service.init(params);
 			return { content: [{ type: "text", text: formatInit(result) }], details: result };
 		},
+		renderCall: (args: WikiInitInput, theme: Theme) => wikiCall("init", args.path, theme),
+		renderResult: (result, options, theme) => wikiResult(result.details, options.expanded, theme),
 	});
 
 	pi.registerTool({
@@ -78,6 +81,8 @@ export function registerWikiTools(pi: ExtensionAPI, service: WikiService): void 
 			const result = await service.status(params);
 			return { content: [{ type: "text", text: formatStatus(result) }], details: result };
 		},
+		renderCall: (args: WikiStatusInput, theme: Theme) => wikiCall("status", args.path, theme),
+		renderResult: (result, options, theme) => wikiResult(result.details, options.expanded, theme),
 	});
 
 	pi.registerTool({
@@ -90,6 +95,8 @@ export function registerWikiTools(pi: ExtensionAPI, service: WikiService): void 
 			const result = await service.lint(params);
 			return { content: [{ type: "text", text: formatLint(result) }], details: result };
 		},
+		renderCall: (args: WikiLintInput, theme: Theme) => wikiCall("lint", args.path, theme),
+		renderResult: (result, options, theme) => wikiResult(result.details, options.expanded, theme),
 	});
 
 	pi.registerTool({
@@ -102,6 +109,8 @@ export function registerWikiTools(pi: ExtensionAPI, service: WikiService): void 
 			const result = await service.graph(params);
 			return { content: [{ type: "text", text: formatGraph(result) }], details: result };
 		},
+		renderCall: (args: WikiGraphInput, theme: Theme) => wikiCall("graph", args.path, theme),
+		renderResult: (result, options, theme) => wikiResult(result.details, options.expanded, theme),
 	});
 
 	pi.registerTool({
@@ -115,6 +124,8 @@ export function registerWikiTools(pi: ExtensionAPI, service: WikiService): void 
 			const result = await service.search(params);
 			return { content: [{ type: "text", text: formatSearch(result) }], details: result };
 		},
+		renderCall: (args, theme) => wikiCall("search", args.query, theme),
+		renderResult: (result, options, theme) => wikiResult(result.details, options.expanded, theme),
 	});
 
 	pi.registerTool({
@@ -128,7 +139,32 @@ export function registerWikiTools(pi: ExtensionAPI, service: WikiService): void 
 			const result = await service.context(params);
 			return { content: [{ type: "text", text: result.context }], details: result };
 		},
+		renderCall: (args, theme) => wikiCall("context", args.query ?? args.path, theme),
+		renderResult: (result, options, theme) => wikiResult(result.details, options.expanded, theme),
 	});
+}
+
+function wikiCall(action: string, target: string, theme: Theme): Text {
+	return new Text(theme.fg("toolTitle", theme.bold(`wiki ${action} `)) + theme.fg("muted", target.replace(/\s+/g, " ").slice(0, 90)), 0, 0);
+}
+
+export function wikiResult(details: unknown, expanded: boolean, theme: Theme): Text {
+	const value = details as Record<string, unknown> | undefined;
+	if (!value) return new Text(theme.fg("dim", "Wiki operation complete"), 0, 0);
+	const path = typeof value.path === "string" ? value.path : "wiki";
+	const summary = value.summary as { error?: number; warning?: number; notice?: number } | undefined;
+	if (summary) return new Text(`${theme.fg(summary.error ? "error" : summary.warning ? "warning" : "success", summary.error ? "issues" : "✓ clean")} ${theme.fg("accent", path)} · ${summary.error ?? 0} errors · ${summary.warning ?? 0} warnings`, 0, 0);
+	const matches = value.matches as unknown[] | undefined;
+	if (matches) return new Text(`${theme.fg("success", "✓")} ${theme.fg("accent", path)} · ${matches.length} match(es)`, 0, 0);
+	const nodes = value.nodes as unknown[] | undefined;
+	const edges = value.edges as unknown[] | undefined;
+	if (nodes && edges) return new Text(`${theme.fg("success", "✓")} ${theme.fg("accent", path)} · ${nodes.length} nodes · ${edges.length} edges`, 0, 0);
+	const created = value.created as string[] | undefined;
+	if (created) return new Text(`${theme.fg("success", value.dryRun ? "preview" : "✓ created")} ${theme.fg("accent", path)} · ${created.length} file(s)`, 0, 0);
+	if (typeof value.pageCount === "number") return new Text(`${theme.fg("success", "✓")} ${theme.fg("accent", path)} · ${value.pageCount} pages`, 0, 0);
+	const included = value.pages as unknown[] | undefined;
+	if (included) return new Text(`${theme.fg("success", "✓")} context from ${included.length} page(s)${expanded && typeof value.context === "string" ? `\n${value.context}` : ""}`, 0, 0);
+	return new Text(`${theme.fg("success", "✓")} ${theme.fg("accent", path)}`, 0, 0);
 }
 
 export function formatInit(result: Awaited<ReturnType<WikiService["init"]>>): string {

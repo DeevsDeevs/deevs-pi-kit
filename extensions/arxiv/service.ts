@@ -21,7 +21,7 @@ export class ArxivService {
 		if (!searchQuery) throw new Error("arxiv_search requires query, title, author, abstract, or category");
 		const url = buildUrl({ search_query: searchQuery, start: String(start), max_results: String(maxResults), sortBy, sortOrder });
 		const feed = parseArxivFeed(await this.fetchText(url));
-		return { query: searchQuery, url, totalResults: feed.totalResults, start, maxResults, papers: feed.papers, truncated: feed.papers.length >= maxResults };
+		return { query: searchQuery, url, totalResults: feed.totalResults, start, maxResults, papers: feed.papers, truncated: feed.totalResults === null ? feed.papers.length >= maxResults : feed.totalResults > start + feed.papers.length };
 	}
 
 	async get(input: ArxivGetInput): Promise<ArxivGetResult> {

@@ -6,7 +6,6 @@ const EXTENSION_ID = "codex-fast";
 const PROVIDER_ID = "openai-codex";
 const API_ID = "openai-codex-responses";
 const FAST_SERVICE_TIER = "priority";
-const SUPPORTED_MODELS = new Set(["gpt-5.4", "gpt-5.5"]);
 const COMMANDS = ["status", "on", "off", "auto", "toggle"] as const;
 
 const DEFAULT_CONFIG: CodexFastConfig = {
@@ -108,10 +107,6 @@ function getEligibility(ctx: ExtensionContext): Eligibility {
 		return { eligible: false, modelKey: key, reason: `current API is ${model.api}, not ${API_ID}` };
 	}
 
-	if (!SUPPORTED_MODELS.has(model.id)) {
-		return { eligible: false, modelKey: key, reason: "Fast mode only supports gpt-5.4 and gpt-5.5" };
-	}
-
 	if (!ctx.modelRegistry.isUsingOAuth(model)) {
 		return { eligible: false, modelKey: key, reason: "ChatGPT OAuth auth is required; API-key auth is not used" };
 	}
@@ -191,7 +186,7 @@ export default function codexFastExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("codex-fast", {
-		description: "Manage Codex Fast mode for ChatGPT-auth GPT-5.4/GPT-5.5",
+		description: "Manage Codex Fast mode for ChatGPT-auth OpenAI Codex models",
 		getArgumentCompletions: (prefix) => {
 			const normalized = prefix.trim().toLowerCase();
 			const matches = COMMANDS.filter((command) => command.startsWith(normalized));
@@ -210,9 +205,9 @@ export default function codexFastExtension(pi: ExtensionAPI): void {
 				}
 			}
 
-			if (action === "on" || action === "enable") state.override = "on";
-			else if (action === "off" || action === "disable") state.override = "off";
-			else if (action === "auto" || action === "default") {
+			if (action === "on") state.override = "on";
+			else if (action === "off") state.override = "off";
+			else if (action === "auto") {
 				state.override = "auto";
 				state.config = loadConfig(ctx.cwd);
 			} else if (action === "toggle") state.override = isFastEnabled(state) ? "off" : "on";
