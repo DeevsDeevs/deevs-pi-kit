@@ -1,5 +1,6 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { constants } from "node:fs";
+import { lstat, mkdir, open } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { MissionCurrent, MissionProgressRecord, MissionUsage } from "./types.ts";
 
 export function missionRoot(cwd: string): string {
@@ -10,53 +11,80 @@ export function missionDir(cwd: string, slug: string): string {
 	return join(missionRoot(cwd), slug);
 }
 
-export async function initializeMissionArtifacts(cwd: string, mission: MissionCurrent, usage?: MissionUsage): Promise<void> {
-	await mkdir(mission.artifactDir, { recursive: true });
+export async function initializeMissionArtifacts(mission: MissionCurrent, usage?: MissionUsage): Promise<void> {
+	await prepareArtifactDirectory(mission.artifactDir);
 	await Promise.all([
-		writeFile(join(mission.artifactDir, "mission.md"), formatMissionMarkdown(mission, usage), "utf8"),
-		writeFile(join(mission.artifactDir, "plan.md"), formatPlanMarkdown(mission), "utf8"),
-		writeFile(join(mission.artifactDir, "decisions.md"), formatDecisionsMarkdown(mission), "utf8"),
-		writeFile(join(mission.artifactDir, "audit.md"), formatAuditMarkdown(mission), "utf8"),
-		writeFile(join(mission.artifactDir, "log.md"), formatProgressLogMarkdown(mission, []), "utf8"),
+		writeArtifactFile(join(mission.artifactDir, "mission.md"), formatMissionMarkdown(mission, usage)),
+		writeArtifactFile(join(mission.artifactDir, "log.md"), formatProgressLogMarkdown(mission, [])),
 	]);
 }
 
 export async function updateMissionSummaryArtifact(mission: MissionCurrent, usage?: MissionUsage): Promise<void> {
-	await mkdir(mission.artifactDir, { recursive: true });
-	await writeFile(join(mission.artifactDir, "mission.md"), formatMissionMarkdown(mission, usage), "utf8");
+	await prepareArtifactDirectory(mission.artifactDir);
+	await writeArtifactFile(join(mission.artifactDir, "mission.md"), formatMissionMarkdown(mission, usage));
 }
 
 export async function writeMissionProgressArtifacts(mission: MissionCurrent, progress: MissionProgressRecord[], usage?: MissionUsage): Promise<void> {
-	await mkdir(mission.artifactDir, { recursive: true });
+	await prepareArtifactDirectory(mission.artifactDir);
 	await Promise.all([
-		writeFile(join(mission.artifactDir, "log.md"), formatProgressLogMarkdown(mission, progress), "utf8"),
-		writeFile(join(mission.artifactDir, "mission.md"), formatMissionMarkdown(mission, usage, progress), "utf8"),
+		writeArtifactFile(join(mission.artifactDir, "log.md"), formatProgressLogMarkdown(mission, progress)),
+		writeArtifactFile(join(mission.artifactDir, "mission.md"), formatMissionMarkdown(mission, usage, progress)),
 	]);
 }
 
-export async function writeCompletionAudit(mission: MissionCurrent, summary: string | undefined, audit: Array<{ requirement: string; evidence: string }> | undefined, usage: MissionUsage): Promise<void> {
-	await mkdir(mission.artifactDir, { recursive: true });
+export async function writeCompletionAudit(mission: MissionCurrent, summary: string | undefined, audit: Array<{ requirementIndex: number; evidence: string }> | undefined, usage: MissionUsage, progress: MissionProgressRecord[] = []): Promise<void> {
+	await prepareArtifactDirectory(mission.artifactDir);
 	const lines = [
-		`# Completion Audit: ${mission.title}`,
+		formatMissionMarkdown(mission, usage, progress).trimEnd(),
 		"",
-		`Status: ${mission.status}`,
+		"## Completion Audit",
+		"",
 		`Completed: ${new Date(mission.updatedAt).toISOString()}`,
-		`Usage: ${usage.totalTokens} tokens, $${usage.totalCostUsd.toFixed(4)}`,
 		"",
-		"## Summary",
+		"### Summary",
 		"",
 		summary?.trim() || "(No summary provided.)",
 		"",
-		"## Requirement Evidence",
+		"### Requirement Evidence",
 		"",
 	];
-	if (audit?.length) {
-		for (const item of audit) lines.push(`- ${item.requirement}: ${item.evidence}`);
-	} else {
-		lines.push("- (Model did not provide a structured audit. See final conversation turn for evidence.)");
-	}
+	if (audit?.length) for (const item of audit) lines.push(`- [${item.requirementIndex}] ${mission.requirements[item.requirementIndex] ?? "(unknown requirement)"}: ${item.evidence.trim()}`);
+	else lines.push("- (Model did not provide a structured audit. See final conversation turn for evidence.)");
 	lines.push("");
-	await writeFile(join(mission.artifactDir, "audit.md"), lines.join("\n"), "utf8");
+	await writeArtifactFile(join(mission.artifactDir, "mission.md"), lines.join("\n"));
+}
+
+async function prepareArtifactDirectory(artifactDir: string): Promise<void> {
+	await ensureDirectory(dirname(artifactDir));
+	await ensureDirectory(artifactDir);
+}
+
+async function ensureDirectory(directory: string): Promise<void> {
+	try {
+		await mkdir(directory);
+	} catch (error) {
+		if (!isNodeError(error) || error.code !== "EEXIST") throw error;
+	}
+	const info = await lstat(directory);
+	if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(`Mission artifact path is not a real directory: ${directory}`);
+}
+
+async function writeArtifactFile(filePath: string, content: string): Promise<void> {
+	const existing = await lstat(filePath).catch((error: unknown) => {
+		if (isNodeError(error) && error.code === "ENOENT") return undefined;
+		throw error;
+	});
+	if (existing?.isSymbolicLink()) throw new Error(`Mission artifact path is a symlink: ${filePath}`);
+	const handle = await open(filePath, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
+	try {
+		await handle.writeFile(content, "utf8");
+	} finally {
+		await handle.close();
+	}
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+	return error instanceof Error && "code" in error;
 }
 
 function formatMissionMarkdown(mission: MissionCurrent, usage?: MissionUsage, progress: MissionProgressRecord[] = []): string {
@@ -68,6 +96,8 @@ function formatMissionMarkdown(mission: MissionCurrent, usage?: MissionUsage, pr
 	const latest = progress.at(-1);
 	return [
 		`# Mission: ${mission.title}`,
+		"",
+		"> Generated projection. Canonical machine state is stored in the workspace `.missions/.state/` registry.",
 		"",
 		`Mission ID: ${mission.missionId}`,
 		`Status: ${mission.status}`,
@@ -86,66 +116,16 @@ function formatMissionMarkdown(mission: MissionCurrent, usage?: MissionUsage, pr
 		mission.objective,
 		"",
 		"## Requirements",
-		...(mission.requirements.length ? mission.requirements.map((item) => `- ${item}`) : ["- (not decomposed)"]),
+		...(mission.requirements.length ? mission.requirements.map((item, index) => `- [${index}] ${item}`) : ["- (not decomposed)"]),
+		"",
+		"## Owned Paths",
+		...(mission.paths.length ? mission.paths.map((item) => `- ${item}`) : ["- (not specified)"]),
 		"",
 		"## Current Reason",
 		mission.lastReason ?? "(none)",
 		"",
 		"## Latest Progress",
 		latest ? `${new Date(latest.at).toISOString()} — ${latest.summary}` : "(none recorded)",
-		"",
-	].join("\n");
-}
-
-function formatPlanMarkdown(mission: MissionCurrent): string {
-	return [
-		`# Plan: ${mission.title}`,
-		"", 
-		"This file is initialized once. Prefer `mission_progress` for durable progress; avoid manually editing plan/audit/decisions every slice unless doing a checkpoint or final audit.",
-		"",
-		"## Requirements",
-		"",
-		...(mission.requirements.length ? mission.requirements.map((item) => `- [ ] ${item}`) : ["- [ ] (not decomposed)"]),
-		"",
-		"## Operating Checklist",
-		"",
-		"- [ ] Define the smallest concrete next deliverable.",
-		"- [ ] Gather real repo/session evidence before changing behavior.",
-		"- [ ] Execute one bounded, verifiable work slice.",
-		"- [ ] Validate with commands, artifact inspection, or other concrete evidence.",
-		"- [ ] Record durable progress with `mission_progress` when summary/evidence/remaining work changes.",
-		"- [ ] Save a chain link only at meaningful checkpoints, handoffs, or final cleanup.",
-		"",
-		"## Completion Gate",
-		"",
-		"Before completing, update `audit.md` with requirement-to-evidence mapping and confirm no required work remains.",
-		"",
-	].join("\n");
-}
-
-function formatDecisionsMarkdown(mission: MissionCurrent): string {
-	return [`# Decisions: ${mission.title}`, "", `Objective: ${mission.objective}`, "", "Append important architecture/product decisions here.", ""].join("\n");
-}
-
-function escapeTableCell(value: string): string {
-	return value.replace(/\|/g, "\\|").replace(/\s+/g, " ").trim();
-}
-
-function formatAuditMarkdown(mission: MissionCurrent): string {
-	return [
-		`# Completion Audit: ${mission.title}`,
-		"",
-		"Fill this when the mission is complete. Do not call `mission_complete` until every requirement has evidence.",
-		"",
-		"Use `mission_search`/`log.md` as supporting notes, then write a concrete requirement-to-evidence audit at completion time.",
-		"",
-		"## Requirements to Evidence",
-		"",
-		"| Requirement | Evidence | Status |",
-		"| --- | --- | --- |",
-		...(mission.requirements.length ? mission.requirements.map((item) => `| ${escapeTableCell(item)} |  | pending |`) : ["| Restate objective as concrete deliverables |  | pending |"]),
-		"| Validate implementation or task output with real commands/artifacts |  | pending |",
-		"| Save durable handoff when useful |  | pending |",
 		"",
 	].join("\n");
 }
@@ -164,7 +144,7 @@ function formatProgressLogMarkdown(mission: MissionCurrent, progress: MissionPro
 	for (const item of progress) {
 		lines.push(`## ${new Date(item.at).toISOString()}${item.checkpoint ? " checkpoint" : ""}`, "", item.summary, "");
 		if (item.evidence.length) lines.push("Evidence:", ...item.evidence.map((value) => `- ${value}`), "");
-		if (item.validation.length) lines.push("Validation:", ...item.validation.map((value) => `- ${value}`), "");
+		if (item.validation.length) lines.push("Validation:", ...item.validation.map((value) => `- ${value.command} → ${value.exitCode}${value.summary ? ` · ${value.summary}` : ""}${value.artifact ? ` · ${value.artifact}` : ""}`), "");
 		if (item.remaining.length) lines.push("Remaining:", ...item.remaining.map((value) => `- ${value}`), "");
 	}
 	return lines.join("\n");

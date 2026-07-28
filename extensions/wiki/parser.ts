@@ -99,7 +99,7 @@ export function normalizeTarget(value: string): string {
 }
 
 export function parseTaxonomyTags(schemaContent: string): Set<string> | null {
-	const section = /##\s+Tag Taxonomy\s*\n([\s\S]*?)(?=^##\s+|\s*$)/im.exec(schemaContent)?.[1];
+	const section = /##\s+Tag Taxonomy\s*\r?\n([\s\S]*?)(?=\r?\n##\s+|$)/i.exec(schemaContent)?.[1];
 	if (!section) return null;
 	const tags = new Set<string>();
 	for (const line of section.split(/\r?\n/)) {

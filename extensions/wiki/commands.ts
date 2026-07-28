@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { showTextViewer } from "../shared/text-viewer.ts";
 import type { WikiService } from "./service.ts";
 import { formatGraph, formatInit, formatLint, formatSearch, formatStatus } from "./tools.ts";
 import type { WikiSearchMode } from "./types.ts";
@@ -9,7 +10,7 @@ export function registerWikiCommands(pi: ExtensionAPI, service: WikiService): vo
 		handler: async (args, ctx) => {
 			const parsed = parseInitArgs(args);
 			if (!parsed) return ctx.ui.notify("Usage: /wiki:init <path> --domain \"domain description\" [--dry-run]", "warning");
-			try { ctx.ui.notify(formatInit(await service.init(parsed)), "info"); } catch (error) { ctx.ui.notify(message(error), "error"); }
+			try { await showTextViewer(ctx, "Wiki init", formatInit(await service.init(parsed))); } catch (error) { ctx.ui.notify(message(error), "error"); }
 		},
 	});
 
@@ -18,7 +19,7 @@ export function registerWikiCommands(pi: ExtensionAPI, service: WikiService): vo
 		handler: async (args, ctx) => {
 			const path = args.trim();
 			if (!path) return ctx.ui.notify("Usage: /wiki:status <path>", "warning");
-			try { ctx.ui.notify(formatStatus(await service.status({ path })), "info"); } catch (error) { ctx.ui.notify(message(error), "error"); }
+			try { await showTextViewer(ctx, "Wiki status", formatStatus(await service.status({ path }))); } catch (error) { ctx.ui.notify(message(error), "error"); }
 		},
 	});
 
@@ -27,7 +28,7 @@ export function registerWikiCommands(pi: ExtensionAPI, service: WikiService): vo
 		handler: async (args, ctx) => {
 			const path = args.trim();
 			if (!path) return ctx.ui.notify("Usage: /wiki:lint <path>", "warning");
-			try { ctx.ui.notify(formatLint(await service.lint({ path })), "info"); } catch (error) { ctx.ui.notify(message(error), "error"); }
+			try { await showTextViewer(ctx, "Wiki lint", formatLint(await service.lint({ path }))); } catch (error) { ctx.ui.notify(message(error), "error"); }
 		},
 	});
 
@@ -36,7 +37,7 @@ export function registerWikiCommands(pi: ExtensionAPI, service: WikiService): vo
 		handler: async (args, ctx) => {
 			const path = args.trim();
 			if (!path) return ctx.ui.notify("Usage: /wiki:graph <path>", "warning");
-			try { ctx.ui.notify(formatGraph(await service.graph({ path, includeOrphans: true })), "info"); } catch (error) { ctx.ui.notify(message(error), "error"); }
+			try { await showTextViewer(ctx, "Wiki graph", formatGraph(await service.graph({ path, includeOrphans: true }))); } catch (error) { ctx.ui.notify(message(error), "error"); }
 		},
 	});
 
@@ -45,7 +46,21 @@ export function registerWikiCommands(pi: ExtensionAPI, service: WikiService): vo
 		handler: async (args, ctx) => {
 			const parsed = parseSearchArgs(args);
 			if (!parsed) return ctx.ui.notify("Usage: /wiki:search <path> [--lookup|--text|--regex] <query>", "warning");
-			try { ctx.ui.notify(formatSearch(await service.search(parsed)), "info"); } catch (error) { ctx.ui.notify(message(error), "error"); }
+			try {
+				const result = await service.search(parsed);
+				if (ctx.mode === "tui" && result.matches.length) {
+					const choices = new Map<string, number>([["Results overview", -1]]);
+					result.matches.forEach((match, index) => choices.set(`${match.page.relativePath}:${match.line}`, index));
+					const selected = await ctx.ui.select("Wiki search", [...choices.keys()]);
+					if (!selected) return;
+					const index = choices.get(selected);
+					if (index !== undefined && index >= 0) {
+						const match = result.matches[index]!;
+						return showTextViewer(ctx, match.page.relativePath, `Line ${match.line}${match.score === undefined ? "" : ` · score ${match.score.toFixed(3)}`}\n\n${match.snippet}`);
+					}
+				}
+				await showTextViewer(ctx, "Wiki search", formatSearch(result));
+			} catch (error) { ctx.ui.notify(message(error), "error"); }
 		},
 	});
 
@@ -54,7 +69,7 @@ export function registerWikiCommands(pi: ExtensionAPI, service: WikiService): vo
 		handler: async (args, ctx) => {
 			const parsed = parseContextArgs(args);
 			if (!parsed) return ctx.ui.notify("Usage: /wiki:context <path> <query>", "warning");
-			try { ctx.ui.notify((await service.context(parsed)).context, "info"); } catch (error) { ctx.ui.notify(message(error), "error"); }
+			try { await showTextViewer(ctx, "Wiki context", (await service.context(parsed)).context); } catch (error) { ctx.ui.notify(message(error), "error"); }
 		},
 	});
 }

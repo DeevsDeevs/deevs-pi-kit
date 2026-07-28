@@ -1,70 +1,55 @@
 ---
 name: subagents
-description: Use curated Deevs staff subagents for background exploration, review, testing, architecture, devops, language-specific review, and anti-slop passes.
+description: Use owned curated Pi Kit personas for bounded exploration, logic bug hunting, review, testing, architecture, devops, language-specific review, and anti-slop passes.
 ---
 
 # Subagents
 
-Use the `agent_*` tools to delegate focused work to curated background staff agents.
+Use `subagent` and `subagent_wait`. Pi Kit owns the persona catalog, policy, isolated executor, artifacts, resume identity, limits, and UI.
 
-## When to delegate
+## Delegate when useful
 
-- Use `agent_start` with `explorer` for non-trivial reconnaissance before editing.
-- Use `reviewer`, `tester`, and `anti-slop` for independent pre-merge perspectives.
-- Use `logic-hunter` for language-agnostic spec-vs-implementation bug hunting and data/control-flow correctness.
-- Use `architect` for design boundaries and migration plans.
-- Use `devops` for runtime/config/process/log/deployment failures.
-- Use `python-dev`, `cpp-dev`, or `rust-dev` for language-specific review.
-- Use `agent_parallel_start` when perspectives are independent and can run at the same time.
-- When a subagent needs durable handoff context, pass `chainContext` or call `chain_context` first and paste the bounded excerpt into the task.
+- `explorer`: targeted non-trivial reconnaissance before editing.
+- `logic-hunter`: language-agnostic spec-vs-implementation and data/control-flow correctness hunting.
+- `reviewer`: fresh independent correctness/security/regression review.
+- `tester`: validation strategy and high-value missing cases.
+- `anti-slop`: remove unnecessary complexity after correctness is established.
+- `architect`: boundaries, migrations, and design trade-offs.
+- `devops`: runtime, process, config, deployment, and log failures.
+- `python-dev`, `cpp-dev`, `rust-dev`: language-specific review.
 
-Do not over-delegate trivial tasks. If the answer is obvious from one file or one command, do it directly.
+Do not delegate a trivial one-file answer. Never run parallel writers in one worktree.
 
-## Scope every task
+## Parallel-first orchestration
 
-Always bound subagent scope before launch:
+Before launching, separate dependency gates from independent work. Put independent runs in one `subagent` call using `tasks` with bounded `concurrency`, then settle the group with one `subagent_wait`; do not launch and wait for independent perspectives one by one.
 
-- Prefer `agent_start` with an explicit `cwd` set to the project or package under review.
-- `agent_parallel_start` currently has no top-level `cwd`; it inherits the parent working directory. If the parent cwd is too broad, use separate `agent_start` calls with explicit `cwd`, or make each parallel task explicitly say which directory/files to inspect and what to avoid.
-- Name the exact files, dirs, commands, or diff ranges to inspect when possible.
-- Tell subagents not to search parent directories, `~/.pi`, process logs, `node_modules`, or unrelated sibling repos unless the task is specifically about those areas.
-- Put hard limits in broad review tasks: max tool calls, max files, or "inspect only these paths".
+Keep work sequential only when one result changes the next task's input, multiple tasks mutate the same resource, the diff must be frozen before review, or an early cheap gate should prevent expensive work. Once the diff is frozen, independent reviewer/tester/security perspectives should normally launch together. The parent may continue unrelated work while a background group runs.
 
-Good bounded review task:
+## Scope every run
 
-```text
-Inspect only README.md and skills/grill-me/SKILL.md in this repo.
-Do not search outside cwd, ~/.pi, process logs, node_modules, or sibling repos.
-Use at most 3 inspection commands. Return final structured output immediately after inspection.
-```
+- Give an explicit `cwd` and exact files/directories/diff range.
+- State what not to inspect: parent directories, sibling repos, `node_modules`, `~/.pi`, and unrelated logs.
+- Ask for concrete evidence and bounded output.
+- Prefer `context: "fresh"` for independent review. Use `context: "fork"` only when parent transcript context is necessary.
+- Use `resume` only when the same persistent agent context should receive another turn; re-review is fresh by default.
 
 ## Lifecycle
 
-Subagents are background jobs. After starting one:
+1. Start with `subagent`; background defaults to true.
+2. Use one bounded `subagent_wait` call rather than polling.
+3. Pass `waitMs: 0` for a status-only projection.
+4. Pass `cancel: true` to stop and wait for actual worker/child quiescence.
+5. Terminal details include exact per-run usage, bounded output, session identity, and artifacts.
+6. Before cross-session Mission takeover, settle or explicitly cancel known Jobs/Subagents in the old session; takeover does not adopt, signal, or kill them.
 
-1. Use `agent_status` to see state.
-2. Use `agent_read` for normal progress/final output.
-3. Use `agent_stop` if a run is stuck or no longer useful.
-4. Use `agent_clear` only for terminal records.
+Detached runs are owned by a dedicated worker and can be restored after parent reload. Resume starts a new run/generation in the exact private child Pi session; it does not claim to resurrect a dead process.
 
-Do not read raw logs by default. `agent_logs` is for debugging or deliberate artifact inspection, such as:
+## Safety and limits
 
-- `agent_read` is missing, truncated, or confusing.
-- The run appears stuck, cancelled, failed, or timed out.
-- You need `metadata`, `task`, or `system-prompt` to debug launch/scope/tool issues.
-- You are diagnosing subagent behavior itself.
-
-Prefer `agent_read` first. `agent_logs source="combined"` now defaults to compact activity, but it is still a debugging path; `agent_logs raw:true` can dump verbose JSON streams, tool chatter, and model reasoning into context.
-
-`agent_read` may say "No final assistant output yet" while a child is still thinking or using tools. Before treating that as a hang, check `agent_status`. Use `agent_logs` only if progress is suspicious or you need to diagnose what the child is doing. If logs show broad or recursive searches, stop the run and relaunch with tighter scope.
-
-Backing processes also appear in `/proc` because the subagents extension uses the background process manager.
-
-## Safety
-
-- Built-in agents are read-only by default.
-- Only pass `allowWrite: true` when the user explicitly asked for a subagent to write.
-- `allowWrite: true` enables `edit` and `write` for that child run.
-- Prefer `context: "fresh"` unless the subagent needs current conversation context; use `context: "fork"` only when needed.
-- Model overrides must be configured in `/agents:settings`.
-- `chainContext` is loaded by the parent and passed as untrusted reference data; subagents do not get chain write tools by default.
+- Personas are read-only by default and receive `safe_read`, `safe_list`, and `safe_search`, not unrestricted shell execution.
+- `allowWrite: true` is valid only when delegated writes are needed; Pi asks the user to confirm every write-capable run in the TUI before enabling write tools and shell.
+- A requested `tools` list can narrow persona capabilities, never broaden them.
+- Omitted turn, token, and cost limits are unbounded. Wall time defaults to six hours (24-hour cap); set tighter limits only when the orchestration plan needs them. Token/cost enforcement may overshoot by at most one provider call when explicitly set.
+- Subagents cannot spawn nested Subagents.
+- Persistent/interactive commands belong in Herdr; bounded non-agent commands belong in Jobs.

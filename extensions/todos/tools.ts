@@ -1,6 +1,6 @@
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
-import type { AgentToolResult, ExtensionAPI, ExtensionContext, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { TODO_TOOL_NAME, type TodoState } from "./state.ts";
 import type { TodoDetails, TodoListInput, TodoStatus } from "./types.ts";
 import { formatTodoText, updateTodoWidget } from "./ui.ts";
@@ -53,8 +53,8 @@ export function registerTodoTools(pi: ExtensionAPI, state: TodoState): void {
 			if (args.todos) text += theme.fg("dim", ` (${args.todos.length})`);
 			return new Text(text, 0, 0);
 		},
-		renderResult(result: AgentToolResult<TodoDetails | undefined>, { expanded }: ToolRenderResultOptions, theme: Theme) {
-			const details = result.details;
+		renderResult(result, { expanded }, theme) {
+			const details = result.details as TodoDetails | undefined;
 			if (!details) return new Text(result.content[0]?.type === "text" ? result.content[0].text : "", 0, 0);
 			if (details.error) return new Text(theme.fg("error", `todo error: ${details.error}`), 0, 0);
 			if (details.todos.length === 0) return new Text(theme.fg("dim", "No todos"), 0, 0);
