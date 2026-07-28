@@ -31,6 +31,7 @@ extensions/todos/       Session-scoped todo list (`todo_list`)
 extensions/ask-user/    Interactive clarification UI (`ask_user`)
 extensions/codex-fast/  OpenAI Codex Fast mode service tier (`/codex-fast`)
 extensions/notifier/    Ready-for-input terminal notifications
+extensions/herdr-compat/ Experimental Shift+Enter compatibility for Pi inside Herdr
 extensions/runtime/     Idle delivery and rendering of terminal runtime events
 skills/                 Agent behavior guidance
 ```
@@ -136,6 +137,10 @@ Send a ready-for-input terminal notification on agent completion.
 Commands: `/notifier:test`, `/notifier:settings`.
 
 Project settings persist to `.pi/notifier.json`.
+
+### Herdr compatibility
+
+When Pi runs inside Herdr (`HERDR_ENV=1`), normalize legacy and Kitty Alt+Enter sequences produced by Shift+Enter compatibility mappings into a newline. This is experimental: after a terminal multiplexer collapses Shift+Enter into Alt+Enter, genuine Alt+Enter cannot be distinguished and is also treated as a newline.
 
 ## Skills
 
