@@ -1,13 +1,12 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import * as os from "node:os";
 import * as path from "node:path";
+import { piAgentDir } from "./config.ts";
 import type { DelegateRunRuntime, DelegateRunSpec } from "./runtime-types.ts";
 
 export function defaultDelegateRoot(cwd: string): string {
-	const base = process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), ".pi", "agent");
 	const project = createHash("sha256").update(path.resolve(cwd)).digest("hex").slice(0, 16);
-	return path.join(base, "subagents", project);
+	return path.join(piAgentDir(), "subagents", project);
 }
 
 export function createDelegatePaths(root: string, runId: string, agentId: string) {

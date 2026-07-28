@@ -92,7 +92,8 @@ export class AgentsDashboard implements Component {
 		if (row.kind === "persona") return `${row.value.name}\n${row.value.description}\nAccess: ${row.value.write ? "write-capable" : "read-only"}\nTools: ${row.value.tools.join(", ") || "none"}`;
 		if (row.kind === "group") return `ID: ${row.value.id}\nStatus: ${row.value.status}\nChildren: ${row.value.children.join(", ") || "none"}\nActive: ${row.value.active.join(", ") || "none"}\nFailures: ${row.value.launchFailures.join("; ") || "none"}`;
 		const run = row.value;
-		return `ID: ${run.spec.id}\nAgent identity: ${run.spec.agentId}\nTask: ${run.spec.task}\nSession: ${run.runtime.sessionFile ?? "pending"}\nOutput/error: ${run.runtime.output || run.runtime.error || "pending"}`;
+		const worktree = run.spec.worktree ? `\nWorktree: ${run.spec.worktree.path} (${run.spec.worktree.branch})` : "";
+		return `ID: ${run.spec.id}\nAgent identity: ${run.spec.agentId}\nTask: ${run.spec.task}${worktree}\nSession: ${run.runtime.sessionFile ?? "pending"}\nOutput/error: ${run.runtime.output || run.runtime.error || "pending"}`;
 	}
 }
 

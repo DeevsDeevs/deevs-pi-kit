@@ -20,6 +20,7 @@ const TaskSchema = Type.Object({
 	model: Type.Optional(Type.String()),
 	tools: Type.Optional(Type.Array(Type.String(), { description: "Optional narrowing using persona-local names such as safe_read, safe_list, and safe_search" })),
 	allowWrite: Type.Optional(Type.Boolean({ description: "Explicitly enable edit/write for this run" })),
+	worktree: Type.Optional(Type.Boolean({ description: "Run in a dedicated git worktree on a new subagent/<label> branch instead of the orchestrator's tree" })),
 	wallMs: Type.Optional(Type.Integer({ minimum: 1_000, maximum: 86_400_000, description: "Hard wall-clock limit; defaults to 6 hours and is capped at 24 hours" })),
 	turns: Type.Optional(Type.Integer({ minimum: 1, description: "Optional provider-turn limit; omitted means unbounded" })),
 	tokens: Type.Optional(Type.Integer({ minimum: 1, description: "Optional aggregate token limit; omitted means unbounded, with at most one provider-call overshoot when set" })),
@@ -36,6 +37,7 @@ const SubagentSchema = Type.Object({
 	model: Type.Optional(Type.String()),
 	tools: Type.Optional(Type.Array(Type.String(), { description: "Optional narrowing using persona-local names such as safe_read, safe_list, and safe_search" })),
 	allowWrite: Type.Optional(Type.Boolean()),
+	worktree: Type.Optional(Type.Boolean({ description: "Run in a dedicated git worktree on a new subagent/<label> branch instead of the orchestrator's tree" })),
 	wallMs: Type.Optional(Type.Integer({ minimum: 1_000, maximum: 86_400_000, description: "Hard wall-clock limit; defaults to 6 hours and is capped at 24 hours" })),
 	turns: Type.Optional(Type.Integer({ minimum: 1, description: "Optional provider-turn limit; omitted means unbounded" })),
 	tokens: Type.Optional(Type.Integer({ minimum: 1, description: "Optional aggregate token limit; omitted means unbounded" })),
@@ -105,7 +107,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		promptGuidelines: [
 			"Use fresh independent runs for review and refutation; resume only when continuity is required.",
 			"Keep scope concrete. Omitted turn/token/cost limits are unbounded and wall time defaults to six hours; tighten only with a reason, never arbitrary tiny defaults.",
-			"Never enable allowWrite unless the user explicitly requested delegated writes; Pi confirms each write-capable run in the TUI.",
+			"Never enable allowWrite unless the user explicitly requested delegated writes; pair it with worktree: true so the run edits an isolated branch.",
 			"Use subagent_wait instead of polling output.",
 		],
 		parameters: SubagentSchema,
@@ -237,7 +239,7 @@ function formatAgentsBrowser(service: SubagentService, id: string): string {
 	const personas = loadBuiltinAgents();
 	if (id) {
 		const run = state.runs.find((candidate) => candidate.spec.id === id);
-		if (run) return `${formatWait(run, 65_536)}\n\nAgent: ${run.spec.agentId}\nGeneration: ${run.spec.generation}\nSession: ${run.runtime.sessionFile ?? "pending"}\nArtifacts: ${run.spec.artifactsDir}`;
+		if (run) return `${formatWait(run, 65_536)}\n\nAgent: ${run.spec.agentId}\nGeneration: ${run.spec.generation}\nCwd: ${run.spec.cwd}${run.spec.worktree ? ` (worktree on ${run.spec.worktree.branch})` : ""}\nSession: ${run.runtime.sessionFile ?? "pending"}\nArtifacts: ${run.spec.artifactsDir}`;
 		const group = state.groups.find((candidate) => candidate.id === id);
 		if (group) return `${formatWait(group, 65_536)}\nLaunch failures:\n${group.launchFailures.map((failure) => `- ${failure}`).join("\n") || "- none"}`;
 		const persona = personas.find((candidate) => candidate.name === id);
@@ -271,13 +273,14 @@ function formatAgentsBrowser(service: SubagentService, id: string): string {
 function formatStart(value: DelegateRun | SubagentGroup): string {
 	if (isGroup(value)) return `${value.id} [${value.status}] ${value.children.length} started, ${value.pending.length} pending`;
 	const duration = Date.now() - value.runtime.startedAt;
-	const header = `${value.spec.id} [${value.runtime.status}] ${value.spec.persona} · ${formatDuration(duration)}`;
+	const worktree = value.spec.worktree ? `\nWorktree: ${value.spec.worktree.path} (${value.spec.worktree.branch})` : "";
+	const header = `${value.spec.id} [${value.runtime.status}] ${value.spec.persona} · ${formatDuration(duration)}${worktree}`;
 	return value.runtime.output ? `${header}\n${value.runtime.output}` : header;
 }
 
 function formatWait(value: DelegateRun | SubagentGroup, maxBytes: number): string {
 	if (isGroup(value)) return `${value.id} [${value.status}] children=${value.children.join(",") || "none"} pending=${value.pending.length}`;
-	const header = `${value.spec.id} [${value.runtime.status}] ${formatUsage(tokenTotal(value), value.runtime.usage.costUsd)}`;
+	const header = `${value.spec.id} [${value.runtime.status}] ${formatUsage(tokenTotal(value), value.runtime.usage.costUsd)}${value.spec.worktree ? ` · ${value.spec.worktree.branch}` : ""}`;
 	const body = value.runtime.output || value.runtime.error || "(no output)";
 	return `${header}\n${truncateBytes(body, maxBytes)}`;
 }

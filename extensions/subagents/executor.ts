@@ -92,6 +92,7 @@ export class DelegateExecutor {
 			tools,
 			allowWrite: input.allowWrite ?? false,
 			deliverTerminal: input.deliverTerminal !== false,
+			worktree: input.worktree,
 			model: input.model,
 			context: input.context ?? "fresh",
 			forkSessionFile: input.forkSessionFile,
@@ -348,7 +349,11 @@ function taskPrompt(task: string): string {
 
 function buildSystemPrompt(spec: DelegateRunSpec, personaBody: string): string {
 	const turnLimit = spec.limits.turns === undefined ? "unbounded" : String(spec.limits.turns);
-	return `You are a delegated Deevs staff subagent.\n\nAgent: ${spec.persona}\nWorking directory: ${spec.cwd}\nContext mode: ${spec.context}\nWrite access: ${spec.allowWrite ? "on" : "off"}\nEnabled tools: ${spec.tools.join(", ") || "none"}\nProvider-turn limit: ${turnLimit}\n\nRules:\n- Stay within the assigned persona and task.\n- Be concrete and evidence-based.\n- Do not spawn other subagents.\n- Do not edit unless write access is on.\n- Do not run destructive or persistent background commands.\n- If provider turns are bounded, return a usable conclusion before the final allowed turn.\n- Return uncertainty explicitly.\n\nPersona:\n${personaBody.trim()}\n`;
+	const worktree = spec.worktree ? `Dedicated worktree branch: ${spec.worktree.branch}\n` : "";
+	const worktreeRules = spec.worktree
+		? "- You own this worktree and its branch; commit your work there so the orchestrator can review it, and never touch other worktrees, branches, or repositories.\n"
+		: "";
+	return `You are a delegated Deevs staff subagent.\n\nAgent: ${spec.persona}\nWorking directory: ${spec.cwd}\n${worktree}Context mode: ${spec.context}\nWrite access: ${spec.allowWrite ? "on" : "off"}\nEnabled tools: ${spec.tools.join(", ") || "none"}\nProvider-turn limit: ${turnLimit}\n\nRules:\n- Stay within the assigned persona and task.\n- Be concrete and evidence-based.\n- Do not spawn other subagents.\n- Do not edit unless write access is on.\n- Do not run destructive or persistent background commands.\n- If provider turns are bounded, return a usable conclusion before the final allowed turn.\n${worktreeRules}- Return uncertainty explicitly.\n\nPersona:\n${personaBody.trim()}\n`;
 }
 
 function resolveTools(personaTools: string[], requested: string[] | undefined, allowWrite: boolean): string[] {

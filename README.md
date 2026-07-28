@@ -51,7 +51,21 @@ Run focused staff agents in the background. Built-in agents include `explorer`, 
 
 Tools: `subagent`, `subagent_wait`. Command: `/agents [run-or-group-id]`, `/agents stop <id>`, `/agents resume <id> <task>`, or `/agents clear [id]`.
 
-Subagents are read-only unless `allowWrite: true` is requested and the user confirms the run in the TUI. Read-only personas receive `safe_read`, `safe_list`, and `safe_search`—never unrestricted `bash`. The process-isolated executor supports parallel groups, hard cancellation, exact per-run usage, detached recovery, persistent agent identity, and resume into the exact private Pi session. Omitted turn/token/cost limits are unbounded; wall time defaults to six hours and is capped at 24 hours. Explicit orchestrator limits always win. Project model/concurrency settings remain in `.pi/subagents.json`.
+Subagents are read-only unless `allowWrite: true` is requested. Read-only personas receive `safe_read`, `safe_list`, and `safe_search`—never unrestricted `bash`. The process-isolated executor supports parallel groups, hard cancellation, exact per-run usage, detached recovery, persistent agent identity, and resume into the exact private Pi session. Omitted turn/token/cost limits are unbounded; wall time defaults to six hours and is capped at 24 hours. Explicit orchestrator limits always win.
+
+`worktree: true` provisions a dedicated git worktree on a fresh `subagent/<persona>-<id>` branch off `HEAD` and runs the child there, so parallel writers never share a tree. Worktree and branch outlive the run for review; drop them with `git worktree remove`.
+
+Settings live in `.pi/subagents.json` per project, with user-level defaults in `~/.pi/agent/subagents.json` (project values win): allowed/default models, per-persona models, timeout bounds, group concurrency, plus
+
+```json
+{
+  "delegatedWrites": "worktree",
+  "worktreeRoot": "../myrepo-worktrees",
+  "worktreeSetup": ["git submodule update --init --recursive"]
+}
+```
+
+`delegatedWrites` decides how write-capable runs are authorized: `prompt` (default) confirms every run in the TUI, `worktree` auto-authorizes runs isolated in a dedicated worktree (`worktree: true`, or an explicit `cwd` that is a linked worktree outside the orchestrator's own tree) and still prompts for anything that would write the orchestrator's tree, `always` authorizes unconditionally. `worktreeRoot` (default: `<repo>-worktrees` beside the repository) is where provisioned worktrees land; `worktreeSetup` shell commands run in each new worktree before the child starts, and a failing command removes the worktree and fails the run.
 
 ### Workflows
 

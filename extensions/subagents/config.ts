@@ -1,5 +1,8 @@
+import { readFile } from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { loadProjectConfig } from "../shared/project-config.ts";
-import type { AgentsSettings } from "./catalog-types.ts";
+import type { AgentsSettings, DelegatedWritePolicy } from "./catalog-types.ts";
 
 export const DEFAULT_TIMEOUT_MS = 6 * 60 * 60_000;
 export const MAX_TIMEOUT_MS = 24 * 60 * 60_000;
@@ -8,6 +11,8 @@ export const MAX_PARALLEL_CONCURRENCY = 6;
 
 export const SUBAGENTS_CONFIG_FILE = "subagents.json";
 
+const DELEGATED_WRITE_POLICIES: DelegatedWritePolicy[] = ["prompt", "worktree", "always"];
+
 export const defaultAgentsSettings: AgentsSettings = {
 	allowedModels: [],
 	modelsByAgent: {},
@@ -15,7 +20,13 @@ export const defaultAgentsSettings: AgentsSettings = {
 	maxTimeoutMs: MAX_TIMEOUT_MS,
 	parallelDefaultConcurrency: DEFAULT_PARALLEL_CONCURRENCY,
 	parallelMaxConcurrency: MAX_PARALLEL_CONCURRENCY,
+	delegatedWrites: "prompt",
+	worktreeSetup: [],
 };
+
+export function piAgentDir(): string {
+	return process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), ".pi", "agent");
+}
 
 export function normalizeAgentsSettings(input: Partial<AgentsSettings>): AgentsSettings {
 	const merged = { ...structuredClone(defaultAgentsSettings), ...input } as AgentsSettings;
@@ -28,11 +39,25 @@ export function normalizeAgentsSettings(input: Partial<AgentsSettings>): AgentsS
 	merged.defaultTimeoutMs = clampNumber(input.defaultTimeoutMs, 1_000, merged.maxTimeoutMs, DEFAULT_TIMEOUT_MS);
 	merged.parallelMaxConcurrency = clampNumber(input.parallelMaxConcurrency, 1, 12, MAX_PARALLEL_CONCURRENCY);
 	merged.parallelDefaultConcurrency = clampNumber(input.parallelDefaultConcurrency, 1, merged.parallelMaxConcurrency, DEFAULT_PARALLEL_CONCURRENCY);
+	merged.delegatedWrites = DELEGATED_WRITE_POLICIES.includes(input.delegatedWrites as DelegatedWritePolicy) ? input.delegatedWrites as DelegatedWritePolicy : "prompt";
+	merged.worktreeRoot = typeof input.worktreeRoot === "string" && input.worktreeRoot.trim() ? input.worktreeRoot.trim() : undefined;
+	merged.worktreeSetup = Array.isArray(input.worktreeSetup) ? input.worktreeSetup.filter((value): value is string => typeof value === "string" && value.trim().length > 0) : [];
 	return merged;
 }
 
 export async function loadAgentsSettings(cwd: string): Promise<AgentsSettings> {
-	return loadProjectConfig(cwd, SUBAGENTS_CONFIG_FILE, defaultAgentsSettings, normalizeAgentsSettings);
+	const defaults = normalizeAgentsSettings({ ...defaultAgentsSettings, ...await readUserAgentsSettings() });
+	return loadProjectConfig(cwd, SUBAGENTS_CONFIG_FILE, defaults, normalizeAgentsSettings);
+}
+
+/** User-level defaults so a single home config can hold the write policy for every project. */
+async function readUserAgentsSettings(): Promise<Partial<AgentsSettings>> {
+	try {
+		const parsed = JSON.parse(await readFile(path.join(piAgentDir(), SUBAGENTS_CONFIG_FILE), "utf8")) as unknown;
+		return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Partial<AgentsSettings> : {};
+	} catch {
+		return {};
+	}
 }
 
 

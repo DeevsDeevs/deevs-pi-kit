@@ -6,6 +6,8 @@ import { clampConcurrency, clampTimeoutMs, loadAgentsSettings } from "./config.t
 import { findAgent, loadBuiltinAgents } from "./agents.ts";
 import { defaultDelegateRoot } from "./artifacts.ts";
 import { DelegateExecutor } from "./executor.ts";
+import { isIsolatedWorktree, provisionWorktree } from "./worktrees.ts";
+import type { AgentsSettings } from "./catalog-types.ts";
 import type { DelegateRun, DelegateRunStatus } from "./runtime-types.ts";
 import { requestRuntimeDelivery } from "../shared/runtime-delivery.ts";
 import { runtimeEvents, type RuntimeTerminalStatus } from "../shared/runtime-events.ts";
@@ -21,6 +23,7 @@ export interface SubagentTaskInput {
 	model?: string;
 	tools?: string[];
 	allowWrite?: boolean;
+	worktree?: boolean;
 	deliverTerminal?: boolean;
 	wallMs?: number;
 	turns?: number;
@@ -36,6 +39,7 @@ export interface SubagentStartRequest {
 	model?: string;
 	tools?: string[];
 	allowWrite?: boolean;
+	worktree?: boolean;
 	wallMs?: number;
 	turns?: number;
 	tokens?: number;
@@ -108,7 +112,7 @@ export class SubagentService {
 		this.ctx = ctx;
 		const previous = request.resume ? this.executor.get(request.resume) : undefined;
 		const writeRequested = request.allowWrite === true || request.tasks?.some((task) => task.allowWrite) === true || previous?.spec.allowWrite === true;
-		if (writeRequested && !await authorizeDelegatedWrite(ctx, request)) throw new Error("Delegated writes were not authorized by the user.");
+		if (writeRequested && !await authorizeDelegatedWrite(ctx, request, await loadAgentsSettings(ctx.cwd), previous)) throw new Error("Delegated writes were not authorized by the user.");
 		if (request.tasks?.length) return this.startGroup(request.tasks, request, ctx);
 		if (request.resume) {
 			if (!request.task?.trim()) throw new Error("A resume task is required.");
@@ -146,6 +150,7 @@ export class SubagentService {
 			model: request.model,
 			tools: request.tools,
 			allowWrite: request.allowWrite,
+			worktree: request.worktree,
 			deliverTerminal: request.deliverTerminal,
 			wallMs: request.wallMs,
 			turns: request.turns,
@@ -243,18 +248,20 @@ export class SubagentService {
 		if (model && settings.allowedModels.length && !settings.allowedModels.includes(model)) throw new Error(`Model override not allowed: ${model}`);
 		this.reserveCapacity(settings.parallelMaxConcurrency);
 		try {
+			const worktree = task.worktree === true ? await provisionWorktree(cwd, persona.name, settings) : undefined;
 			const run = await this.executor.start({
 				persona: persona.name,
 				personaBody: persona.body,
 				personaTools: persona.tools,
 				task: task.task,
-				cwd,
+				cwd: worktree?.path ?? cwd,
 				context: task.context ?? "fresh",
 				forkSessionFile: task.context === "fork" ? ctx.sessionManager.getSessionFile() : undefined,
 				parentSessionFile: ctx.sessionManager.getSessionFile(),
 				model,
 				tools: task.tools,
 				allowWrite: task.allowWrite === true,
+				worktree,
 				deliverTerminal: task.deliverTerminal,
 				detach: background,
 				wallMs: clampTimeoutMs(task.wallMs, settings),
@@ -621,10 +628,21 @@ export class SubagentService {
 	}
 }
 
-async function authorizeDelegatedWrite(ctx: ExtensionContext, request: SubagentStartRequest): Promise<boolean> {
+async function authorizeDelegatedWrite(ctx: ExtensionContext, request: SubagentStartRequest, settings: AgentsSettings, previous?: DelegateRun): Promise<boolean> {
+	if (settings.delegatedWrites === "always") return true;
+	if (settings.delegatedWrites === "worktree" && await writersAreIsolated(ctx, request, previous)) return true;
 	if (ctx.mode !== "tui") return false;
 	const target = request.tasks?.length ? `${request.tasks.length} Subagents` : request.resume ? `resumed Subagent ${request.resume}` : `${request.agent ?? "Subagent"} persona`;
 	return ctx.ui.confirm("Authorize delegated writes?", `${target} will receive edit/write tools and shell access for this run.`);
+}
+
+/** Every write-capable target must land in a git worktree of its own, never the orchestrator's working tree. */
+async function writersAreIsolated(ctx: ExtensionContext, request: SubagentStartRequest, previous?: DelegateRun): Promise<boolean> {
+	if (previous) return !!previous.spec.worktree || await isIsolatedWorktree(previous.spec.cwd, ctx.cwd);
+	const writers = request.tasks?.length ? request.tasks.filter((task) => task.allowWrite === true) : request.allowWrite === true ? [request] : [];
+	if (!writers.length) return false;
+	const isolated = await Promise.all(writers.map(async (writer) => writer.worktree === true || await isIsolatedWorktree(path.resolve(writer.cwd ?? ctx.cwd), ctx.cwd)));
+	return isolated.every(Boolean);
 }
 
 function runTerminalKey(run: DelegateRun): string {
