@@ -1,12 +1,13 @@
 # Mission
 
-Branch-scoped autonomous objectives using Pi 0.82 lifecycle and session entries.
+Single-controller autonomous objectives using Pi 0.82 lifecycle, durable workspace state, and session-entry mirrors.
 
 ## Commands
 
 ```text
 /mission <objective> [--name title] [--req criterion] [--path cwd-relative-scope]... [--budget 200k] [--cost $2] [--chain name]
 /mission status
+/mission takeover [mission-id-or-artifact-slug]
 /mission pause
 /mission resume
 /mission clear
@@ -17,6 +18,7 @@ Branch-scoped autonomous objectives using Pi 0.82 lifecycle and session entries.
 
 ```text
 mission_get
+mission_takeover
 mission_resume
 mission_create
 mission_update
@@ -28,6 +30,10 @@ mission_complete
 ## Runtime behavior
 
 - Active Mission authorization survives restart and permits reversible best judgment without routine questions.
+- Exactly one persisted Pi session controls a Mission. `mission_takeover` or `/mission takeover` transfers control after explicit user authorization when the previous session is stopped or broken; takeover resumes immediately when limits permit.
+- Takeover never stops the previous Pi process or its children. The confirmation is an operator attestation that the old session is quiescent; an upgraded old session is fenced from later Mission mutations by controller and revision checks.
+- Takeover carries progress and usage, creates a new generation, invalidates old review/fingerprint admission, requires fresh independent review, and marks the Mission Chain checkpoint due.
+- Pre-upgrade recovery imports only the exact same-cwd Pi session branch. Generated markdown is never parsed as Mission authority.
 - Authorization never auto-approves tools or crosses credential, safety, irreversible, or material approval boundaries.
 - Autonomous continuation normally advances from `agent_settled`, using a hidden triggering `followUp` after idle/user-priority admission.
 - Session start/tree recovery reconciles already-settled reviews, and the Subagent executor wakes Mission directly when its reviewer settles; no parent model turn or polling is required.
@@ -59,9 +65,13 @@ Material worktree mutation sets independent review due. Mission launches a fresh
 - Without `--chain`, Mission reuses an existing Chain only when exactly one Chain matches the title/slug. With zero or multiple matches, it uses the stable, title-derived fallback `mission-<title-slug>`. The Mission-specific suffix is not added to the Chain name.
 - Artifact directories add a six-character suffix from the Mission ID: `.missions/<title-slug>-<mission-suffix>/`. This collision-resistant (not collision-proof) suffix normally gives repeated Mission creations separate artifact names while retaining the same display title and default Chain name.
 
-## Storage
+## Storage and takeover
 
-Pi custom session entries are authoritative. Human/search projections remain under `.missions/<slug>/`:
+Canonical machine state is a validated, revisioned snapshot under `.missions/.state/<slug>.json`, outside replaceable generated artifact directories. Every mutation uses an exclusive local-filesystem lock and atomic snapshot replacement; custom Pi session entries are append-only transcript mirrors. Locks fail closed rather than guessing process liveness; concurrent takeover attempts admit exactly one controller.
 
-- `mission.md` — canonical status, requirements, latest progress, and completion audit
-- `log.md` — searchable generated progress history
+Human/search projections remain under `.missions/<slug>/`:
+
+- `mission.md` — generated status, requirements, latest progress, and completion audit
+- `log.md` — generated searchable progress history
+
+Takeover requires the same workspace cwd because Mission paths, artifact location, Git roots, and legacy session discovery are cwd-relative. Local atomic rename semantics are required; shared/network filesystems are unsupported. If exact source-session usage is unavailable, bounded Missions fail takeover closed. Multi-writer collaboration, automatic owner killing, cross-machine takeover, and markdown recovery are intentionally unsupported.

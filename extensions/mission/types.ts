@@ -12,7 +12,7 @@ export interface MissionValidationRecord extends MissionValidationInput {
 	objectiveVersion: number;
 }
 
-export type MissionEventKind = "created" | "status_changed" | "continued" | "completed" | "progress" | "objective_updated" | "review_changed" | "workspace_fingerprinted" | "settled";
+export type MissionEventKind = "created" | "taken_over" | "status_changed" | "continued" | "completed" | "progress" | "objective_updated" | "review_changed" | "workspace_fingerprinted" | "settled";
 
 export interface MissionUsage {
 	mainTokens: number;
@@ -65,6 +65,8 @@ export interface MissionEvent {
 	blockerFingerprint?: string;
 	blockerCount?: number;
 	turnCount?: number;
+	ownerSessionId?: string;
+	previousOwnerSessionId?: string;
 }
 
 export interface MissionProgressRecord {
@@ -116,6 +118,34 @@ export interface MissionCurrent {
 	blockerFingerprint?: string;
 	blockerCount?: number;
 	turnCount?: number;
+}
+
+export interface MissionOwner {
+	sessionId: string;
+	sessionFile: string;
+}
+
+export interface MissionSnapshot {
+	version: 1;
+	revision: number;
+	owner: MissionOwner;
+	mission: MissionCurrent;
+	progress: MissionProgressRecord[];
+	continuationProgressIndex: number;
+	carriedUsage: MissionUsage;
+	usage: MissionUsage;
+	reviewFailureCount: number;
+	usageComplete: boolean;
+}
+
+export interface MissionTakeoverInput {
+	missionId: string;
+	reason: string;
+}
+
+export interface MissionTakeoverCandidate {
+	snapshot: MissionSnapshot;
+	source: "snapshot" | "legacy_session";
 }
 
 export interface MissionCreateInput {

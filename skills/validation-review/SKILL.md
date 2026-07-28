@@ -24,11 +24,15 @@ Four angles — for each, know what evidence would change the verdict:
 
 Use project-native facts (changed files, callers, tests, CI conventions, specs/chains) and the narrowest meaningful command — e.g. `cargo check -p <crate>`, `cargo test -p <crate> <filter>`, `cargo clippy -p <crate> --all-targets` — full workspace or e2e only when budget and conventions justify it.
 
+Build a small dependency graph before running checks. Launch independent read-only checks and perspectives together; do not wait for typecheck before starting an unrelated docs/security review. Keep fix → targeted recheck and final-diff → review gates sequential. Do not parallelize commands that write the same outputs, contend heavily for the same resource, or would review a changing diff. Once the diff is frozen, full validation and independent final review should usually run concurrently, then be reconciled into one verdict.
+
 For servers/browsers/e2e: Herdr for persistent processes; `job_start` with readiness watches for bounded commands; run the smoke action with real assertions; capture concise evidence; `job_stop` when done. No large log dumps.
 
 ## 4. Perspectives
 
-Subagents only within budget, each scoped with `cwd`, exact files/diff, command limits, and output shape; settle with `subagent_wait`. Useful: `tester` (missing tests, e2e plan), `reviewer` (requirements, correctness), `anti-slop` (overbuild, fake tests), `rust-dev`, `devops`. Never delegate what one local command or file read proves.
+Subagents only within budget, each scoped with `cwd`, exact files/diff, command limits, and output shape. Batch independent perspectives in one `tasks` group and settle it once with `subagent_wait`. Useful: `tester` (missing tests, e2e plan), `reviewer` (requirements, correctness), `anti-slop` (overbuild, fake tests), `rust-dev`, `devops`. Never delegate what one local command or file read proves.
+
+A cross-session Mission takeover invalidates old running or awaiting-adjudication review state. Re-fingerprint the current workspace and obtain a fresh independent review before completion.
 
 ## 5. Judge test quality
 

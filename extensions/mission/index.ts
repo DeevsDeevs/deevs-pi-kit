@@ -20,6 +20,7 @@ export default function missionExtension(pi: ExtensionAPI): void {
 	registerMissionTools(pi, state, (ctx) => runtime.restore(ctx), {
 		validateCompletion: (input, ctx) => runtime.validateCompletion(input, ctx),
 		onCreated: (ctx) => runtime.onCreated(ctx),
+		onTakenOver: (ctx, mission) => runtime.onTakenOver(ctx, mission),
 		onProgress: (input, ctx) => runtime.onProgress(input, ctx),
 		workspaceFingerprint: (ctx) => runtime.workspaceFingerprint(ctx),
 		onObjectiveUpdated: (input, ctx) => runtime.onObjectiveUpdated(input, ctx),
@@ -29,6 +30,7 @@ export default function missionExtension(pi: ExtensionAPI): void {
 	registerMissionCommands(pi, state, (ctx) => runtime.restore(ctx), (ctx) => void runtime.maybeContinue(ctx), {
 		validateCompletion: (input, ctx, directUserRequest) => runtime.validateCompletion(input, ctx, directUserRequest),
 		onCreated: (ctx) => runtime.onCreated(ctx),
+		onTakenOver: (ctx, mission) => runtime.onTakenOver(ctx, mission),
 		onChanged: (ctx) => runtime.restore(ctx),
 		onCompleted: (ctx, mission) => runtime.onCompleted(ctx, mission),
 	});

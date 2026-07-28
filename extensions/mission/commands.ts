@@ -1,16 +1,17 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { initializeMissionArtifacts, updateMissionSummaryArtifact } from "./artifacts.ts";
 import type { MissionState } from "./state.ts";
-import { completeMission, formatMission, resumeMission } from "./tools.ts";
-import type { MissionCompleteInput, MissionCreateInput, MissionCurrent, MissionStatus } from "./types.ts";
+import { discoverMissionTakeoverCandidates } from "./takeover.ts";
+import { completeMission, formatMission, resumeMission, takeoverMission } from "./tools.ts";
+import type { MissionCompleteInput, MissionCreateInput, MissionCurrent, MissionStatus, MissionTakeoverCandidate } from "./types.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
 import { chainCheckpoints } from "../chains/checkpoint.ts";
 import { FULL_SCREEN_OVERLAY } from "../shared/dashboard.ts";
 import { MissionDashboard } from "./ui.ts";
 
-export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, setContext: (ctx: ExtensionContext) => void, maybeContinue: (ctx: ExtensionContext) => void, hooks: { validateCompletion?: (input: MissionCompleteInput, ctx: ExtensionContext, directUserRequest?: boolean) => Promise<string[]> | string[]; onCreated?: (ctx: ExtensionContext) => void; onChanged?: (ctx: ExtensionContext) => void; onCompleted?: (ctx: ExtensionContext, mission: MissionCurrent) => Promise<void> | void } = {}): void {
+export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, setContext: (ctx: ExtensionContext) => void, maybeContinue: (ctx: ExtensionContext) => void, hooks: { validateCompletion?: (input: MissionCompleteInput, ctx: ExtensionContext, directUserRequest?: boolean) => Promise<string[]> | string[]; onCreated?: (ctx: ExtensionContext) => void; onTakenOver?: (ctx: ExtensionContext, mission: MissionCurrent) => void; discoverTakeoverCandidates?: (ctx: ExtensionContext) => Promise<MissionTakeoverCandidate[]>; onChanged?: (ctx: ExtensionContext) => void; onCompleted?: (ctx: ExtensionContext, mission: MissionCurrent) => Promise<void> | void } = {}): void {
 	pi.registerCommand("mission", {
-		description: "Create/manage a branch-scoped Mission.",
+		description: "Create/manage a durable single-controller Mission.",
 		handler: async (args, ctx) => {
 			setContext(ctx);
 			state.loadFromSession(ctx);
@@ -23,6 +24,17 @@ export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, s
 			}
 
 			const command = trimmed.toLowerCase();
+			if (command === "takeover" || command.startsWith("takeover ")) {
+				try {
+					const selector = trimmed.slice("takeover".length).trim();
+					const mission = await takeoverMission(pi, state, ctx, { missionId: selector, reason: "/mission takeover" }, hooks, true);
+					ctx.ui.notify(`Mission taken over${mission.status === "active" ? " and resumed" : ""}:\n${formatMission(mission, state.readUsage())}`, "info");
+					maybeContinue(ctx);
+				} catch (error) {
+					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+				}
+				return;
+			}
 			if (["pause", "resume", "clear"].includes(command)) {
 				if (command === "resume") {
 					try {
@@ -54,11 +66,13 @@ export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, s
 			}
 
 			try {
+				const takeoverCandidates = await (hooks.discoverTakeoverCandidates ?? discoverMissionTakeoverCandidates)(ctx);
+				if (!state.readAny() && takeoverCandidates.length) throw new Error(`A Mission already exists in another session: ${takeoverCandidates.map((candidate) => candidate.snapshot.mission.missionId).join(", ")}. Use /mission takeover instead.`);
 				const input = parseCreateArgs(trimmed);
 				const event = await state.create(input, ctx);
 				const mission = state.append(pi, event)!;
-				await initializeMissionArtifacts(mission, state.readUsage());
-				hooks.onCreated?.(ctx);
+				try { hooks.onCreated?.(ctx); } catch (error) { ctx.ui.notify(`Mission created, but runtime activation reported: ${error instanceof Error ? error.message : String(error)}`, "warning"); }
+				try { await initializeMissionArtifacts(mission, state.readUsage()); } catch (error) { ctx.ui.notify(`Mission created, but generated artifacts could not be initialized: ${error instanceof Error ? error.message : String(error)}`, "warning"); }
 				ctx.ui.notify(`Mission created: ${mission.title}\nChain: ${mission.chain}@${mission.chainBranch}\nArtifacts: .missions/${mission.slug}`, "info");
 				maybeContinue(ctx);
 			} catch (error) {

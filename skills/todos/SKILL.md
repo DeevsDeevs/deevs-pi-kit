@@ -28,13 +28,13 @@ Not for one-shot answers, tiny edits, pure conversation, durable memory (`chain_
 ## Workflow
 
 1. Create a short list (3–8 items) before substantial work.
-2. Exactly one item `in_progress` unless real parallel subagent/background work exists.
+2. Mark every genuinely concurrent item `in_progress`; otherwise keep exactly one. If pending items have no dependency on the current item and are safe to run together, batch them instead of serializing by habit.
 3. Mark `done` immediately after evidence exists; mark `blocked` instead of pretending progress.
 4. Revise when the plan changes, preserving unchanged ids; clear when the task finishes or is abandoned.
 
 ## Relationship to other Pi systems
 
-Chains hold durable milestones, not every todo update. The parent owns the list for subagent-backed work: `in_progress` while running, `done`/`blocked` after reading results. Track background process ids in `notes` only when useful. Todos can mirror a review matrix, but verdicts still need explicit evidence.
+Chains hold durable milestones, not every todo update. The parent owns the list for subagent-backed work: mark all grouped parallel runs `in_progress`, then each `done`/`blocked` after reading the settled results. Track background process or group ids in `notes` only when useful. Todos can mirror a review matrix, but verdicts still need explicit evidence.
 
 Human display: `/todos` (read-only overlay), `/todos clear`. Use `todo_list` for state changes.
 

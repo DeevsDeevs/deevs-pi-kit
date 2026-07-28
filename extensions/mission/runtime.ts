@@ -8,7 +8,7 @@ import { getSubagentService } from "../subagents/registry.ts";
 import { getJobManager } from "../jobs/registry.ts";
 import type { DelegateRun } from "../subagents/runtime-types.ts";
 import { runtimeEvents } from "../shared/runtime-events.ts";
-import { MISSION_CUSTOM_TYPE, MissionState } from "./state.ts";
+import { MissionState } from "./state.ts";
 import type { MissionCompleteInput, MissionCurrent, MissionProgressInput, MissionUpdateInput } from "./types.ts";
 
 interface MissionAgentMessage {
@@ -42,6 +42,14 @@ export class MissionRuntime {
 		if (!mission) return;
 		chainCheckpoints.current?.activate(mission.chain, mission.chainBranch);
 		chainCheckpoints.current?.due("Mission created", "mission_control");
+		void this.maybeContinue(ctx);
+	}
+
+	onTakenOver(ctx: ExtensionContext, mission: MissionCurrent): void {
+		this.restore(ctx);
+		chainCheckpoints.current?.activate(mission.chain, mission.chainBranch);
+		chainCheckpoints.current?.due("Mission taken over by a new session", "mission_control");
+		this.updateStatus();
 		void this.maybeContinue(ctx);
 	}
 
@@ -154,8 +162,10 @@ export class MissionRuntime {
 		this.pi.on("before_agent_start", (event, ctx) => {
 			this.restore(ctx);
 			const mission = this.state.readAny();
-			if (!mission || mission.status === "complete" || mission.status === "ended") return undefined;
 			const systemPrompt = typeof event.systemPrompt === "string" ? event.systemPrompt : "";
+			const ownershipConflict = this.state.readOwnershipConflict();
+			if (!mission && ownershipConflict) return { systemPrompt: `${systemPrompt}\n\nMission ${ownershipConflict.missionId} was transferred to another Pi session. Do not continue its work or act on stale Mission wakes in this session.` };
+			if (!mission || mission.status === "complete" || mission.status === "ended") return undefined;
 			if (mission.status !== "active") return { systemPrompt: `${systemPrompt}\n\n${suspendedMissionContext(mission, this.state.readProgress().at(-1))}` };
 			const staleWake = latestMissionWakeIsStale(ctx, mission);
 			const wakeGuard = staleWake ? "\n\nThis Mission continuation wake is stale after a pause/objective/generation change. Do not perform substantive work; report the stale wake and settle immediately." : "";
@@ -411,8 +421,8 @@ export class MissionRuntime {
 		this.updateStatus();
 	}
 
-	private failReview(mission: MissionCurrent, reason: string): void {
-		const shouldBlock = reviewFailureCount(this.ctx, mission.missionId) >= 2;
+	private failReview(_mission: MissionCurrent, reason: string): void {
+		const shouldBlock = this.state.readReviewFailureCount() >= 2;
 		this.state.append(this.pi, this.state.reviewEvent("due", { reason, failure: true }));
 		if (shouldBlock) this.state.append(this.pi, this.state.statusEvent("blocked", "independent review failed three times", reason));
 		this.updateStatus();
@@ -580,17 +590,6 @@ function reviewPaths(reviewCwd: string, workspace: MissionWorkspaceRoot[]): stri
 		if (!scopes.length) return [prefix || "."];
 		return scopes.map((scope) => [prefix, scope].filter(Boolean).join("/"));
 	});
-}
-
-function reviewFailureCount(ctx: ExtensionContext | undefined, missionId: string): number {
-	if (!ctx) return 0;
-	return (ctx.sessionManager.getBranch() as readonly unknown[]).filter((entry) => {
-		const record = asRecord(entry);
-		const event = asRecord(record?.data);
-		return record?.type === "custom" && record.customType === MISSION_CUSTOM_TYPE
-			&& event?.kind === "review_changed" && event.missionId === missionId && event.reviewStatus === "due"
-			&& event.reviewFailure === true;
-	}).length;
 }
 
 async function worktreeFingerprint(pi: ExtensionAPI, cwd: string, mission: MissionCurrent | undefined): Promise<string | undefined> {
