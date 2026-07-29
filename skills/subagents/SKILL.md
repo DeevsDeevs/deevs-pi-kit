@@ -20,6 +20,10 @@ Use `subagent` and `subagent_wait`. Pi Kit owns the persona catalog, policy, iso
 
 Do not delegate a trivial one-file answer. Never run parallel writers in one worktree.
 
+## Right-size the orchestration
+
+Delegation is the default: offloading exploration, review, testing, and validation to children keeps the parent context small, so delegate liberally. Right-sizing means avoiding redundancy, not avoiding delegation — use the smallest set of focused runs that answers the question, and ask for the neutral evidence you need (command, exit status, observed output) instead of an extra verdict when the task is mechanical. Two or three well-scoped perspectives beat five overlapping ones.
+
 ## Parallel-first orchestration
 
 Before launching, separate dependency gates from independent work. Put independent runs in one `subagent` call using `tasks` with bounded `concurrency`, then settle the group with one `subagent_wait`; do not launch and wait for independent perspectives one by one.
@@ -60,8 +64,8 @@ Detached runs are owned by a dedicated worker and can be restored after parent r
 
 ## Safety and limits
 
-- Personas are read-only by default and receive `safe_read`, `safe_list`, and `safe_search`, not unrestricted shell execution.
-- `allowWrite: true` is valid only when delegated writes are needed; Pi asks the user to confirm every write-capable run in the TUI before enabling write tools and shell.
+- Personas are read-only by default and receive `safe_read`, `safe_list`, `safe_search`, and read-only `safe_git`, not unrestricted shell execution. Diff and log inspection does not require write access.
+- `allowWrite: true` is valid only when delegated writes are needed; Pi asks the user to confirm every write-capable run in the TUI before enabling write tools and shell, unless the user pre-authorized the session with `/auto`.
 - A requested `tools` list can narrow persona capabilities, never broaden them.
 - Omitted turn, token, and cost limits are unbounded. Wall time defaults to six hours (24-hour cap); set tighter limits only when the orchestration plan needs them. Token/cost enforcement may overshoot by at most one provider call when explicitly set.
 - Subagents cannot spawn nested Subagents.

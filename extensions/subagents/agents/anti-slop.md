@@ -1,7 +1,7 @@
 ---
 name: anti-slop
 description: Minimalism pass that removes AI-generated complexity, dead code, vague abstractions, and noisy docs.
-tools: safe_read,safe_list,safe_search
+tools: safe_read,safe_list,safe_search,safe_git
 mode: advisory
 write: false
 tags: cleanup,minimalism,review

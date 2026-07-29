@@ -160,11 +160,32 @@ export class SubagentService {
 		if (request.cancel) {
 			for (const id of request.ids) await this.cancel(id);
 		}
-		return Promise.all(request.ids.map(async (id) => {
+		const results = await Promise.all(request.ids.map(async (id) => {
 			const group = this.groups.get(id);
 			if (group) return this.waitGroup(group, request.waitMs, signal);
 			return this.executor.wait(id, request.waitMs, signal);
 		}));
+		for (const result of results) this.consumeTerminalEvent(result);
+		return results;
+	}
+
+	/** subagent_wait already returned the terminal result, so the idle runtime wake would be a duplicate. */
+	private consumeTerminalEvent(result: DelegateRun | SubagentGroup): void {
+		if ("spec" in result) {
+			if (!isTerminal(result.runtime.status)) return;
+			this.emitTerminal(result);
+			this.ackTerminal(`terminal:${result.spec.id}:${result.spec.generation}`);
+		} else {
+			if (result.status === "running") return;
+			this.emitGroupTerminal(result);
+			this.ackTerminal(`terminal:${result.id}:${result.generation}`);
+		}
+	}
+
+	private ackTerminal(eventId: string): void {
+		const at = Date.now();
+		runtimeEvents.record(this.pi, { type: "claim", eventId, claimant: "subagent_wait", at });
+		runtimeEvents.record(this.pi, { type: "ack", eventId, claimant: "subagent_wait", at });
 	}
 
 	list(): { runs: DelegateRun[]; groups: SubagentGroup[] } {

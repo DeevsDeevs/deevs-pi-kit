@@ -1,7 +1,7 @@
 ---
 name: reviewer
 description: Strict code reviewer for correctness, regressions, security, performance, and edge cases.
-tools: safe_read,safe_list,safe_search,review_report
+tools: safe_read,safe_list,safe_search,safe_git,review_report
 mode: advisory
 write: false
 tags: review,quality,correctness

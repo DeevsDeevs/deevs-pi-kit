@@ -1,7 +1,7 @@
 ---
 name: logic-hunter
 description: Language-agnostic logic bug hunter for spec-vs-implementation gaps, cross-component data flow issues, and algorithm correctness failures.
-tools: safe_read,safe_list,safe_search
+tools: safe_read,safe_list,safe_search,safe_git
 mode: advisory
 write: false
 tags: bug-hunt,logic,correctness,spec

@@ -13,7 +13,7 @@ describe("read-only child tools", () => {
 			on() {},
 		} as unknown as ExtensionAPI;
 		childSafetyRuntime(pi);
-		expect([...tools.keys()]).toEqual(["safe_read", "safe_list", "review_report", "safe_search"]);
+		expect([...tools.keys()]).toEqual(["safe_read", "safe_list", "review_report", "safe_search", "safe_git"]);
 		const read = await tools.get("safe_read")!.execute("call", { path: "package.json", maxBytes: 200 });
 		expect(read.content[0]?.text).toContain("deevs-pi-kit");
 		const listed = await tools.get("safe_list")!.execute("call", { path: "extensions/subagents", maxDepth: 1, maxResults: 20 });
@@ -45,5 +45,12 @@ describe("read-only child tools", () => {
 			rmSync(artifacts, { recursive: true, force: true });
 		}
 		await expect(tools.get("safe_list")!.execute("call", { path: ".." })).rejects.toThrow("outside");
+
+		const inTree = await tools.get("safe_git")!.execute("call", { subcommand: "rev-parse", args: ["--is-inside-work-tree"] }) as unknown as { content: Array<{ text: string }>; details: { exitCode: number } };
+		expect(inTree.content[0]?.text.trim()).toBe("true");
+		expect(inTree.details.exitCode).toBe(0);
+		const failed = await tools.get("safe_git")!.execute("call", { subcommand: "rev-parse", args: ["--verify", "definitely-missing-ref"] }) as unknown as { details: { exitCode: number } };
+		expect(failed.details.exitCode).not.toBe(0);
+		await expect(tools.get("safe_git")!.execute("call", { subcommand: "diff", args: ["--output=/tmp/leak"] })).rejects.toThrow("not allowed");
 	});
 });
