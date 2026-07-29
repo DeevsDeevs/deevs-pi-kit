@@ -34,6 +34,19 @@ Keep work sequential only when one result changes the next task's input, multipl
 - Prefer `context: "fresh"` for independent review. Use `context: "fork"` only when parent transcript context is necessary.
 - Use `resume` only when the same persistent agent context should receive another turn; re-review is fresh by default.
 
+## Research delegation
+
+Inline this packet in the subagent task when delegating research:
+
+```text
+Question (verbatim): [do not redefine]
+Your probe:          [one assumption to test]
+Report back:         finding + type (observed/derived/estimated/speculation)
+                     + contradicting evidence + UNRESOLVED allowed
+```
+
+Before delivering synthesized research, spawn a fresh child to audit the draft against the original request: requirement by requirement — met / partial / missing; flag claims without locators. Fresh context is the point — never reuse a child that produced the findings.
+
 ## Lifecycle
 
 1. Start with `subagent`; background defaults to true.

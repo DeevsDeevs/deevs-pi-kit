@@ -36,7 +36,9 @@ A cross-session Mission takeover invalidates old running or awaiting-adjudicatio
 
 ## 5. Judge test quality
 
-Good evidence exercises observable behavior through the right public seam, would catch the regression, is deterministic, and asserts meaning — not just "does not crash". Bad evidence: implementation-detail tests, unexplained snapshot updates, mocks bypassing the risky path, e2e actions without assertions, green checks unrelated to the change.
+Good evidence exercises observable behavior through the right public seam, would catch the regression, is deterministic, and asserts meaning — not just "does not crash". Bad evidence: implementation-detail tests, unexplained snapshot updates, mocks bypassing the risky path, e2e actions without assertions, green checks unrelated to the change, expected values computed with the production formula, coverage numbers offered instead of proven behaviors, bug fixes without a reproducer that failed pre-fix, tests that pass only in one order.
+
+Altitude check: pure refactor → zero existing tests change; new feature or bug fix → tests added, existing unchanged; behavior change → the only case existing tests may change. A test breaking outside its case is a change-detector finding — flag it, never fix the test to green the diff.
 
 ## Verdict format
 
@@ -47,7 +49,7 @@ Requirements
 - met/missing: ...
 
 Checks run
-- command/e2e action — pass/fail — what it proves
+- command/e2e action — observed/planned/not run — pass/fail — what it proves
 
 Review findings
 - Blocker/Major/Minor/Nit — file/path — issue — recommended fix
@@ -63,6 +65,6 @@ Severity: **Blocker** wrong behavior, data loss, security, failing required chec
 
 ## Pitfalls
 
-- "Tests pass" is not proof requirements are met.
+- "Tests pass" is not proof requirements are met; a proposed command or coverage number is not evidence at all.
 - Never run expensive checks just to look thorough, ignore failed commands, or fake e2e coverage with unasserted actions.
 - Keep subagents inside budget; name remaining risk instead of shipping hidden uncertainty.
