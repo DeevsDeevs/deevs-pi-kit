@@ -30,7 +30,7 @@ Force a real choice: "Which invariant must never be violated?" beats "Any concer
 
 ## Pressure-test axes (pick by risk, never walk mechanically)
 
-Outcome · non-goals · existing reality (code/docs/chains that constrain us) · interface contract · state (stored where, mutated by whom) · failure behavior (errors, partial success, cancellation, retries) · safety (what needs confirmation, what must never happen silently) · abuse/slop (what a sloppy agent would overbuild or hide) · smallest slice · validation (what check proves it worked).
+Outcome · non-goals · existing reality (code/docs/chains that constrain us) · interface contract · state (stored where, mutated by whom) · failure behavior (errors, partial success, cancellation, retries) · safety (what needs confirmation, what must never happen silently) · abuse/slop (what a sloppy agent would overbuild or hide) · smallest slice · validation (what check proves it worked; for hypotheses: falsifier and pass criteria frozen before running, one variable at a time, the result allowed to kill the hypothesis).
 
 ## Stop conditions
 
