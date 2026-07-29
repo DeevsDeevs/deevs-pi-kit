@@ -1,0 +1,11 @@
+{
+	"id": "loop-run-001",
+	"phase": "loop",
+	"verdict": {
+		"value": "NO_BLOCKERS",
+		"confidence": null
+	},
+	"findings": [],
+	"missing_evidence": [],
+	"questions_for_user": []
+}
