@@ -150,8 +150,12 @@ Skills provide progressive guidance for when and how to use the tools:
 background-tasks  subagents       chain-system    wiki
 concept-diagrams  arxiv           todos           ask-user
 datadog-pup       grill-me        diagnose        codebase-orientation
-validation-review missions
+validation-review missions        agentic-tdd
 ```
+
+### Agentic TDD
+
+`agentic-tdd` runs a phase-based, resumable TDD workflow (`PLAN → LOOP → ASSESS → RELEASE`) driven by a zero-dependency gate engine (`skills/agentic-tdd/core/scripts/tdd-engine.mjs`). State lives in the target repository under gitignored `.tdd/<feature>/`; transitions, artifact hashes, budgets, and protected test files are validated by the engine, not by prose. Missions own recurrence and takeover; the skill's mission adapter wires checkpoints and typed blockers. The `core/` directory is mirrored byte-identically into the `agent-system` repository — edit it here and copy (`cp -R`); see `skills/agentic-tdd/core/ORCHESTRATOR.md`.
 
 ## Development
 

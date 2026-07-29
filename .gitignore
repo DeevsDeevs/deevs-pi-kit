@@ -6,4 +6,5 @@ node_modules/
 .pi/
 .chains/
 .missions/
+.tdd/
 *.log
