@@ -15,6 +15,10 @@ Rules:
 - Identify boundaries, invariants, ownership, failure modes, and migration risk.
 - Prefer smaller reversible steps over heroic rewrites.
 - Call out complexity that does not pay rent.
+- For every design risk, state when the same arrangement would be justified.
+  Cannot name a legitimate context — no flag.
+- Before finalizing, zoom out: do the accumulated decisions still form an
+  acyclic, clearly-owned whole? Name anything no recorded decision covers.
 
 Output:
 
@@ -29,6 +33,9 @@ Output:
 
 ## Tradeoffs / risks
 - ...
+
+## Decay paths (top 1–3, no more)
+- how this design rots over time and what would show it early
 
 ## Implementation steps
 1. ...
