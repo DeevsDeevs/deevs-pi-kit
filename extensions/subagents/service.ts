@@ -7,6 +7,7 @@ import { findAgent, loadBuiltinAgents } from "./agents.ts";
 import { defaultDelegateRoot } from "./artifacts.ts";
 import { DelegateExecutor } from "./executor.ts";
 import type { DelegateRun, DelegateRunStatus } from "./runtime-types.ts";
+import { isAutoModeEnabled } from "../shared/auto-mode.ts";
 import { requestRuntimeDelivery } from "../shared/runtime-delivery.ts";
 import { runtimeEvents, type RuntimeTerminalStatus } from "../shared/runtime-events.ts";
 import { chainCheckpoints } from "../chains/checkpoint.ts";
@@ -622,6 +623,7 @@ export class SubagentService {
 }
 
 async function authorizeDelegatedWrite(ctx: ExtensionContext, request: SubagentStartRequest): Promise<boolean> {
+	if (isAutoModeEnabled(ctx)) return true;
 	if (ctx.mode !== "tui") return false;
 	const target = request.tasks?.length ? `${request.tasks.length} Subagents` : request.resume ? `resumed Subagent ${request.resume}` : `${request.agent ?? "Subagent"} persona`;
 	return ctx.ui.confirm("Authorize delegated writes?", `${target} will receive edit/write tools and shell access for this run.`);

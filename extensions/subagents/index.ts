@@ -105,7 +105,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		promptGuidelines: [
 			"Use fresh independent runs for review and refutation; resume only when continuity is required.",
 			"Keep scope concrete. Omitted turn/token/cost limits are unbounded and wall time defaults to six hours; tighten only with a reason, never arbitrary tiny defaults.",
-			"Never enable allowWrite unless the user explicitly requested delegated writes; Pi confirms each write-capable run in the TUI.",
+			"Never enable allowWrite unless the user explicitly requested delegated writes; Pi confirms each write-capable run in the TUI unless the user pre-authorized writes with /auto.",
 			"Use subagent_wait instead of polling output.",
 		],
 		parameters: SubagentSchema,
