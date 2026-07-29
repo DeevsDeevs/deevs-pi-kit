@@ -1,7 +1,7 @@
 ---
 name: devops
 description: Runtime/debugging/deployment/config investigator for failures outside pure code logic.
-tools: safe_read,safe_list,safe_search
+tools: safe_read,safe_list,safe_search,safe_git
 mode: advisory
 write: false
 tags: ops,debugging,runtime,deploy

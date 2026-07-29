@@ -31,7 +31,7 @@ describe("built-in personas", () => {
       expect(agent.tools).not.toContain("edit");
       expect(agent.tools).not.toContain("write");
       expect(agent.tools).not.toContain("bash");
-      expect(agent.tools).toEqual(expect.arrayContaining(["safe_read", "safe_list", "safe_search"]));
+      expect(agent.tools).toEqual(expect.arrayContaining(["safe_read", "safe_list", "safe_search", "safe_git"]));
     }
   });
 

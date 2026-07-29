@@ -304,6 +304,17 @@ describe("SubagentService", () => {
 		await expect(service.start({ resume: (authorized as { spec: { id: string } }).spec.id, task: "Continue." }, deniedCtx)).rejects.toThrow("not authorized");
 	});
 
+	it("consumes the terminal runtime event when subagent_wait collects the result", async () => {
+		const { service, ctx, branch } = setup();
+		const run = await service.start({ agent: "explorer", task: "Inspect." }, ctx) as DelegateRun;
+		await service.wait({ ids: [run.spec.id], waitMs: 3_000 });
+		const eventId = `terminal:${run.spec.id}:${run.spec.generation}`;
+		const ops = branch.map((entry) => entry.data as { type?: string; eventId?: string; claimant?: string });
+		expect(ops.some((op) => op.type === "emit")).toBe(true);
+		expect(ops.some((op) => op.type === "claim" && op.eventId === eventId && op.claimant === "subagent_wait")).toBe(true);
+		expect(ops.some((op) => op.type === "ack" && op.eventId === eventId && op.claimant === "subagent_wait")).toBe(true);
+	});
+
 	it("pre-authorizes delegated writes without prompting while auto mode is on", async () => {
 		const { service, ctx } = setup();
 		const confirm = vi.fn(async () => { throw new Error("confirm must not be called"); });
