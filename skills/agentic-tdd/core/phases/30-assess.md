@@ -5,13 +5,19 @@ Fresh context, initially read-only. Assessment never silently repairs code.
 
 ## Enter
 
-`engine transition <feature> ASSESSING` — the engine rejects a HEAD that is not the
-candidate commit. `engine verify <feature>` must be clean.
+`engine transition <feature> ASSESSING` — self-verifies; any drift from the candidate
+tree fails the transition. Then create the clean evaluation environment:
+
+```text
+engine assess-worktree <feature>     # detached checkout of the exact candidate snapshot
+```
+
+All builds and checks run in that worktree, not in the developer's tree.
 
 Spawn assessment packets fresh: logic-hunter (semantic), tester-qa (verification), plus
 language/systems review where the profile requires. Packets receive: feature brief,
-frozen plan/contract/oracle, baseline+candidate commits, diff, protected test manifest,
-loop handoff and discoveries, challenge focus items. They do NOT receive the
+frozen plan/contract/oracle, baseline commit + candidate tree, diff, protected test
+manifest, loop handoff and discoveries, challenge focus items. They do NOT receive the
 implementation transcript, developer confidence, or failed-approach narratives.
 
 ## Layers
@@ -19,10 +25,19 @@ implementation transcript, developer confidence, or failed-approach narratives.
 A. **Artifact integrity** — `engine verify` plus: did the candidate weaken/skip tests,
    change tolerances, replace reference outputs, alter benchmark inputs, disable checks,
    expand scope beyond the plan? Any hit is a finding, not a discussion.
-B. **Deterministic verification** — run the applicable subset per profile: clean build,
-   unit/integration, protected acceptance tests, property/metamorphic, differential,
-   replay, fuzz, sanitizers, static analysis, performance protocol. Record real command
-   outputs in `assess/run-NNN/` result files.
+B. **Deterministic verification** — run the applicable subset per profile through the
+   engine, never self-reported:
+
+   ```text
+   engine run-check <feature> acceptance-tests --cwd .tdd/<feature>/assess/worktree -- <test argv>
+   engine run-check <feature> build --cwd ... -- <build argv>
+   ```
+
+   The engine records exit codes and output hashes bound to the candidate tree; the
+   `ASSESSMENT_READY` gate requires a passing bound record for every profile-required
+   check id (`engine status` lists them). Property/metamorphic, differential, replay,
+   fuzz, sanitizer, static-analysis, and performance runs use the same mechanism with
+   their own check ids.
 C. **Semantic** — P/Q/invariant conformance, violation and recovery policy, numerical
    and rounding semantics, temporal ordering, sequence/duplicate/gap/reset/idempotence,
    oracle applicability and common-mode risk, lookahead/data leakage, downstream
@@ -34,10 +49,12 @@ D. **Systems** (per profile) — lifetime/ownership, UB, overflow/narrowing, exc
 
 Every blocking finding follows `templates/finding.json`: falsifiable claim, violated
 clause or exact code path, evidence or minimal counterexample, discriminating check,
-route. Routing: implementation defect / test hole → tester-qa **adds** a protected
-failing test (add-only; never modify existing), then `CHANGES_REQUIRED → LOOP_RUNNING`;
-contract/architecture defect → `PLANNING`; oracle disagreement → `PLANNING` or user
-authority; missing/noisy evidence → rerun ASSESS; waiver-class decisions →
+route. Routing: implementation defect / test hole → tester-qa stages the new failing
+test under `assess/run-NNN/proposed-tests/` (the candidate tree stays immutable while
+judged), then `CHANGES_REQUIRED → LOOP_RUNNING`, where the test is applied, protected,
+and a new candidate is produced; contract/architecture defect → `PLANNING` (direct
+route, `assess/PLAN_AMENDMENT_REQUIRED` result); oracle disagreement → `PLANNING` or
+user authority; missing/noisy evidence → rerun ASSESS; waiver-class decisions →
 `WAITING_FOR_USER_ASSESS`.
 
 The assessor never asks the USER to judge ordinary technical correctness.

@@ -20,3 +20,16 @@ deterministic gates outside the authoring agent's control.
 Authors may propose revisions to their own artifacts; a revision becomes authoritative
 only after independent review and a coordinator version bump. The implementation agent
 never controls the evidence that judges it.
+
+## Threat model
+
+Protected hashes, immutable flags/chmod, engine-validated transitions, and candidate
+tree binding defend against **cooperative-agent drift and accidents** — an agent
+forgetting the rules, silently weakening a test, or assessing the wrong code. They are
+NOT isolation from a malicious or compromised same-user process, which could restore
+permissions, rewrite `manifest.json`, or re-freeze hashes. The practical mitigations the
+engine does provide: evidence executes through `run-check` (assessors interpret, they
+cannot fabricate records), assessment runs in a clean detached worktree of the exact
+candidate snapshot, and every mutation lands in the append-only event log for after-the-
+fact audit. Stronger guarantees require a second user or containerized evaluator —
+out of scope for this kit.

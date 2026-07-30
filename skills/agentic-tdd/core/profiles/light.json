@@ -19,6 +19,7 @@
 	},
 	"assessment": {
 		"protected_acceptance_tests": "required",
+		"required_check_ids": ["acceptance-tests"],
 		"mutation_testing": false,
 		"broad_fuzzing": false,
 		"replay": "when_stateful_or_protocol_related",

@@ -23,9 +23,20 @@ development transcript. The reviewer checks:
   effects documented; rollout, monitoring, rollback/kill-switch paths exist where
   required; waivers have owner, rationale, expiration, follow-up.
 
-Output: `release/reviewer-report.json` with decision `RELEASE_APPROVED | RETURN_TO_PLAN |
-RETURN_TO_LOOP | RETURN_TO_ASSESS | USER_SIGNOFF_REQUIRED | RELEASE_BLOCKED`. The
-reviewer never edits artifacts and never authors waivers.
+Output: a report naming the exact `candidate_tree` it reviewed, with decision
+`RELEASE_APPROVED | RETURN_TO_PLAN | RETURN_TO_LOOP | RETURN_TO_ASSESS |
+USER_SIGNOFF_REQUIRED | RELEASE_BLOCKED | INSUFFICIENT_EVIDENCE`
+(`templates/reviewer-report.json`). `INSUFFICIENT_EVIDENCE` is a legitimate verdict —
+it routes to ASSESS rather than forcing a guess. Ingest it:
+
+```text
+engine review ingest <feature> --report .tdd/<feature>/release/report.json
+```
+
+The engine rejects a report bound to any other candidate tree, and `CLOSED` is
+unreachable without an ingested `RELEASE_APPROVED`, dispositioned challenges, zero open
+blocking questions, and unexpired waivers. The reviewer never edits artifacts and never
+authors waivers; waivers exist only via `engine waiver authorize` with USER authority.
 
 ## User sign-off
 

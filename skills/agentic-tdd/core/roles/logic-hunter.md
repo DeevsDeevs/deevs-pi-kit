@@ -16,6 +16,10 @@ PLAN and ASSESS.
 
 ## Must not
 - write production implementation;
+- rely solely on oracles it authored: for critical domain logic at least one oracle
+  input must be independent of this role — an authoritative external document, an
+  independently implemented reference, an independently selected historical trace, an
+  analytic anchor, or an external domain decision;
 - declare a reference “obviously correct” without validation;
 - resolve ambiguity by plausibility or model vote;
 - widen tolerance to fit a candidate;

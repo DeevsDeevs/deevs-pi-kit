@@ -13,7 +13,9 @@ RELEASE only.
 - inspect external challenge dispositions and waivers;
 - verify scope, rollout, monitoring, rollback, and residual-risk handling;
 - route problems to PLAN, LOOP, or ASSESS;
-- produce a structured release recommendation.
+- produce a structured release recommendation naming the exact candidate tree reviewed;
+- return INSUFFICIENT_EVIDENCE rather than guessing when the evidence chain cannot
+  support a verdict — a reviewer that always approves is ceremony, not a gate.
 
 ## Must not
 - edit code, tests, contract, oracle, or benchmarks;

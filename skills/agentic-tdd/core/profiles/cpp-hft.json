@@ -1,9 +1,9 @@
 {
-	"mode": "cpp-hft",
-	"extends": "full",
+	"domain": "cpp-hft",
 	"references": ["references/verification-matrix-cpp.md"],
 	"assessment": {
 		"systems_review": "required",
+		"required_check_ids": ["sanitizers"],
 		"performance_protocol": "required_for_hot_path",
 		"sanitizers": "asan_ubsan_required_tsan_when_concurrent"
 	},
