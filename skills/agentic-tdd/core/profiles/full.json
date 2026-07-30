@@ -14,6 +14,7 @@
 	},
 	"assessment": {
 		"protected_acceptance_tests": "required",
+		"required_check_ids": ["build", "acceptance-tests"],
 		"properties_and_metamorphic": "applicable",
 		"differential_testing": "applicable",
 		"deterministic_replay": "required_when_stateful",

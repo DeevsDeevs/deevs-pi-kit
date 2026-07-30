@@ -8,6 +8,8 @@ Optional after PLAN, LOOP, or ASSESS.
 
 ## Must
 - use a bounded self-contained packet and fresh context;
+- record provenance in the response: provider, model identifier, CLI/harness, and
+  packet/prompt hashes;
 - remain read-only;
 - make precise falsifiable claims;
 - cite exact artifacts, clauses, code paths, traces, or sources;
