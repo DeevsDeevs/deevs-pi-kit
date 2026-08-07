@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buildPiCommand, DelegateExecutor } from "../extensions/subagents/executor.ts";
+import { buildPiCommand, DelegateExecutor, resolvePiInvocation, scriptRuntimeCandidates } from "../extensions/subagents/executor.ts";
 import { DEFAULT_TIMEOUT_MS } from "../extensions/subagents/config.ts";
 import type { DelegateRunSpec, DelegateStartInput } from "../extensions/subagents/runtime-types.ts";
 
@@ -44,6 +44,16 @@ function completedScript(output = "Ship"): string {
 }
 
 describe("DelegateExecutor", () => {
+	it("resolves Pi and worker runtimes across source and standalone installs", () => {
+		const args = ["--mode", "json"];
+		const sourceCli = path.join(process.cwd(), "test/delegate-executor.test.ts");
+		expect(resolvePiInvocation(args, sourceCli, "/usr/bin/node")).toEqual({ command: "/usr/bin/node", args: [sourceCli, ...args] });
+		expect(resolvePiInvocation(args, "/$bunfs/root/pi", "/opt/pi")).toEqual({ command: "/opt/pi", args });
+		expect(resolvePiInvocation(args, "", "/usr/bin/bun")).toEqual({ command: "pi", args });
+		expect(scriptRuntimeCandidates("/usr/bin/node")).toEqual(["/usr/bin/node"]);
+		expect(scriptRuntimeCandidates("/opt/pi", { NODE: "/usr/local/bin/node" } as NodeJS.ProcessEnv)).toEqual(["/usr/local/bin/node", "node", "bun"]);
+	});
+
 	it("leaves usage limits unbounded and uses the generous default wall limit", async () => {
 		const executor = setup(() => completedScript());
 		const run = await executor.start(input({ wallMs: undefined }));
@@ -176,6 +186,15 @@ describe("DelegateExecutor", () => {
 		const settled = await restoredExecutor.wait(started.spec.id);
 		expect(settled.runtime.status).toBe("completed");
 		expect(settled.runtime.output).toBe("restored");
+	});
+
+	it("polls terminal state when a filesystem watch event is missed", async () => {
+		const executor = setup(() => `setTimeout(()=>{${completedScript("polled")}},500);`);
+		const started = await executor.start(input({ detach: true }));
+		(executor as unknown as { closeWatcher(id: string): void }).closeWatcher(started.spec.id);
+		const settled = await executor.wait(started.spec.id, 2_000);
+		expect(settled.runtime.status).toBe("completed");
+		expect(settled.runtime.output).toBe("polled");
 	});
 
 	it("rechecks terminal state after subscribing to wait events", async () => {
