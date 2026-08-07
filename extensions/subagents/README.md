@@ -26,7 +26,7 @@ subagent       fresh run, persistent resume, or bounded parallel group
 subagent_wait  status, wait, or cancellation with real settlement
 ```
 
-`subagent_wait` blocks until settlement by default. Prefer one bounded wait over repeated `waitMs: 0` status calls.
+`subagent_wait` blocks until settlement by default. Continue runnable independent parent work after launch; terminal delivery wakes idle Pi automatically. Use one bounded wait only when the result is the next dependency, during cancellation, or at final settlement—not repeated `waitMs: 0` status calls.
 
 ## Guarantees
 
@@ -37,6 +37,6 @@ subagent_wait  status, wait, or cancellation with real settlement
 - persistent agent identity resumes the exact private Pi session in a new run/generation;
 - wall, provider-turn, token, and cost enforcement with at most one provider-call token/cost overshoot;
 - terminal state is withheld until the child process group actually quiesces;
-- stable terminal events, exact per-run usage, grouped completion, user-priority wake admission, and Chain/Mission integration.
+- stable terminal events, exact per-run usage, one aggregate wake per completed group, user-priority wake admission, and Chain/Mission integration.
 
 Project settings in `.pi/subagents.json` cover allowed/default models, per-persona models, timeout bounds, and group concurrency.
