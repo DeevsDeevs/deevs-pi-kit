@@ -4,6 +4,7 @@ import { Worker } from "node:worker_threads";
 import { Type } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_TIMEOUT_MS as DEFAULT_SUBAGENT_TIMEOUT_MS, MAX_TIMEOUT_MS as MAX_SUBAGENT_TIMEOUT_MS } from "../subagents/config.ts";
 import { getSubagentService } from "../subagents/registry.ts";
 import type { DelegateRun } from "../subagents/runtime-types.ts";
 import { ownsProcessIdentity, quiesceProcessGroup } from "../shared/process-group.ts";
@@ -13,8 +14,6 @@ import { WorkflowFleetWidget } from "./ui.ts";
 
 const WORKER_URL = new URL("./worker.ts", import.meta.url);
 const MAX_SOURCE_BYTES = 64 * 1024;
-const DEFAULT_TIMEOUT_MS = 120_000;
-const MAX_TIMEOUT_MS = 300_000;
 const MAX_AGENT_CONCURRENCY = 3;
 const WORKFLOW_FLEETS = Symbol.for("deevs.pi-kit.workflow-fleets.v1");
 
@@ -23,7 +22,7 @@ type WorkflowFleetRegistry = Map<string, Map<string, WorkflowDetails>>;
 const WorkflowSchema = Type.Object({
 	source: Type.String({ description: "Trusted JavaScript function body. Use await agent({agent, task, ...}) and return structured-cloneable data." }),
 	input: Type.Optional(Type.Unknown({ description: "Structured-cloneable workflow input available as input" })),
-	timeoutMs: Type.Optional(Type.Number({ description: "Hard workflow timeout, capped at five minutes" })),
+	timeoutMs: Type.Optional(Type.Number({ description: "Hard workflow timeout; defaults to six hours and is capped at 24 hours" })),
 });
 
 interface WorkflowInput {
@@ -107,8 +106,8 @@ export default function workflowExtension(pi: ExtensionAPI): void {
 				details.status = signal?.aborted ? "cancelled" : error instanceof WorkflowTimeoutError ? "timeout" : "failed";
 				details.error = error instanceof Error ? error.message : String(error);
 				details.endedAt = Date.now();
-				for (const agent of details.agents) if (agent.status === "running") { agent.status = details.status; agent.endedAt = details.endedAt; }
-				return { content: [{ type: "text" as const, text: formatWorkflow(details) }], details, usage: toToolUsage(sumUsage(details.runs)) };
+				for (const agent of details.agents) if (agent.status === "queued" || agent.status === "running") { agent.status = details.status; agent.endedAt = details.endedAt; }
+				return { content: [{ type: "text" as const, text: formatWorkflow(details) }], details, usage: toToolUsage(sumUsage(details.runs)), isError: true };
 			} finally {
 				const fleet = workflowFleet(ctx);
 				fleet.delete(id);
@@ -211,7 +210,6 @@ async function runWorkflow(
 				try { await operation(); }
 				catch (cleanupError) { terminalError ??= cleanupError instanceof Error ? cleanupError : new Error(String(cleanupError)); }
 			};
-			if (error) await cleanup(cancelChildren);
 			if (error) await cleanup(cancelChildren);
 			await cleanup(settleRequests);
 			await cleanup(() => worker.terminate());
@@ -342,7 +340,7 @@ function sumUsage(runs: DelegateRun[]) {
 }
 
 function clampTimeout(value: number | undefined): number {
-	return Number.isFinite(value) ? Math.max(1_000, Math.min(Math.floor(value!), MAX_TIMEOUT_MS)) : DEFAULT_TIMEOUT_MS;
+	return Number.isFinite(value) ? Math.max(1_000, Math.min(Math.floor(value!), MAX_SUBAGENT_TIMEOUT_MS)) : DEFAULT_SUBAGENT_TIMEOUT_MS;
 }
 
 function number(value: unknown): number | undefined {

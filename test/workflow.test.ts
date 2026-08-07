@@ -11,7 +11,7 @@ import { clearSubagentService, setSubagentService } from "../extensions/subagent
 const cleanups: Array<() => void> = [];
 afterEach(() => cleanups.splice(0).reverse().forEach((cleanup) => cleanup()));
 
-async function setup(trusted = true, hangAgents = false) {
+async function setup(trusted = true, hangAgents = false, failAgents = false) {
 	const root = mkdtempSync(path.join(tmpdir(), "workflow-test-"));
 	const project = mkdtempSync(path.join(tmpdir(), "workflow-project-"));
 	const branch: Array<Record<string, unknown>> = [];
@@ -34,6 +34,7 @@ async function setup(trusted = true, hangAgents = false) {
 		artifactsRoot: root,
 		command: (spec) => {
 			if (hangAgents) return { command: process.execPath, args: ["-e", "setInterval(()=>{},1000)"] };
+			if (failAgents) return { command: process.execPath, args: ["-e", "console.error('synthetic child failure');process.exit(1)"] };
 			const message = { role: "assistant", content: [{ type: "text", text: `${spec.persona} result` }], usage: { input: 3, output: 2, cost: { total: 0.002 } } };
 			return { command: process.execPath, args: ["-e", `const m=${JSON.stringify(message)};console.log(JSON.stringify({type:'message_end',message:m}));console.log(JSON.stringify({type:'turn_end',message:m,toolResults:[]}));console.log(JSON.stringify({type:'agent_settled'}));`] };
 		},
@@ -113,7 +114,7 @@ describe("trusted workflow runtime", () => {
 		const { tool, ctx } = await setup();
 		const result = await execute(tool, ctx, `while (true) {}`, 1_000);
 		const details = result.details as { status: string; error: string };
-		expect(result.isError).toBeUndefined();
+		expect(result.isError).toBe(true);
 		expect(details.status).toBe("timeout");
 		expect(details.error).toContain("timed out");
 	});
@@ -124,6 +125,16 @@ describe("trusted workflow runtime", () => {
 		service.wait = ((request, signal) => request.cancel ? Promise.reject(new Error("synthetic service cancellation failure")) : originalWait(request, signal)) as typeof service.wait;
 		const result = await execute(tool, ctx, `agent({ agent: "reviewer", task: "hang" }); while (true) {}`, 1_000);
 		expect((result.details as { status: string }).status).toBe("timeout");
+		expect(service.list().runs.filter((run) => ["starting", "running", "stopping"].includes(run.runtime.status))).toEqual([]);
+	});
+
+	it("fails promptly when a child process cannot run", async () => {
+		const { tool, ctx, service } = await setup(true, false, true);
+		const result = await execute(tool, ctx, `return await agent({ agent: "reviewer", task: "fail" });`, 10_000);
+		const details = result.details as { status: string; agents: Array<{ status: string }> };
+		expect(result.isError).toBe(true);
+		expect(details.status).toBe("failed");
+		expect(details.agents).toEqual([expect.objectContaining({ status: "failed" })]);
 		expect(service.list().runs.filter((run) => ["starting", "running", "stopping"].includes(run.runtime.status))).toEqual([]);
 	});
 
@@ -140,9 +151,11 @@ describe("trusted workflow runtime", () => {
 
 	it("does not launch or leave orphan agents after workflow timeout", async () => {
 		const { tool, ctx, service } = await setup(true, true);
-		const result = await execute(tool, ctx, `agent({ agent: "reviewer", task: "hang" }); while (true) {}`, 1_000);
-		expect(result.isError).toBeUndefined();
-		expect((result.details as { status: string }).status).toBe("timeout");
+		const result = await execute(tool, ctx, `await Promise.all(Array.from({ length: 4 }, () => agent({ agent: "reviewer", task: "hang" })));`, 1_000);
+		const details = result.details as { status: string; agents: Array<{ status: string }> };
+		expect(result.isError).toBe(true);
+		expect(details.status).toBe("timeout");
+		expect(details.agents.every((agent) => !["queued", "running"].includes(agent.status))).toBe(true);
 		expect(service.list().runs.filter((run) => ["starting", "running", "stopping"].includes(run.runtime.status))).toEqual([]);
 	});
 });
