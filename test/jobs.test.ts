@@ -62,6 +62,17 @@ describe("bounded Jobs", () => {
 		await restored.shutdown();
 	});
 
+	it("consumes the terminal wake when a tool explicitly collects a Job", async () => {
+		const { manager, ctx, branch } = setup();
+		const started = await manager.start({ name: "collected", argv: [process.execPath, "-e", "console.log('done')"] }, ctx);
+		const jobs = await manager.wait([started.spec.id]);
+		manager.consumeTerminal(jobs, "/tmp/jobs-parent.jsonl");
+		const eventId = `terminal:${started.spec.id}:${started.spec.generation}`;
+		const operations = branch.map((entry) => entry.data as { type?: string; eventId?: string; claimant?: string });
+		expect(operations.some((operation) => operation.type === "claim" && operation.eventId === eventId)).toBe(true);
+		expect(operations.some((operation) => operation.type === "ack" && operation.eventId === eventId)).toBe(true);
+	});
+
 	it("rejects explicit detached-process syntax for shell and argv Jobs", async () => {
 		const { manager, ctx } = setup();
 		await expect(manager.start({ name: "shell-detach", command: "setsid node worker.js" }, ctx)).rejects.toThrow("Detached process launch");

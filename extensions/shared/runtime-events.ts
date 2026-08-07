@@ -7,6 +7,7 @@ export const RUNTIME_SOURCE_KINDS = ["subagent", "subagent-group", "job", "missi
 export type RuntimeSourceKind = typeof RUNTIME_SOURCE_KINDS[number];
 export type RuntimeEventType = "attention" | "terminal";
 export type RuntimeTerminalStatus = "completed" | "partial" | "failed" | "cancelled" | "timeout" | "limited" | "blocked" | "lost";
+export type RuntimeDeliveryPolicy = "notify" | "record_only";
 export type RuntimeDeliveryStatus = "pending" | "claimed" | "acked";
 
 export interface RuntimeSource {
@@ -42,6 +43,7 @@ export interface RuntimeEvent {
 	source: RuntimeSource;
 	type: RuntimeEventType;
 	status: RuntimeTerminalStatus;
+	delivery?: RuntimeDeliveryPolicy;
 	createdAt: number;
 	summary: string;
 	artifactRef?: string;
@@ -97,7 +99,10 @@ export function reduceRuntimeEvent(state: RuntimeEventState, operation: RuntimeE
 			generations: generation ? state.generations : { ...state.generations, [key]: event.source.generation },
 			events: { ...state.events, [event.id]: event },
 			dedupe: { ...state.dedupe, [event.dedupeKey]: event.id },
-			deliveries: { ...state.deliveries, [event.id]: { status: "pending" } },
+			deliveries: {
+				...state.deliveries,
+				[event.id]: event.delivery === "record_only" ? { status: "acked", ackedAt: event.createdAt } : { status: "pending" },
+			},
 		};
 	}
 
@@ -179,8 +184,18 @@ export const runtimeEvents = new RuntimeEventJournal(runtimeEventState);
 
 export function pendingRuntimeEvents(state: RuntimeEventState): RuntimeEvent[] {
 	return Object.values(state.events)
-		.filter((event) => isCurrentEvent(state, event) && state.deliveries[event.id]?.status === "pending")
+		.filter((event) => event.delivery !== "record_only" && isCurrentEvent(state, event) && state.deliveries[event.id]?.status === "pending")
 		.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+}
+
+export function consumeRuntimeEvent(pi: ExtensionAPI, eventId: string, claimant: string): boolean {
+	const delivery = runtimeEvents.read().deliveries[eventId];
+	if (!delivery || delivery.status === "acked") return delivery?.status === "acked";
+	const at = Date.now();
+	if (delivery.status === "pending") runtimeEvents.record(pi, { type: "claim", eventId, claimant, at });
+	const claimed = runtimeEvents.read().deliveries[eventId];
+	if (claimed?.status === "claimed" && claimed.claimedBy === claimant) runtimeEvents.record(pi, { type: "ack", eventId, claimant, at });
+	return runtimeEvents.read().deliveries[eventId]?.status === "acked";
 }
 
 function isRuntimeEventOperation(value: unknown): value is RuntimeEventOperation {
@@ -208,6 +223,7 @@ function isRuntimeEvent(value: unknown): value is RuntimeEvent {
 		&& nonEmptyString(source.generation)
 		&& (event.type === "attention" || event.type === "terminal")
 		&& ["completed", "partial", "failed", "cancelled", "timeout", "limited", "blocked", "lost"].includes(String(event.status))
+		&& (event.delivery === undefined || event.delivery === "notify" || event.delivery === "record_only")
 		&& typeof event.createdAt === "number" && Number.isFinite(event.createdAt)
 		&& typeof event.summary === "string"
 		&& (event.usage === undefined || isRuntimeUsage(event.usage));

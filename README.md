@@ -42,7 +42,7 @@ skills/                 Agent behavior guidance
 
 Run bounded non-interactive commands with capped output, readiness checks, hard timeouts, durable terminal events, and process-tree cancellation. Persistent shells, servers, REPLs, panes, and reliable unattended schedules belong in Herdr.
 
-Tools: `job_start`, `job_wait`, `job_read`, `job_stop`.
+Tools: `job_start`, `job_wait`, `job_read`, `job_stop`. After starting background work, continue runnable independent work; terminal delivery wakes idle Pi automatically. Wait only at a result dependency, cancellation, or final-settlement gate.
 
 Command: `/jobs` (`/jobs <id>`, `/jobs stop <id>`, `/jobs clear [id]`). On upgrade, legacy `~/.pi/agent/process-state` records are detected and reported but never adopted or killed; inspect old tmux sessions and hand persistent work to Herdr before removing those records.
 
@@ -50,13 +50,13 @@ Command: `/jobs` (`/jobs <id>`, `/jobs stop <id>`, `/jobs clear [id]`). On upgra
 
 Run focused staff agents in the background. Built-in agents include `explorer`, `architect`, `reviewer`, `tester`, `logic-hunter`, `devops`, `python-dev`, `cpp-dev`, `rust-dev`, and `anti-slop`.
 
-Tools: `subagent`, `subagent_wait`. Command: `/agents [run-or-group-id]`, `/agents stop <id>`, `/agents resume <id> <task>`, or `/agents clear [id]`.
+Tools: `subagent`, `subagent_wait`. Command: `/agents [run-or-group-id]`, `/agents stop <id>`, `/agents resume <id> <task>`, or `/agents clear [id]`. Background runs wake idle Pi when settled; continue independent parent work and collect results only when they become the next dependency.
 
 Subagents are read-only unless `allowWrite: true` is requested and the user confirms the run in the TUI. Read-only personas receive `safe_read`, `safe_list`, and `safe_search`—never unrestricted `bash`. The process-isolated executor supports parallel groups, hard cancellation, exact per-run usage, detached recovery, persistent agent identity, and resume into the exact private Pi session. Omitted turn/token/cost limits are unbounded; wall time defaults to six hours and is capped at 24 hours. Explicit orchestrator limits always win. Project model/concurrency settings remain in `.pi/subagents.json`.
 
 ### Workflows
 
-Run foreground JavaScript function bodies in a terminable worker with `await agent({ agent, task })`. Workflows require a trusted project, force child agents read-only, cap concurrency, aggregate real usage, and settle children before returning. Concurrent Workflows share one bounded below-editor dashboard: a single run shows agent detail, while multiple runs collapse to capped per-Workflow progress rows. Trusted workflow JavaScript is **not** a security sandbox.
+Run foreground JavaScript function bodies in a terminable worker with `await agent({ agent, task })`. Workflow has no background/wait pair: use a background Subagent group when the parent can continue independently. Workflows require a trusted project, force child agents read-only, cap concurrency, aggregate real usage, and settle children before returning. Concurrent Workflows share one bounded below-editor dashboard: a single run shows agent detail, while multiple runs collapse to capped per-Workflow progress rows. Trusted workflow JavaScript is **not** a security sandbox.
 
 Tool: `workflow`.
 

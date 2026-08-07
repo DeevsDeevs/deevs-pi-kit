@@ -26,7 +26,7 @@ Identify only the smallest relevant area: repo root/cwd, package/crate/service, 
 Find the fastest deterministic loop that reaches the bug, e.g. `cargo test -p <crate> <filter> -- --nocapture`, a focused unit test, a CLI run on fixture input, a request script against a dev server, a replay of a captured event, or a small throwaway harness when no seam exists.
 
 - Bounded repro loops: `job_start`/`job_read`. Persistent servers/watchers: Herdr — never `&`, `nohup`, `disown`, `setsid`.
-- Subagents only for independent investigation, tightly scoped with `cwd` and exact files; settle with `subagent_wait`.
+- Subagents only for independent investigation, tightly scoped with `cwd` and exact files; continue other runnable probes, then collect once with `subagent_wait` when the result becomes the next dependency.
 - For long diagnoses, `chain_save` the symptom, repro command, hypotheses tested, files touched, ids, and next step.
 
 Do not proceed until the loop reproduces the bug or proves more evidence is needed.

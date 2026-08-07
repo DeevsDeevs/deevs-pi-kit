@@ -20,9 +20,10 @@ Workflow:
 
 1. `job_start` with `argv` when shell syntax is unnecessary.
 2. Add `readyPattern` only when readiness matters.
-3. Use `job_read` with `afterSeq` for bounded output.
-4. Use one `job_wait` rather than polling.
-5. Stop with `job_stop`.
+3. Continue runnable independent parent work after `job_start`; terminal delivery wakes idle Pi automatically.
+4. Use `job_read` with `afterSeq` for bounded output when the output becomes relevant.
+5. Use one `job_wait` only at a result dependency, cancellation, or final-settlement gate rather than polling.
+6. Stop with `job_stop`.
 
 Jobs use pipe stdio, close stdin after optional initial input, cap memory/log output, emit durable terminal events, and are killed or reconciled as lost when Pi ownership ends.
 
