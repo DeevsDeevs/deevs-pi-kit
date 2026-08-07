@@ -30,7 +30,8 @@ subagent_wait  status, wait, or cancellation with real settlement
 
 ## Guarantees
 
-- read-only unless `allowWrite: true` is explicit and the user confirms the run in the TUI;
+- read-only unless `allowWrite: true` is explicit; `delegatedWrites` decides whether that run is confirmed in the TUI, trusted because it is worktree-isolated, or trusted unconditionally;
+- `worktree: true` gives the run its own git worktree and `subagent/<persona>-<id>` branch off `HEAD`, kept after settlement for review;
 - requested tools may narrow but never broaden persona capability;
 - detached worker owns the private Pi child and durable artifacts;
 - parent reload restoration, stale-worker reconciliation, bounded JSONL/stderr, partial output, and process-group cancellation;
@@ -39,4 +40,4 @@ subagent_wait  status, wait, or cancellation with real settlement
 - terminal state is withheld until the child process group actually quiesces;
 - stable terminal events, exact per-run usage, grouped completion, user-priority wake admission, and Chain/Mission integration.
 
-Project settings in `.pi/subagents.json` cover allowed/default models, per-persona models, timeout bounds, and group concurrency.
+Settings in `.pi/subagents.json`, defaulted by `~/.pi/agent/subagents.json`, cover allowed/default models, per-persona models, timeout bounds, group concurrency, the `delegatedWrites` policy, `worktreeRoot`, and `worktreeSetup`.

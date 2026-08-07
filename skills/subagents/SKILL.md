@@ -18,7 +18,7 @@ Use `subagent` and `subagent_wait`. Pi Kit owns the persona catalog, policy, iso
 - `devops`: runtime, process, config, deployment, and log failures.
 - `python-dev`, `cpp-dev`, `rust-dev`: language-specific review.
 
-Do not delegate a trivial one-file answer. Never run parallel writers in one worktree.
+Do not delegate a trivial one-file answer. Never run parallel writers in one worktree; give every write-capable task its own `worktree: true`.
 
 ## Parallel-first orchestration
 
@@ -61,7 +61,9 @@ Detached runs are owned by a dedicated worker and can be restored after parent r
 ## Safety and limits
 
 - Personas are read-only by default and receive `safe_read`, `safe_list`, and `safe_search`, not unrestricted shell execution.
-- `allowWrite: true` is valid only when delegated writes are needed; Pi asks the user to confirm every write-capable run in the TUI before enabling write tools and shell.
+- `allowWrite: true` is valid only when delegated writes are needed. Pair it with `worktree: true` so the run owns its git worktree and `subagent/<persona>-<id>` branch instead of editing the orchestrator's tree.
+- The project `delegatedWrites` policy decides authorization: `prompt` confirms every write-capable run in the TUI, `worktree` silently trusts worktree-isolated runs and still prompts for writes to the orchestrator's tree, `always` trusts every run.
+- Report the worktree path and branch when a write-capable run settles; worktrees persist for review and are removed with `git worktree remove`.
 - A requested `tools` list can narrow persona capabilities, never broaden them.
 - Omitted turn, token, and cost limits are unbounded. Wall time defaults to six hours (24-hour cap); set tighter limits only when the orchestration plan needs them. Token/cost enforcement may overshoot by at most one provider call when explicitly set.
 - Subagents cannot spawn nested Subagents.

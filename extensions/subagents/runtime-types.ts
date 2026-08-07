@@ -15,6 +15,11 @@ export type DelegateRunStatus =
 
 export type DelegateLimitReason = "wall" | "turns" | "tokens" | "cost" | "protocol_output";
 
+export interface DelegateWorktree {
+	path: string;
+	branch: string;
+}
+
 export interface DelegateRunSpec {
 	id: string;
 	agentId: string;
@@ -26,6 +31,8 @@ export interface DelegateRunSpec {
 	tools: string[];
 	allowWrite: boolean;
 	deliverTerminal: boolean;
+	/** Dedicated git worktree provisioned for this run; absent when the run shares the orchestrator's tree. */
+	worktree?: DelegateWorktree;
 	model?: string;
 	execution: { command: string; args: string[] };
 	context: "fresh" | "fork" | "resume";
@@ -88,6 +95,7 @@ export interface DelegateStartInput {
 	cwd: string;
 	allowWrite?: boolean;
 	deliverTerminal?: boolean;
+	worktree?: DelegateWorktree;
 	tools?: string[];
 	model?: string;
 	context?: "fresh" | "fork";

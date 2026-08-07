@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
@@ -15,6 +16,12 @@ afterEach(() => cleanup.splice(0).reverse().forEach((fn) => fn()));
 function setup(failReviewer = false) {
 	const root = mkdtempSync(path.join(tmpdir(), "subagent-service-"));
 	const project = mkdtempSync(path.join(tmpdir(), "subagent-project-"));
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = root;
+	cleanup.push(() => {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+	});
 	const branch: Array<Record<string, unknown>> = [];
 	const pi = {
 		appendEntry(customType: string, data: unknown) { branch.push({ type: "custom", customType, data }); },
@@ -302,4 +309,40 @@ describe("SubagentService", () => {
 		expect((authorized as { spec: { id: string; tools: string[] } }).spec.tools).toContain("edit");
 		await expect(service.start({ resume: (authorized as { spec: { id: string } }).spec.id, task: "Continue." }, deniedCtx)).rejects.toThrow("not authorized");
 	});
+
+	it("auto-authorizes worktree-isolated writes under the worktree policy", async () => {
+		const { service, ctx, project } = setup();
+		initRepo(project);
+		writeSettings(project, { delegatedWrites: "worktree" });
+		const deniedCtx = { ...ctx, mode: "tui", ui: { confirm: async () => false } } as unknown as ExtensionContext;
+		const isolated = await service.start({ agent: "reviewer", task: "Edit it.", allowWrite: true, worktree: true, background: false }, deniedCtx) as {
+			spec: { cwd: string; tools: string[]; worktree?: { path: string; branch: string } };
+		};
+		expect(isolated.spec.tools).toContain("edit");
+		expect(isolated.spec.worktree?.branch).toMatch(/^subagent\/reviewer-/);
+		expect(isolated.spec.cwd).toBe(isolated.spec.worktree?.path);
+		cleanup.push(() => rmSync(path.dirname(isolated.spec.worktree!.path), { recursive: true, force: true }));
+		await expect(service.start({ agent: "reviewer", task: "Edit it.", allowWrite: true }, deniedCtx)).rejects.toThrow("not authorized");
+	});
+
+	it("skips confirmation entirely under the always policy", async () => {
+		const { service, ctx, project } = setup();
+		writeSettings(project, { delegatedWrites: "always" });
+		const headlessCtx = { ...ctx, mode: "print" } as unknown as ExtensionContext;
+		const run = await service.start({ agent: "reviewer", task: "Edit it.", allowWrite: true, background: false }, headlessCtx) as { spec: { tools: string[] } };
+		expect(run.spec.tools).toContain("edit");
+	});
 });
+
+function initRepo(dir: string): void {
+	const git = (args: string[]) => execFileSync("git", ["-C", dir, ...args], { stdio: "ignore" });
+	git(["init", "-q", "."]);
+	writeFileSync(path.join(dir, "seed.txt"), "seed\n");
+	git(["add", "seed.txt"]);
+	git(["-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "-qm", "seed", "--no-gpg-sign"]);
+}
+
+function writeSettings(dir: string, settings: Record<string, unknown>): void {
+	mkdirSync(path.join(dir, ".pi"), { recursive: true });
+	writeFileSync(path.join(dir, ".pi", "subagents.json"), JSON.stringify(settings));
+}
