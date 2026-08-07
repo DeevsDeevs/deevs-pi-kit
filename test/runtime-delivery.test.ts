@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { RuntimeDeliveryCoordinator } from "../extensions/shared/runtime-delivery.ts";
-import { pendingRuntimeEvents, runtimeEvents, type RuntimeEvent } from "../extensions/shared/runtime-events.ts";
+import { consumeRuntimeEvent, pendingRuntimeEvents, runtimeEvents, type RuntimeEvent } from "../extensions/shared/runtime-events.ts";
 
 function setup(pending = false, failSend = false, dropSend = false) {
 	const branch: Array<Record<string, unknown>> = [];
@@ -53,10 +53,22 @@ describe("runtime terminal delivery", () => {
 
 		expect(test.messages).toHaveLength(1);
 		expect(test.messages[0]?.options).toEqual({ triggerTurn: true, deliverAs: "followUp" });
+		expect((test.messages[0]?.message as { content?: string }).content).toContain("Continue runnable independent work first");
+		expect((test.messages[0]?.message as { content?: string }).content).not.toContain("Use subagent_wait");
 		expect(runtimeEvents.read().deliveries["terminal-1"]?.status).toBe("claimed");
 
 		test.coordinator.acknowledgeDelivered(test.ctx);
 		expect(runtimeEvents.read().deliveries["terminal-1"]?.status).toBe("acked");
+		expect(pendingRuntimeEvents(runtimeEvents.read())).toEqual([]);
+		test.coordinator.clearContext();
+	});
+
+	it("does not wake after a structured tool already consumed the terminal result", async () => {
+		const test = setup();
+		runtimeEvents.record(test.pi, { type: "emit", event: terminalEvent() });
+		expect(consumeRuntimeEvent(test.pi, "terminal-1", "/tmp/session.jsonl")).toBe(true);
+		await test.coordinator.maybeDeliver();
+		expect(test.messages).toEqual([]);
 		expect(pendingRuntimeEvents(runtimeEvents.read())).toEqual([]);
 		test.coordinator.clearContext();
 	});

@@ -8,6 +8,7 @@ import { SubagentService, type SubagentGroup } from "../extensions/subagents/ser
 import { DEFAULT_TIMEOUT_MS } from "../extensions/subagents/config.ts";
 import type { DelegateRun } from "../extensions/subagents/runtime-types.ts";
 import { chainCheckpoints } from "../extensions/chains/checkpoint.ts";
+import { pendingRuntimeEvents, replayRuntimeEventEntries } from "../extensions/shared/runtime-events.ts";
 
 const cleanup: Array<() => void> = [];
 afterEach(() => cleanup.splice(0).reverse().forEach((fn) => fn()));
@@ -49,6 +50,17 @@ describe("SubagentService", () => {
 		expect((limited as { spec: { limits: { wallMs: number; turns?: number } } }).spec.limits).toMatchObject({ wallMs: 1_234, turns: 2 });
 		const modeled = await service.start({ agent: "explorer", task: "Inspect.", model: "provider/model", background: false }, ctx);
 		expect((modeled as { spec: { model?: string } }).spec.model).toBe("provider/model");
+	});
+
+	it("consumes a terminal event when the parent explicitly collects the result", async () => {
+		const { service, ctx, branch } = setup();
+		const run = await service.start({ agent: "explorer", task: "Inspect." }, ctx) as DelegateRun;
+		const results = await service.wait({ ids: [run.spec.id], waitMs: 3_000 });
+		service.consumeTerminal(results, "/tmp/parent.jsonl");
+		const eventId = `terminal:${run.spec.id}:${run.spec.generation}`;
+		const operations = branch.map((entry) => entry.data as { type?: string; eventId?: string; claimant?: string });
+		expect(operations.some((operation) => operation.type === "claim" && operation.eventId === eventId && operation.claimant === "/tmp/parent.jsonl")).toBe(true);
+		expect(operations.some((operation) => operation.type === "ack" && operation.eventId === eventId && operation.claimant === "/tmp/parent.jsonl")).toBe(true);
 	});
 
 	it("records a write-enabled terminal Chain obligation only once across reload", async () => {
@@ -187,6 +199,13 @@ describe("SubagentService", () => {
 			.filter((operation) => operation?.type === "emit")
 			.map((operation) => operation.event?.source?.kind);
 		expect(emittedKinds).toContain("subagent-group");
+		const emitted = branch
+			.map((entry) => (entry.data as { type?: string; event?: { source?: { kind?: string }; delivery?: string } }))
+			.filter((operation) => operation.type === "emit")
+			.map((operation) => operation.event);
+		expect(emitted.filter((event) => event?.source?.kind === "subagent").every((event) => event?.delivery === "record_only")).toBe(true);
+		expect(emitted.filter((event) => event?.source?.kind === "subagent-group")).toHaveLength(1);
+		expect(pendingRuntimeEvents(replayRuntimeEventEntries(branch)).map((event) => event.source.kind)).toEqual(["subagent-group"]);
 	});
 
 	it("does not let already-terminal fast children stall pending group tasks", async () => {

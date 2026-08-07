@@ -117,6 +117,7 @@ describe("Mission state", () => {
 				source: { kind: "subagent", id: "a", generation: "g" },
 				type: "terminal",
 				status: "completed",
+				delivery: "record_only",
 				createdAt: Date.now(),
 				summary: "done",
 				usage: { inputTokens: 10, outputTokens: 4, cacheReadTokens: 100, cacheWriteTokens: 1, costUsd: 0.1 },
@@ -143,13 +144,14 @@ describe("Mission state", () => {
 		const test = setup();
 		let resumeTool: { execute: (...args: unknown[]) => Promise<{ content: Array<{ text?: string }> }> } | undefined;
 		const pi = { ...test.pi, registerTool(tool: unknown) { const value = tool as { name: string; execute: (...args: unknown[]) => Promise<{ content: Array<{ text?: string }> }> }; if (value.name === "mission_resume") resumeTool = value; } } as unknown as ExtensionAPI;
-		registerMissionTools(pi, test.state, () => undefined);
+		registerMissionTools(pi, test.state, () => undefined, { continuationBlockers: () => ["independent review still running: review-1"] });
 		let confirmations = 0;
 		const ctx = { ...test.ctx, hasUI: true, ui: { confirm: async () => { confirmations++; return true; } } } as unknown as ExtensionContext;
 		await expect(resumeTool!.execute("call", { reason: "Nothing to resume" }, undefined, undefined, ctx)).rejects.toThrow("No Mission exists");
 		test.state.append(test.pi, await test.state.create({ objective: "Do work", chain: "kit" }, test.ctx));
 		const result = await resumeTool!.execute("call", { reason: "Already running" }, undefined, undefined, ctx);
 		expect(result.content[0]?.text).toContain("already active");
+		expect(result.content[0]?.text).toContain("independent review still running: review-1");
 		expect(confirmations).toBe(0);
 	});
 

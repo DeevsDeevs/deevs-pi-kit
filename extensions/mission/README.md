@@ -37,9 +37,9 @@ mission_complete
 - Pre-upgrade recovery imports only the exact same-cwd Pi session branch. Generated markdown is never parsed as Mission authority.
 - Authorization never auto-approves tools or crosses credential, safety, irreversible, or material approval boundaries.
 - Autonomous continuation normally advances from `agent_settled`, using a hidden triggering `followUp` after idle/user-priority admission.
-- Session start/tree recovery reconciles already-settled reviews, and the Subagent executor wakes Mission directly when its reviewer settles; no parent model turn or polling is required.
+- Session start/tree recovery reconciles already-settled reviews. Reviewer terminal evidence is recorded silently, and Mission owns the single review-ready wake; no parent polling or duplicate generic Subagent wake is required.
 - A failed synchronous follow-up admission gets one delayed retry. Mission does not use Cron or polling loops: session Cron cannot recover a closed Pi process, while reopening the exact session re-arms Mission from durable state.
-- Interrupt pauses; retryable provider behavior remains Pi-owned; terminal errors, recurring blockers, budget limits, and usage limits have distinct states.
+- Typed interactive/RPC mid-stream steering gets user priority without permanently pausing autonomy. Explicit or otherwise unmatched aborts still pause; retryable provider behavior remains Pi-owned; terminal errors, recurring blockers, budget limits, and usage limits have distinct states.
 - Paused/blocked state is injected into every model turn with the exact Chain, artifact path, and recorded next work. `mission_resume` lets the agent resume only after explicit user authorization or resolution of the recorded blocker.
 - The dashboard intentionally omits a one-key destructive End action; type `/mission end` for the explicit human confirmation path.
 - Objective edits create a new objective version and require a reason.

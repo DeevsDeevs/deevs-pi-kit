@@ -25,6 +25,7 @@ export default function missionExtension(pi: ExtensionAPI): void {
 		workspaceFingerprint: (ctx) => runtime.workspaceFingerprint(ctx),
 		onObjectiveUpdated: (input, ctx) => runtime.onObjectiveUpdated(input, ctx),
 		onResumed: (ctx) => { runtime.restore(ctx); void runtime.maybeContinue(ctx); },
+		continuationBlockers: (ctx) => runtime.continuationBlockers(ctx),
 		onCompleted: (ctx, mission) => runtime.onCompleted(ctx, mission),
 	});
 	registerMissionCommands(pi, state, (ctx) => runtime.restore(ctx), (ctx) => void runtime.maybeContinue(ctx), {
@@ -32,6 +33,7 @@ export default function missionExtension(pi: ExtensionAPI): void {
 		onCreated: (ctx) => runtime.onCreated(ctx),
 		onTakenOver: (ctx, mission) => runtime.onTakenOver(ctx, mission),
 		onChanged: (ctx) => runtime.restore(ctx),
+		continuationBlockers: (ctx) => runtime.continuationBlockers(ctx),
 		onObjectiveUpdated: (input, ctx) => runtime.onObjectiveUpdated(input, ctx),
 		onCompleted: (ctx, mission) => runtime.onCompleted(ctx, mission),
 	});

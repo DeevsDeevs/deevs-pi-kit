@@ -145,7 +145,11 @@ export function requestRuntimeDelivery(): void {
 function deliveryContent(events: RuntimeEvent[]): string {
 	const lines = events.slice(0, 12).map((event) => `- ${event.source.kind} ${event.source.id} [${event.status}]: ${event.summary}`);
 	if (events.length > lines.length) lines.push(`- ${events.length - lines.length} more terminal event(s)`);
-	return [`Background work reached a terminal state.`, ...lines, `Use subagent_wait or the relevant bounded wait/read tool for structured results.`].join("\n");
+	return [
+		`Background work reached a terminal state.`,
+		...lines,
+		`Continue runnable independent work first. Collect structured results with the relevant wait/read tool when they become the next dependency or final-settlement gate.`,
+	].join("\n");
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

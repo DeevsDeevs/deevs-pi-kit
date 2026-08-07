@@ -30,7 +30,7 @@ For servers/browsers/e2e: Herdr for persistent processes; `job_start` with readi
 
 ## 4. Perspectives
 
-Subagents only within budget, each scoped with `cwd`, exact files/diff, command limits, and output shape. Batch independent perspectives in one `tasks` group and settle it once with `subagent_wait`. Useful: `tester` (missing tests, e2e plan), `reviewer` (requirements, correctness), `anti-slop` (overbuild, fake tests), `rust-dev`, `devops`. Never delegate what one local command or file read proves.
+Subagents only within budget, each scoped with `cwd`, exact files/diff, command limits, and output shape. Batch independent perspectives in one `tasks` group, continue other runnable checks, then collect it once with `subagent_wait` when the verdict becomes the next dependency; terminal delivery wakes idle Pi automatically. Useful: `tester` (missing tests, e2e plan), `reviewer` (requirements, correctness), `anti-slop` (overbuild, fake tests), `rust-dev`, `devops`. Never delegate what one local command or file read proves.
 
 A cross-session Mission takeover invalidates old running or awaiting-adjudication review state. Re-fingerprint the current workspace and obtain a fresh independent review before completion.
 

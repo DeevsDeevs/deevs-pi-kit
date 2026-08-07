@@ -25,6 +25,7 @@ export interface DelegateRunSpec {
 	cwd: string;
 	tools: string[];
 	allowWrite: boolean;
+	/** Record terminal evidence always; when true, also wake the idle parent. */
 	deliverTerminal: boolean;
 	model?: string;
 	execution: { command: string; args: string[] };
@@ -87,6 +88,7 @@ export interface DelegateStartInput {
 	task: string;
 	cwd: string;
 	allowWrite?: boolean;
+	/** Record terminal evidence always; false suppresses only the parent wake. */
 	deliverTerminal?: boolean;
 	tools?: string[];
 	model?: string;

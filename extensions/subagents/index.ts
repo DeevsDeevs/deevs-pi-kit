@@ -106,7 +106,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			"Use fresh independent runs for review and refutation; resume only when continuity is required.",
 			"Keep scope concrete. Omitted turn/token/cost limits are unbounded and wall time defaults to six hours; tighten only with a reason, never arbitrary tiny defaults.",
 			"Never enable allowWrite unless the user explicitly requested delegated writes; Pi confirms each write-capable run in the TUI.",
-			"Use subagent_wait instead of polling output.",
+			"After starting background runs, continue runnable independent work. Terminal events wake idle Pi automatically; wait only when the result is the next dependency, during cancellation, or at final settlement.",
 		],
 		parameters: SubagentSchema,
 		async execute(_toolCallId, params: SubagentStartRequest, signal, onUpdate, ctx) {
@@ -115,6 +115,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			const unsubscribeUpdate = service.executor.onChange((run) => onUpdate?.({ content: [{ type: "text", text: formatStart(run) }], details: run }));
 			try {
 				const result = await service.start(params, ctx);
+				service.consumeTerminal([result], runtimeClaimant(ctx));
 				updateStatus();
 				return { content: [{ type: "text" as const, text: formatStart(result) }], details: result, usage: claimUsage([result]) };
 			} finally {
@@ -134,8 +135,8 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		name: "subagent_wait",
 		label: "Wait for Subagent",
 		description: "Wait for, inspect, or cancel Subagent runs and groups without polling.",
-		promptSnippet: "Wait on one or more Subagent lifecycle states; use waitMs=0 for status.",
-		promptGuidelines: ["Prefer one bounded wait over repeated status calls.", "Terminal settlement follows actual worker/child quiescence."],
+		promptSnippet: "Collect Subagent results at a dependency, cancellation, or final-settlement gate; use waitMs=0 only for status.",
+		promptGuidelines: ["Do not wait while runnable independent work remains; idle Pi is woken automatically when background work settles.", "Prefer one bounded wait over repeated status calls.", "Terminal settlement follows actual worker/child quiescence."],
 		parameters: WaitSchema,
 		async execute(_toolCallId, params: SubagentWaitRequest & { maxBytes?: number }, signal, onUpdate, ctx) {
 			setContext(ctx);
@@ -144,6 +145,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			});
 			try {
 				const results = await service.wait(params, signal);
+				service.consumeTerminal(results, runtimeClaimant(ctx));
 				updateStatus();
 				const maxBytes = clampBytes(params.maxBytes);
 				return { content: [{ type: "text" as const, text: results.map((item) => formatWait(item, maxBytes)).join("\n\n") }], details: { results }, usage: claimUsage(results) };
@@ -171,7 +173,10 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				context.ui.notify(`Cleared ${service.clearTerminal(id)} terminal Subagent record(s).`, "info");
 				return;
 			}
-			if (action === "stop" && id) await service.wait({ ids: [id], cancel: true });
+			if (action === "stop" && id) {
+				const results = await service.wait({ ids: [id], cancel: true });
+				service.consumeTerminal(results, runtimeClaimant(context));
+			}
 			if (action === "resume" && id) {
 				const task = rest.join(" ").trim();
 				if (!task) return context.ui.notify("Usage: /agents resume <run-id> <task>", "warning");
@@ -230,6 +235,10 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		latestCtx?.ui.setStatus("subagents", undefined);
 		latestCtx = undefined;
 	});
+}
+
+function runtimeClaimant(ctx: ExtensionContext): string {
+	return ctx.sessionManager.getSessionFile() ?? `memory:${ctx.sessionManager.getSessionId()}`;
 }
 
 function formatAgentsBrowser(service: SubagentService, id: string): string {

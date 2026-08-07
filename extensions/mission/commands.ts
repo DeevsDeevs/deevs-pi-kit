@@ -2,14 +2,14 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { initializeMissionArtifacts, updateMissionSummaryArtifact } from "./artifacts.ts";
 import type { MissionState } from "./state.ts";
 import { listSnapshotTakeoverCandidates } from "./takeover.ts";
-import { completeMission, formatMission, resumeMission, takeoverMission, updateMission } from "./tools.ts";
+import { completeMission, formatContinuation, formatMission, resumeMission, takeoverMission, updateMission } from "./tools.ts";
 import type { MissionCompleteInput, MissionCreateInput, MissionCurrent, MissionStatus, MissionTakeoverCandidate, MissionUpdateInput } from "./types.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
 import { chainCheckpoints } from "../chains/checkpoint.ts";
 import { FULL_SCREEN_OVERLAY } from "../shared/dashboard.ts";
 import { MissionDashboard } from "./ui.ts";
 
-export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, setContext: (ctx: ExtensionContext) => void, maybeContinue: (ctx: ExtensionContext) => void, hooks: { validateCompletion?: (input: MissionCompleteInput, ctx: ExtensionContext, directUserRequest?: boolean) => Promise<string[]> | string[]; onCreated?: (ctx: ExtensionContext) => void; onTakenOver?: (ctx: ExtensionContext, mission: MissionCurrent) => void; discoverTakeoverCandidates?: (ctx: ExtensionContext) => Promise<MissionTakeoverCandidate[]>; onChanged?: (ctx: ExtensionContext) => void; onObjectiveUpdated?: (input: MissionUpdateInput, ctx: ExtensionContext) => void; onCompleted?: (ctx: ExtensionContext, mission: MissionCurrent) => Promise<void> | void } = {}): void {
+export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, setContext: (ctx: ExtensionContext) => void, maybeContinue: (ctx: ExtensionContext) => void, hooks: { validateCompletion?: (input: MissionCompleteInput, ctx: ExtensionContext, directUserRequest?: boolean) => Promise<string[]> | string[]; onCreated?: (ctx: ExtensionContext) => void; onTakenOver?: (ctx: ExtensionContext, mission: MissionCurrent) => void; discoverTakeoverCandidates?: (ctx: ExtensionContext) => Promise<MissionTakeoverCandidate[]>; onChanged?: (ctx: ExtensionContext) => void; continuationBlockers?: (ctx: ExtensionContext) => string[]; onObjectiveUpdated?: (input: MissionUpdateInput, ctx: ExtensionContext) => void; onCompleted?: (ctx: ExtensionContext, mission: MissionCurrent) => Promise<void> | void } = {}): void {
 	pi.registerCommand("mission", {
 		description: "Create/manage a durable single-controller Mission.",
 		handler: async (args, ctx) => {
@@ -39,9 +39,9 @@ export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, s
 				if (command === "resume") {
 					try {
 						const mission = await resumeMission(pi, state, "/resume");
-						ctx.ui.notify(formatMission(mission, state.readUsage()), "info");
 						hooks.onChanged?.(ctx);
 						maybeContinue(ctx);
+						ctx.ui.notify(`${formatMission(mission, state.readUsage())}${formatContinuation(hooks.continuationBlockers?.(ctx) ?? [])}`, "info");
 					} catch (error) {
 						ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 					}
