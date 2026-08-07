@@ -7,6 +7,7 @@ import { findAgent, loadBuiltinAgents } from "./agents.ts";
 import { defaultDelegateRoot } from "./artifacts.ts";
 import { DelegateExecutor } from "./executor.ts";
 import type { DelegateRun, DelegateRunStatus } from "./runtime-types.ts";
+import { isAutoModeEnabled } from "../shared/auto-mode.ts";
 import { requestRuntimeDelivery } from "../shared/runtime-delivery.ts";
 import { runtimeEvents, type RuntimeTerminalStatus } from "../shared/runtime-events.ts";
 import { chainCheckpoints } from "../chains/checkpoint.ts";
@@ -159,11 +160,32 @@ export class SubagentService {
 		if (request.cancel) {
 			for (const id of request.ids) await this.cancel(id);
 		}
-		return Promise.all(request.ids.map(async (id) => {
+		const results = await Promise.all(request.ids.map(async (id) => {
 			const group = this.groups.get(id);
 			if (group) return this.waitGroup(group, request.waitMs, signal);
 			return this.executor.wait(id, request.waitMs, signal);
 		}));
+		for (const result of results) this.consumeTerminalEvent(result);
+		return results;
+	}
+
+	/** subagent_wait already returned the terminal result, so the idle runtime wake would be a duplicate. */
+	private consumeTerminalEvent(result: DelegateRun | SubagentGroup): void {
+		if ("spec" in result) {
+			if (!isTerminal(result.runtime.status)) return;
+			this.emitTerminal(result);
+			this.ackTerminal(`terminal:${result.spec.id}:${result.spec.generation}`);
+		} else {
+			if (result.status === "running") return;
+			this.emitGroupTerminal(result);
+			this.ackTerminal(`terminal:${result.id}:${result.generation}`);
+		}
+	}
+
+	private ackTerminal(eventId: string): void {
+		const at = Date.now();
+		runtimeEvents.record(this.pi, { type: "claim", eventId, claimant: "subagent_wait", at });
+		runtimeEvents.record(this.pi, { type: "ack", eventId, claimant: "subagent_wait", at });
 	}
 
 	list(): { runs: DelegateRun[]; groups: SubagentGroup[] } {
@@ -622,6 +644,7 @@ export class SubagentService {
 }
 
 async function authorizeDelegatedWrite(ctx: ExtensionContext, request: SubagentStartRequest): Promise<boolean> {
+	if (isAutoModeEnabled(ctx)) return true;
 	if (ctx.mode !== "tui") return false;
 	const target = request.tasks?.length ? `${request.tasks.length} Subagents` : request.resume ? `resumed Subagent ${request.resume}` : `${request.agent ?? "Subagent"} persona`;
 	return ctx.ui.confirm("Authorize delegated writes?", `${target} will receive edit/write tools and shell access for this run.`);

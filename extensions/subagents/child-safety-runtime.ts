@@ -1,10 +1,15 @@
+import { execFile } from "node:child_process";
 import { open, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import * as path from "node:path";
+import { promisify } from "node:util";
 import { Type } from "@earendil-works/pi-ai";
 import { isToolCallEventType, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { detectDetachedShell } from "../shared/process-safety.ts";
 
+const execFileAsync = promisify(execFile);
+
 const SKIP_DIRS = new Set([".git", "node_modules", ".pi", ".chains", ".missions"]);
+const GIT_BLOCKED_ARG_PREFIXES = ["--output", "--ext-diff"];
 
 export default function childSafetyRuntime(pi: ExtensionAPI): void {
 	pi.registerTool({
@@ -111,6 +116,54 @@ export default function childSafetyRuntime(pi: ExtensionAPI): void {
 				if (matches.length >= maxResults) break;
 			}
 			return result(matches.length ? matches.join("\n") : "No matches.", { matches });
+		},
+	});
+
+	pi.registerTool({
+		name: "safe_git",
+		label: "Read-only git",
+		description: "Run a read-only git inspection (status, diff, log, show, blame, rev-parse) inside the delegated project without shell access.",
+		parameters: Type.Object({
+			subcommand: Type.Union([
+				Type.Literal("status"),
+				Type.Literal("diff"),
+				Type.Literal("log"),
+				Type.Literal("show"),
+				Type.Literal("blame"),
+				Type.Literal("rev-parse"),
+			]),
+			args: Type.Optional(Type.Array(Type.String(), { maxItems: 32 })),
+			maxBytes: Type.Optional(Type.Number({ minimum: 1, maximum: 200_000 })),
+		}),
+		async execute(_id, input) {
+			const args = input.args ?? [];
+			for (const arg of args) {
+				if (arg.includes("\0")) throw new Error("safe_git arguments must not contain NUL bytes.");
+				if (GIT_BLOCKED_ARG_PREFIXES.some((prefix) => arg.startsWith(prefix))) throw new Error(`safe_git argument is not allowed: ${arg}`);
+			}
+			const maxBytes = Math.floor(input.maxBytes ?? 65_536);
+			let stdout = "";
+			let stderr = "";
+			let exitCode = 0;
+			try {
+				({ stdout, stderr } = await execFileAsync("git", ["--no-pager", input.subcommand, ...args], {
+					cwd: process.cwd(),
+					timeout: 30_000,
+					maxBuffer: 8 * 1024 * 1024,
+					env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_PAGER: "cat" },
+				}));
+			} catch (error) {
+				const failure = error as NodeJS.ErrnoException & { stdout?: string; stderr?: string; killed?: boolean };
+				if (failure.killed) throw new Error("safe_git timed out after 30s.");
+				if (typeof failure.code !== "number") throw new Error(`safe_git failed: ${failure.message}`);
+				stdout = failure.stdout ?? "";
+				stderr = failure.stderr ?? "";
+				exitCode = failure.code;
+			}
+			const combined = stderr.trim() ? `${stdout}${stdout.endsWith("\n") || !stdout ? "" : "\n"}[stderr] ${stderr.trim()}` : stdout;
+			const clipped = combined.length > maxBytes ? `${combined.slice(0, maxBytes)}\n[truncated at ${maxBytes} bytes]` : combined;
+			const text = clipped.trim() ? clipped : `(no output; exit ${exitCode})`;
+			return result(exitCode === 0 ? text : `${text}\n[exit ${exitCode}]`, { subcommand: input.subcommand, args, exitCode });
 		},
 	});
 

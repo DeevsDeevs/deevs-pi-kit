@@ -29,6 +29,7 @@ extensions/wiki/        Curated markdown wiki helpers (`wiki_*`)
 extensions/arxiv/       arXiv search, lookup, and BibTeX tools
 extensions/todos/       Session-scoped todo list (`todo_list`)
 extensions/ask-user/    Interactive clarification UI (`ask_user`)
+extensions/auto-mode/   Session-wide Subagent write pre-authorization (`/auto`)
 extensions/codex-fast/  OpenAI Codex Fast mode service tier (`/codex-fast`)
 extensions/notifier/    Ready-for-input terminal notifications
 extensions/herdr-compat/ Experimental Shift+Enter compatibility for Pi inside Herdr
@@ -52,7 +53,7 @@ Run focused staff agents in the background. Built-in agents include `explorer`, 
 
 Tools: `subagent`, `subagent_wait`. Command: `/agents [run-or-group-id]`, `/agents stop <id>`, `/agents resume <id> <task>`, or `/agents clear [id]`.
 
-Subagents are read-only unless `allowWrite: true` is requested and the user confirms the run in the TUI. Read-only personas receive `safe_read`, `safe_list`, and `safe_search`—never unrestricted `bash`. The process-isolated executor supports parallel groups, hard cancellation, exact per-run usage, detached recovery, persistent agent identity, and resume into the exact private Pi session. Omitted turn/token/cost limits are unbounded; wall time defaults to six hours and is capped at 24 hours. Explicit orchestrator limits always win. Project model/concurrency settings remain in `.pi/subagents.json`.
+Subagents are read-only unless `allowWrite: true` is requested and the user confirms the run in the TUI, or auto mode (`/auto`) is active. Read-only personas receive `safe_read`, `safe_list`, `safe_search`, and `safe_git` (read-only `status`/`diff`/`log`/`show`/`blame`/`rev-parse` without shell access)—never unrestricted `bash`. Results collected through `subagent_wait` are marked delivered, so no duplicate terminal notification follows. The process-isolated executor supports parallel groups, hard cancellation, exact per-run usage, detached recovery, persistent agent identity, and resume into the exact private Pi session. Omitted turn/token/cost limits are unbounded; wall time defaults to six hours and is capped at 24 hours. Explicit orchestrator limits always win. Project model/concurrency settings remain in `.pi/subagents.json`.
 
 ### Workflows
 
@@ -120,7 +121,13 @@ Tool: `ask_user`.
 
 Use it only after checking files, docs, and commands that could answer the question.
 
-### Codex Fast
+### Auto mode
+
+Pre-authorize all Subagent `allowWrite` runs for the current session with one upfront confirmation, instead of a per-run TUI dialog. Enabling asks once; afterwards write-capable Subagents launch without prompting — including while the session runs unattended — so overnight work never stalls on a confirmation. Disabling restores per-run confirmation.
+
+Command: `/auto` (toggle), `/auto on`, `/auto off`, `/auto status`.
+
+The mode is session-scoped: it is recorded in the session and survives `/reload` and resume, while new sessions always start with it off. An `auto` status chip is shown while active. Enabling requires an interactive confirmation, so headless sessions cannot switch it on.
 
 Enable OpenAI Codex Fast mode by injecting `service_tier: "priority"` into eligible ChatGPT-auth `openai-codex` requests. It does not change the selected model or thinking level.
 
