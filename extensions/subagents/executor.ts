@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { existsSync, readFileSync, watch, type FSWatcher } from "node:fs";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import * as path from "node:path";
 import { ownsProcessIdentity, quiesceProcessGroup } from "../shared/process-group.ts";
@@ -15,6 +15,7 @@ import {
 	writeRunRuntime,
 	writeRunSpec,
 } from "./artifacts.ts";
+import { createBoundedByteTail } from "./protocol.ts";
 import type {
 	DelegateExecutorOptions,
 	DelegateResumeInput,
@@ -145,6 +146,9 @@ export class DelegateExecutor {
 		return new Promise<DelegateRun>((resolve, reject) => {
 			let timer: NodeJS.Timeout | undefined;
 			const keepAlive = waitMs === undefined ? setTimeout(() => undefined, 2_147_483_647) : undefined;
+			const poll = setInterval(() => {
+				try { done(this.refresh(id)); } catch { /* A concurrent restore may detach the run; the timeout path returns the last known state. */ }
+			}, 250);
 			const done = (run: DelegateRun): void => {
 				if (run.spec.id !== id || !TERMINAL.has(run.runtime.status)) return;
 				cleanup();
@@ -159,6 +163,7 @@ export class DelegateExecutor {
 				signal?.removeEventListener("abort", abort);
 				if (timer) clearTimeout(timer);
 				if (keepAlive) clearTimeout(keepAlive);
+				clearInterval(poll);
 			};
 			this.events.on("change", done);
 			signal?.addEventListener("abort", abort, { once: true });
@@ -263,24 +268,14 @@ export class DelegateExecutor {
 		};
 		writeRunSpec(spec);
 		writeRunRuntime(spec, runtime);
-		const worker = spawn(process.execPath, [WORKER_PATH, path.join(spec.artifactsDir, "spec.json")], {
-			cwd: spec.cwd,
-			detached: true,
-			stdio: ["ignore", "ignore", "ignore", "ipc"],
-		});
-		const ready = new Promise<void>((resolve, reject) => {
-			worker.on("message", (message: unknown) => {
-				if (typeof message === "object" && message !== null && "type" in message && message.type === "delegate_worker_ready") resolve();
-			});
-			worker.once("exit", () => resolve());
-			worker.once("error", reject);
-		});
-		await new Promise<void>((resolve, reject) => {
-			worker.once("spawn", resolve);
-			worker.once("error", reject);
-		});
-		if (!worker.pid) throw new Error("Delegate worker spawned without a pid.");
-		await ready;
+		let worker: ChildProcess;
+		try {
+			worker = await startDelegateWorker(spec);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			writeRunRuntime(spec, { ...runtime, status: "failed", endedAt: this.now(), error: message });
+			throw error;
+		}
 		worker.unref();
 		this.roots.set(spec.id, root);
 		const run = readRun(root, spec.id) ?? { spec, runtime };
@@ -292,7 +287,8 @@ export class DelegateExecutor {
 	private watchRun(run: DelegateRun): void {
 		if (this.watchers.has(run.spec.id)) return;
 		const watcher = watch(run.spec.artifactsDir, (_event, filename) => {
-			if (filename && filename !== path.basename(run.spec.runtimePath)) return;
+			const runtimeName = path.basename(run.spec.runtimePath);
+			if (filename && filename !== runtimeName && !filename.startsWith(`${runtimeName}.`)) return;
 			try {
 				const refreshed = this.refresh(run.spec.id);
 				if (TERMINAL.has(refreshed.runtime.status)) this.closeWatcher(run.spec.id);
@@ -337,9 +333,70 @@ export function buildPiCommand(spec: DelegateRunSpec): { command: string; args: 
 	args.push("--no-extensions", "--extension", CHILD_SAFETY_PATH, "--no-skills", "--append-system-prompt", spec.systemPromptPath);
 	if (spec.tools.length) args.push("--tools", spec.tools.join(","));
 	args.push(`@${spec.taskPath}`);
-	const currentCli = process.argv[1];
-	if (currentCli && path.basename(currentCli).startsWith("pi")) return { command: process.execPath, args: [currentCli, ...args] };
+	return resolvePiInvocation(args);
+}
+
+export function resolvePiInvocation(args: string[], currentScript = process.argv[1], execPath = process.execPath): { command: string; args: string[] } {
+	if (currentScript && !currentScript.startsWith("/$bunfs/root/") && existsSync(currentScript)) return { command: execPath, args: [currentScript, ...args] };
+	if (!/^(node|bun)(\.exe)?$/i.test(path.basename(execPath))) return { command: execPath, args };
 	return { command: "pi", args };
+}
+
+export function scriptRuntimeCandidates(execPath = process.execPath, env = process.env): string[] {
+	if (/^(node|bun)(\.exe)?$/i.test(path.basename(execPath))) return [execPath];
+	return [...new Set([env.NODE, env.npm_node_execpath, "node", "bun"].filter((value): value is string => !!value))];
+}
+
+async function startDelegateWorker(spec: DelegateRunSpec): Promise<ChildProcess> {
+	const failures: string[] = [];
+	for (const runtime of scriptRuntimeCandidates()) {
+		try {
+			return await startDelegateWorkerWith(runtime, spec);
+		} catch (error) {
+			failures.push(`${runtime}: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+	throw new Error(`Unable to start the Subagent worker with Node or Bun. ${failures.join("; ")}`);
+}
+
+function startDelegateWorkerWith(runtime: string, spec: DelegateRunSpec): Promise<ChildProcess> {
+	return new Promise((resolve, reject) => {
+		const stderr = createBoundedByteTail(spec.limits.maxStderrBytes);
+		const worker = spawn(runtime, [WORKER_PATH, path.join(spec.artifactsDir, "spec.json")], {
+			cwd: spec.cwd,
+			detached: true,
+			stdio: ["ignore", "ignore", "pipe", "ipc"],
+		});
+		let finished = false;
+		worker.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk));
+		const cleanup = (): void => {
+			worker.off("error", onError);
+			worker.off("exit", onExit);
+			worker.off("message", onMessage);
+		};
+		const fail = (error: Error): void => {
+			if (finished) return;
+			finished = true;
+			cleanup();
+			worker.stderr?.destroy();
+			reject(error);
+		};
+		const onError = (error: Error): void => fail(error);
+		const onExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+			const output = stderr.text().trim();
+			fail(new Error(`Worker exited before readiness (${signal ?? code ?? "unknown"})${output ? `: ${output}` : "."}`));
+		};
+		const onMessage = (message: unknown): void => {
+			if (typeof message !== "object" || message === null || !("type" in message) || message.type !== "delegate_worker_ready" || finished) return;
+			finished = true;
+			cleanup();
+			worker.stderr?.destroy();
+			resolve(worker);
+		};
+		worker.once("error", onError);
+		worker.once("exit", onExit);
+		worker.on("message", onMessage);
+	});
 }
 
 function taskPrompt(task: string): string {
