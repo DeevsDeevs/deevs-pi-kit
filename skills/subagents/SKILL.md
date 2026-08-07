@@ -22,7 +22,7 @@ Do not delegate a trivial one-file answer. Never run parallel writers in one wor
 
 ## Parallel-first orchestration
 
-Before launching, separate dependency gates from independent work. Put independent runs in one `subagent` call using `tasks` with bounded `concurrency`, then settle the group with one `subagent_wait`; do not launch and wait for independent perspectives one by one.
+Before launching, separate dependency gates from independent work. Put independent runs in one `subagent` call using `tasks` with bounded `concurrency`; do not launch and wait for independent perspectives one by one. After launch, continue runnable independent parent work. Terminal events wake idle Pi automatically; collect the group with one `subagent_wait` only when its result becomes the next dependency or at final settlement.
 
 Keep work sequential only when one result changes the next task's input, multiple tasks mutate the same resource, the diff must be frozen before review, or an early cheap gate should prevent expensive work. Once the diff is frozen, independent reviewer/tester/security perspectives should normally launch together. The parent may continue unrelated work while a background group runs.
 
@@ -50,11 +50,12 @@ Before delivering synthesized research, spawn a fresh child to audit the draft a
 ## Lifecycle
 
 1. Start with `subagent`; background defaults to true.
-2. Use one bounded `subagent_wait` call rather than polling.
-3. Pass `waitMs: 0` for a status-only projection.
-4. Pass `cancel: true` to stop and wait for actual worker/child quiescence.
-5. Terminal details include exact per-run usage, bounded output, session identity, and artifacts.
-6. Before cross-session Mission takeover, settle or explicitly cancel known Jobs/Subagents in the old session; takeover does not adopt, signal, or kill them.
+2. Continue runnable independent parent work instead of waiting merely to keep the turn open.
+3. Use one bounded `subagent_wait` at the next dependency, cancellation, or final-settlement gate rather than polling.
+4. Pass `waitMs: 0` only when an immediate status projection is genuinely needed; terminal delivery wakes idle Pi automatically.
+5. Pass `cancel: true` to stop and wait for actual worker/child quiescence.
+6. Terminal details include exact per-run usage, bounded output, session identity, and artifacts.
+7. Before cross-session Mission takeover, settle or explicitly cancel known Jobs/Subagents in the old session; takeover does not adopt, signal, or kill them.
 
 Detached runs are owned by a dedicated worker and can be restored after parent reload. Resume starts a new run/generation in the exact private child Pi session; it does not claim to resurrect a dead process.
 

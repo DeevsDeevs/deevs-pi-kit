@@ -23,10 +23,13 @@ export class MissionRuntime {
 	private continuationInFlight = false;
 	private disposed = false;
 	private lastAgentMessages: MissionAgentMessage[] = [];
+	private currentRunSteered = false;
+	private lastAbortWasSteered = false;
 	private mutatingCalls = new Set<string>();
 	private materialMutationSinceSettle = false;
 	private worktreeBeforeTurn?: string;
 	private recoveryTimer?: NodeJS.Timeout;
+	private reviewAdmissionRetry = false;
 	private unsubscribeReview?: () => void;
 
 	constructor(private readonly pi: ExtensionAPI, readonly state: MissionState) {}
@@ -94,6 +97,7 @@ export class MissionRuntime {
 				source: { kind: "mission", id: mission.missionId, generation: mission.generation ?? `legacy-${mission.missionId}` },
 				type: "terminal",
 				status: mission.status === "ended" ? "cancelled" : "completed",
+				delivery: "record_only",
 				createdAt: mission.updatedAt,
 				summary: mission.lastSummary || mission.title,
 			},
@@ -143,12 +147,17 @@ export class MissionRuntime {
 			this.scheduleRecovery(ctx);
 		});
 		this.pi.on("session_compact", (_event, ctx) => this.restore(ctx));
+		this.pi.on("input", (event) => {
+			if (event.streamingBehavior === "steer") this.currentRunSteered = event.source === "interactive" || event.source === "rpc";
+		});
 		this.pi.on("turn_start", async (_event, ctx) => {
 			this.restore(ctx);
 			this.worktreeBeforeTurn = await this.reconcileWorkspaceFingerprint(ctx);
 		});
 		this.pi.on("agent_end", (event, ctx) => {
 			this.lastAgentMessages = [...event.messages];
+			this.lastAbortWasSteered = this.currentRunSteered && this.lastAgentMessages.some((message) => message.role === "assistant" && message.stopReason === "aborted");
+			this.currentRunSteered = false;
 			this.restore(ctx);
 		});
 		this.pi.on("tool_execution_start", (event) => {
@@ -182,15 +191,42 @@ export class MissionRuntime {
 			this.continuationInFlight = false;
 			if (this.recoveryTimer) clearTimeout(this.recoveryTimer);
 			this.recoveryTimer = undefined;
+			this.reviewAdmissionRetry = false;
 			this.unsubscribeReview?.();
 			this.unsubscribeReview = undefined;
 			this.lastAgentMessages = [];
+			this.currentRunSteered = false;
+			this.lastAbortWasSteered = false;
 			this.mutatingCalls.clear();
 			this.materialMutationSinceSettle = false;
 			this.worktreeBeforeTurn = undefined;
 			this.ctx?.ui.setStatus("mission", undefined);
 			this.ctx = undefined;
 		});
+	}
+
+	continuationBlockers(ctx: ExtensionContext): string[] {
+		this.restore(ctx);
+		const mission = this.state.readAny();
+		if (!mission || mission.status !== "active") return mission ? [`Mission status is ${mission.status}.`] : ["No Mission exists on this branch."];
+		const blockers: string[] = [];
+		const limit = this.state.budgetExceeded();
+		if (limit) blockers.push(`${limit} limit is exhausted`);
+		try {
+			const active = this.activeSubagentWork();
+			if (active.runs.length) blockers.push(`Subagents still running: ${active.runs.map((run) => run.spec.id).join(", ")}`);
+			if (active.groupIds.length) blockers.push(`Subagent groups still running: ${active.groupIds.join(", ")}`);
+			if (active.launchReservations) blockers.push(`${active.launchReservations} Subagent launch(es) still starting`);
+		} catch {
+			blockers.push("Subagent settlement cannot currently be verified");
+		}
+		const jobs = this.activeJobs();
+		if (jobs.length) blockers.push(`Jobs still running: ${jobs.map((job) => job.spec.id).join(", ")}`);
+		if (mission.reviewStatus === "running") blockers.push(`independent review still running${mission.reviewRunId ? `: ${mission.reviewRunId}` : ""}`);
+		else if (mission.reviewStatus === "due") blockers.push("independent review is due");
+		else if (mission.reviewStatus === "awaiting_adjudication") blockers.push(`independent review is ready for adjudication${mission.reviewRunId ? `: ${mission.reviewRunId}` : ""}`);
+		if (ctx.hasPendingMessages()) blockers.push("user messages are queued ahead of autonomous continuation");
+		return blockers;
 	}
 
 	async maybeContinue(ctx: ExtensionContext): Promise<void> {
@@ -238,10 +274,13 @@ export class MissionRuntime {
 			this.restore(ctx);
 			await this.reconcileWorkspaceFingerprint(ctx);
 			this.bindReviewRecovery(ctx);
-			await this.reconcileReview();
+			const reviewSettled = await this.reconcileReview();
+			const shouldAdmitReview = reviewSettled || this.reviewAdmissionRetry;
+			this.reviewAdmissionRetry = false;
+			if (shouldAdmitReview && await this.admitDueReview(ctx)) return;
 			await this.maybeContinue(ctx);
 		} catch (error) {
-			this.ctx?.ui.notify(`Mission recovery deferred: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			this.ctx?.ui.notify?.(`Mission recovery deferred: ${error instanceof Error ? error.message : String(error)}`, "warning");
 			this.scheduleRecovery(ctx, 5_000);
 		}
 	}
@@ -269,12 +308,15 @@ export class MissionRuntime {
 		}
 		this.worktreeBeforeTurn = undefined;
 		const interrupted = this.lastAgentMessages.some((message) => message.role === "assistant" && message.stopReason === "aborted");
-		if (interrupted) {
+		const interruptedBySteer = interrupted && this.lastAbortWasSteered;
+		const terminalError = this.lastAgentMessages.some((message) => message.role === "assistant" && message.stopReason === "error");
+		this.lastAgentMessages = [];
+		this.lastAbortWasSteered = false;
+		if (interrupted && !interruptedBySteer) {
 			this.state.append(this.pi, this.state.statusEvent("paused", "explicit interruption paused Mission autonomy"));
 			this.updateStatus();
 			return;
 		}
-		const terminalError = this.lastAgentMessages.some((message) => message.role === "assistant" && message.stopReason === "error");
 		if (terminalError) {
 			this.state.append(this.pi, this.state.statusEvent("terminal_error", "provider/runtime error remained after Pi retry settlement"));
 			this.updateStatus();
@@ -287,7 +329,6 @@ export class MissionRuntime {
 		const madeProgress = this.materialMutationSinceSettle || recentProgress.some((progress) => progress.validation.some((validation) => validation.exitCode === 0 && validation.objectiveVersion === (mission!.objectiveVersion ?? 1)));
 		this.state.append(this.pi, this.state.settledEvent({ blockerFingerprint: blocker, madeProgress }));
 		this.materialMutationSinceSettle = false;
-		this.lastAgentMessages = [];
 		mission = this.state.read()!;
 		if ((mission.blockerCount ?? 0) >= 3) {
 			this.state.append(this.pi, this.state.statusEvent("blocked", `same blocker recurred ${mission.blockerCount} autonomous turns`, latestProgress?.summary.slice(0, 500)));
@@ -313,15 +354,7 @@ export class MissionRuntime {
 		const chain = chainCheckpoints.current?.read();
 		if (chain?.status === "due" && chain.dueCodes.includes("material_change")) this.markReviewDue(chain.dueReasons.at(-1) ?? "material mutation");
 		await this.reconcileReview();
-		mission = this.state.read()!;
-		if (mission.reviewStatus === "due") {
-			try {
-				const active = this.activeSubagentWork();
-				if (active.runs.length || active.groupIds.length || active.launchReservations || this.activeJobs().length) return;
-			} catch { return; }
-			await this.startReview(ctx, mission);
-			return;
-		}
+		if (await this.admitDueReview(ctx)) return;
 		await this.maybeContinue(ctx);
 	}
 
@@ -348,12 +381,24 @@ export class MissionRuntime {
 		this.updateStatus();
 	}
 
+	private async admitDueReview(ctx: ExtensionContext): Promise<boolean> {
+		const mission = this.state.read();
+		if (!mission || mission.status !== "active" || mission.reviewStatus !== "due") return false;
+		try {
+			const active = this.activeSubagentWork();
+			if (active.runs.length || active.groupIds.length || active.launchReservations || this.activeJobs().length) return true;
+		} catch { return true; }
+		await this.startReview(ctx, mission);
+		return true;
+	}
+
 	private async startReview(ctx: ExtensionContext, mission: MissionCurrent): Promise<void> {
 		let service;
 		try {
 			service = getSubagentService();
 		} catch (error) {
 			this.failReview(mission, `review admission failed: ${error instanceof Error ? error.message : String(error)}`);
+			this.reviewAdmissionRetry = this.state.read()?.reviewStatus === "due";
 			this.scheduleRecovery(ctx, 1_000);
 			return;
 		}
@@ -362,6 +407,7 @@ export class MissionRuntime {
 			if (listed.runs.some((run) => ["starting", "running", "stopping"].includes(run.runtime.status)) || listed.groups.some((group) => group.status === "running") || (service.activeLaunchReservations?.() ?? 0) || this.activeJobs().length) return;
 		} catch (error) {
 			this.failReview(mission, `review admission failed: ${error instanceof Error ? error.message : String(error)}`);
+			this.reviewAdmissionRetry = this.state.read()?.reviewStatus === "due";
 			this.scheduleRecovery(ctx, 1_000);
 			return;
 		}
@@ -382,11 +428,13 @@ export class MissionRuntime {
 				cwd: reviewCwd,
 				context: "fresh",
 				allowWrite: false,
+				deliverTerminal: false,
 				background: true,
 				wallMs: 10 * 60_000,
 			}, ctx);
 		} catch (error) {
 			this.failReview(mission, `review admission failed: ${error instanceof Error ? error.message : String(error)}`);
+			this.reviewAdmissionRetry = this.state.read()?.reviewStatus === "due";
 			this.scheduleRecovery(ctx, 1_000);
 			return;
 		}
@@ -395,38 +443,39 @@ export class MissionRuntime {
 		this.updateStatus();
 	}
 
-	private async reconcileReview(): Promise<void> {
+	private async reconcileReview(): Promise<boolean> {
 		const mission = this.state.read();
 		// Only an active Mission may transition review state; reviewEvent()/failReview() call requireActive() and would throw on a paused/blocked Mission whose reviewer settled after the pause.
-		if (!mission?.reviewRunId || mission.reviewStatus !== "running" || mission.status !== "active") return;
+		if (!mission?.reviewRunId || mission.reviewStatus !== "running" || mission.status !== "active") return false;
 		let run: DelegateRun;
 		try {
 			run = getSubagentService().executor.get(mission.reviewRunId);
 		} catch (error) {
 			this.failReview(mission, `independent review run lost: ${error instanceof Error ? error.message : String(error)}`);
-			return;
+			return true;
 		}
-		if (["starting", "running", "stopping"].includes(run.runtime.status)) return;
+		if (["starting", "running", "stopping"].includes(run.runtime.status)) return false;
 		if (run.runtime.status !== "completed") {
 			this.failReview(mission, run.runtime.error || "independent review failed");
-			return;
+			return true;
 		}
 		const suggested = await readReviewVerdict(run);
 		if (suggested === "unknown") {
 			this.failReview(mission, "independent reviewer did not submit a valid review_report artifact");
-			return;
+			return true;
 		}
 		const fingerprint = this.ctx ? await worktreeFingerprint(this.pi, this.ctx.cwd, mission) : undefined;
 		if (!fingerprint) {
 			this.failReview(mission, "could not fingerprint reviewed worktree");
-			return;
+			return true;
 		}
 		if (!mission.reviewWorktreeFingerprint || fingerprint !== mission.reviewWorktreeFingerprint) {
 			this.failReview(mission, "worktree changed while independent review was running");
-			return;
+			return true;
 		}
 		this.state.append(this.pi, this.state.reviewEvent("awaiting_adjudication", { runId: run.spec.id, reason: "Independent review settled; parent must adjudicate the structured reviewer result.", suggestedVerdict: suggested, worktreeFingerprint: fingerprint }));
 		this.updateStatus();
+		return true;
 	}
 
 	private failReview(_mission: MissionCurrent, reason: string): void {
@@ -499,7 +548,7 @@ function continuationMessage(mission: MissionCurrent): string {
 		`Objective: ${mission.objective}`,
 		`Requirements: ${mission.requirements.map((item) => `• ${item}`).join(" ")}`,
 		`Review: ${mission.reviewStatus ?? "not_required"}${mission.reviewReason ? ` (${mission.reviewReason})` : ""}.`,
-		"Choose the highest-leverage next action toward the full objective; do not shrink scope to fit one turn, and work until a natural turn boundary. Make best judgments without routine questions. Stop for credentials, safety, irreversible operations, explicit approval boundaries, terminal error, or a genuine repeated blocker. Record milestone evidence with mission_progress. Completion requires validation, independent review convergence, child settlement, Chain checkpoint, and a requirement evidence audit.",
+		"Choose the highest-leverage next action toward the full objective; do not shrink scope to fit one turn, and work until a natural turn boundary. After starting background work, continue any runnable independent work instead of waiting merely to keep the turn open; terminal delivery wakes idle Pi automatically. Make best judgments without routine questions. Stop for credentials, safety, irreversible operations, explicit approval boundaries, terminal error, or a genuine repeated blocker. Record milestone evidence with mission_progress. Completion requires validation, independent review convergence, child settlement, Chain checkpoint, and a requirement evidence audit.",
 	].join("\n");
 }
 

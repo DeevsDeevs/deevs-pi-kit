@@ -7,6 +7,7 @@ import workflowExtension from "../extensions/workflow/index.ts";
 import { DelegateExecutor } from "../extensions/subagents/executor.ts";
 import { SubagentService } from "../extensions/subagents/service.ts";
 import { clearSubagentService, setSubagentService } from "../extensions/subagents/registry.ts";
+import { pendingRuntimeEvents, replayRuntimeEventEntries } from "../extensions/shared/runtime-events.ts";
 
 const cleanups: Array<() => void> = [];
 afterEach(() => cleanups.splice(0).reverse().forEach((cleanup) => cleanup()));
@@ -63,7 +64,10 @@ describe("trusted workflow runtime", () => {
 		expect(details.activeAgents).toBe(0);
 		expect(details.result).toEqual({ status: "completed", output: "reviewer result" });
 		expect(result.usage).toMatchObject({ totalTokens: 5, cost: { total: 0.002 } });
-		expect(branch.some((entry) => JSON.stringify(entry).includes('"type":"emit"'))).toBe(false);
+		const events = Object.values(replayRuntimeEventEntries(branch).events);
+		expect(events).toHaveLength(1);
+		expect(events[0]?.delivery).toBe("record_only");
+		expect(pendingRuntimeEvents(replayRuntimeEventEntries(branch))).toEqual([]);
 	});
 
 	it("uses one race-safe widget for concurrent Workflows", async () => {

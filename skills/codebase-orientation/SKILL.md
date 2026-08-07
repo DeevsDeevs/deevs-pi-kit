@@ -29,7 +29,7 @@ Stop when: [next safe action is clear]
 
 Bounded searches only: `rg`, `find`, package metadata, obvious entrypoints. Source-of-truth order: source/tests/config/CI beat project docs; project docs beat chains/wiki. Mark uncertainty instead of smoothing conflicts.
 
-Pi-native: `read` for source/docs, `bash` for bounded searches, `subagent` only when the area spans enough files that a bounded read-only map helps (explicit `cwd`, paths, output shape; settle with `subagent_wait`), a small Mermaid diagram only when it beats prose, `chain_save` only when the map is useful future context.
+Pi-native: `read` for source/docs, `bash` for bounded searches, `subagent` only when the area spans enough files that a bounded read-only map helps (explicit `cwd`, paths, output shape; continue other mapping work, then collect with `subagent_wait` when needed), a small Mermaid diagram only when it beats prose, `chain_save` only when the map is useful future context.
 
 ## Rust checklist (inspect only what is relevant)
 

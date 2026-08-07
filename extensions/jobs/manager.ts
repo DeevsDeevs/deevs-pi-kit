@@ -8,7 +8,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { detectDetachedArgv, detectDetachedShell } from "../shared/process-safety.ts";
 import { ownsProcessIdentity, quiesceProcessGroup, readProcessIdentity, trySignalGroup } from "../shared/process-group.ts";
 import { requestRuntimeDelivery } from "../shared/runtime-delivery.ts";
-import { runtimeEvents } from "../shared/runtime-events.ts";
+import { consumeRuntimeEvent, runtimeEvents } from "../shared/runtime-events.ts";
 import { JobBuffer } from "./buffer.ts";
 import type { JobChunk, JobReadInput, JobReadResult, JobRecord, JobRuntime, JobSpec, JobStartInput, JobStatus, JobStream } from "./types.ts";
 
@@ -175,6 +175,10 @@ export class JobManager {
 
 	async wait(ids: string[], waitMs?: number, signal?: AbortSignal): Promise<JobRecord[]> {
 		return Promise.all(ids.map((id) => this.waitOne(id, waitMs, signal)));
+	}
+
+	consumeTerminal(records: JobRecord[], claimant: string): void {
+		for (const record of records) if (TERMINAL.has(record.runtime.status)) consumeRuntimeEvent(this.pi, `terminal:${record.spec.id}:${record.spec.generation}`, claimant);
 	}
 
 	async stop(id: string, status: "cancelled" | "timeout" | "failed" = "cancelled", error?: string): Promise<JobRecord> {
@@ -405,6 +409,7 @@ export class JobManager {
 				source: { kind: "job", id: record.spec.id, generation: record.spec.generation },
 				type: "terminal",
 				status: jobTerminalStatus(record.runtime.status),
+				delivery: "notify",
 				createdAt: record.runtime.endedAt ?? Date.now(),
 				summary: record.runtime.error || `${record.spec.name} ${record.runtime.status}`,
 				artifactRef: record.spec.artifactsDir,

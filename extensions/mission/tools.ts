@@ -92,6 +92,7 @@ interface MissionToolHooks extends MissionCompletionHooks {
 	workspaceFingerprint?: (ctx: ExtensionContext) => Promise<string | undefined>;
 	onObjectiveUpdated?: (input: MissionUpdateInput, ctx: ExtensionContext) => void;
 	onResumed?: (ctx: ExtensionContext) => void;
+	continuationBlockers?: (ctx: ExtensionContext) => string[];
 }
 
 const USER_END_SUMMARY = "Mission ended at explicit user request. Use /mission resume to continue if needed.";
@@ -215,7 +216,10 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 			state.loadFromSession(ctx);
 			const current = state.readAny();
 			if (!current) throw new Error("No Mission exists on this branch.");
-			if (current.status === "active") return { content: [{ type: "text" as const, text: `Mission already active: ${current.title}` }], details: { mission: current, usage: state.readUsage() } };
+			if (current.status === "active") {
+				const blockers = hooks.continuationBlockers?.(ctx) ?? [];
+				return { content: [{ type: "text" as const, text: `Mission already active: ${current.title}${formatContinuation(blockers)}` }], details: { mission: current, usage: state.readUsage(), continuationBlockers: blockers } };
+			}
 			const explanation = params.reason.trim();
 			if (!explanation) throw new Error("Resuming a Mission requires a reason.");
 			const remainingLimit = state.limitExceeded();
@@ -225,7 +229,8 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 			if (!await ctx.ui.confirm("Resume Mission?", `Resume autonomous work because: ${explanation}`)) throw new Error("Mission resume was not authorized by the user.");
 			const mission = await resumeMission(pi, state, explanation);
 			hooks.onResumed?.(ctx);
-			return { content: [{ type: "text" as const, text: `Mission resumed: ${mission.title}\n${formatMissionLocation(mission)}` }], details: { mission, usage: state.readUsage() } };
+			const blockers = hooks.continuationBlockers?.(ctx) ?? [];
+			return { content: [{ type: "text" as const, text: `Mission resumed: ${mission.title}\n${formatMissionLocation(mission)}${formatContinuation(blockers)}` }], details: { mission, usage: state.readUsage(), continuationBlockers: blockers } };
 		},
 	});
 
@@ -478,6 +483,10 @@ export function formatMission(mission: ReturnType<MissionState["readAny"]>, usag
 		formatMissionLocation(mission),
 		mission.lastReason ? `Reason: ${compactMissionText(mission.lastReason, 160)}` : undefined,
 	].filter(Boolean).join("\n");
+}
+
+export function formatContinuation(blockers: string[]): string {
+	return blockers.length ? `\nContinuation waiting on:\n${blockers.map((blocker) => `- ${blocker}`).join("\n")}` : "\nAutonomous continuation wake requested.";
 }
 
 function formatMissionLocation(mission: NonNullable<ReturnType<MissionState["readAny"]>>): string {

@@ -8,7 +8,7 @@ import { defaultDelegateRoot } from "./artifacts.ts";
 import { DelegateExecutor } from "./executor.ts";
 import type { DelegateRun, DelegateRunStatus } from "./runtime-types.ts";
 import { requestRuntimeDelivery } from "../shared/runtime-delivery.ts";
-import { runtimeEvents, type RuntimeTerminalStatus } from "../shared/runtime-events.ts";
+import { consumeRuntimeEvent, runtimeEvents, type RuntimeTerminalStatus } from "../shared/runtime-events.ts";
 import { chainCheckpoints } from "../chains/checkpoint.ts";
 
 class ConcurrencyLimitError extends Error {}
@@ -45,7 +45,7 @@ export interface SubagentStartRequest {
 	tasks?: SubagentTaskInput[];
 	concurrency?: number;
 	failFast?: boolean;
-	/** Internal: foreground workflow children return through their owning tool call instead of a second wake. */
+	/** Internal: record terminal evidence but suppress the separate parent wake. */
 	deliverTerminal?: boolean;
 }
 
@@ -164,6 +164,21 @@ export class SubagentService {
 			if (group) return this.waitGroup(group, request.waitMs, signal);
 			return this.executor.wait(id, request.waitMs, signal);
 		}));
+	}
+
+	consumeTerminal(results: Array<DelegateRun | SubagentGroup>, claimant: string): void {
+		for (const result of results) {
+			if ("spec" in result) {
+				if (isTerminal(result.runtime.status)) consumeRuntimeEvent(this.pi, `terminal:${result.spec.id}:${result.spec.generation}`, claimant);
+				continue;
+			}
+			if (result.status === "running") continue;
+			consumeRuntimeEvent(this.pi, `terminal:${result.id}:${result.generation}`, claimant);
+			for (const id of result.children) {
+				const run = this.executor.find(id);
+				if (run && isTerminal(run.runtime.status)) consumeRuntimeEvent(this.pi, `terminal:${run.spec.id}:${run.spec.generation}`, claimant);
+			}
+		}
 	}
 
 	list(): { runs: DelegateRun[]; groups: SubagentGroup[] } {
@@ -333,7 +348,7 @@ export class SubagentService {
 		while (group.status === "running" && !group.cancelRequestedAt && group.active.length < group.concurrency && group.pending.length) {
 			const task = group.pending.shift()!;
 			try {
-				const run = await this.startTask(task, ctx, true);
+				const run = await this.startTask({ ...task, deliverTerminal: false }, ctx, true);
 				group.children.push(run.spec.id);
 				if (!isTerminal(run.runtime.status)) group.active.push(run.spec.id);
 				(group.childRoots ??= {})[run.spec.id] = path.dirname(path.dirname(run.spec.artifactsDir));
@@ -393,10 +408,7 @@ export class SubagentService {
 			run.runtime.chainCheckpointRecordedAt = Date.now();
 			writeFileSync(run.spec.runtimePath, JSON.stringify(run.runtime));
 		}
-		if (run.spec.deliverTerminal === false) {
-			this.pruneTerminal();
-			return;
-		}
+		const attention = run.runtime.status === "needs_attention";
 		runtimeEvents.record(this.pi, {
 			type: "emit",
 			event: {
@@ -404,8 +416,9 @@ export class SubagentService {
 				id: `terminal:${run.spec.id}:${run.spec.generation}`,
 				dedupeKey: terminalDedupeKey,
 				source: { kind: "subagent", id: run.spec.id, generation: run.spec.generation },
-				type: run.runtime.status === "needs_attention" ? "attention" : "terminal",
+				type: attention ? "attention" : "terminal",
 				status: terminalStatus(run.runtime.status),
+				delivery: attention || run.spec.deliverTerminal !== false ? "notify" : "record_only",
 				createdAt: run.runtime.endedAt ?? Date.now(),
 				summary: run.runtime.output?.split(/\r?\n/, 1)[0]?.slice(0, 240) || run.runtime.error || run.runtime.status,
 				artifactRef: run.spec.artifactsDir,
@@ -598,6 +611,7 @@ export class SubagentService {
 				source: { kind: "subagent-group", id: group.id, generation: group.generation },
 				type: "terminal",
 				status: group.status,
+				delivery: "notify",
 				createdAt: group.endedAt ?? Date.now(),
 				summary: missing ? `${runs.length}/${group.children.length} child run record(s) settled · ${missing} missing` : `${runs.length} child run(s) settled`,
 				artifactRef: path.join(this.roots.get(group.id) ?? this.root(group.cwd), "groups", `${group.id}.json`),

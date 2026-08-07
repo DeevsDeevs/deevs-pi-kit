@@ -42,11 +42,12 @@ export default function jobsExtension(pi: ExtensionAPI): void {
 		label: "Start Job",
 		description: "Start a bounded non-agent pipe job with capped output, readiness, hard timeout, and process-tree cancellation.",
 		promptSnippet: "Run a bounded non-interactive command; persistent or interactive processes belong in Herdr.",
-		promptGuidelines: ["Do not use Jobs for servers, REPLs, terminal panes, or unattended schedules.", "Use argv instead of shell command when shell features are unnecessary."],
+		promptGuidelines: ["Do not use Jobs for servers, REPLs, terminal panes, or unattended schedules.", "Use argv instead of shell command when shell features are unnecessary.", "After starting a Job, continue runnable independent work. Terminal events wake idle Pi automatically; wait only at a result dependency, cancellation, or final-settlement gate."],
 		parameters: StartSchema,
 		async execute(_toolCallId, params: JobStartInput, signal, _onUpdate, context) {
 			ctx = context;
 			const job = await manager.start(params, context, signal);
+			manager.consumeTerminal([job], runtimeClaimant(context));
 			updateStatus();
 			return { content: [{ type: "text" as const, text: formatJob(job) }], details: job };
 		},
@@ -58,11 +59,13 @@ export default function jobsExtension(pi: ExtensionAPI): void {
 		name: "job_wait",
 		label: "Wait for Job",
 		description: "Wait for one or more Jobs to settle without polling.",
-		promptSnippet: "Wait on bounded Job terminal states.",
+		promptSnippet: "Collect bounded Job results only at a dependency, cancellation, or final-settlement gate.",
+		promptGuidelines: ["Do not wait while runnable independent work remains; idle Pi is woken automatically when the Job settles.", "Prefer one bounded wait over polling."],
 		parameters: WaitSchema,
 		async execute(_toolCallId, params: { ids: string[]; waitMs?: number }, signal, _onUpdate, context) {
 			ctx = context;
 			const jobs = await manager.wait(params.ids, params.waitMs, signal);
+			manager.consumeTerminal(jobs, runtimeClaimant(context));
 			updateStatus();
 			return { content: [{ type: "text" as const, text: jobs.map(formatJob).join("\n") }], details: { jobs } };
 		},
@@ -79,6 +82,7 @@ export default function jobsExtension(pi: ExtensionAPI): void {
 		async execute(_toolCallId, params: JobReadInput, _signal, _onUpdate, context) {
 			ctx = context;
 			const result = manager.read(params);
+			manager.consumeTerminal([result.job], runtimeClaimant(context));
 			return { content: [{ type: "text" as const, text: formatRead(result) }], details: result };
 		},
 		renderCall(args, theme) { return new Text(theme.fg("toolTitle", theme.bold("job_read ")) + theme.fg("muted", `${args.id} @${args.afterSeq ?? 0}`), 0, 0); },
@@ -97,6 +101,7 @@ export default function jobsExtension(pi: ExtensionAPI): void {
 		async execute(_toolCallId, params: { id: string }, _signal, _onUpdate, context) {
 			ctx = context;
 			const job = await manager.stop(params.id);
+			manager.consumeTerminal([job], runtimeClaimant(context));
 			updateStatus();
 			return { content: [{ type: "text" as const, text: formatJob(job) }], details: job };
 		},
@@ -114,7 +119,10 @@ export default function jobsExtension(pi: ExtensionAPI): void {
 				context.ui.notify(`Cleared ${manager.clearTerminal(id)} terminal Job record(s).`, "info");
 				return;
 			}
-			if (action === "stop" && id) await manager.stop(id);
+			if (action === "stop" && id) {
+				const stopped = await manager.stop(id);
+				manager.consumeTerminal([stopped], runtimeClaimant(context));
+			}
 			const jobs = manager.list();
 			let exact = jobs.find((job) => job.spec.id === action);
 			if (!action && context.mode === "tui" && context.hasUI) {
@@ -165,6 +173,10 @@ export default function jobsExtension(pi: ExtensionAPI): void {
 		ctx?.ui.setStatus("jobs", undefined);
 		ctx = undefined;
 	});
+}
+
+function runtimeClaimant(ctx: ExtensionContext): string {
+	return ctx.sessionManager.getSessionFile() ?? `memory:${ctx.sessionManager.getSessionId()}`;
 }
 
 function formatJob(job: JobRecord): string {

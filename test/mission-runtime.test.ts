@@ -105,6 +105,31 @@ describe("Mission runtime", () => {
 		expect(prompt?.systemPrompt).toContain("kit@main");
 	});
 
+	it("keeps autonomy active when a typed mid-stream steer aborts the current run", async () => {
+		const test = await setup();
+		await test.emit("input", { source: "interactive", streamingBehavior: "steer", text: "Also update docs" });
+		await test.emit("agent_end", { messages: [{ role: "assistant", content: [], stopReason: "aborted" }] });
+		await test.emit("agent_settled");
+		expect(test.state.read()?.status).toBe("active");
+	});
+
+	it("does not treat extension-injected steering as user authorization", async () => {
+		const test = await setup();
+		await test.emit("input", { source: "extension", streamingBehavior: "steer", text: "runtime wake" });
+		await test.emit("agent_end", { messages: [{ role: "assistant", content: [], stopReason: "aborted" }] });
+		await test.emit("agent_settled");
+		expect(test.state.read()?.status).toBe("paused");
+	});
+
+	it("attributes an abort to the latest typed steer source", async () => {
+		const test = await setup();
+		await test.emit("input", { source: "interactive", streamingBehavior: "steer", text: "user steer" });
+		await test.emit("input", { source: "extension", streamingBehavior: "steer", text: "runtime steer" });
+		await test.emit("agent_end", { messages: [{ role: "assistant", content: [], stopReason: "aborted" }] });
+		await test.emit("agent_settled");
+		expect(test.state.read()?.status).toBe("paused");
+	});
+
 	it("lets the model-callable tool policy authorize recoverable user-requested closure", async () => {
 		const test = await setup();
 		expect(await test.runtime.validateCompletion({ userRequested: true }, test.ctx)).toEqual([]);
@@ -122,6 +147,7 @@ describe("Mission runtime", () => {
 		try {
 			await test.emit("session_start", { reason: "resume" });
 			expect(test.messages).toEqual([]);
+			expect(test.runtime.continuationBlockers(test.ctx)).toContain("Subagent groups still running: g_active");
 			const blockers = await test.runtime.validateCompletion({ userRequested: true }, test.ctx);
 			expect(blockers).toContain("Subagent groups have not settled: g_active");
 			expect(blockers).toContain("Subagent launches have not settled: 1");
@@ -224,8 +250,13 @@ describe("Mission runtime", () => {
 		const artifactsDir = mkdtempSync(join(tmpdir(), "mission-review-mutation-"));
 		const run = { spec: { id: "review-mutation", artifactsDir }, runtime: { status: "running", output: "" } } as unknown as DelegateRun;
 		let listener: ((candidate: DelegateRun) => void) | undefined;
+		let restarted: { deliverTerminal?: boolean } | undefined;
 		const service = {
 			list: () => ({ runs: [], groups: [] }),
+			start: async (input: { deliverTerminal?: boolean }) => {
+				restarted = input;
+				return { spec: { id: "review-mutation-retry" }, runtime: { status: "running" } } as DelegateRun;
+			},
 			executor: { get: () => run, onChange: (value: (candidate: DelegateRun) => void) => { listener = value; return () => undefined; } },
 		} as unknown as SubagentService;
 		setSubagentService(service);
@@ -237,8 +268,10 @@ describe("Mission runtime", () => {
 			run.runtime.status = "completed";
 			writeFileSync(join(artifactsDir, "review-report.json"), JSON.stringify({ version: 1, verdict: "clear", findings: [] }));
 			listener?.(run);
-			await vi.waitFor(() => expect(test.state.read()?.reviewStatus).toBe("due"), { timeout: 500 });
+			await vi.waitFor(() => expect(test.state.read()?.reviewRunId).toBe("review-mutation-retry"), { timeout: 500 });
+			expect(test.state.read()?.reviewStatus).toBe("running");
 			expect(test.state.read()?.reviewReason).toContain("worktree changed while independent review was running");
+			expect(restarted?.deliverTerminal).toBe(false);
 		} finally {
 			rmSync(artifactsDir, { recursive: true, force: true });
 			clearSubagentService(service);
@@ -275,17 +308,19 @@ describe("Mission runtime", () => {
 		}
 	});
 
-	it("moves a lost reviewer run back to a recoverable due state", async () => {
+	it("re-admits a lost reviewer without a parent polling turn", async () => {
 		const test = await setup();
 		const service = {
 			list: () => ({ runs: [], groups: [] }),
+			start: async () => ({ spec: { id: "replacement-review" }, runtime: { status: "running" } }) as DelegateRun,
 			executor: { get: () => { throw new Error("Unknown delegate run"); }, onChange: () => () => undefined },
 		} as unknown as SubagentService;
 		setSubagentService(service);
 		try {
 			test.state.append(test.pi, test.state.reviewEvent("running", { runId: "missing-review", reason: "reviewing" }));
 			await test.emit("session_start", { reason: "resume" });
-			expect(test.state.read()?.reviewStatus).toBe("due");
+			expect(test.state.read()?.reviewStatus).toBe("running");
+			expect(test.state.read()?.reviewRunId).toBe("replacement-review");
 			expect(test.state.read()?.reviewReason).toContain("independent review run lost");
 		} finally {
 			clearSubagentService(service);
@@ -479,10 +514,10 @@ describe("Mission runtime", () => {
 		createGitRepo(parent, "repo-a");
 		createGitRepo(parent, "repo-b");
 		const test = await setup({ cwd: parent, exec: actualGitExec });
-		let started: { cwd?: string; task?: string } | undefined;
+		let started: { cwd?: string; task?: string; deliverTerminal?: boolean } | undefined;
 		const service = {
 			list: () => ({ runs: [], groups: [] }),
-			start: async (input: { cwd?: string; task?: string }) => {
+			start: async (input: { cwd?: string; task?: string; deliverTerminal?: boolean }) => {
 				started = input;
 				return { spec: { id: "workspace-review" }, runtime: { status: "running", startedAt: Date.now() } } as DelegateRun;
 			},
@@ -497,6 +532,7 @@ describe("Mission runtime", () => {
 			expect(started?.cwd).toBe(parent);
 			expect(started?.task).toContain("repo-a");
 			expect(started?.task).toContain("repo-b");
+			expect(started?.deliverTerminal).toBe(false);
 			expect(test.state.read()?.reviewStatus).toBe("running");
 		} finally {
 			await test.emit("session_shutdown");
