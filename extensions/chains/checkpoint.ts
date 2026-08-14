@@ -73,7 +73,6 @@ export class ChainCheckpointService {
 	private remindNextTurn = false;
 	private gitBeforeTurn?: string;
 	private forcedWakeAt?: number;
-	private autoCompactionPending = false;
 
 	constructor(private readonly pi: ExtensionAPI) {}
 
@@ -136,27 +135,7 @@ export class ChainCheckpointService {
 	}
 
 	contextCompacted(): void {
-		this.autoCompactionPending = false;
 		if (this.state.contextPressureHandled) this.record({ type: "context_reset", at: Date.now() });
-	}
-
-	compactionRequired(ctx: ExtensionContext): boolean {
-		const percent = ctx.getContextUsage()?.percent;
-		return percent !== null && percent !== undefined && percent >= 90
-			&& this.state.status === "saved" && !this.state.waiverReason && this.state.contextPressureHandled;
-	}
-
-	maybeAutoCompact(ctx: ExtensionContext, force = false): boolean {
-		if (!this.compactionRequired(ctx) || this.autoCompactionPending) return false;
-		if (!force && (!ctx.isIdle() || ctx.hasPendingMessages())) return false;
-		this.autoCompactionPending = true;
-		const target = this.state.chain ? `${this.state.chain}@${this.state.branch ?? "main"}` : "the saved Chain checkpoint";
-		ctx.compact({
-			customInstructions: `Preserve the latest durable ${target} checkpoint, active Mission/Todos, decisions, validation, modified files, blockers, and exact next step. Prefer the saved Chain link over rediscovery.`,
-			onComplete: () => { this.autoCompactionPending = false; },
-			onError: () => { this.autoCompactionPending = false; },
-		});
-		return true;
 	}
 
 	immediateCheckpointDue(): boolean {
@@ -225,7 +204,7 @@ export function registerChainCheckpoint(pi: ExtensionAPI, service: ChainCheckpoi
 	pi.on("session_start", (_event, ctx) => service.restore(ctx, true));
 	pi.on("session_tree", (_event, ctx) => service.restore(ctx, true));
 	pi.on("session_compact", (_event, ctx) => {
-		service.restore(ctx);
+		service.restore(ctx, true);
 		service.contextCompacted();
 	});
 	pi.on("turn_start", async (_event, ctx) => {
@@ -237,7 +216,6 @@ export function registerChainCheckpoint(pi: ExtensionAPI, service: ChainCheckpoi
 		await service.detectGitMutation(ctx.cwd);
 		service.checkContextPressure(ctx);
 		service.forceCheckpointTurn(ctx);
-		service.maybeAutoCompact(ctx);
 	});
 	pi.on("before_agent_start", (event, ctx) => {
 		service.restore(ctx);
@@ -251,9 +229,6 @@ export function registerChainCheckpoint(pi: ExtensionAPI, service: ChainCheckpoi
 		service.checkContextPressure(ctx);
 		const reason = service.blockTool(event.toolName);
 		if (reason) return { block: true, reason };
-		if (!service.compactionRequired(ctx)) return undefined;
-		service.maybeAutoCompact(ctx, true);
-		return { block: true, reason: "Context is at least 90% full and the required Chain checkpoint is saved. Compaction started; retry after it completes." };
 	});
 	pi.on("tool_execution_start", (event) => {
 		toolArgs.set(event.toolCallId, event.args);
@@ -267,7 +242,6 @@ export function registerChainCheckpoint(pi: ExtensionAPI, service: ChainCheckpoi
 		if (event.toolName === "chain_save" && typeof args?.chain === "string") {
 			const link = asRecord(details?.link);
 			service.saved(args.chain, typeof args.branch === "string" ? args.branch : "main", typeof link?.filename === "string" ? link.filename : undefined);
-			service.maybeAutoCompact(ctx, true);
 			return;
 		}
 		if ((event.toolName === "chain_load" || event.toolName === "chain_context") && typeof args?.chain === "string") {
