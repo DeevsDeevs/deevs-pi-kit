@@ -7,6 +7,7 @@ import { JobBuffer } from "../extensions/jobs/buffer.ts";
 import { JobManager } from "../extensions/jobs/manager.ts";
 import { claimJobManager, clearJobManager, releaseJobManager, setJobManager } from "../extensions/jobs/registry.ts";
 import { detectDetachedArgv } from "../extensions/shared/process-safety.ts";
+import { pendingRuntimeEvents, replayRuntimeEventEntries } from "../extensions/shared/runtime-events.ts";
 
 const cleanups: Array<() => void> = [];
 afterEach(() => cleanups.splice(0).reverse().forEach((cleanup) => cleanup()));
@@ -71,6 +72,15 @@ describe("bounded Jobs", () => {
 		const operations = branch.map((entry) => entry.data as { type?: string; eventId?: string; claimant?: string });
 		expect(operations.some((operation) => operation.type === "claim" && operation.eventId === eventId)).toBe(true);
 		expect(operations.some((operation) => operation.type === "ack" && operation.eventId === eventId)).toBe(true);
+	});
+
+	it("consumes a terminal wake when its Job record is cleared", async () => {
+		const { manager, ctx, branch } = setup();
+		const started = await manager.start({ name: "discarded", argv: [process.execPath, "-e", "console.log('done')"] }, ctx);
+		await manager.wait([started.spec.id]);
+		expect(pendingRuntimeEvents(replayRuntimeEventEntries(branch)).map((event) => event.source.id)).toEqual([started.spec.id]);
+		expect(manager.clearTerminal(started.spec.id)).toBe(1);
+		expect(pendingRuntimeEvents(replayRuntimeEventEntries(branch))).toEqual([]);
 	});
 
 	it("rejects explicit detached-process syntax for shell and argv Jobs", async () => {

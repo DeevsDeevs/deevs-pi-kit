@@ -58,6 +58,7 @@ export class JobManager {
 		let cleared = 0;
 		for (const record of candidates) {
 			if (!TERMINAL.has(record.runtime.status)) continue;
+			consumeRuntimeEvent(this.pi, `terminal:${record.spec.id}:${record.spec.generation}`, this.parentSessionFile ?? "job-manager");
 			this.records.delete(record.spec.id);
 			this.buffers.delete(record.spec.id);
 			rmSync(record.spec.artifactsDir, { recursive: true, force: true });
