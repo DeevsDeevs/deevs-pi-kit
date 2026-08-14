@@ -7,6 +7,7 @@ import {
 
 export const RUNTIME_DELIVERY_MESSAGE = "deevs.runtime-delivery.v1";
 const STALE_CLAIM_MS = 30_000;
+const MAX_EVENTS_PER_DELIVERY = 12;
 
 export class RuntimeDeliveryCoordinator {
 	private pi?: ExtensionAPI;
@@ -51,7 +52,7 @@ export class RuntimeDeliveryCoordinator {
 			return;
 		}
 		if (!idle) return;
-		const events = pendingRuntimeEvents(runtimeEvents.read());
+		const events = pendingRuntimeEvents(runtimeEvents.read()).slice(0, MAX_EVENTS_PER_DELIVERY);
 		if (!events.length) return;
 
 		this.delivering = true;
@@ -143,8 +144,7 @@ export function requestRuntimeDelivery(): void {
 }
 
 function deliveryContent(events: RuntimeEvent[]): string {
-	const lines = events.slice(0, 12).map((event) => `- ${event.source.kind} ${event.source.id} [${event.status}]: ${event.summary}`);
-	if (events.length > lines.length) lines.push(`- ${events.length - lines.length} more terminal event(s)`);
+	const lines = events.map((event) => `- ${event.source.kind} ${event.source.id} [${event.status}]: ${event.summary}`);
 	return [
 		`Background work reached a terminal state.`,
 		...lines,
