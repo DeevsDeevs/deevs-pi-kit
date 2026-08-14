@@ -275,17 +275,19 @@ describe("cron extension surface", () => {
 		shutdown?.();
 	});
 
-	it("registers one compact model tool and one command", () => {
-		const tools: string[] = [];
+	it("registers one compact semantic scheduling tool and one command", () => {
+		const tools: Array<{ name: string; description: string; promptSnippet?: string; promptGuidelines?: string[] }> = [];
 		const commands: string[] = [];
 		const pi = {
-			registerTool(tool: { name: string }) { tools.push(tool.name); },
+			registerTool(tool: typeof tools[number]) { tools.push(tool); },
 			registerCommand(name: string) { commands.push(name); },
 			registerMessageRenderer() {},
 			on() {},
 		} as unknown as ExtensionAPI;
 		cronExtension(pi);
-		expect(tools).toEqual(["cron"]);
+		expect(tools.map((tool) => tool.name)).toEqual(["cron"]);
+		expect([tools[0]!.description, tools[0]!.promptSnippet, ...(tools[0]!.promptGuidelines ?? [])].join(" ")).toContain("wall-clock");
+		expect(tools[0]!.promptGuidelines?.join(" ")).toContain("Do not poll Jobs, Subagents, or Workflows");
 		expect(commands).toEqual(["cron"]);
 	});
 });

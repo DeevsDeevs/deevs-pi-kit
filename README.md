@@ -72,7 +72,7 @@ Canonical Mission state is a validated, revisioned snapshot in `.missions/.state
 
 ### Cron
 
-Schedule a prompt for the current Pi session with a standard five-field local-time cron expression. Tasks persist by exact Pi session id, fire only while that session process is idle, boundedly coalesce missed recurring occurrences on resume, and advance only after Pi admits the generated `<cron-fire>` follow-up.
+Schedule a prompt for the current Pi session with a standard five-field local-time cron expression. Use it for user-requested reminders and recurring timed checks/reports, or a near-term autonomous one-shot return when wall-clock delay is the real dependency and no completion event exists. Do not poll Jobs, Subagents, or Workflows; their terminal events already wake idle Pi. Tasks persist by exact Pi session id, fire only while that session process is idle, boundedly coalesce missed recurring occurrences on resume, and advance only after Pi admits the generated `<cron-fire>` follow-up.
 
 Tool: `cron` with `create`, `list`, and `delete` actions. Command: `/cron` or `/cron delete <id>`.
 
@@ -86,7 +86,7 @@ Tools: `chain_save`, `chain_load`, `chain_fork`, `chain_context`, `chain_list`, 
 
 Commands: `/chains`, `/chain-link`, `/chain-load`, `/chain-fork`, `/chain-list`, `/chain-search`, `/chain-waive <reason>`.
 
-Pi session entries track active `saved` versus `checkpoint due` state across resume and typed durable milestones. At 80% context usage, other tools are blocked until `chain_save`; after a saved checkpoint, 90% usage triggers native Pi compaction while idle so the next turn does not remain over threshold. See [`extensions/chains/README.md`](extensions/chains/README.md).
+Pi session entries track active `saved` versus `checkpoint due` state across resume and typed durable milestones. At 80% context usage, other tools are blocked until `chain_save`; Pi's native compactor then retains full lifecycle control, and the first post-compaction turn is reminded to reload the saved Chain. See [`extensions/chains/README.md`](extensions/chains/README.md).
 
 ### Wiki
 
