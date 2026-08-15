@@ -142,6 +142,10 @@ Project settings persist to `.pi/notifier.json`.
 
 When Pi runs inside Herdr (`HERDR_ENV=1`), normalize legacy and Kitty Alt+Enter sequences produced by Shift+Enter compatibility mappings into a newline. This is experimental: after a terminal multiplexer collapses Shift+Enter into Alt+Enter, genuine Alt+Enter cannot be distinguished and is also treated as a newline.
 
+### Hosted runtime design
+
+The proposed durable Monitor/inbox service is design-only and not included in the current package. Its minimal versioned protocol, explicit capability model, exact Pi/Herdr identity binding, claim/ack lifecycle, and first E2E gate are specified in [`extensions/runtime/PROTOCOL.md`](extensions/runtime/PROTOCOL.md).
+
 ## Skills
 
 Skills provide progressive guidance for when and how to use the tools:
