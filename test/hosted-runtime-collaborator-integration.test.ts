@@ -91,6 +91,18 @@ function baseResponse(request: Request): unknown {
 }
 
 describe("hosted collaborator Pi integration", () => {
+	it("lists durable collaborator state from Runtime instead of session memory", async () => {
+		const test = await setup((request) => request.method === "participant.list"
+			? { participants: [mainParticipant, { ...fableParticipant, state: "vacant", holderTargetKey: undefined, holderLive: false }] }
+			: baseResponse(request));
+		await test.integration.sessionStart(test.ctx as never);
+		expect(await test.integration.listCollaborators(test.ctx as never)).toMatchObject([
+			{ protocol: "review", participantId: "main", state: "held", holderLive: true },
+			{ protocol: "review", participantId: "fable", state: "vacant", holderLive: false },
+		]);
+		await test.integration.sessionShutdown();
+	});
+
 	it("bootstraps identity from Herdr env and persists exact acquisition", async () => {
 		process.env.PI_RUNTIME_COLLABORATE = "review:main";
 		const test = await setup((request) => {
