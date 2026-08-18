@@ -34,12 +34,13 @@ export default function cronExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "cron",
 		label: "Cron",
-		description: "Create, list, or delete process-local schedules for the current Pi session. Fires while the session is open or when that same session resumes; not an OS scheduler.",
-		promptSnippet: "Schedule a prompt in the current Pi session with cron create/list/delete actions.",
+		description: "Schedule a prompt to return to this exact Pi session later, either once or on a recurring five-field local-time cron schedule. The session process must remain open or be resumed.",
+		promptSnippet: "Use Session Cron for reminders, recurring timed work, or a near-term return when progress genuinely depends on wall-clock time and no completion event exists.",
 		promptGuidelines: [
-			"Use cron only when the user requests a reminder or recurring action in this Pi session.",
-			"Cron uses five local-time fields and cannot wake a closed Pi process; overdue fires coalesce when the same session resumes.",
-			"Use recurring=false for one-shot reminders and cron action=delete to cancel a schedule.",
+			"Use cron semantically for user-requested reminders or recurring timed work, or for a short autonomous one-shot return when external state has no terminal event and waiting now would waste the turn.",
+			"Do not poll Jobs, Subagents, or Workflows with cron; their terminal delivery already wakes idle Pi.",
+			"Cron cannot wake a closed Pi process or machine; overdue fires coalesce only when the exact session resumes.",
+			"Use recurring=false for one-shot work, and report the task id plus /cron delete <id> cancellation path after creation.",
 		],
 		parameters: CronSchema,
 		async execute(_toolCallId, input: CronInput): Promise<AgentToolResult<CronDetails>> {

@@ -32,7 +32,7 @@ extensions/ask-user/    Interactive clarification UI (`ask_user`)
 extensions/codex-fast/  OpenAI Codex Fast mode service tier (`/codex-fast`)
 extensions/notifier/    Ready-for-input terminal notifications
 extensions/herdr-compat/ Experimental Shift+Enter compatibility for Pi inside Herdr
-extensions/runtime/     Idle delivery and rendering of terminal runtime events
+extensions/runtime/     Durable Monitor inbox and exact Pi/Herdr wake delivery
 skills/                 Agent behavior guidance
 ```
 
@@ -72,7 +72,7 @@ Canonical Mission state is a validated, revisioned snapshot in `.missions/.state
 
 ### Cron
 
-Schedule a prompt for the current Pi session with a standard five-field local-time cron expression. Tasks persist by exact Pi session id, fire only while that session process is idle, boundedly coalesce missed recurring occurrences on resume, and advance only after Pi admits the generated `<cron-fire>` follow-up.
+Schedule a prompt for the current Pi session with a standard five-field local-time cron expression. Use it for user-requested reminders and recurring timed checks/reports, or a near-term autonomous one-shot return when wall-clock delay is the real dependency and no completion event exists. Do not poll Jobs, Subagents, or Workflows; their terminal events already wake idle Pi. Tasks persist by exact Pi session id, fire only while that session process is idle, boundedly coalesce missed recurring occurrences on resume, and advance only after Pi admits the generated `<cron-fire>` follow-up.
 
 Tool: `cron` with `create`, `list`, and `delete` actions. Command: `/cron` or `/cron delete <id>`.
 
@@ -86,7 +86,7 @@ Tools: `chain_save`, `chain_load`, `chain_fork`, `chain_context`, `chain_list`, 
 
 Commands: `/chains`, `/chain-link`, `/chain-load`, `/chain-fork`, `/chain-list`, `/chain-search`, `/chain-waive <reason>`.
 
-Pi session entries track active `saved` versus `checkpoint due` state across resume and typed durable milestones. At 80% context usage, other tools are blocked until `chain_save`; after a saved checkpoint, 90% usage triggers native Pi compaction while idle so the next turn does not remain over threshold. See [`extensions/chains/README.md`](extensions/chains/README.md).
+Pi session entries track active `saved` versus `checkpoint due` state across resume and typed durable milestones. At 80% context usage, other tools are blocked until `chain_save`; Pi's native compactor then retains full lifecycle control, and the first post-compaction turn is reminded to reload the saved Chain. See [`extensions/chains/README.md`](extensions/chains/README.md).
 
 ### Wiki
 
@@ -142,6 +142,12 @@ Project settings persist to `.pi/notifier.json`.
 
 When Pi runs inside Herdr (`HERDR_ENV=1`), normalize legacy and Kitty Alt+Enter sequences produced by Shift+Enter compatibility mappings into a newline. This is experimental: after a terminal multiplexer collapses Shift+Enter into Alt+Enter, genuine Alt+Enter cannot be distinguished and is also treated as a newline.
 
+### Hosted runtime
+
+Runtime watches newly created direct-child files and delivers them to one exact Pi session across restarts. It stores events before using Herdr to wake the verified idle pane; Herdr remains the process and prompt-delivery layer.
+
+Commands: `/runtime start`, `/runtime status`, `/runtime register`, `/runtime monitor <directory>`, and `/runtime monitor-delete`. Runtime never starts or changes Herdr layout silently. See [`extensions/runtime/PROTOCOL.md`](extensions/runtime/PROTOCOL.md).
+
 ## Skills
 
 Skills provide progressive guidance for when and how to use the tools:
@@ -158,6 +164,7 @@ validation-review missions
 ```bash
 npm install
 npm run check
+npm run smoke:runtime-release  # explicit destructive gate; requires Herdr + its Pi integration
 ```
 
-`npm run check` runs strict typechecking, the unit/integration/UI suite, reproducible RPC/print/JSON mode smokes, a full lockfile supply-chain audit (including Pi/TypeScript/Vitest development tooling), and a package dry run against Pi 0.82. The audit has one narrow, expiring exception for `GHSA-mh99-v99m-4gvg`: Pi 0.82.x's published shrinkwrap pins dev-only `brace-expansion@5.0.7` and prevents downstream selection of fixed 5.0.8; the exception expires 2026-08-15 and all other high-severity findings fail the gate.
+`npm run check` runs typechecking, tests, RPC/print/JSON mode smokes, the lockfile audit, and a package dry run. The isolated Runtime release gate is separate because it starts real Herdr and Pi processes.

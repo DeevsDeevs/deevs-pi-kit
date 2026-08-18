@@ -63,6 +63,15 @@ describe("SubagentService", () => {
 		expect(operations.some((operation) => operation.type === "ack" && operation.eventId === eventId && operation.claimant === "/tmp/parent.jsonl")).toBe(true);
 	});
 
+	it("consumes a terminal wake when its Subagent record is cleared", async () => {
+		const { service, ctx, branch } = setup();
+		const run = await service.start({ agent: "explorer", task: "Inspect." }, ctx) as DelegateRun;
+		await service.wait({ ids: [run.spec.id], waitMs: 3_000 });
+		expect(pendingRuntimeEvents(replayRuntimeEventEntries(branch)).map((event) => event.source.id)).toEqual([run.spec.id]);
+		expect(service.clearTerminal(run.spec.id)).toBe(1);
+		expect(pendingRuntimeEvents(replayRuntimeEventEntries(branch))).toEqual([]);
+	});
+
 	it("records a write-enabled terminal Chain obligation only once across reload", async () => {
 		const { service, ctx, root, pi } = setup();
 		const previous = chainCheckpoints.current;

@@ -65,9 +65,7 @@ describe("Chain checkpoint state", () => {
 	it("forces one immediate Chain checkpoint when context reaches 80 percent", () => {
 		const branch: Array<Record<string, unknown>> = [];
 		const messages: Array<{ message: unknown; options: unknown }> = [];
-		let compactCalls = 0;
 		let percent = 79;
-		let idle = true;
 		const pi = {
 			appendEntry(customType: string, data: unknown) { branch.push({ type: "custom", customType, data }); },
 			sendMessage(message: unknown, options: unknown) { messages.push({ message, options }); },
@@ -76,9 +74,8 @@ describe("Chain checkpoint state", () => {
 			getContextUsage: () => ({ tokens: 80, contextWindow: 100, percent }),
 			sessionManager: { getBranch: () => branch },
 			ui: { setStatus() {} },
-			isIdle: () => idle,
-			hasPendingMessages: () => !idle,
-			compact: () => { compactCalls++; },
+			isIdle: () => true,
+			hasPendingMessages: () => false,
 		} as unknown as ExtensionContext;
 		const service = new ChainCheckpointService(pi);
 		service.activate("kit", "main");
@@ -96,23 +93,13 @@ describe("Chain checkpoint state", () => {
 		expect(messages[0]?.options).toEqual({ triggerTurn: true, deliverAs: "followUp" });
 		service.saved("kit", "main", "checkpoint.md");
 		expect(service.blockTool("read")).toBeUndefined();
-		percent = 90;
-		idle = false;
-		expect(service.maybeAutoCompact(ctx)).toBe(false);
-		expect(service.maybeAutoCompact(ctx, true)).toBe(true);
-		expect(service.maybeAutoCompact(ctx, true)).toBe(false);
-		expect(compactCalls).toBe(1);
-		percent = 95;
-		const reloaded = new ChainCheckpointService(pi);
-		reloaded.restore(ctx);
-		reloaded.checkContextPressure(ctx);
-		expect(reloaded.read().status).toBe("saved");
-		reloaded.contextCompacted();
-		reloaded.checkContextPressure(ctx);
-		expect(reloaded.read().status).toBe("due");
+		service.contextCompacted();
+		percent = 50;
+		service.checkContextPressure(ctx);
+		expect(service.read()).toMatchObject({ status: "saved", contextPressureHandled: false });
 	});
 
-	it("compacts immediately after the 80% checkpoint is saved during an active turn", () => {
+	it("leaves compaction to Pi and reminds the first post-compaction turn", async () => {
 		const branch: Array<Record<string, unknown>> = [];
 		const handlers = new Map<string, (...args: any[]) => unknown>();
 		let compactCalls = 0;
@@ -123,6 +110,7 @@ describe("Chain checkpoint state", () => {
 			registerEntryRenderer() {},
 		} as unknown as ExtensionAPI;
 		const ctx = {
+			cwd: "/tmp/project",
 			getContextUsage: () => ({ tokens: percent, contextWindow: 100, percent }),
 			sessionManager: { getBranch: () => branch },
 			ui: { setStatus() {} }, isIdle: () => false, hasPendingMessages: () => true,
@@ -133,28 +121,15 @@ describe("Chain checkpoint state", () => {
 		service.activate("kit", "main");
 		service.checkContextPressure(ctx);
 		handlers.get("tool_execution_start")!({ toolCallId: "save-1", args: { chain: "kit", branch: "main" } });
-		percent = 90;
+		percent = 95;
 		handlers.get("tool_execution_end")!({ toolCallId: "save-1", toolName: "chain_save", isError: false, result: { details: { link: { filename: "checkpoint.md" } } } }, ctx);
-		expect(service.read().status).toBe("saved");
-		expect(compactCalls).toBe(1);
-	});
-
-	it("does not auto-compact a waived context-pressure checkpoint", () => {
-		const branch: Array<Record<string, unknown>> = [];
-		let compactCalls = 0;
-		const pi = { appendEntry(customType: string, data: unknown) { branch.push({ type: "custom", customType, data }); } } as unknown as ExtensionAPI;
-		const ctx = {
-			getContextUsage: () => ({ tokens: 90, contextWindow: 100, percent: 90 }),
-			sessionManager: { getBranch: () => branch },
-			ui: { setStatus() {} }, isIdle: () => true, hasPendingMessages: () => false,
-			compact: () => { compactCalls++; },
-		} as unknown as ExtensionContext;
-		const service = new ChainCheckpointService(pi);
-		service.activate("kit", "main");
-		service.checkContextPressure(ctx);
-		service.waive("user accepted risk");
-		service.maybeAutoCompact(ctx);
+		expect(handlers.get("tool_call")!({ toolName: "read" }, ctx)).toBeUndefined();
+		await handlers.get("agent_settled")!({}, ctx);
 		expect(compactCalls).toBe(0);
+		percent = 50;
+		handlers.get("session_compact")!({}, ctx);
+		const prompt = handlers.get("before_agent_start")!({ systemPrompt: "base" }, ctx) as { systemPrompt: string };
+		expect(prompt.systemPrompt).toContain("Load this Chain before rediscovery");
 	});
 
 	it("keeps colliding long Chain names separately visible in the dashboard", async () => {
