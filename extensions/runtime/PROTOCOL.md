@@ -1,6 +1,6 @@
 # pi-kit-runtime protocol v1 (design draft)
 
-Status: **design only; not implemented**.
+Status: **implemented through durable state, transport, directory Monitor, and verified Pi registration. Exact wake/admission remains pending.**
 
 This protocol adds one local durable inbox for events that must survive a Pi process restart. The first vertical slice watches newly created files in one directory and wakes one exact Pi session through Herdr.
 
@@ -104,7 +104,7 @@ Result:
 }
 ```
 
-`runtimeId` is generated once and persisted. `epoch` changes on every runtime process start. `hello` accepts only ranges spanning v1 and returns exact version `1`. Capability values include only fields consumed by clients or varying at runtime. When Herdr wake is unavailable, `agentWake` is `"none"` and the result includes a typed degraded reason. Durable inbox persistence, offline queuing, non-recursive created-file monitoring, and lack of proven reboot survival are fixed v1 contract properties rather than redundant capability flags.
+`runtimeId` is generated once and persisted. `epoch` changes on every runtime process start. `hello` accepts only ranges spanning v1 and returns exact version `1`. Capability values include only fields consumed by clients or varying at runtime. When the implemented Herdr wake path is temporarily unavailable, `agentWake` is `"none"` and the result includes a typed degraded reason. During the pre-wake implementation checkpoints, `agentWake` is `"none"` without a degraded reason because that capability is not shipped yet. Durable inbox persistence, offline queuing, non-recursive created-file monitoring, and lack of proven reboot survival are fixed v1 contract properties rather than redundant capability flags.
 
 ## Method surface
 
@@ -158,10 +158,10 @@ The cleartext project root and Pi session ID remain in the protected runtime sta
 
 The runtime queries Herdr instead of trusting the supplied host fields. Before making the registration wakeable, it reconciles bounded `admittedClaims` copied from hosted custom messages already present in the Pi session branch. A matching historical claim may acknowledge its exact events even after lease expiry/runtime restart; a mismatched target or event set is rejected.
 
-The Pi integration reports both session ID and canonical session path through Herdr `pane.report_agent_session` under source `pi-kit-runtime`. Herdr protocol 19 returns one discriminated `AgentSessionInfo` (`kind: id | path`). Registration uses this strict predicate:
+The Pi integration consumes Herdr's authoritative Pi session report. Current Herdr's built-in Pi integration reports the canonical session path under source `herdr:pi`; an explicit Pi Kit report may use source `pi-kit-runtime`. Herdr protocol 19 returns one discriminated `AgentSessionInfo` (`kind: id | path`), so Runtime compares whichever authoritative representation is present rather than pretending both are simultaneously available. Registration uses this strict predicate:
 
 1. `paneId` resolves and its `terminalId` equals the supplied terminal ID.
-2. Reported agent-session source/agent identify the Pi Kit report.
+2. Reported agent-session source/agent identify either Herdr's built-in Pi integration (`herdr:pi`/`pi`) or the explicit Pi Kit report (`pi-kit-runtime`/`pi`).
 3. For `kind: id`, `value === piSessionId`; for `kind: path`, canonical `value === piSessionFile`. Any available authoritative field that disagrees rejects registration.
 4. Canonical Herdr cwd equals the registered project root in v1.
 5. No different live terminal already owns `targetKey`.
@@ -176,13 +176,16 @@ Result:
   "registrationId": "reg_...",
   "registrationKey": "base64url-random-256-bit",
   "leaseUntil": 1780000000000,
-  "hostStateChangeSeq": 42
+  "hostStateChangeSeq": 42,
+  "paneId": "w6:p2"
 }
 ```
 
 `registrationKey` is required for target-scoped operations and is never written to logs. Live registrations are scoped to `epoch` and kept in memory; retrying the same verified `clientGeneration` within an epoch returns the same registration/key. Clients reconnect and re-register after runtime restart. Durable monitors/events target `targetKey`, not the ephemeral registration. `pi.heartbeat` renews the short registration lease and refreshes verified host identity. A Pi reload in the same terminal/session may rotate generation and key. A different live terminal receives `conflict`; v1 has no automatic takeover.
 
 `pi.unregister` is best effort. Lease expiry or epoch change marks the client offline but does not delete monitors or queued events.
+
+The Pi extension does not silently start Runtime. `/runtime start` explicitly creates a no-focus Herdr tab and launches the packaged service with PATH `node`; `/runtime register` binds to an already-running service. On later Pi reload/session startup, the extension may re-register only when the runtime socket already exists. `/runtime monitor <directory>` and `/runtime monitor-delete` are authorized by the current registration and require a trusted project.
 
 ## Directory monitor
 
