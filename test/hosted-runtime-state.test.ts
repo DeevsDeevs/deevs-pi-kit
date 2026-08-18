@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HOSTED_ACK_RETENTION_MS, HOSTED_MONITOR_MAX_ENTRIES, HOSTED_STATE_MAX_BYTES, type HostedClaim, type HostedEvent, type HostedMonitor, type HostedTarget } from "../extensions/runtime/hosted-types.ts";
@@ -279,6 +279,13 @@ describe("hosted runtime state persistence", () => {
 		invalid.events.evt_1!.summary = "x".repeat(2_049);
 		expect(() => writeHostedRuntimeState(root, invalid)).toThrow(HostedStateStorageError);
 		expect(readHostedRuntimeState(root)).toEqual(state);
+	});
+
+	it("cleans its temporary file when the atomic rename fails", () => {
+		const root = temporaryRoot();
+		mkdirSync(runtimeStatePaths(root).state);
+		expect(() => writeHostedRuntimeState(root, emptyHostedRuntimeState())).toThrow(HostedStateStorageError);
+		expect(readdirSync(root).filter((name) => name.endsWith(".tmp"))).toEqual([]);
 	});
 
 	it("fails closed for malformed, unknown-field, mismatched-delivery, and oversized state", () => {
