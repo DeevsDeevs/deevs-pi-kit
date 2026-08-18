@@ -199,7 +199,7 @@ Mailbox messages are addressed to participants rather than historical Pi session
 
 Bodies are capped at 16 KiB and become model-visible input in the recipient Pi session. They are authored by an identity-verified participant in the same trusted project, but remain untrusted prose: bodies never authorize routing, ownership, takeover, acknowledgement, or verdicts.
 
-Herdr remains the live process and prompt layer. `/runtime collaborator-start` materializes a child Pi session, creates a no-focus tab, starts Pi, and waits for the child to acquire its environment-bootstrapped identity. The identity disposition is mirrored in Pi session history for safe reload/resume. Models may call `mail_send` and `collaborator_start`; the latter requires trusted interactive confirmation, can acquire the caller and launch only new or vacant identities, and refuses revival or takeover. Stand-down, release, revival, and takeover remain user commands.
+Herdr remains the live process and prompt layer. `/runtime collaborator-start` materializes a child Pi session, creates a no-focus tab, starts Pi, and waits for the child to acquire its environment-bootstrapped identity. The identity disposition is mirrored in Pi session history for safe reload/resume. Models may inspect current durable participants with read-only `collaborator_list`, call `mail_send`, and request `collaborator_start`; the latter requires trusted interactive confirmation, can acquire the caller and launch only new or vacant identities, and refuses revival or takeover. Stand-down, release, revival, and takeover remain user commands.
 
 ## Persistence and retention
 

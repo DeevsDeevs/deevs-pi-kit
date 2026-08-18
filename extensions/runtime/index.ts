@@ -13,6 +13,23 @@ export default function runtimeExtension(pi: ExtensionAPI): void {
 		handler: (args, ctx) => hosted.command(args, ctx),
 	});
 	pi.registerTool({
+		name: "collaborator_list",
+		label: "List Runtime Collaborators",
+		description: "List durable collaborator participants for this trusted project, including held/vacant/ended state and whether each holder is live.",
+		promptSnippet: "List durable Runtime collaborators and their current ownership state.",
+		promptGuidelines: ["Use collaborator_list instead of conversation memory when checking active collaborators, especially before reporting completion or cleanup."],
+		parameters: Type.Object({}),
+		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+			const participants = await hosted.listCollaborators(ctx);
+			return {
+				content: [{ type: "text" as const, text: participants.length > 0
+					? participants.map((participant) => `${participant.protocol}/${participant.participantId}: ${participant.state}${participant.state === "held" ? ` (${participant.holderLive ? "live" : "offline"})` : ""}`).join("\n")
+					: "No Runtime collaborators exist for this project." }],
+				details: { participants },
+			};
+		},
+	});
+	pi.registerTool({
 		name: "collaborator_start",
 		label: "Start Runtime Collaborator",
 		description: "After explicit user confirmation, acquire this Pi session's collaborator identity when needed and start one persistent Pi collaborator in a no-focus Herdr tab. Refuses revival and takeover.",

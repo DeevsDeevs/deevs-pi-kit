@@ -257,6 +257,10 @@ export class HostedRuntimeIntegration {
 		}
 	}
 
+	async listCollaborators(ctx: ExtensionContext): Promise<ClientParticipantStatus[]> {
+		return this.listParticipants(await this.requireRegistration(ctx));
+	}
+
 	async startCollaborator(input: { participantId: string; protocol?: string; callerParticipantId?: string }, ctx: ExtensionContext, signal?: AbortSignal): Promise<{ started: boolean; participant: string; paneId?: string }> {
 		if (this.collaboratorStartActive) throw new HostedRuntimeClientError("busy", "Another collaborator start is already in progress.");
 		this.collaboratorStartActive = true;
