@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { TextDecoder } from "node:util";
 import { DirectoryMonitorManager, type DirectoryMonitorOptions } from "./monitor.ts";
 import { dispatchHostedLine, encodeHostedResponse, HOSTED_MAX_REQUEST_BYTES, invalidFrame, type HostedProtocolContext } from "./protocol.ts";
+import { HostedParticipantCoordinator, type HostedParticipantCoordinatorOptions } from "./participant.ts";
 import { HerdrCliHostVerifier, RuntimeRegistrationManager, type HostedHostVerifier, type RegistrationManagerOptions } from "./registration.ts";
 import { HostedStateStore, loadOrCreateRuntimeInstance } from "./state.ts";
 import { HostedWakeCoordinator, type HostedWakeOptions } from "./wake.ts";
@@ -21,6 +22,7 @@ export interface RuntimeServerOptions {
 	monitor?: DirectoryMonitorOptions;
 	host?: HostedHostVerifier;
 	registration?: RegistrationManagerOptions;
+	participant?: HostedParticipantCoordinatorOptions;
 	wake?: HostedWakeOptions;
 }
 
@@ -37,6 +39,7 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 	const store = new HostedStateStore(options.root);
 	const host = options.host ?? new HerdrCliHostVerifier();
 	let wakes: HostedWakeCoordinator | undefined;
+	let participants: HostedParticipantCoordinator | undefined;
 	const monitors = new DirectoryMonitorManager(store, {
 		...options.monitor,
 		onEvents: (targetKey) => {
@@ -48,10 +51,12 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 		...options.registration,
 		onReady: (targetKey) => {
 			options.registration?.onReady?.(targetKey);
+			participants?.registrationReady(targetKey);
 			wakes?.request(targetKey);
 		},
 	});
 	wakes = new HostedWakeCoordinator(store, registrations, host, options.wake);
+	participants = new HostedParticipantCoordinator(store, registrations, wakes, options.participant);
 	const socketPath = options.socketPath ?? join(options.root, "runtime.sock");
 	const context: HostedProtocolContext = {
 		runtimeId: instance.runtimeId,
@@ -60,6 +65,7 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 		registrations,
 		monitors,
 		wakes,
+		participants,
 	};
 	const sockets = new Set<Socket>();
 	const server = createServer((socket) => handleConnection(socket, context, sockets));
