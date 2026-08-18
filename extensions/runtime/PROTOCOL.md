@@ -70,7 +70,7 @@ Failure:
 {"v":1,"id":"req_01...","ok":false,"error":{"code":"identity_mismatch","message":"display-only diagnostic"}}
 ```
 
-Unknown fields are rejected in v1. Request IDs correlate one connection exchange only. Every v1 mutation is naturally idempotent on typed durable keys: monitor creation uses its canonical target/directory, deletion of an already absent exact monitor succeeds, wake acceptance uses `wakeId`, and claim acknowledgement/release uses the exact receipt. Registration-time admission reconciliation uses the same receipt keys and never repeats model-visible delivery. An operation-result cache is deferred until the protocol gains a genuinely non-idempotent mutation.
+Malformed framing or JSON has no trustworthy request ID, so its failure uses `"id": null` and the runtime closes that connection after responding. V1 request lines are capped at 64 KiB. Unknown fields are rejected in v1. Request IDs correlate one connection exchange only. Every v1 mutation is naturally idempotent on typed durable keys: monitor creation uses its canonical target/directory, deletion of an already absent exact monitor succeeds, wake acceptance uses `wakeId`, and claim acknowledgement/release uses the exact receipt. Registration-time admission reconciliation uses the same receipt keys and never repeats model-visible delivery. An operation-result cache is deferred until the protocol gains a genuinely non-idempotent mutation.
 
 Error codes:
 
