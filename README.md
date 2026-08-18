@@ -32,7 +32,7 @@ extensions/ask-user/    Interactive clarification UI (`ask_user`)
 extensions/codex-fast/  OpenAI Codex Fast mode service tier (`/codex-fast`)
 extensions/notifier/    Ready-for-input terminal notifications
 extensions/herdr-compat/ Experimental Shift+Enter compatibility for Pi inside Herdr
-extensions/runtime/     Idle delivery and rendering of terminal runtime events
+extensions/runtime/     Durable Monitor inbox and exact Pi/Herdr wake delivery
 skills/                 Agent behavior guidance
 ```
 
@@ -144,9 +144,9 @@ When Pi runs inside Herdr (`HERDR_ENV=1`), normalize legacy and Kitty Alt+Enter 
 
 ### Hosted runtime
 
-Runtime ships the owner-only durable state/service, strict Unix-socket protocol, direct-child created-file Monitor, exact Pi/Herdr registration, and durable exact-agent wake/admission acknowledgement. Start it explicitly with `/runtime start`, inspect it with `/runtime status`, and configure one trusted-project Monitor with `/runtime monitor <directory>` (`/runtime monitor-delete` removes it without discarding queued events). Runtime never starts or changes Herdr layout silently.
+Runtime watches newly created direct-child files and delivers them to one exact Pi session across restarts. It stores events before using Herdr to wake the verified idle pane; Herdr remains the process and prompt-delivery layer.
 
-A settled Monitor event is recorded before Herdr prompts the exact verified idle Pi session. Pi rechecks user-priority admission, stores an exact claim receipt in one hidden custom follow-up, acknowledges at `message_start`, and reconciles that receipt after restart. Runtime Release 1's isolated restart/no-redelivery gate passes; see [`extensions/runtime/PROTOCOL.md`](extensions/runtime/PROTOCOL.md).
+Commands: `/runtime start`, `/runtime status`, `/runtime register`, `/runtime monitor <directory>`, and `/runtime monitor-delete`. Runtime never starts or changes Herdr layout silently. See [`extensions/runtime/PROTOCOL.md`](extensions/runtime/PROTOCOL.md).
 
 ## Skills
 
@@ -167,4 +167,4 @@ npm run check
 npm run smoke:runtime-release  # explicit destructive gate; requires Herdr + its Pi integration
 ```
 
-`npm run check` runs strict typechecking, the unit/integration/UI suite, reproducible RPC/print/JSON mode smokes, a full lockfile supply-chain audit (including Pi/TypeScript/Vitest development tooling), and a package dry run against Pi 0.82. The audit has one narrow, expiring exception for `GHSA-mh99-v99m-4gvg`: Pi 0.82.x's published shrinkwrap pins dev-only `brace-expansion@5.0.7` and prevents downstream selection of fixed 5.0.8; the exception expires 2026-08-15 and all other high-severity findings fail the gate.
+`npm run check` runs typechecking, tests, RPC/print/JSON mode smokes, the lockfile audit, and a package dry run. The isolated Runtime release gate is separate because it starts real Herdr and Pi processes.

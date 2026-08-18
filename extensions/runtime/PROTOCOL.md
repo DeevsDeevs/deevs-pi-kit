@@ -1,95 +1,73 @@
-# pi-kit-runtime protocol v1 (design draft)
+# Hosted Runtime protocol v1
 
-Status: **Runtime Release 1 implemented. The isolated restart/no-redelivery acceptance gate passes.**
+Runtime provides a durable local inbox for events that must survive Pi and Runtime restarts. Release 1 watches newly created files in one directory and wakes one exact Pi session through Herdr.
 
-This protocol adds one local durable inbox for events that must survive a Pi process restart. The first vertical slice watches newly created files in one directory and wakes one exact Pi session through Herdr.
+It does not replace Herdr, bounded Jobs, Subagents, Workflows, Missions, or session Cron. Herdr owns live panes and prompt delivery; Runtime adds durable routing, claims, acknowledgement, and recovery.
 
-It does not replace bounded Jobs, Pi JSON/print Subagents, foreground Workflows, Mission policy, or process-local Session Cron.
+## Guarantees
 
-## Invariants
+- Events and Monitor cursors are persisted before wake attempts.
+- A wake targets a verified Pi session, terminal, pane, and project—not focus, PID, or cwd alone.
+- Delivery is at least once until Pi admits the message, then never redelivered.
+- Busy or offline Pi sessions retain pending events without interruption or fallback.
+- Routing and authorization use validated IDs, generations, keys, statuses, and receipts. Prose is display-only.
+- Runtime restart preserves monitors, events, claims, receipts, and wake state but invalidates live registrations.
 
-1. **One event, one durable owner, one delivery claim.** Runtime state—not a watcher process's memory—owns dedupe and claim/ack.
-2. **Exact target.** A wake is bound to a canonical Pi session and verified Herdr agent session. It never uses the focused pane, PID guessing, cwd alone, or prose identity.
-3. **Record before wake.** An event and its monitor cursor are durable before any wake attempt.
-4. **At-least-once until admission.** Crashes may repeat a wake, but an event keeps the same ID and is never redelivered after acknowledged admission.
-5. **Do not interrupt user work.** Runtime never steers a `working`/`blocked` agent and does not enqueue ahead of user work already visible to Pi. A truly concurrent user submission and hosted wake follow Pi's actual queue order; v1 does not claim an unavailable cross-process atomic priority guarantee.
-6. **No silent fallback.** Persistence and wake capabilities are reported explicitly. A missing Herdr wake queues events; it does not become process-local polling or another pane.
-7. **Typed control plane.** Version, IDs, generations, statuses, capabilities, and error codes drive behavior. Human summaries never authorize ownership, takeover, or acknowledgement.
-
-## Scope of v1
+## Release 1 scope
 
 Included:
 
-- one runtime instance per Pi agent data directory;
-- local request/response transport;
-- exact Pi registration and heartbeat;
-- direct-child regular-file creation monitoring for one registered directory per target;
-- durable event queue, claim, acknowledgement, release, and stale-claim recovery;
-- exact Herdr wake when the registered Pi agent is idle or done;
-- restart reconciliation using `fs.watch` only as a hint plus authoritative scans.
+- one Runtime service per Pi agent directory;
+- one direct-child, created-regular-file Monitor per target;
+- exact Pi/Herdr registration and heartbeat;
+- durable queue, claim, acknowledgement, release, and lease recovery;
+- exact Herdr wake for `idle` or `done` Pi agents;
+- authoritative directory scans with `fs.watch` as a latency hint.
 
 Deferred:
 
-- recursive watches, arbitrary shell monitors, file contents, modification/deletion events;
-- collaborator participant leases and protocol mailboxes;
-- durable schedules;
-- runtime-owned Jobs or Subagent workers;
-- Mission continuation/completion policy;
-- automatic takeover by another Pi session;
-- native `systemd --user`/`launchd` installers and Windows named-pipe transport.
+- recursive/content/modification/deletion monitoring;
+- collaborator leases and mailboxes;
+- durable schedules and automatic takeover;
+- Runtime-owned workers;
+- native service installers and Windows transport.
 
-## Components
+## Operation
 
-- **Runtime:** `pi-kit-runtime`, a single local service supervised initially by Herdr.
-- **Pi client:** the Pi Kit extension loaded in the target Pi session.
-- **Host adapter:** Herdr protocol 19+ for agent identity, status, and exact prompt delivery.
-- **Monitor:** a durable directory registration owned by the runtime.
-- **Inbox:** durable events targeted to a stable Pi session key.
+Runtime starts only through `/runtime start` or the service command. Pi may automatically register on session start only when the Runtime socket already exists.
 
-Herdr supplies live topology and delivery, not durable inbox semantics. Protocol 19 exposes pane/terminal/session identity, unique live agent names, agent status and `state_change_seq`, prompts, and live subscriptions. It does not expose a durable acknowledged event cursor or participant lease.
-
-## Transport envelope
-
-The first implementation uses newline-delimited JSON over a Unix-domain socket owned by the current user. The runtime directory is mode `0700`; the socket is mode `0600`. The server rejects peers with a different uid when peer credentials are available.
-
-Request:
-
-```json
-{"v":1,"id":"req_01...","method":"hello","params":{}}
-```
-
-Success:
-
-```json
-{"v":1,"id":"req_01...","ok":true,"result":{}}
-```
-
-Failure:
-
-```json
-{"v":1,"id":"req_01...","ok":false,"error":{"code":"identity_mismatch","message":"display-only diagnostic"}}
-```
-
-Malformed framing or JSON has no trustworthy request ID, so its failure uses `"id": null` and the runtime closes that connection after responding. V1 request lines are capped at 64 KiB. Unknown fields are rejected in v1. Request IDs correlate one connection exchange only. Every v1 mutation is naturally idempotent on typed durable keys: monitor creation uses its canonical target/directory, deletion of an already absent exact monitor succeeds, wake acceptance uses `wakeId`, and claim acknowledgement/release uses the exact receipt. Registration-time admission reconciliation uses the same receipt keys and never repeats model-visible delivery. An operation-result cache is deferred until the protocol gains a genuinely non-idempotent mutation.
-
-Error codes:
+Pi commands:
 
 ```text
-invalid_request          unsupported_version     capability_unavailable
-not_found                conflict                registration_stale
-identity_mismatch        claim_conflict          host_unavailable
-busy                     storage_error            internal
+/runtime status
+/runtime start
+/runtime register
+/runtime monitor <directory>
+/runtime monitor-delete
 ```
 
-## Handshake and capabilities
+Default files:
 
-`hello` request:
+```text
+$PI_CODING_AGENT_DIR/runtime/
+  instance.json
+  state.v1.json
+  runtime.sock
+```
+
+The directory is mode `0700` and the Unix socket is mode `0600`. Current Node Unix sockets do not expose peer credentials, so v1 security is limited to owner-only filesystem permissions plus registration keys. Runtime never logs registration keys.
+
+## Transport
+
+Requests and responses are newline-delimited JSON over the Unix socket. Request lines are limited to 64 KiB. Invalid framing or JSON closes the connection after an error response.
 
 ```json
-{"minVersion":1,"maxVersion":1}
+{"v":1,"id":"req_...","method":"hello","params":{}}
+{"v":1,"id":"req_...","ok":true,"result":{}}
+{"v":1,"id":"req_...","ok":false,"error":{"code":"not_found","message":"diagnostic"}}
 ```
 
-Result:
+`hello` accepts a version range spanning v1 and returns:
 
 ```json
 {
@@ -104,266 +82,121 @@ Result:
 }
 ```
 
-`runtimeId` is generated once and persisted. `epoch` changes on every runtime process start. `hello` accepts only ranges spanning v1 and returns exact version `1`. Capability values include only fields consumed by clients or varying at runtime. When the Herdr wake adapter is not configured, `agentWake` is `"none"`; host-dependent operations otherwise fail with typed `host_unavailable` when Herdr is temporarily unreachable. Durable inbox persistence, offline queuing, non-recursive created-file monitoring, and lack of proven reboot survival are fixed v1 contract properties rather than redundant capability flags.
+`runtimeId` persists; `epoch` changes on every service start. `agentWake` is `none` when no Herdr adapter is configured.
 
-## Method surface
+Error codes:
 
-| Method | Durable mutation | Purpose |
-|---|---:|---|
-| `hello` | no | Negotiate version and capabilities |
-| `pi.register` | no | Bind one live Pi generation to a stable target after host verification |
-| `pi.heartbeat` | no | Renew and re-verify the live registration |
-| `pi.unregister` | no | Drop a live registration best-effort |
-| `monitor.create` | yes | Persist one directory monitor and initial baseline |
-| `monitor.get` | no | Read the target's single monitor status |
-| `monitor.delete` | yes | Stop one monitor without discarding queued events |
-| `wake.accept` | yes | Validate one outstanding wake and atomically claim its first batch |
-| `inbox.claim` | yes | Explicit/manual claim when no wake transport is available |
-| `inbox.ack` | yes | Acknowledge admission for an exact claim |
-| `inbox.release` | yes | Return an exact claim to pending |
-| `inbox.status` | no | Return counts/status without claiming |
+```text
+invalid_request          unsupported_version     capability_unavailable
+not_found                conflict                registration_stale
+identity_mismatch        claim_conflict          host_unavailable
+busy                     storage_error           internal
+```
 
-`monitor.*`, `wake.accept`, and `inbox.*` require the exact current registration ID/key. Repeating a mutation with the same natural typed key returns the existing outcome without repeating side effects.
+### Methods
 
-Hosted protocol types are separate from the existing Pi-session `RuntimeEvent` v1 types in `extensions/shared/runtime-events.ts`. V1 does not add `monitor`, filesystem payloads, leases, or target routing to that local terminal-event schema. A future Pi adapter uses a separately named hosted custom message/type and may reuse only presentation code.
+| Method | Purpose |
+|---|---|
+| `hello` | Negotiate v1 and capabilities |
+| `pi.register` | Verify and bind a live Pi generation |
+| `pi.heartbeat` | Renew and reverify registration |
+| `pi.unregister` | Drop registration best-effort |
+| `monitor.create` | Create the target's Monitor and baseline |
+| `monitor.get` | Read Monitor status |
+| `monitor.delete` | Remove Monitor without discarding events |
+| `wake.accept` | Accept a wake and atomically claim its first batch |
+| `inbox.claim` | Claim manually when wake transport is unavailable |
+| `inbox.ack` | Acknowledge exact admission receipts |
+| `inbox.release` | Return an exact claim to pending |
+| `inbox.status` | Read target queue counts |
 
-## Stable Pi target and live registration
+All methods except `hello` and `pi.register` require the exact current registration ID and key. Mutations are idempotent on their typed durable keys.
 
-A target survives process restarts:
+Hosted event types are separate from process-local `RuntimeEvent` types in `extensions/shared/runtime-events.ts`.
+
+## Identity and registration
+
+A stable target survives process restarts:
 
 ```text
 targetKey = sha256(canonicalProjectRoot + NUL + piSessionId)
 ```
 
-The cleartext project root and Pi session ID remain in the protected runtime state for diagnostics; callers do not choose `targetKey` directly.
+Registration supplies the canonical project root, Pi session ID/file, a client generation, historical admission receipts, and Herdr pane/terminal locators. Runtime then verifies:
 
-`pi.register` request:
+1. the Pi session file header contains the supplied session ID;
+2. Herdr resolves the pane to the supplied terminal;
+3. Herdr reports the same Pi session ID or canonical session path;
+4. Herdr's canonical cwd equals the project root;
+5. no other live terminal owns the target.
 
-```json
-{
-  "projectRoot": "/canonical/project",
-  "piSessionId": "019f...",
-  "piSessionFile": "/canonical/...jsonl",
-  "clientGeneration": "gen_...",
-  "admittedClaims": [
-    {"claimId":"claim_previous_epoch","eventIds":["evt_..."]}
-  ],
-  "herdr": {
-    "paneId": "w6:p2",
-    "terminalId": "opaque-terminal-id",
-    "agentName": "pi-main"
-  }
-}
-```
+A successful registration receives a random 256-bit key and a 30-second lease. Registrations live only in memory and are scoped to the Runtime epoch. Heartbeats renew the lease and rerun the complete host predicate. A moved pane is accepted only when the same terminal and Pi identity still verify. Another live terminal receives `conflict`; v1 has no takeover.
 
-The runtime queries Herdr instead of trusting the supplied host fields. Before making the registration wakeable, it reconciles bounded `admittedClaims` copied from hosted custom messages already present in the Pi session branch. A matching historical claim may acknowledge its exact events even after lease expiry/runtime restart; a mismatched target or event set is rejected.
+Before registration becomes wakeable, Runtime reconciles exact claim/event receipts already present in Pi's hosted custom-message history. This closes the crash window where Pi persisted admission before Runtime persisted acknowledgement.
 
-The Pi integration consumes Herdr's authoritative Pi session report. Current Herdr's built-in Pi integration reports the canonical session path under source `herdr:pi`; an explicit Pi Kit report may use source `pi-kit-runtime`. Herdr protocol 19 returns one discriminated `AgentSessionInfo` (`kind: id | path`), so Runtime compares whichever authoritative representation is present rather than pretending both are simultaneously available. Registration uses this strict predicate:
+## Monitor and events
 
-1. `paneId` resolves and its `terminalId` equals the supplied terminal ID.
-2. Reported agent-session source/agent identify either Herdr's built-in Pi integration (`herdr:pi`/`pi`) or the explicit Pi Kit report (`pi-kit-runtime`/`pi`).
-3. For `kind: id`, `value === piSessionId`; for `kind: path`, canonical `value === piSessionFile`. Any available authoritative field that disagrees rejects registration.
-4. Canonical Herdr cwd equals the registered project root in v1.
-5. No different live terminal already owns `targetKey`.
+`monitor.create` accepts a canonical directory inside the registered project and a settle interval.
 
-`paneId` is a locator, not durable authority. After a pane move the runtime may resolve the same `terminalId`, but must rerun the entire session/cwd predicate before updating the locator. Agent name is an optional unique lookup hint, never sole authority. Herdr `revision`/`state_change_seq` are freshness signals queried again before every wake, not persisted ownership.
+- The root and entries must not be symlinks.
+- Only direct-child regular files are observed.
+- Existing files form a non-emitting baseline.
+- A new path emits after size and mtime remain stable for the settle interval.
+- A path emits once per Monitor generation.
+- Events contain bounded path metadata, not file contents.
+- Missing directories degrade and retry without losing the cursor.
+- Crossing the entry cap fails without advancing the cursor.
 
-Result:
+`fs.watch` only requests an early scan. Startup, watch hints, and the five-second fallback all use the same authoritative reconciliation. Cursor and event updates commit in one atomic state mutation before wake.
 
-```json
-{
-  "targetKey": "pi_...",
-  "registrationId": "reg_...",
-  "registrationKey": "base64url-random-256-bit",
-  "leaseUntil": 1780000000000,
-  "hostStateChangeSeq": 42,
-  "paneId": "w6:p2"
-}
-```
-
-`registrationKey` is required for target-scoped operations and is never written to logs. Live registrations are scoped to `epoch` and kept in memory; retrying the same verified `clientGeneration` within an epoch returns the same registration/key. Clients reconnect and re-register after runtime restart. Durable monitors/events target `targetKey`, not the ephemeral registration. `pi.heartbeat` renews the short registration lease and refreshes verified host identity. A Pi reload in the same terminal/session may rotate generation and key. A different live terminal receives `conflict`; v1 has no automatic takeover.
-
-`pi.unregister` is best effort. Lease expiry or epoch change marks the client offline but does not delete monitors or queued events.
-
-The Pi extension does not silently start Runtime. `/runtime start` explicitly creates a no-focus Herdr tab and launches the packaged service with PATH `node`; `/runtime register` binds to an already-running service. On later Pi reload/session startup, the extension may re-register only when the runtime socket already exists. `/runtime monitor <directory>` and `/runtime monitor-delete` are authorized by the current registration and require a trusted project.
-
-## Directory monitor
-
-`monitor.create` request:
-
-```json
-{
-  "registrationId": "reg_...",
-  "registrationKey": "...",
-  "directory": "/canonical/project/.collaboration/fable/fable",
-  "settleMs": 250
-}
-```
-
-Rules:
-
-- The project must be trusted by Pi before creation.
-- The canonical directory must stay within the registered project root.
-- Symlink roots and symlink entries are rejected/ignored.
-- V1 behavior is fixed: direct children only, created regular files only, and an initial non-emitting baseline. These are not request options.
-- A target may own only one monitor; another create returns `conflict` until the monitor is deleted.
-- Existing entries become the baseline and do not emit events.
-- A new regular file emits only after size and mtime remain unchanged for `settleMs`.
-- A relative path emits once per monitor generation. Producers that need another event use a new immutable filename; modification support is deferred.
-- No file content is stored or injected. The event carries bounded metadata and a canonical/relative path for later explicit reading.
-
-Result:
-
-```json
-{"monitorId":"mon_...","generation":"gen_...","status":"watching"}
-```
-
-`monitor.get` and `monitor.delete` require the exact target registration. Deletion atomically removes the monitor but does not acknowledge already queued events.
-
-### Watch algorithm
-
-`fs.watch` is only a low-latency hint. The authoritative algorithm is:
-
-1. Persist the initial directory snapshot.
-2. Reconcile after each watch hint with debounce.
-3. Reconcile periodically (initially every five seconds) to cover missed/overflowed watch events.
-4. Reconcile immediately after runtime restart and watcher recreation.
-5. If the directory disappears, mark the monitor `degraded` and retry scans; do not discard its cursor.
-
-For each newly stable path, atomically persist one next-state snapshot containing both the observed cursor update and `event.enqueued` before attempting wake. Therefore:
-
-- crash before atomic rename: the previous state remains valid and the next scan rediscovers the path;
-- crash after atomic rename: the same pending event survives;
-- duplicate watch hints: the durable cursor suppresses duplicates.
-
-The first slice caps a monitor baseline at the advertised `maxEntries`. Crossing the cap fails the scan without advancing its cursor; it never silently drops entries.
-
-## Event model
-
-```json
-{
-  "version": 1,
-  "eventId": "evt_...",
-  "source": {"kind":"monitor","id":"mon_...","generation":"gen_...","sequence":17},
-  "targetKey": "pi_...",
-  "type": "filesystem.created",
-  "createdAt": 1780000000000,
-  "summary": "new file: fable/0049-review.md",
-  "payload": {
-    "relativePath": "0049-review.md",
-    "path": "/canonical/project/.collaboration/fable/fable/0049-review.md",
-    "fileType": "regular",
-    "size": 842,
-    "mtimeMs": 1780000000000
-  },
-  "delivery": {"status":"pending"}
-}
-```
-
-`summary` is display-only. Routing and dedupe use typed source/target/sequence/ID fields.
-
-Delivery states:
+Each event has a stable ID, typed Monitor source/generation/sequence, stable target, bounded filesystem metadata, and one delivery state:
 
 ```text
 pending -> claimed -> acked
-                  \-> pending (release or lease expiry)
+                  \-> pending  (release or lease expiry)
 ```
 
-Only the exact current registration may claim its target. Claims have a short lease. `wake.accept` and `inbox.claim` return at most the advertised batch size in source sequence order:
+Claims contain at most 12 events in source sequence order. Normal acknowledgement or release requires the same registration generation and exact claim/event receipt. Historical registration reconciliation is the only generation-exempt path.
 
-```json
-{"claimId":"claim_...","leaseUntil":1780000030000,"events":[{"eventId":"evt_..."}]}
-```
+Acknowledgement means the hosted message entered Pi session history; it does not mean the model completed resulting work.
 
-Each event retains its latest durable admission receipt key `{targetKey, eventId, claimId}` until acknowledgement. `inbox.ack` and `inbox.release` carry `registrationId`, `registrationKey`, `claimId`, and the exact event IDs. Normal ack/release requires the registration generation that created the claim. The sole exception is registration-time history reconciliation for the same stable target and exact receipt key. Repeating the same operation is idempotent; a different target/owner receives `claim_conflict`.
+## Wake and admission
 
-Acknowledgement means **the hosted event message was admitted to Pi session history**, not that the model completed resulting work.
+Runtime keeps at most one outstanding wake per target. Pending events remain queued while the target is offline, unverified, `working`, `blocked`, or unknown.
 
-## Exact wake and Pi admission
+For an exact `idle` or `done` target, Runtime:
 
-The runtime keeps at most one outstanding wake per target. Pending events remain queued while the target is offline, `working`, `blocked`, unknown, or has no verified Herdr binding.
-
-When Herdr reports the exact agent as `idle` or `done`, the runtime:
-
-1. Re-resolves the current pane from the verified terminal + agent-session identity.
-2. Persists `wakeId` before sending.
-3. Calls Herdr `agent.prompt` without lifecycle waiting, targeting that exact agent/pane with:
+1. reverifies Herdr terminal, Pi session, cwd, status, and freshness;
+2. persists a wake ID;
+3. prompts that exact pane with:
 
 ```text
 /pi-kit-runtime-wake 1 <registrationId> <wakeId>
 ```
 
-The command is protocol framing, not model prose. Pi checks extension commands before model input, so the handler runs without starting an LLM turn. The command is valid only for the matching registration and outstanding wake.
+The Pi command handler checks that Pi is idle with no pending user messages, atomically accepts the wake, and claims the first batch. It then enqueues one hidden `deevs.hosted-runtime.v1` custom message containing the exact claim/event receipt.
 
-The Pi handler rechecks `ctx.isIdle()` and `ctx.hasPendingMessages()` to narrow the status race without overstating atomicity:
+- Busy Pi declines without claiming.
+- Synchronous enqueue failure releases the claim.
+- `message_start` acknowledges admission.
+- A pre-admission crash returns the claim to pending after lease expiry.
+- A post-admission/pre-ack crash is reconciled from Pi history during registration.
+- Repeated wake IDs and receipt operations are idempotent.
 
-- busy/already pending: decline the wake without claiming; the durable wake and pending events remain available for the next verified idle retry;
-- idle: atomically `wake.accept` and claim up to 12 events, then enqueue one hidden Pi custom follow-up containing every claimed event summary and ID;
-- synchronous enqueue failure: release the claim;
-- `message_start`: acknowledge the exact hosted claim; the custom message details retain `claimId` and event IDs so resume reconciliation can repeat the same idempotent ack;
-- Pi/runtime crash before admission: an accepted claim lease expires and the same event IDs are retried;
-- Pi crash after admission but before ack persistence: custom-message details preserve the historical claim/event set; `pi.register` reconciles it before enabling wakes, even if the old claim lease expired.
+## Persistence and retention
 
-A repeated `wakeId` is harmless. A wake never targets the focused pane or falls back to raw terminal text.
+Runtime stores one bounded, schema-validated state document. Mutations write a temporary file, fsync it, atomically rename it, then fsync the parent directory. Corruption fails closed; Runtime never resets to an empty inbox.
 
-## Runtime persistence
+Pending and claimed events, claim receipts, wakes, and Monitor cursors are never age-pruned. Acknowledged events and complete settled claims are retained for seven days and pruned atomically with later acknowledgements.
 
-Default root:
+Whole-state replacement is intentional for Release 1. A journal or database is deferred until measured state size or write throughput requires it.
 
-```text
-$PI_CODING_AGENT_DIR/runtime/
-  instance.json
-  state.v1.json
-  runtime.sock
+## Release gate
+
+Run from a source checkout with Herdr and its Pi integration installed:
+
+```bash
+npm run smoke:runtime-release
 ```
 
-- Directory/files use owner-only permissions.
-- The first slice keeps one bounded schema-validated state document. Each mutation writes a temporary file, fsyncs it, renames atomically, then fsyncs the parent directory before success.
-- Corruption fails closed with `storage_error`; it does not start from an empty inbox.
-- The state document has an advertised size/monitor-entry cap. Hitting it stops new cursor advancement rather than losing events.
-- Retention pruning may remove only acknowledged events older than seven days and settled claims whose complete event set is removed. Pending/claimed events, their claim receipts, and monitor cursors are never age-pruned.
-- Runtime restart clears live registrations but preserves claims/wakes/events. Stale wake locators are discarded; pending events are rearmed only after the exact Pi session re-registers and history reconciliation finishes.
-- An append journal/database is deferred until measured state size or write throughput makes whole-state atomic replacement inadequate.
-
-The protocol guarantees durable state across runtime process restart. Machine reboot wake depends on the advertised supervisor/Herdr capability and is `false` unless proven. Capability results are timestamped and scoped to runtime `epoch`; every host-dependent operation rechecks Herdr and may return typed `host_unavailable` even if `hello` previously advertised wake support.
-
-## Degraded modes
-
-| Condition | Typed state | Behavior |
-|---|---|---|
-| Runtime unavailable | client `unavailable` | No Monitor API; existing local Jobs/Subagents continue unchanged |
-| Herdr unavailable | `agentWake: none`, `host_unavailable` | Keep events pending; allow explicit inbox inspection after reconnect |
-| Pi offline/lease expired | target `offline` | Keep events pending; no wake |
-| Pi working/blocked | target `busy` | Keep events pending; subscribe/reconcile for idle |
-| Watch root missing | monitor `degraded` | Retain cursor and retry scans |
-| State file corrupt | runtime `storage_error` | Fail closed; never reset or silently dedupe from memory |
-| Identity conflict | `conflict` | Do not replace owner; require a future explicit takeover operation |
-
-## Dumbgram pressure test
-
-| Observed failure | v1 result |
-|---|---|
-| Polling watcher lost its in-memory `seen` set | Durable monitor cursor and event state survive restart |
-| Pi learned files only after user nudges | Events queue offline and wake the exact registered Pi when idle |
-| Watcher exited or was killed as a guessed orphan | Monitor is a structural runtime resource; delegated agents never own it by PID |
-| Repeated scans could redeliver a filename | Stable monitor generation/path cursor and event ID dedupe |
-| Pi was busy when external work arrived | Event stays pending; runtime and Pi both enforce user-priority admission |
-| Original pane moved | Runtime follows only the same terminal + agent session, never focus |
-| Runtime/Herdr unavailable | Capability degrades explicitly; no process-local semantic fallback |
-| Two logical actors wrote as `fable` | **Not solved by Monitor v1.** Exclusive participant leases are the next layer |
-| Mission review/completion churn | **Not solved here.** Mission policy remains in Pi |
-
-## Release 1 acceptance
-
-`npm run smoke:runtime-release` uses a unique isolated Herdr server/session, Pi agent directory, Runtime state, and Pi sessions to prove:
-
-1. Register an exact Pi session in Herdr.
-2. Create a non-recursive directory monitor with an empty baseline.
-3. Create one file while Pi is busy or unavailable.
-4. Restart `pi-kit-runtime`.
-5. Resume/idle the exact Pi session and receive one hosted event wake.
-6. Admit and acknowledge the event.
-7. Restart runtime and Pi again; the acknowledged event is not redelivered.
-8. A different pane/session cannot claim or acknowledge it.
-
-This gate passes without touching the user's active Herdr server. Features beyond this vertical remain deferred.
+The isolated gate uses a unique Herdr server/session/socket, Pi agent directory, Runtime state, project, and Pi sessions. It proves offline queuing, Runtime and Pi restarts, exact wake/admission, historical receipt reconciliation, foreign-session rejection, and no redelivery across a full heartbeat interval. It cleans all isolated resources and never connects to the user's active Herdr server.
