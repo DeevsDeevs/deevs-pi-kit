@@ -191,8 +191,10 @@ export class SubagentService {
 
 	clearTerminal(id?: string): number {
 		let cleared = 0;
+		const claimant = this.ctx?.sessionManager.getSessionFile() ?? "subagent-service";
 		for (const group of [...this.groups.values()]) {
 			if ((id && group.id !== id) || group.status === "running") continue;
+			consumeRuntimeEvent(this.pi, `terminal:${group.id}:${group.generation}`, claimant);
 			const root = this.roots.get(group.id) ?? this.root(group.cwd);
 			rmSync(path.join(root, "groups", `${group.id}.json`), { force: true });
 			this.groups.delete(group.id);
@@ -203,6 +205,7 @@ export class SubagentService {
 		const referenced = new Set([...this.groups.values()].flatMap((group) => group.children));
 		for (const run of this.executor.list()) {
 			if ((id && run.spec.id !== id) || !isTerminal(run.runtime.status) || referenced.has(run.spec.id)) continue;
+			consumeRuntimeEvent(this.pi, `terminal:${run.spec.id}:${run.spec.generation}`, claimant);
 			rmSync(run.spec.artifactsDir, { recursive: true, force: true });
 			this.executor.forget(run.spec.id);
 			this.terminalSeen.delete(runTerminalKey(run));

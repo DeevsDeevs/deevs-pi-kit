@@ -14,6 +14,7 @@
     "test:watch": "vitest",
     "audit": "node scripts/audit.mjs",
     "smoke:modes": "node scripts/smoke-modes.mjs",
+    "smoke:runtime-release": "node --experimental-strip-types scripts/smoke-runtime-release.mjs",
     "check": "npm run typecheck && npm test && npm run smoke:modes && npm run audit && npm pack --dry-run"
   },
   "keywords": [

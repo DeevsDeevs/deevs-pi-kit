@@ -105,6 +105,29 @@ describe("runtime terminal delivery", () => {
 		test.coordinator.clearContext();
 	});
 
+	it("batches terminal events without acknowledging undisclosed overflow", async () => {
+		const test = setup();
+		for (let index = 1; index <= 13; index++) {
+			const event = terminalEvent(`terminal-${String(index).padStart(2, "0")}`);
+			event.summary = `result ${index}`;
+			runtimeEvents.record(test.pi, { type: "emit", event });
+		}
+
+		await test.coordinator.maybeDeliver();
+		const first = test.messages[0]?.message as { content: string; details: { eventIds: string[] } };
+		expect(first.details.eventIds).toHaveLength(12);
+		expect(first.content).toContain("result 12");
+		expect(first.content).not.toContain("result 13");
+		expect(pendingRuntimeEvents(runtimeEvents.read()).map((event) => event.id)).toEqual(["terminal-13"]);
+
+		test.coordinator.acknowledgeDelivered(test.ctx);
+		await test.coordinator.maybeDeliver();
+		const second = test.messages[1]?.message as { content: string; details: { eventIds: string[] } };
+		expect(second.details.eventIds).toEqual(["terminal-13"]);
+		expect(second.content).toContain("result 13");
+		test.coordinator.clearContext();
+	});
+
 	it("does not wake ahead of queued user work", async () => {
 		const test = setup(true);
 		runtimeEvents.record(test.pi, { type: "emit", event: terminalEvent() });
