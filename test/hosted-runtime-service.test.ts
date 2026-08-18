@@ -29,8 +29,8 @@ function temporaryRoot(): string {
 }
 
 describe("hosted runtime protocol", () => {
-	it("negotiates exact v1 with only truthful current capabilities", () => {
-		const response = dispatchHostedLine(JSON.stringify({
+	it("negotiates exact v1 with only truthful current capabilities", async () => {
+		const response = await dispatchHostedLine(JSON.stringify({
 			v: 1,
 			id: "req_1",
 			method: "hello",
@@ -54,15 +54,15 @@ describe("hosted runtime protocol", () => {
 		});
 	});
 
-	it("rejects malformed framing, unsupported ranges, unknown fields, and unknown methods", () => {
-		expect(dispatchHostedLine("{bad", context)).toMatchObject({ id: null, ok: false, error: { code: "invalid_request" } });
-		expect(dispatchHostedLine(JSON.stringify({ v: 1, id: "range", method: "hello", params: { minVersion: 2, maxVersion: 3 } }), context))
+	it("rejects malformed framing, unsupported ranges, unknown fields, and unknown methods", async () => {
+		expect(await dispatchHostedLine("{bad", context)).toMatchObject({ id: null, ok: false, error: { code: "invalid_request" } });
+		expect(await dispatchHostedLine(JSON.stringify({ v: 1, id: "range", method: "hello", params: { minVersion: 2, maxVersion: 3 } }), context))
 			.toMatchObject({ id: "range", ok: false, error: { code: "unsupported_version" } });
-		expect(dispatchHostedLine(JSON.stringify({ v: 2, id: "future", method: "hello", params: {}, futureField: true }), context))
+		expect(await dispatchHostedLine(JSON.stringify({ v: 2, id: "future", method: "hello", params: {}, futureField: true }), context))
 			.toMatchObject({ id: "future", ok: false, error: { code: "unsupported_version" } });
-		expect(dispatchHostedLine(JSON.stringify({ v: 1, id: "extra", method: "hello", params: { minVersion: 1, maxVersion: 1, extra: true } }), context))
+		expect(await dispatchHostedLine(JSON.stringify({ v: 1, id: "extra", method: "hello", params: { minVersion: 1, maxVersion: 1, extra: true } }), context))
 			.toMatchObject({ id: "extra", ok: false, error: { code: "invalid_request" } });
-		expect(dispatchHostedLine(JSON.stringify({ v: 1, id: "missing", method: "other", params: {} }), context))
+		expect(await dispatchHostedLine(JSON.stringify({ v: 1, id: "missing", method: "other", params: {} }), context))
 			.toMatchObject({ id: "missing", ok: false, error: { code: "not_found" } });
 	});
 });

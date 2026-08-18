@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { TextDecoder } from "node:util";
 import { DirectoryMonitorManager, type DirectoryMonitorOptions } from "./monitor.ts";
 import { dispatchHostedLine, encodeHostedResponse, HOSTED_MAX_REQUEST_BYTES, invalidFrame, type HostedProtocolContext } from "./protocol.ts";
+import { HerdrCliHostVerifier, RuntimeRegistrationManager, type HostedHostVerifier, type RegistrationManagerOptions } from "./registration.ts";
 import { HostedStateStore, loadOrCreateRuntimeInstance } from "./state.ts";
 
 export class RuntimeAlreadyRunningError extends Error {
@@ -17,6 +18,8 @@ export interface RuntimeServerOptions {
 	epoch?: string;
 	probeTimeoutMs?: number;
 	monitor?: DirectoryMonitorOptions;
+	host?: HostedHostVerifier;
+	registration?: RegistrationManagerOptions;
 }
 
 export interface RuntimeServerHandle {
@@ -31,12 +34,14 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 	const instance = loadOrCreateRuntimeInstance(options.root);
 	const store = new HostedStateStore(options.root);
 	const monitors = new DirectoryMonitorManager(store, options.monitor);
+	const registrations = new RuntimeRegistrationManager(store, options.host ?? new HerdrCliHostVerifier(), options.registration);
 	const socketPath = options.socketPath ?? join(options.root, "runtime.sock");
 	const context: HostedProtocolContext = {
 		runtimeId: instance.runtimeId,
 		epoch: options.epoch ?? `epoch_${randomUUID()}`,
 		agentWake: "none",
-		degradedReason: "host_unavailable",
+		registrations,
+		monitors,
 	};
 	const sockets = new Set<Socket>();
 	const server = createServer((socket) => handleConnection(socket, context, sockets));
@@ -55,6 +60,7 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 				if (closed) return;
 				closed = true;
 				monitors.close();
+				registrations.close();
 				for (const socket of sockets) socket.destroy();
 				await closeServer(server);
 				if (sameSocket(socketPath, identity)) try { unlinkSync(socketPath); } catch {}
@@ -62,6 +68,7 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 		};
 	} catch (error) {
 		monitors.close();
+		registrations.close();
 		await closeServer(server);
 		try { unlinkSync(socketPath); } catch {}
 		throw error;
@@ -95,41 +102,56 @@ function handleConnection(socket: Socket, context: HostedProtocolContext, socket
 	socket.on("error", () => {});
 	let buffered = Buffer.alloc(0);
 	let closing = false;
+	let processing = false;
 	socket.on("data", (chunk: Buffer) => {
 		if (closing) return;
 		buffered = Buffer.concat([buffered, chunk]);
-		while (!closing) {
-			const newline = buffered.indexOf(0x0a);
-			if (newline < 0) break;
-			if (newline > HOSTED_MAX_REQUEST_BYTES) {
-				closing = true;
-				writeAndClose(socket, encodeHostedResponse(invalidFrame(`Request exceeds ${HOSTED_MAX_REQUEST_BYTES} bytes.`)));
-				return;
-			}
-			const frame = buffered.subarray(0, newline);
-			buffered = buffered.subarray(newline + 1);
-			const line = frame.at(-1) === 0x0d ? frame.subarray(0, -1) : frame;
-			let decoded: string;
-			try {
-				decoded = new TextDecoder("utf-8", { fatal: true }).decode(line);
-			} catch {
-				closing = true;
-				writeAndClose(socket, encodeHostedResponse(invalidFrame("Request is not valid UTF-8.")));
-				return;
-			}
-			const response = dispatchHostedLine(decoded, context);
-			if (!response.ok && response.id === null) {
-				closing = true;
-				writeAndClose(socket, encodeHostedResponse(response));
-				return;
-			}
-			socket.write(encodeHostedResponse(response));
-		}
-		if (!closing && buffered.length > HOSTED_MAX_REQUEST_BYTES) {
-			closing = true;
-			writeAndClose(socket, encodeHostedResponse(invalidFrame(`Request exceeds ${HOSTED_MAX_REQUEST_BYTES} bytes.`)));
-		}
+		void drain();
 	});
+
+	async function drain(): Promise<void> {
+		if (processing || closing) return;
+		processing = true;
+		socket.pause();
+		try {
+			while (!closing) {
+				const newline = buffered.indexOf(0x0a);
+				if (newline < 0) {
+					if (buffered.length > HOSTED_MAX_REQUEST_BYTES) {
+						closing = true;
+						writeAndClose(socket, encodeHostedResponse(invalidFrame(`Request exceeds ${HOSTED_MAX_REQUEST_BYTES} bytes.`)));
+					}
+					break;
+				}
+				if (newline > HOSTED_MAX_REQUEST_BYTES) {
+					closing = true;
+					writeAndClose(socket, encodeHostedResponse(invalidFrame(`Request exceeds ${HOSTED_MAX_REQUEST_BYTES} bytes.`)));
+					break;
+				}
+				const frame = buffered.subarray(0, newline);
+				buffered = buffered.subarray(newline + 1);
+				const line = frame.at(-1) === 0x0d ? frame.subarray(0, -1) : frame;
+				let decoded: string;
+				try {
+					decoded = new TextDecoder("utf-8", { fatal: true }).decode(line);
+				} catch {
+					closing = true;
+					writeAndClose(socket, encodeHostedResponse(invalidFrame("Request is not valid UTF-8.")));
+					break;
+				}
+				const response = await dispatchHostedLine(decoded, context);
+				if (!response.ok && response.id === null) {
+					closing = true;
+					writeAndClose(socket, encodeHostedResponse(response));
+					break;
+				}
+				socket.write(encodeHostedResponse(response));
+			}
+		} finally {
+			processing = false;
+			if (!closing) socket.resume();
+		}
+	}
 }
 
 function writeAndClose(socket: Socket, value: string): void {

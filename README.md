@@ -142,9 +142,11 @@ Project settings persist to `.pi/notifier.json`.
 
 When Pi runs inside Herdr (`HERDR_ENV=1`), normalize legacy and Kitty Alt+Enter sequences produced by Shift+Enter compatibility mappings into a newline. This is experimental: after a terminal multiplexer collapses Shift+Enter into Alt+Enter, genuine Alt+Enter cannot be distinguished and is also treated as a newline.
 
-### Hosted runtime design
+### Hosted runtime
 
-The proposed durable Monitor/inbox service is design-only and not included in the current package. Its minimal versioned protocol, explicit capability model, exact Pi/Herdr identity binding, claim/ack lifecycle, and first E2E gate are specified in [`extensions/runtime/PROTOCOL.md`](extensions/runtime/PROTOCOL.md).
+Runtime currently ships the owner-only durable state/service, strict Unix-socket protocol, direct-child created-file Monitor, and exact Pi/Herdr registration boundary. Start it explicitly with `/runtime start`, inspect it with `/runtime status`, and configure one trusted-project Monitor with `/runtime monitor <directory>` (`/runtime monitor-delete` removes it without discarding queued events). Runtime never starts or changes Herdr layout silently.
+
+Exact wake, Pi admission/acknowledgement, and the complete release E2E remain pending, so queued Monitor events do not yet trigger a Pi turn. The versioned contract and release gate are tracked in [`extensions/runtime/PROTOCOL.md`](extensions/runtime/PROTOCOL.md).
 
 ## Skills
 
