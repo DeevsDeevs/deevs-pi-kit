@@ -70,7 +70,7 @@ Failure:
 {"v":1,"id":"req_01...","ok":false,"error":{"code":"identity_mismatch","message":"display-only diagnostic"}}
 ```
 
-Unknown fields are rejected in v1. Request IDs correlate one connection exchange only. Methods marked as durable mutations carry a separate `operationId`; the runtime persists a bounded operation-result cache so a retry returns the original result instead of repeating the mutation. Registration-time admission reconciliation is the narrow exception: it is idempotent directly on exact durable receipt keys and never repeats model-visible delivery.
+Unknown fields are rejected in v1. Request IDs correlate one connection exchange only. Every v1 mutation is naturally idempotent on typed durable keys: monitor creation uses its canonical target/directory, deletion of an already absent exact monitor succeeds, wake acceptance uses `wakeId`, and claim acknowledgement/release uses the exact receipt. Registration-time admission reconciliation uses the same receipt keys and never repeats model-visible delivery. An operation-result cache is deferred until the protocol gains a genuinely non-idempotent mutation.
 
 Error codes:
 
@@ -96,22 +96,15 @@ Result:
   "version": 1,
   "runtimeId": "rt_...",
   "epoch": "epoch_...",
-  "observedAt": 1780000000000,
   "capabilities": {
-    "durableInbox": true,
-    "eventPersistence": "runtime_restart",
-    "offlineQueue": true,
     "agentWake": "herdr_exact_agent",
-    "rebootSurvival": false,
-    "monitor": {"directoryCreatedFiles": true, "recursive": false, "maxEntries": 10000},
     "maxDeliveryBatch": 12,
-    "host": {"kind": "herdr", "protocol": 19, "detachedServerDaemon": true}
-  },
-  "idempotencyTtlMs": 86400000
+    "monitor": {"maxEntries": 10000}
+  }
 }
 ```
 
-`runtimeId` is generated once and persisted. `epoch` changes on every runtime process start. Capability values reflect observed runtime/Herdr state; unavailable capabilities use typed values such as `agentWake: "none"` plus a typed degraded reason. Example booleans such as `detachedServerDaemon` are observations, not promises. Clients must not infer stronger behavior.
+`runtimeId` is generated once and persisted. `epoch` changes on every runtime process start. `hello` accepts only ranges spanning v1 and returns exact version `1`. Capability values include only fields consumed by clients or varying at runtime. When Herdr wake is unavailable, `agentWake` is `"none"` and the result includes a typed degraded reason. Durable inbox persistence, offline queuing, non-recursive created-file monitoring, and lack of proven reboot survival are fixed v1 contract properties rather than redundant capability flags.
 
 ## Method surface
 
@@ -130,7 +123,7 @@ Result:
 | `inbox.release` | yes | Return an exact claim to pending |
 | `inbox.status` | no | Return counts/status without claiming |
 
-`monitor.*`, `wake.accept`, and `inbox.*` require the exact current registration ID/key. Durable mutations also require `operationId`.
+`monitor.*`, `wake.accept`, and `inbox.*` require the exact current registration ID/key. Repeating a mutation with the same natural typed key returns the existing outcome without repeating side effects.
 
 Hosted protocol types are separate from the existing Pi-session `RuntimeEvent` v1 types in `extensions/shared/runtime-events.ts`. V1 does not add `monitor`, filesystem payloads, leases, or target routing to that local terminal-event schema. A future Pi adapter uses a separately named hosted custom message/type and may reuse only presentation code.
 
@@ -197,7 +190,6 @@ Result:
 
 ```json
 {
-  "operationId": "op_...",
   "registrationId": "reg_...",
   "registrationKey": "...",
   "directory": "/canonical/project/.collaboration/fable/fable",
@@ -280,7 +272,7 @@ Only the exact current registration may claim its target. Claims have a short le
 {"claimId":"claim_...","leaseUntil":1780000030000,"events":[{"eventId":"evt_..."}]}
 ```
 
-Each event retains its latest durable admission receipt key `{targetKey, eventId, claimId}` until acknowledgement. `inbox.ack` and `inbox.release` carry `operationId`, `registrationId`, `registrationKey`, `claimId`, and the exact event IDs. Normal ack/release requires the registration generation that created the claim. The sole exception is registration-time history reconciliation for the same stable target and exact receipt key. Repeating the same operation is idempotent; a different target/owner receives `claim_conflict`.
+Each event retains its latest durable admission receipt key `{targetKey, eventId, claimId}` until acknowledgement. `inbox.ack` and `inbox.release` carry `registrationId`, `registrationKey`, `claimId`, and the exact event IDs. Normal ack/release requires the registration generation that created the claim. The sole exception is registration-time history reconciliation for the same stable target and exact receipt key. Repeating the same operation is idempotent; a different target/owner receives `claim_conflict`.
 
 Acknowledgement means **the hosted event message was admitted to Pi session history**, not that the model completed resulting work.
 
@@ -326,7 +318,7 @@ $PI_CODING_AGENT_DIR/runtime/
 - The first slice keeps one bounded schema-validated state document. Each mutation writes a temporary file, fsyncs it, renames atomically, then fsyncs the parent directory before success.
 - Corruption fails closed with `storage_error`; it does not start from an empty inbox.
 - The state document has an advertised size/monitor-entry cap. Hitting it stops new cursor advancement rather than losing events.
-- Bounded retention may remove only acknowledged events and cached operation results older than their advertised retention interval. Pending/claimed events, their latest claim identity, and monitor cursors are never age-pruned.
+- Retention pruning may remove only acknowledged events older than seven days and settled claims whose complete event set is removed. Pending/claimed events, their claim receipts, and monitor cursors are never age-pruned.
 - Runtime restart clears live registrations but preserves claims/wakes/events. Stale wake locators are discarded; pending events are rearmed only after the exact Pi session re-registers and history reconciliation finishes.
 - An append journal/database is deferred until measured state size or write throughput makes whole-state atomic replacement inadequate.
 
