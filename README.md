@@ -146,7 +146,9 @@ When Pi runs inside Herdr (`HERDR_ENV=1`), normalize legacy and Kitty Alt+Enter 
 
 Runtime watches newly created direct-child files and delivers them to one exact Pi session across restarts. It stores events before using Herdr to wake the verified idle pane; Herdr remains the process and prompt-delivery layer.
 
-Commands: `/runtime start`, `/runtime status`, `/runtime register`, `/runtime monitor <directory>`, and `/runtime monitor-delete`. Runtime never starts or changes Herdr layout silently. See [`extensions/runtime/PROTOCOL.md`](extensions/runtime/PROTOCOL.md).
+Runtime can also host persistent Pi collaborators in no-focus Herdr tabs. Participant identities are exclusive and durable; messages use Runtime mailboxes while Herdr delivers exact wakes. The model can only call `mail_send`; acquire, stand-down, release, revival, and takeover remain user commands.
+
+Commands: `/runtime start`, `/runtime status`, `/runtime register`, `/runtime monitor <directory>`, `/runtime monitor-delete`, `/runtime collaborate <protocol> <id>`, `/runtime collaborator-start <protocol> <id>`, `/runtime participants`, `/runtime stand-down`, `/runtime leave`, and `/runtime takeover <protocol> <id>`. Runtime never starts or changes Herdr layout silently. See [`extensions/runtime/PROTOCOL.md`](extensions/runtime/PROTOCOL.md).
 
 ## Skills
 
@@ -164,7 +166,8 @@ validation-review missions
 ```bash
 npm install
 npm run check
-npm run smoke:runtime-release  # explicit destructive gate; requires Herdr + its Pi integration
+npm run smoke:runtime-release       # isolated Monitor release gate; requires Herdr + Pi integration
+npm run smoke:collaborator-release  # isolated two-Pi collaborator release gate
 ```
 
-`npm run check` runs typechecking, tests, RPC/print/JSON mode smokes, the lockfile audit, and a package dry run. The isolated Runtime release gate is separate because it starts real Herdr and Pi processes.
+`npm run check` runs typechecking, tests, RPC/print/JSON mode smokes, the lockfile audit, and a package dry run. The isolated Runtime release gates are separate because they start real Herdr and Pi processes.

@@ -1,5 +1,6 @@
-import { HOSTED_MAX_DELIVERY_BATCH, HOSTED_MONITOR_MAX_ENTRIES, HOSTED_PROTOCOL_VERSION, type HostedMonitor } from "../hosted-types.ts";
+import { HOSTED_MAILBOX_MAX_BODY_BYTES, HOSTED_MAX_DELIVERY_BATCH, HOSTED_MONITOR_MAX_ENTRIES, HOSTED_PROTOCOL_VERSION, type HostedMonitor } from "../hosted-types.ts";
 import { DirectoryMonitorManager } from "./monitor.ts";
+import { HostedParticipantCoordinator } from "./participant.ts";
 import { RuntimeRegistrationManager, type RegisterPiInput } from "./registration.ts";
 import { HostedWakeCoordinator, type HostedClaimResult } from "./wake.ts";
 
@@ -27,6 +28,7 @@ export interface HostedProtocolContext {
 	registrations?: RuntimeRegistrationManager;
 	monitors?: DirectoryMonitorManager;
 	wakes?: HostedWakeCoordinator;
+	participants?: HostedParticipantCoordinator;
 }
 
 export type HostedResponse =
@@ -54,6 +56,7 @@ export async function dispatchHostedLine(line: string, context: HostedProtocolCo
 		const registrations = context.registrations;
 		const monitors = context.monitors;
 		const wakes = context.wakes;
+		const participants = context.participants;
 		if (!registrations || !monitors || !wakes) return failure(id, "capability_unavailable", "Hosted runtime methods are unavailable in this process.");
 
 		if (method === "pi.register") {
@@ -108,6 +111,36 @@ export async function dispatchHostedLine(line: string, context: HostedProtocolCo
 			const auth = authParams(params);
 			return success(id, wakes.status(registrations.authorize(auth.registrationId, auth.registrationKey)));
 		}
+		if (method.startsWith("participant.") || method === "mailbox.send") {
+			if (!participants) return failure(id, "capability_unavailable", "Collaborator mailbox methods are unavailable in this process.");
+			if (method === "participant.acquire") {
+				const input = strictObject(params, "participant.acquire params", ["registrationId", "registrationKey", "protocol", "participantId", "revive"]);
+				if (input.revive !== undefined && typeof input.revive !== "boolean") throw new Error("participant revive must be a boolean");
+				const registration = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
+				return success(id, participants.acquire(registration, participantName(input.protocol, "protocol"), participantName(input.participantId, "participant ID"), input.revive === true));
+			}
+			if (method === "participant.list") {
+				const auth = authParams(params);
+				return success(id, { participants: participants.list(registrations.authorize(auth.registrationId, auth.registrationKey)) });
+			}
+			if (method === "participant.get" || method === "participant.stand_down" || method === "participant.release") {
+				const input = participantAuthParams(params, method);
+				const registration = registrations.authorize(input.registrationId, input.registrationKey);
+				if (method === "participant.get") return success(id, participants.get(registration, input.participantKey));
+				if (method === "participant.stand_down") return success(id, participants.standDown(registration, input.participantKey));
+				return success(id, participants.release(registration, input.participantKey));
+			}
+			if (method === "participant.takeover") {
+				const input = strictObject(params, "participant.takeover params", ["registrationId", "registrationKey", "participantKey", "expectedGeneration", "confirmed"]);
+				if (input.confirmed !== true) throw new Error("participant takeover requires explicit confirmation");
+				const registration = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
+				return success(id, participants.takeover(registration, boundedText(input.participantKey, "participant key", 200), boundedText(input.expectedGeneration, "expected participant generation", 200)));
+			}
+			const input = strictObject(params, "mailbox.send params", ["registrationId", "registrationKey", "recipientParticipantKey", "sendId", "body"]);
+			const registration = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
+			const event = participants.send(registration, boundedText(input.recipientParticipantKey, "recipient participant key", 200), boundedText(input.sendId, "send ID", 200), boundedText(input.body, "mailbox body", HOSTED_MAILBOX_MAX_BODY_BYTES));
+			return success(id, { eventId: event.eventId, sequence: event.source.sequence });
+		}
 		return failure(id, "not_found", "Unknown runtime method.");
 	} catch (error) {
 		return failure(candidateId, errorCode(error), error instanceof Error ? error.message : "Invalid request.");
@@ -138,6 +171,7 @@ function hello(id: string, value: unknown, context: HostedProtocolContext): Host
 			...(context.degradedReason ? { degradedReason: context.degradedReason } : {}),
 			maxDeliveryBatch: HOSTED_MAX_DELIVERY_BATCH,
 			monitor: { maxEntries: HOSTED_MONITOR_MAX_ENTRIES },
+			...(context.participants ? { mailbox: { maxBodyBytes: HOSTED_MAILBOX_MAX_BODY_BYTES } } : {}),
 		},
 	});
 }
@@ -171,6 +205,21 @@ function authParams(value: unknown): { registrationId: string; registrationKey: 
 		registrationId: boundedText(params.registrationId, "registration ID", 200),
 		registrationKey: boundedText(params.registrationKey, "registration key", 200),
 	};
+}
+
+function participantAuthParams(value: unknown, name: string): { registrationId: string; registrationKey: string; participantKey: string } {
+	const params = strictObject(value, `${name} params`, ["registrationId", "registrationKey", "participantKey"]);
+	return {
+		registrationId: boundedText(params.registrationId, "registration ID", 200),
+		registrationKey: boundedText(params.registrationKey, "registration key", 200),
+		participantKey: boundedText(params.participantKey, "participant key", 200),
+	};
+}
+
+function participantName(value: unknown, name: string): string {
+	const result = boundedText(value, name, 64);
+	if (!/^[a-z][a-z0-9_-]{0,63}$/.test(result)) throw new Error(`${name} has invalid syntax.`);
+	return result;
 }
 
 function claimReceiptParams(value: unknown, name: string): { registrationId: string; registrationKey: string; claimId: string; eventIds: string[] } {
@@ -222,7 +271,7 @@ function errorCode(error: unknown): HostedErrorCode {
 	return error instanceof Error ? "invalid_request" : "internal";
 }
 
-const HOSTED_METHODS = new Set(["pi.register", "pi.heartbeat", "pi.unregister", "monitor.create", "monitor.get", "monitor.delete", "wake.accept", "inbox.claim", "inbox.ack", "inbox.release", "inbox.status"]);
+const HOSTED_METHODS = new Set(["pi.register", "pi.heartbeat", "pi.unregister", "monitor.create", "monitor.get", "monitor.delete", "wake.accept", "inbox.claim", "inbox.ack", "inbox.release", "inbox.status", "participant.acquire", "participant.get", "participant.list", "participant.stand_down", "participant.release", "participant.takeover", "mailbox.send"]);
 
 const ERROR_CODES = new Set<HostedErrorCode>([
 	"invalid_request", "unsupported_version", "capability_unavailable", "not_found", "conflict", "registration_stale", "identity_mismatch", "claim_conflict", "host_unavailable", "busy", "storage_error", "internal",
