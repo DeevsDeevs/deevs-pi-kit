@@ -144,9 +144,9 @@ When Pi runs inside Herdr (`HERDR_ENV=1`), normalize legacy and Kitty Alt+Enter 
 
 ### Hosted runtime
 
-Runtime currently ships the owner-only durable state/service, strict Unix-socket protocol, direct-child created-file Monitor, and exact Pi/Herdr registration boundary. Start it explicitly with `/runtime start`, inspect it with `/runtime status`, and configure one trusted-project Monitor with `/runtime monitor <directory>` (`/runtime monitor-delete` removes it without discarding queued events). Runtime never starts or changes Herdr layout silently.
+Runtime ships the owner-only durable state/service, strict Unix-socket protocol, direct-child created-file Monitor, exact Pi/Herdr registration, and durable exact-agent wake/admission acknowledgement. Start it explicitly with `/runtime start`, inspect it with `/runtime status`, and configure one trusted-project Monitor with `/runtime monitor <directory>` (`/runtime monitor-delete` removes it without discarding queued events). Runtime never starts or changes Herdr layout silently.
 
-Exact wake, Pi admission/acknowledgement, and the complete release E2E remain pending, so queued Monitor events do not yet trigger a Pi turn. The versioned contract and release gate are tracked in [`extensions/runtime/PROTOCOL.md`](extensions/runtime/PROTOCOL.md).
+A settled Monitor event is recorded before Herdr prompts the exact verified idle Pi session. Pi rechecks user-priority admission, stores an exact claim receipt in one hidden custom follow-up, acknowledges at `message_start`, and reconciles that receipt after restart. The full restart/no-redelivery release E2E remains pending; see [`extensions/runtime/PROTOCOL.md`](extensions/runtime/PROTOCOL.md).
 
 ## Skills
 

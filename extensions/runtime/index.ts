@@ -11,6 +11,10 @@ export default function runtimeExtension(pi: ExtensionAPI): void {
 		description: "Start, inspect, register, or configure the durable Runtime service",
 		handler: (args, ctx) => hosted.command(args, ctx),
 	});
+	pi.registerCommand("pi-kit-runtime-wake", {
+		description: "Internal durable Runtime wake protocol",
+		handler: (args, ctx) => hosted.acceptWake(args, ctx),
+	});
 	pi.on("session_start", async (_event, ctx) => {
 		runtimeDelivery.restore(ctx);
 		void runtimeDelivery.maybeDeliver();
@@ -20,7 +24,10 @@ export default function runtimeExtension(pi: ExtensionAPI): void {
 		runtimeDelivery.restore(ctx);
 		void runtimeDelivery.maybeDeliver();
 	});
-	pi.on("message_start", (event) => runtimeDelivery.acknowledgeMessage(event.message));
+	pi.on("message_start", (event) => {
+		runtimeDelivery.acknowledgeMessage(event.message);
+		hosted.acknowledgeMessage(event.message);
+	});
 	pi.on("before_agent_start", (_event, ctx) => runtimeDelivery.setContext(ctx));
 	pi.on("agent_settled", (_event, ctx) => {
 		runtimeDelivery.setContext(ctx);

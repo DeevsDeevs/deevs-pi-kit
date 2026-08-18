@@ -218,6 +218,17 @@ describe("hosted runtime state reducer", () => {
 		expect(afterAckExpiry.events.evt_1?.delivery.status).toBe("acked");
 	});
 
+	it("prunes old acknowledged receipt groups during later acknowledgements", () => {
+		let state = reduceHostedState(populatedState(), { type: "inbox.claim", claim: claim("claim_1") });
+		state = reduceHostedState(state, { type: "inbox.ack", targetKey: "pi_target", claimId: "claim_1", eventIds: ["evt_1"], at: 1_000 });
+		state = reduceHostedState(state, { type: "monitor.commit", monitor: { ...state.monitors.mon_1!, sequence: 2, updatedAt: 2_000 }, events: [event("evt_2", 2)] });
+		state = reduceHostedState(state, { type: "inbox.claim", claim: { ...claim("claim_2", ["evt_2"]), createdAt: 2_000, leaseUntil: 3_000 } });
+		state = reduceHostedState(state, { type: "inbox.ack", targetKey: "pi_target", claimId: "claim_2", eventIds: ["evt_2"], at: 1_001 + HOSTED_ACK_RETENTION_MS });
+		expect(state.events.evt_1).toBeUndefined();
+		expect(state.claims.claim_1).toBeUndefined();
+		expect(state.events.evt_2?.delivery.status).toBe("acked");
+	});
+
 	it("prunes only complete old acknowledged receipt groups", () => {
 		let state = reduceHostedState(populatedState(), { type: "inbox.claim", claim: claim() });
 		state = reduceHostedState(state, { type: "inbox.ack", targetKey: "pi_target", claimId: "claim_1", eventIds: ["evt_1"], at: 1_000 });
@@ -228,19 +239,31 @@ describe("hosted runtime state reducer", () => {
 		expect(state.claims).toEqual({});
 	});
 
+	it("atomically accepts one wake into its exact first pending batch", () => {
+		let state = populatedState();
+		state = reduceHostedState(state, { type: "wake.set", wake: { wakeId: "wake_1", targetKey: "pi_target", registrationId: "reg_1", createdAt: 250 } });
+		const operation = { type: "wake.accept" as const, wakeId: "wake_1", claim: claim() };
+		state = reduceHostedState(state, operation);
+		expect(state.wakes).toEqual({});
+		expect(state.events.evt_1?.delivery).toEqual({ status: "claimed", claimId: "claim_1" });
+		expect(reduceHostedState(state, operation)).toBe(state);
+		const fresh = reduceHostedState(populatedState(), { type: "wake.set", wake: { wakeId: "wake_1", targetKey: "pi_target", registrationId: "reg_1", createdAt: 250 } });
+		expect(() => reduceHostedState(fresh, { ...operation, claim: claim("claim_wrong", ["evt_missing"]) })).toThrow(HostedStateConflictError);
+	});
+
 	it("keeps one outstanding wake per target and clears only the exact wake", () => {
 		let state = reduceHostedState(emptyHostedRuntimeState(), { type: "target.ensure", target: target() });
 		state = reduceHostedState(state, {
 			type: "wake.set",
 			wake: { wakeId: "wake_1", targetKey: "pi_target", registrationId: "reg_1", createdAt: 200 },
 		});
-		const second = reduceHostedState(state, {
+		expect(reduceHostedState(state, { type: "wake.set", wake: { wakeId: "wake_1", targetKey: "pi_target", registrationId: "reg_1", createdAt: 200 } })).toBe(state);
+		expect(() => reduceHostedState(state, {
 			type: "wake.set",
 			wake: { wakeId: "wake_2", targetKey: "pi_target", registrationId: "reg_1", createdAt: 201 },
-		});
-		expect(second.wakes.pi_target?.wakeId).toBe("wake_1");
-		expect(reduceHostedState(second, { type: "wake.clear", targetKey: "pi_target", wakeId: "wake_2" })).toBe(second);
-		expect(reduceHostedState(second, { type: "wake.clear", targetKey: "pi_target", wakeId: "wake_1" }).wakes).toEqual({});
+		})).toThrow(HostedStateConflictError);
+		expect(reduceHostedState(state, { type: "wake.clear", targetKey: "pi_target", wakeId: "wake_2" })).toBe(state);
+		expect(reduceHostedState(state, { type: "wake.clear", targetKey: "pi_target", wakeId: "wake_1" }).wakes).toEqual({});
 	});
 });
 

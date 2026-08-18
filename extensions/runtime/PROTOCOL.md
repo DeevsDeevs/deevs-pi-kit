@@ -1,6 +1,6 @@
 # pi-kit-runtime protocol v1 (design draft)
 
-Status: **implemented through durable state, transport, directory Monitor, and verified Pi registration. Exact wake/admission remains pending.**
+Status: **implemented through exact wake and Pi admission acknowledgement. The full restart/no-redelivery release E2E remains pending.**
 
 This protocol adds one local durable inbox for events that must survive a Pi process restart. The first vertical slice watches newly created files in one directory and wakes one exact Pi session through Herdr.
 
@@ -104,7 +104,7 @@ Result:
 }
 ```
 
-`runtimeId` is generated once and persisted. `epoch` changes on every runtime process start. `hello` accepts only ranges spanning v1 and returns exact version `1`. Capability values include only fields consumed by clients or varying at runtime. When the implemented Herdr wake path is temporarily unavailable, `agentWake` is `"none"` and the result includes a typed degraded reason. During the pre-wake implementation checkpoints, `agentWake` is `"none"` without a degraded reason because that capability is not shipped yet. Durable inbox persistence, offline queuing, non-recursive created-file monitoring, and lack of proven reboot survival are fixed v1 contract properties rather than redundant capability flags.
+`runtimeId` is generated once and persisted. `epoch` changes on every runtime process start. `hello` accepts only ranges spanning v1 and returns exact version `1`. Capability values include only fields consumed by clients or varying at runtime. When the Herdr wake adapter is not configured, `agentWake` is `"none"`; host-dependent operations otherwise fail with typed `host_unavailable` when Herdr is temporarily unreachable. Durable inbox persistence, offline queuing, non-recursive created-file monitoring, and lack of proven reboot survival are fixed v1 contract properties rather than redundant capability flags.
 
 ## Method surface
 
@@ -297,11 +297,11 @@ The command is protocol framing, not model prose. Pi checks extension commands b
 
 The Pi handler rechecks `ctx.isIdle()` and `ctx.hasPendingMessages()` to narrow the status race without overstating atomicity:
 
-- busy/already pending: reject/release; runtime keeps events pending and rearms after the next verified idle state;
+- busy/already pending: decline the wake without claiming; the durable wake and pending events remain available for the next verified idle retry;
 - idle: atomically `wake.accept` and claim up to 12 events, then enqueue one hidden Pi custom follow-up containing every claimed event summary and ID;
 - synchronous enqueue failure: release the claim;
 - `message_start`: acknowledge the exact hosted claim; the custom message details retain `claimId` and event IDs so resume reconciliation can repeat the same idempotent ack;
-- Pi/runtime crash before admission: claim lease expires and the same event IDs are retried;
+- Pi/runtime crash before admission: an accepted claim lease expires and the same event IDs are retried;
 - Pi crash after admission but before ack persistence: custom-message details preserve the historical claim/event set; `pi.register` reconciles it before enabling wakes, even if the old claim lease expired.
 
 A repeated `wakeId` is harmless. A wake never targets the focused pane or falls back to raw terminal text.

@@ -21,6 +21,7 @@ export interface DirectoryMonitorOptions {
 	scanIntervalMs?: number;
 	watchDebounceMs?: number;
 	createId?: (prefix: "mon" | "gen") => string;
+	onEvents?: (targetKey: string) => void;
 	onError?: (error: unknown) => void;
 }
 
@@ -137,7 +138,10 @@ export class DirectoryMonitorManager {
 		}
 		const changed = currentMonitor.status !== "watching" || sequence !== currentMonitor.sequence || !sameObservations(entries, currentMonitor.entries);
 		const monitor: HostedMonitor = changed ? { ...currentMonitor, status: "watching", sequence, entries, updatedAt: now } : currentMonitor;
-		if (changed) this.store.apply({ type: "monitor.commit", monitor, events });
+		if (changed) {
+			this.store.apply({ type: "monitor.commit", monitor, events });
+			if (events.length > 0) this.options.onEvents?.(monitor.targetKey);
+		}
 		if (this.started) {
 			this.ensureWatcher(monitor);
 			const nextSettle = nextSettleDelay(monitor, now);
