@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { lstatSync, readdirSync, realpathSync, watch, type FSWatcher } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { HOSTED_MONITOR_MAX_ENTRIES, type HostedEvent, type HostedFileObservation, type HostedMonitor } from "../hosted-types.ts";
+import { HOSTED_MONITOR_MAX_ENTRIES, type HostedFileObservation, type HostedFilesystemCreatedEvent, type HostedMonitor } from "../hosted-types.ts";
 import { HostedStateStore } from "./state.ts";
 
 const DEFAULT_SCAN_INTERVAL_MS = 5_000;
@@ -129,7 +129,7 @@ export class DirectoryMonitorManager {
 		if (Object.keys(entries).length > HOSTED_MONITOR_MAX_ENTRIES) throw new MonitorLimitError(`Monitor cursor exceeds ${HOSTED_MONITOR_MAX_ENTRIES} entries.`);
 
 		let sequence = currentMonitor.sequence;
-		const events: HostedEvent[] = [];
+		const events: HostedFilesystemCreatedEvent[] = [];
 		for (const entry of Object.values(entries).sort((left, right) => left.relativePath.localeCompare(right.relativePath))) {
 			if (!entry.present || entry.emitted || now - entry.stableSince < currentMonitor.settleMs) continue;
 			entry.emitted = true;
@@ -232,7 +232,7 @@ function scanRegularFiles(directory: string): Map<string, { size: number; mtimeM
 	return files;
 }
 
-function createdEvent(monitor: HostedMonitor, entry: HostedFileObservation, sequence: number, now: number): HostedEvent {
+function createdEvent(monitor: HostedMonitor, entry: HostedFileObservation, sequence: number, now: number): HostedFilesystemCreatedEvent {
 	const key = `${monitor.monitorId}\0${monitor.generation}\0${sequence}\0${entry.relativePath}`;
 	return {
 		version: 1,

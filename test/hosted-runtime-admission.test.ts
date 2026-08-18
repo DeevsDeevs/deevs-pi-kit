@@ -40,7 +40,9 @@ describe("hosted Pi wake admission", () => {
 						claimId: `claim_${wakeId}`,
 						leaseUntil: 99_999,
 						status: "active",
-						events: [{ version: 1, eventId: `evt_${wakeId}`, type: "filesystem.created", summary: `new file: ${wakeId}.md`, payload: { path: join(projectRoot, `${wakeId}.md`) } }],
+						events: wakeId === "wake_mail"
+							? [{ version: 1, eventId: "evt_mail", type: "mailbox.message", summary: "message from fable", payload: { body: "Please inspect the race.", sendId: "send_mail", senderParticipantKey: "participant_fable", recipientParticipantKey: "participant_main" } }]
+							: [{ version: 1, eventId: `evt_${wakeId}`, type: "filesystem.created", summary: `new file: ${wakeId}.md`, payload: { path: join(projectRoot, `${wakeId}.md`) } }],
 					};
 				}
 				socket.end(`${JSON.stringify({ v: 1, id: request.id, ok: true, result })}\n`);
@@ -60,16 +62,20 @@ describe("hosted Pi wake admission", () => {
 		};
 		let pending = false;
 		const historical = { type: "custom_message", customType: HOSTED_RUNTIME_MESSAGE, details: { version: 1, claimId: "claim_old", eventIds: ["evt_old"] } };
+		let branch: unknown[] = [historical];
 		const ctx = {
 			cwd: projectRoot,
 			isProjectTrusted: () => true,
 			isIdle: () => true,
 			hasPendingMessages: () => pending,
-			sessionManager: { getSessionFile: () => sessionFile, getSessionId: () => "session_1", getBranch: () => [historical] },
+			sessionManager: { getSessionFile: () => sessionFile, getSessionId: () => "session_1", getBranch: () => branch },
 		};
 		const integration = new HostedRuntimeIntegration(pi as never, runtimeRoot);
 		await integration.sessionStart(ctx as never);
 		expect(requests.find((request) => request.method === "pi.register")?.params.admittedClaims).toEqual([{ claimId: "claim_old", eventIds: ["evt_old"] }]);
+		branch = [];
+		integration.sessionTree(ctx as never);
+		expect((integration as unknown as { admittedClaims: Map<string, string[]> }).admittedClaims.size).toBe(0);
 
 		pending = true;
 		await integration.acceptWake("1 reg_1 wake_busy", ctx as never);
@@ -82,6 +88,13 @@ describe("hosted Pi wake admission", () => {
 		expect(messages).toHaveLength(1);
 		integration.acknowledgeMessage({ role: "custom", ...messages[0] });
 		await vi.waitFor(() => expect(requests.some((request) => request.method === "inbox.ack" && request.params.claimId === "claim_wake_1")).toBe(true));
+
+		await integration.acceptWake("1 reg_1 wake_mail", ctx as never);
+		expect(messages[1]).toMatchObject({
+			customType: HOSTED_RUNTIME_MESSAGE,
+			content: expect.stringContaining("Please inspect the race."),
+			details: { mailbox: [{ eventId: "evt_mail", sendId: "send_mail", senderParticipantKey: "participant_fable", recipientParticipantKey: "participant_main" }] },
+		});
 
 		sendFails = true;
 		await integration.acceptWake("1 reg_1 wake_2", ctx as never);

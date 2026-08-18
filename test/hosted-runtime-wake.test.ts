@@ -52,10 +52,11 @@ function setup(status: HostedLiveAgent["status"] = "idle") {
 		herdr: { paneId: "w1:p1", terminalId: "term_1" },
 	};
 	let wakeNumber = 0;
+	let claimNumber = 0;
 	const wakes = new HostedWakeCoordinator(store, registrations, host, {
 		now: () => now,
 		createWakeId: () => `wake_${++wakeNumber}`,
-		createClaimId: () => "claim_manual",
+		createClaimId: () => `claim_manual_${++claimNumber}`,
 	});
 	const monitors = new DirectoryMonitorManager(store, { automatic: false, now: () => now, createId: (prefix) => `${prefix}_wake` });
 	return { root, projectRoot, watchRoot, store, host, registrations, input, wakes, monitors, setNow(value: number) { now = value; } };
@@ -129,10 +130,25 @@ describe("hosted exact wake and inbox", () => {
 		test.wakes.request(registration.targetKey);
 		await vi.waitFor(() => expect(test.host.prompts).toHaveLength(1));
 		const manual = test.wakes.claim(registration);
-		expect(() => test.wakes.accept(registration, "wake_1")).toThrow(/no pending events/);
+		expect(() => test.wakes.accept(registration, "wake_1")).toThrow(/active delivery claim/);
 		test.wakes.ack(registration, manual.claim.claimId, manual.claim.eventIds);
 		test.wakes.request(registration.targetKey);
 		await vi.waitFor(() => expect(test.store.read().wakes).toEqual({}));
+	});
+
+	it("serializes claims for one target even when later events are pending", async () => {
+		const test = setup();
+		const { registration } = await enqueue(test);
+		const first = test.wakes.claim(registration);
+		writeFileSync(join(test.watchRoot, "second.md"), "second");
+		const monitor = Object.values(test.store.read().monitors)[0]!;
+		test.monitors.reconcile(monitor.monitorId);
+		test.setNow(1_002);
+		test.monitors.reconcile(monitor.monitorId);
+		expect(pendingHostedEvents(test.store.read(), registration.targetKey)).toHaveLength(1);
+		expect(() => test.wakes.claim(registration)).toThrow(/active delivery claim/);
+		test.wakes.ack(registration, first.claim.claimId, first.claim.eventIds);
+		expect(test.wakes.claim(registration).events).toHaveLength(1);
 	});
 
 	it("rebinds a durable old-epoch wake only after the exact Pi target re-registers", async () => {

@@ -50,7 +50,7 @@ describe("hosted runtime client vertical", () => {
 		});
 		servers.push(server);
 		const client = new HostedRuntimeClient(server.socketPath);
-		expect(await client.hello()).toMatchObject({ epoch: "epoch_client", capabilities: { agentWake: "herdr_exact_agent" } });
+		expect(await client.hello()).toMatchObject({ epoch: "epoch_client", capabilities: { agentWake: "herdr_exact_agent", mailbox: { maxBodyBytes: 16_384 } } });
 		const registration = await client.call("pi.register", {
 			projectRoot,
 			piSessionId: "session_1",
@@ -61,6 +61,8 @@ describe("hosted runtime client vertical", () => {
 		}) as Record<string, unknown>;
 		expect(registration).toMatchObject({ registrationId: "reg_client", registrationKey: "secret_client", hostStateChangeSeq: 4 });
 		const auth = { registrationId: "reg_client", registrationKey: "secret_client" };
+		expect(await client.call("participant.acquire", { ...auth, protocol: "review", participantId: "main" })).toMatchObject({ participant: { participantId: "main", holderLive: true }, revived: false });
+		expect(await client.call("participant.list", auth)).toMatchObject({ participants: [{ participantId: "main" }] });
 		expect(await client.call("monitor.create", { ...auth, directory: watchRoot, settleMs: 250 })).toMatchObject({ monitorId: "mon_client", status: "watching" });
 		expect(await client.call("monitor.get", auth)).toMatchObject({ monitor: { monitorId: "mon_client" } });
 		host.agent = { ...host.agent, paneId: "w1:p9", stateChangeSeq: 5 };

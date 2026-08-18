@@ -1,6 +1,6 @@
 # Hosted Runtime protocol v1
 
-Runtime provides a durable local inbox for events that must survive Pi and Runtime restarts. Release 1 watches newly created files in one directory and wakes one exact Pi session through Herdr.
+Runtime provides a durable local inbox for events that must survive Pi and Runtime restarts. Release 1 watches newly created files in one directory and wakes one exact Pi session through Herdr. The Pi Collaborator extension adds durable participant identity and directed mailboxes on the same wake/admission foundation.
 
 It does not replace Herdr, bounded Jobs, Subagents, Workflows, Missions, or session Cron. Herdr owns live panes and prompt delivery; Runtime adds durable routing, claims, acknowledgement, and recovery.
 
@@ -22,12 +22,13 @@ Included:
 - exact Pi/Herdr registration and heartbeat;
 - durable queue, claim, acknowledgement, release, and lease recovery;
 - exact Herdr wake for `idle` or `done` Pi agents;
-- authoritative directory scans with `fs.watch` as a latency hint.
+- authoritative directory scans with `fs.watch` as a latency hint;
+- exclusive Pi collaborator identities and durable directed mailboxes.
 
 Deferred:
 
 - recursive/content/modification/deletion monitoring;
-- collaborator leases and mailboxes;
+- non-Pi collaborators, groups, broadcasts, and attachments;
 - durable schedules and automatic takeover;
 - Runtime-owned workers;
 - native service installers and Windows transport.
@@ -109,6 +110,13 @@ busy                     storage_error           internal
 | `inbox.ack` | Acknowledge exact admission receipts |
 | `inbox.release` | Return an exact claim to pending |
 | `inbox.status` | Read target queue counts |
+| `participant.acquire` | Acquire or revive one project/protocol participant |
+| `participant.get` | Read one participant and queue status |
+| `participant.list` | List participants in the registered project |
+| `participant.stand_down` | Vacate an identity while retaining queued mail |
+| `participant.release` | End an identity and reject new mail |
+| `participant.takeover` | Explicitly rebind an offline holder generation |
+| `mailbox.send` | Append one idempotent directed message |
 
 All methods except `hello` and `pi.register` require the exact current registration ID and key. Mutations are idempotent on their typed durable keys.
 
@@ -183,6 +191,16 @@ The Pi command handler checks that Pi is idle with no pending user messages, ato
 - A post-admission/pre-ack crash is reconciled from Pi history during registration.
 - Repeated wake IDs and receipt operations are idempotent.
 
+## Collaborator mailbox
+
+A participant is addressed by `(canonicalProjectRoot, protocol, participantId)` and has one durable state: `held`, `vacant`, or `ended`. One Pi target may hold one identity. Stand-down explicitly consents to succession; release ends the identity; takeover requires an offline holder, the exact observed generation, restart grace, and Pi-side user confirmation. Ownership never changes on a timer.
+
+Mailbox messages are addressed to participants rather than historical Pi sessions. Runtime resolves the current holder only when claiming/waking, so pending mail follows an explicit succession. Each sender-recipient stream has a durable sequence. `(senderParticipantKey, sendId)` plus a recipient/body fingerprint makes retries idempotent and changed retries conflict.
+
+Bodies are capped at 16 KiB and become model-visible input in the recipient Pi session. They are authored by an identity-verified participant in the same trusted project, but remain untrusted prose: bodies never authorize routing, ownership, takeover, acknowledgement, or verdicts.
+
+Herdr remains the live process and prompt layer. `/runtime collaborator-start` creates a no-focus tab, starts Pi, and waits for the child to acquire its environment-bootstrapped identity. The identity disposition is mirrored in Pi session history for safe reload/resume. Models receive only `mail_send`; every ownership transition remains a user command.
+
 ## Persistence and retention
 
 Runtime stores one bounded, schema-validated state document. Mutations write a temporary file, fsync it, atomically rename it, then fsync the parent directory. Corruption fails closed; Runtime never resets to an empty inbox.
@@ -197,6 +215,7 @@ Run from a source checkout with Herdr and its Pi integration installed:
 
 ```bash
 npm run smoke:runtime-release
+npm run smoke:collaborator-release
 ```
 
-The isolated gate uses a unique Herdr server/session/socket, Pi agent directory, Runtime state, project, and Pi sessions. It proves offline queuing, Runtime and Pi restarts, exact wake/admission, historical receipt reconciliation, foreign-session rejection, and no redelivery across a full heartbeat interval. It cleans all isolated resources and never connects to the user's active Herdr server.
+Both isolated gates use unique Herdr servers/sessions/sockets, Pi agent directories, Runtime state, projects, and Pi sessions. The Runtime gate proves offline Monitor queuing, restarts, exact wake/admission, historical reconciliation, foreign-session rejection, and no redelivery. The two-Pi Collaborator gate additionally proves bidirectional mail, identity conflict, stand-down queuing and reacquisition, release/revival, claimed-mail takeover after lease expiry, historical mailbox reconciliation, and no redelivery across a full heartbeat interval. Both clean all isolated resources and never connect to the user's active Herdr server.
