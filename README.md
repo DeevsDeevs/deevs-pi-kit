@@ -166,7 +166,8 @@ validation-review missions
 ```bash
 npm install
 npm run check
-npm run smoke:runtime-release  # explicit destructive gate; requires Herdr + its Pi integration
+npm run smoke:runtime-release       # isolated Monitor release gate; requires Herdr + Pi integration
+npm run smoke:collaborator-release  # isolated two-Pi collaborator release gate
 ```
 
-`npm run check` runs typechecking, tests, RPC/print/JSON mode smokes, the lockfile audit, and a package dry run. The isolated Runtime release gate is separate because it starts real Herdr and Pi processes.
+`npm run check` runs typechecking, tests, RPC/print/JSON mode smokes, the lockfile audit, and a package dry run. The isolated Runtime release gates are separate because they start real Herdr and Pi processes.

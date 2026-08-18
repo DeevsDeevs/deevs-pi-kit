@@ -1,6 +1,6 @@
 # Hosted Runtime protocol v1
 
-Runtime provides a durable local inbox for events that must survive Pi and Runtime restarts. Release 1 watches newly created files in one directory and wakes one exact Pi session through Herdr. The Pi Collaborator extension is implemented through client integration; its isolated two-Pi release gate remains pending.
+Runtime provides a durable local inbox for events that must survive Pi and Runtime restarts. Release 1 watches newly created files in one directory and wakes one exact Pi session through Herdr. The Pi Collaborator extension adds durable participant identity and directed mailboxes on the same wake/admission foundation.
 
 It does not replace Herdr, bounded Jobs, Subagents, Workflows, Missions, or session Cron. Herdr owns live panes and prompt delivery; Runtime adds durable routing, claims, acknowledgement, and recovery.
 
@@ -215,6 +215,7 @@ Run from a source checkout with Herdr and its Pi integration installed:
 
 ```bash
 npm run smoke:runtime-release
+npm run smoke:collaborator-release
 ```
 
-The isolated gate uses a unique Herdr server/session/socket, Pi agent directory, Runtime state, project, and Pi sessions. It proves offline queuing, Runtime and Pi restarts, exact wake/admission, historical receipt reconciliation, foreign-session rejection, and no redelivery across a full heartbeat interval. It cleans all isolated resources and never connects to the user's active Herdr server.
+Both isolated gates use unique Herdr servers/sessions/sockets, Pi agent directories, Runtime state, projects, and Pi sessions. The Runtime gate proves offline Monitor queuing, restarts, exact wake/admission, historical reconciliation, foreign-session rejection, and no redelivery. The two-Pi Collaborator gate additionally proves bidirectional mail, identity conflict, stand-down queuing and reacquisition, release/revival, claimed-mail takeover after lease expiry, historical mailbox reconciliation, and no redelivery across a full heartbeat interval. Both clean all isolated resources and never connect to the user's active Herdr server.
