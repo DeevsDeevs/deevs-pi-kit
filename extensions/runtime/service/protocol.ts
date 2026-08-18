@@ -1,6 +1,7 @@
 import { HOSTED_MAX_DELIVERY_BATCH, HOSTED_MONITOR_MAX_ENTRIES, HOSTED_PROTOCOL_VERSION, type HostedMonitor } from "../hosted-types.ts";
 import { DirectoryMonitorManager } from "./monitor.ts";
 import { RuntimeRegistrationManager, type RegisterPiInput } from "./registration.ts";
+import { HostedWakeCoordinator, type HostedClaimResult } from "./wake.ts";
 
 export const HOSTED_MAX_REQUEST_BYTES = 64 * 1024;
 
@@ -25,6 +26,7 @@ export interface HostedProtocolContext {
 	degradedReason?: "host_unavailable";
 	registrations?: RuntimeRegistrationManager;
 	monitors?: DirectoryMonitorManager;
+	wakes?: HostedWakeCoordinator;
 }
 
 export type HostedResponse =
@@ -51,7 +53,8 @@ export async function dispatchHostedLine(line: string, context: HostedProtocolCo
 		if (!HOSTED_METHODS.has(method)) return failure(id, "not_found", "Unknown runtime method.");
 		const registrations = context.registrations;
 		const monitors = context.monitors;
-		if (!registrations || !monitors) return failure(id, "capability_unavailable", "Hosted runtime methods are unavailable in this process.");
+		const wakes = context.wakes;
+		if (!registrations || !monitors || !wakes) return failure(id, "capability_unavailable", "Hosted runtime methods are unavailable in this process.");
 
 		if (method === "pi.register") {
 			const registration = await registrations.register(registerParams(params));
@@ -84,6 +87,26 @@ export async function dispatchHostedLine(line: string, context: HostedProtocolCo
 			const registration = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
 			monitors.delete(registration.targetKey, boundedText(input.monitorId, "monitor ID", 200));
 			return success(id, { deleted: true });
+		}
+		if (method === "wake.accept") {
+			const input = strictObject(params, "wake.accept params", ["registrationId", "registrationKey", "wakeId"]);
+			const registration = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
+			return success(id, claimResult(wakes.accept(registration, boundedText(input.wakeId, "wake ID", 200))));
+		}
+		if (method === "inbox.claim") {
+			const auth = authParams(params);
+			return success(id, claimResult(wakes.claim(registrations.authorize(auth.registrationId, auth.registrationKey))));
+		}
+		if (method === "inbox.ack" || method === "inbox.release") {
+			const input = claimReceiptParams(params, method);
+			const registration = registrations.authorize(input.registrationId, input.registrationKey);
+			if (method === "inbox.ack") wakes.ack(registration, input.claimId, input.eventIds);
+			else wakes.release(registration, input.claimId, input.eventIds);
+			return success(id, { settled: true });
+		}
+		if (method === "inbox.status") {
+			const auth = authParams(params);
+			return success(id, wakes.status(registrations.authorize(auth.registrationId, auth.registrationKey)));
 		}
 		return failure(id, "not_found", "Unknown runtime method.");
 	} catch (error) {
@@ -150,6 +173,18 @@ function authParams(value: unknown): { registrationId: string; registrationKey: 
 	};
 }
 
+function claimReceiptParams(value: unknown, name: string): { registrationId: string; registrationKey: string; claimId: string; eventIds: string[] } {
+	const params = strictObject(value, `${name} params`, ["registrationId", "registrationKey", "claimId", "eventIds"]);
+	const eventIds = boundedArray(params.eventIds, "eventIds", HOSTED_MAX_DELIVERY_BATCH).map((eventId) => boundedText(eventId, "event ID", 200));
+	if (eventIds.length === 0 || new Set(eventIds).size !== eventIds.length) throw new Error("Claim event IDs must be non-empty and unique.");
+	return {
+		registrationId: boundedText(params.registrationId, "registration ID", 200),
+		registrationKey: boundedText(params.registrationKey, "registration key", 200),
+		claimId: boundedText(params.claimId, "claim ID", 200),
+		eventIds,
+	};
+}
+
 function registrationResult(registration: Awaited<ReturnType<RuntimeRegistrationManager["register"]>>): Record<string, unknown> {
 	return {
 		targetKey: registration.targetKey,
@@ -165,6 +200,15 @@ function monitorResult(monitor: HostedMonitor): Record<string, unknown> {
 	return { monitorId: monitor.monitorId, generation: monitor.generation, directory: monitor.directory, status: monitor.status, settleMs: monitor.settleMs };
 }
 
+function claimResult(result: HostedClaimResult): Record<string, unknown> {
+	return {
+		claimId: result.claim.claimId,
+		leaseUntil: result.claim.leaseUntil,
+		status: result.claim.status,
+		events: result.events,
+	};
+}
+
 function success(id: string, result: unknown): HostedResponse {
 	return { v: 1, id, ok: true, result };
 }
@@ -178,7 +222,7 @@ function errorCode(error: unknown): HostedErrorCode {
 	return error instanceof Error ? "invalid_request" : "internal";
 }
 
-const HOSTED_METHODS = new Set(["pi.register", "pi.heartbeat", "pi.unregister", "monitor.create", "monitor.get", "monitor.delete"]);
+const HOSTED_METHODS = new Set(["pi.register", "pi.heartbeat", "pi.unregister", "monitor.create", "monitor.get", "monitor.delete", "wake.accept", "inbox.claim", "inbox.ack", "inbox.release", "inbox.status"]);
 
 const ERROR_CODES = new Set<HostedErrorCode>([
 	"invalid_request", "unsupported_version", "capability_unavailable", "not_found", "conflict", "registration_stale", "identity_mismatch", "claim_conflict", "host_unavailable", "busy", "storage_error", "internal",

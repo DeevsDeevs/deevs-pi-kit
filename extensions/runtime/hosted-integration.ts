@@ -5,8 +5,10 @@ import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { HostedRuntimeClient, HostedRuntimeClientError } from "./client.ts";
+import { HOSTED_MAX_DELIVERY_BATCH } from "./hosted-types.ts";
 
 const HEARTBEAT_MS = 10_000;
+export const HOSTED_RUNTIME_MESSAGE = "deevs.hosted-runtime.v1";
 
 interface LiveClientRegistration {
 	targetKey: string;
@@ -17,14 +19,29 @@ interface LiveClientRegistration {
 	paneId: string;
 }
 
+interface HostedReceipt {
+	claimId: string;
+	eventIds: string[];
+}
+
+interface HostedClaimMessage extends HostedReceipt {
+	status: "active" | "acked";
+	events: Array<{ eventId: string; type: string; summary: string; path: string }>;
+}
+
 export class HostedRuntimeIntegration {
 	private readonly pi: ExtensionAPI;
 	private readonly root: string;
 	private readonly client: HostedRuntimeClient;
 	private readonly clientGeneration = `client_${randomUUID()}`;
 	private registration?: LiveClientRegistration;
+	private registering?: Promise<LiveClientRegistration>;
 	private heartbeatTimer?: NodeJS.Timeout;
+	private ctx?: ExtensionContext;
 	private active = false;
+	private readonly handledWakeIds = new Set<string>();
+	private readonly admittedClaims = new Map<string, string[]>();
+	private readonly pendingAcks = new Set<string>();
 
 	constructor(pi: ExtensionAPI, root = defaultRuntimeRoot()) {
 		this.pi = pi;
@@ -34,12 +51,16 @@ export class HostedRuntimeIntegration {
 
 	async sessionStart(ctx: ExtensionContext): Promise<void> {
 		this.active = true;
+		this.ctx = ctx;
+		this.restoreAdmissions(ctx);
 		if (!existsSync(this.client.socketPath)) return;
+		this.startHeartbeat();
 		try { await this.register(ctx); } catch {}
 	}
 
 	async sessionShutdown(): Promise<void> {
 		this.active = false;
+		this.ctx = undefined;
 		this.stopHeartbeat();
 		const registration = this.registration;
 		this.registration = undefined;
@@ -47,6 +68,51 @@ export class HostedRuntimeIntegration {
 		try {
 			await this.client.call("pi.unregister", { registrationId: registration.registrationId, registrationKey: registration.registrationKey });
 		} catch {}
+	}
+
+	async acceptWake(args: string, ctx: ExtensionCommandContext): Promise<void> {
+		const parts = args.trim().split(/\s+/);
+		if (parts.length !== 3 || parts[0] !== "1") return;
+		const [, registrationId, wakeId] = parts as [string, string, string];
+		if (!this.active || !ctx.isIdle() || ctx.hasPendingMessages() || this.handledWakeIds.has(wakeId)) return;
+		let registration: LiveClientRegistration | undefined;
+		try { registration = this.registration ?? await this.registering; } catch { return; }
+		if (!registration || registration.registrationId !== registrationId) return;
+		let claim: HostedClaimMessage;
+		try {
+			claim = parseClaim(await this.client.call("wake.accept", { ...auth(registration), wakeId }));
+		} catch {
+			return;
+		}
+		if (claim.status === "acked") {
+			this.rememberWake(wakeId);
+			return;
+		}
+		if (!this.active || !ctx.isIdle() || ctx.hasPendingMessages()) {
+			await this.releaseClaim(registration, claim);
+			return;
+		}
+		this.rememberWake(wakeId);
+		try {
+			this.pi.sendMessage({
+				customType: HOSTED_RUNTIME_MESSAGE,
+				content: hostedContent(claim.events),
+				display: false,
+				details: { version: 1, wakeId, claimId: claim.claimId, eventIds: claim.eventIds },
+			}, { triggerTurn: true, deliverAs: "followUp" });
+		} catch {
+			this.handledWakeIds.delete(wakeId);
+			await this.releaseClaim(registration, claim);
+		}
+	}
+
+	acknowledgeMessage(message: unknown): void {
+		const record = asRecord(message);
+		if (record?.role !== "custom" || record.customType !== HOSTED_RUNTIME_MESSAGE) return;
+		const receipt = parseReceipt(record.details);
+		if (!receipt) return;
+		this.rememberAdmission(receipt, true);
+		void this.ackReceipt(receipt);
 	}
 
 	async command(args: string, ctx: ExtensionCommandContext): Promise<void> {
@@ -124,7 +190,16 @@ export class HostedRuntimeIntegration {
 		return this.register(ctx);
 	}
 
-	private async register(ctx: ExtensionContext): Promise<LiveClientRegistration> {
+	private register(ctx: ExtensionContext): Promise<LiveClientRegistration> {
+		if (this.registering) return this.registering;
+		const registration = this.registerOnce(ctx);
+		this.registering = registration;
+		const cleanup = () => { if (this.registering === registration) this.registering = undefined; };
+		void registration.then(cleanup, cleanup);
+		return registration;
+	}
+
+	private async registerOnce(ctx: ExtensionContext): Promise<LiveClientRegistration> {
 		if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Runtime registration requires a trusted project.");
 		const sessionFile = ctx.sessionManager.getSessionFile();
 		if (!sessionFile) throw new HostedRuntimeClientError("invalid_request", "Runtime requires a persisted Pi session.");
@@ -135,10 +210,11 @@ export class HostedRuntimeIntegration {
 			piSessionId: sessionId,
 			piSessionFile: realpathSync(sessionFile),
 			clientGeneration: this.clientGeneration,
-			admittedClaims: [],
+			admittedClaims: [...this.admittedClaims].slice(-HOSTED_MAX_DELIVERY_BATCH).map(([claimId, eventIds]) => ({ claimId, eventIds })),
 			herdr: { paneId: host.paneId, terminalId: host.terminalId },
 		});
 		const registration = parseRegistration(result);
+		this.pendingAcks.clear();
 		if (!this.active) {
 			try { await this.client.call("pi.unregister", auth(registration)); } catch {}
 			throw new HostedRuntimeClientError("registration_stale", "Pi session shut down while registration was in flight.");
@@ -157,7 +233,7 @@ export class HostedRuntimeIntegration {
 	}
 
 	private startHeartbeat(): void {
-		this.stopHeartbeat();
+		if (this.heartbeatTimer) return;
 		this.heartbeatTimer = setInterval(() => void this.heartbeat(), HEARTBEAT_MS);
 		this.heartbeatTimer.unref?.();
 	}
@@ -168,19 +244,103 @@ export class HostedRuntimeIntegration {
 	}
 
 	private async heartbeat(): Promise<void> {
+		if (!this.active || !this.ctx) return;
 		const registration = this.registration;
-		if (!registration) return;
 		try {
+			if (!registration) {
+				if (existsSync(this.client.socketPath)) await this.register(this.ctx);
+				return;
+			}
 			this.registration = parseRegistration(await this.client.call("pi.heartbeat", auth(registration)));
+			await this.retryAdmissions(this.registration);
 		} catch {
 			this.registration = undefined;
-			this.stopHeartbeat();
 		}
+	}
+
+	private restoreAdmissions(ctx: ExtensionContext): void {
+		for (const entry of ctx.sessionManager.getBranch() as readonly unknown[]) {
+			const record = asRecord(entry);
+			if (record?.type !== "custom_message" || record.customType !== HOSTED_RUNTIME_MESSAGE) continue;
+			const receipt = parseReceipt(record.details);
+			if (receipt) this.rememberAdmission(receipt, false);
+		}
+	}
+
+	private async retryAdmissions(registration: LiveClientRegistration): Promise<void> {
+		await Promise.all([...this.pendingAcks].map((claimId) => {
+			const eventIds = this.admittedClaims.get(claimId);
+			return eventIds ? this.ackReceipt({ claimId, eventIds }, registration) : Promise.resolve();
+		}));
+	}
+
+	private async ackReceipt(receipt: HostedReceipt, registration = this.registration): Promise<void> {
+		if (!registration) return;
+		try {
+			await this.client.call("inbox.ack", { ...auth(registration), claimId: receipt.claimId, eventIds: receipt.eventIds });
+			this.pendingAcks.delete(receipt.claimId);
+		} catch (error) {
+			if (error instanceof HostedRuntimeClientError && (error.code === "claim_conflict" || error.code === "not_found")) this.pendingAcks.delete(receipt.claimId);
+		}
+	}
+
+	private async releaseClaim(registration: LiveClientRegistration, claim: HostedClaimMessage): Promise<void> {
+		try { await this.client.call("inbox.release", { ...auth(registration), claimId: claim.claimId, eventIds: claim.eventIds }); } catch {}
+	}
+
+	private rememberAdmission(receipt: HostedReceipt, retry: boolean): void {
+		this.admittedClaims.delete(receipt.claimId);
+		this.admittedClaims.set(receipt.claimId, receipt.eventIds);
+		if (retry) this.pendingAcks.add(receipt.claimId);
+		while (this.admittedClaims.size > HOSTED_MAX_DELIVERY_BATCH) {
+			const oldest = this.admittedClaims.keys().next().value!;
+			this.admittedClaims.delete(oldest);
+			this.pendingAcks.delete(oldest);
+		}
+	}
+
+	private rememberWake(wakeId: string): void {
+		this.handledWakeIds.add(wakeId);
+		while (this.handledWakeIds.size > 256) this.handledWakeIds.delete(this.handledWakeIds.values().next().value!);
 	}
 }
 
 function defaultRuntimeRoot(): string {
 	return join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "runtime");
+}
+
+function parseClaim(value: unknown): HostedClaimMessage {
+	const result = strictObject(value, "Runtime wake claim");
+	if (result.status !== "active" && result.status !== "acked") throw new HostedRuntimeClientError("invalid_response", "Runtime claim has an invalid status.");
+	if (!Array.isArray(result.events) || result.events.length < 1 || result.events.length > HOSTED_MAX_DELIVERY_BATCH) throw new HostedRuntimeClientError("invalid_response", "Runtime claim events are invalid.");
+	const events = result.events.map((value) => {
+		const event = strictObject(value, "Runtime event");
+		const payload = strictObject(event.payload, "Runtime event payload");
+		return { eventId: text(event.eventId), type: text(event.type), summary: text(event.summary), path: text(payload.path) };
+	});
+	const eventIds = events.map((event) => event.eventId);
+	if (new Set(eventIds).size !== eventIds.length) throw new HostedRuntimeClientError("invalid_response", "Runtime claim event IDs are duplicated.");
+	return { claimId: text(result.claimId), status: result.status, eventIds, events };
+}
+
+function parseReceipt(value: unknown): HostedReceipt | undefined {
+	const details = asRecord(value);
+	if (details?.version !== 1 || typeof details.claimId !== "string" || !Array.isArray(details.eventIds) || details.eventIds.length < 1 || details.eventIds.length > HOSTED_MAX_DELIVERY_BATCH) return undefined;
+	const eventIds = details.eventIds.filter((eventId): eventId is string => typeof eventId === "string" && eventId.length > 0);
+	if (eventIds.length !== details.eventIds.length || new Set(eventIds).size !== eventIds.length) return undefined;
+	return { claimId: details.claimId, eventIds };
+}
+
+function hostedContent(events: HostedClaimMessage["events"]): string {
+	return [
+		"Runtime admitted durable external events:",
+		...events.map((event) => `- ${event.type} ${event.eventId}: ${event.summary} (${event.path})`),
+		"Inspect the referenced files when they become relevant to the current work.",
+	].join("\n");
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+	return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
 function parseRegistration(value: unknown): LiveClientRegistration {

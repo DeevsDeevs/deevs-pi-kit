@@ -7,6 +7,7 @@ import { DirectoryMonitorManager, type DirectoryMonitorOptions } from "./monitor
 import { dispatchHostedLine, encodeHostedResponse, HOSTED_MAX_REQUEST_BYTES, invalidFrame, type HostedProtocolContext } from "./protocol.ts";
 import { HerdrCliHostVerifier, RuntimeRegistrationManager, type HostedHostVerifier, type RegistrationManagerOptions } from "./registration.ts";
 import { HostedStateStore, loadOrCreateRuntimeInstance } from "./state.ts";
+import { HostedWakeCoordinator, type HostedWakeOptions } from "./wake.ts";
 
 export class RuntimeAlreadyRunningError extends Error {
 	readonly code = "conflict" as const;
@@ -20,6 +21,7 @@ export interface RuntimeServerOptions {
 	monitor?: DirectoryMonitorOptions;
 	host?: HostedHostVerifier;
 	registration?: RegistrationManagerOptions;
+	wake?: HostedWakeOptions;
 }
 
 export interface RuntimeServerHandle {
@@ -33,15 +35,31 @@ export interface RuntimeServerHandle {
 export async function startRuntimeServer(options: RuntimeServerOptions): Promise<RuntimeServerHandle> {
 	const instance = loadOrCreateRuntimeInstance(options.root);
 	const store = new HostedStateStore(options.root);
-	const monitors = new DirectoryMonitorManager(store, options.monitor);
-	const registrations = new RuntimeRegistrationManager(store, options.host ?? new HerdrCliHostVerifier(), options.registration);
+	const host = options.host ?? new HerdrCliHostVerifier();
+	let wakes: HostedWakeCoordinator | undefined;
+	const monitors = new DirectoryMonitorManager(store, {
+		...options.monitor,
+		onEvents: (targetKey) => {
+			options.monitor?.onEvents?.(targetKey);
+			wakes?.request(targetKey);
+		},
+	});
+	const registrations = new RuntimeRegistrationManager(store, host, {
+		...options.registration,
+		onReady: (targetKey) => {
+			options.registration?.onReady?.(targetKey);
+			wakes?.request(targetKey);
+		},
+	});
+	wakes = new HostedWakeCoordinator(store, registrations, host, options.wake);
 	const socketPath = options.socketPath ?? join(options.root, "runtime.sock");
 	const context: HostedProtocolContext = {
 		runtimeId: instance.runtimeId,
 		epoch: options.epoch ?? `epoch_${randomUUID()}`,
-		agentWake: "none",
+		agentWake: "herdr_exact_agent",
 		registrations,
 		monitors,
+		wakes,
 	};
 	const sockets = new Set<Socket>();
 	const server = createServer((socket) => handleConnection(socket, context, sockets));
@@ -60,6 +78,7 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 				if (closed) return;
 				closed = true;
 				monitors.close();
+				wakes.close();
 				registrations.close();
 				for (const socket of sockets) socket.destroy();
 				await closeServer(server);
@@ -68,6 +87,7 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 		};
 	} catch (error) {
 		monitors.close();
+		wakes.close();
 		registrations.close();
 		await closeServer(server);
 		try { unlinkSync(socketPath); } catch {}

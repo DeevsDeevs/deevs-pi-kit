@@ -112,4 +112,5 @@ export type HostedStateOperation =
 	| { type: "inbox.release_expired"; at: number }
 	| { type: "retention.prune"; before: number }
 	| { type: "wake.set"; wake: HostedWake }
+	| { type: "wake.accept"; wakeId: string; claim: HostedClaim }
 	| { type: "wake.clear"; targetKey: string; wakeId: string };

@@ -15,6 +15,7 @@ import {
 } from "node:fs";
 import { basename, join } from "node:path";
 import {
+	HOSTED_ACK_RETENTION_MS,
 	HOSTED_MAX_DELIVERY_BATCH,
 	HOSTED_MONITOR_MAX_ENTRIES,
 	HOSTED_STATE_MAX_BYTES,
@@ -130,21 +131,7 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 		};
 	}
 
-	if (operation.type === "inbox.claim") {
-		const claim = operation.claim;
-		const existing = state.claims[claim.claimId];
-		if (existing) {
-			if (!sameClaim(existing, claim)) throw new HostedStateConflictError("claim_conflict", "Claim ID does not match its durable receipt.");
-			return state;
-		}
-		if (claim.status !== "active" || claim.eventIds.length < 1 || claim.eventIds.length > HOSTED_MAX_DELIVERY_BATCH) return state;
-		if (new Set(claim.eventIds).size !== claim.eventIds.length || claim.leaseUntil <= claim.createdAt) return state;
-		const claimedEvents = claim.eventIds.map((eventId) => state.events[eventId]);
-		if (claimedEvents.some((event) => !event || event.targetKey !== claim.targetKey || event.delivery.status !== "pending")) return state;
-		const events = { ...state.events };
-		for (const event of claimedEvents as HostedEvent[]) events[event.eventId] = { ...event, delivery: { status: "claimed", claimId: claim.claimId } };
-		return { ...state, claims: { ...state.claims, [claim.claimId]: claim }, events };
-	}
+	if (operation.type === "inbox.claim") return claimEvents(state, operation.claim);
 
 	if (operation.type === "inbox.ack") {
 		const claim = state.claims[operation.claimId];
@@ -156,11 +143,11 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 			if (!event || event.targetKey !== claim.targetKey) return state;
 			if (event.delivery.status !== "acked") events[eventId] = { ...event, delivery: { status: "acked", claimId: claim.claimId, ackedAt: operation.at } };
 		}
-		return {
+		return pruneAcknowledged({
 			...state,
 			claims: { ...state.claims, [claim.claimId]: { ...claim, status: "acked", settledAt: operation.at } },
 			events,
-		};
+		}, Math.max(0, operation.at - HOSTED_ACK_RETENTION_MS));
 	}
 
 	if (operation.type === "inbox.release") return releaseClaim(state, operation.targetKey, operation.claimId, operation.eventIds, operation.at);
@@ -178,8 +165,27 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 	if (operation.type === "wake.set") {
 		if (!state.targets[operation.wake.targetKey]) return state;
 		const existing = state.wakes[operation.wake.targetKey];
-		if (existing) return state;
+		if (existing) {
+			if (!sameWake(existing, operation.wake)) throw new HostedStateConflictError("conflict", "Target already has another outstanding wake.");
+			return state;
+		}
 		return { ...state, wakes: { ...state.wakes, [operation.wake.targetKey]: operation.wake } };
+	}
+
+	if (operation.type === "wake.accept") {
+		const wake = state.wakes[operation.claim.targetKey];
+		const existingClaim = state.claims[operation.claim.claimId];
+		if (!wake) {
+			if (existingClaim && sameClaim(existingClaim, operation.claim)) return state;
+			throw new HostedStateConflictError("claim_conflict", "Wake is absent or no longer current.");
+		}
+		if (wake.wakeId !== operation.wakeId || wake.registrationId !== operation.claim.registrationId) throw new HostedStateConflictError("claim_conflict", "Wake does not match this claim owner.");
+		const expected = pendingHostedEvents(state, wake.targetKey).slice(0, HOSTED_MAX_DELIVERY_BATCH).map((event) => event.eventId);
+		if (expected.length === 0 || !sameOrderedIds(expected, operation.claim.eventIds)) throw new HostedStateConflictError("claim_conflict", "Wake claim is not the current first delivery batch.");
+		const claimed = claimEvents(state, operation.claim);
+		const wakes = { ...claimed.wakes };
+		delete wakes[wake.targetKey];
+		return { ...claimed, wakes };
 	}
 
 	if (operation.type === "wake.clear") {
@@ -240,6 +246,21 @@ export function validateHostedRuntimeState(value: unknown): HostedRuntimeState {
 	} catch (error) {
 		throw storageError("Runtime state is malformed", error);
 	}
+}
+
+function claimEvents(state: HostedRuntimeState, claim: HostedClaim): HostedRuntimeState {
+	const existing = state.claims[claim.claimId];
+	if (existing) {
+		if (!sameClaim(existing, claim)) throw new HostedStateConflictError("claim_conflict", "Claim ID does not match its durable receipt.");
+		return state;
+	}
+	if (claim.status !== "active" || claim.eventIds.length < 1 || claim.eventIds.length > HOSTED_MAX_DELIVERY_BATCH) return state;
+	if (new Set(claim.eventIds).size !== claim.eventIds.length || claim.leaseUntil <= claim.createdAt) return state;
+	const claimedEvents = claim.eventIds.map((eventId) => state.events[eventId]);
+	if (claimedEvents.some((event) => !event || event.targetKey !== claim.targetKey || event.delivery.status !== "pending")) return state;
+	const events = { ...state.events };
+	for (const event of claimedEvents as HostedEvent[]) events[event.eventId] = { ...event, delivery: { status: "claimed", claimId: claim.claimId } };
+	return { ...state, claims: { ...state.claims, [claim.claimId]: claim }, events };
 }
 
 function releaseClaim(state: HostedRuntimeState, targetKey: string, claimId: string, eventIds: string[], at: number): HostedRuntimeState {
@@ -575,6 +596,14 @@ function sameMonitorIdentity(left: HostedMonitor, right: HostedMonitor): boolean
 
 function sameClaim(left: HostedClaim, right: HostedClaim): boolean {
 	return left.claimId === right.claimId && left.targetKey === right.targetKey && left.registrationId === right.registrationId && left.clientGeneration === right.clientGeneration && sameIds(left.eventIds, right.eventIds);
+}
+
+function sameWake(left: HostedWake, right: HostedWake): boolean {
+	return left.wakeId === right.wakeId && left.targetKey === right.targetKey && left.registrationId === right.registrationId && left.createdAt === right.createdAt;
+}
+
+function sameOrderedIds(left: readonly string[], right: readonly string[]): boolean {
+	return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function sameIds(left: readonly string[], right: readonly string[]): boolean {

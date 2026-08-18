@@ -21,6 +21,7 @@ class FakeHost implements HostedHostVerifier {
 	constructor(agent: HostedLiveAgent) { this.agent = agent; }
 	async getPane(): Promise<HostedLiveAgent> { this.onGet?.(); await this.getBarrier; return this.agent; }
 	async findTerminal(): Promise<HostedLiveAgent> { return this.agent; }
+	async prompt(): Promise<void> {}
 }
 
 describe("hosted runtime client vertical", () => {
@@ -37,6 +38,7 @@ describe("hosted runtime client vertical", () => {
 			terminalId: "term_1",
 			cwd: projectRoot,
 			agentSession: { source: "herdr:pi", agent: "pi", kind: "path", value: sessionFile },
+			status: "idle",
 			stateChangeSeq: 4,
 		});
 		const server = await startRuntimeServer({
@@ -48,7 +50,7 @@ describe("hosted runtime client vertical", () => {
 		});
 		servers.push(server);
 		const client = new HostedRuntimeClient(server.socketPath);
-		expect(await client.hello()).toMatchObject({ epoch: "epoch_client", capabilities: { agentWake: "none" } });
+		expect(await client.hello()).toMatchObject({ epoch: "epoch_client", capabilities: { agentWake: "herdr_exact_agent" } });
 		const registration = await client.call("pi.register", {
 			projectRoot,
 			piSessionId: "session_1",
@@ -77,7 +79,7 @@ describe("hosted runtime client vertical", () => {
 		writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: "session_1", timestamp: "2026-01-01T00:00:00.000Z", cwd: projectRoot })}\n`);
 		let release!: () => void;
 		let entered!: () => void;
-		const host = new FakeHost({ paneId: "w1:p1", terminalId: "term_1", cwd: projectRoot, agentSession: { source: "herdr:pi", agent: "pi", kind: "path", value: sessionFile }, stateChangeSeq: 1 });
+		const host = new FakeHost({ paneId: "w1:p1", terminalId: "term_1", cwd: projectRoot, agentSession: { source: "herdr:pi", agent: "pi", kind: "path", value: sessionFile }, status: "idle", stateChangeSeq: 1 });
 		host.getBarrier = new Promise<void>((resolve) => { release = resolve; });
 		const getEntered = new Promise<void>((resolve) => { entered = resolve; });
 		host.onGet = entered;
@@ -85,7 +87,7 @@ describe("hosted runtime client vertical", () => {
 		const server = await startRuntimeServer({ root: runtimeRoot, host, monitor: { automatic: false }, registration: { createId: () => "reg_race", createKey: () => "key_race" } });
 		servers.push(server);
 		const pi = { exec: async () => ({ code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false }) };
-		const ctx = { cwd: projectRoot, isProjectTrusted: () => true, sessionManager: { getSessionFile: () => sessionFile, getSessionId: () => "session_1" } };
+		const ctx = { cwd: projectRoot, isProjectTrusted: () => true, sessionManager: { getSessionFile: () => sessionFile, getSessionId: () => "session_1", getBranch: () => [] } };
 		const integration = new HostedRuntimeIntegration(pi as never, runtimeRoot);
 		const starting = integration.sessionStart(ctx as never);
 		await getEntered;

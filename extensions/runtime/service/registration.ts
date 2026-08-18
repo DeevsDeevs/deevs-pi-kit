@@ -25,18 +25,22 @@ export interface HostedAgentSessionIdentity {
 	value: string;
 }
 
+export type HostedAgentStatus = "idle" | "working" | "blocked" | "done" | "unknown";
+
 export interface HostedLiveAgent {
 	paneId: string;
 	terminalId: string;
 	cwd: string;
 	name?: string;
 	agentSession: HostedAgentSessionIdentity;
+	status: HostedAgentStatus;
 	stateChangeSeq: number;
 }
 
 export interface HostedHostVerifier {
 	getPane(paneId: string): Promise<HostedLiveAgent>;
 	findTerminal(terminalId: string): Promise<HostedLiveAgent>;
+	prompt(paneId: string, text: string): Promise<void>;
 }
 
 export interface RegisterPiInput {
@@ -62,6 +66,7 @@ export interface RegistrationManagerOptions {
 	createId?: () => string;
 	createKey?: () => string;
 	leaseMs?: number;
+	onReady?: (targetKey: string) => void;
 }
 
 export class RuntimeRegistrationManager {
@@ -71,6 +76,7 @@ export class RuntimeRegistrationManager {
 	private readonly registrations = new Map<string, HostedLiveRegistration>();
 	private readonly byTarget = new Map<string, string>();
 	private readonly byTerminal = new Map<string, string>();
+	private readonly verifications = new Map<string, Promise<HostedLiveRegistration>>();
 	private closed = false;
 
 	constructor(store: HostedStateStore, host: HostedHostVerifier, options: RegistrationManagerOptions = {}) {
@@ -96,6 +102,7 @@ export class RuntimeRegistrationManager {
 		if (existing && existing.clientGeneration === input.clientGeneration && existing.host.terminalId === verified.terminalId) {
 			const renewed = { ...existing, leaseUntil: this.now() + this.leaseMs(), host: verified };
 			this.registrations.set(renewed.registrationId, renewed);
+			this.ready(renewed.targetKey);
 			return renewed;
 		}
 		const target: HostedTarget = { targetKey, projectRoot, piSessionId: input.piSessionId, piSessionFile, createdAt: this.now() };
@@ -114,27 +121,22 @@ export class RuntimeRegistrationManager {
 		this.registrations.set(registration.registrationId, registration);
 		this.byTarget.set(targetKey, registration.registrationId);
 		this.byTerminal.set(verified.terminalId, registration.registrationId);
+		this.ready(registration.targetKey);
 		return registration;
 	}
 
 	async heartbeat(registrationId: string, registrationKey: string): Promise<HostedLiveRegistration> {
-		const current = this.authorize(registrationId, registrationKey);
-		const verified = await this.host.findTerminal(current.host.terminalId);
-		this.ensureOpen();
-		if (this.registrations.get(registrationId) !== current) throw new RegistrationError("registration_stale", "Registration changed while its host identity was being verified.");
-		const target = this.store.read().targets[current.targetKey];
-		if (!target) throw new RegistrationError("not_found", "Runtime target no longer exists.");
-		verifyIdentity(verified, {
-			projectRoot: target.projectRoot,
-			piSessionId: target.piSessionId,
-			piSessionFile: target.piSessionFile,
-			clientGeneration: current.clientGeneration,
-			admittedClaims: [],
-			herdr: { paneId: current.host.paneId, terminalId: current.host.terminalId, agentName: current.host.name },
-		}, true);
-		const renewed = { ...current, leaseUntil: this.now() + this.leaseMs(), host: verified };
-		this.registrations.set(registrationId, renewed);
-		return renewed;
+		const registration = await this.verify(registrationId, registrationKey, true);
+		this.ready(registration.targetKey);
+		return registration;
+	}
+
+	async verifyTarget(targetKey: string): Promise<HostedLiveRegistration> {
+		this.expire();
+		const registrationId = this.byTarget.get(targetKey);
+		const registration = registrationId ? this.registrations.get(registrationId) : undefined;
+		if (!registration) throw new RegistrationError("registration_stale", "Pi target has no live registration.");
+		return this.verify(registration.registrationId, registration.registrationKey, false);
 	}
 
 	unregister(registrationId: string, registrationKey: string): void {
@@ -154,6 +156,34 @@ export class RuntimeRegistrationManager {
 		this.registrations.clear();
 		this.byTarget.clear();
 		this.byTerminal.clear();
+		this.verifications.clear();
+	}
+
+	private verify(registrationId: string, registrationKey: string, renew: boolean): Promise<HostedLiveRegistration> {
+		const prior = this.verifications.get(registrationId) ?? Promise.resolve(undefined);
+		const verification = prior.catch(() => undefined).then(async () => {
+			const current = this.authorize(registrationId, registrationKey);
+			const verified = await this.host.findTerminal(current.host.terminalId);
+			this.ensureOpen();
+			if (this.registrations.get(registrationId) !== current) throw new RegistrationError("registration_stale", "Registration changed while its host identity was being verified.");
+			const target = this.store.read().targets[current.targetKey];
+			if (!target) throw new RegistrationError("not_found", "Runtime target no longer exists.");
+			verifyIdentity(verified, {
+				projectRoot: target.projectRoot,
+				piSessionId: target.piSessionId,
+				piSessionFile: target.piSessionFile,
+				clientGeneration: current.clientGeneration,
+				admittedClaims: [],
+				herdr: { paneId: current.host.paneId, terminalId: current.host.terminalId, agentName: current.host.name },
+			}, true);
+			const next = { ...current, leaseUntil: renew ? this.now() + this.leaseMs() : current.leaseUntil, host: verified };
+			this.registrations.set(registrationId, next);
+			return next;
+		});
+		this.verifications.set(registrationId, verification);
+		const cleanup = () => { if (this.verifications.get(registrationId) === verification) this.verifications.delete(registrationId); };
+		void verification.then(cleanup, cleanup);
+		return verification;
 	}
 
 	private ensureOpen(): void {
@@ -187,6 +217,10 @@ export class RuntimeRegistrationManager {
 	private leaseMs(): number {
 		return this.options.leaseMs ?? REGISTRATION_LEASE_MS;
 	}
+
+	private ready(targetKey: string): void {
+		if (this.options.onReady) queueMicrotask(() => this.options.onReady?.(targetKey));
+	}
 }
 
 export class HerdrCliHostVerifier implements HostedHostVerifier {
@@ -202,6 +236,10 @@ export class HerdrCliHostVerifier implements HostedHostVerifier {
 		const matches = agents.map(parseLiveAgent).filter((agent) => agent.terminalId === terminalId);
 		if (matches.length !== 1) throw new RegistrationError("identity_mismatch", "The registered terminal is not uniquely live in Herdr.");
 		return matches[0]!;
+	}
+
+	async prompt(paneId: string, text: string): Promise<void> {
+		await runHerdr(["agent", "prompt", paneId, text]);
 	}
 }
 
@@ -269,12 +307,15 @@ function parseLiveAgent(value: unknown): HostedLiveAgent {
 		const session = strictObject(agent.agent_session, "Herdr agent session");
 		if (session.kind !== "id" && session.kind !== "path") throw new Error("invalid session kind");
 		if (!Number.isSafeInteger(agent.state_change_seq) || Number(agent.state_change_seq) < 0) throw new Error("invalid state sequence");
+		const status = agent.agent_status;
+		if (status !== "idle" && status !== "working" && status !== "blocked" && status !== "done" && status !== "unknown") throw new Error("invalid agent status");
 		return {
 			paneId: text(agent.pane_id),
 			terminalId: text(agent.terminal_id),
 			cwd: text(agent.cwd),
 			...(typeof agent.name === "string" ? { name: agent.name } : {}),
 			agentSession: { source: text(session.source), agent: text(session.agent), kind: session.kind, value: text(session.value) },
+			status,
 			stateChangeSeq: Number(agent.state_change_seq),
 		};
 	} catch (error) {
