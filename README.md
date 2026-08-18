@@ -146,7 +146,7 @@ When Pi runs inside Herdr (`HERDR_ENV=1`), normalize legacy and Kitty Alt+Enter 
 
 Runtime ships the owner-only durable state/service, strict Unix-socket protocol, direct-child created-file Monitor, exact Pi/Herdr registration, and durable exact-agent wake/admission acknowledgement. Start it explicitly with `/runtime start`, inspect it with `/runtime status`, and configure one trusted-project Monitor with `/runtime monitor <directory>` (`/runtime monitor-delete` removes it without discarding queued events). Runtime never starts or changes Herdr layout silently.
 
-A settled Monitor event is recorded before Herdr prompts the exact verified idle Pi session. Pi rechecks user-priority admission, stores an exact claim receipt in one hidden custom follow-up, acknowledges at `message_start`, and reconciles that receipt after restart. The full restart/no-redelivery release E2E remains pending; see [`extensions/runtime/PROTOCOL.md`](extensions/runtime/PROTOCOL.md).
+A settled Monitor event is recorded before Herdr prompts the exact verified idle Pi session. Pi rechecks user-priority admission, stores an exact claim receipt in one hidden custom follow-up, acknowledges at `message_start`, and reconciles that receipt after restart. Runtime Release 1's isolated restart/no-redelivery gate passes; see [`extensions/runtime/PROTOCOL.md`](extensions/runtime/PROTOCOL.md).
 
 ## Skills
 
@@ -164,6 +164,7 @@ validation-review missions
 ```bash
 npm install
 npm run check
+npm run smoke:runtime-release  # explicit destructive gate; requires Herdr + its Pi integration
 ```
 
 `npm run check` runs strict typechecking, the unit/integration/UI suite, reproducible RPC/print/JSON mode smokes, a full lockfile supply-chain audit (including Pi/TypeScript/Vitest development tooling), and a package dry run against Pi 0.82. The audit has one narrow, expiring exception for `GHSA-mh99-v99m-4gvg`: Pi 0.82.x's published shrinkwrap pins dev-only `brace-expansion@5.0.7` and prevents downstream selection of fixed 5.0.8; the exception expires 2026-08-15 and all other high-severity findings fail the gate.

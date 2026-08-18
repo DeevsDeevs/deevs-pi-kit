@@ -123,6 +123,18 @@ describe("hosted exact wake and inbox", () => {
 		expect(test.host.prompts[1]?.text).toContain(" wake_2");
 	});
 
+	it("fails a stale wake safely when a manual claim wins the interleaving", async () => {
+		const test = setup();
+		const { registration } = await enqueue(test);
+		test.wakes.request(registration.targetKey);
+		await vi.waitFor(() => expect(test.host.prompts).toHaveLength(1));
+		const manual = test.wakes.claim(registration);
+		expect(() => test.wakes.accept(registration, "wake_1")).toThrow(/no pending events/);
+		test.wakes.ack(registration, manual.claim.claimId, manual.claim.eventIds);
+		test.wakes.request(registration.targetKey);
+		await vi.waitFor(() => expect(test.store.read().wakes).toEqual({}));
+	});
+
 	it("rebinds a durable old-epoch wake only after the exact Pi target re-registers", async () => {
 		const test = setup();
 		const { registration } = await enqueue(test);
