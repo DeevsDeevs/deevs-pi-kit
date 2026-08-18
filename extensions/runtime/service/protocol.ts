@@ -114,9 +114,10 @@ export async function dispatchHostedLine(line: string, context: HostedProtocolCo
 		if (method.startsWith("participant.") || method === "mailbox.send") {
 			if (!participants) return failure(id, "capability_unavailable", "Collaborator mailbox methods are unavailable in this process.");
 			if (method === "participant.acquire") {
-				const input = strictObject(params, "participant.acquire params", ["registrationId", "registrationKey", "protocol", "participantId"]);
+				const input = strictObject(params, "participant.acquire params", ["registrationId", "registrationKey", "protocol", "participantId", "revive"]);
+				if (input.revive !== undefined && typeof input.revive !== "boolean") throw new Error("participant revive must be a boolean");
 				const registration = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
-				return success(id, participants.acquire(registration, participantName(input.protocol, "protocol"), participantName(input.participantId, "participant ID")));
+				return success(id, participants.acquire(registration, participantName(input.protocol, "protocol"), participantName(input.participantId, "participant ID"), input.revive === true));
 			}
 			if (method === "participant.list") {
 				const auth = authParams(params);

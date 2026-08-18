@@ -59,11 +59,12 @@ export class HostedParticipantCoordinator {
 		this.seenTargets.add(targetKey);
 	}
 
-	acquire(registration: HostedLiveRegistration, protocol: string, participantId: string): { participant: HostedParticipantStatus; revived: boolean } {
+	acquire(registration: HostedLiveRegistration, protocol: string, participantId: string, allowRevive = false): { participant: HostedParticipantStatus; revived: boolean } {
 		this.seenTargets.add(registration.targetKey);
 		const target = this.requireTarget(registration.targetKey);
 		const participantKey = deriveParticipantKey(target.projectRoot, protocol, participantId);
 		const before = this.store.read().participants[participantKey];
+		if (before?.state === "ended" && !allowRevive) throw new HostedParticipantError("conflict", "Ended participant requires explicit revival authorization.");
 		const latest = before?.transitions.at(-1);
 		const revived = before?.state === "ended" || (before?.state === "held" && before.holderTargetKey === registration.targetKey && latest?.cause === "revive");
 		this.store.apply({
