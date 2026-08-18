@@ -53,6 +53,28 @@ export function emptyHostedRuntimeState(): HostedRuntimeState {
 	return { version: 1, targets: {}, monitors: {}, events: {}, dedupe: {}, claims: {}, wakes: {} };
 }
 
+export class HostedStateStore {
+	readonly root: string;
+	private state: HostedRuntimeState;
+
+	constructor(root: string) {
+		this.root = root;
+		this.state = readHostedRuntimeState(root);
+	}
+
+	read(): HostedRuntimeState {
+		return this.state;
+	}
+
+	apply(operation: HostedStateOperation): HostedRuntimeState {
+		const next = reduceHostedState(this.state, operation);
+		if (next === this.state) return this.state;
+		writeHostedRuntimeState(this.root, next);
+		this.state = next;
+		return next;
+	}
+}
+
 export function reduceHostedState(state: HostedRuntimeState, operation: HostedStateOperation): HostedRuntimeState {
 	if (operation.type === "target.ensure") {
 		const existing = state.targets[operation.target.targetKey];
@@ -366,12 +388,13 @@ function validateMonitor(value: unknown, key: string): HostedMonitor {
 }
 
 function validateObservation(value: unknown, key: string): HostedFileObservation {
-	const entry = strictObject(value, "file observation", ["relativePath", "size", "mtimeMs", "stableSince", "emitted"]);
+	const entry = strictObject(value, "file observation", ["relativePath", "size", "mtimeMs", "stableSince", "present", "emitted"]);
 	const result: HostedFileObservation = {
 		relativePath: text(entry.relativePath, "relative path", MAX_PATH_BYTES),
 		size: integer(entry.size, "file size"),
 		mtimeMs: nonNegativeNumber(entry.mtimeMs, "file modification time"),
 		stableSince: nonNegativeNumber(entry.stableSince, "stable since"),
+		present: boolean(entry.present, "present"),
 		emitted: boolean(entry.emitted, "emitted"),
 	};
 	if (result.relativePath !== key) throw new Error("relative path does not match map key");

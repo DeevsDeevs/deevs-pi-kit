@@ -84,7 +84,7 @@ function populatedState(): ReturnType<typeof emptyHostedRuntimeState> {
 			sequence: 1,
 			updatedAt: 200,
 			entries: {
-				"review.md": { relativePath: "review.md", size: 42, mtimeMs: 200, stableSince: 200, emitted: true },
+				"review.md": { relativePath: "review.md", size: 42, mtimeMs: 200, stableSince: 200, present: true, emitted: true },
 			},
 		}),
 		events: [event()],
@@ -142,7 +142,7 @@ describe("hosted runtime state reducer", () => {
 				updatedAt: 300,
 				entries: Object.fromEntries(Array.from({ length: HOSTED_MONITOR_MAX_ENTRIES + 1 }, (_, index) => {
 					const relativePath = `file-${index}`;
-					return [relativePath, { relativePath, size: 1, mtimeMs: 1, stableSince: 1, emitted: false }];
+					return [relativePath, { relativePath, size: 1, mtimeMs: 1, stableSince: 1, present: true, emitted: false }];
 				})),
 			}),
 		]) {
