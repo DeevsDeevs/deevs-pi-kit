@@ -1,6 +1,6 @@
 # pi-kit-runtime protocol v1 (design draft)
 
-Status: **implemented through exact wake and Pi admission acknowledgement. The full restart/no-redelivery release E2E remains pending.**
+Status: **Runtime Release 1 implemented. The isolated restart/no-redelivery acceptance gate passes.**
 
 This protocol adds one local durable inbox for events that must survive a Pi process restart. The first vertical slice watches newly created files in one directory and wakes one exact Pi session through Herdr.
 
@@ -353,9 +353,9 @@ The protocol guarantees durable state across runtime process restart. Machine re
 | Two logical actors wrote as `fable` | **Not solved by Monitor v1.** Exclusive participant leases are the next layer |
 | Mission review/completion churn | **Not solved here.** Mission policy remains in Pi |
 
-## First implementation acceptance
+## Release 1 acceptance
 
-One real E2E must prove:
+`npm run smoke:runtime-release` uses a unique isolated Herdr server/session, Pi agent directory, Runtime state, and Pi sessions to prove:
 
 1. Register an exact Pi session in Herdr.
 2. Create a non-recursive directory monitor with an empty baseline.
@@ -366,4 +366,4 @@ One real E2E must prove:
 7. Restart runtime and Pi again; the acknowledged event is not redelivered.
 8. A different pane/session cannot claim or acknowledge it.
 
-Anything beyond this path is deferred until the vertical slice passes.
+This gate passes without touching the user's active Herdr server. Features beyond this vertical remain deferred.
