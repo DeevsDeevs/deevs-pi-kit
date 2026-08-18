@@ -102,6 +102,7 @@ export class HostedWakeCoordinator {
 		const claim = this.requireClaim(registration, claimId, eventIds);
 		this.store.apply({ type: "inbox.ack", targetKey: registration.targetKey, claimId: claim.claimId, eventIds: claim.eventIds, at: this.now() });
 		if (this.store.read().claims[claimId]?.status !== "acked") throw new HostedInboxError("claim_conflict", "Claim no longer owns its delivery events.");
+		this.request(registration.targetKey);
 	}
 
 	release(registration: HostedLiveRegistration, claimId: string, eventIds: string[]): void {

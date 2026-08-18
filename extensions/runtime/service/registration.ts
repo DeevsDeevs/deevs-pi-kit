@@ -151,6 +151,11 @@ export class RuntimeRegistrationManager {
 		return registration;
 	}
 
+	hasLiveTarget(targetKey: string): boolean {
+		this.expire();
+		return this.byTarget.has(targetKey);
+	}
+
 	close(): void {
 		this.closed = true;
 		this.registrations.clear();
