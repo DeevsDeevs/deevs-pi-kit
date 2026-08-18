@@ -3,8 +3,9 @@ import { chmodSync, lstatSync, renameSync, unlinkSync } from "node:fs";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
 import { TextDecoder } from "node:util";
+import { DirectoryMonitorManager, type DirectoryMonitorOptions } from "./monitor.ts";
 import { dispatchHostedLine, encodeHostedResponse, HOSTED_MAX_REQUEST_BYTES, invalidFrame, type HostedProtocolContext } from "./protocol.ts";
-import { loadOrCreateRuntimeInstance, readHostedRuntimeState } from "./state.ts";
+import { HostedStateStore, loadOrCreateRuntimeInstance } from "./state.ts";
 
 export class RuntimeAlreadyRunningError extends Error {
 	readonly code = "conflict" as const;
@@ -15,6 +16,7 @@ export interface RuntimeServerOptions {
 	socketPath?: string;
 	epoch?: string;
 	probeTimeoutMs?: number;
+	monitor?: DirectoryMonitorOptions;
 }
 
 export interface RuntimeServerHandle {
@@ -27,7 +29,8 @@ export interface RuntimeServerHandle {
 
 export async function startRuntimeServer(options: RuntimeServerOptions): Promise<RuntimeServerHandle> {
 	const instance = loadOrCreateRuntimeInstance(options.root);
-	readHostedRuntimeState(options.root);
+	const store = new HostedStateStore(options.root);
+	const monitors = new DirectoryMonitorManager(store, options.monitor);
 	const socketPath = options.socketPath ?? join(options.root, "runtime.sock");
 	const context: HostedProtocolContext = {
 		runtimeId: instance.runtimeId,
@@ -41,6 +44,7 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 	try {
 		chmodSync(socketPath, 0o600);
 		const identity = socketIdentity(socketPath);
+		monitors.start();
 		let closed = false;
 		return {
 			root: options.root,
@@ -50,12 +54,14 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 			async close() {
 				if (closed) return;
 				closed = true;
+				monitors.close();
 				for (const socket of sockets) socket.destroy();
 				await closeServer(server);
 				if (sameSocket(socketPath, identity)) try { unlinkSync(socketPath); } catch {}
 			},
 		};
 	} catch (error) {
+		monitors.close();
 		await closeServer(server);
 		try { unlinkSync(socketPath); } catch {}
 		throw error;

@@ -22,6 +22,7 @@ export interface HostedFileObservation {
 	size: number;
 	mtimeMs: number;
 	stableSince: number;
+	present: boolean;
 	emitted: boolean;
 }
 
