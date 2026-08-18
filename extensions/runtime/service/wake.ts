@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { HOSTED_MAX_DELIVERY_BATCH, type HostedClaim, type HostedEvent, type HostedWake } from "../hosted-types.ts";
 import { RuntimeRegistrationManager, type HostedHostVerifier, type HostedLiveRegistration } from "./registration.ts";
-import { HostedStateStore, pendingHostedEvents } from "./state.ts";
+import { HostedStateStore, hostedEventRoutesToTarget, pendingHostedEvents } from "./state.ts";
 
 const CLAIM_LEASE_MS = 30_000;
 
@@ -58,6 +58,7 @@ export class HostedWakeCoordinator {
 			if (existing.status === "released") throw new HostedInboxError("claim_conflict", "Wake claim was already released.");
 			return { claim: existing, events: claimEvents(state.events, existing) };
 		}
+		if (this.hasActiveClaim(registration.targetKey)) throw new HostedInboxError("busy", "Target already has an active delivery claim.");
 		const wake = state.wakes[registration.targetKey];
 		if (!wake || wake.wakeId !== wakeId || wake.registrationId !== registration.registrationId) throw new HostedInboxError("not_found", "Wake is absent or does not match this registration.");
 		const events = pendingHostedEvents(state, registration.targetKey).slice(0, HOSTED_MAX_DELIVERY_BATCH);
@@ -79,6 +80,7 @@ export class HostedWakeCoordinator {
 
 	claim(registration: HostedLiveRegistration): HostedClaimResult {
 		this.releaseExpired();
+		if (this.hasActiveClaim(registration.targetKey)) throw new HostedInboxError("busy", "Target already has an active delivery claim.");
 		const events = pendingHostedEvents(this.store.read(), registration.targetKey).slice(0, HOSTED_MAX_DELIVERY_BATCH);
 		if (events.length === 0) throw new HostedInboxError("not_found", "Inbox has no pending events.");
 		const now = this.now();
@@ -99,6 +101,7 @@ export class HostedWakeCoordinator {
 	ack(registration: HostedLiveRegistration, claimId: string, eventIds: string[]): void {
 		const claim = this.requireClaim(registration, claimId, eventIds);
 		this.store.apply({ type: "inbox.ack", targetKey: registration.targetKey, claimId: claim.claimId, eventIds: claim.eventIds, at: this.now() });
+		if (this.store.read().claims[claimId]?.status !== "acked") throw new HostedInboxError("claim_conflict", "Claim no longer owns its delivery events.");
 	}
 
 	release(registration: HostedLiveRegistration, claimId: string, eventIds: string[]): void {
@@ -112,8 +115,9 @@ export class HostedWakeCoordinator {
 		let pending = 0;
 		let claimed = 0;
 		let acknowledged = 0;
-		for (const event of Object.values(this.store.read().events)) {
-			if (event.targetKey !== registration.targetKey) continue;
+		const state = this.store.read();
+		for (const event of Object.values(state.events)) {
+			if (!hostedEventRoutesToTarget(state, event, registration.targetKey)) continue;
 			if (event.delivery.status === "pending") pending++;
 			else if (event.delivery.status === "claimed") claimed++;
 			else acknowledged++;
@@ -170,6 +174,10 @@ export class HostedWakeCoordinator {
 
 	private releaseExpired(): void {
 		this.store.apply({ type: "inbox.release_expired", at: this.now() });
+	}
+
+	private hasActiveClaim(targetKey: string): boolean {
+		return Object.values(this.store.read().claims).some((claim) => claim.targetKey === targetKey && claim.status === "active");
 	}
 
 	private now(): number {

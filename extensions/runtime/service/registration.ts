@@ -194,7 +194,7 @@ export class RuntimeRegistrationManager {
 		const claim = this.store.read().claims[receipt.claimId];
 		if (!claim) return;
 		if (claim.targetKey !== targetKey || !sameIds(claim.eventIds, receipt.eventIds)) throw new RegistrationError("conflict", "Admitted claim receipt does not match durable state.");
-		this.store.apply({ type: "inbox.ack", targetKey, claimId: receipt.claimId, eventIds: receipt.eventIds, at: this.now() });
+		this.store.apply({ type: "inbox.reconcile", targetKey, claimId: receipt.claimId, eventIds: receipt.eventIds, at: this.now() });
 	}
 
 	private expire(): void {

@@ -3,6 +3,8 @@ export const HOSTED_MAX_DELIVERY_BATCH = 12;
 export const HOSTED_MONITOR_MAX_ENTRIES = 10_000;
 export const HOSTED_STATE_MAX_BYTES = 8 * 1024 * 1024;
 export const HOSTED_ACK_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
+export const HOSTED_MAILBOX_MAX_BODY_BYTES = 16 * 1024;
+export const HOSTED_PARTICIPANT_TRANSITION_LIMIT = 8;
 
 export interface HostedRuntimeInstance {
 	version: 1;
@@ -39,8 +41,41 @@ export interface HostedMonitor {
 	updatedAt: number;
 }
 
-export interface HostedEventSource {
+export type HostedParticipantState = "held" | "vacant" | "ended";
+export type HostedParticipantTransitionCause = "acquire" | "reacquire" | "stand_down" | "release" | "takeover" | "revive";
+
+export interface HostedParticipantTransition {
+	cause: HostedParticipantTransitionCause;
+	generation: string;
+	holderTargetKey?: string;
+	previousGeneration?: string;
+	previousHolderTargetKey?: string;
+	at: number;
+}
+
+export interface HostedParticipant {
+	participantKey: string;
+	projectRoot: string;
+	protocol: string;
+	participantId: string;
+	state: HostedParticipantState;
+	generation: string;
+	holderTargetKey?: string;
+	outSeq: Record<string, number>;
+	transitions: HostedParticipantTransition[];
+	createdAt: number;
+	updatedAt: number;
+}
+
+export interface HostedMonitorEventSource {
 	kind: "monitor";
+	id: string;
+	generation: string;
+	sequence: number;
+}
+
+export interface HostedParticipantEventSource {
+	kind: "participant";
 	id: string;
 	generation: string;
 	sequence: number;
@@ -54,23 +89,43 @@ export interface HostedFilesystemCreatedPayload {
 	mtimeMs: number;
 }
 
+export interface HostedMailboxMessagePayload {
+	sendId: string;
+	senderParticipantKey: string;
+	recipientParticipantKey: string;
+	body: string;
+	fingerprint: string;
+}
+
 export type HostedEventDelivery =
 	| { status: "pending"; latestClaimId?: string }
 	| { status: "claimed"; claimId: string }
 	| { status: "acked"; claimId: string; ackedAt: number };
 
-export interface HostedEvent {
+interface HostedEventBase {
 	version: 1;
 	eventId: string;
 	dedupeKey: string;
-	source: HostedEventSource;
-	targetKey: string;
-	type: "filesystem.created";
 	createdAt: number;
 	summary: string;
-	payload: HostedFilesystemCreatedPayload;
 	delivery: HostedEventDelivery;
 }
+
+export interface HostedFilesystemCreatedEvent extends HostedEventBase {
+	source: HostedMonitorEventSource;
+	targetKey: string;
+	type: "filesystem.created";
+	payload: HostedFilesystemCreatedPayload;
+}
+
+export interface HostedMailboxMessageEvent extends HostedEventBase {
+	source: HostedParticipantEventSource;
+	recipientParticipantKey: string;
+	type: "mailbox.message";
+	payload: HostedMailboxMessagePayload;
+}
+
+export type HostedEvent = HostedFilesystemCreatedEvent | HostedMailboxMessageEvent;
 
 export interface HostedClaim {
 	claimId: string;
@@ -92,9 +147,10 @@ export interface HostedWake {
 }
 
 export interface HostedRuntimeState {
-	version: 1;
+	version: 2;
 	targets: Record<string, HostedTarget>;
 	monitors: Record<string, HostedMonitor>;
+	participants: Record<string, HostedParticipant>;
 	events: Record<string, HostedEvent>;
 	dedupe: Record<string, string>;
 	claims: Record<string, HostedClaim>;
@@ -105,9 +161,15 @@ export type HostedStateOperation =
 	| { type: "target.ensure"; target: HostedTarget }
 	| { type: "monitor.create"; monitor: HostedMonitor }
 	| { type: "monitor.delete"; targetKey: string; monitorId: string }
-	| { type: "monitor.commit"; monitor: HostedMonitor; events: HostedEvent[] }
+	| { type: "monitor.commit"; monitor: HostedMonitor; events: HostedFilesystemCreatedEvent[] }
+	| { type: "participant.acquire"; participantKey: string; projectRoot: string; protocol: string; participantId: string; targetKey: string; generation: string; at: number }
+	| { type: "participant.stand_down"; participantKey: string; targetKey: string; generation: string; at: number }
+	| { type: "participant.release"; participantKey: string; targetKey: string; generation: string; at: number }
+	| { type: "participant.takeover"; participantKey: string; targetKey: string; generation: string; at: number }
+	| { type: "mailbox.send"; senderParticipantKey: string; senderTargetKey: string; recipientParticipantKey: string; sendId: string; eventId: string; body: string; at: number }
 	| { type: "inbox.claim"; claim: HostedClaim }
 	| { type: "inbox.ack"; targetKey: string; claimId: string; eventIds: string[]; at: number }
+	| { type: "inbox.reconcile"; targetKey: string; claimId: string; eventIds: string[]; at: number }
 	| { type: "inbox.release"; targetKey: string; claimId: string; eventIds: string[]; at: number }
 	| { type: "inbox.release_expired"; at: number }
 	| { type: "retention.prune"; before: number }
