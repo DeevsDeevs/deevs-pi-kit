@@ -82,7 +82,7 @@ describe("hosted directory Monitor", () => {
 		expect(pendingHostedEvents(test.store.read(), "pi_target")).toEqual([]);
 		test.setNow(1_450);
 		test.manager.reconcile(monitor.monitorId);
-		expect(pendingHostedEvents(test.store.read(), "pi_target").map((event) => event.payload.relativePath)).toEqual(["new.md"]);
+		expect(pendingHostedEvents(test.store.read(), "pi_target").map((event) => event.type === "filesystem.created" ? event.payload.relativePath : "")).toEqual(["new.md"]);
 	});
 
 	it("rejects symlink roots and ignores symlink entries and nested files", () => {
@@ -140,7 +140,7 @@ describe("hosted directory Monitor", () => {
 		restarted.reconcile(monitor.monitorId);
 		now = 5_250;
 		restarted.reconcile(monitor.monitorId);
-		expect(pendingHostedEvents(store.read(), "pi_target").map((event) => event.payload.relativePath)).toEqual(["offline.md"]);
+		expect(pendingHostedEvents(store.read(), "pi_target").map((event) => event.type === "filesystem.created" ? event.payload.relativePath : "")).toEqual(["offline.md"]);
 	});
 
 	it("uses fs.watch only as a low-latency hint", async () => {
@@ -148,7 +148,7 @@ describe("hosted directory Monitor", () => {
 		const monitor = test.manager.create("pi_target", test.watchRoot, 0);
 		test.manager.start();
 		writeFileSync(join(test.watchRoot, "hinted.md"), "hinted");
-		await vi.waitFor(() => expect(pendingHostedEvents(test.store.read(), "pi_target").map((event) => event.payload.relativePath)).toContain("hinted.md"), { timeout: 1_000, interval: 10 });
+		await vi.waitFor(() => expect(pendingHostedEvents(test.store.read(), "pi_target").map((event) => event.type === "filesystem.created" ? event.payload.relativePath : "")).toContain("hinted.md"), { timeout: 1_000, interval: 10 });
 		test.manager.close();
 		expect(test.store.read().monitors[monitor.monitorId]?.status).toBe("watching");
 	});

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HOSTED_ACK_RETENTION_MS, HOSTED_MONITOR_MAX_ENTRIES, HOSTED_STATE_MAX_BYTES, type HostedClaim, type HostedEvent, type HostedMonitor, type HostedTarget } from "../extensions/runtime/hosted-types.ts";
+import { HOSTED_ACK_RETENTION_MS, HOSTED_MONITOR_MAX_ENTRIES, HOSTED_STATE_MAX_BYTES, type HostedClaim, type HostedFilesystemCreatedEvent, type HostedMonitor, type HostedTarget } from "../extensions/runtime/hosted-types.ts";
 import {
 	HostedStateConflictError,
 	HostedStateStorageError,
@@ -54,7 +54,7 @@ function monitor(overrides: Partial<HostedMonitor> = {}): HostedMonitor {
 	};
 }
 
-function event(id = "evt_1", sequence = 1): HostedEvent {
+function event(id = "evt_1", sequence = 1): HostedFilesystemCreatedEvent {
 	return {
 		version: 1,
 		eventId: id,
@@ -108,7 +108,7 @@ describe("hosted runtime state reducer", () => {
 	it("commits a monitor cursor and event together while deduplicating repeats", () => {
 		const state = populatedState();
 		expect(state.monitors.mon_1?.sequence).toBe(1);
-		expect(state.events.evt_1?.payload.relativePath).toBe("review.md");
+		expect(state.events.evt_1?.type === "filesystem.created" ? state.events.evt_1.payload.relativePath : undefined).toBe("review.md");
 		expect(pendingHostedEvents(state, "pi_target").map((candidate) => candidate.eventId)).toEqual(["evt_1"]);
 
 		const duplicate = { ...event("evt_duplicate"), dedupeKey: event().dedupeKey };
@@ -187,9 +187,23 @@ describe("hosted runtime state reducer", () => {
 		let state = reduceHostedState(populatedState(), { type: "inbox.claim", claim: claim("claim_1") });
 		state = reduceHostedState(state, { type: "inbox.release", targetKey: "pi_target", claimId: "claim_1", eventIds: ["evt_1"], at: 400 });
 		state = reduceHostedState(state, { type: "inbox.claim", claim: { ...claim("claim_2"), createdAt: 500, leaseUntil: 1_500 } });
+		const staleAck = reduceHostedState(state, { type: "inbox.ack", targetKey: "pi_target", claimId: "claim_1", eventIds: ["evt_1"], at: 550 });
+		expect(staleAck).toBe(state);
+		expect(state.events.evt_1?.delivery).toEqual({ status: "claimed", claimId: "claim_2" });
 		state = reduceHostedState(state, { type: "inbox.ack", targetKey: "pi_target", claimId: "claim_2", eventIds: ["evt_1"], at: 600 });
-		state = reduceHostedState(state, { type: "inbox.ack", targetKey: "pi_target", claimId: "claim_1", eventIds: ["evt_1"], at: 700 });
+		state = reduceHostedState(state, { type: "inbox.reconcile", targetKey: "pi_target", claimId: "claim_1", eventIds: ["evt_1"], at: 700 });
 		expect(state.events.evt_1?.delivery).toEqual({ status: "acked", claimId: "claim_2", ackedAt: 600 });
+	});
+
+	it("reconciles an older exact admission without leaving a newer claim active", () => {
+		let state = reduceHostedState(populatedState(), { type: "inbox.claim", claim: claim("claim_1") });
+		state = reduceHostedState(state, { type: "inbox.release", targetKey: "pi_target", claimId: "claim_1", eventIds: ["evt_1"], at: 400 });
+		state = reduceHostedState(state, { type: "inbox.claim", claim: { ...claim("claim_2"), createdAt: 500, leaseUntil: 1_500 } });
+		state = reduceHostedState(state, { type: "inbox.reconcile", targetKey: "pi_target", claimId: "claim_1", eventIds: ["evt_1"], at: 550 });
+		expect(state.events.evt_1?.delivery).toEqual({ status: "acked", claimId: "claim_1", ackedAt: 550 });
+		expect(state.claims.claim_1?.status).toBe("acked");
+		expect(state.claims.claim_2?.status).toBe("released");
+		expect(Object.values(state.claims).filter((candidate) => candidate.status === "active")).toEqual([]);
 	});
 
 	it("rejects malformed or conflicting claim attempts", () => {
@@ -203,7 +217,7 @@ describe("hosted runtime state reducer", () => {
 			type: "inbox.claim",
 			claim: { ...claim(), eventIds: ["evt_other"] },
 		})).toThrow(HostedStateConflictError);
-		expect(reduceHostedState(claimed, { type: "inbox.claim", claim: claim("claim_2") })).toBe(claimed);
+		expect(() => reduceHostedState(claimed, { type: "inbox.claim", claim: claim("claim_2") })).toThrow(HostedStateConflictError);
 	});
 
 	it("releases expired claims without replaying acknowledged events", () => {
