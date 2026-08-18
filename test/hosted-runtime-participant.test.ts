@@ -100,6 +100,14 @@ describe("hosted participant coordinator", () => {
 		expect(() => test.participants.send(main, fableParticipant.participantKey, "send_1", "Changed.")).toThrow(expect.objectContaining({ code: "conflict" }));
 	});
 
+	it("rejects cross-protocol send after a target changes identity", async () => {
+		const test = setup();
+		const { main, mainParticipant, fableParticipant } = await acquirePair(test);
+		test.participants.standDown(main, mainParticipant.participantKey);
+		test.participants.acquire(main, "other", "main");
+		expect(() => test.participants.send(main, fableParticipant.participantKey, "send_cross_protocol", "Wrong protocol.")).toThrow(expect.objectContaining({ code: "conflict" }));
+	});
+
 	it("rejects live or stale-generation takeover and allows it after a seen holder unregisters", async () => {
 		const test = setup();
 		const { fable, fableParticipant } = await acquirePair(test);
@@ -145,7 +153,8 @@ describe("hosted participant coordinator", () => {
 		const { main, fable, fableParticipant } = await acquirePair(test);
 		test.participants.release(fable, fableParticipant.participantKey);
 		expect(() => test.participants.send(main, fableParticipant.participantKey, "send_ended", "No receiver.")).toThrow(expect.objectContaining({ code: "not_found" }));
-		const revived = test.participants.acquire(fable, "review", "fable");
+		expect(() => test.participants.acquire(fable, "review", "fable")).toThrow(expect.objectContaining({ code: "conflict" }));
+		const revived = test.participants.acquire(fable, "review", "fable", true);
 		expect(revived).toMatchObject({ revived: true, participant: { state: "held" } });
 		expect(test.participants.acquire(fable, "review", "fable")).toMatchObject({ revived: true, participant: { generation: revived.participant.generation } });
 	});

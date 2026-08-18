@@ -146,7 +146,9 @@ When Pi runs inside Herdr (`HERDR_ENV=1`), normalize legacy and Kitty Alt+Enter 
 
 Runtime watches newly created direct-child files and delivers them to one exact Pi session across restarts. It stores events before using Herdr to wake the verified idle pane; Herdr remains the process and prompt-delivery layer.
 
-Commands: `/runtime start`, `/runtime status`, `/runtime register`, `/runtime monitor <directory>`, and `/runtime monitor-delete`. Runtime never starts or changes Herdr layout silently. See [`extensions/runtime/PROTOCOL.md`](extensions/runtime/PROTOCOL.md).
+Runtime can also host persistent Pi collaborators in no-focus Herdr tabs. Participant identities are exclusive and durable; messages use Runtime mailboxes while Herdr delivers exact wakes. The model can only call `mail_send`; acquire, stand-down, release, revival, and takeover remain user commands.
+
+Commands: `/runtime start`, `/runtime status`, `/runtime register`, `/runtime monitor <directory>`, `/runtime monitor-delete`, `/runtime collaborate <protocol> <id>`, `/runtime collaborator-start <protocol> <id>`, `/runtime participants`, `/runtime stand-down`, `/runtime leave`, and `/runtime takeover <protocol> <id>`. Runtime never starts or changes Herdr layout silently. See [`extensions/runtime/PROTOCOL.md`](extensions/runtime/PROTOCOL.md).
 
 ## Skills
 
