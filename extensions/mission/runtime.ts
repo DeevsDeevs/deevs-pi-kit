@@ -10,6 +10,7 @@ import type { DelegateRun } from "../subagents/runtime-types.ts";
 import { runtimeEvents } from "../shared/runtime-events.ts";
 import { MissionState } from "./state.ts";
 import { missionRoot } from "./artifacts.ts";
+import { MAX_MISSION_REVIEW_ADJUDICATIONS } from "./types.ts";
 import type { MissionCompleteInput, MissionCurrent, MissionProgressInput, MissionReviewSeverity, MissionReviewVerdict, MissionUpdateInput } from "./types.ts";
 
 interface MissionAgentMessage {
@@ -521,6 +522,16 @@ export class MissionRuntime {
 		}
 		if (current.completionLatchCandidateId === candidateId && (current.completionLatchReviewStatus === "skipped" || current.completionLatchReviewStatus === "not_required")) {
 			this.state.append(this.pi, this.state.reviewEvent(current.completionLatchReviewStatus, { reason: "Duplicate review admission suppressed for the unchanged user-authorized completion candidate.", worktreeFingerprint: reviewWorktreeFingerprint, candidateId }));
+			this.updateStatus();
+			return;
+		}
+		if (current.reviewAdjudicationHistoryComplete !== true) {
+			this.state.append(this.pi, this.state.statusEvent("blocked", "review adjudication history completeness is unknown", "A new reviewer was not launched because legacy state cannot prove that this candidate was never reviewed."));
+			this.updateStatus();
+			return;
+		}
+		if ((current.reviewAdjudications?.length ?? 0) >= MAX_MISSION_REVIEW_ADJUDICATIONS) {
+			this.state.append(this.pi, this.state.statusEvent("blocked", "review adjudication history capacity reached", "A new reviewer was not launched because doing so could require forgetting an already reviewed candidate."));
 			this.updateStatus();
 			return;
 		}

@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { MissionState } from "../extensions/mission/state.ts";
+import { MISSION_CUSTOM_TYPE, MissionState } from "../extensions/mission/state.ts";
 import { MissionRuntime } from "../extensions/mission/runtime.ts";
 import { parseCreateArgs } from "../extensions/mission/commands.ts";
 import { completeMission, registerMissionTools, resumeMission } from "../extensions/mission/tools.ts";
@@ -14,6 +14,7 @@ import type { JobManager } from "../extensions/jobs/manager.ts";
 import { clearSubagentService, getSubagentService, setSubagentService } from "../extensions/subagents/registry.ts";
 import type { SubagentService } from "../extensions/subagents/service.ts";
 import type { DelegateRun } from "../extensions/subagents/runtime-types.ts";
+import { MAX_MISSION_REVIEW_ADJUDICATIONS } from "../extensions/mission/types.ts";
 import type { MissionCurrent } from "../extensions/mission/types.ts";
 
 function expectedFingerprint(diff = "", head = "head"): string {
@@ -375,15 +376,14 @@ describe("Mission runtime", () => {
 	});
 
 	it("suppresses duplicate reviewer generations when a previously adjudicated candidate returns", async () => {
-		let head = "candidate-a";
+		const head = "candidate-a";
 		const test = await setup({ head: () => head });
 		const candidateA = await test.runtime.completionCandidateId(test.ctx);
 		test.state.append(test.pi, test.state.reviewEvent("clear", { candidateId: candidateA, worktreeFingerprint: expectedFingerprint("", head) }));
-		head = "candidate-b";
-		const candidateB = await test.runtime.completionCandidateId(test.ctx);
-		test.state.append(test.pi, test.state.reviewEvent("clear", { candidateId: candidateB, worktreeFingerprint: expectedFingerprint("", head) }));
-		head = "candidate-a";
-		test.state.append(test.pi, test.state.reviewEvent("due", { reason: "candidate A returned" }));
+		const otherCandidates = Array.from({ length: 32 }, (_, index) => `candidate_other_${index}`);
+		for (const candidateId of otherCandidates) test.state.append(test.pi, test.state.reviewEvent("clear", { candidateId }));
+		expect(test.state.read()?.reviewAdjudications).toHaveLength(33);
+		test.state.append(test.pi, test.state.reviewEvent("due", { reason: "candidate A returned after more than 32 adjudications" }));
 		let starts = 0;
 		const service = {
 			list: () => ({ runs: [], groups: [] }),
@@ -396,7 +396,128 @@ describe("Mission runtime", () => {
 			await internal.startReview(test.ctx, test.state.read()!);
 			expect(starts).toBe(0);
 			expect(test.state.read()).toMatchObject({ reviewStatus: "clear", reviewAdjudicatedCandidateId: candidateA });
-			expect(test.state.read()?.reviewAdjudications).toEqual([{ candidateId: candidateB, verdict: "clear" }, { candidateId: candidateA, verdict: "clear" }]);
+			expect(test.state.read()?.reviewAdjudications).toHaveLength(33);
+			expect(test.state.read()?.reviewAdjudications?.at(-1)).toEqual({ candidateId: candidateA, verdict: "clear" });
+			expect(test.state.read()?.reviewAdjudications?.map((item) => item.candidateId)).toEqual([...otherCandidates, candidateA]);
+		} finally {
+			clearSubagentService(service);
+		}
+	});
+
+	it("fails closed before reviewer launch when adjudication history capacity is exhausted", async () => {
+		const test = await setup();
+		test.state.append(test.pi, test.state.reviewEvent("clear", { candidateId: "candidate_seed" }));
+		for (let index = 1; index < MAX_MISSION_REVIEW_ADJUDICATIONS; index++) test.state.append(test.pi, test.state.reviewEvent("clear", { candidateId: `candidate_${index}` }));
+		expect(test.state.read()?.reviewAdjudications).toHaveLength(MAX_MISSION_REVIEW_ADJUDICATIONS);
+		expect(() => test.state.reviewEvent("clear", { candidateId: "candidate_over_capacity" })).toThrow("refusing to forget a reviewed candidate");
+		test.state.append(test.pi, test.state.reviewEvent("due", { reason: "new candidate" }));
+		let starts = 0;
+		const service = {
+			list: () => ({ runs: [], groups: [] }),
+			start: async () => { starts++; return { spec: { id: "must-not-start" }, runtime: { status: "running" } } as DelegateRun; },
+			executor: { onChange: () => () => undefined },
+		} as unknown as SubagentService;
+		setSubagentService(service);
+		try {
+			const internal = test.runtime as unknown as { startReview: (ctx: ExtensionContext, mission: MissionCurrent) => Promise<void> };
+			await internal.startReview(test.ctx, test.state.read()!);
+			expect(starts).toBe(0);
+			expect(test.state.read()).toMatchObject({ status: "blocked", reviewStatus: "due", lastReason: "review adjudication history capacity reached" });
+		} finally {
+			clearSubagentService(service);
+		}
+	});
+
+	it("does not infer complete history from an original legacy branch with truncated arrays", async () => {
+		const test = await setup();
+		const mission = test.state.read()!;
+		const legacyAdjudications = Array.from({ length: 32 }, (_, index) => ({ candidateId: `legacy_candidate_${index + 2}`, verdict: "clear" }));
+		const snapshotFile = join(test.ctx.cwd, ".missions", ".state", `${mission.slug}.json`);
+		const snapshot = JSON.parse(readFileSync(snapshotFile, "utf8"));
+		delete snapshot.mission.reviewAdjudicationHistoryComplete;
+		snapshot.mission.reviewAdjudications = legacyAdjudications;
+		writeFileSync(snapshotFile, JSON.stringify(snapshot));
+		const created = test.branch.find((entry) => entry.customType === MISSION_CUSTOM_TYPE && (entry.data as { kind?: string }).kind === "created")!;
+		delete (created.data as { reviewAdjudicationHistoryComplete?: true }).reviewAdjudicationHistoryComplete;
+		test.branch.push({ type: "custom", customType: MISSION_CUSTOM_TYPE, data: { kind: "review_changed", missionId: mission.missionId, generation: mission.generation, at: Date.now(), reviewStatus: "clear", reviewCandidateId: "legacy_candidate_33", reviewAdjudicatedCandidateId: "legacy_candidate_33", reviewAdjudicatedVerdict: "clear", reviewAdjudications: legacyAdjudications } });
+		test.state.loadFromSession(test.ctx);
+		expect(test.state.read()?.reviewAdjudicationHistoryComplete).toBeUndefined();
+		expect(test.state.read()?.reviewAdjudications).toHaveLength(32);
+		test.state.append(test.pi, test.state.reviewEvent("due", { reason: "possibly evicted legacy candidate returned" }));
+		let starts = 0;
+		const service = {
+			list: () => ({ runs: [], groups: [] }),
+			start: async () => { starts++; return { spec: { id: "must-not-start" }, runtime: { status: "running" } } as DelegateRun; },
+			executor: { onChange: () => () => undefined },
+		} as unknown as SubagentService;
+		setSubagentService(service);
+		try {
+			const internal = test.runtime as unknown as { startReview: (ctx: ExtensionContext, current: MissionCurrent) => Promise<void> };
+			await internal.startReview(test.ctx, test.state.read()!);
+			expect(starts).toBe(0);
+			expect(test.state.read()).toMatchObject({ status: "blocked", reviewStatus: "due", lastReason: "review adjudication history completeness is unknown" });
+		} finally {
+			clearSubagentService(service);
+		}
+	});
+
+	it("replays the authoritative singular legacy verdict over a stale array entry", async () => {
+		const test = await setup();
+		const mission = test.state.read()!;
+		const candidateId = (await test.runtime.completionCandidateId(test.ctx))!;
+		const snapshotFile = join(test.ctx.cwd, ".missions", ".state", `${mission.slug}.json`);
+		const snapshot = JSON.parse(readFileSync(snapshotFile, "utf8"));
+		delete snapshot.mission.reviewAdjudicationHistoryComplete;
+		snapshot.mission.reviewStatus = "clear";
+		snapshot.mission.reviewAdjudicatedCandidateId = candidateId;
+		snapshot.mission.reviewAdjudicatedVerdict = "changes_requested";
+		snapshot.mission.reviewAdjudications = Array.from({ length: 32 }, (_, index) => ({ candidateId: index === 0 ? candidateId : `legacy_other_${index}`, verdict: "clear" }));
+		writeFileSync(snapshotFile, JSON.stringify(snapshot));
+		test.branch.splice(0, test.branch.length, { type: "custom", customType: MISSION_CUSTOM_TYPE, data: { kind: "taken_over", missionId: mission.missionId, slug: mission.slug, generation: mission.generation, at: Date.now(), status: "active" } });
+		test.state.loadFromSession(test.ctx);
+		expect(test.state.read()?.reviewAdjudications?.at(-1)).toEqual({ candidateId, verdict: "changes_requested" });
+		test.state.append(test.pi, test.state.reviewEvent("due", { reason: "known singular candidate returned" }));
+		let starts = 0;
+		const service = {
+			list: () => ({ runs: [], groups: [] }),
+			start: async () => { starts++; return { spec: { id: "must-not-start" }, runtime: { status: "running" } } as DelegateRun; },
+			executor: { onChange: () => () => undefined },
+		} as unknown as SubagentService;
+		setSubagentService(service);
+		try {
+			const internal = test.runtime as unknown as { startReview: (ctx: ExtensionContext, current: MissionCurrent) => Promise<void> };
+			await internal.startReview(test.ctx, test.state.read()!);
+			expect(starts).toBe(0);
+			expect(test.state.read()).toMatchObject({ status: "active", reviewStatus: "changes_requested", reviewAdjudicatedCandidateId: candidateId, reviewAdjudicatedVerdict: "changes_requested" });
+		} finally {
+			clearSubagentService(service);
+		}
+	});
+
+	it("fails closed for an unknown candidate when a takeover snapshot has incomplete legacy history", async () => {
+		const test = await setup();
+		const mission = test.state.read()!;
+		const snapshotFile = join(test.ctx.cwd, ".missions", ".state", `${mission.slug}.json`);
+		const snapshot = JSON.parse(readFileSync(snapshotFile, "utf8"));
+		delete snapshot.mission.reviewAdjudicationHistoryComplete;
+		snapshot.mission.reviewAdjudications = Array.from({ length: 32 }, (_, index) => ({ candidateId: `legacy_candidate_${index + 2}`, verdict: "clear" }));
+		writeFileSync(snapshotFile, JSON.stringify(snapshot));
+		test.branch.splice(0, test.branch.length, { type: "custom", customType: MISSION_CUSTOM_TYPE, data: { kind: "taken_over", missionId: mission.missionId, slug: mission.slug, generation: mission.generation, at: Date.now(), status: "active" } });
+		test.state.loadFromSession(test.ctx);
+		expect(test.state.read()?.reviewAdjudicationHistoryComplete).toBeUndefined();
+		test.state.append(test.pi, test.state.reviewEvent("due", { reason: "legacy candidate returned" }));
+		let starts = 0;
+		const service = {
+			list: () => ({ runs: [], groups: [] }),
+			start: async () => { starts++; return { spec: { id: "must-not-start" }, runtime: { status: "running" } } as DelegateRun; },
+			executor: { onChange: () => () => undefined },
+		} as unknown as SubagentService;
+		setSubagentService(service);
+		try {
+			const internal = test.runtime as unknown as { startReview: (ctx: ExtensionContext, current: MissionCurrent) => Promise<void> };
+			await internal.startReview(test.ctx, test.state.read()!);
+			expect(starts).toBe(0);
+			expect(test.state.read()).toMatchObject({ status: "blocked", reviewStatus: "due", lastReason: "review adjudication history completeness is unknown" });
 		} finally {
 			clearSubagentService(service);
 		}

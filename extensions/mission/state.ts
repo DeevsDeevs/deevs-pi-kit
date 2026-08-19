@@ -5,6 +5,7 @@ import { ChainService } from "../chains/service.ts";
 import { slugify } from "../chains/parser.ts";
 import { missionDir } from "./artifacts.ts";
 import { currentMissionOwner, listMissionSnapshots, readMissionSnapshot, withMissionLock, withMissionWorkspaceLock, writeMissionSnapshot } from "./persistence.ts";
+import { MAX_MISSION_REVIEW_ADJUDICATIONS } from "./types.ts";
 import type { MissionCreateInput, MissionCurrent, MissionEvent, MissionOwner, MissionProgressInput, MissionProgressRecord, MissionConvergedReviewStatus, MissionReviewSeverity, MissionReviewStatus, MissionReviewVerdict, MissionSnapshot, MissionStatus, MissionTakeoverCandidate, MissionUpdateInput, MissionUsage, MissionValidationInput, MissionValidationRecord } from "./types.ts";
 
 export const MISSION_CUSTOM_TYPE = "deevs-mission-state";
@@ -12,7 +13,6 @@ const DEFAULT_CHAIN_BRANCH = "main";
 const MAX_REQUIREMENTS = 12;
 const MAX_PATHS = 100;
 export const DEFAULT_REVIEW_CORRECTION_LIMIT = 3;
-const MAX_REVIEW_ADJUDICATIONS = 32;
 const STATUS_TRANSITIONS: Record<MissionStatus, readonly MissionStatus[]> = {
 	active: ["paused", "blocked", "terminal_error", "budget_limited", "usage_limited", "complete", "ended", "cleared"],
 	paused: ["active", "ended", "cleared"],
@@ -335,6 +335,7 @@ export class MissionState {
 				turnBudget: positiveInteger(input.turnBudget, "turnBudget"),
 				wallDeadlineAt: input.wallDeadlineMs === undefined ? undefined : now + positiveNumber(input.wallDeadlineMs, "wallDeadlineMs")!,
 				reviewStatus: "not_required",
+				reviewAdjudicationHistoryComplete: true,
 				reviewCorrectionCount: 0,
 				reviewCorrectionLimit: DEFAULT_REVIEW_CORRECTION_LIMIT,
 				blockerCount: 0,
@@ -438,10 +439,19 @@ export class MissionState {
 		const adjudicated = status === "clear" || status === "changes_requested";
 		const correctionCount = input.replayAdjudication ? mission.reviewCorrectionCount : status === "changes_requested" ? (mission.reviewCorrectionCount ?? 0) + 1 : status === "clear" ? 0 : undefined;
 		const candidateId = input.candidateId ?? mission.reviewCandidateId;
-		const previousAdjudications = mission.reviewAdjudications
-			?? (mission.reviewAdjudicatedCandidateId && mission.reviewAdjudicatedVerdict ? [{ candidateId: mission.reviewAdjudicatedCandidateId, verdict: mission.reviewAdjudicatedVerdict }] : []);
+		let previousAdjudications = [...(mission.reviewAdjudications ?? [])];
+		if (mission.reviewAdjudicatedCandidateId && mission.reviewAdjudicatedVerdict) {
+			previousAdjudications = [...previousAdjudications.filter((item) => item.candidateId !== mission.reviewAdjudicatedCandidateId), { candidateId: mission.reviewAdjudicatedCandidateId, verdict: mission.reviewAdjudicatedVerdict }];
+		}
+		const candidateKnown = candidateId ? previousAdjudications.some((item) => item.candidateId === candidateId) : false;
+		if (adjudicated && candidateId && mission.reviewAdjudicationHistoryComplete !== true && !candidateKnown) {
+			throw new Error("Mission review adjudication history is incomplete; refusing to adjudicate an unknown candidate.");
+		}
+		if (adjudicated && candidateId && previousAdjudications.length >= MAX_MISSION_REVIEW_ADJUDICATIONS && !candidateKnown) {
+			throw new Error("Mission review adjudication history capacity is exhausted; refusing to forget a reviewed candidate.");
+		}
 		const adjudications = adjudicated && candidateId
-			? [...previousAdjudications.filter((item) => item.candidateId !== candidateId), { candidateId, verdict: status }].slice(-MAX_REVIEW_ADJUDICATIONS)
+			? [...previousAdjudications.filter((item) => item.candidateId !== candidateId), { candidateId, verdict: status }]
 			: undefined;
 		return {
 			kind: "review_changed",
@@ -611,6 +621,7 @@ export class MissionState {
 				reviewAdjudicatedCandidateId: event.reviewAdjudicatedCandidateId,
 				reviewAdjudicatedVerdict: event.reviewAdjudicatedVerdict,
 				reviewAdjudications: event.reviewAdjudications?.map((item) => ({ ...item })),
+				reviewAdjudicationHistoryComplete: event.reviewAdjudicationHistoryComplete,
 				reviewHighestSeverity: event.reviewHighestSeverity,
 				reviewBlockingFindingCount: event.reviewBlockingFindingCount ?? 0,
 				reviewBacklogFindingCount: event.reviewBacklogFindingCount ?? 0,
@@ -684,7 +695,12 @@ export class MissionState {
 		if (event.reviewCandidateObjectiveVersion !== undefined) this.current.reviewCandidateObjectiveVersion = event.reviewCandidateObjectiveVersion;
 		if (event.reviewAdjudicatedCandidateId !== undefined) this.current.reviewAdjudicatedCandidateId = event.reviewAdjudicatedCandidateId;
 		if (event.reviewAdjudicatedVerdict !== undefined) this.current.reviewAdjudicatedVerdict = event.reviewAdjudicatedVerdict;
-		if (event.reviewAdjudications !== undefined) this.current.reviewAdjudications = event.reviewAdjudications.map((item) => ({ ...item }));
+		if (event.reviewAdjudications !== undefined || (event.reviewAdjudicatedCandidateId && event.reviewAdjudicatedVerdict)) {
+			const additions = [...(event.reviewAdjudications ?? [])];
+			if (event.reviewAdjudicatedCandidateId && event.reviewAdjudicatedVerdict) additions.push({ candidateId: event.reviewAdjudicatedCandidateId, verdict: event.reviewAdjudicatedVerdict });
+			for (const adjudication of additions) this.current.reviewAdjudications = [...(this.current.reviewAdjudications ?? []).filter((item) => item.candidateId !== adjudication.candidateId), { ...adjudication }];
+		}
+		if (event.reviewAdjudicationHistoryComplete !== undefined) this.current.reviewAdjudicationHistoryComplete = event.reviewAdjudicationHistoryComplete;
 		if (event.kind === "review_changed" && event.reviewStatus === "awaiting_adjudication") this.current.reviewHighestSeverity = event.reviewHighestSeverity;
 		else if (event.reviewHighestSeverity !== undefined) this.current.reviewHighestSeverity = event.reviewHighestSeverity;
 		if (event.reviewBlockingFindingCount !== undefined) this.current.reviewBlockingFindingCount = event.reviewBlockingFindingCount;

@@ -3,6 +3,7 @@ export type MissionReviewStatus = "not_required" | "due" | "starting" | "running
 export type MissionConvergedReviewStatus = "not_required" | "clear" | "skipped";
 export type MissionReviewSeverity = "blocker" | "major" | "minor" | "nit";
 export type MissionReviewVerdict = "clear" | "changes_requested";
+export const MAX_MISSION_REVIEW_ADJUDICATIONS = 256;
 
 export interface MissionValidationInput {
 	command: string;
@@ -71,6 +72,7 @@ export interface MissionEvent {
 	reviewAdjudicatedCandidateId?: string;
 	reviewAdjudicatedVerdict?: MissionReviewVerdict;
 	reviewAdjudications?: Array<{ candidateId: string; verdict: MissionReviewVerdict }>;
+	reviewAdjudicationHistoryComplete?: true;
 	reviewHighestSeverity?: MissionReviewSeverity;
 	reviewBlockingFindingCount?: number;
 	reviewBacklogFindingCount?: number;
@@ -141,6 +143,7 @@ export interface MissionCurrent {
 	reviewAdjudicatedCandidateId?: string;
 	reviewAdjudicatedVerdict?: MissionReviewVerdict;
 	reviewAdjudications?: Array<{ candidateId: string; verdict: MissionReviewVerdict }>;
+	reviewAdjudicationHistoryComplete?: true;
 	reviewHighestSeverity?: MissionReviewSeverity;
 	reviewBlockingFindingCount?: number;
 	reviewBacklogFindingCount?: number;

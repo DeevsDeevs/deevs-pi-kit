@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { missionDir, missionRoot } from "./artifacts.ts";
+import { MAX_MISSION_REVIEW_ADJUDICATIONS } from "./types.ts";
 import type { MissionCurrent, MissionOwner, MissionProgressRecord, MissionSnapshot, MissionUsage } from "./types.ts";
 
 const SNAPSHOT_VERSION = 1;
@@ -239,12 +240,17 @@ function validateMission(value: Record<string, unknown>, cwd: string, slug: stri
 	}
 	if (mission.reviewSuggestedVerdict !== undefined && !["clear", "changes_requested", "unknown"].includes(mission.reviewSuggestedVerdict)) throw new Error("Invalid Mission suggested review verdict.");
 	if (mission.reviewAdjudicatedVerdict !== undefined && mission.reviewAdjudicatedVerdict !== "clear" && mission.reviewAdjudicatedVerdict !== "changes_requested") throw new Error("Invalid Mission adjudicated review verdict.");
-	if (value.reviewAdjudications !== undefined) mission.reviewAdjudications = array(value.reviewAdjudications, "Mission review adjudications", 32).map((item) => {
+	if (value.reviewAdjudications !== undefined) mission.reviewAdjudications = array(value.reviewAdjudications, "Mission review adjudications", MAX_MISSION_REVIEW_ADJUDICATIONS).map((item) => {
 		const adjudication = object(item, "Mission review adjudication");
 		const verdict = text(adjudication.verdict, "Mission review adjudication verdict", 40);
 		if (verdict !== "clear" && verdict !== "changes_requested") throw new Error("Invalid Mission review adjudication verdict.");
 		return { candidateId: text(adjudication.candidateId, "Mission review adjudication candidate", 200), verdict };
 	});
+	if (mission.reviewAdjudicatedCandidateId && mission.reviewAdjudicatedVerdict) {
+		const candidateKnown = mission.reviewAdjudications?.some((item) => item.candidateId === mission.reviewAdjudicatedCandidateId) ?? false;
+		if (!candidateKnown && (mission.reviewAdjudications?.length ?? 0) >= MAX_MISSION_REVIEW_ADJUDICATIONS) throw new Error("Mission review adjudication history cannot include the latest adjudicated candidate without exceeding capacity.");
+		mission.reviewAdjudications = [...(mission.reviewAdjudications ?? []).filter((item) => item.candidateId !== mission.reviewAdjudicatedCandidateId), { candidateId: mission.reviewAdjudicatedCandidateId, verdict: mission.reviewAdjudicatedVerdict }];
+	}
 	if (mission.reviewHighestSeverity !== undefined && !["blocker", "major", "minor", "nit"].includes(mission.reviewHighestSeverity)) throw new Error("Invalid Mission review severity.");
 	if (mission.completionLatchReviewStatus !== undefined && !["not_required", "clear", "skipped"].includes(mission.completionLatchReviewStatus)) throw new Error("Invalid Mission completion latch review status.");
 	if (mission.completionEffectsStatus !== undefined && mission.completionEffectsStatus !== "pending" && mission.completionEffectsStatus !== "done") throw new Error("Invalid Mission completion effects status.");
@@ -255,6 +261,10 @@ function validateMission(value: Record<string, unknown>, cwd: string, slug: stri
 	if (value.lastContinuationAt !== undefined) mission.lastContinuationAt = number(value.lastContinuationAt, "lastContinuationAt");
 	if (reviewStatus) mission.reviewStatus = reviewStatus as MissionCurrent["reviewStatus"];
 	if (value.reviewFailure !== undefined) mission.reviewFailure = value.reviewFailure === true;
+	if (value.reviewAdjudicationHistoryComplete !== undefined) {
+		if (value.reviewAdjudicationHistoryComplete !== true) throw new Error("Invalid Mission review adjudication history completeness marker.");
+		mission.reviewAdjudicationHistoryComplete = true;
+	}
 	return mission;
 }
 
