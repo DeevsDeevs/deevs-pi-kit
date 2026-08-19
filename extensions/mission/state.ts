@@ -672,7 +672,8 @@ export class MissionState {
 		if (event.reviewCandidateObjectiveVersion !== undefined) this.current.reviewCandidateObjectiveVersion = event.reviewCandidateObjectiveVersion;
 		if (event.reviewAdjudicatedCandidateId !== undefined) this.current.reviewAdjudicatedCandidateId = event.reviewAdjudicatedCandidateId;
 		if (event.reviewAdjudicatedVerdict !== undefined) this.current.reviewAdjudicatedVerdict = event.reviewAdjudicatedVerdict;
-		if (event.reviewHighestSeverity !== undefined) this.current.reviewHighestSeverity = event.reviewHighestSeverity;
+		if (event.kind === "review_changed" && event.reviewStatus === "awaiting_adjudication") this.current.reviewHighestSeverity = event.reviewHighestSeverity;
+		else if (event.reviewHighestSeverity !== undefined) this.current.reviewHighestSeverity = event.reviewHighestSeverity;
 		if (event.reviewBlockingFindingCount !== undefined) this.current.reviewBlockingFindingCount = event.reviewBlockingFindingCount;
 		if (event.reviewBacklogFindingCount !== undefined) this.current.reviewBacklogFindingCount = event.reviewBacklogFindingCount;
 		if (event.reviewCorrectionCount !== undefined) this.current.reviewCorrectionCount = event.reviewCorrectionCount;

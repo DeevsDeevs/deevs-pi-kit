@@ -246,6 +246,15 @@ describe("Mission state", () => {
 		expect(test.branch).toHaveLength(before);
 	});
 
+	it("clears stale highest severity when a later report has no findings", async () => {
+		const test = setup();
+		test.state.append(test.pi, await test.state.create({ objective: "Do work", chain: "kit" }, test.ctx));
+		test.state.append(test.pi, test.state.reviewEvent("awaiting_adjudication", { runId: "review-major", suggestedVerdict: "changes_requested", highestSeverity: "major", blockingFindingCount: 1 }));
+		expect(test.state.read()?.reviewHighestSeverity).toBe("major");
+		test.state.append(test.pi, test.state.reviewEvent("awaiting_adjudication", { runId: "review-clear", suggestedVerdict: "clear", blockingFindingCount: 0, backlogFindingCount: 0 }));
+		expect(test.state.read()?.reviewHighestSeverity).toBeUndefined();
+	});
+
 	it("returns post-adjudication Mission state after the progress hook", async () => {
 		const test = setup();
 		test.state.append(test.pi, await test.state.create({ objective: "Do work", chain: "kit" }, test.ctx));
