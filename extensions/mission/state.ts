@@ -12,6 +12,7 @@ const DEFAULT_CHAIN_BRANCH = "main";
 const MAX_REQUIREMENTS = 12;
 const MAX_PATHS = 100;
 export const DEFAULT_REVIEW_CORRECTION_LIMIT = 3;
+const MAX_REVIEW_ADJUDICATIONS = 32;
 const STATUS_TRANSITIONS: Record<MissionStatus, readonly MissionStatus[]> = {
 	active: ["paused", "blocked", "terminal_error", "budget_limited", "usage_limited", "complete", "ended", "cleared"],
 	paused: ["active", "ended", "cleared"],
@@ -409,8 +410,10 @@ export class MissionState {
 	objectiveUpdateEvent(input: MissionUpdateInput): MissionEvent {
 		const mission = this.requireMutable();
 		assertInputLimits(input.requirements, input.paths);
-		const objective = input.objective?.trim() || mission.objective;
+		const objective = input.objective?.trim().replace(/\s+/g, " ") || mission.objective;
 		const requirements = input.requirements?.length ? normalizeRequirements(input.requirements) : mission.requirements;
+		const paths = input.paths !== undefined ? normalizePaths(input.paths) : mission.paths;
+		const identityChanged = objective !== mission.objective.trim().replace(/\s+/g, " ") || !sameOrderedStrings(requirements, mission.requirements) || !sameStringSet(paths, mission.paths);
 		if (!input.reason.trim()) throw new Error("Mission objective updates require a reason.");
 		return {
 			kind: "objective_updated",
@@ -419,15 +422,14 @@ export class MissionState {
 			at: Date.now(),
 			objective,
 			requirements,
-			objectiveVersion: (mission.objectiveVersion ?? 1) + 1,
+			objectiveVersion: identityChanged ? (mission.objectiveVersion ?? 1) + 1 : mission.objectiveVersion ?? 1,
 			reason: input.reason.trim(),
-			...(input.paths !== undefined ? { paths: normalizePaths(input.paths) } : {}),
+			...(input.paths !== undefined ? { paths } : {}),
 			...(input.tokenBudget !== undefined ? { tokenBudget: input.tokenBudget === null || input.tokenBudget === 0 ? null : positiveNumber(input.tokenBudget, "tokenBudget") } : {}),
 			...(input.costBudgetUsd !== undefined ? { costBudgetUsd: input.costBudgetUsd === null || input.costBudgetUsd === 0 ? null : positiveNumber(input.costBudgetUsd, "costBudgetUsd") } : {}),
 			...(input.turnBudget !== undefined ? { turnBudget: input.turnBudget === null || input.turnBudget === 0 ? null : positiveInteger(input.turnBudget, "turnBudget") } : {}),
 			...(input.wallDeadlineMs !== undefined ? { wallDeadlineAt: input.wallDeadlineMs === null || input.wallDeadlineMs === 0 ? null : Date.now() + positiveNumber(input.wallDeadlineMs, "wallDeadlineMs")! } : {}),
-			reviewStatus: "due",
-			reviewReason: "Mission objective changed",
+			...(identityChanged ? { reviewStatus: "due" as const, reviewReason: "Mission objective changed" } : {}),
 		};
 	}
 
@@ -436,6 +438,11 @@ export class MissionState {
 		const adjudicated = status === "clear" || status === "changes_requested";
 		const correctionCount = input.replayAdjudication ? mission.reviewCorrectionCount : status === "changes_requested" ? (mission.reviewCorrectionCount ?? 0) + 1 : status === "clear" ? 0 : undefined;
 		const candidateId = input.candidateId ?? mission.reviewCandidateId;
+		const previousAdjudications = mission.reviewAdjudications
+			?? (mission.reviewAdjudicatedCandidateId && mission.reviewAdjudicatedVerdict ? [{ candidateId: mission.reviewAdjudicatedCandidateId, verdict: mission.reviewAdjudicatedVerdict }] : []);
+		const adjudications = adjudicated && candidateId
+			? [...previousAdjudications.filter((item) => item.candidateId !== candidateId), { candidateId, verdict: status }].slice(-MAX_REVIEW_ADJUDICATIONS)
+			: undefined;
 		return {
 			kind: "review_changed",
 			missionId: mission.missionId,
@@ -454,6 +461,7 @@ export class MissionState {
 			reviewCandidateObjectiveVersion: candidateId ? mission.objectiveVersion ?? 1 : undefined,
 			reviewAdjudicatedCandidateId: adjudicated ? candidateId : undefined,
 			reviewAdjudicatedVerdict: adjudicated ? status : undefined,
+			reviewAdjudications: adjudications,
 			reviewHighestSeverity: input.highestSeverity,
 			reviewBlockingFindingCount: input.blockingFindingCount,
 			reviewBacklogFindingCount: input.backlogFindingCount,
@@ -602,6 +610,7 @@ export class MissionState {
 				reviewCandidateObjectiveVersion: event.reviewCandidateObjectiveVersion,
 				reviewAdjudicatedCandidateId: event.reviewAdjudicatedCandidateId,
 				reviewAdjudicatedVerdict: event.reviewAdjudicatedVerdict,
+				reviewAdjudications: event.reviewAdjudications?.map((item) => ({ ...item })),
 				reviewHighestSeverity: event.reviewHighestSeverity,
 				reviewBlockingFindingCount: event.reviewBlockingFindingCount ?? 0,
 				reviewBacklogFindingCount: event.reviewBacklogFindingCount ?? 0,
@@ -635,6 +644,7 @@ export class MissionState {
 		}
 		if (event.kind === "objective_updated") {
 			this.continuationProgressIndex = this.progress.length;
+			const identityChanged = event.objectiveVersion === undefined || event.objectiveVersion !== (this.current.objectiveVersion ?? 1);
 			if (event.objective) this.current.objective = event.objective;
 			if (event.requirements) this.current.requirements = normalizeRequirements(event.requirements);
 			if (event.paths !== undefined) this.current.paths = normalizePaths(event.paths);
@@ -643,14 +653,16 @@ export class MissionState {
 			if (event.turnBudget !== undefined) this.current.turnBudget = event.turnBudget ?? undefined;
 			if (event.wallDeadlineAt !== undefined) this.current.wallDeadlineAt = event.wallDeadlineAt ?? undefined;
 			this.current.objectiveVersion = event.objectiveVersion ?? (this.current.objectiveVersion ?? 1) + 1;
-			this.current.reviewCandidateId = undefined;
-			this.current.reviewCandidateObjectiveVersion = undefined;
-			this.current.reviewAdmissionId = undefined;
-			this.current.reviewAdjudicatedCandidateId = undefined;
-			this.current.reviewAdjudicatedVerdict = undefined;
-			this.current.reviewCorrectionCount = 0;
-			this.current.completionLatchCandidateId = undefined;
-			this.current.completionLatchReviewStatus = undefined;
+			if (identityChanged) {
+				this.current.reviewCandidateId = undefined;
+				this.current.reviewCandidateObjectiveVersion = undefined;
+				this.current.reviewAdmissionId = undefined;
+				this.current.reviewAdjudicatedCandidateId = undefined;
+				this.current.reviewAdjudicatedVerdict = undefined;
+				this.current.reviewCorrectionCount = 0;
+				this.current.completionLatchCandidateId = undefined;
+				this.current.completionLatchReviewStatus = undefined;
+			}
 		}
 		if (event.reviewStatus) this.current.reviewStatus = event.reviewStatus;
 		// A review that reaches the reviewer or clears wipes the transient failure streak, so weeks-apart intermittent reviewer failures cannot accumulate into a permanent three-strike block.
@@ -672,6 +684,7 @@ export class MissionState {
 		if (event.reviewCandidateObjectiveVersion !== undefined) this.current.reviewCandidateObjectiveVersion = event.reviewCandidateObjectiveVersion;
 		if (event.reviewAdjudicatedCandidateId !== undefined) this.current.reviewAdjudicatedCandidateId = event.reviewAdjudicatedCandidateId;
 		if (event.reviewAdjudicatedVerdict !== undefined) this.current.reviewAdjudicatedVerdict = event.reviewAdjudicatedVerdict;
+		if (event.reviewAdjudications !== undefined) this.current.reviewAdjudications = event.reviewAdjudications.map((item) => ({ ...item }));
 		if (event.kind === "review_changed" && event.reviewStatus === "awaiting_adjudication") this.current.reviewHighestSeverity = event.reviewHighestSeverity;
 		else if (event.reviewHighestSeverity !== undefined) this.current.reviewHighestSeverity = event.reviewHighestSeverity;
 		if (event.reviewBlockingFindingCount !== undefined) this.current.reviewBlockingFindingCount = event.reviewBlockingFindingCount;
@@ -793,6 +806,16 @@ function normalizePaths(values: string[] | undefined): string[] {
 		if (!result.includes(path)) result.push(path);
 	}
 	return result;
+}
+
+function sameOrderedStrings(left: string[], right: string[]): boolean {
+	return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function sameStringSet(left: string[], right: string[]): boolean {
+	if (left.length !== right.length) return false;
+	const sortedRight = [...right].sort();
+	return [...left].sort().every((value, index) => value === sortedRight[index]);
 }
 
 function normalizeValidation(values: Array<MissionValidationInput | MissionValidationRecord> | undefined, objectiveVersion: number): MissionValidationRecord[] {

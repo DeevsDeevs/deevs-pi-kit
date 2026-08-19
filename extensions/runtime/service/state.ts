@@ -189,6 +189,11 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 		const cause = operation.type === "participant.stand_down" ? "stand_down" : "release";
 		const nextState = operation.type === "participant.stand_down" ? "vacant" : "ended";
 		if (!current) throw new HostedStateConflictError("conflict", "Participant is absent.");
+		if (operation.type === "participant.stand_down" && operation.expectedGeneration !== undefined && current.generation !== operation.expectedGeneration) {
+			const latest = current.transitions.at(-1);
+			if (current.state === "vacant" && latest?.cause === "stand_down" && latest.previousGeneration === operation.expectedGeneration && latest.previousHolderTargetKey === operation.targetKey) return state;
+			throw new HostedStateConflictError("conflict", "Participant generation changed before stand-down.");
+		}
 		if (current.state !== "held" || current.holderTargetKey !== operation.targetKey) {
 			const latest = current.transitions.at(-1);
 			if (current.state === nextState && latest?.cause === cause && latest.previousHolderTargetKey === operation.targetKey) return state;

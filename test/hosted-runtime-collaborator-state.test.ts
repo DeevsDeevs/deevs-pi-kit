@@ -156,6 +156,16 @@ describe("hosted Runtime collaborator state", () => {
 		expect(state.participants[key]?.transitions.map((transition) => transition.cause)).toEqual(["acquire", "stand_down", "reacquire", "release", "revive"]);
 	});
 
+	it("generation-fences automatic stand-down rollback", () => {
+		const state = pairedState();
+		const key = participantKey("fable");
+		expect(() => reduceHostedState(state, { type: "participant.stand_down", participantKey: key, targetKey: "target_fable", expectedGeneration: "stale_generation", generation: "lease_vacant", at: 4 })).toThrow("generation changed before stand-down");
+		const expectedGeneration = state.participants[key]!.generation;
+		const vacant = reduceHostedState(state, { type: "participant.stand_down", participantKey: key, targetKey: "target_fable", expectedGeneration, generation: "lease_vacant", at: 4 });
+		expect(vacant.participants[key]?.state).toBe("vacant");
+		expect(reduceHostedState(vacant, { type: "participant.stand_down", participantKey: key, targetKey: "target_fable", expectedGeneration, generation: "ignored_retry", at: 5 })).toBe(vacant);
+	});
+
 	it("bounds transition history without hiding the current generation", () => {
 		let state = pairedState();
 		const key = participantKey("fable");

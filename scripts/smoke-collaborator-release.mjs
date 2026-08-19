@@ -41,7 +41,8 @@ execFileSync("git", ["init", "-q"], { cwd: projectRoot });
 execFileSync("git", ["add", "release.txt"], { cwd: projectRoot });
 execFileSync("git", ["-c", "user.name=Release Gate", "-c", "user.email=release@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "release baseline"], { cwd: projectRoot });
 writeFileSync(alphaSessionFile, `${JSON.stringify({ type: "session", version: 3, id: alphaSessionId, timestamp: new Date().toISOString(), cwd: projectRoot })}\n`);
-writeFileSync(missionHoldExtension, `import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";\nimport { setJobManager } from ${JSON.stringify(pathToFileURL(join(repo, "extensions/jobs/registry.ts")).href)};\nconst manager = { list: () => [{ spec: { id: "combined-release-hold" }, runtime: { status: "running" } }] };\nfunction stream(model) { const events = createAssistantMessageEventStream(); const message = { role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: Date.now() }; queueMicrotask(() => { events.push({ type: "start", partial: message }); events.push({ type: "done", reason: "stop", message }); events.end(); }); return events; }\nexport default function (pi) { setJobManager(manager); pi.registerProvider("release-gate", { name: "Release Gate", baseUrl: "http://release.invalid", apiKey: "test", api: "release-gate", streamSimple: stream, models: [{ id: "noop", name: "No-op", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 4096, maxTokens: 64 }] }); }\n`);
+writeFileSync(missionHoldExtension, `import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";\nimport { setJobManager } from ${JSON.stringify(pathToFileURL(join(repo, "extensions/jobs/registry.ts")).href)};\nconst manager = { list: () => [{ spec: { id: "combined-release-hold" }, runtime: { status: "running" } }] };\nlet launchIssued = false;
+function stream(model, context) { const events = createAssistantMessageEventStream(); const launch = !launchIssued && JSON.stringify(context).includes("release-gate collaborator tool launch"); launchIssued ||= launch; const toolCall = { type: "toolCall", id: "release-gate-collaborator-start", name: "collaborator_start", arguments: { participantId: "beta", protocol: "review", callerParticipantId: "alpha" } }; const message = { role: "assistant", content: launch ? [toolCall] : [], api: model.api, provider: model.provider, model: model.id, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: launch ? "toolUse" : "stop", timestamp: Date.now() }; queueMicrotask(() => { events.push({ type: "start", partial: message }); if (launch) { events.push({ type: "toolcall_start", contentIndex: 0, partial: message }); events.push({ type: "toolcall_end", contentIndex: 0, toolCall, partial: message }); } events.push({ type: "done", reason: message.stopReason, message }); events.end(); }); return events; }\nexport default function (pi) { setJobManager(manager); pi.registerProvider("release-gate", { name: "Release Gate", baseUrl: "http://release.invalid", apiKey: "test", api: "release-gate", streamSimple: stream, models: [{ id: "noop", name: "No-op", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 4096, maxTokens: 64 }] }); }\n`);
 writeFileSync(join(agentDir, "settings.json"), `${JSON.stringify({ defaultProjectTrust: "always", extensions: [missionHoldExtension, herdrIntegration, runtimeExtension, missionExtension] }, null, 2)}\n`);
 
 const herdrEnv = { ...process.env, HERDR_SOCKET_PATH: herdrSocket, PI_CODING_AGENT_DIR: agentDir };
@@ -186,11 +187,20 @@ async function acquire(pi, participantId) {
 }
 
 async function launchCollaborator(parent, participantId) {
-	cli("agent", "prompt", parent.pane.pane_id, `/runtime collaborator-start review ${participantId}`);
+	const callerEntriesBefore = sessionEntries(parent.sessionFile).filter((entry) => entry.type === "custom" && entry.customType === participantEntry).length;
+	cli("agent", "prompt", parent.pane.pane_id, "release-gate collaborator tool launch");
+	await waitFor(() => readPane(parent.pane.pane_id, 200).includes("Start Runtime collaborator?"), "collaborator_start did not request trusted confirmation", 60_000);
+	cli("pane", "send-keys", parent.pane.pane_id, "y", "enter");
 	await waitFor(() => {
 		const current = participant("review", participantId);
 		return current?.state === "held" ? current : undefined;
-	}, `${participantId} did not acquire through the production collaborator launcher`, 60_000);
+	}, `${participantId} did not acquire through the collaborator_start tool`, 60_000);
+	await waitFor(() => participant("review", "alpha")?.state === "held", "collaborator_start did not acquire the caller identity");
+	await waitFor(() => {
+		const entries = sessionEntries(parent.sessionFile).filter((entry) => entry.type === "custom" && entry.customType === participantEntry);
+		const latest = entries.at(-1);
+		return entries.length > callerEntriesBefore && latest?.data?.participantId === "alpha" && latest.data.disposition === "held";
+	}, "collaborator_start did not persist caller acquisition");
 	const launched = await waitFor(() => {
 		const tabs = cli("tab", "list", "--workspace", parent.pane.workspace_id).result.tabs;
 		const tab = tabs.find((candidate) => candidate.label === `collaborator:${participantId}`);
@@ -205,8 +215,8 @@ async function launchCollaborator(parent, participantId) {
 	assert.equal(header.version, 3);
 	assert.equal(header.cwd, projectRoot);
 	await waitFor(() => sessionEntries(launched.sessionFile).filter((entry) => entry.type === "custom" && entry.customType === participantEntry).at(-1)?.data?.participantId === participantId, `${participantId} launch identity was not persisted`);
-	await waitFor(() => readPane(parent.pane.pane_id).includes(`Collaborator review/${participantId} started`), `parent did not confirm ${participantId} production launch`);
-	return { ...launched, sessionId: header.id };
+	await waitFor(() => readPane(parent.pane.pane_id, 200).includes(`Started review/${participantId} in`), `parent tool did not confirm ${participantId} production launch`);
+	return { ...launched, sessionId: header.id, callerAcquired: true };
 }
 
 async function directRegistration(pi, sessionId, clientGeneration) {
@@ -395,8 +405,8 @@ try {
 
 	let alphaPi = await startPi("collaborator-alpha-1", alphaSessionFile);
 	await assertRuntimeRegistered(alphaPi);
-	await acquire(alphaPi, "alpha");
 	let betaPi = await launchCollaborator(alphaPi, "beta");
+	assert.equal(betaPi.callerAcquired, true);
 	betaSessionFile = betaPi.sessionFile;
 	betaSessionId = betaPi.sessionId;
 	await assertRuntimeRegistered(betaPi);
@@ -507,6 +517,9 @@ try {
 	console.log(JSON.stringify({
 		status: "pass",
 		productionLaunch: true,
+		productionToolLaunch: true,
+		trustedConfirmation: true,
+		callerAcquired: true,
 		materializedChildSession: true,
 		participants: 2,
 		alphaToBeta: alphaToBeta.eventId,

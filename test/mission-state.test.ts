@@ -41,6 +41,17 @@ describe("Mission state", () => {
 		expect(mission.reviewSkippedReason).toBe("Documentation-only change");
 	});
 
+	it("preserves candidate identity for limit-only and normalized no-op updates", async () => {
+		const test = setup();
+		test.state.append(test.pi, await test.state.create({ objective: "Implement runtime", requirements: ["Works"], paths: ["src", "test"], chain: "kit" }, test.ctx));
+		test.state.append(test.pi, test.state.reviewEvent("clear", { candidateId: "candidate-stable", worktreeFingerprint: "fingerprint-stable" }));
+		test.state.append(test.pi, test.state.completionLatchEvent("candidate-stable", "clear"));
+		let mission = test.state.append(test.pi, test.state.objectiveUpdateEvent({ tokenBudget: 50_000, reason: "raise limit" }))!;
+		expect(mission).toMatchObject({ objectiveVersion: 1, reviewStatus: "clear", reviewAdjudicatedCandidateId: "candidate-stable", completionLatchCandidateId: "candidate-stable", tokenBudget: 50_000 });
+		mission = test.state.append(test.pi, test.state.objectiveUpdateEvent({ objective: "  Implement   runtime ", requirements: [" Works "], paths: ["test", "src"], reason: "normalize equivalent input" }))!;
+		expect(mission).toMatchObject({ objectiveVersion: 1, reviewStatus: "clear", reviewAdjudicatedCandidateId: "candidate-stable", completionLatchCandidateId: "candidate-stable" });
+	});
+
 	it("preserves meaningful leading digits while stripping explicit list markers", async () => {
 		const test = setup();
 		const mission = test.state.append(test.pi, await test.state.create({ objective: "Coverage", chain: "kit", requirements: ["100% coverage", "1. First check", "- Second check", "1.2 stays"] }, test.ctx));

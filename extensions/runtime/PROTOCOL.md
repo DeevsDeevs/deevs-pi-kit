@@ -118,7 +118,7 @@ busy                     storage_error           internal
 | `participant.takeover` | Explicitly rebind an offline holder generation |
 | `mailbox.send` | Append one idempotent directed message |
 
-All methods except `hello` and `pi.register` require the exact current registration ID and key. Mutations are idempotent on their typed durable keys.
+All methods except `hello` and `pi.register` require the exact current registration ID and key. Mutations are idempotent on their typed durable keys. `participant.acquire` reports whether that call transitioned ownership; automatic rollback supplies the acquired generation to `participant.stand_down`, which fails if ownership changed.
 
 Hosted event types are separate from process-local `RuntimeEvent` types in `extensions/shared/runtime-events.ts`.
 

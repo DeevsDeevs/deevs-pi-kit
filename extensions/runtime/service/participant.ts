@@ -59,7 +59,7 @@ export class HostedParticipantCoordinator {
 		this.seenTargets.add(targetKey);
 	}
 
-	acquire(registration: HostedLiveRegistration, protocol: string, participantId: string, allowRevive = false): { participant: HostedParticipantStatus; revived: boolean } {
+	acquire(registration: HostedLiveRegistration, protocol: string, participantId: string, allowRevive = false): { participant: HostedParticipantStatus; revived: boolean; transitioned: boolean } {
 		this.seenTargets.add(registration.targetKey);
 		const target = this.requireTarget(registration.targetKey);
 		const participantKey = deriveParticipantKey(target.projectRoot, protocol, participantId);
@@ -79,7 +79,7 @@ export class HostedParticipantCoordinator {
 		});
 		const participant = this.requireParticipant(participantKey, target.projectRoot);
 		this.wakes.request(registration.targetKey);
-		return { participant: this.status(participant), revived };
+		return { participant: this.status(participant), revived, transitioned: before?.state !== "held" || before.holderTargetKey !== registration.targetKey };
 	}
 
 	get(registration: HostedLiveRegistration, participantKey: string): HostedParticipantStatus {
@@ -95,8 +95,8 @@ export class HostedParticipantCoordinator {
 			.map((participant) => this.status(participant, false));
 	}
 
-	standDown(registration: HostedLiveRegistration, participantKey: string): HostedParticipantStatus {
-		return this.leave(registration, participantKey, "participant.stand_down");
+	standDown(registration: HostedLiveRegistration, participantKey: string, expectedGeneration?: string): HostedParticipantStatus {
+		return this.leave(registration, participantKey, "participant.stand_down", expectedGeneration);
 	}
 
 	release(registration: HostedLiveRegistration, participantKey: string): HostedParticipantStatus {
@@ -152,10 +152,10 @@ export class HostedParticipantCoordinator {
 		return event;
 	}
 
-	private leave(registration: HostedLiveRegistration, participantKey: string, type: "participant.stand_down" | "participant.release"): HostedParticipantStatus {
+	private leave(registration: HostedLiveRegistration, participantKey: string, type: "participant.stand_down" | "participant.release", expectedGeneration?: string): HostedParticipantStatus {
 		const target = this.requireTarget(registration.targetKey);
 		this.requireParticipant(participantKey, target.projectRoot);
-		this.store.apply({ type, participantKey, targetKey: registration.targetKey, generation: this.createGeneration(), at: this.now() });
+		this.store.apply({ type, participantKey, targetKey: registration.targetKey, generation: this.createGeneration(), ...(type === "participant.stand_down" && expectedGeneration !== undefined ? { expectedGeneration } : {}), at: this.now() });
 		this.wakes.request(registration.targetKey);
 		return this.status(this.requireParticipant(participantKey, target.projectRoot));
 	}

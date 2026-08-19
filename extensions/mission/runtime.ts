@@ -512,8 +512,10 @@ export class MissionRuntime {
 			this.state.append(this.pi, this.state.completionLatchClearedEvent());
 			current = this.state.read()!;
 		}
-		if (current.reviewAdjudicatedCandidateId === candidateId && current.reviewAdjudicatedVerdict) {
-			this.state.append(this.pi, this.state.reviewEvent(current.reviewAdjudicatedVerdict, { runId: current.reviewRunId, reason: "Duplicate review admission suppressed for the unchanged adjudicated candidate.", worktreeFingerprint: reviewWorktreeFingerprint, candidateId, replayAdjudication: true }));
+		const priorAdjudication = current.reviewAdjudications?.find((item) => item.candidateId === candidateId)
+			?? (current.reviewAdjudicatedCandidateId === candidateId && current.reviewAdjudicatedVerdict ? { candidateId, verdict: current.reviewAdjudicatedVerdict } : undefined);
+		if (priorAdjudication) {
+			this.state.append(this.pi, this.state.reviewEvent(priorAdjudication.verdict, { runId: current.reviewRunId, reason: "Duplicate review admission suppressed for the unchanged adjudicated candidate.", worktreeFingerprint: reviewWorktreeFingerprint, candidateId, replayAdjudication: true }));
 			this.updateStatus();
 			return;
 		}

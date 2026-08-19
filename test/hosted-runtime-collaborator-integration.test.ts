@@ -106,7 +106,7 @@ describe("hosted collaborator Pi integration", () => {
 	it("bootstraps identity from Herdr env and persists exact acquisition", async () => {
 		process.env.PI_RUNTIME_COLLABORATE = "review:main";
 		const test = await setup((request) => {
-			if (request.method === "participant.acquire") return { participant: mainParticipant, revived: false };
+			if (request.method === "participant.acquire") return { participant: mainParticipant, revived: false, transitioned: true };
 			return baseResponse(request);
 		});
 		await test.integration.sessionStart(test.ctx as never);
@@ -120,7 +120,7 @@ describe("hosted collaborator Pi integration", () => {
 		let rotated = false;
 		const test = await setup((request) => {
 			if (request.method === "participant.get") return rotated ? { ...mainParticipant, holderTargetKey: "target_other" } : mainParticipant;
-			if (request.method === "participant.acquire") return { participant: mainParticipant, revived: false };
+			if (request.method === "participant.acquire") return { participant: mainParticipant, revived: false, transitioned: true };
 			if (request.method === "participant.list") return { participants: [mainParticipant, fableParticipant] };
 			if (request.method === "mailbox.send") return { eventId: "event_mail", sequence: 4 };
 			return baseResponse(request);
@@ -248,7 +248,7 @@ describe("hosted collaborator Pi integration", () => {
 		let listCount = 0;
 		const test = await setup((request) => {
 			if (request.method === "participant.list") return { participants: listCount++ === 0 ? [] : [mainParticipant] };
-			if (request.method === "participant.acquire") return { participant: mainParticipant, revived: false };
+			if (request.method === "participant.acquire") return { participant: mainParticipant, revived: false, transitioned: true };
 			return baseResponse(request);
 		});
 		let childSessionFile = "";
@@ -279,7 +279,7 @@ describe("hosted collaborator Pi integration", () => {
 				if (listCount === 2) return { participants: [mainParticipant] };
 				throw new HostedRuntimeClientError("unavailable", "transient list failure");
 			}
-			if (request.method === "participant.acquire") return { participant: mainParticipant, revived: false };
+			if (request.method === "participant.acquire") return { participant: mainParticipant, revived: false, transitioned: true };
 			return baseResponse(request);
 		});
 		let childSessionFile = "";
@@ -312,7 +312,7 @@ describe("hosted collaborator Pi integration", () => {
 
 		const beforeDispatch = await setup((request) => {
 			if (request.method === "participant.list") return { participants: [] };
-			if (request.method === "participant.acquire") return { participant: mainParticipant, revived: false };
+			if (request.method === "participant.acquire") return { participant: mainParticipant, revived: false, transitioned: true };
 			if (request.method === "participant.stand_down") return { ...mainParticipant, state: "vacant", generation: "lease_vacant", holderTargetKey: undefined, holderLive: false, lastTransition: { cause: "stand_down" } };
 			return baseResponse(request);
 		});
@@ -329,6 +329,23 @@ describe("hosted collaborator Pi integration", () => {
 		await beforeDispatch.integration.sessionShutdown();
 	});
 
+	it("revalidates an existing caller generation after confirmation before launch dispatch", async () => {
+		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
+		let rotated = false;
+		const vacantFable = { ...fableParticipant, state: "vacant", holderTargetKey: undefined, holderLive: false };
+		const test = await setup((request) => {
+			if (request.method === "participant.get") return mainParticipant;
+			if (request.method === "participant.list") return { participants: [rotated ? { ...mainParticipant, generation: "lease_rotated", holderTargetKey: "target_other" } : mainParticipant, vacantFable] };
+			return baseResponse(request);
+		}, [identity]);
+		test.ctx.ui.confirm = async () => { rotated = true; return true; };
+		await test.integration.sessionStart(test.ctx as never);
+		await expect(test.integration.startCollaborator({ participantId: "fable" }, test.ctx as never)).rejects.toThrow("changed while launch confirmation was pending");
+		expect(test.execCalls.some((call) => call.args[0] === "tab")).toBe(false);
+		expect(test.entries.at(-1)).toMatchObject({ customType: HOSTED_PARTICIPANT_ENTRY, data: { participantId: "main", generation: "lease_rotated", disposition: "vacant" } });
+		await test.integration.sessionShutdown();
+	});
+
 	it("requires trust and confirmation before the model acquires and starts collaborators", async () => {
 		let listCount = 0;
 		let childTargetKey = "";
@@ -339,7 +356,7 @@ describe("hosted collaborator Pi integration", () => {
 				if (listCount === 3) return { participants: [mainParticipant] };
 				return { participants: [mainParticipant, { ...fableParticipant, holderTargetKey: childTargetKey }] };
 			}
-			if (request.method === "participant.acquire") return { participant: mainParticipant, revived: false };
+			if (request.method === "participant.acquire") return { participant: mainParticipant, revived: false, transitioned: true };
 			return baseResponse(request);
 		});
 		test.setExec(async (_command, args) => {
@@ -368,9 +385,10 @@ describe("hosted collaborator Pi integration", () => {
 	});
 
 	it("stands down a newly acquired caller when model-driven child launch fails", async () => {
+		let acquired = false;
 		const test = await setup((request) => {
-			if (request.method === "participant.list") return { participants: [] };
-			if (request.method === "participant.acquire") return { participant: mainParticipant, revived: false };
+			if (request.method === "participant.list") return { participants: acquired ? [mainParticipant] : [] };
+			if (request.method === "participant.acquire") { acquired = true; return { participant: mainParticipant, revived: false, transitioned: true }; }
 			if (request.method === "participant.stand_down") return { ...mainParticipant, state: "vacant", generation: "lease_vacant", holderTargetKey: undefined, holderLive: false, lastTransition: { cause: "stand_down" } };
 			return baseResponse(request);
 		});
@@ -381,9 +399,26 @@ describe("hosted collaborator Pi integration", () => {
 		});
 		await test.integration.sessionStart(test.ctx as never);
 		await expect(test.integration.startCollaborator({ protocol: "review", callerParticipantId: "main", participantId: "fable" }, test.ctx as never)).rejects.toThrow("could not create");
-		expect(test.requests.some((request) => request.method === "participant.stand_down" && request.params.participantKey === "participant_main")).toBe(true);
+		expect(test.requests.some((request) => request.method === "participant.stand_down" && request.params.participantKey === "participant_main" && request.params.expectedGeneration === "lease_main")).toBe(true);
 		expect(test.entries.at(-1)).toMatchObject({ customType: HOSTED_PARTICIPANT_ENTRY, data: { participantId: "main", disposition: "vacant", generation: "lease_vacant" } });
 		expect(readdirSync(join(test.runtimeRoot, "collaborator-sessions"))).toEqual([]);
+		await test.integration.sessionShutdown();
+	});
+
+	it("does not roll back a caller acquired concurrently by the same target", async () => {
+		const test = await setup((request) => {
+			if (request.method === "participant.list") return { participants: request.params.registrationId ? [mainParticipant] : [] };
+			if (request.method === "participant.acquire") return { participant: mainParticipant, revived: false, transitioned: false };
+			return baseResponse(request);
+		});
+		test.setExec(async (_command, args) => {
+			if (args[0] === "pane") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
+			if (args[0] === "tab" && args[1] === "create") return { code: 1, stdout: "", stderr: "create failed", killed: false };
+			return { code: 0, stdout: "{}", stderr: "", killed: false };
+		});
+		await test.integration.sessionStart(test.ctx as never);
+		await expect(test.integration.startCollaborator({ protocol: "review", callerParticipantId: "main", participantId: "fable" }, test.ctx as never)).rejects.toThrow("could not create");
+		expect(test.requests.some((request) => request.method === "participant.stand_down")).toBe(false);
 		await test.integration.sessionShutdown();
 	});
 
@@ -391,7 +426,7 @@ describe("hosted collaborator Pi integration", () => {
 		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
 		const test = await setup((request) => {
 			if (request.method === "participant.get") return mainParticipant;
-			if (request.method === "participant.acquire") return { participant: mainParticipant, revived: false };
+			if (request.method === "participant.acquire") return { participant: mainParticipant, revived: false, transitioned: true };
 			if (request.method === "participant.list") return { participants: [mainParticipant, fableParticipant] };
 			if (request.method === "participant.takeover") return { ...fableParticipant, holderTargetKey: "target_main", generation: "lease_takeover", lastTransition: { cause: "takeover" } };
 			if (request.method === "participant.stand_down") return { ...mainParticipant, state: "vacant", generation: "lease_vacant", holderTargetKey: undefined, holderLive: false, lastTransition: { cause: "stand_down" } };
