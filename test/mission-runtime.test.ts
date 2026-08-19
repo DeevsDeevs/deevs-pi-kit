@@ -251,6 +251,18 @@ describe("Mission runtime", () => {
 		}
 	});
 
+	it("keeps a changed candidate awaiting adjudication instead of comparing it to the old admitted baseline", async () => {
+		let fingerprint = "baseline";
+		const test = await setup({ fingerprint: () => fingerprint });
+		test.state.append(test.pi, test.state.workspaceFingerprintEvent(expectedFingerprint(fingerprint)));
+		fingerprint = "reviewed-change";
+		const reviewedFingerprint = expectedFingerprint(fingerprint);
+		const candidateId = await test.runtime.completionCandidateId(test.ctx);
+		test.state.append(test.pi, test.state.reviewEvent("awaiting_adjudication", { runId: "review-changed-candidate", suggestedVerdict: "clear", worktreeFingerprint: reviewedFingerprint, candidateId }));
+		await test.emit("turn_start");
+		expect(test.state.read()).toMatchObject({ reviewStatus: "awaiting_adjudication", reviewRunId: "review-changed-candidate", reviewWorktreeFingerprint: reviewedFingerprint });
+	});
+
 	it("requires a new review when the worktree changes while review is running", async () => {
 		let fingerprint = "before";
 		const test = await setup({ fingerprint: () => fingerprint });
