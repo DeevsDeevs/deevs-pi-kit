@@ -431,7 +431,7 @@ export class MissionState {
 		};
 	}
 
-	reviewEvent(status: MissionReviewStatus, input: { runId?: string; reason?: string; skippedReason?: string; suggestedVerdict?: MissionReviewVerdict | "unknown"; failure?: boolean; worktreeFingerprint?: string; candidateId?: string; highestSeverity?: MissionReviewSeverity; blockingFindingCount?: number; backlogFindingCount?: number; replayAdjudication?: boolean } = {}): MissionEvent {
+	reviewEvent(status: MissionReviewStatus, input: { runId?: string; admissionId?: string; reason?: string; skippedReason?: string; suggestedVerdict?: MissionReviewVerdict | "unknown"; failure?: boolean; worktreeFingerprint?: string; candidateId?: string; highestSeverity?: MissionReviewSeverity; blockingFindingCount?: number; backlogFindingCount?: number; replayAdjudication?: boolean } = {}): MissionEvent {
 		const mission = this.requireActive();
 		const adjudicated = status === "clear" || status === "changes_requested";
 		const correctionCount = input.replayAdjudication ? mission.reviewCorrectionCount : status === "changes_requested" ? (mission.reviewCorrectionCount ?? 0) + 1 : status === "clear" ? 0 : undefined;
@@ -443,6 +443,7 @@ export class MissionState {
 			at: Date.now(),
 			reviewStatus: status,
 			reviewRunId: input.runId,
+			reviewAdmissionId: input.admissionId,
 			reviewReason: input.reason,
 			reviewSkippedReason: input.skippedReason?.trim(),
 			reviewSuggestedVerdict: input.suggestedVerdict,
@@ -481,6 +482,7 @@ export class MissionState {
 	completionEvent(candidateId: string, completionId: string, audit: Array<{ requirementIndex: number; evidence: string }> | undefined, reason?: string, summary?: string): MissionEvent {
 		const mission = this.requireActive();
 		if (mission.completionLatchCandidateId !== candidateId) throw new Error("Mission completion is not authorized for this candidate.");
+		if (mission.completionLatchReviewStatus !== (mission.reviewStatus ?? "not_required")) throw new Error("Mission completion authorization does not match the current review disposition.");
 		return { kind: "completed", missionId: mission.missionId, generation: mission.generation, at: Date.now(), status: "complete", reason, summary, reviewCandidateId: candidateId, expectedObjectiveVersion: mission.objectiveVersion ?? 1, completionId, completionEffectsStatus: "pending", completionAudit: audit };
 	}
 
@@ -592,6 +594,7 @@ export class MissionState {
 				wallDeadlineAt: event.wallDeadlineAt ?? undefined,
 				reviewStatus: event.reviewStatus ?? "not_required",
 				reviewRunId: event.reviewRunId,
+				reviewAdmissionId: event.reviewAdmissionId,
 				reviewReason: event.reviewReason,
 				reviewSkippedReason: event.reviewSkippedReason,
 				admittedWorktreeFingerprint: event.admittedWorktreeFingerprint,
@@ -605,6 +608,7 @@ export class MissionState {
 				reviewCorrectionCount: event.reviewCorrectionCount ?? 0,
 				reviewCorrectionLimit: event.reviewCorrectionLimit ?? DEFAULT_REVIEW_CORRECTION_LIMIT,
 				completionLatchCandidateId: event.completionLatchCandidateId,
+				completionLatchReviewStatus: event.completionLatchReviewStatus,
 				completionId: event.completionId,
 				completionEffectsStatus: event.completionEffectsStatus,
 				blockerFingerprint: event.blockerFingerprint,
@@ -641,6 +645,7 @@ export class MissionState {
 			this.current.objectiveVersion = event.objectiveVersion ?? (this.current.objectiveVersion ?? 1) + 1;
 			this.current.reviewCandidateId = undefined;
 			this.current.reviewCandidateObjectiveVersion = undefined;
+			this.current.reviewAdmissionId = undefined;
 			this.current.reviewAdjudicatedCandidateId = undefined;
 			this.current.reviewAdjudicatedVerdict = undefined;
 			this.current.reviewCorrectionCount = 0;
@@ -650,8 +655,13 @@ export class MissionState {
 		if (event.reviewStatus) this.current.reviewStatus = event.reviewStatus;
 		// A review that reaches the reviewer or clears wipes the transient failure streak, so weeks-apart intermittent reviewer failures cannot accumulate into a permanent three-strike block.
 		if (event.reviewStatus === "awaiting_adjudication" || event.reviewStatus === "clear") this.reviewFailureCount = 0;
-		if (event.kind === "review_changed") this.current.reviewRunId = event.reviewRunId;
-		else if (event.reviewRunId !== undefined) this.current.reviewRunId = event.reviewRunId;
+		if (event.kind === "review_changed") {
+			this.current.reviewRunId = event.reviewRunId;
+			this.current.reviewAdmissionId = event.reviewAdmissionId;
+		} else {
+			if (event.reviewRunId !== undefined) this.current.reviewRunId = event.reviewRunId;
+			if (event.reviewAdmissionId !== undefined) this.current.reviewAdmissionId = event.reviewAdmissionId;
+		}
 		if (event.reviewReason !== undefined) this.current.reviewReason = event.reviewReason;
 		if (event.reviewSkippedReason !== undefined) this.current.reviewSkippedReason = event.reviewSkippedReason;
 		if (event.reviewSuggestedVerdict !== undefined) this.current.reviewSuggestedVerdict = event.reviewSuggestedVerdict;

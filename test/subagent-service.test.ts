@@ -52,6 +52,20 @@ describe("SubagentService", () => {
 		expect((modeled as { spec: { model?: string } }).spec.model).toBe("provider/model");
 	});
 
+	it("returns one durable run for repeated internal admission across service reload", async () => {
+		const { service, ctx, root, pi } = setup();
+		const first = await service.start({ agent: "reviewer", task: "Inspect.", admissionKey: "review_candidate_1", background: false }, ctx) as DelegateRun;
+		const repeated = await service.start({ agent: "reviewer", task: "Inspect again.", admissionKey: "review_candidate_1" }, ctx) as DelegateRun;
+		expect(repeated.spec.id).toBe(first.spec.id);
+		service.dispose();
+		const restoredService = new SubagentService(pi, new DelegateExecutor({ artifactsRoot: root }), root);
+		restoredService.setContext(ctx);
+		cleanup.push(() => restoredService.dispose());
+		const restored = await restoredService.start({ agent: "reviewer", task: "Recover.", admissionKey: "review_candidate_1" }, ctx) as DelegateRun;
+		expect(restored.spec.id).toBe(first.spec.id);
+		expect(readdirSync(path.join(root, "runs"))).toHaveLength(1);
+	});
+
 	it("consumes a terminal event when the parent explicitly collects the result", async () => {
 		const { service, ctx, branch } = setup();
 		const run = await service.start({ agent: "explorer", task: "Inspect." }, ctx) as DelegateRun;
@@ -150,6 +164,22 @@ describe("SubagentService", () => {
 		await restored.restore(ctx);
 		expect(restoreRoot).toHaveBeenCalledWith(childRoot, parentSessionFile);
 		expect(restored.list().runs.some((candidate) => candidate.spec.id === run.spec.id)).toBe(true);
+	});
+
+	it("indexes an alternate run root before launch dispatch", async () => {
+		const parentRoot = mkdtempSync(path.join(tmpdir(), "subagent-preindex-parent-"));
+		const childRoot = mkdtempSync(path.join(tmpdir(), "subagent-preindex-child-"));
+		const parentCwd = mkdtempSync(path.join(tmpdir(), "subagent-preindex-parent-cwd-"));
+		const childCwd = mkdtempSync(path.join(tmpdir(), "subagent-preindex-child-cwd-"));
+		const parentSessionFile = "/tmp/preindex-parent.jsonl";
+		const pi = { appendEntry: () => undefined } as unknown as ExtensionAPI;
+		const ctx = { cwd: parentCwd, sessionManager: { getSessionFile: () => parentSessionFile, getBranch: () => [] }, isIdle: () => false, hasPendingMessages: () => false } as unknown as ExtensionContext;
+		const executor = new DelegateExecutor({ artifactsRoot: childRoot, command: () => { throw new Error("synthetic pre-dispatch failure"); } });
+		const service = new SubagentService(pi, executor, parentRoot);
+		cleanup.push(() => service.dispose(), ...[parentRoot, childRoot, parentCwd, childCwd].map((root) => () => rmSync(root, { recursive: true, force: true })));
+		await expect(service.start({ agent: "reviewer", task: "Inspect.", cwd: childCwd, admissionKey: "review_preindex" }, ctx)).rejects.toThrow("synthetic pre-dispatch failure");
+		const indexFile = path.join(parentRoot, "roots", readdirSync(path.join(parentRoot, "roots"))[0]!);
+		expect(JSON.parse(readFileSync(indexFile, "utf8")).roots).toEqual([childRoot]);
 	});
 
 	it("does not adopt legacy groups without exact parent-session ownership", async () => {

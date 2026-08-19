@@ -244,13 +244,14 @@ describe("DelegateExecutor", () => {
 			writeFileSync(path.join(spec.sessionDir, `${spec.id}.jsonl`), "{}\n");
 			return completedScript(spec.context);
 		});
-		const first = await executor.start(input());
+		const first = await executor.start(input({ admissionKey: "review-original" }));
 		const resumed = await executor.resume({ runId: first.spec.id, task: "Review the fixes.", detach: false, wallMs: 2_000, turns: 2 });
 
 		expect(resumed.spec.id).not.toBe(first.spec.id);
 		expect(resumed.spec.agentId).toBe(first.spec.agentId);
 		expect(resumed.spec.personaVersion).toBe(first.spec.personaVersion);
 		expect(resumed.spec.context).toBe("resume");
+		expect(resumed.spec.admissionKey).toBeUndefined();
 		expect(resumed.runtime.output).toBe("resume");
 		expect(readFileSync(resumed.spec.systemPromptPath, "utf8")).toContain("Provider-turn limit: 2");
 	});

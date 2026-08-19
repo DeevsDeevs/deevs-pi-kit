@@ -1,4 +1,4 @@
-import { createHash, type Hash } from "node:crypto";
+import { createHash, randomUUID, type Hash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, readFile, readlink, realpath, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
@@ -72,7 +72,7 @@ export class MissionRuntime {
 	onResumed(ctx: ExtensionContext): void {
 		this.restore(ctx);
 		const mission = this.state.read();
-		if (mission?.reviewStatus === "starting") this.state.append(this.pi, this.state.reviewEvent("due", { reason: "explicit resume authorized retry after ambiguous reviewer admission", candidateId: mission.reviewCandidateId }));
+		if (mission?.reviewStatus === "starting") this.state.append(this.pi, this.state.reviewEvent("due", { reason: "explicit resume authorized reconciliation of ambiguous reviewer admission", candidateId: mission.reviewCandidateId, admissionId: mission.reviewAdmissionId }));
 		this.updateStatus();
 		this.scheduleRecovery(ctx);
 	}
@@ -110,6 +110,8 @@ export class MissionRuntime {
 		const fingerprint = await worktreeFingerprint(this.pi, ctx.cwd, mission);
 		if (!fingerprint) throw new Error("Mission completion authorization requires an exact workspace fingerprint.");
 		const candidateId = reviewCandidateId(mission, fingerprint);
+		if (reviewStatus === "clear" && (mission.reviewWorktreeFingerprint !== fingerprint || mission.reviewAdjudicatedCandidateId !== candidateId || mission.reviewAdjudicatedVerdict !== "clear")) throw new Error("Mission completion authorization requires review convergence for the current candidate.");
+		if ((reviewStatus === "skipped" || reviewStatus === "not_required") && mission.admittedWorktreeFingerprint !== fingerprint) throw new Error("Mission completion authorization requires the converged disposition to match the current workspace fingerprint.");
 		this.state.append(this.pi, this.state.completionLatchEvent(candidateId, reviewStatus));
 		return candidateId;
 	}
@@ -187,7 +189,7 @@ export class MissionRuntime {
 			if (mission.completionLatchCandidateId !== candidateId) {
 				if (mission.completionLatchCandidateId) this.state.append(this.pi, this.state.completionLatchClearedEvent());
 				blockers.push("Mission completion is not user-authorized for the current objective/scope/fingerprint candidate.");
-			}
+			} else if (mission.completionLatchReviewStatus !== (mission.reviewStatus ?? "not_required")) blockers.push("Mission completion authorization does not match the current converged review disposition.");
 			if (mission.reviewStatus === "clear" && (fingerprint !== mission.reviewWorktreeFingerprint || mission.reviewAdjudicatedCandidateId !== candidateId || mission.reviewAdjudicatedVerdict !== "clear")) blockers.push("Worktree differs from the severity-adjudicated reviewed candidate.");
 			else if (mission.reviewStatus === "not_required" || mission.reviewStatus === "skipped") {
 				if (!mission.admittedWorktreeFingerprint) blockers.push("No durable admitted workspace fingerprint is recorded.");
@@ -458,8 +460,11 @@ export class MissionRuntime {
 		const mission = this.state.read();
 		if (!mission || mission.status !== "active" || mission.reviewStatus !== "due") return false;
 		try {
+			const service = getSubagentService();
+			if (service.restorationComplete?.() === false) return true;
 			const active = this.activeSubagentWork();
-			if (active.runs.length || active.groupIds.length || active.launchReservations || this.activeJobs().length) return true;
+			const recoveredRun = mission.reviewAdmissionId && active.runs.length === 1 && active.runs[0]?.spec.admissionKey === mission.reviewAdmissionId;
+			if ((active.runs.length && !recoveredRun) || active.groupIds.length || active.launchReservations || this.activeJobs().length) return true;
 		} catch { return true; }
 		await this.startReview(ctx, mission);
 		return true;
@@ -479,8 +484,14 @@ export class MissionRuntime {
 			return;
 		}
 		try {
+			if (service.restorationComplete?.() === false) {
+				this.scheduleRecovery(ctx, 1_000);
+				return;
+			}
 			const listed = service.list();
-			if (listed.runs.some((run) => ["starting", "running", "stopping"].includes(run.runtime.status)) || listed.groups.some((group) => group.status === "running") || (service.activeLaunchReservations?.() ?? 0) || this.activeJobs().length) return;
+			const activeRuns = listed.runs.filter((run) => ["starting", "running", "stopping"].includes(run.runtime.status));
+			const recoveredRun = mission.reviewAdmissionId && activeRuns.length === 1 && activeRuns[0]?.spec.admissionKey === mission.reviewAdmissionId;
+			if ((activeRuns.length && !recoveredRun) || listed.groups.some((group) => group.status === "running") || (service.activeLaunchReservations?.() ?? 0) || this.activeJobs().length) return;
 		} catch (error) {
 			this.failReview(mission, `review admission failed: ${error instanceof Error ? error.message : String(error)}`);
 			this.reviewAdmissionRetry = this.state.read()?.reviewStatus === "due";
@@ -513,7 +524,17 @@ export class MissionRuntime {
 		const reviewCwd = workspace.length === 1 ? workspace[0]!.root : ctx.cwd;
 		const paths = reviewPaths(reviewCwd, workspace);
 		const scope = `Review only these typed Mission workspace paths: ${paths.join(", ")}.`;
-		this.state.append(this.pi, this.state.reviewEvent("starting", { reason: current.reviewReason, worktreeFingerprint: reviewWorktreeFingerprint, candidateId }));
+		const sameReservedCandidate = current.reviewCandidateId === candidateId && current.reviewWorktreeFingerprint === reviewWorktreeFingerprint;
+		if (current.reviewAdmissionId && !sameReservedCandidate) {
+			if (service.restorationComplete?.() === false) {
+				this.scheduleRecovery(ctx, 1_000);
+				return;
+			}
+			const prior = service.list().runs.find((run) => run.spec.admissionKey === current.reviewAdmissionId);
+			if (prior && ["starting", "running", "stopping"].includes(prior.runtime.status)) return;
+		}
+		const admissionId = sameReservedCandidate && current.reviewAdmissionId ? current.reviewAdmissionId : `review_${randomUUID()}`;
+		this.state.append(this.pi, this.state.reviewEvent("starting", { reason: current.reviewReason, worktreeFingerprint: reviewWorktreeFingerprint, candidateId, admissionId }));
 		this.reviewAdmissionInFlight = true;
 		let run;
 		try {
@@ -524,6 +545,7 @@ export class MissionRuntime {
 				context: "fresh",
 				allowWrite: false,
 				deliverTerminal: false,
+				admissionKey: admissionId,
 				background: true,
 				wallMs: 10 * 60_000,
 			}, ctx);
@@ -545,7 +567,7 @@ export class MissionRuntime {
 			return;
 		}
 		try {
-			this.state.append(this.pi, this.state.reviewEvent("running", { runId: run.spec.id, reason: current.reviewReason, worktreeFingerprint: reviewWorktreeFingerprint, candidateId }));
+			this.state.append(this.pi, this.state.reviewEvent("running", { runId: run.spec.id, reason: current.reviewReason, worktreeFingerprint: reviewWorktreeFingerprint, candidateId, admissionId }));
 			this.updateStatus();
 			let boundRun = run;
 			try {
@@ -564,9 +586,14 @@ export class MissionRuntime {
 		// Only an active Mission may transition review state; reviewEvent()/failReview() call requireActive() and would throw on a paused/blocked Mission whose reviewer settled after the pause.
 		if (!mission?.reviewRunId || mission.reviewStatus !== "running" || mission.status !== "active") return false;
 		let run: DelegateRun;
+		const service = getSubagentService();
 		try {
-			run = getSubagentService().executor.get(mission.reviewRunId);
+			run = service.executor.get(mission.reviewRunId);
 		} catch (error) {
+			if (service.restorationComplete?.() === false) {
+				if (this.ctx) this.scheduleRecovery(this.ctx, 1_000);
+				return false;
+			}
 			this.failReview(mission, `independent review run lost: ${error instanceof Error ? error.message : String(error)}`);
 			return true;
 		}

@@ -426,12 +426,14 @@ describe("Mission runtime", () => {
 	it("requires explicit resume after ambiguous starting admission and re-enters review recovery", async () => {
 		const test = await setup();
 		const candidateId = await test.runtime.completionCandidateId(test.ctx);
-		test.state.append(test.pi, test.state.reviewEvent("starting", { candidateId, worktreeFingerprint: expectedFingerprint() }));
+		test.state.append(test.pi, test.state.reviewEvent("starting", { candidateId, worktreeFingerprint: expectedFingerprint(), admissionId: "review-ambiguous" }));
 		await test.emit("session_start", { reason: "resume" });
 		await vi.waitFor(() => expect(test.state.readAny()?.status).toBe("blocked"), { timeout: 500 });
+		let recoveredAdmissionKey: string | undefined;
+		const recoveredRun = { spec: { id: "recovered-review", admissionKey: "review-ambiguous" }, runtime: { status: "running" } } as DelegateRun;
 		const service = {
-			list: () => ({ runs: [], groups: [] }),
-			start: async () => ({ spec: { id: "recovered-review" }, runtime: { status: "running" } }) as DelegateRun,
+			list: () => ({ runs: [recoveredRun], groups: [] }),
+			start: async (input: { admissionKey?: string }) => { recoveredAdmissionKey = input.admissionKey; return recoveredRun; },
 			executor: { onChange: () => () => undefined },
 		} as unknown as SubagentService;
 		setSubagentService(service);
@@ -439,7 +441,41 @@ describe("Mission runtime", () => {
 		test.runtime.onResumed(test.ctx);
 		await vi.waitFor(() => expect(test.state.read()?.reviewRunId).toBe("recovered-review"), { timeout: 500 });
 		expect(test.state.read()?.reviewStatus).toBe("running");
+		expect(recoveredAdmissionKey).toBe("review-ambiguous");
 		clearSubagentService(service);
+	});
+
+	it("rotates an ambiguous admission only after the old candidate's run settles", async () => {
+		let fingerprint = "candidate-a";
+		const test = await setup({ fingerprint: () => fingerprint });
+		const candidateA = await test.runtime.completionCandidateId(test.ctx);
+		const oldRun = { spec: { id: "old-review", admissionKey: "review-old" }, runtime: { status: "running" } } as DelegateRun;
+		test.state.append(test.pi, test.state.reviewEvent("starting", { candidateId: candidateA, worktreeFingerprint: expectedFingerprint(fingerprint), admissionId: "review-old" }));
+		await test.emit("session_start", { reason: "resume" });
+		await vi.waitFor(() => expect(test.state.readAny()?.status).toBe("blocked"), { timeout: 500 });
+		fingerprint = "candidate-b";
+		let launches = 0;
+		let newAdmissionKey: string | undefined;
+		const service = {
+			list: () => ({ runs: [oldRun], groups: [] }),
+			start: async (input: { admissionKey?: string }) => { launches++; newAdmissionKey = input.admissionKey; return { spec: { id: "new-review" }, runtime: { status: "running" } } as DelegateRun; },
+			executor: { get: () => undefined, onChange: () => () => undefined },
+		} as unknown as SubagentService;
+		setSubagentService(service);
+		try {
+			await resumeMission(test.pi, test.state, "user inspected ambiguous launch");
+			test.runtime.onResumed(test.ctx);
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			expect(launches).toBe(0);
+			oldRun.runtime.status = "completed";
+			const internal = test.runtime as unknown as { startReview: (ctx: ExtensionContext, mission: MissionCurrent) => Promise<void> };
+			await internal.startReview(test.ctx, test.state.read()!);
+			expect(launches).toBe(1);
+			expect(newAdmissionKey).not.toBe("review-old");
+			expect(test.state.read()).toMatchObject({ reviewStatus: "running", reviewRunId: "new-review", reviewAdmissionId: newAdmissionKey });
+		} finally {
+			clearSubagentService(service);
+		}
 	});
 
 	it.each([
@@ -484,6 +520,28 @@ describe("Mission runtime", () => {
 		const approved = { ...test.ctx, hasUI: true, ui: { ...test.ctx.ui, confirm: async () => true } } as unknown as ExtensionContext;
 		await progressTool!.execute("call", { summary: "continue", reviewContinue: true, reviewContinueReason: "user wants more" }, undefined, undefined, approved);
 		expect(test.state.read()).toMatchObject({ status: "active", reviewCorrectionCount: 4, reviewCorrectionLimit: 6 });
+	});
+
+	it("rejects completion authorization when a skipped disposition belongs to an older fingerprint", async () => {
+		let fingerprint = "waived";
+		const test = await setup({ fingerprint: () => fingerprint });
+		const admitted = expectedFingerprint(fingerprint);
+		test.state.append(test.pi, test.state.workspaceFingerprintEvent(admitted));
+		test.state.append(test.pi, test.state.reviewEvent("skipped", { worktreeFingerprint: admitted, skippedReason: "trusted waiver" }));
+		fingerprint = "changed";
+		await expect(test.runtime.authorizeCompletion(test.ctx)).rejects.toThrow("converged disposition to match the current workspace fingerprint");
+		expect(test.state.read()?.completionLatchCandidateId).toBeUndefined();
+	});
+
+	it("requires fresh completion authorization when review disposition changes for the same candidate", async () => {
+		const test = await setup();
+		const fingerprint = expectedFingerprint();
+		const candidateId = await test.runtime.completionCandidateId(test.ctx);
+		test.state.append(test.pi, test.state.reviewEvent("clear", { candidateId, worktreeFingerprint: fingerprint }));
+		await test.runtime.authorizeCompletion(test.ctx);
+		test.state.append(test.pi, test.state.reviewEvent("skipped", { candidateId, worktreeFingerprint: fingerprint, skippedReason: "new waiver" }));
+		expect(await test.runtime.validateCompletion({ audit: [{ requirementIndex: 0, evidence: "validated" }] }, test.ctx)).toContain("Mission completion authorization does not match the current converged review disposition.");
+		expect(() => test.state.completionEvent(candidateId!, "completion-stale-latch", [{ requirementIndex: 0, evidence: "validated" }])).toThrow("does not match the current review disposition");
 	});
 
 	it("latches completion to one candidate and repairs pending effects exactly once", async () => {
@@ -541,17 +599,50 @@ describe("Mission runtime", () => {
 		}
 	});
 
-	it("re-admits a lost reviewer without a parent polling turn", async () => {
+	it("defers legacy due admission until Subagent restoration completes", async () => {
 		const test = await setup();
+		let restored = false;
+		let launches = 0;
+		const service = {
+			list: () => ({ runs: [], groups: [] }),
+			start: async () => { launches++; return { spec: { id: "legacy-due-review" }, runtime: { status: "running" } } as DelegateRun; },
+			restorationComplete: () => restored,
+			executor: { get: () => undefined, onChange: () => () => undefined },
+		} as unknown as SubagentService;
+		setSubagentService(service);
+		try {
+			test.state.append(test.pi, test.state.reviewEvent("due", { reason: "legacy due without admission key" }));
+			const internal = test.runtime as unknown as { startReview: (ctx: ExtensionContext, mission: MissionCurrent) => Promise<void> };
+			await internal.startReview(test.ctx, test.state.read()!);
+			expect(launches).toBe(0);
+			expect(test.state.read()?.reviewStatus).toBe("due");
+			restored = true;
+			await internal.startReview(test.ctx, test.state.read()!);
+			expect(launches).toBe(1);
+			expect(test.state.read()).toMatchObject({ reviewStatus: "running", reviewRunId: "legacy-due-review" });
+		} finally {
+			clearSubagentService(service);
+		}
+	});
+
+	it("waits for Subagent restoration before re-admitting a lost reviewer", async () => {
+		const test = await setup();
+		let restored = false;
 		const service = {
 			list: () => ({ runs: [], groups: [] }),
 			start: async () => ({ spec: { id: "replacement-review" }, runtime: { status: "running" } }) as DelegateRun,
+			restorationComplete: () => restored,
 			executor: { get: () => { throw new Error("Unknown delegate run"); }, onChange: () => () => undefined },
 		} as unknown as SubagentService;
 		setSubagentService(service);
 		try {
 			test.state.append(test.pi, test.state.reviewEvent("running", { runId: "missing-review", reason: "reviewing" }));
 			await test.emit("session_start", { reason: "resume" });
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			expect(test.state.read()).toMatchObject({ reviewStatus: "running", reviewRunId: "missing-review" });
+			restored = true;
+			const internal = test.runtime as unknown as { recover: (ctx: ExtensionContext) => Promise<void> };
+			await internal.recover(test.ctx);
 			await vi.waitFor(() => expect(test.state.read()?.reviewRunId).toBe("replacement-review"), { timeout: 500 });
 			expect(test.state.read()?.reviewStatus).toBe("running");
 			expect(test.state.read()?.reviewReason).toContain("independent review run lost");

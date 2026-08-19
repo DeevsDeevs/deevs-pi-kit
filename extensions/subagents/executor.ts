@@ -46,6 +46,10 @@ export class DelegateExecutor {
 		return () => this.events.off("change", listener);
 	}
 
+	rootFor(cwd: string): string {
+		return this.options.artifactsRoot ?? defaultDelegateRoot(cwd);
+	}
+
 	list(includeTerminal = true): DelegateRun[] {
 		return [...this.runs.values()].filter((run) => includeTerminal || !TERMINAL.has(run.runtime.status)).sort((a, b) => b.runtime.startedAt - a.runtime.startedAt);
 	}
@@ -97,6 +101,7 @@ export class DelegateExecutor {
 			context: input.context ?? "fresh",
 			forkSessionFile: input.forkSessionFile,
 			parentSessionFile: input.parentSessionFile,
+			admissionKey: input.admissionKey,
 			createdAt: now,
 			limits: limitsFrom(input),
 			...paths,
@@ -124,6 +129,7 @@ export class DelegateExecutor {
 			generation: randomUUID(),
 			task: input.task,
 			context: "resume",
+			admissionKey: undefined,
 			forkSessionFile: undefined,
 			resumeSessionFile: sessionFile,
 			createdAt: now,
