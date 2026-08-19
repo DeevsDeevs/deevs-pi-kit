@@ -47,6 +47,8 @@ export interface SubagentStartRequest {
 	failFast?: boolean;
 	/** Internal: record terminal evidence but suppress the separate parent wake. */
 	deliverTerminal?: boolean;
+	/** Internal: return the existing durable run when an ambiguous launch is retried. */
+	admissionKey?: string;
 }
 
 export interface SubagentWaitRequest {
@@ -84,6 +86,7 @@ export class SubagentService {
 	private readonly terminalSeen = new Set<string>();
 	private readonly groupFills = new Map<string, Promise<void>>();
 	private startingRuns = 0;
+	private restoredParentSessionFile?: string;
 	private capacityVersion = 0;
 	private readonly capacityWaiters = new Set<() => void>();
 	private ctx?: ExtensionContext;
@@ -151,7 +154,7 @@ export class SubagentService {
 			turns: request.turns,
 			tokens: request.tokens,
 			costUsd: request.costUsd,
-		}, ctx, request.background !== false);
+		}, ctx, request.background !== false, request.admissionKey);
 	}
 
 	async wait(request: SubagentWaitRequest, signal?: AbortSignal): Promise<Array<DelegateRun | SubagentGroup>> {
@@ -189,6 +192,10 @@ export class SubagentService {
 		return this.startingRuns;
 	}
 
+	restorationComplete(): boolean {
+		return this.restoredParentSessionFile !== undefined;
+	}
+
 	clearTerminal(id?: string): number {
 		let cleared = 0;
 		const claimant = this.ctx?.sessionManager.getSessionFile() ?? "subagent-service";
@@ -216,6 +223,7 @@ export class SubagentService {
 
 	async restore(ctx: ExtensionContext): Promise<void> {
 		this.ctx = ctx;
+		this.restoredParentSessionFile = undefined;
 		const parentSessionFile = ctx.sessionManager.getSessionFile();
 		for (const run of this.executor.list()) if (!parentSessionFile || run.spec.parentSessionFile !== parentSessionFile) {
 			this.executor.detach(run.spec.id);
@@ -244,6 +252,7 @@ export class SubagentService {
 			else this.emitGroupTerminal(group);
 		}
 		this.pruneTerminal();
+		this.restoredParentSessionFile = parentSessionFile;
 	}
 
 	dispose(): void {
@@ -251,11 +260,22 @@ export class SubagentService {
 		this.executor.dispose();
 	}
 
-	private async startTask(task: SubagentTaskInput, ctx: ExtensionContext, background: boolean): Promise<DelegateRun> {
+	private async startTask(task: SubagentTaskInput, ctx: ExtensionContext, background: boolean, admissionKey?: string): Promise<DelegateRun> {
 		const agents = loadBuiltinAgents();
 		const persona = findAgent(agents, task.agent);
 		if (!persona || persona.disabled) throw new Error(`Unknown or disabled persona: ${task.agent}`);
 		const cwd = path.resolve(task.cwd ?? ctx.cwd);
+		const parentSessionFile = ctx.sessionManager.getSessionFile();
+		if (admissionKey) {
+			if (!/^[A-Za-z0-9_-]{1,200}$/.test(admissionKey)) throw new Error("Invalid internal Subagent admission key.");
+			await this.executor.restore(cwd, parentSessionFile);
+			const existing = this.executor.list().find((run) => run.spec.admissionKey === admissionKey && run.spec.cwd === cwd && run.spec.parentSessionFile === parentSessionFile);
+			if (existing) {
+				this.recordRunRoot(existing, ctx);
+				return existing;
+			}
+		}
+		this.recordRunRootPath(this.executor.rootFor(cwd), ctx);
 		const settings = await loadAgentsSettings(cwd);
 		const model = task.model ?? settings.modelsByAgent[persona.name] ?? persona.model ?? settings.defaultModel;
 		if (model && settings.allowedModels.length && !settings.allowedModels.includes(model)) throw new Error(`Model override not allowed: ${model}`);
@@ -269,7 +289,8 @@ export class SubagentService {
 				cwd,
 				context: task.context ?? "fresh",
 				forkSessionFile: task.context === "fork" ? ctx.sessionManager.getSessionFile() : undefined,
-				parentSessionFile: ctx.sessionManager.getSessionFile(),
+				parentSessionFile,
+				admissionKey,
 				model,
 				tools: task.tools,
 				allowWrite: task.allowWrite === true,
@@ -530,10 +551,13 @@ export class SubagentService {
 	}
 
 	private recordRunRoot(run: DelegateRun, ctx: ExtensionContext): void {
+		this.recordRunRootPath(path.dirname(path.dirname(run.spec.artifactsDir)), ctx);
+	}
+
+	private recordRunRootPath(runRoot: string, ctx: ExtensionContext): void {
 		const parentSessionFile = ctx.sessionManager.getSessionFile();
 		if (!parentSessionFile) throw new Error("Subagent runs require a durable parent session file.");
 		const parentRoot = this.root(ctx.cwd);
-		const runRoot = path.dirname(path.dirname(run.spec.artifactsDir));
 		if (runRoot === parentRoot) return;
 		const target = this.runRootsPath(parentRoot, parentSessionFile);
 		const roots = new Set(this.readRunRoots(parentRoot, parentSessionFile));

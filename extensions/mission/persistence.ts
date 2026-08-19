@@ -234,7 +234,7 @@ function validateMission(value: Record<string, unknown>, cwd: string, slug: stri
 	for (const key of ["tokenBudget", "turnBudget", "wallDeadlineAt", "objectiveVersion", "blockerCount", "turnCount", "reviewCandidateObjectiveVersion", "reviewBlockingFindingCount", "reviewBacklogFindingCount", "reviewCorrectionCount", "reviewCorrectionLimit"] as const) {
 		if (value[key] !== undefined) (mission as unknown as Record<string, unknown>)[key] = boundedInteger(value[key], key, 0, Number.MAX_SAFE_INTEGER);
 	}
-	for (const key of ["lastReason", "lastSummary", "generation", "reviewRunId", "reviewReason", "reviewSkippedReason", "reviewSuggestedVerdict", "reviewWorktreeFingerprint", "admittedWorktreeFingerprint", "reviewCandidateId", "reviewAdjudicatedCandidateId", "reviewAdjudicatedVerdict", "reviewHighestSeverity", "completionLatchCandidateId", "completionLatchReviewStatus", "completionId", "completionEffectsStatus", "blockerFingerprint"] as const) {
+	for (const key of ["lastReason", "lastSummary", "generation", "reviewRunId", "reviewAdmissionId", "reviewReason", "reviewSkippedReason", "reviewSuggestedVerdict", "reviewWorktreeFingerprint", "admittedWorktreeFingerprint", "reviewCandidateId", "reviewAdjudicatedCandidateId", "reviewAdjudicatedVerdict", "reviewHighestSeverity", "completionLatchCandidateId", "completionLatchReviewStatus", "completionId", "completionEffectsStatus", "blockerFingerprint"] as const) {
 		if (value[key] !== undefined) (mission as unknown as Record<string, unknown>)[key] = text(value[key], key, 20_000);
 	}
 	if (mission.reviewAdjudicatedVerdict !== undefined && mission.reviewAdjudicatedVerdict !== "clear" && mission.reviewAdjudicatedVerdict !== "changes_requested") throw new Error("Invalid Mission adjudicated review verdict.");

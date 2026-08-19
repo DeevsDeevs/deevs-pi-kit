@@ -35,6 +35,8 @@ export interface DelegateRunSpec {
 	createdAt: number;
 	/** Exact parent Pi session that owns this durable run. Legacy records may omit it. */
 	parentSessionFile?: string;
+	/** Internal idempotency key for one durable launch admission. */
+	admissionKey?: string;
 	limits: {
 		wallMs: number;
 		turns?: number;
@@ -95,6 +97,7 @@ export interface DelegateStartInput {
 	context?: "fresh" | "fork";
 	forkSessionFile?: string;
 	parentSessionFile?: string;
+	admissionKey?: string;
 	detach?: boolean;
 	wallMs?: number;
 	turns?: number;

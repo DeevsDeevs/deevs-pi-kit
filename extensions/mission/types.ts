@@ -59,6 +59,7 @@ export interface MissionEvent {
 	wallDeadlineAt?: number | null;
 	reviewStatus?: MissionReviewStatus;
 	reviewRunId?: string;
+	reviewAdmissionId?: string;
 	reviewReason?: string;
 	reviewSkippedReason?: string;
 	reviewSuggestedVerdict?: MissionReviewVerdict | "unknown";
@@ -127,6 +128,7 @@ export interface MissionCurrent {
 	wallDeadlineAt?: number;
 	reviewStatus?: MissionReviewStatus;
 	reviewRunId?: string;
+	reviewAdmissionId?: string;
 	reviewReason?: string;
 	reviewSkippedReason?: string;
 	reviewSuggestedVerdict?: MissionReviewVerdict | "unknown";
