@@ -10,7 +10,7 @@ import type { DelegateRun } from "../subagents/runtime-types.ts";
 import { runtimeEvents } from "../shared/runtime-events.ts";
 import { MissionState } from "./state.ts";
 import { missionRoot } from "./artifacts.ts";
-import type { MissionCompleteInput, MissionCurrent, MissionProgressInput, MissionUpdateInput } from "./types.ts";
+import type { MissionCompleteInput, MissionCurrent, MissionProgressInput, MissionReviewSeverity, MissionReviewVerdict, MissionUpdateInput } from "./types.ts";
 
 interface MissionAgentMessage {
 	role?: string;
@@ -30,13 +30,25 @@ export class MissionRuntime {
 	private worktreeBeforeTurn?: string;
 	private recoveryTimer?: NodeJS.Timeout;
 	private reviewAdmissionRetry = false;
+	private reviewAdmissionInFlight = false;
 	private unsubscribeReview?: () => void;
 
-	constructor(private readonly pi: ExtensionAPI, readonly state: MissionState) {}
+	private readonly pi: ExtensionAPI;
+	readonly state: MissionState;
+
+	constructor(pi: ExtensionAPI, state: MissionState) {
+		this.pi = pi;
+		this.state = state;
+	}
 
 	restore(ctx: ExtensionContext): void {
 		this.ctx = ctx;
 		this.state.loadFromSession(ctx);
+		const mission = this.state.read();
+		if (mission?.reviewStatus === "clear" && (!mission.reviewCandidateId || !mission.reviewAdjudicatedCandidateId || mission.reviewAdjudicatedVerdict !== "clear")) {
+			if (mission.completionLatchCandidateId) this.state.append(this.pi, this.state.completionLatchClearedEvent());
+			this.state.append(this.pi, this.state.reviewEvent("due", { reason: "Legacy clear review lacks typed candidate metadata and must be reviewed again." }));
+		}
 		this.updateStatus();
 	}
 
@@ -57,6 +69,14 @@ export class MissionRuntime {
 		void this.maybeContinue(ctx);
 	}
 
+	onResumed(ctx: ExtensionContext): void {
+		this.restore(ctx);
+		const mission = this.state.read();
+		if (mission?.reviewStatus === "starting") this.state.append(this.pi, this.state.reviewEvent("due", { reason: "explicit resume authorized retry after ambiguous reviewer admission", candidateId: mission.reviewCandidateId }));
+		this.updateStatus();
+		this.scheduleRecovery(ctx);
+	}
+
 	onProgress(input: MissionProgressInput, ctx: ExtensionContext): void {
 		this.restore(ctx);
 		if (input.reviewVerdict) {
@@ -65,8 +85,12 @@ export class MissionRuntime {
 				throw new Error("Review adjudication requires the exact awaiting reviewer run id.");
 			}
 			if (!input.reviewReason?.trim()) throw new Error("Review adjudication requires an evidence-based reason.");
-			this.state.append(this.pi, this.state.reviewEvent(input.reviewVerdict, { runId: input.reviewRunId, reason: input.reviewReason }));
+			if (input.reviewVerdict !== mission.reviewSuggestedVerdict) throw new Error(`Review adjudication must match the severity-derived verdict: ${mission.reviewSuggestedVerdict ?? "unknown"}.`);
+			const adjudicated = this.state.append(this.pi, this.state.reviewEvent(input.reviewVerdict, { runId: input.reviewRunId, reason: input.reviewReason, candidateId: mission.reviewCandidateId }));
 			chainCheckpoints.current?.due(`Mission review adjudicated: ${input.reviewVerdict}`, "mission_milestone");
+			if (adjudicated?.reviewStatus === "changes_requested" && (adjudicated.reviewCorrectionCount ?? 0) > (adjudicated.reviewCorrectionLimit ?? 3)) {
+				this.state.append(this.pi, this.state.statusEvent("blocked", "review correction limit reached", `Correction cycle ${adjudicated.reviewCorrectionCount} requires explicit user authorization.`));
+			}
 		}
 		this.updateStatus();
 	}
@@ -76,13 +100,46 @@ export class MissionRuntime {
 		return worktreeFingerprint(this.pi, ctx.cwd, this.state.read());
 	}
 
+	async authorizeCompletion(ctx: ExtensionContext): Promise<string> {
+		this.restore(ctx);
+		const mission = this.state.read();
+		const reviewStatus = mission?.reviewStatus ?? "not_required";
+		if (!mission || (reviewStatus !== "clear" && reviewStatus !== "skipped" && reviewStatus !== "not_required")) throw new Error("Mission completion cannot be authorized before review convergence.");
+		const settlement = this.settlementBlockers();
+		if (settlement.length) throw new Error(`Mission completion cannot be authorized while child work is unsettled: ${settlement.join("; ")}`);
+		const fingerprint = await worktreeFingerprint(this.pi, ctx.cwd, mission);
+		if (!fingerprint) throw new Error("Mission completion authorization requires an exact workspace fingerprint.");
+		const candidateId = reviewCandidateId(mission, fingerprint);
+		this.state.append(this.pi, this.state.completionLatchEvent(candidateId, reviewStatus));
+		return candidateId;
+	}
+
+	async completionCandidateId(ctx: ExtensionContext): Promise<string | undefined> {
+		this.restore(ctx);
+		const mission = this.state.read();
+		const fingerprint = await worktreeFingerprint(this.pi, ctx.cwd, mission);
+		return mission && fingerprint ? reviewCandidateId(mission, fingerprint) : undefined;
+	}
+
+	authorizeReviewContinuation(ctx: ExtensionContext): void {
+		this.restore(ctx);
+		const mission = this.state.readAny();
+		if (!mission) throw new Error("No Mission exists on this branch.");
+		const nextLimit = (mission.reviewCorrectionLimit ?? 3) + 3;
+		this.state.append(this.pi, this.state.reviewPolicyEvent(nextLimit));
+		this.state.append(this.pi, this.state.statusEvent("active", "explicit user authorization extended the review correction limit"));
+		chainCheckpoints.current?.due(`Mission review correction limit extended to ${nextLimit}`, "mission_control");
+		this.updateStatus();
+		void this.maybeContinue(ctx);
+	}
+
 	onObjectiveUpdated(_input: MissionUpdateInput, ctx: ExtensionContext): void {
 		this.restore(ctx);
 		chainCheckpoints.current?.due("Mission objective updated", "mission_control");
 		this.updateStatus();
 	}
 
-	onCompleted(ctx: ExtensionContext, completedMission?: MissionCurrent): void {
+	onCompleted(ctx: ExtensionContext, completedMission?: MissionCurrent, completionId?: string): void {
 		if (completedMission) this.ctx = ctx;
 		else this.restore(ctx);
 		const mission = completedMission ?? this.state.readAny();
@@ -92,8 +149,8 @@ export class MissionRuntime {
 			type: "emit",
 			event: {
 				version: 1,
-				id: `terminal:${mission.missionId}:${mission.generation}`,
-				dedupeKey: `mission:${mission.missionId}:${mission.generation}:terminal`,
+				id: completionId ? `terminal:${completionId}` : `terminal:${mission.missionId}:${mission.generation}`,
+				dedupeKey: completionId ? `mission:${completionId}:terminal` : `mission:${mission.missionId}:${mission.generation}:terminal`,
 				source: { kind: "mission", id: mission.missionId, generation: mission.generation ?? `legacy-${mission.missionId}` },
 				type: "terminal",
 				status: mission.status === "ended" ? "cancelled" : "completed",
@@ -123,10 +180,15 @@ export class MissionRuntime {
 		const validation = this.state.readProgress().flatMap((progress) => progress.validation);
 		if (!validation.some((item) => item.exitCode === 0 && item.objectiveVersion === (mission.objectiveVersion ?? 1))) blockers.push("No successful structured validation is recorded for the current objectiveVersion.");
 		if (!["clear", "skipped", "not_required"].includes(mission.reviewStatus ?? "not_required")) blockers.push(`Independent review is ${mission.reviewStatus ?? "due"}.`);
-		if (mission.reviewStatus === "clear" || mission.reviewStatus === "not_required" || mission.reviewStatus === "skipped") {
-			const fingerprint = await worktreeFingerprint(this.pi, ctx.cwd, mission);
-			if (!fingerprint) blockers.push("Mission workspace could not be fingerprinted; ensure explicit Mission paths exist, stay inside cwd, and resolve to Git repositories.");
-			else if (mission.reviewStatus === "clear" && fingerprint !== mission.reviewWorktreeFingerprint) blockers.push("Worktree differs from the schema-validated reviewed snapshot.");
+		const fingerprint = await worktreeFingerprint(this.pi, ctx.cwd, mission);
+		if (!fingerprint) blockers.push("Mission workspace could not be fingerprinted; ensure explicit Mission paths exist, stay inside cwd, and resolve to Git repositories.");
+		else {
+			const candidateId = reviewCandidateId(mission, fingerprint);
+			if (mission.completionLatchCandidateId !== candidateId) {
+				if (mission.completionLatchCandidateId) this.state.append(this.pi, this.state.completionLatchClearedEvent());
+				blockers.push("Mission completion is not user-authorized for the current objective/scope/fingerprint candidate.");
+			}
+			if (mission.reviewStatus === "clear" && (fingerprint !== mission.reviewWorktreeFingerprint || mission.reviewAdjudicatedCandidateId !== candidateId || mission.reviewAdjudicatedVerdict !== "clear")) blockers.push("Worktree differs from the severity-adjudicated reviewed candidate.");
 			else if (mission.reviewStatus === "not_required" || mission.reviewStatus === "skipped") {
 				if (!mission.admittedWorktreeFingerprint) blockers.push("No durable admitted workspace fingerprint is recorded.");
 				else if (fingerprint !== mission.admittedWorktreeFingerprint) blockers.push("Worktree differs from the last durable admitted workspace fingerprint.");
@@ -192,6 +254,7 @@ export class MissionRuntime {
 			if (this.recoveryTimer) clearTimeout(this.recoveryTimer);
 			this.recoveryTimer = undefined;
 			this.reviewAdmissionRetry = false;
+			this.reviewAdmissionInFlight = false;
 			this.unsubscribeReview?.();
 			this.unsubscribeReview = undefined;
 			this.lastAgentMessages = [];
@@ -222,7 +285,8 @@ export class MissionRuntime {
 		}
 		const jobs = this.activeJobs();
 		if (jobs.length) blockers.push(`Jobs still running: ${jobs.map((job) => job.spec.id).join(", ")}`);
-		if (mission.reviewStatus === "running") blockers.push(`independent review still running${mission.reviewRunId ? `: ${mission.reviewRunId}` : ""}`);
+		if (mission.reviewStatus === "starting") blockers.push("independent review admission is starting");
+		else if (mission.reviewStatus === "running") blockers.push(`independent review still running${mission.reviewRunId ? `: ${mission.reviewRunId}` : ""}`);
 		else if (mission.reviewStatus === "due") blockers.push("independent review is due");
 		else if (mission.reviewStatus === "awaiting_adjudication") blockers.push(`independent review is ready for adjudication${mission.reviewRunId ? `: ${mission.reviewRunId}` : ""}`);
 		if (ctx.hasPendingMessages()) blockers.push("user messages are queued ahead of autonomous continuation");
@@ -241,7 +305,7 @@ export class MissionRuntime {
 			return;
 		}
 		// Block on "due" as well as "running": a continuation turn during the review-admission window would mutate the worktree while a reviewer is about to start, guaranteeing a review failure and wasting a strike.
-		if (this.state.budgetExceeded() || activeSubagents.runs.length || activeSubagents.groupIds.length || activeSubagents.launchReservations || this.activeJobs().length || mission.reviewStatus === "running" || mission.reviewStatus === "due") return;
+		if (this.state.budgetExceeded() || activeSubagents.runs.length || activeSubagents.groupIds.length || activeSubagents.launchReservations || this.activeJobs().length || mission.reviewStatus === "starting" || mission.reviewStatus === "running" || mission.reviewStatus === "due") return;
 		const event = this.state.continuedEvent();
 		this.state.append(this.pi, event);
 		this.continuationInFlight = true;
@@ -274,8 +338,14 @@ export class MissionRuntime {
 			this.restore(ctx);
 			await this.reconcileWorkspaceFingerprint(ctx);
 			this.bindReviewRecovery(ctx);
+			const recovering = this.state.read();
+			if (recovering?.reviewStatus === "starting" && !this.reviewAdmissionInFlight) {
+				this.state.append(this.pi, this.state.statusEvent("blocked", "review admission outcome is ambiguous", "A reserved reviewer may have started before the controller stopped; explicit user recovery is required."));
+				this.updateStatus();
+				return;
+			}
 			const reviewSettled = await this.reconcileReview();
-			const shouldAdmitReview = reviewSettled || this.reviewAdmissionRetry;
+			const shouldAdmitReview = reviewSettled || this.reviewAdmissionRetry || this.state.read()?.reviewStatus === "due";
 			this.reviewAdmissionRetry = false;
 			if (shouldAdmitReview && await this.admitDueReview(ctx)) return;
 			await this.maybeContinue(ctx);
@@ -291,7 +361,8 @@ export class MissionRuntime {
 		try {
 			this.unsubscribeReview = getSubagentService().executor.onChange((run) => {
 				const mission = this.state.read();
-				if (mission?.reviewStatus === "running" && mission.reviewRunId === run.spec.id && !["starting", "running", "stopping"].includes(run.runtime.status)) this.scheduleRecovery(ctx);
+				const terminal = !["starting", "running", "stopping"].includes(run.runtime.status);
+				if (terminal && ((mission?.reviewStatus === "running" && mission.reviewRunId === run.spec.id) || mission?.reviewStatus === "due")) this.scheduleRecovery(ctx);
 			});
 		} catch {
 			// Subagents may not be registered yet; the next lifecycle recovery retries binding.
@@ -363,6 +434,8 @@ export class MissionRuntime {
 		if (!mission || mission.status !== "active") return undefined;
 		const fingerprint = await worktreeFingerprint(this.pi, ctx.cwd, mission);
 		if (!fingerprint) return undefined;
+		const candidateId = reviewCandidateId(mission, fingerprint);
+		if (mission.completionLatchCandidateId && mission.completionLatchCandidateId !== candidateId) this.state.append(this.pi, this.state.completionLatchClearedEvent());
 		const admitted = mission.reviewStatus === "clear" ? mission.reviewWorktreeFingerprint : mission.admittedWorktreeFingerprint;
 		if (admitted && admitted !== fingerprint) {
 			this.markReviewDue("workspace changed since the last admitted fingerprint");
@@ -376,7 +449,7 @@ export class MissionRuntime {
 
 	private markReviewDue(reason: string): void {
 		const mission = this.state.read();
-		if (!mission || mission.status !== "active" || mission.reviewStatus === "running" || mission.reviewStatus === "due") return;
+		if (!mission || mission.status !== "active" || mission.reviewStatus === "starting" || mission.reviewStatus === "running" || mission.reviewStatus === "due") return;
 		this.state.append(this.pi, this.state.reviewEvent("due", { reason }));
 		this.updateStatus();
 	}
@@ -393,6 +466,9 @@ export class MissionRuntime {
 	}
 
 	private async startReview(ctx: ExtensionContext, mission: MissionCurrent): Promise<void> {
+		this.state.loadFromSession(ctx);
+		if (!this.state.readOwner()) throw new Error("Mission review admission requires a canonical persisted session owner.");
+		mission = this.state.read() ?? mission;
 		let service;
 		try {
 			service = getSubagentService();
@@ -417,14 +493,33 @@ export class MissionRuntime {
 			this.failReview(mission, "could not resolve and fingerprint the Mission Git workspace; ensure explicit Mission paths exist, stay inside cwd, and resolve to Git repositories");
 			return;
 		}
+		let current = this.state.read();
+		if (!current || current.reviewStatus !== "due" || current.objectiveVersion !== mission.objectiveVersion) return;
+		const candidateId = reviewCandidateId(current, reviewWorktreeFingerprint);
+		if (current.completionLatchCandidateId && current.completionLatchCandidateId !== candidateId) {
+			this.state.append(this.pi, this.state.completionLatchClearedEvent());
+			current = this.state.read()!;
+		}
+		if (current.reviewAdjudicatedCandidateId === candidateId && current.reviewAdjudicatedVerdict) {
+			this.state.append(this.pi, this.state.reviewEvent(current.reviewAdjudicatedVerdict, { runId: current.reviewRunId, reason: "Duplicate review admission suppressed for the unchanged adjudicated candidate.", worktreeFingerprint: reviewWorktreeFingerprint, candidateId, replayAdjudication: true }));
+			this.updateStatus();
+			return;
+		}
+		if (current.completionLatchCandidateId === candidateId && (current.completionLatchReviewStatus === "skipped" || current.completionLatchReviewStatus === "not_required")) {
+			this.state.append(this.pi, this.state.reviewEvent(current.completionLatchReviewStatus, { reason: "Duplicate review admission suppressed for the unchanged user-authorized completion candidate.", worktreeFingerprint: reviewWorktreeFingerprint, candidateId }));
+			this.updateStatus();
+			return;
+		}
 		const reviewCwd = workspace.length === 1 ? workspace[0]!.root : ctx.cwd;
 		const paths = reviewPaths(reviewCwd, workspace);
 		const scope = `Review only these typed Mission workspace paths: ${paths.join(", ")}.`;
+		this.state.append(this.pi, this.state.reviewEvent("starting", { reason: current.reviewReason, worktreeFingerprint: reviewWorktreeFingerprint, candidateId }));
+		this.reviewAdmissionInFlight = true;
 		let run;
 		try {
 			run = await service.start({
 				agent: "reviewer",
-				task: `Fresh independent Mission review. ${scope} Ignore unrelated pre-existing working-tree changes. Mission: ${mission.title}. Objective: ${mission.objective}. Requirements: ${mission.requirements.join(" | ")}. Review normally, call the schema-validated review_report tool exactly once, then summarize for the parent. Do not edit files.`,
+				task: `Fresh independent Mission review. ${scope} Ignore unrelated pre-existing working-tree changes. Mission: ${current.title}. Objective: ${current.objective}. Requirements: ${current.requirements.join(" | ")}. Review normally, call the schema-validated review_report tool exactly once, then summarize for the parent. Do not edit files.`,
 				cwd: reviewCwd,
 				context: "fresh",
 				allowWrite: false,
@@ -433,14 +528,35 @@ export class MissionRuntime {
 				wallMs: 10 * 60_000,
 			}, ctx);
 		} catch (error) {
-			this.failReview(mission, `review admission failed: ${error instanceof Error ? error.message : String(error)}`);
-			this.reviewAdmissionRetry = this.state.read()?.reviewStatus === "due";
-			this.scheduleRecovery(ctx, 1_000);
+			this.ctx?.ui.notify?.(`Mission reviewer launch outcome is ambiguous: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			this.scheduleRecovery(ctx);
+			return;
+		} finally {
+			this.reviewAdmissionInFlight = false;
+		}
+		if ("children" in run) {
+			this.ctx?.ui.notify?.("Mission reviewer unexpectedly launched a group; the durable admission remains reserved.", "warning");
+			this.scheduleRecovery(ctx);
 			return;
 		}
-		if ("children" in run) return;
-		this.state.append(this.pi, this.state.reviewEvent("running", { runId: run.spec.id, reason: mission.reviewReason, worktreeFingerprint: reviewWorktreeFingerprint }));
-		this.updateStatus();
+		const reserved = this.state.read();
+		if (!reserved || reserved.reviewStatus !== "starting" || reserved.reviewCandidateId !== candidateId || reserved.objectiveVersion !== current.objectiveVersion) {
+			this.scheduleRecovery(ctx);
+			return;
+		}
+		try {
+			this.state.append(this.pi, this.state.reviewEvent("running", { runId: run.spec.id, reason: current.reviewReason, worktreeFingerprint: reviewWorktreeFingerprint, candidateId }));
+			this.updateStatus();
+			let boundRun = run;
+			try {
+				const latest = service.executor.get?.(run.spec.id);
+				if (latest?.spec.id === run.spec.id) boundRun = latest;
+			} catch { /* The returned launch record remains authoritative for immediate settlement. */ }
+			if (!["starting", "running", "stopping"].includes(boundRun.runtime.status)) this.scheduleRecovery(ctx);
+		} catch (error) {
+			this.ctx?.ui.notify?.(`Mission reviewer started but binding its run failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			this.scheduleRecovery(ctx);
+		}
 	}
 
 	private async reconcileReview(): Promise<boolean> {
@@ -459,8 +575,8 @@ export class MissionRuntime {
 			this.failReview(mission, run.runtime.error || "independent review failed");
 			return true;
 		}
-		const suggested = await readReviewVerdict(run);
-		if (suggested === "unknown") {
+		const report = await readReviewReport(run);
+		if (!report) {
 			this.failReview(mission, "independent reviewer did not submit a valid review_report artifact");
 			return true;
 		}
@@ -469,11 +585,12 @@ export class MissionRuntime {
 			this.failReview(mission, "could not fingerprint reviewed worktree");
 			return true;
 		}
-		if (!mission.reviewWorktreeFingerprint || fingerprint !== mission.reviewWorktreeFingerprint) {
-			this.failReview(mission, "worktree changed while independent review was running");
+		const candidateId = reviewCandidateId(mission, fingerprint);
+		if (!mission.reviewWorktreeFingerprint || fingerprint !== mission.reviewWorktreeFingerprint || mission.reviewCandidateObjectiveVersion !== (mission.objectiveVersion ?? 1) || mission.reviewCandidateId !== candidateId) {
+			this.failReview(mission, "objective, scope, or worktree changed while independent review was running");
 			return true;
 		}
-		this.state.append(this.pi, this.state.reviewEvent("awaiting_adjudication", { runId: run.spec.id, reason: "Independent review settled; parent must adjudicate the structured reviewer result.", suggestedVerdict: suggested, worktreeFingerprint: fingerprint }));
+		this.state.append(this.pi, this.state.reviewEvent("awaiting_adjudication", { runId: run.spec.id, reason: "Independent review settled; parent must adjudicate the severity-derived result.", suggestedVerdict: report.verdict, worktreeFingerprint: fingerprint, candidateId, highestSeverity: report.highestSeverity, blockingFindingCount: report.blockingFindingCount, backlogFindingCount: report.backlogFindingCount }));
 		this.updateStatus();
 		return true;
 	}
@@ -530,6 +647,7 @@ export class MissionRuntime {
 		}
 		const review = mission.reviewStatus;
 		if (review === "due") return this.ctx.ui.setStatus("mission", theme?.fg("warning", "review due") ?? "review due");
+		if (review === "starting") return this.ctx.ui.setStatus("mission", theme?.fg("accent", "review starting") ?? "review starting");
 		if (review === "running") return this.ctx.ui.setStatus("mission", theme?.fg("accent", "review running") ?? "review running");
 		if (review === "awaiting_adjudication") return this.ctx.ui.setStatus("mission", theme?.fg("warning", "review ready") ?? "review ready");
 		if (review === "changes_requested") return this.ctx.ui.setStatus("mission", theme?.fg("error", "review changes") ?? "review changes");
@@ -582,11 +700,37 @@ function latestMissionWakeIsStale(ctx: ExtensionContext, mission: MissionCurrent
 	return details?.missionId !== mission.missionId || details?.generation !== mission.generation || details?.objectiveVersion !== mission.objectiveVersion;
 }
 
-async function readReviewVerdict(run: DelegateRun): Promise<"clear" | "changes_requested" | "unknown"> {
+interface DerivedReviewReport {
+	verdict: MissionReviewVerdict;
+	highestSeverity?: MissionReviewSeverity;
+	blockingFindingCount: number;
+	backlogFindingCount: number;
+}
+
+const REVIEW_SEVERITIES: readonly MissionReviewSeverity[] = ["blocker", "major", "minor", "nit"];
+
+async function readReviewReport(run: DelegateRun): Promise<DerivedReviewReport | undefined> {
 	try {
-		const report = JSON.parse(await readFile(join(run.spec.artifactsDir, "review-report.json"), "utf8")) as { version?: unknown; verdict?: unknown };
-		return report.version === 1 && (report.verdict === "clear" || report.verdict === "changes_requested") ? report.verdict : "unknown";
-	} catch { return "unknown"; }
+		const report = JSON.parse(await readFile(join(run.spec.artifactsDir, "review-report.json"), "utf8")) as { version?: unknown; verdict?: unknown; findings?: unknown };
+		if (report.version !== 1 || (report.verdict !== "clear" && report.verdict !== "changes_requested") || !Array.isArray(report.findings) || report.findings.length > 1_000) return undefined;
+		const severities: MissionReviewSeverity[] = [];
+		for (const finding of report.findings) {
+			if (!finding || typeof finding !== "object" || Array.isArray(finding) || !("severity" in finding) || !REVIEW_SEVERITIES.includes(finding.severity as MissionReviewSeverity)) return undefined;
+			severities.push(finding.severity as MissionReviewSeverity);
+		}
+		const blockingFindingCount = severities.filter((severity) => severity === "blocker" || severity === "major").length;
+		return {
+			verdict: blockingFindingCount > 0 ? "changes_requested" : "clear",
+			highestSeverity: REVIEW_SEVERITIES.find((severity) => severities.includes(severity)),
+			blockingFindingCount,
+			backlogFindingCount: severities.length - blockingFindingCount,
+		};
+	} catch { return undefined; }
+}
+
+function reviewCandidateId(mission: MissionCurrent, fingerprint: string): string {
+	const input = JSON.stringify({ version: 1, objectiveVersion: mission.objectiveVersion ?? 1, paths: [...mission.paths].sort(), fingerprint });
+	return `candidate_${createHash("sha256").update(input).digest("hex")}`;
 }
 
 interface MissionWorkspaceRoot {

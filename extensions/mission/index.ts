@@ -23,19 +23,25 @@ export default function missionExtension(pi: ExtensionAPI): void {
 		onTakenOver: (ctx, mission) => runtime.onTakenOver(ctx, mission),
 		onProgress: (input, ctx) => runtime.onProgress(input, ctx),
 		workspaceFingerprint: (ctx) => runtime.workspaceFingerprint(ctx),
+		authorizeCompletion: (ctx) => runtime.authorizeCompletion(ctx),
+		completionCandidateId: (ctx) => runtime.completionCandidateId(ctx),
+		authorizeReviewContinuation: (ctx) => runtime.authorizeReviewContinuation(ctx),
 		onObjectiveUpdated: (input, ctx) => runtime.onObjectiveUpdated(input, ctx),
-		onResumed: (ctx) => { runtime.restore(ctx); void runtime.maybeContinue(ctx); },
+		onResumed: (ctx) => runtime.onResumed(ctx),
 		continuationBlockers: (ctx) => runtime.continuationBlockers(ctx),
-		onCompleted: (ctx, mission) => runtime.onCompleted(ctx, mission),
+		onCompleted: (ctx, mission, completionId) => runtime.onCompleted(ctx, mission, completionId),
 	});
 	registerMissionCommands(pi, state, (ctx) => runtime.restore(ctx), (ctx) => void runtime.maybeContinue(ctx), {
 		validateCompletion: (input, ctx, directUserRequest) => runtime.validateCompletion(input, ctx, directUserRequest),
 		onCreated: (ctx) => runtime.onCreated(ctx),
 		onTakenOver: (ctx, mission) => runtime.onTakenOver(ctx, mission),
 		onChanged: (ctx) => runtime.restore(ctx),
+		onResumed: (ctx) => runtime.onResumed(ctx),
 		continuationBlockers: (ctx) => runtime.continuationBlockers(ctx),
+		authorizeCompletion: (ctx) => runtime.authorizeCompletion(ctx),
+		completionCandidateId: (ctx) => runtime.completionCandidateId(ctx),
 		onObjectiveUpdated: (input, ctx) => runtime.onObjectiveUpdated(input, ctx),
-		onCompleted: (ctx, mission) => runtime.onCompleted(ctx, mission),
+		onCompleted: (ctx, mission, completionId) => runtime.onCompleted(ctx, mission, completionId),
 	});
 	runtime.register();
 

@@ -74,7 +74,9 @@ export class ChainCheckpointService {
 	private gitBeforeTurn?: string;
 	private forcedWakeAt?: number;
 
-	constructor(private readonly pi: ExtensionAPI) {}
+	private readonly pi: ExtensionAPI;
+
+	constructor(pi: ExtensionAPI) { this.pi = pi; }
 
 	read(): ChainCheckpointState {
 		return this.state;

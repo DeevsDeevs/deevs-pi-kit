@@ -62,13 +62,13 @@ Tool: `workflow`.
 
 ### Mission
 
-Create a single-controller workspace objective with `agent_settled` autonomous continuation, user-priority admission, wall/turn/token/cost limits, objective versions, independent review convergence, child-settlement and Chain completion vetoes, and durable state under `.missions/`. A stopped or broken Pi session can hand control to a new same-cwd session through an explicit, confirmed takeover; Missions never use collaborative multi-writer merging. In a non-Git workspace containing several repositories, pass explicit cwd-relative Mission `paths`; review and mutation fingerprints then cover each selected Git root independently. Path-less Missions cover the whole current repository, so concurrent sessions should use explicit paths; three review-time fingerprint changes block instead of requeueing forever.
+Create a single-controller workspace objective with `agent_settled` autonomous continuation, user-priority admission, wall/turn/token/cost limits, objective versions, typed review candidates, bounded correction cycles, trusted completion latches, child-settlement and Chain completion vetoes, and durable state under `.missions/`. A stopped or broken Pi session can hand control to a new same-cwd session through an explicit, confirmed takeover; Missions never use collaborative multi-writer merging. In a non-Git workspace containing several repositories, pass explicit cwd-relative Mission `paths`; review and mutation fingerprints then cover each selected Git root independently. Path-less Missions cover the whole current repository, so concurrent sessions should use explicit paths.
 
 Tools: `mission_get`, `mission_takeover`, `mission_resume`, `mission_create`, `mission_update`, `mission_progress`, `mission_search`, `mission_complete`.
 
-Commands: `/mission <objective> [--name short-title] [--req criterion] [--path cwd-relative-scope] [--budget 200k] [--cost $2] [--chain name]` (`--path` is repeatable), `/mission status`, `/mission takeover [mission-id-or-slug]`, `/mission pause`, `/mission resume`, `/mission clear`, `/mission complete`/`end`/`stop`.
+Commands: `/mission <objective> [--name short-title] [--req criterion] [--path cwd-relative-scope] [--budget 200k] [--cost $2] [--chain name]` (`--path` is repeatable), `/mission status`, `/mission takeover [mission-id-or-slug]`, `/mission pause`, `/mission resume`, `/mission clear`, `/mission complete` (trusted candidate authorization), and `/mission end`/`stop`.
 
-Canonical Mission state is a validated, revisioned snapshot in `.missions/.state/<slug>.json`; Pi custom session entries remain transcript mirrors. Every mutation verifies the controlling session under an exclusive local-filesystem lock. Takeover imports exact same-cwd legacy session state when needed, carries usage/progress, creates a new generation, requires fresh review, and resumes immediately when limits permit. It does not stop the old Pi process or its children, so confirmation requires that the old session is already stopped. Requirements use stable indexes, validation uses command/exit-code records, blockers use explicit IDs, and reviewer verdicts come from a schema-validated child tool. `mission.md` and `log.md` are generated human/search projections. See [`extensions/mission/README.md`](extensions/mission/README.md).
+Canonical Mission state is a validated, revisioned snapshot in `.missions/.state/<slug>.json`; Pi custom session entries remain transcript mirrors. Every mutation verifies the controlling session under an exclusive local-filesystem lock. Takeover imports exact same-cwd legacy session state when needed, carries usage/progress, preserves an unchanged adjudicated candidate, and resumes immediately when limits permit. It does not stop the old Pi process or its children, so confirmation requires that the old session is already stopped. Requirements use stable indexes, validation uses command/exit-code records, blockers use explicit IDs, and reviewer verdicts come from a schema-validated child tool. `mission.md` and `log.md` are generated human/search projections. See [`extensions/mission/README.md`](extensions/mission/README.md).
 
 ### Cron
 
@@ -167,7 +167,7 @@ validation-review missions
 npm install
 npm run check
 npm run smoke:runtime-release       # isolated Monitor release gate; requires Herdr + Pi integration
-npm run smoke:collaborator-release  # isolated two-Pi collaborator release gate
+npm run smoke:collaborator-release  # production collaborator launch + combined Mission completion-once gate
 ```
 
 `npm run check` runs typechecking, tests, RPC/print/JSON mode smokes, the lockfile audit, and a package dry run. The isolated Runtime release gates are separate because they start real Herdr and Pi processes.

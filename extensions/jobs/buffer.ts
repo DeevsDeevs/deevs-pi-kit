@@ -7,7 +7,13 @@ export class JobBuffer {
 	private dropped = 0;
 	private next = 1;
 
-	constructor(private readonly maxBytes = 1_000_000, private readonly maxChunkBytes = 64_000) {}
+	private readonly maxBytes: number;
+	private readonly maxChunkBytes: number;
+
+	constructor(maxBytes = 1_000_000, maxChunkBytes = 64_000) {
+		this.maxBytes = maxBytes;
+		this.maxChunkBytes = maxChunkBytes;
+	}
 
 	append(stream: JobStream, value: Buffer | string): JobChunk {
 		const raw = Buffer.isBuffer(value) ? value : Buffer.from(value);

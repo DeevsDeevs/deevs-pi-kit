@@ -13,9 +13,11 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 class FakeHost implements HostedHostVerifier {
 	prompts: Array<{ paneId: string; text: string; wakeWasDurable: boolean }> = [];
 	onPrompt?: () => boolean;
+	verifyBarrier?: Promise<void>;
+	onVerify?: () => void;
 	constructor(public agent: HostedLiveAgent) {}
-	async getPane(): Promise<HostedLiveAgent> { return this.agent; }
-	async findTerminal(): Promise<HostedLiveAgent> { return this.agent; }
+	async getPane(): Promise<HostedLiveAgent> { this.onVerify?.(); await this.verifyBarrier; return this.agent; }
+	async findTerminal(): Promise<HostedLiveAgent> { this.onVerify?.(); await this.verifyBarrier; return this.agent; }
 	async prompt(paneId: string, text: string): Promise<void> { this.prompts.push({ paneId, text, wakeWasDurable: this.onPrompt?.() ?? false }); }
 }
 
@@ -134,6 +136,23 @@ describe("hosted exact wake and inbox", () => {
 		test.wakes.ack(registration, manual.claim.claimId, manual.claim.eventIds);
 		test.wakes.request(registration.targetKey);
 		await vi.waitFor(() => expect(test.store.read().wakes).toEqual({}));
+	});
+
+	it("reruns an active wake request and clears routing that changed during verification", async () => {
+		const test = setup();
+		const { registration } = await enqueue(test);
+		let verificationStarted!: () => void;
+		let releaseVerification!: () => void;
+		const started = new Promise<void>((resolve) => { verificationStarted = resolve; });
+		test.host.verifyBarrier = new Promise<void>((resolve) => { releaseVerification = resolve; });
+		test.host.onVerify = verificationStarted;
+		test.wakes.request(registration.targetKey);
+		await started;
+		const manual = test.wakes.claim(registration);
+		test.wakes.ack(registration, manual.claim.claimId, manual.claim.eventIds);
+		releaseVerification();
+		await vi.waitFor(() => expect(test.store.read().wakes).toEqual({}));
+		expect(test.host.prompts).toEqual([]);
 	});
 
 	it("serializes claims for one target even when later events are pending", async () => {

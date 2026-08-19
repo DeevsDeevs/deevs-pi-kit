@@ -8,7 +8,7 @@ const SNAPSHOT_VERSION = 1;
 // Lock holds are synchronous sub-second operations, so a lock older than this — or one whose owner pid is gone — is a crashed holder, not live contention.
 const STALE_LOCK_MS = 30_000;
 const STATUSES = new Set(["active", "paused", "blocked", "terminal_error", "budget_limited", "usage_limited", "complete", "ended", "cleared"]);
-const REVIEW_STATUSES = new Set(["not_required", "due", "running", "awaiting_adjudication", "changes_requested", "clear", "skipped"]);
+const REVIEW_STATUSES = new Set(["not_required", "due", "starting", "running", "awaiting_adjudication", "changes_requested", "clear", "skipped"]);
 
 export function readMissionSnapshot(cwd: string, slug: string): MissionSnapshot | undefined {
 	if (!validSlug(slug)) throw new Error(`Invalid Mission slug: ${slug}`);
@@ -183,7 +183,7 @@ function readJsonFile(file: string, name: string): unknown {
 
 function validateSnapshot(value: unknown, cwd: string, expectedSlug: string): MissionSnapshot {
 	const record = object(value, "Mission snapshot");
-	if (record.version !== SNAPSHOT_VERSION || !integer(record.revision, 0)) throw new Error("Unsupported Mission snapshot version or revision.");
+	if (record.version !== SNAPSHOT_VERSION || !Number.isSafeInteger(record.revision) || (record.revision as number) < 0) throw new Error("Unsupported Mission snapshot version or revision.");
 	const ownerValue = object(record.owner, "Mission owner");
 	const owner: MissionOwner = { sessionId: text(ownerValue.sessionId, "owner session id", 200), sessionFile: text(ownerValue.sessionFile, "owner session file", 2_000) };
 	const rawMission = object(record.mission, "Mission");
@@ -230,12 +230,21 @@ function validateMission(value: Record<string, unknown>, cwd: string, slug: stri
 		baselineMainCostUsd: nonnegative(value.baselineMainCostUsd, "baseline main cost"),
 		baselineSubagentCostUsd: nonnegative(value.baselineSubagentCostUsd, "baseline Subagent cost"),
 	};
-	for (const key of ["tokenBudget", "costBudgetUsd", "turnBudget", "wallDeadlineAt", "objectiveVersion", "blockerCount", "turnCount"] as const) {
-		if (value[key] !== undefined) (mission as unknown as Record<string, unknown>)[key] = nonnegative(value[key], key);
+	if (value.costBudgetUsd !== undefined) mission.costBudgetUsd = nonnegative(value.costBudgetUsd, "costBudgetUsd");
+	for (const key of ["tokenBudget", "turnBudget", "wallDeadlineAt", "objectiveVersion", "blockerCount", "turnCount", "reviewCandidateObjectiveVersion", "reviewBlockingFindingCount", "reviewBacklogFindingCount", "reviewCorrectionCount", "reviewCorrectionLimit"] as const) {
+		if (value[key] !== undefined) (mission as unknown as Record<string, unknown>)[key] = boundedInteger(value[key], key, 0, Number.MAX_SAFE_INTEGER);
 	}
-	for (const key of ["lastReason", "lastSummary", "generation", "reviewRunId", "reviewReason", "reviewSkippedReason", "reviewSuggestedVerdict", "reviewWorktreeFingerprint", "admittedWorktreeFingerprint", "blockerFingerprint"] as const) {
+	for (const key of ["lastReason", "lastSummary", "generation", "reviewRunId", "reviewReason", "reviewSkippedReason", "reviewSuggestedVerdict", "reviewWorktreeFingerprint", "admittedWorktreeFingerprint", "reviewCandidateId", "reviewAdjudicatedCandidateId", "reviewAdjudicatedVerdict", "reviewHighestSeverity", "completionLatchCandidateId", "completionLatchReviewStatus", "completionId", "completionEffectsStatus", "blockerFingerprint"] as const) {
 		if (value[key] !== undefined) (mission as unknown as Record<string, unknown>)[key] = text(value[key], key, 20_000);
 	}
+	if (mission.reviewAdjudicatedVerdict !== undefined && mission.reviewAdjudicatedVerdict !== "clear" && mission.reviewAdjudicatedVerdict !== "changes_requested") throw new Error("Invalid Mission adjudicated review verdict.");
+	if (mission.reviewHighestSeverity !== undefined && !["blocker", "major", "minor", "nit"].includes(mission.reviewHighestSeverity)) throw new Error("Invalid Mission review severity.");
+	if (mission.completionLatchReviewStatus !== undefined && !["not_required", "clear", "skipped"].includes(mission.completionLatchReviewStatus)) throw new Error("Invalid Mission completion latch review status.");
+	if (mission.completionEffectsStatus !== undefined && mission.completionEffectsStatus !== "pending" && mission.completionEffectsStatus !== "done") throw new Error("Invalid Mission completion effects status.");
+	if (value.completionAudit !== undefined) mission.completionAudit = array(value.completionAudit, "Mission completion audit", 12).map((item) => {
+		const audit = object(item, "Mission completion audit item");
+		return { requirementIndex: boundedInteger(audit.requirementIndex, "requirement index", 0, 11), evidence: text(audit.evidence, "requirement evidence", 2_000) };
+	});
 	if (value.lastContinuationAt !== undefined) mission.lastContinuationAt = number(value.lastContinuationAt, "lastContinuationAt");
 	if (reviewStatus) mission.reviewStatus = reviewStatus as MissionCurrent["reviewStatus"];
 	if (value.reviewFailure !== undefined) mission.reviewFailure = value.reviewFailure === true;
@@ -320,10 +329,6 @@ function boundedInteger(value: unknown, name: string, min: number, max: number):
 	const result = number(value, name);
 	if (!Number.isInteger(result) || result < min || result > max) throw new Error(`${name} must be an integer from ${min} to ${max}.`);
 	return result;
-}
-
-function integer(value: unknown, min: number): value is number {
-	return typeof value === "number" && Number.isInteger(value) && value >= min;
 }
 
 function pathExists(path: string): boolean {

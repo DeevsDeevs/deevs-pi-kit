@@ -36,7 +36,9 @@ export class JobManager {
 	private readonly events = new EventEmitter();
 	private parentSessionFile?: string;
 
-	constructor(private pi: ExtensionAPI) {}
+	private pi: ExtensionAPI;
+
+	constructor(pi: ExtensionAPI) { this.pi = pi; }
 
 	setExtensionApi(pi: ExtensionAPI): void {
 		this.pi = pi;

@@ -10,6 +10,10 @@ import { pathToFileURL } from "node:url";
 const repo = process.cwd();
 const { HostedRuntimeClient } = await import(pathToFileURL(join(repo, "extensions/runtime/client.ts")));
 const { startRuntimeServer } = await import(pathToFileURL(join(repo, "extensions/runtime/service/server.ts")));
+const { MissionState, MISSION_CUSTOM_TYPE } = await import(pathToFileURL(join(repo, "extensions/mission/state.ts")));
+const { MissionRuntime } = await import(pathToFileURL(join(repo, "extensions/mission/runtime.ts")));
+const { registerMissionTools } = await import(pathToFileURL(join(repo, "extensions/mission/tools.ts")));
+const { setSubagentService, clearSubagentService } = await import(pathToFileURL(join(repo, "extensions/subagents/registry.ts")));
 const base = mkdtempSync(join(tmpdir(), "pi-kit-collaborator-release-"));
 const cleanupBase = () => rmSync(base, { recursive: true, force: true });
 process.once("exit", cleanupBase);
@@ -19,9 +23,9 @@ const agentDir = join(base, "agent");
 const runtimeRoot = join(agentDir, "runtime");
 const projectRoot = join(base, "project");
 const alphaSessionFile = join(base, "alpha.jsonl");
-const betaSessionFile = join(base, "beta.jsonl");
+let betaSessionFile;
 const alphaSessionId = "019f0000-0000-7000-8000-000000000101";
-const betaSessionId = "019f0000-0000-7000-8000-000000000102";
+let betaSessionId;
 const herdrIntegration = join(homedir(), ".pi", "agent", "extensions", "herdr-agent-state.ts");
 const runtimeExtension = join(repo, "extensions", "runtime", "index.ts");
 const participantEntry = "deevs.hosted-runtime.participant.v1";
@@ -30,9 +34,12 @@ const hostedEntry = "deevs.hosted-runtime.v1";
 if (!existsSync(herdrIntegration)) throw new Error(`Herdr Pi integration is missing: ${herdrIntegration}`);
 mkdirSync(projectRoot, { recursive: true });
 mkdirSync(agentDir, { recursive: true });
-for (const [path, id] of [[alphaSessionFile, alphaSessionId], [betaSessionFile, betaSessionId]]) {
-	writeFileSync(path, `${JSON.stringify({ type: "session", version: 3, id, timestamp: new Date().toISOString(), cwd: projectRoot })}\n`);
-}
+writeFileSync(join(projectRoot, "release.txt"), "runtime collaborator Mission release gate\n");
+execFileSync("git", ["init", "-q"], { cwd: projectRoot });
+execFileSync("git", ["add", "release.txt"], { cwd: projectRoot });
+execFileSync("git", ["-c", "user.name=Release Gate", "-c", "user.email=release@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "release baseline"], { cwd: projectRoot });
+writeFileSync(alphaSessionFile, `${JSON.stringify({ type: "session", version: 3, id: alphaSessionId, timestamp: new Date().toISOString(), cwd: projectRoot })}\n`);
+writeFileSync(join(agentDir, "settings.json"), `${JSON.stringify({ defaultProjectTrust: "always", extensions: [herdrIntegration, runtimeExtension] }, null, 2)}\n`);
 
 const herdrEnv = { ...process.env, HERDR_SOCKET_PATH: herdrSocket, PI_CODING_AGENT_DIR: agentDir };
 delete herdrEnv.PI_PACKAGE_DIR;
@@ -113,7 +120,7 @@ async function startPi(name, sessionFile) {
 	const created = cli("workspace", "create", "--cwd", projectRoot, "--label", name, "--no-focus");
 	const pane = created.result.root_pane;
 	panes.add(pane.pane_id);
-	cli("agent", "start", name, "--kind", "pi", "--pane", pane.pane_id, "--timeout", "10000", "--", "--session", sessionFile, "--extension", herdrIntegration, "--extension", runtimeExtension);
+	cli("agent", "start", name, "--kind", "pi", "--pane", pane.pane_id, "--timeout", "10000", "--", "--approve", "--session", sessionFile);
 	const live = await waitFor(() => {
 		const agent = cli("agent", "get", pane.pane_id).result.agent;
 		return agent.agent_session?.kind === "path" ? agent : undefined;
@@ -160,6 +167,30 @@ async function acquire(pi, participantId) {
 	}, `${participantId} identity was not persisted`);
 }
 
+async function launchCollaborator(parent, participantId) {
+	cli("agent", "prompt", parent.pane.pane_id, `/runtime collaborator-start review ${participantId}`);
+	await waitFor(() => {
+		const current = participant("review", participantId);
+		return current?.state === "held" ? current : undefined;
+	}, `${participantId} did not acquire through the production collaborator launcher`, 60_000);
+	const launched = await waitFor(() => {
+		const tabs = cli("tab", "list", "--workspace", parent.pane.workspace_id).result.tabs;
+		const tab = tabs.find((candidate) => candidate.label === `collaborator:${participantId}`);
+		if (!tab) return undefined;
+		const pane = cli("pane", "list", "--workspace", parent.pane.workspace_id).result.panes.find((candidate) => candidate.tab_id === tab.tab_id);
+		if (!pane?.agent_session?.value) return undefined;
+		return { pane, live: pane, sessionFile: pane.agent_session.value };
+	}, `${participantId} Herdr tab/session was not discoverable`, 60_000);
+	panes.add(launched.pane.pane_id);
+	const header = sessionEntries(launched.sessionFile)[0];
+	assert.equal(header.type, "session");
+	assert.equal(header.version, 3);
+	assert.equal(header.cwd, projectRoot);
+	await waitFor(() => sessionEntries(launched.sessionFile).filter((entry) => entry.type === "custom" && entry.customType === participantEntry).at(-1)?.data?.participantId === participantId, `${participantId} launch identity was not persisted`);
+	await waitFor(() => readPane(parent.pane.pane_id).includes(`Collaborator review/${participantId} started`), `parent did not confirm ${participantId} production launch`);
+	return { ...launched, sessionId: header.id };
+}
+
 async function directRegistration(pi, sessionId, clientGeneration) {
 	const client = new HostedRuntimeClient(runtime.socketPath);
 	const receipts = hostedMessages(pi.sessionFile).map((entry) => ({ claimId: entry.details.claimId, eventIds: entry.details.eventIds }));
@@ -198,6 +229,118 @@ function appendParticipantIdentity(path, value) {
 	})}\n`);
 }
 
+async function proveMissionCompletionOnce(replyEventId) {
+	const branch = [];
+	let completeTool;
+	const pi = {
+		appendEntry(customType, data) { branch.push({ type: "custom", customType, data }); },
+		registerTool(tool) { if (tool.name === "mission_complete") completeTool = tool; },
+		registerCommand() {},
+		on() {},
+		sendMessage() {},
+		async exec(command, args, options = {}) {
+			try { return { code: 0, stdout: execFileSync(command, args, { cwd: options.cwd, encoding: "utf8" }), stderr: "", killed: false }; }
+			catch (error) { return { code: error.status ?? 1, stdout: error.stdout?.toString() ?? "", stderr: error.stderr?.toString() ?? "", killed: false }; }
+		},
+	};
+	const ctx = {
+		cwd: projectRoot,
+		hasUI: true,
+		isIdle: () => true,
+		hasPendingMessages: () => false,
+		ui: { confirm: async () => true, notify() {}, setStatus() {} },
+		sessionManager: { getBranch: () => branch, getSessionFile: () => alphaSessionFile, getSessionId: () => alphaSessionId },
+	};
+	let reviewRun;
+	let reviewerStarts = 0;
+	const reviewArtifacts = join(base, "combined-mission-review");
+	const service = {
+		list: () => ({ runs: reviewRun ? [reviewRun] : [], groups: [] }),
+		start: async () => {
+			reviewerStarts++;
+			mkdirSync(reviewArtifacts, { recursive: true });
+			reviewRun = { spec: { id: "typed-release-review", artifactsDir: reviewArtifacts }, runtime: { status: "running", output: "" } };
+			return reviewRun;
+		},
+		executor: { get: (runId) => reviewRun?.spec.id === runId ? reviewRun : undefined, onChange: () => () => undefined },
+	};
+	let activeService = service;
+	setSubagentService(activeService);
+	try {
+		const state = new MissionState();
+		state.loadFromSession(ctx);
+		state.append(pi, await state.create({ objective: "Prove collaborator-to-Mission completion once", requirements: ["Reply is durably admitted and typed completion settles once"], chain: "runtime-host-architecture" }, ctx));
+		const missionRuntime = new MissionRuntime(pi, state);
+		state.append(pi, state.progressEvent({ summary: "Collaborator reply admitted", evidence: [`Runtime reply event ${replyEventId} acknowledged`], validation: [{ command: "runtime collaborator reply acknowledgement", exitCode: 0 }] }));
+		state.append(pi, state.reviewEvent("due", { reason: "combined release review" }));
+		await missionRuntime.startReview(ctx, state.read());
+		assert.equal(reviewerStarts, 1);
+		assert.equal(state.read().reviewStatus, "running");
+		reviewRun.runtime.status = "completed";
+		writeFileSync(join(reviewArtifacts, "review-report.json"), JSON.stringify({ version: 1, verdict: "clear", findings: [] }));
+
+		const recoveredState = new MissionState();
+		recoveredState.loadFromSession(ctx);
+		const recoveredRuntime = new MissionRuntime(pi, recoveredState);
+		await recoveredRuntime.recover(ctx);
+		assert.equal(recoveredState.read().reviewStatus, "awaiting_adjudication");
+		recoveredRuntime.onProgress({ summary: "Typed parent adjudication", reviewVerdict: "clear", reviewRunId: "typed-release-review", reviewReason: "Structured release gate has zero blocking findings." }, ctx);
+		const candidateId = recoveredState.read().reviewAdjudicatedCandidateId;
+		assert.ok(candidateId);
+
+		clearSubagentService(activeService);
+		activeService = {
+			list: () => ({ runs: [], groups: [] }),
+			start: async () => { reviewerStarts++; return { spec: { id: `duplicate-review-${reviewerStarts}` }, runtime: { status: "running", output: "" } }; },
+			executor: { get: () => undefined, onChange: () => () => undefined },
+		};
+		setSubagentService(activeService);
+		const replayState = new MissionState();
+		replayState.loadFromSession(ctx);
+		const replayRuntime = new MissionRuntime(pi, replayState);
+		replayState.append(pi, replayState.reviewEvent("due", { reason: "synthetic replay after adjudication" }));
+		await replayRuntime.startReview(ctx, replayState.read());
+		assert.equal(reviewerStarts, 1);
+		assert.equal(replayState.read().reviewStatus, "clear");
+		let completionEffects = 0;
+		registerMissionTools(pi, replayState, () => replayRuntime.restore(ctx), {
+			validateCompletion: (input, currentCtx) => replayRuntime.validateCompletion(input, currentCtx),
+			authorizeCompletion: (currentCtx) => replayRuntime.authorizeCompletion(currentCtx),
+			completionCandidateId: (currentCtx) => replayRuntime.completionCandidateId(currentCtx),
+			onCompleted: (currentCtx, mission) => { completionEffects++; replayRuntime.onCompleted(currentCtx, mission); },
+		});
+		assert.ok(completeTool);
+		const completionInput = { authorizeCompletion: true, summary: "Combined Runtime collaborator and Mission release gate passed.", audit: [{ requirementIndex: 0, evidence: `Acknowledged reply ${replyEventId}; typed review clear.` }] };
+		const first = await completeTool.execute("release-completion-1", completionInput, undefined, undefined, ctx);
+		assert.equal(first.details.mission.status, "complete");
+		assert.equal(first.details.mission.completionEffectsStatus, "done");
+		const beforeReplay = branch.filter((entry) => entry.customType === MISSION_CUSTOM_TYPE && entry.data?.kind === "completed").length;
+		const reviewsBeforeReplay = branch.filter((entry) => entry.customType === MISSION_CUSTOM_TYPE && entry.data?.kind === "review_changed").length;
+
+		const completionReplayState = new MissionState();
+		completionReplayState.loadFromSession(ctx);
+		const completionReplayRuntime = new MissionRuntime(pi, completionReplayState);
+		completeTool = undefined;
+		registerMissionTools(pi, completionReplayState, () => completionReplayRuntime.restore(ctx), {
+			validateCompletion: (input, currentCtx) => completionReplayRuntime.validateCompletion(input, currentCtx),
+			authorizeCompletion: (currentCtx) => completionReplayRuntime.authorizeCompletion(currentCtx),
+			completionCandidateId: (currentCtx) => completionReplayRuntime.completionCandidateId(currentCtx),
+			onCompleted: (currentCtx, mission) => { completionEffects++; completionReplayRuntime.onCompleted(currentCtx, mission); },
+		});
+		const replay = await completeTool.execute("release-completion-2", completionInput, undefined, undefined, ctx);
+		assert.equal(replay.details.alreadyComplete, true);
+		assert.equal(branch.filter((entry) => entry.customType === MISSION_CUSTOM_TYPE && entry.data?.kind === "completed").length, beforeReplay);
+		assert.equal(beforeReplay, 1);
+		assert.equal(completionEffects, 1);
+		assert.equal(branch.filter((entry) => entry.customType === MISSION_CUSTOM_TYPE && entry.data?.kind === "review_changed").length, reviewsBeforeReplay);
+		assert.equal(completionReplayState.readAny()?.status, "complete");
+		assert.equal(completionReplayState.readAny()?.completionEffectsStatus, "done");
+		return { missionId: completionReplayState.readAny().missionId, parentReloads: 3, reviewers: reviewerStarts, completions: beforeReplay, completionEffects };
+	} finally {
+		clearSubagentService(activeService);
+	}
+}
+
 function simulatePreAckCrash(eventId) {
 	const state = readState();
 	const event = state.events[eventId];
@@ -217,11 +360,12 @@ try {
 	await startRuntime("epoch_collaborator_1");
 
 	let alphaPi = await startPi("collaborator-alpha-1", alphaSessionFile);
-	let betaPi = await startPi("collaborator-beta-1", betaSessionFile);
 	await assertRuntimeRegistered(alphaPi);
-	await assertRuntimeRegistered(betaPi);
 	await acquire(alphaPi, "alpha");
-	await acquire(betaPi, "beta");
+	let betaPi = await launchCollaborator(alphaPi, "beta");
+	betaSessionFile = betaPi.sessionFile;
+	betaSessionId = betaPi.sessionId;
+	await assertRuntimeRegistered(betaPi);
 	const alphaKey = participant("review", "alpha").participantKey;
 	const betaKey = participant("review", "beta").participantKey;
 	assert.notEqual(alphaKey, betaKey);
@@ -242,6 +386,7 @@ try {
 	await waitMessage(alphaSessionFile, "beta-to-alpha release marker", 1);
 	await waitFor(() => readState().events[betaToAlpha.eventId].delivery.status === "acked", "beta-to-alpha mail was not acknowledged");
 	await waitIdle(alphaPi);
+	const missionCompletion = await proveMissionCompletionOnce(betaToAlpha.eventId);
 	await assert.rejects(() => betaDirect.client.call("participant.acquire", { ...auth(betaDirect.registration), protocol: "review", participantId: "alpha", revive: false }), (error) => error?.code === "conflict");
 
 	cli("agent", "prompt", alphaPi.pane.pane_id, "/runtime stand-down");
@@ -310,14 +455,23 @@ try {
 	await assertRuntimeRegistered(betaPi);
 	await sleep(11_000);
 	assert.equal(readState().events[takeoverMail.eventId].delivery.status, "acked");
-	assert.equal(Object.keys(readState().wakes).length, 0);
+	try {
+		await waitFor(() => Object.keys(readState().wakes).length === 0, "final wake did not settle after the full heartbeat window", 10_000);
+	} catch (error) {
+		const failedState = readState();
+		throw new Error(`${error.message}: ${JSON.stringify({ wakes: failedState.wakes, participants: failedState.participants, unsettled: Object.values(failedState.events).filter((event) => event.delivery?.status !== "acked") })}`);
+	}
+	const finalState = readState();
 	assert.equal(hostedMessages(betaSessionFile).length, beforeReconcileMessages, "mailbox event redelivered after final restart");
 
 	console.log(JSON.stringify({
 		status: "pass",
+		productionLaunch: true,
+		materializedChildSession: true,
 		participants: 2,
 		alphaToBeta: alphaToBeta.eventId,
 		betaToAlpha: betaToAlpha.eventId,
+		missionCompletion,
 		standDownQueued: queuedWhileVacant.eventId,
 		releaseRejected: true,
 		revived: true,

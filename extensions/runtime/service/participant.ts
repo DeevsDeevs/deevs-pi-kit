@@ -110,8 +110,9 @@ export class HostedParticipantCoordinator {
 		if (participant.state === "held" && participant.holderTargetKey === registration.targetKey && latest?.cause === "takeover" && latest.previousGeneration === expectedGeneration) return this.status(participant);
 		if (participant.state !== "held" || participant.generation !== expectedGeneration) throw new HostedParticipantError("conflict", "Participant state or generation changed before takeover.");
 		if (participant.holderTargetKey === registration.targetKey) return this.status(participant);
-		if (this.registrations.hasLiveTarget(participant.holderTargetKey!)) throw new HostedParticipantError("busy", "Participant holder is still live.");
-		if (!this.seenTargets.has(participant.holderTargetKey!) && this.now() - this.epochStartedAt < (this.options.reconnectGraceMs ?? DEFAULT_RECONNECT_GRACE_MS)) {
+		const previousHolderTargetKey = participant.holderTargetKey!;
+		if (this.registrations.hasLiveTarget(previousHolderTargetKey)) throw new HostedParticipantError("busy", "Participant holder is still live.");
+		if (!this.seenTargets.has(previousHolderTargetKey) && this.now() - this.epochStartedAt < (this.options.reconnectGraceMs ?? DEFAULT_RECONNECT_GRACE_MS)) {
 			throw new HostedParticipantError("busy", "Participant holder is inside the Runtime reconnect grace period.");
 		}
 		this.store.apply({ type: "inbox.release_expired", at: this.now() });
@@ -123,6 +124,7 @@ export class HostedParticipantCoordinator {
 			generation: this.createGeneration(),
 			at: this.now(),
 		});
+		this.wakes.request(previousHolderTargetKey);
 		this.wakes.request(registration.targetKey);
 		return this.status(this.requireParticipant(participantKey, target.projectRoot));
 	}
@@ -154,6 +156,7 @@ export class HostedParticipantCoordinator {
 		const target = this.requireTarget(registration.targetKey);
 		this.requireParticipant(participantKey, target.projectRoot);
 		this.store.apply({ type, participantKey, targetKey: registration.targetKey, generation: this.createGeneration(), at: this.now() });
+		this.wakes.request(registration.targetKey);
 		return this.status(this.requireParticipant(participantKey, target.projectRoot));
 	}
 
