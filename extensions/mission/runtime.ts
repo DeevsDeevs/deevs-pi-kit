@@ -438,7 +438,8 @@ export class MissionRuntime {
 		if (!fingerprint) return undefined;
 		const candidateId = reviewCandidateId(mission, fingerprint);
 		if (mission.completionLatchCandidateId && mission.completionLatchCandidateId !== candidateId) this.state.append(this.pi, this.state.completionLatchClearedEvent());
-		const admitted = mission.reviewStatus === "clear" ? mission.reviewWorktreeFingerprint : mission.admittedWorktreeFingerprint;
+		const candidateBoundReview = mission.reviewStatus === "starting" || mission.reviewStatus === "running" || mission.reviewStatus === "awaiting_adjudication" || mission.reviewStatus === "clear";
+		const admitted = candidateBoundReview ? mission.reviewWorktreeFingerprint : mission.admittedWorktreeFingerprint;
 		if (admitted && admitted !== fingerprint) {
 			this.markReviewDue("workspace changed since the last admitted fingerprint");
 			return fingerprint;
