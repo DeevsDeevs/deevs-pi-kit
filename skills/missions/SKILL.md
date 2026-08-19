@@ -22,7 +22,7 @@ Use `mission_takeover` only when the user explicitly asks to continue a Mission 
 - Read `mission_get` first and use the exact Mission id or artifact slug.
 - Confirm that the previous Pi session is stopped; takeover does not kill it or its Jobs/Subagents.
 - Record a concrete takeover reason.
-- Takeover resumes immediately when limits permit, carries progress/usage, creates a new generation, and forces fresh workspace review.
+- Takeover resumes immediately when limits permit, carries progress/usage, creates a new generation, preserves an unchanged exact adjudicated candidate and completion latch, and recovers unresolved or changed review state.
 - If takeover lands in a limit state, revise the limit only with explicit user authorization, then call `mission_resume`.
 - Never reconstruct Mission authority from `mission.md` or `log.md`; legacy recovery must use the exact same-cwd Pi session branch.
 - Never attempt multi-writer Mission collaboration. A foreign controller must be taken over explicitly or left alone.
@@ -33,4 +33,4 @@ Human command: `/mission takeover [mission-id-or-artifact-slug]`.
 
 - Treat malformed, missing, ambiguous, symlinked, or concurrently changed machine state as a blocker.
 - Do not bypass credentials, safety, irreversible actions, tool confirmations, budgets, review, child settlement, or Chain checkpoints.
-- After takeover, obtain fresh independent review; old running or awaiting-adjudication review state is invalid.
+- After takeover, obtain fresh independent review unless the exact unchanged candidate already has a durable adjudication or user-authorized completion latch with its converged disposition; old running or awaiting-adjudication review state is invalid and must be recovered.
