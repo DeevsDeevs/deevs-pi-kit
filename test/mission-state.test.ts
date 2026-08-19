@@ -239,7 +239,7 @@ describe("Mission state", () => {
 		const pi = { ...test.pi, registerTool(tool: unknown) { const value = tool as { name: string; execute: (...args: unknown[]) => Promise<unknown> }; if (value.name === "mission_progress") progressTool = value; } } as unknown as ExtensionAPI;
 		registerMissionTools(pi, test.state, () => undefined);
 		const before = test.branch.length;
-		await expect(progressTool!.execute("call", { summary: "Adjudicate", reviewVerdict: "clear", reviewRunId: "review-1", reviewReason: "report evidence" }, undefined, undefined, test.ctx)).rejects.toThrow("structured review_report");
+		await expect(progressTool!.execute("call", { summary: "Adjudicate", reviewVerdict: "clear", reviewRunId: "review-1", reviewReason: "report evidence" }, undefined, undefined, test.ctx)).rejects.toThrow("severity-derived reviewer verdict");
 		expect(test.branch).toHaveLength(before);
 		expect(test.state.readProgress()).toEqual([]);
 		await expect(progressTool!.execute("call", { summary: "Invalid mixed control", reviewSkip: true, reviewSkipReason: "waive", reviewVerdict: "changes_requested", reviewRunId: "review-1", reviewReason: "report evidence" }, undefined, undefined, test.ctx)).rejects.toThrow("mutually exclusive");
@@ -262,8 +262,9 @@ describe("Mission state", () => {
 		test.state.append(test.pi, await test.state.create({ objective: "Do work", requirements: ["Works"], chain: "kit" }, test.ctx));
 		const input = { summary: "done", audit: [{ requirementIndex: 0, evidence: "tests" }] };
 		const ctx = { ...test.ctx, ui: { notify: () => undefined } } as unknown as ExtensionContext;
-		// Status is committed first; a throwing onCompleted is a best-effort side effect and must not abort the completion or surface as a tool error.
-		const completed = await completeMission(test.pi as unknown as ExtensionAPI, test.state, ctx, input, "complete", { onCompleted: () => { throw new Error("synthetic side effect failure"); } });
+		test.state.append(test.pi, test.state.completionLatchEvent("candidate-test", "not_required"));
+		// Status is committed first; a throwing onCompleted leaves durable pending effects without leaking a false active state.
+		const completed = await completeMission(test.pi as unknown as ExtensionAPI, test.state, ctx, input, "complete", { completionCandidateId: async () => "candidate-test", onCompleted: () => { throw new Error("synthetic side effect failure"); } });
 		expect(completed.mission?.status).toBe("complete");
 		expect(test.state.readAny()?.status).toBe("complete");
 	});

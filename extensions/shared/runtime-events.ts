@@ -159,7 +159,9 @@ export function replayRuntimeEventEntries(entries: readonly unknown[]): RuntimeE
 interface RuntimeEventStateHolder { state: RuntimeEventState }
 
 export class RuntimeEventJournal {
-	constructor(private readonly holder: RuntimeEventStateHolder = { state: emptyRuntimeEventState() }) {}
+	private readonly holder: RuntimeEventStateHolder;
+
+	constructor(holder: RuntimeEventStateHolder = { state: emptyRuntimeEventState() }) { this.holder = holder; }
 
 	restore(entries: readonly unknown[]): void {
 		this.holder.state = replayRuntimeEventEntries(entries);

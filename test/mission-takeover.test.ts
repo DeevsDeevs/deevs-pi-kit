@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionManager, type ExtensionAPI, type ExtensionContext, type SessionInfo } from "@earendil-works/pi-coding-agent";
 import { MissionState, MISSION_CUSTOM_TYPE } from "../extensions/mission/state.ts";
-import { withMissionLock } from "../extensions/mission/persistence.ts";
+import { readMissionSnapshot, withMissionLock } from "../extensions/mission/persistence.ts";
 import { discoverMissionTakeoverCandidates } from "../extensions/mission/takeover.ts";
 import { registerMissionTools } from "../extensions/mission/tools.ts";
 import type { MissionTakeoverCandidate } from "../extensions/mission/types.ts";
@@ -72,6 +72,19 @@ describe("Mission takeover", () => {
 		firstState.append(first.pi, firstState.statusEvent("ended", "finished"));
 		const replacement = session(cwd, "replacement-session");
 		expect(await discoverMissionTakeoverCandidates(replacement.ctx)).toEqual([]);
+	});
+
+	it("preserves one unchanged adjudicated candidate and its user completion authorization across takeover", async () => {
+		const cwd = mkdtempSync(path.join(tmpdir(), "mission-takeover-candidate-"));
+		cleanup.push(cwd);
+		const source = await sourceMission(cwd);
+		source.state.append(source.pi, source.state.reviewEvent("clear", { candidateId: "candidate-stable", worktreeFingerprint: "fingerprint-stable" }));
+		source.state.append(source.pi, source.state.completionLatchEvent("candidate-stable", "clear"));
+		source.candidate.snapshot = source.state.exportSnapshot(source.state.readOwner()!);
+		const successor = session(cwd, "successor-session");
+		const state = new MissionState();
+		const taken = state.takeover(successor.pi, source.candidate, successor.ctx, "old controller stopped");
+		expect(taken).toMatchObject({ reviewStatus: "clear", reviewCandidateId: "candidate-stable", reviewAdjudicatedCandidateId: "candidate-stable", reviewAdjudicatedVerdict: "clear", completionLatchCandidateId: "candidate-stable", completionLatchReviewStatus: "clear" });
 	});
 
 	it("discovers a pre-upgrade Mission from its exact same-cwd session branch", async () => {
@@ -147,6 +160,27 @@ describe("Mission takeover", () => {
 
 		await expect(tool!.execute("call", { missionId: source.candidate.snapshot.mission.missionId, reason: "old session crashed" }, undefined, undefined, target.ctx)).rejects.toThrow("ownership changed after confirmation");
 		expect(state.readAny()).toBeUndefined();
+	});
+
+	it("rejects fractional durable correction counters", async () => {
+		const cwd = mkdtempSync(path.join(tmpdir(), "mission-fractional-policy-"));
+		cleanup.push(cwd);
+		const source = await sourceMission(cwd);
+		const slug = source.candidate.snapshot.mission.slug;
+		const snapshotFile = path.join(cwd, ".missions", ".state", `${slug}.json`);
+		const snapshot = JSON.parse(readFileSync(snapshotFile, "utf8"));
+		snapshot.mission.reviewCorrectionLimit = 3.5;
+		writeFileSync(snapshotFile, JSON.stringify(snapshot));
+		expect(() => readMissionSnapshot(cwd, slug)).toThrow("reviewCorrectionLimit must be an integer");
+		snapshot.mission.reviewCorrectionLimit = 3;
+		snapshot.revision = Number.MAX_SAFE_INTEGER + 1;
+		writeFileSync(snapshotFile, JSON.stringify(snapshot));
+		expect(() => readMissionSnapshot(cwd, slug)).toThrow("Unsupported Mission snapshot version or revision");
+		snapshot.revision = Number.MAX_SAFE_INTEGER;
+		writeFileSync(snapshotFile, JSON.stringify(snapshot));
+		const reloaded = new MissionState();
+		reloaded.loadFromSession(source.ctx);
+		expect(() => reloaded.append(source.pi, reloaded.progressEvent({ summary: "cannot advance" }))).toThrow("revision space is exhausted");
 	});
 
 	it("serializes different-slug creation and rejects symlinked state on read", async () => {

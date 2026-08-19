@@ -33,6 +33,7 @@ export class HostedWakeCoordinator {
 	private readonly host: HostedHostVerifier;
 	private readonly options: HostedWakeOptions;
 	private readonly active = new Set<string>();
+	private readonly rerun = new Set<string>();
 	private closed = false;
 
 	constructor(store: HostedStateStore, registrations: RuntimeRegistrationManager, host: HostedHostVerifier, options: HostedWakeOptions = {}) {
@@ -43,9 +44,16 @@ export class HostedWakeCoordinator {
 	}
 
 	request(targetKey: string): void {
-		if (this.closed || this.active.has(targetKey)) return;
+		if (this.closed) return;
+		if (this.active.has(targetKey)) {
+			this.rerun.add(targetKey);
+			return;
+		}
 		this.active.add(targetKey);
-		void this.wake(targetKey).catch((error) => this.options.onError?.(error)).finally(() => this.active.delete(targetKey));
+		void this.wake(targetKey).catch((error) => this.options.onError?.(error)).finally(() => {
+			this.active.delete(targetKey);
+			if (this.rerun.delete(targetKey) && !this.closed) this.request(targetKey);
+		});
 	}
 
 	accept(registration: HostedLiveRegistration, wakeId: string): HostedClaimResult {
@@ -130,17 +138,15 @@ export class HostedWakeCoordinator {
 	close(): void {
 		this.closed = true;
 		this.active.clear();
+		this.rerun.clear();
 	}
 
 	private async wake(targetKey: string): Promise<void> {
 		this.releaseExpired();
-		if (pendingHostedEvents(this.store.read(), targetKey).length === 0) {
-			const stale = this.store.read().wakes[targetKey];
-			if (stale) this.store.apply({ type: "wake.clear", targetKey, wakeId: stale.wakeId });
-			return;
-		}
+		if (this.clearWakeWithoutPending(targetKey)) return;
 		const verified = await this.registrations.verifyTarget(targetKey);
 		const registration = this.registrations.authorize(verified.registrationId, verified.registrationKey);
+		if (this.clearWakeWithoutPending(targetKey)) return;
 		if (registration.host.status !== "idle" && registration.host.status !== "done") return;
 		let wake: HostedWake | undefined = this.store.read().wakes[targetKey];
 		if (wake && wake.registrationId !== registration.registrationId) {
@@ -157,6 +163,13 @@ export class HostedWakeCoordinator {
 			this.store.apply({ type: "wake.set", wake });
 		}
 		await this.host.prompt(registration.host.paneId, `/pi-kit-runtime-wake 1 ${registration.registrationId} ${wake.wakeId}`);
+	}
+
+	private clearWakeWithoutPending(targetKey: string): boolean {
+		if (pendingHostedEvents(this.store.read(), targetKey).length > 0) return false;
+		const stale = this.store.read().wakes[targetKey];
+		if (stale) this.store.apply({ type: "wake.clear", targetKey, wakeId: stale.wakeId });
+		return true;
 	}
 
 	private requireClaim(registration: HostedLiveRegistration, claimId: string, eventIds: string[]): HostedClaim {

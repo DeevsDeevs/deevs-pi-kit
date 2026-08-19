@@ -36,7 +36,9 @@ const DEFAULT_CONTEXT_RECENT_LINKS = 3;
 const DEFAULT_CONTEXT_SEARCH_MATCHES = 8;
 
 export class ChainService {
-	constructor(private cwd: string) {}
+	private cwd: string;
+
+	constructor(cwd: string) { this.cwd = cwd; }
 
 	setCwd(cwd: string): void {
 		this.cwd = cwd;

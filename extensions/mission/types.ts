@@ -1,5 +1,8 @@
 export type MissionStatus = "active" | "paused" | "blocked" | "terminal_error" | "budget_limited" | "usage_limited" | "complete" | "ended" | "cleared";
-export type MissionReviewStatus = "not_required" | "due" | "running" | "awaiting_adjudication" | "changes_requested" | "clear" | "skipped";
+export type MissionReviewStatus = "not_required" | "due" | "starting" | "running" | "awaiting_adjudication" | "changes_requested" | "clear" | "skipped";
+export type MissionConvergedReviewStatus = "not_required" | "clear" | "skipped";
+export type MissionReviewSeverity = "blocker" | "major" | "minor" | "nit";
+export type MissionReviewVerdict = "clear" | "changes_requested";
 
 export interface MissionValidationInput {
 	command: string;
@@ -12,7 +15,7 @@ export interface MissionValidationRecord extends MissionValidationInput {
 	objectiveVersion: number;
 }
 
-export type MissionEventKind = "created" | "taken_over" | "status_changed" | "continued" | "completed" | "progress" | "objective_updated" | "review_changed" | "workspace_fingerprinted" | "settled";
+export type MissionEventKind = "created" | "taken_over" | "status_changed" | "continued" | "completed" | "completion_effects_done" | "completion_latched" | "completion_latch_cleared" | "progress" | "objective_updated" | "review_changed" | "review_policy_updated" | "workspace_fingerprinted" | "settled";
 
 export interface MissionUsage {
 	mainTokens: number;
@@ -58,10 +61,25 @@ export interface MissionEvent {
 	reviewRunId?: string;
 	reviewReason?: string;
 	reviewSkippedReason?: string;
-	reviewSuggestedVerdict?: "clear" | "changes_requested" | "unknown";
+	reviewSuggestedVerdict?: MissionReviewVerdict | "unknown";
 	reviewFailure?: boolean;
 	reviewWorktreeFingerprint?: string;
 	admittedWorktreeFingerprint?: string;
+	reviewCandidateId?: string;
+	reviewCandidateObjectiveVersion?: number;
+	reviewAdjudicatedCandidateId?: string;
+	reviewAdjudicatedVerdict?: MissionReviewVerdict;
+	reviewHighestSeverity?: MissionReviewSeverity;
+	reviewBlockingFindingCount?: number;
+	reviewBacklogFindingCount?: number;
+	reviewCorrectionCount?: number;
+	reviewCorrectionLimit?: number;
+	completionLatchCandidateId?: string;
+	completionLatchReviewStatus?: MissionConvergedReviewStatus;
+	completionId?: string;
+	completionEffectsStatus?: "pending" | "done";
+	completionAudit?: Array<{ requirementIndex: number; evidence: string }>;
+	expectedObjectiveVersion?: number;
 	blockerFingerprint?: string;
 	blockerCount?: number;
 	turnCount?: number;
@@ -111,10 +129,24 @@ export interface MissionCurrent {
 	reviewRunId?: string;
 	reviewReason?: string;
 	reviewSkippedReason?: string;
-	reviewSuggestedVerdict?: "clear" | "changes_requested" | "unknown";
+	reviewSuggestedVerdict?: MissionReviewVerdict | "unknown";
 	reviewFailure?: boolean;
 	reviewWorktreeFingerprint?: string;
 	admittedWorktreeFingerprint?: string;
+	reviewCandidateId?: string;
+	reviewCandidateObjectiveVersion?: number;
+	reviewAdjudicatedCandidateId?: string;
+	reviewAdjudicatedVerdict?: MissionReviewVerdict;
+	reviewHighestSeverity?: MissionReviewSeverity;
+	reviewBlockingFindingCount?: number;
+	reviewBacklogFindingCount?: number;
+	reviewCorrectionCount?: number;
+	reviewCorrectionLimit?: number;
+	completionLatchCandidateId?: string;
+	completionLatchReviewStatus?: MissionConvergedReviewStatus;
+	completionId?: string;
+	completionEffectsStatus?: "pending" | "done";
+	completionAudit?: Array<{ requirementIndex: number; evidence: string }>;
 	blockerFingerprint?: string;
 	blockerCount?: number;
 	turnCount?: number;
@@ -185,6 +217,8 @@ export interface MissionProgressInput {
 	reviewVerdict?: "clear" | "changes_requested";
 	reviewRunId?: string;
 	reviewReason?: string;
+	reviewContinue?: boolean;
+	reviewContinueReason?: string;
 }
 
 export interface MissionSearchInput {
@@ -196,4 +230,5 @@ export interface MissionCompleteInput {
 	summary?: string;
 	audit?: Array<{ requirementIndex: number; evidence: string }>;
 	userRequested?: boolean;
+	authorizeCompletion?: boolean;
 }

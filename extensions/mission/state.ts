@@ -5,12 +5,13 @@ import { ChainService } from "../chains/service.ts";
 import { slugify } from "../chains/parser.ts";
 import { missionDir } from "./artifacts.ts";
 import { currentMissionOwner, listMissionSnapshots, readMissionSnapshot, withMissionLock, withMissionWorkspaceLock, writeMissionSnapshot } from "./persistence.ts";
-import type { MissionCreateInput, MissionCurrent, MissionEvent, MissionOwner, MissionProgressInput, MissionProgressRecord, MissionReviewStatus, MissionSnapshot, MissionStatus, MissionTakeoverCandidate, MissionUpdateInput, MissionUsage, MissionValidationInput, MissionValidationRecord } from "./types.ts";
+import type { MissionCreateInput, MissionCurrent, MissionEvent, MissionOwner, MissionProgressInput, MissionProgressRecord, MissionConvergedReviewStatus, MissionReviewSeverity, MissionReviewStatus, MissionReviewVerdict, MissionSnapshot, MissionStatus, MissionTakeoverCandidate, MissionUpdateInput, MissionUsage, MissionValidationInput, MissionValidationRecord } from "./types.ts";
 
 export const MISSION_CUSTOM_TYPE = "deevs-mission-state";
 const DEFAULT_CHAIN_BRANCH = "main";
 const MAX_REQUIREMENTS = 12;
 const MAX_PATHS = 100;
+export const DEFAULT_REVIEW_CORRECTION_LIMIT = 3;
 const STATUS_TRANSITIONS: Record<MissionStatus, readonly MissionStatus[]> = {
 	active: ["paused", "blocked", "terminal_error", "budget_limited", "usage_limited", "complete", "ended", "cleared"],
 	paused: ["active", "ended", "cleared"],
@@ -173,13 +174,10 @@ export class MissionState {
 				baselineSubagentTokens: currentAggregate.subagentTokens,
 				baselineMainCostUsd: currentAggregate.mainCostUsd,
 				baselineSubagentCostUsd: currentAggregate.subagentCostUsd,
-				reviewStatus: "due",
-				reviewReason: "Mission ownership changed; fresh independent review required.",
+				reviewStatus: source.mission.reviewStatus === "clear" || source.mission.reviewStatus === "skipped" ? source.mission.reviewStatus : "due",
+				reviewReason: source.mission.reviewStatus === "clear" || source.mission.reviewStatus === "skipped" ? source.mission.reviewReason : "Mission ownership changed; unresolved review requires recovery.",
 				reviewRunId: undefined,
-				reviewSuggestedVerdict: undefined,
 				reviewFailure: undefined,
-				reviewWorktreeFingerprint: undefined,
-				admittedWorktreeFingerprint: undefined,
 			};
 			taken = {
 				...source,
@@ -336,6 +334,8 @@ export class MissionState {
 				turnBudget: positiveInteger(input.turnBudget, "turnBudget"),
 				wallDeadlineAt: input.wallDeadlineMs === undefined ? undefined : now + positiveNumber(input.wallDeadlineMs, "wallDeadlineMs")!,
 				reviewStatus: "not_required",
+				reviewCorrectionCount: 0,
+				reviewCorrectionLimit: DEFAULT_REVIEW_CORRECTION_LIMIT,
 				blockerCount: 0,
 				turnCount: 0,
 			};
@@ -363,6 +363,7 @@ export class MissionState {
 					this.restoreSnapshot(stored, [], this.cwd!, false);
 					this.usage = currentUsage;
 				}
+				if (stored?.revision === Number.MAX_SAFE_INTEGER) throw new Error("Mission state revision space is exhausted.");
 				// Apply to in-memory state, then commit to disk. If the durable write fails, roll the in-memory state back so read()/readAny() never report an event that was never persisted.
 				this.applyEvent(event);
 				if (event.reviewFailure) this.reviewFailureCount++;
@@ -430,8 +431,11 @@ export class MissionState {
 		};
 	}
 
-	reviewEvent(status: MissionReviewStatus, input: { runId?: string; reason?: string; skippedReason?: string; suggestedVerdict?: "clear" | "changes_requested" | "unknown"; failure?: boolean; worktreeFingerprint?: string } = {}): MissionEvent {
+	reviewEvent(status: MissionReviewStatus, input: { runId?: string; reason?: string; skippedReason?: string; suggestedVerdict?: MissionReviewVerdict | "unknown"; failure?: boolean; worktreeFingerprint?: string; candidateId?: string; highestSeverity?: MissionReviewSeverity; blockingFindingCount?: number; backlogFindingCount?: number; replayAdjudication?: boolean } = {}): MissionEvent {
 		const mission = this.requireActive();
+		const adjudicated = status === "clear" || status === "changes_requested";
+		const correctionCount = input.replayAdjudication ? mission.reviewCorrectionCount : status === "changes_requested" ? (mission.reviewCorrectionCount ?? 0) + 1 : status === "clear" ? 0 : undefined;
+		const candidateId = input.candidateId ?? mission.reviewCandidateId;
 		return {
 			kind: "review_changed",
 			missionId: mission.missionId,
@@ -445,7 +449,44 @@ export class MissionState {
 			reviewFailure: input.failure,
 			reviewWorktreeFingerprint: input.worktreeFingerprint,
 			admittedWorktreeFingerprint: status === "skipped" ? input.worktreeFingerprint : undefined,
+			reviewCandidateId: candidateId,
+			reviewCandidateObjectiveVersion: candidateId ? mission.objectiveVersion ?? 1 : undefined,
+			reviewAdjudicatedCandidateId: adjudicated ? candidateId : undefined,
+			reviewAdjudicatedVerdict: adjudicated ? status : undefined,
+			reviewHighestSeverity: input.highestSeverity,
+			reviewBlockingFindingCount: input.blockingFindingCount,
+			reviewBacklogFindingCount: input.backlogFindingCount,
+			reviewCorrectionCount: correctionCount,
 		};
+	}
+
+	reviewPolicyEvent(reviewCorrectionLimit: number): MissionEvent {
+		const mission = this.requireCurrent();
+		if (mission.status !== "blocked" || (mission.reviewCorrectionCount ?? 0) <= (mission.reviewCorrectionLimit ?? DEFAULT_REVIEW_CORRECTION_LIMIT)) throw new Error("Mission review correction authorization is not required.");
+		if (!Number.isSafeInteger(reviewCorrectionLimit) || reviewCorrectionLimit < (mission.reviewCorrectionCount ?? 0)) throw new Error("Review correction limit must cover the pending correction cycle.");
+		return { kind: "review_policy_updated", missionId: mission.missionId, generation: mission.generation, at: Date.now(), reviewCorrectionLimit };
+	}
+
+	completionLatchEvent(candidateId: string, reviewStatus: MissionConvergedReviewStatus): MissionEvent {
+		const mission = this.requireActive();
+		if (!candidateId) throw new Error("Mission completion authorization requires an exact candidate.");
+		return { kind: "completion_latched", missionId: mission.missionId, generation: mission.generation, at: Date.now(), completionLatchCandidateId: candidateId, completionLatchReviewStatus: reviewStatus };
+	}
+
+	completionLatchClearedEvent(): MissionEvent {
+		const mission = this.requireActive();
+		return { kind: "completion_latch_cleared", missionId: mission.missionId, generation: mission.generation, at: Date.now() };
+	}
+
+	completionEvent(candidateId: string, completionId: string, audit: Array<{ requirementIndex: number; evidence: string }> | undefined, reason?: string, summary?: string): MissionEvent {
+		const mission = this.requireActive();
+		if (mission.completionLatchCandidateId !== candidateId) throw new Error("Mission completion is not authorized for this candidate.");
+		return { kind: "completed", missionId: mission.missionId, generation: mission.generation, at: Date.now(), status: "complete", reason, summary, reviewCandidateId: candidateId, expectedObjectiveVersion: mission.objectiveVersion ?? 1, completionId, completionEffectsStatus: "pending", completionAudit: audit };
+	}
+
+	completionEffectsDoneEvent(completionId: string): MissionEvent {
+		const mission = this.requireCurrent();
+		return { kind: "completion_effects_done", missionId: mission.missionId, generation: mission.generation, at: Date.now(), completionId, completionEffectsStatus: "done" };
 	}
 
 	workspaceFingerprintEvent(fingerprint: string): MissionEvent {
@@ -554,6 +595,18 @@ export class MissionState {
 				reviewReason: event.reviewReason,
 				reviewSkippedReason: event.reviewSkippedReason,
 				admittedWorktreeFingerprint: event.admittedWorktreeFingerprint,
+				reviewCandidateId: event.reviewCandidateId,
+				reviewCandidateObjectiveVersion: event.reviewCandidateObjectiveVersion,
+				reviewAdjudicatedCandidateId: event.reviewAdjudicatedCandidateId,
+				reviewAdjudicatedVerdict: event.reviewAdjudicatedVerdict,
+				reviewHighestSeverity: event.reviewHighestSeverity,
+				reviewBlockingFindingCount: event.reviewBlockingFindingCount ?? 0,
+				reviewBacklogFindingCount: event.reviewBacklogFindingCount ?? 0,
+				reviewCorrectionCount: event.reviewCorrectionCount ?? 0,
+				reviewCorrectionLimit: event.reviewCorrectionLimit ?? DEFAULT_REVIEW_CORRECTION_LIMIT,
+				completionLatchCandidateId: event.completionLatchCandidateId,
+				completionId: event.completionId,
+				completionEffectsStatus: event.completionEffectsStatus,
 				blockerFingerprint: event.blockerFingerprint,
 				blockerCount: event.blockerCount ?? 0,
 				turnCount: event.turnCount ?? 0,
@@ -562,6 +615,11 @@ export class MissionState {
 		}
 		if (!this.current || this.current.missionId !== event.missionId) return;
 		if (event.generation && this.current.generation && event.generation !== this.current.generation) return;
+		if (event.kind === "completed" && event.completionId) {
+			if (this.current.status !== "active") throw new Error("Mission completion was already committed or the Mission is no longer active.");
+			if (this.current.objectiveVersion !== event.expectedObjectiveVersion || this.current.completionLatchCandidateId !== event.reviewCandidateId) throw new Error("Mission completion candidate changed before terminal commit.");
+		}
+		if (event.kind === "completion_effects_done" && (this.current.status !== "complete" || this.current.completionId !== event.completionId)) throw new Error("Mission completion effects do not match the terminal operation.");
 		this.current.updatedAt = event.at;
 		if (event.status) this.current.status = event.status;
 		if (event.reason) this.current.lastReason = event.reason;
@@ -581,17 +639,44 @@ export class MissionState {
 			if (event.turnBudget !== undefined) this.current.turnBudget = event.turnBudget ?? undefined;
 			if (event.wallDeadlineAt !== undefined) this.current.wallDeadlineAt = event.wallDeadlineAt ?? undefined;
 			this.current.objectiveVersion = event.objectiveVersion ?? (this.current.objectiveVersion ?? 1) + 1;
+			this.current.reviewCandidateId = undefined;
+			this.current.reviewCandidateObjectiveVersion = undefined;
+			this.current.reviewAdjudicatedCandidateId = undefined;
+			this.current.reviewAdjudicatedVerdict = undefined;
+			this.current.reviewCorrectionCount = 0;
+			this.current.completionLatchCandidateId = undefined;
+			this.current.completionLatchReviewStatus = undefined;
 		}
 		if (event.reviewStatus) this.current.reviewStatus = event.reviewStatus;
 		// A review that reaches the reviewer or clears wipes the transient failure streak, so weeks-apart intermittent reviewer failures cannot accumulate into a permanent three-strike block.
 		if (event.reviewStatus === "awaiting_adjudication" || event.reviewStatus === "clear") this.reviewFailureCount = 0;
-		if (event.reviewRunId !== undefined) this.current.reviewRunId = event.reviewRunId;
+		if (event.kind === "review_changed") this.current.reviewRunId = event.reviewRunId;
+		else if (event.reviewRunId !== undefined) this.current.reviewRunId = event.reviewRunId;
 		if (event.reviewReason !== undefined) this.current.reviewReason = event.reviewReason;
 		if (event.reviewSkippedReason !== undefined) this.current.reviewSkippedReason = event.reviewSkippedReason;
 		if (event.reviewSuggestedVerdict !== undefined) this.current.reviewSuggestedVerdict = event.reviewSuggestedVerdict;
 		if (event.reviewFailure !== undefined) this.current.reviewFailure = event.reviewFailure;
 		if (event.reviewWorktreeFingerprint !== undefined) this.current.reviewWorktreeFingerprint = event.reviewWorktreeFingerprint;
 		if (event.admittedWorktreeFingerprint !== undefined) this.current.admittedWorktreeFingerprint = event.admittedWorktreeFingerprint;
+		if (event.reviewCandidateId !== undefined) this.current.reviewCandidateId = event.reviewCandidateId;
+		if (event.reviewCandidateObjectiveVersion !== undefined) this.current.reviewCandidateObjectiveVersion = event.reviewCandidateObjectiveVersion;
+		if (event.reviewAdjudicatedCandidateId !== undefined) this.current.reviewAdjudicatedCandidateId = event.reviewAdjudicatedCandidateId;
+		if (event.reviewAdjudicatedVerdict !== undefined) this.current.reviewAdjudicatedVerdict = event.reviewAdjudicatedVerdict;
+		if (event.reviewHighestSeverity !== undefined) this.current.reviewHighestSeverity = event.reviewHighestSeverity;
+		if (event.reviewBlockingFindingCount !== undefined) this.current.reviewBlockingFindingCount = event.reviewBlockingFindingCount;
+		if (event.reviewBacklogFindingCount !== undefined) this.current.reviewBacklogFindingCount = event.reviewBacklogFindingCount;
+		if (event.reviewCorrectionCount !== undefined) this.current.reviewCorrectionCount = event.reviewCorrectionCount;
+		if (event.reviewCorrectionLimit !== undefined) this.current.reviewCorrectionLimit = event.reviewCorrectionLimit;
+		if (event.kind === "completion_latch_cleared") {
+			this.current.completionLatchCandidateId = undefined;
+			this.current.completionLatchReviewStatus = undefined;
+		} else if (event.completionLatchCandidateId !== undefined) {
+			this.current.completionLatchCandidateId = event.completionLatchCandidateId;
+			this.current.completionLatchReviewStatus = event.completionLatchReviewStatus;
+		}
+		if (event.completionId !== undefined) this.current.completionId = event.completionId;
+		if (event.completionEffectsStatus !== undefined) this.current.completionEffectsStatus = event.completionEffectsStatus;
+		if (event.completionAudit !== undefined) this.current.completionAudit = event.completionAudit.map((item) => ({ ...item }));
 		if (event.kind === "settled") {
 			this.current.blockerFingerprint = event.blockerFingerprint;
 			this.current.blockerCount = event.blockerCount ?? 0;

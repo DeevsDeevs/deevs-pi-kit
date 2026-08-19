@@ -57,7 +57,7 @@ export default function childSafetyRuntime(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "review_report",
 		label: "Submit structured review",
-		description: "Persist the review verdict as schema-validated data. Prose is explanatory only.",
+		description: "Persist schema-validated findings. Runtime derives release disposition from severity: blocker/major require changes; minor/nit are non-blocking backlog. Prose is explanatory only.",
 		parameters: Type.Object({
 			verdict: Type.Union([Type.Literal("clear"), Type.Literal("changes_requested")]),
 			overallExplanation: Type.String(),
@@ -66,7 +66,7 @@ export default function childSafetyRuntime(pi: ExtensionAPI): void {
 				summary: Type.String(),
 				path: Type.Optional(Type.String()),
 				line: Type.Optional(Type.Integer({ minimum: 1 })),
-			})),
+			}), { maxItems: 1_000 }),
 		}),
 		async execute(_id, input) {
 			const artifacts = process.env.DEEVS_PI_SUBAGENT_ARTIFACTS;

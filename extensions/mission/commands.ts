@@ -9,7 +9,7 @@ import { chainCheckpoints } from "../chains/checkpoint.ts";
 import { FULL_SCREEN_OVERLAY } from "../shared/dashboard.ts";
 import { MissionDashboard } from "./ui.ts";
 
-export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, setContext: (ctx: ExtensionContext) => void, maybeContinue: (ctx: ExtensionContext) => void, hooks: { validateCompletion?: (input: MissionCompleteInput, ctx: ExtensionContext, directUserRequest?: boolean) => Promise<string[]> | string[]; onCreated?: (ctx: ExtensionContext) => void; onTakenOver?: (ctx: ExtensionContext, mission: MissionCurrent) => void; discoverTakeoverCandidates?: (ctx: ExtensionContext) => Promise<MissionTakeoverCandidate[]>; onChanged?: (ctx: ExtensionContext) => void; continuationBlockers?: (ctx: ExtensionContext) => string[]; onObjectiveUpdated?: (input: MissionUpdateInput, ctx: ExtensionContext) => void; onCompleted?: (ctx: ExtensionContext, mission: MissionCurrent) => Promise<void> | void } = {}): void {
+export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, setContext: (ctx: ExtensionContext) => void, maybeContinue: (ctx: ExtensionContext) => void, hooks: { validateCompletion?: (input: MissionCompleteInput, ctx: ExtensionContext, directUserRequest?: boolean) => Promise<string[]> | string[]; authorizeCompletion?: (ctx: ExtensionContext) => Promise<string>; completionCandidateId?: (ctx: ExtensionContext) => Promise<string | undefined>; onCreated?: (ctx: ExtensionContext) => void; onTakenOver?: (ctx: ExtensionContext, mission: MissionCurrent) => void; discoverTakeoverCandidates?: (ctx: ExtensionContext) => Promise<MissionTakeoverCandidate[]>; onChanged?: (ctx: ExtensionContext) => void; onResumed?: (ctx: ExtensionContext) => void; continuationBlockers?: (ctx: ExtensionContext) => string[]; onObjectiveUpdated?: (input: MissionUpdateInput, ctx: ExtensionContext) => void; onCompleted?: (ctx: ExtensionContext, mission: MissionCurrent, completionId?: string) => Promise<void> | void } = {}): void {
 	pi.registerCommand("mission", {
 		description: "Create/manage a durable single-controller Mission.",
 		handler: async (args, ctx) => {
@@ -39,7 +39,7 @@ export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, s
 				if (command === "resume") {
 					try {
 						const mission = await resumeMission(pi, state, "/resume");
-						hooks.onChanged?.(ctx);
+						hooks.onResumed?.(ctx);
 						maybeContinue(ctx);
 						ctx.ui.notify(`${formatMission(mission, state.readUsage())}${formatContinuation(hooks.continuationBlockers?.(ctx) ?? [])}`, "info");
 					} catch (error) {
@@ -66,7 +66,7 @@ export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, s
 			}
 			if (command === "complete" || command === "end" || command === "stop") {
 				try {
-					const result = await completeMission(pi, state, ctx, { userRequested: true }, `/mission ${command}`, hooks, true);
+					const result = await completeMission(pi, state, ctx, command === "complete" ? { authorizeCompletion: true } : { userRequested: true }, `/mission ${command}`, hooks, true);
 					if (result.alreadyComplete) ctx.ui.notify(`Mission already complete: ${result.mission!.title}`, "info");
 					else if (result.blockers?.length) ctx.ui.notify(`Mission completion blocked:\n${result.blockers.map((blocker) => `- ${blocker}`).join("\n")}`, "error");
 					else ctx.ui.notify(`${formatMission(result.mission, result.usage)}\nResume: /mission resume`, "info");

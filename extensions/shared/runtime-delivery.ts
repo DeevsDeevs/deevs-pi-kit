@@ -17,7 +17,9 @@ export class RuntimeDeliveryCoordinator {
 	private readonly confirmationTimers = new Map<string, NodeJS.Timeout>();
 	private retryAttempts = 0;
 
-	constructor(private readonly confirmationMs = STALE_CLAIM_MS) {}
+	private readonly confirmationMs: number;
+
+	constructor(confirmationMs = STALE_CLAIM_MS) { this.confirmationMs = confirmationMs; }
 
 	initialize(pi: ExtensionAPI): void {
 		this.pi = pi;

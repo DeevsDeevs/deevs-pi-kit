@@ -114,9 +114,11 @@ describe("hosted participant coordinator", () => {
 		const successor = await register(test, "successor");
 		expect(() => test.participants.takeover(successor, fableParticipant.participantKey, fableParticipant.generation)).toThrow(HostedParticipantError);
 		test.registrations.unregister(fable.registrationId, fable.registrationKey);
+		test.requested.length = 0;
 		expect(() => test.participants.takeover(successor, fableParticipant.participantKey, "stale_generation")).toThrow(expect.objectContaining({ code: "conflict" }));
 		const taken = test.participants.takeover(successor, fableParticipant.participantKey, fableParticipant.generation);
 		expect(taken).toMatchObject({ state: "held", holderTargetKey: successor.targetKey, lastTransition: { cause: "takeover" } });
+		expect(test.requested).toEqual([fable.targetKey, successor.targetKey]);
 		expect(test.participants.takeover(successor, fableParticipant.participantKey, fableParticipant.generation).generation).toBe(taken.generation);
 	});
 
