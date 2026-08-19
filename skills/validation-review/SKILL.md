@@ -32,7 +32,7 @@ For servers/browsers/e2e: Herdr for persistent processes; `job_start` with readi
 
 Subagents only within budget, each scoped with `cwd`, exact files/diff, command limits, and output shape. Batch independent perspectives in one `tasks` group, continue other runnable checks, then collect it once with `subagent_wait` when the verdict becomes the next dependency; terminal delivery wakes idle Pi automatically. Useful: `tester` (missing tests, e2e plan), `reviewer` (requirements, correctness), `anti-slop` (overbuild, fake tests), `rust-dev`, `devops`. Never delegate what one local command or file read proves.
 
-A cross-session Mission takeover invalidates old running or awaiting-adjudication review state. Re-fingerprint the current workspace and obtain a fresh independent review before completion.
+A cross-session Mission takeover invalidates old running or awaiting-adjudication review state. Re-fingerprint the workspace; preserve review convergence only for the exact unchanged candidate with a durable adjudication or user-authorized completion latch and its converged disposition, otherwise obtain a fresh independent review before completion.
 
 ## 5. Judge test quality
 

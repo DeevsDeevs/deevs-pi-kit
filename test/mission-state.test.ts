@@ -269,6 +269,20 @@ describe("Mission state", () => {
 		expect(test.state.readAny()?.status).toBe("complete");
 	});
 
+	it("keeps model guidance aligned with completion and takeover control semantics", () => {
+		const test = setup();
+		const tools = new Map<string, { promptGuidelines?: string[] }>();
+		const pi = { ...test.pi, registerTool(tool: unknown) { const value = tool as { name: string; promptGuidelines?: string[] }; tools.set(value.name, value); } } as unknown as ExtensionAPI;
+		registerMissionTools(pi, test.state, () => undefined);
+		const completion = tools.get("mission_complete")?.promptGuidelines?.join(" ") ?? "";
+		const takeover = tools.get("mission_takeover")?.promptGuidelines?.join(" ") ?? "";
+		expect(completion).toContain("complete or finish");
+		expect(completion).toContain("end, stop, or abandon");
+		expect(completion).not.toContain("end/complete/stop");
+		expect(takeover).toContain("preserves an unchanged exact adjudicated candidate");
+		expect(takeover).not.toContain("forces fresh review");
+	});
+
 	it("records user-requested closure as ended rather than achieved", async () => {
 		const test = setup();
 		test.state.append(test.pi, await test.state.create({ objective: "Do work", title: "Probe", chain: "kit" }, test.ctx));

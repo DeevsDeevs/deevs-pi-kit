@@ -193,7 +193,7 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 		promptSnippet: "Take over a stopped session's Mission after explicit user confirmation.",
 		promptGuidelines: [
 			"Call mission_takeover only when the user explicitly asks to continue a Mission from another stopped or broken Pi session.",
-			"Mission takeover resumes autonomy immediately when limits permit, forces fresh review, and never stops the old process; confirm that the old session is no longer working first.",
+			"Mission takeover resumes autonomy immediately when limits permit, preserves an unchanged exact adjudicated candidate and completion latch, recovers unresolved or changed review state, and never stops the old process; confirm that the old session is no longer working first.",
 			"Use the exact Mission id reported by mission_get or mission_search and record the concrete takeover reason.",
 		],
 		parameters: TakeoverSchema,
@@ -373,7 +373,7 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 		promptSnippet: "Complete or user-end Mission.",
 		promptGuidelines: [
 			"Complete only when objective is achieved and no required work remains; use authorizeCompletion=true to request the final trusted candidate latch.",
-			"If user asks to end/complete/stop, call with userRequested=true and note remaining work/resume option.",
+			"If the user asks to complete or finish an achieved Mission, use authorizeCompletion=true; if the user explicitly asks to end, stop, or abandon it regardless of achievement, use userRequested=true and note remaining work/resume options.",
 			"Never complete merely for budget, pause, or partial progress.",
 		],
 		parameters: CompleteSchema,
