@@ -70,6 +70,7 @@ export interface MissionEvent {
 	reviewCandidateObjectiveVersion?: number;
 	reviewAdjudicatedCandidateId?: string;
 	reviewAdjudicatedVerdict?: MissionReviewVerdict;
+	reviewAdjudications?: Array<{ candidateId: string; verdict: MissionReviewVerdict }>;
 	reviewHighestSeverity?: MissionReviewSeverity;
 	reviewBlockingFindingCount?: number;
 	reviewBacklogFindingCount?: number;
@@ -139,6 +140,7 @@ export interface MissionCurrent {
 	reviewCandidateObjectiveVersion?: number;
 	reviewAdjudicatedCandidateId?: string;
 	reviewAdjudicatedVerdict?: MissionReviewVerdict;
+	reviewAdjudications?: Array<{ candidateId: string; verdict: MissionReviewVerdict }>;
 	reviewHighestSeverity?: MissionReviewSeverity;
 	reviewBlockingFindingCount?: number;
 	reviewBacklogFindingCount?: number;

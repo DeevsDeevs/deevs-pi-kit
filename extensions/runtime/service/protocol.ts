@@ -123,11 +123,15 @@ export async function dispatchHostedLine(line: string, context: HostedProtocolCo
 				const auth = authParams(params);
 				return success(id, { participants: participants.list(registrations.authorize(auth.registrationId, auth.registrationKey)) });
 			}
-			if (method === "participant.get" || method === "participant.stand_down" || method === "participant.release") {
+			if (method === "participant.stand_down") {
+				const input = strictObject(params, "participant.stand_down params", ["registrationId", "registrationKey", "participantKey", "expectedGeneration"]);
+				const registration = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
+				return success(id, participants.standDown(registration, boundedText(input.participantKey, "participant key", 200), input.expectedGeneration === undefined ? undefined : boundedText(input.expectedGeneration, "expected participant generation", 200)));
+			}
+			if (method === "participant.get" || method === "participant.release") {
 				const input = participantAuthParams(params, method);
 				const registration = registrations.authorize(input.registrationId, input.registrationKey);
 				if (method === "participant.get") return success(id, participants.get(registration, input.participantKey));
-				if (method === "participant.stand_down") return success(id, participants.standDown(registration, input.participantKey));
 				return success(id, participants.release(registration, input.participantKey));
 			}
 			if (method === "participant.takeover") {

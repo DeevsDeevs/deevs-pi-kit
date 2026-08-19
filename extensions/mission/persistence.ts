@@ -237,7 +237,14 @@ function validateMission(value: Record<string, unknown>, cwd: string, slug: stri
 	for (const key of ["lastReason", "lastSummary", "generation", "reviewRunId", "reviewAdmissionId", "reviewReason", "reviewSkippedReason", "reviewSuggestedVerdict", "reviewWorktreeFingerprint", "admittedWorktreeFingerprint", "reviewCandidateId", "reviewAdjudicatedCandidateId", "reviewAdjudicatedVerdict", "reviewHighestSeverity", "completionLatchCandidateId", "completionLatchReviewStatus", "completionId", "completionEffectsStatus", "blockerFingerprint"] as const) {
 		if (value[key] !== undefined) (mission as unknown as Record<string, unknown>)[key] = text(value[key], key, 20_000);
 	}
+	if (mission.reviewSuggestedVerdict !== undefined && !["clear", "changes_requested", "unknown"].includes(mission.reviewSuggestedVerdict)) throw new Error("Invalid Mission suggested review verdict.");
 	if (mission.reviewAdjudicatedVerdict !== undefined && mission.reviewAdjudicatedVerdict !== "clear" && mission.reviewAdjudicatedVerdict !== "changes_requested") throw new Error("Invalid Mission adjudicated review verdict.");
+	if (value.reviewAdjudications !== undefined) mission.reviewAdjudications = array(value.reviewAdjudications, "Mission review adjudications", 32).map((item) => {
+		const adjudication = object(item, "Mission review adjudication");
+		const verdict = text(adjudication.verdict, "Mission review adjudication verdict", 40);
+		if (verdict !== "clear" && verdict !== "changes_requested") throw new Error("Invalid Mission review adjudication verdict.");
+		return { candidateId: text(adjudication.candidateId, "Mission review adjudication candidate", 200), verdict };
+	});
 	if (mission.reviewHighestSeverity !== undefined && !["blocker", "major", "minor", "nit"].includes(mission.reviewHighestSeverity)) throw new Error("Invalid Mission review severity.");
 	if (mission.completionLatchReviewStatus !== undefined && !["not_required", "clear", "skipped"].includes(mission.completionLatchReviewStatus)) throw new Error("Invalid Mission completion latch review status.");
 	if (mission.completionEffectsStatus !== undefined && mission.completionEffectsStatus !== "pending" && mission.completionEffectsStatus !== "done") throw new Error("Invalid Mission completion effects status.");

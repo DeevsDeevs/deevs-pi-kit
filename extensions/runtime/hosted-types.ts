@@ -163,7 +163,7 @@ export type HostedStateOperation =
 	| { type: "monitor.delete"; targetKey: string; monitorId: string }
 	| { type: "monitor.commit"; monitor: HostedMonitor; events: HostedFilesystemCreatedEvent[] }
 	| { type: "participant.acquire"; participantKey: string; projectRoot: string; protocol: string; participantId: string; targetKey: string; generation: string; at: number }
-	| { type: "participant.stand_down"; participantKey: string; targetKey: string; generation: string; at: number }
+	| { type: "participant.stand_down"; participantKey: string; targetKey: string; generation: string; expectedGeneration?: string; at: number }
 	| { type: "participant.release"; participantKey: string; targetKey: string; generation: string; at: number }
 	| { type: "participant.takeover"; participantKey: string; targetKey: string; generation: string; at: number }
 	| { type: "mailbox.send"; senderParticipantKey: string; senderTargetKey: string; recipientParticipantKey: string; sendId: string; eventId: string; body: string; at: number }

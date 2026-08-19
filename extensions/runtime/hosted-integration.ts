@@ -286,6 +286,7 @@ export class HostedRuntimeIntegration {
 		const registration = await this.requireRegistration(ctx);
 		const participants = await this.listParticipants(registration);
 		throwIfAborted(signal);
+		let expectedCaller: ClientParticipantStatus | undefined;
 		if (identity) {
 			const caller = identity.participantKey
 				? participants.find((participant) => participant.participantKey === identity.participantKey)
@@ -298,6 +299,7 @@ export class HostedRuntimeIntegration {
 				throw new HostedRuntimeClientError("conflict", `Current collaborator identity ${protocol}/${callerParticipantId} is not held by this Pi target.`);
 			}
 			if (identity.participantKey !== caller.participantKey || identity.generation !== caller.generation) this.persistParticipant({ version: 1, protocol, participantId: callerParticipantId, participantKey: caller.participantKey, generation: caller.generation, disposition: "held" });
+			expectedCaller = caller;
 		}
 		const child = participants.find((participant) => participant.protocol === protocol && participant.participantId === participantId);
 		if (child?.state === "held") throw new HostedRuntimeClientError("conflict", "Participant already has a holder.");
@@ -308,22 +310,24 @@ export class HostedRuntimeIntegration {
 		let acquiredCaller: ParticipantIdentity | undefined;
 		let rollbackCaller = false;
 		try {
+			let launchCaller = expectedCaller;
 			if (!identity) {
 				const caller = participants.find((participant) => participant.protocol === protocol && participant.participantId === callerParticipantId);
 				if (caller?.state === "ended") throw new HostedRuntimeClientError("conflict", "Ended caller identities require explicit /runtime collaborate revival.");
 				const acquired = parseAcquireResult(await this.client.call("participant.acquire", { ...auth(registration), protocol, participantId: callerParticipantId, revive: false }));
 				acquiredCaller = { version: 1, protocol, participantId: callerParticipantId, participantKey: acquired.participant.participantKey, generation: acquired.participant.generation, disposition: "held" };
-				rollbackCaller = caller?.state !== "held" || caller.holderTargetKey !== registration.targetKey;
+				rollbackCaller = acquired.transitioned;
+				launchCaller = acquired.participant;
 				this.persistParticipant(acquiredCaller);
 				throwIfAborted(signal);
 			}
-			const paneId = await this.launchCollaborator(ctx, protocol, participantId, false, signal);
+			const paneId = await this.launchCollaborator(ctx, protocol, participantId, false, signal, launchCaller);
 			return { started: true, participant: `${protocol}/${participantId}`, paneId };
 		} catch (error) {
 			const childMayBeLive = error instanceof HostedCollaboratorStartError && error.childMayBeLive;
 			if (acquiredCaller?.participantKey && rollbackCaller && !childMayBeLive) {
 				try {
-					const participant = parseParticipant(await this.client.call("participant.stand_down", { ...auth(registration), participantKey: acquiredCaller.participantKey }));
+					const participant = parseParticipant(await this.client.call("participant.stand_down", { ...auth(registration), participantKey: acquiredCaller.participantKey, expectedGeneration: acquiredCaller.generation }));
 					this.persistParticipant({ ...acquiredCaller, generation: participant.generation, disposition: "vacant" });
 				} catch (rollbackError) {
 					throw new HostedRuntimeClientError("internal", `Collaborator launch failed and caller rollback also failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`);
@@ -344,12 +348,23 @@ export class HostedRuntimeIntegration {
 		return { eventId: text(result.eventId), sequence: integer(result.sequence), recipient: `${identity.protocol}/${participantId}` };
 	}
 
-	private async launchCollaborator(ctx: ExtensionContext, protocol: string, participantId: string, allowRevive: boolean, signal?: AbortSignal): Promise<string | undefined> {
+	private async launchCollaborator(ctx: ExtensionContext, protocol: string, participantId: string, allowRevive: boolean, signal?: AbortSignal, expectedCaller?: ClientParticipantStatus): Promise<string | undefined> {
 		throwIfAborted(signal);
 		if (process.env.HERDR_ENV !== "1" || !process.env.HERDR_WORKSPACE_ID) throw new HostedRuntimeClientError("host_unavailable", "Collaborator start requires this Pi session to run inside Herdr.");
 		if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Collaborator start requires a trusted project.");
 		const registration = await this.requireRegistration(ctx);
-		const existing = (await this.listParticipants(registration)).find((participant) => participant.protocol === protocol && participant.participantId === participantId);
+		const participants = await this.listParticipants(registration);
+		if (expectedCaller) {
+			const caller = participants.find((participant) => participant.participantKey === expectedCaller.participantKey);
+			const unchanged = caller?.protocol === expectedCaller.protocol && caller.participantId === expectedCaller.participantId && caller.state === "held" && caller.holderTargetKey === registration.targetKey && caller.generation === expectedCaller.generation;
+			if (!caller || !unchanged) {
+				this.persistParticipant(caller && caller.protocol === expectedCaller.protocol && caller.participantId === expectedCaller.participantId
+					? { version: 1, protocol: caller.protocol, participantId: caller.participantId, participantKey: caller.participantKey, generation: caller.generation, disposition: caller.state === "ended" ? "ended" : caller.state === "held" && caller.holderTargetKey === registration.targetKey ? "held" : "vacant" }
+					: { version: 1, protocol: expectedCaller.protocol, participantId: expectedCaller.participantId, disposition: "vacant" });
+				throw new HostedRuntimeClientError("conflict", `Caller identity ${expectedCaller.protocol}/${expectedCaller.participantId} changed while launch confirmation was pending.`);
+			}
+		}
+		const existing = participants.find((participant) => participant.protocol === protocol && participant.participantId === participantId);
 		throwIfAborted(signal);
 		if (existing?.state === "held") throw new HostedRuntimeClientError("conflict", "Participant already has a holder.");
 		if (existing?.state === "ended") {
@@ -691,10 +706,11 @@ function auth(registration: LiveClientRegistration): { registrationId: string; r
 	return { registrationId: registration.registrationId, registrationKey: registration.registrationKey };
 }
 
-function parseAcquireResult(value: unknown): { participant: ClientParticipantStatus; revived: boolean } {
+function parseAcquireResult(value: unknown): { participant: ClientParticipantStatus; revived: boolean; transitioned: boolean } {
 	const result = strictObject(value, "Participant acquire result");
 	if (typeof result.revived !== "boolean") throw new HostedRuntimeClientError("invalid_response", "Participant revival flag is invalid.");
-	return { participant: parseParticipant(result.participant), revived: result.revived };
+	if (typeof result.transitioned !== "boolean") throw new HostedRuntimeClientError("invalid_response", "Participant transition flag is invalid.");
+	return { participant: parseParticipant(result.participant), revived: result.revived, transitioned: result.transitioned };
 }
 
 function parseParticipant(value: unknown): ClientParticipantStatus {

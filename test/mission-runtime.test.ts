@@ -374,6 +374,34 @@ describe("Mission runtime", () => {
 		}
 	});
 
+	it("suppresses duplicate reviewer generations when a previously adjudicated candidate returns", async () => {
+		let head = "candidate-a";
+		const test = await setup({ head: () => head });
+		const candidateA = await test.runtime.completionCandidateId(test.ctx);
+		test.state.append(test.pi, test.state.reviewEvent("clear", { candidateId: candidateA, worktreeFingerprint: expectedFingerprint("", head) }));
+		head = "candidate-b";
+		const candidateB = await test.runtime.completionCandidateId(test.ctx);
+		test.state.append(test.pi, test.state.reviewEvent("clear", { candidateId: candidateB, worktreeFingerprint: expectedFingerprint("", head) }));
+		head = "candidate-a";
+		test.state.append(test.pi, test.state.reviewEvent("due", { reason: "candidate A returned" }));
+		let starts = 0;
+		const service = {
+			list: () => ({ runs: [], groups: [] }),
+			start: async () => { starts++; return { spec: { id: "must-not-start" }, runtime: { status: "running" } } as DelegateRun; },
+			executor: { onChange: () => () => undefined },
+		} as unknown as SubagentService;
+		setSubagentService(service);
+		try {
+			const internal = test.runtime as unknown as { startReview: (ctx: ExtensionContext, mission: MissionCurrent) => Promise<void> };
+			await internal.startReview(test.ctx, test.state.read()!);
+			expect(starts).toBe(0);
+			expect(test.state.read()).toMatchObject({ reviewStatus: "clear", reviewAdjudicatedCandidateId: candidateA });
+			expect(test.state.read()?.reviewAdjudications).toEqual([{ candidateId: candidateB, verdict: "clear" }, { candidateId: candidateA, verdict: "clear" }]);
+		} finally {
+			clearSubagentService(service);
+		}
+	});
+
 	it("reserves a typed review candidate before launch and rejects a stale objective result", async () => {
 		const test = await setup();
 		test.state.append(test.pi, test.state.reviewEvent("due", { reason: "review" }));
@@ -1028,7 +1056,7 @@ describe("Mission runtime", () => {
 		expect(blockers).toContain("Requirement audit contains an unknown requirementIndex.");
 
 		test.state.append(test.pi, test.state.progressEvent({ summary: "Old validation", validation: [{ command: "npm test", exitCode: 0 }] }));
-		test.state.append(test.pi, test.state.objectiveUpdateEvent({ reason: "Objective version changed" }));
+		test.state.append(test.pi, test.state.objectiveUpdateEvent({ objective: "Changed objective", reason: "Objective version changed" }));
 		blockers = await test.runtime.validateCompletion({ audit: [{ requirementIndex: 0, evidence: "old output" }] }, test.ctx);
 		expect(blockers).toContain("No successful structured validation is recorded for the current objectiveVersion.");
 		test.state.append(test.pi, test.state.progressEvent({ summary: "Validated", validation: [{ command: "npm test", exitCode: 0, summary: "passed" }] }));
