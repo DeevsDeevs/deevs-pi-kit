@@ -91,7 +91,7 @@ export interface MissionCompletionHooks {
 }
 
 interface MissionToolHooks extends MissionCompletionHooks {
-	onCreated?: (ctx: ExtensionContext) => void;
+	onCreated?: (ctx: ExtensionContext) => void | Promise<void>;
 	onTakenOver?: (ctx: ExtensionContext, mission: MissionCurrent) => void;
 	discoverTakeoverCandidates?: (ctx: ExtensionContext) => Promise<MissionTakeoverCandidate[]>;
 	onProgress?: (input: MissionProgressInput, ctx: ExtensionContext) => void;
@@ -122,9 +122,11 @@ export async function resumeMission(pi: ExtensionAPI, state: MissionState, reaso
 
 export async function updateMission(pi: ExtensionAPI, state: MissionState, ctx: ExtensionContext, params: MissionUpdateInput, hooks: Pick<MissionToolHooks, "onObjectiveUpdated"> = {}): Promise<MissionCurrent> {
 	state.loadFromSession(ctx);
-	const mission = state.append(pi, state.objectiveUpdateEvent(params))!;
-	await updateMissionSummaryArtifact(mission, state.readUsage());
+	state.append(pi, state.objectiveUpdateEvent(params));
 	hooks.onObjectiveUpdated?.(params, ctx);
+	const mission = state.readAny();
+	if (!mission) throw new Error("Mission update lost canonical state.");
+	await updateMissionSummaryArtifact(mission, state.readUsage());
 	return mission;
 }
 
@@ -264,10 +266,12 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 				const takeoverCandidates = listSnapshotTakeoverCandidates(ctx);
 				if (takeoverCandidates.length) throw new Error(`A Mission already exists in another session: ${takeoverCandidates.map((candidate) => candidate.snapshot.mission.missionId).join(", ")}. Take it over instead of creating a replacement.`);
 			}
+			if (!ctx.sessionManager.getSessionFile() || !ctx.sessionManager.getSessionId()) throw new Error("Mission creation requires a persisted Pi session owner.");
 			const event = await state.create(params, ctx);
-			const mission = state.append(pi, event)!;
-			try { hooks.onCreated?.(ctx); }
-			catch (error) { if (ctx.hasUI) ctx.ui.notify(`Mission created, but runtime activation reported: ${error instanceof Error ? error.message : String(error)}`, "warning"); }
+			state.append(pi, event);
+			await hooks.onCreated?.(ctx);
+			const mission = state.readAny();
+			if (!mission) throw new Error("Mission creation lost canonical state.");
 			try { await initializeMissionArtifacts(mission, state.readUsage()); }
 			catch (error) { if (ctx.hasUI) ctx.ui.notify(`Mission created, but generated artifacts could not be initialized: ${error instanceof Error ? error.message : String(error)}`, "warning"); }
 			return { content: [{ type: "text" as const, text: `Mission created: ${mission.title}\n${formatMissionLocation(mission)}` }], details: { mission, usage: state.readUsage() } };
@@ -486,7 +490,7 @@ function missionResult(details: unknown, expanded: boolean, theme: Theme, isErro
 		const mission = value.mission;
 		const color = isError ? "error" : mission.status === "complete" ? "success" : mission.status === "active" ? "warning" : "muted";
 		let text = `${theme.fg(color, value.alreadyComplete ? "already complete" : mission.status)} ${theme.fg("accent", mission.title)} ${theme.fg("muted", mission.missionId)}`;
-		if (mission.reviewStatus && mission.reviewStatus !== "not_required") text += ` · review ${mission.reviewStatus}`;
+		if (mission.reviewStatus && mission.reviewStatus !== "not_required") text += ` · review ${mission.reviewStatus}${mission.reviewOutcome ? ` (${mission.reviewOutcome})` : ""}`;
 		if (value.usage) text += ` · ${value.usage.totalTokens} tokens`;
 		if (expanded) text += `\n${mission.objective}`;
 		return new Text(text, 0, 0);
@@ -552,6 +556,7 @@ export function formatMission(mission: ReturnType<MissionState["readAny"]>, usag
 		objective,
 		requirements ? `Req: ${requirements}` : undefined,
 		`Usage: ${budget}`,
+		mission.reviewStatus === "awaiting_adjudication" ? `Review: run ${mission.reviewRunId ?? "missing"}; derived ${mission.reviewSuggestedVerdict ?? "unknown"}; severity ${mission.reviewHighestSeverity ?? "none"}; blocking ${mission.reviewBlockingFindingCount ?? 0}; backlog ${mission.reviewBacklogFindingCount ?? 0}; evidence via subagent_wait.` : undefined,
 		formatMissionLocation(mission),
 		mission.lastReason ? `Reason: ${compactMissionText(mission.lastReason, 160)}` : undefined,
 	].filter(Boolean).join("\n");

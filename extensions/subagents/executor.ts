@@ -9,6 +9,7 @@ import { DEFAULT_TIMEOUT_MS } from "./config.ts";
 import {
 	createDelegatePaths,
 	defaultDelegateRoot,
+	findRunByAdmission,
 	listRunIds,
 	readRun,
 	writePrivateText,
@@ -77,11 +78,16 @@ export class DelegateExecutor {
 		return !!run && TERMINAL.has(run.runtime.status) && this.detach(id);
 	}
 
+	allocateRunId(): string {
+		return runId(this.now());
+	}
+
 	async start(input: DelegateStartInput): Promise<DelegateRun> {
 		if (!input.task.trim()) throw new Error("Delegate task is empty.");
 		if (input.context === "fork" && !input.forkSessionFile) throw new Error("Fork context requires forkSessionFile.");
 		const now = this.now();
-		const id = runId(now);
+		const id = input.id ?? runId(now);
+		if (!/^[A-Za-z0-9_-]{1,200}$/.test(id) || this.runs.has(id)) throw new Error(`Invalid or duplicate delegate run id: ${id}`);
 		const agentId = `sa_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
 		const root = this.options.artifactsRoot ?? defaultDelegateRoot(input.cwd);
 		const paths = createDelegatePaths(root, id, agentId);
@@ -227,6 +233,20 @@ export class DelegateExecutor {
 		return this.accept({ spec: run.spec, runtime });
 	}
 
+	adopt(id: string, parentSessionFile: string): DelegateRun | undefined {
+		const run = this.runs.get(id);
+		if (!run) return undefined;
+		const adopted = { spec: { ...run.spec, parentSessionFile }, runtime: run.runtime };
+		writeRunSpec(adopted.spec);
+		return this.accept(adopted);
+	}
+
+	async restoreAdmission(cwd: string, admissionKey: string): Promise<DelegateRun | undefined> {
+		const root = this.options.artifactsRoot ?? defaultDelegateRoot(cwd);
+		const run = findRunByAdmission(root, cwd, admissionKey);
+		return run ? this.restoreRun(root, run) : undefined;
+	}
+
 	async restore(cwd: string, parentSessionFile?: string): Promise<DelegateRun[]> {
 		const root = this.options.artifactsRoot ?? defaultDelegateRoot(cwd);
 		return this.restoreRoot(root, parentSessionFile);
@@ -236,22 +256,27 @@ export class DelegateExecutor {
 		for (const id of listRunIds(root)) {
 			const run = readRun(root, id);
 			if (!run || (parentSessionFile !== undefined && run.spec.parentSessionFile !== parentSessionFile)) continue;
-			this.roots.set(id, root);
-			if (!TERMINAL.has(run.runtime.status)) {
-				const workerOwned = run.runtime.workerPid !== undefined && await ownsProcessIdentity(run.runtime.workerPid, run.runtime.workerIdentity);
-				if (!workerOwned) {
-					const childOwned = run.runtime.childPid !== undefined && await ownsProcessIdentity(run.runtime.childPid, run.runtime.childIdentity);
-					const quiesced = childOwned ? await quiesceProcessGroup(run.runtime.childPid!, { graceful: false }) : true;
-					run.runtime = quiesced
-						? { ...run.runtime, status: "lost", endedAt: this.now(), error: "Delegate ownership could not be proven during restoration; unrelated processes were not signalled." }
-						: { ...run.runtime, status: "stopping", error: "Owned stale delegate process group has not quiesced; terminal settlement is withheld." };
-					writeRunRuntime(run.spec, run.runtime);
-				}
-			}
-			this.accept(run);
-			if (!TERMINAL.has(run.runtime.status)) this.watchRun(run);
+			await this.restoreRun(root, run);
 		}
 		return this.list();
+	}
+
+	private async restoreRun(root: string, run: DelegateRun): Promise<DelegateRun> {
+		this.roots.set(run.spec.id, root);
+		if (!TERMINAL.has(run.runtime.status)) {
+			const workerOwned = run.runtime.workerPid !== undefined && await ownsProcessIdentity(run.runtime.workerPid, run.runtime.workerIdentity);
+			if (!workerOwned) {
+				const childOwned = run.runtime.childPid !== undefined && await ownsProcessIdentity(run.runtime.childPid, run.runtime.childIdentity);
+				const quiesced = childOwned ? await quiesceProcessGroup(run.runtime.childPid!, { graceful: false }) : true;
+				run.runtime = quiesced
+					? { ...run.runtime, status: "lost", endedAt: this.now(), error: "Delegate ownership could not be proven during restoration; unrelated processes were not signalled." }
+					: { ...run.runtime, status: "stopping", error: "Owned stale delegate process group has not quiesced; terminal settlement is withheld." };
+				writeRunRuntime(run.spec, run.runtime);
+			}
+		}
+		const restored = this.accept(run);
+		if (!TERMINAL.has(restored.runtime.status)) this.watchRun(restored);
+		return restored;
 	}
 
 	dispose(): void {

@@ -28,7 +28,7 @@ describe("read-only child tools", () => {
 		try {
 			process.env.DEEVS_PI_SUBAGENT_ARTIFACTS = artifacts;
 			await tools.get("review_report")!.execute("call", { verdict: "clear", overallExplanation: "ok", findings: [] });
-			expect(JSON.parse(readFileSync(path.join(artifacts, "review-report.json"), "utf8"))).toMatchObject({ version: 1, verdict: "clear" });
+			expect(JSON.parse(readFileSync(path.join(artifacts, "review-report.json"), "utf8"))).toMatchObject({ version: 1, overallExplanation: "ok", verdict: "clear" });
 			mkdirSync(local);
 			writeFileSync(path.join(local, "large.txt"), "x".repeat(300_000));
 			writeFileSync(path.join(outside, "secret.txt"), "secret");

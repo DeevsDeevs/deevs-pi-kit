@@ -9,7 +9,7 @@ import { chainCheckpoints } from "../chains/checkpoint.ts";
 import { FULL_SCREEN_OVERLAY } from "../shared/dashboard.ts";
 import { MissionDashboard } from "./ui.ts";
 
-export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, setContext: (ctx: ExtensionContext) => void, maybeContinue: (ctx: ExtensionContext) => void, hooks: { validateCompletion?: (input: MissionCompleteInput, ctx: ExtensionContext, directUserRequest?: boolean) => Promise<string[]> | string[]; authorizeCompletion?: (ctx: ExtensionContext) => Promise<string>; completionCandidateId?: (ctx: ExtensionContext) => Promise<string | undefined>; onCreated?: (ctx: ExtensionContext) => void; onTakenOver?: (ctx: ExtensionContext, mission: MissionCurrent) => void; discoverTakeoverCandidates?: (ctx: ExtensionContext) => Promise<MissionTakeoverCandidate[]>; onChanged?: (ctx: ExtensionContext) => void; onResumed?: (ctx: ExtensionContext) => void; continuationBlockers?: (ctx: ExtensionContext) => string[]; onObjectiveUpdated?: (input: MissionUpdateInput, ctx: ExtensionContext) => void; onCompleted?: (ctx: ExtensionContext, mission: MissionCurrent, completionId?: string) => Promise<void> | void } = {}): void {
+export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, setContext: (ctx: ExtensionContext) => void, maybeContinue: (ctx: ExtensionContext) => void, hooks: { validateCompletion?: (input: MissionCompleteInput, ctx: ExtensionContext, directUserRequest?: boolean) => Promise<string[]> | string[]; authorizeCompletion?: (ctx: ExtensionContext) => Promise<string>; completionCandidateId?: (ctx: ExtensionContext) => Promise<string | undefined>; onCreated?: (ctx: ExtensionContext) => void | Promise<void>; onTakenOver?: (ctx: ExtensionContext, mission: MissionCurrent) => void; discoverTakeoverCandidates?: (ctx: ExtensionContext) => Promise<MissionTakeoverCandidate[]>; onChanged?: (ctx: ExtensionContext) => void; onResumed?: (ctx: ExtensionContext) => void; continuationBlockers?: (ctx: ExtensionContext) => string[]; onObjectiveUpdated?: (input: MissionUpdateInput, ctx: ExtensionContext) => void; onCompleted?: (ctx: ExtensionContext, mission: MissionCurrent, completionId?: string) => Promise<void> | void } = {}): void {
 	pi.registerCommand("mission", {
 		description: "Create/manage a durable single-controller Mission.",
 		handler: async (args, ctx) => {
@@ -18,7 +18,7 @@ export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, s
 			const trimmed = args.trim();
 			if (!trimmed || trimmed === "status" || trimmed === "show") {
 				if (ctx.mode === "tui" && ctx.hasUI && state.readAny()) {
-					await showMissionDashboard(pi, state, ctx, setContext, maybeContinue, hooks);
+					await showMissionDashboard(pi, state, ctx, setContext, hooks);
 				} else await showTextViewer(ctx, "Mission", formatMission(state.readAny(), state.readUsage()));
 				return;
 			}
@@ -29,7 +29,6 @@ export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, s
 					const selector = trimmed.slice("takeover".length).trim();
 					const mission = await takeoverMission(pi, state, ctx, { missionId: selector, reason: "/mission takeover" }, hooks, true);
 					ctx.ui.notify(`Mission taken over${mission.status === "active" ? " and resumed" : ""}:\n${formatMission(mission, state.readUsage())}`, "info");
-					maybeContinue(ctx);
 				} catch (error) {
 					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 				}
@@ -40,7 +39,6 @@ export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, s
 					try {
 						const mission = await resumeMission(pi, state, "/resume");
 						hooks.onResumed?.(ctx);
-						maybeContinue(ctx);
 						ctx.ui.notify(`${formatMission(mission, state.readUsage())}${formatContinuation(hooks.continuationBlockers?.(ctx) ?? [])}`, "info");
 					} catch (error) {
 						ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
@@ -81,10 +79,11 @@ export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, s
 					const takeoverCandidates = listSnapshotTakeoverCandidates(ctx);
 					if (takeoverCandidates.length) throw new Error(`A Mission already exists in another session: ${takeoverCandidates.map((candidate) => candidate.snapshot.mission.missionId).join(", ")}. Use /mission takeover instead.`);
 				}
+				if (!ctx.sessionManager.getSessionFile() || !ctx.sessionManager.getSessionId()) throw new Error("Mission creation requires a persisted Pi session owner.");
 				const input = parseCreateArgs(trimmed);
 				const event = await state.create(input, ctx);
 				const mission = state.append(pi, event)!;
-				try { hooks.onCreated?.(ctx); } catch (error) { ctx.ui.notify(`Mission created, but runtime activation reported: ${error instanceof Error ? error.message : String(error)}`, "warning"); }
+				await hooks.onCreated?.(ctx);
 				try { await initializeMissionArtifacts(mission, state.readUsage()); } catch (error) { ctx.ui.notify(`Mission created, but generated artifacts could not be initialized: ${error instanceof Error ? error.message : String(error)}`, "warning"); }
 				ctx.ui.notify(`Mission created: ${mission.title}\nChain: ${mission.chain}@${mission.chainBranch}\nArtifacts: .missions/${mission.slug}`, "info");
 				maybeContinue(ctx);
@@ -111,7 +110,6 @@ async function showMissionDashboard(
 	state: MissionState,
 	ctx: ExtensionContext,
 	setContext: (ctx: ExtensionContext) => void,
-	maybeContinue: (ctx: ExtensionContext) => void,
 	hooks: { onChanged?: (ctx: ExtensionContext) => void },
 ): Promise<void> {
 	await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
@@ -129,7 +127,6 @@ async function showMissionDashboard(
 				setContext(ctx);
 				if (status === "paused") chainCheckpoints.current?.due("Mission paused", "mission_control");
 				hooks.onChanged?.(ctx);
-				if (status === "active") maybeContinue(ctx);
 				render();
 			})().catch((error) => ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"));
 		});

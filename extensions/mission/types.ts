@@ -3,6 +3,7 @@ export type MissionReviewStatus = "not_required" | "due" | "starting" | "running
 export type MissionConvergedReviewStatus = "not_required" | "clear" | "skipped";
 export type MissionReviewSeverity = "blocker" | "major" | "minor" | "nit";
 export type MissionReviewVerdict = "clear" | "changes_requested";
+export type MissionReviewOutcome = "superseded" | "failed";
 export const MAX_MISSION_REVIEW_ADJUDICATIONS = 256;
 
 export interface MissionValidationInput {
@@ -59,12 +60,17 @@ export interface MissionEvent {
 	turnBudget?: number | null;
 	wallDeadlineAt?: number | null;
 	reviewStatus?: MissionReviewStatus;
+	initialBaselinePending?: boolean;
+	reviewUpdatedAt?: number;
 	reviewRunId?: string;
 	reviewAdmissionId?: string;
 	reviewReason?: string;
 	reviewSkippedReason?: string;
 	reviewSuggestedVerdict?: MissionReviewVerdict | "unknown";
 	reviewFailure?: boolean;
+	reviewOutcome?: MissionReviewOutcome;
+	reviewNotBeforeAt?: number;
+	reviewSupersessionCount?: number;
 	reviewWorktreeFingerprint?: string;
 	admittedWorktreeFingerprint?: string;
 	reviewCandidateId?: string;
@@ -130,12 +136,17 @@ export interface MissionCurrent {
 	turnBudget?: number;
 	wallDeadlineAt?: number;
 	reviewStatus?: MissionReviewStatus;
+	initialBaselinePending?: boolean;
+	reviewUpdatedAt?: number;
 	reviewRunId?: string;
 	reviewAdmissionId?: string;
 	reviewReason?: string;
 	reviewSkippedReason?: string;
 	reviewSuggestedVerdict?: MissionReviewVerdict | "unknown";
 	reviewFailure?: boolean;
+	reviewOutcome?: MissionReviewOutcome;
+	reviewNotBeforeAt?: number;
+	reviewSupersessionCount?: number;
 	reviewWorktreeFingerprint?: string;
 	admittedWorktreeFingerprint?: string;
 	reviewCandidateId?: string;

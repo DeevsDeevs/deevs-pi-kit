@@ -7,7 +7,6 @@ import type { MissionCurrent, MissionOwner, MissionProgressRecord, MissionSnapsh
 
 const SNAPSHOT_VERSION = 1;
 // Lock holds are synchronous sub-second operations, so a lock older than this — or one whose owner pid is gone — is a crashed holder, not live contention.
-const STALE_LOCK_MS = 30_000;
 const STATUSES = new Set(["active", "paused", "blocked", "terminal_error", "budget_limited", "usage_limited", "complete", "ended", "cleared"]);
 const REVIEW_STATUSES = new Set(["not_required", "due", "starting", "running", "awaiting_adjudication", "changes_requested", "clear", "skipped"]);
 
@@ -110,14 +109,17 @@ function withLockPath<T>(lock: string, busyMessage: string, operation: () => T):
 
 function acquireLock(lock: string, busyMessage: string): void {
 	for (let attempt = 0; attempt < 50; attempt++) {
+		const candidate = `${lock}.candidate.${process.pid}.${randomUUID()}`;
 		try {
-			mkdirSync(lock, { mode: 0o700 });
-			try { writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid: process.pid, startedAt: Date.now() }), { encoding: "utf8", mode: 0o600 }); } catch { /* the directory itself is the lock; owner metadata only aids stale recovery. */ }
+			mkdirSync(candidate, { mode: 0o700 });
+			writeFileSync(join(candidate, "owner.json"), JSON.stringify({ pid: process.pid, startedAt: Date.now() }), { encoding: "utf8", mode: 0o600 });
+			renameSync(candidate, lock);
 			return;
 		} catch (error) {
-			if (!isNodeError(error) || error.code !== "EEXIST") throw error;
+			rmSync(candidate, { recursive: true, force: true });
+			if (!isNodeError(error) || (error.code !== "EEXIST" && error.code !== "ENOTEMPTY")) throw error;
 		}
-		// A crashed holder leaves the lock dir forever; reclaim it so a SIGKILL cannot permanently brick the Mission. Reclaim is an atomic rename-aside — only one racer's rename wins, losers get ENOENT and simply retry mkdir, so exclusion holds.
+		// A crashed holder leaves the lock dir forever; reclaim it only when its published owner is provably dead.
 		if (!reclaimIfStale(lock)) throw new Error(busyMessage);
 	}
 	throw new Error(busyMessage);
@@ -127,11 +129,10 @@ function reclaimIfStale(lock: string): boolean {
 	let stale: boolean;
 	try {
 		const owner = JSON.parse(readFileSync(join(lock, "owner.json"), "utf8")) as { pid?: unknown; startedAt?: unknown };
-		const startedAt = typeof owner.startedAt === "number" ? owner.startedAt : statSync(lock).mtimeMs;
-		stale = !isPidAlive(owner.pid) || Date.now() - startedAt >= STALE_LOCK_MS;
+		stale = !isPidAlive(owner.pid);
 	} catch {
-		// Missing owner.json is the tiny window between mkdir and the metadata write, so fall back to directory age; a vanished lock just means retry mkdir.
-		try { stale = Date.now() - statSync(lock).mtimeMs >= STALE_LOCK_MS; } catch { return true; }
+		// Owner metadata is published atomically with the lock directory; unknown/corrupt ownership fails closed.
+		try { statSync(lock); return false; } catch { return true; }
 	}
 	if (!stale) return false;
 	const aside = `${lock}.stale.${process.pid}.${randomUUID()}`;
@@ -232,13 +233,14 @@ function validateMission(value: Record<string, unknown>, cwd: string, slug: stri
 		baselineSubagentCostUsd: nonnegative(value.baselineSubagentCostUsd, "baseline Subagent cost"),
 	};
 	if (value.costBudgetUsd !== undefined) mission.costBudgetUsd = nonnegative(value.costBudgetUsd, "costBudgetUsd");
-	for (const key of ["tokenBudget", "turnBudget", "wallDeadlineAt", "objectiveVersion", "blockerCount", "turnCount", "reviewCandidateObjectiveVersion", "reviewBlockingFindingCount", "reviewBacklogFindingCount", "reviewCorrectionCount", "reviewCorrectionLimit"] as const) {
+	for (const key of ["tokenBudget", "turnBudget", "wallDeadlineAt", "objectiveVersion", "blockerCount", "turnCount", "reviewCandidateObjectiveVersion", "reviewUpdatedAt", "reviewNotBeforeAt", "reviewSupersessionCount", "reviewBlockingFindingCount", "reviewBacklogFindingCount", "reviewCorrectionCount", "reviewCorrectionLimit"] as const) {
 		if (value[key] !== undefined) (mission as unknown as Record<string, unknown>)[key] = boundedInteger(value[key], key, 0, Number.MAX_SAFE_INTEGER);
 	}
-	for (const key of ["lastReason", "lastSummary", "generation", "reviewRunId", "reviewAdmissionId", "reviewReason", "reviewSkippedReason", "reviewSuggestedVerdict", "reviewWorktreeFingerprint", "admittedWorktreeFingerprint", "reviewCandidateId", "reviewAdjudicatedCandidateId", "reviewAdjudicatedVerdict", "reviewHighestSeverity", "completionLatchCandidateId", "completionLatchReviewStatus", "completionId", "completionEffectsStatus", "blockerFingerprint"] as const) {
+	for (const key of ["lastReason", "lastSummary", "generation", "reviewRunId", "reviewAdmissionId", "reviewReason", "reviewSkippedReason", "reviewSuggestedVerdict", "reviewOutcome", "reviewWorktreeFingerprint", "admittedWorktreeFingerprint", "reviewCandidateId", "reviewAdjudicatedCandidateId", "reviewAdjudicatedVerdict", "reviewHighestSeverity", "completionLatchCandidateId", "completionLatchReviewStatus", "completionId", "completionEffectsStatus", "blockerFingerprint"] as const) {
 		if (value[key] !== undefined) (mission as unknown as Record<string, unknown>)[key] = text(value[key], key, 20_000);
 	}
 	if (mission.reviewSuggestedVerdict !== undefined && !["clear", "changes_requested", "unknown"].includes(mission.reviewSuggestedVerdict)) throw new Error("Invalid Mission suggested review verdict.");
+	if (mission.reviewOutcome !== undefined && mission.reviewOutcome !== "superseded" && mission.reviewOutcome !== "failed") throw new Error("Invalid Mission review outcome.");
 	if (mission.reviewAdjudicatedVerdict !== undefined && mission.reviewAdjudicatedVerdict !== "clear" && mission.reviewAdjudicatedVerdict !== "changes_requested") throw new Error("Invalid Mission adjudicated review verdict.");
 	if (value.reviewAdjudications !== undefined) mission.reviewAdjudications = array(value.reviewAdjudications, "Mission review adjudications", MAX_MISSION_REVIEW_ADJUDICATIONS).map((item) => {
 		const adjudication = object(item, "Mission review adjudication");
@@ -261,6 +263,10 @@ function validateMission(value: Record<string, unknown>, cwd: string, slug: stri
 	if (value.lastContinuationAt !== undefined) mission.lastContinuationAt = number(value.lastContinuationAt, "lastContinuationAt");
 	if (reviewStatus) mission.reviewStatus = reviewStatus as MissionCurrent["reviewStatus"];
 	if (value.reviewFailure !== undefined) mission.reviewFailure = value.reviewFailure === true;
+	if (value.initialBaselinePending !== undefined) {
+		if (typeof value.initialBaselinePending !== "boolean") throw new Error("Invalid Mission initial baseline pending marker.");
+		mission.initialBaselinePending = value.initialBaselinePending;
+	}
 	if (value.reviewAdjudicationHistoryComplete !== undefined) {
 		if (value.reviewAdjudicationHistoryComplete !== true) throw new Error("Invalid Mission review adjudication history completeness marker.");
 		mission.reviewAdjudicationHistoryComplete = true;

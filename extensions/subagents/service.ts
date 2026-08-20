@@ -4,7 +4,7 @@ import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { clampConcurrency, clampTimeoutMs, loadAgentsSettings } from "./config.ts";
 import { findAgent, loadBuiltinAgents } from "./agents.ts";
-import { defaultDelegateRoot } from "./artifacts.ts";
+import { defaultDelegateRoot, releaseAdmissionReservation, removeAdmission, reserveAdmission } from "./artifacts.ts";
 import { DelegateExecutor } from "./executor.ts";
 import type { DelegateRun, DelegateRunStatus } from "./runtime-types.ts";
 import { requestRuntimeDelivery } from "../shared/runtime-delivery.ts";
@@ -12,6 +12,7 @@ import { consumeRuntimeEvent, runtimeEvents, type RuntimeTerminalStatus } from "
 import { chainCheckpoints } from "../chains/checkpoint.ts";
 
 class ConcurrencyLimitError extends Error {}
+export class SubagentAdmissionReservedError extends Error {}
 
 export interface SubagentTaskInput {
 	agent: string;
@@ -213,6 +214,7 @@ export class SubagentService {
 		for (const run of this.executor.list()) {
 			if ((id && run.spec.id !== id) || !isTerminal(run.runtime.status) || referenced.has(run.spec.id)) continue;
 			consumeRuntimeEvent(this.pi, `terminal:${run.spec.id}:${run.spec.generation}`, claimant);
+			if (run.spec.admissionKey) removeAdmission(this.executor.rootFor(run.spec.cwd), run.spec.cwd, run.spec.admissionKey, run.spec.id);
 			rmSync(run.spec.artifactsDir, { recursive: true, force: true });
 			this.executor.forget(run.spec.id);
 			this.terminalSeen.delete(runTerminalKey(run));
@@ -268,12 +270,8 @@ export class SubagentService {
 		const parentSessionFile = ctx.sessionManager.getSessionFile();
 		if (admissionKey) {
 			if (!/^[A-Za-z0-9_-]{1,200}$/.test(admissionKey)) throw new Error("Invalid internal Subagent admission key.");
-			await this.executor.restore(cwd, parentSessionFile);
-			const existing = this.executor.list().find((run) => run.spec.admissionKey === admissionKey && run.spec.cwd === cwd && run.spec.parentSessionFile === parentSessionFile);
-			if (existing) {
-				this.recordRunRoot(existing, ctx);
-				return existing;
-			}
+			const existing = await this.executor.restoreAdmission(cwd, admissionKey);
+			if (existing) return this.adoptAdmission(existing, parentSessionFile, ctx);
 		}
 		this.recordRunRootPath(this.executor.rootFor(cwd), ctx);
 		const settings = await loadAgentsSettings(cwd);
@@ -281,7 +279,16 @@ export class SubagentService {
 		if (model && settings.allowedModels.length && !settings.allowedModels.includes(model)) throw new Error(`Model override not allowed: ${model}`);
 		this.reserveCapacity(settings.parallelMaxConcurrency);
 		try {
-			const run = await this.executor.start({
+			const reservedRunId = admissionKey ? this.executor.allocateRunId() : undefined;
+			if (admissionKey && !reserveAdmission(this.executor.rootFor(cwd), cwd, admissionKey, reservedRunId!)) {
+				const existing = await this.executor.restoreAdmission(cwd, admissionKey);
+				if (existing) return this.adoptAdmission(existing, parentSessionFile, ctx);
+				throw new SubagentAdmissionReservedError(`Delegate admission is already reserved: ${admissionKey}`);
+			}
+			let run: DelegateRun;
+			try {
+				run = await this.executor.start({
+				id: reservedRunId,
 				persona: persona.name,
 				personaBody: persona.body,
 				personaTools: persona.tools,
@@ -300,10 +307,15 @@ export class SubagentService {
 				turns: task.turns,
 				tokens: task.tokens,
 				costUsd: task.costUsd,
-			});
+				});
+			} catch (error) {
+				if (admissionKey) releaseAdmissionReservation(this.executor.rootFor(cwd), cwd, admissionKey);
+				throw error;
+			}
 			try {
 				this.recordRunRoot(run, ctx);
 			} catch (error) {
+				if (admissionKey) releaseAdmissionReservation(this.executor.rootFor(cwd), cwd, admissionKey);
 				await this.executor.cancel(run.spec.id).catch(() => undefined);
 				throw error;
 			}
@@ -313,6 +325,15 @@ export class SubagentService {
 			this.startingRuns--;
 			this.signalCapacityChange();
 		}
+	}
+
+	private adoptAdmission(run: DelegateRun, parentSessionFile: string | undefined, ctx: ExtensionContext): DelegateRun {
+		const crossParent = Boolean(parentSessionFile && run.spec.parentSessionFile !== parentSessionFile);
+		const adopted = crossParent ? this.executor.adopt(run.spec.id, parentSessionFile!) ?? run : run;
+		this.recordRunRoot(adopted, ctx);
+		this.activate(adopted);
+		if (isTerminal(adopted.runtime.status) && !crossParent) this.emitTerminal(adopted);
+		return adopted;
 	}
 
 	private reserveCapacity(limit: number): void {

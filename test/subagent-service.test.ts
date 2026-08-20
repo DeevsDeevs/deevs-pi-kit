@@ -64,6 +64,35 @@ describe("SubagentService", () => {
 		const restored = await restoredService.start({ agent: "reviewer", task: "Recover.", admissionKey: "review_candidate_1" }, ctx) as DelegateRun;
 		expect(restored.spec.id).toBe(first.spec.id);
 		expect(readdirSync(path.join(root, "runs"))).toHaveLength(1);
+		expect(restoredService.clearTerminal(first.spec.id)).toBe(1);
+		const replacement = await restoredService.start({ agent: "reviewer", task: "Fresh admission.", admissionKey: "review_candidate_1", background: false }, ctx) as DelegateRun;
+		expect(replacement.spec.id).not.toBe(first.spec.id);
+		expect(readdirSync(path.join(root, "runs"))).toHaveLength(1);
+	});
+
+	it("creates at most one run for concurrent admission attempts", async () => {
+		const { service, ctx, root } = setup();
+		const settled = await Promise.allSettled([
+			service.start({ agent: "reviewer", task: "First.", admissionKey: "review_race", background: true }, ctx),
+			service.start({ agent: "reviewer", task: "Second.", admissionKey: "review_race", background: true }, ctx),
+		]);
+		const ids = settled.filter((item): item is PromiseFulfilledResult<DelegateRun | SubagentGroup> => item.status === "fulfilled").map((item) => (item.value as DelegateRun).spec.id);
+		expect(new Set(ids).size).toBe(1);
+		expect(readdirSync(path.join(root, "runs"))).toHaveLength(1);
+	});
+
+	it("adopts only the exact admission across parent sessions", async () => {
+		const { service, ctx, root } = setup();
+		const wanted = await service.start({ agent: "reviewer", task: "Wanted.", admissionKey: "review_wanted", background: false }, ctx) as DelegateRun;
+		const foreign = await service.start({ agent: "reviewer", task: "Foreign.", admissionKey: "review_foreign", background: false }, ctx) as DelegateRun;
+		writeFileSync(path.join(root, "runs", foreign.spec.id, "spec.json"), "{");
+		const successor = { ...ctx, sessionManager: { ...ctx.sessionManager, getSessionFile: () => "/tmp/successor.jsonl" } } as ExtensionContext;
+		await service.restore(successor);
+		const adopted = await service.start({ agent: "reviewer", task: "Recover.", admissionKey: "review_wanted" }, successor) as DelegateRun;
+		expect(adopted.spec.id).toBe(wanted.spec.id);
+		expect(adopted.spec.parentSessionFile).toBe("/tmp/successor.jsonl");
+		expect(service.list().runs.map((run) => run.spec.id)).toEqual([wanted.spec.id]);
+		expect(readFileSync(path.join(root, "runs", foreign.spec.id, "spec.json"), "utf8")).toBe("{");
 	});
 
 	it("consumes a terminal event when the parent explicitly collects the result", async () => {

@@ -6,7 +6,7 @@ import { slugify } from "../chains/parser.ts";
 import { missionDir } from "./artifacts.ts";
 import { currentMissionOwner, listMissionSnapshots, readMissionSnapshot, withMissionLock, withMissionWorkspaceLock, writeMissionSnapshot } from "./persistence.ts";
 import { MAX_MISSION_REVIEW_ADJUDICATIONS } from "./types.ts";
-import type { MissionCreateInput, MissionCurrent, MissionEvent, MissionOwner, MissionProgressInput, MissionProgressRecord, MissionConvergedReviewStatus, MissionReviewSeverity, MissionReviewStatus, MissionReviewVerdict, MissionSnapshot, MissionStatus, MissionTakeoverCandidate, MissionUpdateInput, MissionUsage, MissionValidationInput, MissionValidationRecord } from "./types.ts";
+import type { MissionCreateInput, MissionCurrent, MissionEvent, MissionOwner, MissionProgressInput, MissionProgressRecord, MissionConvergedReviewStatus, MissionReviewOutcome, MissionReviewSeverity, MissionReviewStatus, MissionReviewVerdict, MissionSnapshot, MissionStatus, MissionTakeoverCandidate, MissionUpdateInput, MissionUsage, MissionValidationInput, MissionValidationRecord } from "./types.ts";
 
 export const MISSION_CUSTOM_TYPE = "deevs-mission-state";
 const DEFAULT_CHAIN_BRANCH = "main";
@@ -164,6 +164,7 @@ export class MissionState {
 			if (stored && (stored.revision !== source.revision || stored.owner.sessionId !== source.owner.sessionId)) throw new Error("Mission ownership changed; inspect the latest controller before retrying takeover.");
 			if (!stored && candidate.source === "snapshot") throw new Error("Mission canonical state disappeared before takeover.");
 			const now = Date.now();
+			const preservesReview = source.mission.reviewStatus === "clear" || source.mission.reviewStatus === "skipped" || source.mission.reviewStatus === "changes_requested";
 			const mission: MissionCurrent = {
 				...source.mission,
 				status: takeoverStatus(source),
@@ -175,9 +176,9 @@ export class MissionState {
 				baselineSubagentTokens: currentAggregate.subagentTokens,
 				baselineMainCostUsd: currentAggregate.mainCostUsd,
 				baselineSubagentCostUsd: currentAggregate.subagentCostUsd,
-				reviewStatus: source.mission.reviewStatus === "clear" || source.mission.reviewStatus === "skipped" ? source.mission.reviewStatus : "due",
-				reviewReason: source.mission.reviewStatus === "clear" || source.mission.reviewStatus === "skipped" ? source.mission.reviewReason : "Mission ownership changed; unresolved review requires recovery.",
-				reviewRunId: undefined,
+				reviewStatus: preservesReview ? source.mission.reviewStatus : "due",
+				reviewReason: preservesReview ? source.mission.reviewReason : "Mission ownership changed; unresolved review requires recovery.",
+				reviewRunId: source.mission.reviewStatus === "changes_requested" ? source.mission.reviewRunId : undefined,
 				reviewFailure: undefined,
 			};
 			taken = {
@@ -234,7 +235,7 @@ export class MissionState {
 					? { ...rawEvent, baselineMainTokens: rolling.mainTokens, baselineSubagentTokens: rolling.subagentTokens, baselineMainCostUsd: rolling.mainCostUsd, baselineSubagentCostUsd: rolling.subagentCostUsd }
 					: rawEvent;
 				this.applyEvent(event);
-				if (event.reviewFailure) this.reviewFailureCount++;
+				if (event.reviewOutcome === "failed") this.reviewFailureCount++;
 				const status = (this.current as MissionCurrent | undefined)?.status;
 				if (["complete", "ended", "cleared", "budget_limited"].includes(status ?? "")) terminalUsage = { ...rolling };
 				continue;
@@ -334,7 +335,10 @@ export class MissionState {
 				objectiveVersion: 1,
 				turnBudget: positiveInteger(input.turnBudget, "turnBudget"),
 				wallDeadlineAt: input.wallDeadlineMs === undefined ? undefined : now + positiveNumber(input.wallDeadlineMs, "wallDeadlineMs")!,
-				reviewStatus: "not_required",
+				reviewStatus: "due",
+				initialBaselinePending: true,
+				reviewUpdatedAt: now,
+				reviewReason: "Mission creation requires a durable initial workspace baseline.",
 				reviewAdjudicationHistoryComplete: true,
 				reviewCorrectionCount: 0,
 				reviewCorrectionLimit: DEFAULT_REVIEW_CORRECTION_LIMIT,
@@ -352,7 +356,7 @@ export class MissionState {
 			if (!this.cwd || !this.owner) {
 				pi.appendEntry(MISSION_CUSTOM_TYPE, event);
 				this.applyEvent(event);
-				if (event.reviewFailure) this.reviewFailureCount++;
+				if (event.reviewOutcome === "failed") this.reviewFailureCount++;
 				return this.readAny();
 			}
 			const persist = () => withMissionLock(this.cwd!, event.slug ?? this.current?.slug ?? "", () => {
@@ -368,7 +372,7 @@ export class MissionState {
 				if (stored?.revision === Number.MAX_SAFE_INTEGER) throw new Error("Mission state revision space is exhausted.");
 				// Apply to in-memory state, then commit to disk. If the durable write fails, roll the in-memory state back so read()/readAny() never report an event that was never persisted.
 				this.applyEvent(event);
-				if (event.reviewFailure) this.reviewFailureCount++;
+				if (event.reviewOutcome === "failed") this.reviewFailureCount++;
 				try {
 					const snapshot = this.exportSnapshot(this.owner!);
 					snapshot.revision = (stored?.revision ?? 0) + 1;
@@ -434,11 +438,12 @@ export class MissionState {
 		};
 	}
 
-	reviewEvent(status: MissionReviewStatus, input: { runId?: string; admissionId?: string; reason?: string; skippedReason?: string; suggestedVerdict?: MissionReviewVerdict | "unknown"; failure?: boolean; worktreeFingerprint?: string; candidateId?: string; highestSeverity?: MissionReviewSeverity; blockingFindingCount?: number; backlogFindingCount?: number; replayAdjudication?: boolean } = {}): MissionEvent {
+	reviewEvent(status: MissionReviewStatus, input: { runId?: string; admissionId?: string; reason?: string; skippedReason?: string; suggestedVerdict?: MissionReviewVerdict | "unknown"; failure?: boolean; outcome?: MissionReviewOutcome; notBeforeAt?: number; worktreeFingerprint?: string; candidateId?: string; highestSeverity?: MissionReviewSeverity; blockingFindingCount?: number; backlogFindingCount?: number; replayAdjudication?: boolean } = {}): MissionEvent {
 		const mission = this.requireActive();
 		const adjudicated = status === "clear" || status === "changes_requested";
 		const correctionCount = input.replayAdjudication ? mission.reviewCorrectionCount : status === "changes_requested" ? (mission.reviewCorrectionCount ?? 0) + 1 : status === "clear" ? 0 : undefined;
-		const candidateId = input.candidateId ?? mission.reviewCandidateId;
+		const supersessionCount = input.outcome === "superseded" ? (mission.reviewSupersessionCount ?? 0) + 1 : (status === "clear" || status === "changes_requested") ? 0 : undefined;
+		const candidateId = input.candidateId ?? (status === "due" ? undefined : mission.reviewCandidateId);
 		let previousAdjudications = [...(mission.reviewAdjudications ?? [])];
 		if (mission.reviewAdjudicatedCandidateId && mission.reviewAdjudicatedVerdict) {
 			previousAdjudications = [...previousAdjudications.filter((item) => item.candidateId !== mission.reviewAdjudicatedCandidateId), { candidateId: mission.reviewAdjudicatedCandidateId, verdict: mission.reviewAdjudicatedVerdict }];
@@ -465,8 +470,11 @@ export class MissionState {
 			reviewSkippedReason: input.skippedReason?.trim(),
 			reviewSuggestedVerdict: input.suggestedVerdict,
 			reviewFailure: input.failure,
+			reviewOutcome: input.outcome,
+			reviewNotBeforeAt: input.notBeforeAt,
+			reviewSupersessionCount: supersessionCount,
 			reviewWorktreeFingerprint: input.worktreeFingerprint,
-			admittedWorktreeFingerprint: status === "skipped" ? input.worktreeFingerprint : undefined,
+			admittedWorktreeFingerprint: status === "skipped" || status === "not_required" ? input.worktreeFingerprint : undefined,
 			reviewCandidateId: candidateId,
 			reviewCandidateObjectiveVersion: candidateId ? mission.objectiveVersion ?? 1 : undefined,
 			reviewAdjudicatedCandidateId: adjudicated ? candidateId : undefined,
@@ -587,6 +595,7 @@ export class MissionState {
 			const requirements = normalizeRequirements(event.requirements?.length ? event.requirements : inferRequirements(event.objective));
 			this.progress = [];
 			this.continuationProgressIndex = 0;
+			this.reviewFailureCount = 0;
 			this.current = {
 				missionId: event.missionId,
 				objective: event.objective,
@@ -611,7 +620,12 @@ export class MissionState {
 				turnBudget: event.turnBudget ?? undefined,
 				wallDeadlineAt: event.wallDeadlineAt ?? undefined,
 				reviewStatus: event.reviewStatus ?? "not_required",
+				initialBaselinePending: event.initialBaselinePending ?? false,
+				reviewUpdatedAt: event.reviewUpdatedAt ?? event.at,
 				reviewRunId: event.reviewRunId,
+				reviewOutcome: event.reviewOutcome,
+				reviewNotBeforeAt: event.reviewNotBeforeAt,
+				reviewSupersessionCount: event.reviewSupersessionCount ?? 0,
 				reviewAdmissionId: event.reviewAdmissionId,
 				reviewReason: event.reviewReason,
 				reviewSkippedReason: event.reviewSkippedReason,
@@ -665,9 +679,14 @@ export class MissionState {
 			if (event.wallDeadlineAt !== undefined) this.current.wallDeadlineAt = event.wallDeadlineAt ?? undefined;
 			this.current.objectiveVersion = event.objectiveVersion ?? (this.current.objectiveVersion ?? 1) + 1;
 			if (identityChanged) {
-				this.current.reviewCandidateId = undefined;
-				this.current.reviewCandidateObjectiveVersion = undefined;
-				this.current.reviewAdmissionId = undefined;
+				this.current.reviewOutcome = "superseded";
+				this.current.reviewSupersessionCount = (this.current.reviewSupersessionCount ?? 0) + 1;
+				this.current.reviewNotBeforeAt = undefined;
+				if (!this.current.reviewRunId || !this.current.reviewAdmissionId) {
+					this.current.reviewCandidateId = undefined;
+					this.current.reviewCandidateObjectiveVersion = undefined;
+					this.current.reviewWorktreeFingerprint = undefined;
+				}
 				this.current.reviewAdjudicatedCandidateId = undefined;
 				this.current.reviewAdjudicatedVerdict = undefined;
 				this.current.reviewCorrectionCount = 0;
@@ -676,6 +695,8 @@ export class MissionState {
 			}
 		}
 		if (event.reviewStatus) this.current.reviewStatus = event.reviewStatus;
+		if (event.kind === "review_changed") this.current.reviewUpdatedAt = event.at;
+		if (event.kind === "review_changed" && event.reviewStatus === "not_required") this.current.initialBaselinePending = false;
 		// A review that reaches the reviewer or clears wipes the transient failure streak, so weeks-apart intermittent reviewer failures cannot accumulate into a permanent three-strike block.
 		if (event.reviewStatus === "awaiting_adjudication" || event.reviewStatus === "clear") this.reviewFailureCount = 0;
 		if (event.kind === "review_changed") {
@@ -688,10 +709,19 @@ export class MissionState {
 		if (event.reviewReason !== undefined) this.current.reviewReason = event.reviewReason;
 		if (event.reviewSkippedReason !== undefined) this.current.reviewSkippedReason = event.reviewSkippedReason;
 		if (event.reviewSuggestedVerdict !== undefined) this.current.reviewSuggestedVerdict = event.reviewSuggestedVerdict;
-		if (event.reviewFailure !== undefined) this.current.reviewFailure = event.reviewFailure;
+		if (event.kind === "review_changed") {
+			this.current.reviewFailure = event.reviewFailure;
+			this.current.reviewOutcome = event.reviewOutcome;
+		}
+		if (event.reviewStatus && event.reviewStatus !== "due") this.current.reviewNotBeforeAt = undefined;
+		else if (event.reviewNotBeforeAt !== undefined) this.current.reviewNotBeforeAt = event.reviewNotBeforeAt;
 		if (event.reviewWorktreeFingerprint !== undefined) this.current.reviewWorktreeFingerprint = event.reviewWorktreeFingerprint;
 		if (event.admittedWorktreeFingerprint !== undefined) this.current.admittedWorktreeFingerprint = event.admittedWorktreeFingerprint;
-		if (event.reviewCandidateId !== undefined) this.current.reviewCandidateId = event.reviewCandidateId;
+		if (event.kind === "review_changed" && event.reviewStatus === "due" && event.reviewCandidateId === undefined) {
+			this.current.reviewCandidateId = undefined;
+			this.current.reviewCandidateObjectiveVersion = undefined;
+			this.current.reviewWorktreeFingerprint = undefined;
+		} else if (event.reviewCandidateId !== undefined) this.current.reviewCandidateId = event.reviewCandidateId;
 		if (event.reviewCandidateObjectiveVersion !== undefined) this.current.reviewCandidateObjectiveVersion = event.reviewCandidateObjectiveVersion;
 		if (event.reviewAdjudicatedCandidateId !== undefined) this.current.reviewAdjudicatedCandidateId = event.reviewAdjudicatedCandidateId;
 		if (event.reviewAdjudicatedVerdict !== undefined) this.current.reviewAdjudicatedVerdict = event.reviewAdjudicatedVerdict;
@@ -706,6 +736,7 @@ export class MissionState {
 		if (event.reviewBlockingFindingCount !== undefined) this.current.reviewBlockingFindingCount = event.reviewBlockingFindingCount;
 		if (event.reviewBacklogFindingCount !== undefined) this.current.reviewBacklogFindingCount = event.reviewBacklogFindingCount;
 		if (event.reviewCorrectionCount !== undefined) this.current.reviewCorrectionCount = event.reviewCorrectionCount;
+		if (event.reviewSupersessionCount !== undefined) this.current.reviewSupersessionCount = event.reviewSupersessionCount;
 		if (event.reviewCorrectionLimit !== undefined) this.current.reviewCorrectionLimit = event.reviewCorrectionLimit;
 		if (event.kind === "completion_latch_cleared") {
 			this.current.completionLatchCandidateId = undefined;
@@ -739,6 +770,7 @@ export class MissionState {
 
 function takeoverStatus(snapshot: MissionSnapshot): MissionStatus {
 	const mission = snapshot.mission;
+	if ((mission.reviewCorrectionCount ?? 0) > (mission.reviewCorrectionLimit ?? DEFAULT_REVIEW_CORRECTION_LIMIT)) return "blocked";
 	if ((mission.tokenBudget !== undefined && snapshot.usage.totalTokens >= mission.tokenBudget) || (mission.costBudgetUsd !== undefined && snapshot.usage.totalCostUsd >= mission.costBudgetUsd)) return "budget_limited";
 	if ((mission.turnBudget !== undefined && (mission.turnCount ?? 0) >= mission.turnBudget) || (mission.wallDeadlineAt !== undefined && Date.now() >= mission.wallDeadlineAt)) return "usage_limited";
 	return "active";
