@@ -34,7 +34,7 @@ mission_complete
 - Active Mission authorization survives restart and permits reversible best judgment without routine questions.
 - Exactly one persisted Pi session controls a Mission. `mission_takeover` or `/mission takeover` transfers control after explicit user authorization when the previous session is stopped or broken; takeover resumes immediately when limits permit.
 - Takeover never stops the previous Pi process or its children. The confirmation is an operator attestation that the old session is quiescent; an upgraded old session is fenced from later Mission mutations by controller and revision checks.
-- Takeover carries progress and usage, creates a new controller generation, preserves an unchanged adjudicated objective/scope/fingerprint candidate, recovers unresolved review as due, and marks the Mission Chain checkpoint due.
+- Takeover carries progress and usage, creates a new controller generation, preserves an unchanged adjudicated objective/scope/fingerprint candidate, recovers unresolved review as due, and marks the Mission Chain checkpoint due. It preserves a correction-limit block and adopts only the exact prior admission; unrelated foreign-session runs are never restored.
 - Pre-upgrade recovery imports only the exact same-cwd Pi session branch. Generated markdown is never parsed as Mission authority.
 - Authorization never auto-approves tools or crosses credential, safety, irreversible, or material approval boundaries.
 - Autonomous continuation normally advances from `agent_settled`, using a hidden triggering `followUp` after idle/user-priority admission.
@@ -50,7 +50,7 @@ mission_complete
 
 ## Completion gate
 
-Material worktree mutation sets independent review due. Mission durably reserves one candidate before launching a fresh read-only `reviewer`; the child submits findings through the schema-validated `review_report` tool, and the parent adjudicates that exact run. Runtime derives the release decision from typed severity: `blocker|major` require changes, while `minor|nit` remain non-blocking backlog. The fourth valid correction cycle blocks until trusted UI authorization adds three more cycles. Missing or malformed reports remain `unknown`, never implicit clearance. Completion is vetoed until:
+Mission creation starts review-due and becomes `not_required` only after its initial workspace fingerprint is durably admitted. Later material mutation sets independent review due and starts a short durable quiet window before admission. Mission then reserves one candidate before launching a fresh read-only `reviewer`; the child submits findings through the schema-validated `review_report` tool, and the parent adjudicates that exact run. A candidate that changes while review runs is typed `superseded` and does not consume reviewer-failure capacity; only typed launch, runtime, missing-run, malformed-report, or fingerprint failures do. Runtime derives the release decision from typed severity: `blocker|major` require changes, while `minor|nit` remain non-blocking backlog. The fourth valid correction cycle blocks until trusted UI authorization adds three more cycles. Missing or malformed reports remain `unknown`, never implicit clearance. Completion is vetoed until:
 
 - every ordered requirement index has concrete audit evidence;
 - at least one structured validation record has `exitCode: 0`;

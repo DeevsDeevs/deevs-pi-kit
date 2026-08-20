@@ -59,6 +59,7 @@ async function setup(options: { pending?: boolean; fingerprint?: () => string; h
 		cwd,
 		isIdle: () => true,
 		hasPendingMessages: () => options.pending === true,
+		abort: () => undefined,
 		sessionManager: { getBranch: () => branch, getSessionFile: () => join(cwd, "session.jsonl"), getSessionId: () => `session-${createHash("sha256").update(cwd).digest("hex").slice(0, 12)}` },
 		ui: { setStatus: () => undefined },
 	} as unknown as ExtensionContext;
@@ -67,6 +68,8 @@ async function setup(options: { pending?: boolean; fingerprint?: () => string; h
 	const created = await state.create({ objective: "Implement it", requirements: ["Feature works"], chain: "kit" }, ctx);
 	state.append(pi, created);
 	const runtime = new MissionRuntime(pi, state);
+	const initialFingerprint = await runtime.workspaceFingerprint(ctx);
+	if (initialFingerprint) state.append(pi, state.reviewEvent("not_required", { reason: "test baseline", worktreeFingerprint: initialFingerprint }));
 	const emptyService = {
 		list: () => ({ runs: [], groups: [] }),
 		executor: { onChange: () => () => undefined },
@@ -173,6 +176,19 @@ describe("Mission runtime", () => {
 		expect(["due", "starting", "blocked"]).toContain(test.state.readAny()?.reviewStatus);
 	});
 
+	it("blocks recovery when the durable workspace candidate cannot be fingerprinted", async () => {
+		let unavailable = false;
+		const cwd = mkdtempSync(join(tmpdir(), "mission-recovery-fingerprint-"));
+		ownedRoots.push(cwd);
+		const test = await setup({ cwd, exec: async (_command, args) => unavailable
+			? { code: 1, stdout: "", stderr: "git unavailable" }
+			: { code: 0, stdout: args[0] === "rev-parse" && args[1] === "--show-toplevel" ? cwd : args[0] === "rev-parse" ? "head" : "", stderr: "" } });
+		unavailable = true;
+		const internal = test.runtime as unknown as { recover: (ctx: ExtensionContext) => Promise<void> };
+		await internal.recover(test.ctx);
+		expect(test.state.readAny()).toMatchObject({ status: "blocked", lastReason: "workspace fingerprint unavailable during recovery" });
+	});
+
 	it("fails completion and continuation closed when child settlement cannot be verified", async () => {
 		const test = await setup();
 		const service = {
@@ -224,14 +240,13 @@ describe("Mission runtime", () => {
 		expect(test.state.read()?.reviewStatus).toBe("clear");
 	});
 
-	it("recovers automatically when a review settles without a parent agent turn", async () => {
+	it("wakes the parent exactly once when a review becomes ready for adjudication", async () => {
 		const test = await setup();
 		const artifactsDir = mkdtempSync(join(tmpdir(), "mission-review-"));
 		const run = { spec: { id: "review-recovery", artifactsDir }, runtime: { status: "running", output: "" } } as unknown as DelegateRun;
-		let listener: ((candidate: DelegateRun) => void) | undefined;
 		const service = {
 			list: () => ({ runs: [], groups: [] }),
-			executor: { get: () => run, onChange: (value: (candidate: DelegateRun) => void) => { listener = value; return () => undefined; } },
+			executor: { get: () => run, onChange: () => () => undefined },
 		} as unknown as SubagentService;
 		setSubagentService(service);
 		try {
@@ -241,10 +256,13 @@ describe("Mission runtime", () => {
 			expect(test.messages).toEqual([]);
 			run.runtime.status = "completed";
 			run.runtime.output = "human explanation in any language";
-			writeFileSync(join(artifactsDir, "review-report.json"), JSON.stringify({ version: 1, verdict: "clear", findings: [] }));
-			listener?.(run);
-			await vi.waitFor(() => expect(test.state.read()?.reviewStatus).toBe("awaiting_adjudication"), { timeout: 500 });
+			writeFileSync(join(artifactsDir, "review-report.json"), JSON.stringify({ version: 1, overallExplanation: "reviewed", verdict: "clear", findings: [] }));
+			const internal = test.runtime as unknown as { recover: (ctx: ExtensionContext) => Promise<void> };
+			await internal.recover(test.ctx);
+			expect(test.state.read()?.reviewStatus).toBe("awaiting_adjudication");
 			expect(test.state.read()?.reviewSuggestedVerdict).toBe("clear");
+			expect(test.messages).toHaveLength(1);
+			await internal.recover(test.ctx);
 			expect(test.messages).toHaveLength(1);
 		} finally {
 			rmSync(artifactsDir, { recursive: true, force: true });
@@ -269,7 +287,6 @@ describe("Mission runtime", () => {
 		const test = await setup({ fingerprint: () => fingerprint });
 		const artifactsDir = mkdtempSync(join(tmpdir(), "mission-review-mutation-"));
 		const run = { spec: { id: "review-mutation", artifactsDir }, runtime: { status: "running", output: "" } } as unknown as DelegateRun;
-		let listener: ((candidate: DelegateRun) => void) | undefined;
 		let restarted: { deliverTerminal?: boolean } | undefined;
 		const service = {
 			list: () => ({ runs: [], groups: [] }),
@@ -277,7 +294,7 @@ describe("Mission runtime", () => {
 				restarted = input;
 				return { spec: { id: "review-mutation-retry" }, runtime: { status: "running" } } as DelegateRun;
 			},
-			executor: { get: () => run, onChange: (value: (candidate: DelegateRun) => void) => { listener = value; return () => undefined; } },
+			executor: { get: () => run, onChange: () => () => undefined },
 		} as unknown as SubagentService;
 		setSubagentService(service);
 		try {
@@ -285,20 +302,20 @@ describe("Mission runtime", () => {
 			test.state.append(test.pi, test.state.reviewEvent("running", { runId: run.spec.id, worktreeFingerprint: launchFingerprint }));
 			await test.emit("session_start", { reason: "resume" });
 			fingerprint = "after";
-			run.runtime.status = "completed";
-			writeFileSync(join(artifactsDir, "review-report.json"), JSON.stringify({ version: 1, verdict: "clear", findings: [] }));
-			listener?.(run);
-			await vi.waitFor(() => expect(test.state.read()?.reviewRunId).toBe("review-mutation-retry"), { timeout: 500 });
-			expect(test.state.read()?.reviewStatus).toBe("running");
-			expect(test.state.read()?.reviewReason).toContain("worktree changed while independent review was running");
-			expect(restarted?.deliverTerminal).toBe(false);
+			run.runtime.status = "failed";
+			run.runtime.error = "obsolete reviewer failed";
+			await (test.runtime as unknown as { reconcileReview: () => Promise<boolean> }).reconcileReview();
+			expect(test.state.read()?.reviewStatus).toBe("due");
+			expect(test.state.read()).toMatchObject({ reviewOutcome: "superseded" });
+			expect(test.state.readReviewFailureCount()).toBe(0);
+			expect(restarted).toBeUndefined();
 		} finally {
 			rmSync(artifactsDir, { recursive: true, force: true });
 			clearSubagentService(service);
 		}
 	});
 
-	it("blocks after three review-time fingerprint changes instead of requeueing forever", async () => {
+	it("does not spend reviewer-failure capacity when a completed review is superseded", async () => {
 		let fingerprint = "before";
 		const test = await setup({ fingerprint: () => fingerprint });
 		const artifactsDir = mkdtempSync(join(tmpdir(), "mission-review-churn-"));
@@ -310,22 +327,49 @@ describe("Mission runtime", () => {
 		} as unknown as SubagentService;
 		setSubagentService(service);
 		try {
-			test.state.append(test.pi, test.state.reviewEvent("due", { reason: "first churn", failure: true }));
-			test.state.append(test.pi, test.state.reviewEvent("due", { reason: "second churn", failure: true }));
+			test.state.append(test.pi, test.state.reviewEvent("due", { reason: "first churn", outcome: "failed" }));
+			test.state.append(test.pi, test.state.reviewEvent("due", { reason: "second churn", outcome: "failed" }));
 			test.state.append(test.pi, test.state.reviewEvent("running", { runId: run.spec.id, worktreeFingerprint: expectedFingerprint(fingerprint) }));
 			await test.emit("session_start", { reason: "resume" });
 			fingerprint = "after";
 			run.runtime.status = "completed";
-			writeFileSync(join(artifactsDir, "review-report.json"), JSON.stringify({ version: 1, verdict: "clear", findings: [] }));
+			writeFileSync(join(artifactsDir, "review-report.json"), JSON.stringify({ version: 1, overallExplanation: "reviewed", verdict: "clear", findings: [] }));
 			listener?.(run);
 			await new Promise((resolve) => setTimeout(resolve, 10));
-			expect(test.state.readAny()?.status).toBe("blocked");
-			expect(test.state.readAny()?.reviewStatus).toBe("due");
-			expect(test.state.readAny()?.lastSummary).toContain("worktree changed while independent review was running");
+			expect(test.state.readAny()?.status).toBe("active");
+			expect(test.state.readAny()).toMatchObject({ reviewStatus: "due", reviewOutcome: "superseded" });
+			expect(test.state.readReviewFailureCount()).toBe(2);
 		} finally {
 			rmSync(artifactsDir, { recursive: true, force: true });
 			clearSubagentService(service);
 		}
+	});
+
+	it("does not count a failed attempt again when persisting retry eligibility", async () => {
+		const test = await setup();
+		const service = { list: () => ({ runs: [], groups: [] }), executor: { onChange: () => () => undefined } } as unknown as SubagentService;
+		setSubagentService(service);
+		try {
+			const internal = test.runtime as unknown as { failReview: (mission: MissionCurrent, reason: string) => void; recover: (ctx: ExtensionContext) => Promise<void> };
+			internal.failReview(test.state.read()!, "review runtime failed");
+			expect(test.state.readReviewFailureCount()).toBe(1);
+			await internal.recover(test.ctx);
+			expect(test.state.readReviewFailureCount()).toBe(1);
+			expect(test.state.read()?.reviewNotBeforeAt).toBeDefined();
+		} finally {
+			await test.emit("session_shutdown");
+			clearSubagentService(service);
+		}
+	});
+
+	it("bounds repeated candidate supersession separately from reviewer failures", async () => {
+		const test = await setup();
+		const internal = test.runtime as unknown as { supersedeReview: (reason: string) => void };
+		internal.supersedeReview("candidate one changed");
+		internal.supersedeReview("candidate two changed");
+		internal.supersedeReview("candidate three changed");
+		expect(test.state.readAny()).toMatchObject({ status: "blocked", reviewStatus: "due", reviewOutcome: "superseded", reviewSupersessionCount: 3 });
+		expect(test.state.readReviewFailureCount()).toBe(0);
 	});
 
 	it("refuses reviewer launch without a canonical persisted Mission owner", async () => {
@@ -565,7 +609,7 @@ describe("Mission runtime", () => {
 		const test = await setup();
 		const artifactsDir = mkdtempSync(join(tmpdir(), "mission-fast-review-"));
 		const run = { spec: { id: "fast-review", artifactsDir }, runtime: { status: "completed", output: "" } } as unknown as DelegateRun;
-		writeFileSync(join(artifactsDir, "review-report.json"), JSON.stringify({ version: 1, verdict: "clear", findings: [] }));
+		writeFileSync(join(artifactsDir, "review-report.json"), JSON.stringify({ version: 1, overallExplanation: "reviewed", verdict: "clear", findings: [] }));
 		const service = {
 			list: () => ({ runs: [], groups: [] }),
 			start: async () => run,
@@ -654,7 +698,7 @@ describe("Mission runtime", () => {
 		setSubagentService(service);
 		try {
 			test.state.append(test.pi, test.state.reviewEvent("running", { runId: run.spec.id, candidateId, worktreeFingerprint: expectedFingerprint() }));
-			writeFileSync(join(artifactsDir, "review-report.json"), JSON.stringify({ version: 1, verdict: submitted, findings: [{ severity, summary: "typed finding" }] }));
+			writeFileSync(join(artifactsDir, "review-report.json"), JSON.stringify({ version: 1, overallExplanation: "reviewed", verdict: submitted, findings: [{ severity, summary: "typed finding" }] }));
 			const internal = test.runtime as unknown as { reconcileReview: () => Promise<boolean> };
 			expect(await internal.reconcileReview()).toBe(true);
 			expect(test.state.read()).toMatchObject({ reviewStatus: "awaiting_adjudication", reviewSuggestedVerdict: expected, reviewBlockingFindingCount: blocking, reviewBacklogFindingCount: backlog, reviewHighestSeverity: severity });
@@ -760,6 +804,74 @@ describe("Mission runtime", () => {
 		}
 	});
 
+	it("persists a bounded quiet window before admitting a due reviewer", async () => {
+		const test = await setup();
+		let launches = 0;
+		const service = {
+			list: () => ({ runs: [], groups: [] }),
+			start: async () => { launches++; return { spec: { id: "quiet-review" }, runtime: { status: "running" } } as DelegateRun; },
+			executor: { get: () => undefined, onChange: () => () => undefined },
+		} as unknown as SubagentService;
+		setSubagentService(service);
+		try {
+			test.state.append(test.pi, test.state.reviewEvent("due", { reason: "material change" }));
+			const internal = test.runtime as unknown as { recover: (ctx: ExtensionContext) => Promise<void> };
+			const busy = { ...test.ctx, isIdle: () => false } as unknown as ExtensionContext;
+			await internal.recover(busy);
+			expect(test.state.read()?.reviewNotBeforeAt).toBeUndefined();
+			await internal.recover(test.ctx);
+			expect(launches).toBe(0);
+			expect(test.state.read()?.reviewNotBeforeAt).toBeGreaterThan(Date.now());
+			await vi.waitFor(() => expect(launches).toBe(1), { timeout: 500 });
+			expect(test.state.read()?.reviewStatus).toBe("running");
+		} finally {
+			await test.emit("session_shutdown");
+			clearSubagentService(service);
+		}
+	});
+
+	it("re-arms review automatically after an idle objective update", async () => {
+		const test = await setup();
+		let launches = 0;
+		const service = { list: () => ({ runs: [], groups: [] }), start: async () => { launches++; return { spec: { id: "objective-update-review" }, runtime: { status: "running" } } as DelegateRun; }, executor: { onChange: () => () => undefined } } as unknown as SubagentService;
+		setSubagentService(service);
+		try {
+			const input = { objective: "Updated objective", reason: "user changed scope" };
+			test.state.append(test.pi, test.state.objectiveUpdateEvent(input));
+			test.runtime.onObjectiveUpdated(input, test.ctx);
+			await vi.waitFor(() => expect(launches).toBe(1), { timeout: 500 });
+			expect(test.state.read()?.reviewRunId).toBe("objective-update-review");
+		} finally {
+			await test.emit("session_shutdown");
+			clearSubagentService(service);
+		}
+	});
+
+	it("restarts quiet eligibility when the due candidate changes", async () => {
+		let fingerprint = "first";
+		let launches = 0;
+		const test = await setup({ fingerprint: () => fingerprint });
+		const service = { list: () => ({ runs: [], groups: [] }), start: async () => { launches++; return { spec: { id: "quiet-window-retry" }, runtime: { status: "running" } } as DelegateRun; }, executor: { onChange: () => () => undefined } } as unknown as SubagentService;
+		setSubagentService(service);
+		try {
+			test.state.append(test.pi, test.state.reviewEvent("due", { reason: "material change" }));
+			const internal = test.runtime as unknown as { recover: (ctx: ExtensionContext) => Promise<void> };
+			await internal.recover(test.ctx);
+			const firstEligibleAt = test.state.read()!.reviewNotBeforeAt!;
+			const firstCandidate = test.state.read()!.reviewCandidateId;
+			fingerprint = "second";
+			await internal.recover(test.ctx);
+			expect(test.state.read()).toMatchObject({ reviewStatus: "due", reviewOutcome: "superseded" });
+			expect(test.state.read()?.reviewCandidateId).not.toBe(firstCandidate);
+			expect(test.state.read()!.reviewNotBeforeAt!).toBeGreaterThanOrEqual(firstEligibleAt);
+			await vi.waitFor(() => expect(launches).toBe(1), { timeout: 500 });
+			expect(test.state.read()?.reviewRunId).toBe("quiet-window-retry");
+		} finally {
+			await test.emit("session_shutdown");
+			clearSubagentService(service);
+		}
+	});
+
 	it("defers legacy due admission until Subagent restoration completes", async () => {
 		const test = await setup();
 		let restored = false;
@@ -786,6 +898,32 @@ describe("Mission runtime", () => {
 		}
 	});
 
+	it("retries a due admission after Subagent restoration finishes", async () => {
+		const test = await setup();
+		let restored = false;
+		let launches = 0;
+		const service = {
+			list: () => ({ runs: [], groups: [] }),
+			start: async () => { launches++; return { spec: { id: "restored-review" }, runtime: { status: "running" } } as DelegateRun; },
+			restorationComplete: () => restored,
+			executor: { get: () => undefined, onChange: () => () => undefined },
+		} as unknown as SubagentService;
+		setSubagentService(service);
+		try {
+			const candidateId = await test.runtime.completionCandidateId(test.ctx);
+			test.state.append(test.pi, test.state.reviewEvent("due", { reason: "restoration race", candidateId, worktreeFingerprint: expectedFingerprint(), notBeforeAt: Date.now() - 1 }));
+			const internal = test.runtime as unknown as { recover: (ctx: ExtensionContext) => Promise<void> };
+			await internal.recover(test.ctx);
+			expect(launches).toBe(0);
+			restored = true;
+			await vi.waitFor(() => expect(launches).toBe(1), { timeout: 500 });
+			expect(test.state.read()?.reviewRunId).toBe("restored-review");
+		} finally {
+			await test.emit("session_shutdown");
+			clearSubagentService(service);
+		}
+	});
+
 	it("waits for Subagent restoration before re-admitting a lost reviewer", async () => {
 		const test = await setup();
 		let restored = false;
@@ -806,13 +944,13 @@ describe("Mission runtime", () => {
 			await internal.recover(test.ctx);
 			await vi.waitFor(() => expect(test.state.read()?.reviewRunId).toBe("replacement-review"), { timeout: 500 });
 			expect(test.state.read()?.reviewStatus).toBe("running");
-			expect(test.state.read()?.reviewReason).toContain("independent review run lost");
+			expect(test.state.read()?.reviewReason).toContain("candidate changed");
 		} finally {
 			clearSubagentService(service);
 		}
 	});
 
-	it("keeps a durable ambiguous reservation when reviewer launch rejects", async () => {
+	it("counts definite reviewer launch rejection as a typed failure", async () => {
 		const test = await setup();
 		const service = {
 			list: () => ({ runs: [], groups: [] }),
@@ -825,10 +963,8 @@ describe("Mission runtime", () => {
 			test.state.append(test.pi, test.state.reviewEvent("due", { reason: "files changed" }));
 			const internal = test.runtime as unknown as { startReview: (ctx: ExtensionContext, mission: MissionCurrent) => Promise<void>; recoveryTimer?: NodeJS.Timeout };
 			await internal.startReview(test.ctx, mission);
-			expect(test.state.read()?.reviewStatus).toBe("starting");
-			expect(internal.recoveryTimer).toBeDefined();
-			await vi.waitFor(() => expect(test.state.readAny()?.status).toBe("blocked"), { timeout: 500 });
-			expect(test.state.readAny()?.lastReason).toContain("ambiguous");
+			expect(test.state.read()).toMatchObject({ reviewStatus: "due", reviewOutcome: "failed" });
+			expect(test.state.readReviewFailureCount()).toBe(1);
 			await test.emit("session_shutdown");
 		} finally {
 			clearSubagentService(service);
@@ -862,11 +998,13 @@ describe("Mission runtime", () => {
 		} as unknown as SubagentService;
 		setSubagentService(service);
 		try {
-			test.state.append(test.pi, test.state.reviewEvent("due", { reason: "first review timeout", failure: true }));
-			test.state.append(test.pi, test.state.reviewEvent("due", { reason: "second review limit", failure: true }));
-			test.state.append(test.pi, test.state.reviewEvent("running", { runId: run.spec.id, reason: "third review" }));
+			test.state.append(test.pi, test.state.reviewEvent("due", { reason: "first review timeout", outcome: "failed" }));
+			test.state.append(test.pi, test.state.reviewEvent("due", { reason: "second review limit", outcome: "failed" }));
+			const candidateId = await test.runtime.completionCandidateId(test.ctx);
+			test.state.append(test.pi, test.state.reviewEvent("running", { runId: run.spec.id, reason: "third review", candidateId, worktreeFingerprint: expectedFingerprint() }));
 			await test.emit("session_start", { reason: "resume" });
 			await vi.waitFor(() => expect(test.state.readAny()?.status).toBe("blocked"), { timeout: 500 });
+			expect(test.state.readAny()?.reviewOutcome).toBe("failed");
 			expect(test.messages).toEqual([]);
 		} finally {
 			clearSubagentService(service);
@@ -901,6 +1039,7 @@ describe("Mission runtime", () => {
 		const test = await setup({ cwd: parent, exec: actualGitExec });
 		try {
 			test.state.append(test.pi, test.state.objectiveUpdateEvent({ reason: "typed workspace", paths: ["repo-a", "repo-b"] }));
+			test.state.append(test.pi, test.state.reviewEvent("not_required", { worktreeFingerprint: (await test.runtime.workspaceFingerprint(test.ctx))! }));
 			test.state.append(test.pi, test.state.progressEvent({ summary: "Validated", validation: [{ command: "npm test", exitCode: 0 }] }));
 			test.state.append(test.pi, test.state.reviewEvent("skipped", { skippedReason: "test" }));
 			await test.emit("turn_start");
@@ -941,6 +1080,7 @@ describe("Mission runtime", () => {
 		const test = await setup({ cwd: parent, exec: actualGitExec });
 		try {
 			test.state.append(test.pi, test.state.objectiveUpdateEvent({ reason: "typed scope", paths: ["repo/tracked.txt"] }));
+			test.state.append(test.pi, test.state.reviewEvent("not_required", { worktreeFingerprint: (await test.runtime.workspaceFingerprint(test.ctx))! }));
 			test.state.append(test.pi, test.state.progressEvent({ summary: "Validated", validation: [{ command: "npm test", exitCode: 0 }] }));
 			test.state.append(test.pi, test.state.reviewEvent("skipped", { skippedReason: "test" }));
 			await test.emit("turn_start");
@@ -964,6 +1104,7 @@ describe("Mission runtime", () => {
 		const test = await setup({ cwd: parent, exec: actualGitExec });
 		try {
 			test.state.append(test.pi, test.state.objectiveUpdateEvent({ reason: "typed scope", paths: ["repo"] }));
+			test.state.append(test.pi, test.state.reviewEvent("not_required", { worktreeFingerprint: (await test.runtime.workspaceFingerprint(test.ctx))! }));
 			test.state.append(test.pi, test.state.progressEvent({ summary: "Validated", validation: [{ command: "npm test", exitCode: 0 }] }));
 			test.state.append(test.pi, test.state.reviewEvent("skipped", { skippedReason: "test" }));
 			await test.emit("turn_start");

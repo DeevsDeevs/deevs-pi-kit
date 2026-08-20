@@ -317,7 +317,7 @@ async function proveMissionCompletionOnce(replyEventId) {
 		assert.equal(reviewerStarts, 1);
 		assert.equal(state.read().reviewStatus, "running");
 		reviewRun.runtime.status = "completed";
-		writeFileSync(join(reviewArtifacts, "review-report.json"), JSON.stringify({ version: 1, verdict: "clear", findings: [] }));
+		writeFileSync(join(reviewArtifacts, "review-report.json"), JSON.stringify({ version: 1, verdict: "clear", overallExplanation: "Release review clear.", findings: [] }));
 
 		const recoveredState = new MissionState();
 		recoveredState.loadFromSession(ctx);

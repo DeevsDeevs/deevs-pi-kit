@@ -27,7 +27,7 @@ describe("Mission state", () => {
 
 		expect(mission.generation).toBeTruthy();
 		expect(mission.objectiveVersion).toBe(1);
-		expect(mission.reviewStatus).toBe("not_required");
+		expect(mission.reviewStatus).toBe("due");
 		expect(mission.turnBudget).toBe(2);
 		expect(mission.wallDeadlineAt).toBeGreaterThan(Date.now());
 
@@ -121,12 +121,21 @@ describe("Mission state", () => {
 		let mission = test.state.append(test.pi, created)!;
 		const stale: MissionEvent = { kind: "review_changed", missionId: mission.missionId, generation: "stale", at: Date.now(), reviewStatus: "clear" };
 		mission = test.state.append(test.pi, stale)!;
-		expect(mission.reviewStatus).toBe("not_required");
+		expect(mission.reviewStatus).toBe("due");
 
 		for (let index = 0; index < 3; index++) {
 			mission = test.state.append(test.pi, test.state.settledEvent({ blockerFingerprint: "need credentials", madeProgress: false }))!;
 		}
 		expect(mission.blockerCount).toBe(3);
+	});
+
+	it("resets reviewer failure capacity for a replacement Mission", async () => {
+		const test = setup();
+		test.state.append(test.pi, await test.state.create({ objective: "First", chain: "kit" }, test.ctx));
+		test.state.append(test.pi, test.state.reviewEvent("due", { outcome: "failed" }));
+		test.state.append(test.pi, test.state.statusEvent("ended", "replace"));
+		test.state.append(test.pi, await test.state.create({ objective: "Second", chain: "kit" }, test.ctx));
+		expect(test.state.readReviewFailureCount()).toBe(0);
 	});
 
 	it("accounts individual Subagent terminal usage exactly once", async () => {
@@ -271,6 +280,16 @@ describe("Mission state", () => {
 		expect(test.branch).toHaveLength(before);
 	});
 
+	it("counts typed reviewer failures but not superseded candidates", async () => {
+		const test = setup();
+		test.state.append(test.pi, await test.state.create({ objective: "Do work", chain: "kit" }, test.ctx));
+		test.state.append(test.pi, test.state.reviewEvent("due", { reason: "review runtime failed", outcome: "failed" }));
+		expect(test.state.readReviewFailureCount()).toBe(1);
+		test.state.append(test.pi, test.state.reviewEvent("due", { reason: "candidate changed", outcome: "superseded" }));
+		expect(test.state.readReviewFailureCount()).toBe(1);
+		expect(test.state.read()).toMatchObject({ reviewStatus: "due", reviewOutcome: "superseded" });
+	});
+
 	it("clears stale highest severity when a later report has no findings", async () => {
 		const test = setup();
 		test.state.append(test.pi, await test.state.create({ objective: "Do work", chain: "kit" }, test.ctx));
@@ -278,6 +297,16 @@ describe("Mission state", () => {
 		expect(test.state.read()?.reviewHighestSeverity).toBe("major");
 		test.state.append(test.pi, test.state.reviewEvent("awaiting_adjudication", { runId: "review-clear", suggestedVerdict: "clear", blockingFindingCount: 0, backlogFindingCount: 0 }));
 		expect(test.state.read()?.reviewHighestSeverity).toBeUndefined();
+	});
+
+	it("rejects ownerless tool creation before reporting success", async () => {
+		const test = setup();
+		let createTool: { execute: (...args: unknown[]) => Promise<{ details?: { mission?: { reviewStatus?: string } } }> } | undefined;
+		const pi = { ...test.pi, registerTool(tool: unknown) { const value = tool as typeof createTool & { name?: string }; if (value?.name === "mission_create") createTool = value; } } as unknown as ExtensionAPI;
+		registerMissionTools(pi, test.state, () => undefined, { onCreated: async () => { throw new Error("baseline persistence failed"); } });
+		const ctx = { ...test.ctx, sessionManager: { ...test.ctx.sessionManager, getSessionId: () => "test-session", getSessionFile: () => undefined } } as unknown as ExtensionContext;
+		await expect(createTool!.execute("call", { objective: "Do work", chain: "kit" }, undefined, undefined, ctx)).rejects.toThrow("persisted Pi session owner");
+		expect(test.state.readAny()).toBeUndefined();
 	});
 
 	it("returns post-adjudication Mission state after the progress hook", async () => {
@@ -296,6 +325,7 @@ describe("Mission state", () => {
 		test.state.append(test.pi, await test.state.create({ objective: "Do work", requirements: ["Works"], chain: "kit" }, test.ctx));
 		const input = { summary: "done", audit: [{ requirementIndex: 0, evidence: "tests" }] };
 		const ctx = { ...test.ctx, ui: { notify: () => undefined } } as unknown as ExtensionContext;
+		test.state.append(test.pi, test.state.reviewEvent("not_required", { worktreeFingerprint: "fingerprint-test" }));
 		test.state.append(test.pi, test.state.completionLatchEvent("candidate-test", "not_required"));
 		// Status is committed first; a throwing onCompleted leaves durable pending effects without leaking a false active state.
 		const completed = await completeMission(test.pi as unknown as ExtensionAPI, test.state, ctx, input, "complete", { completionCandidateId: async () => "candidate-test", onCompleted: () => { throw new Error("synthetic side effect failure"); } });

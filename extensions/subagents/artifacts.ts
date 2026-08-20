@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -58,10 +58,66 @@ export function readRun(root: string, id: string): { spec: DelegateRunSpec; runt
 	const specPath = path.join(dir, "spec.json");
 	const runtimePath = path.join(dir, "runtime.json");
 	if (!existsSync(specPath) || !existsSync(runtimePath)) return undefined;
-	return {
-		spec: JSON.parse(readFileSync(specPath, "utf8")) as DelegateRunSpec,
-		runtime: JSON.parse(readFileSync(runtimePath, "utf8")) as DelegateRunRuntime,
-	};
+	try {
+		return {
+			spec: JSON.parse(readFileSync(specPath, "utf8")) as DelegateRunSpec,
+			runtime: JSON.parse(readFileSync(runtimePath, "utf8")) as DelegateRunRuntime,
+		};
+	} catch { return undefined; }
+}
+
+export function findRunByAdmission(root: string, cwd: string, admissionKey: string): { spec: DelegateRunSpec; runtime: DelegateRunRuntime } | undefined {
+	const index = readAdmissionIndex(root, cwd, admissionKey);
+	if (!index?.runId) return undefined;
+	const run = readRun(root, index.runId);
+	if (!run) {
+		if (!isPidAlive(index.ownerPid)) rmSync(admissionIndexPath(root, cwd, admissionKey), { force: true });
+		return undefined;
+	}
+	if (path.resolve(run.spec.cwd) !== path.resolve(cwd) || run.spec.admissionKey !== admissionKey) throw new Error(`Delegate admission index is inconsistent: ${admissionKey}`);
+	return run;
+}
+
+export function reserveAdmission(root: string, cwd: string, admissionKey: string, runId: string): boolean {
+	const file = admissionIndexPath(root, cwd, admissionKey);
+	mkdirSync(path.dirname(file), { recursive: true });
+	try {
+		writeFileSync(file, `${JSON.stringify({ cwd: path.resolve(cwd), admissionKey, runId, ownerPid: process.pid, reservedAt: Date.now() })}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+		return true;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+		throw error;
+	}
+}
+
+export function removeAdmission(root: string, cwd: string, admissionKey: string, runId: string): void {
+	const file = admissionIndexPath(root, cwd, admissionKey);
+	const index = readAdmissionIndex(root, cwd, admissionKey);
+	if (index?.runId === runId) rmSync(file, { force: true });
+}
+
+export function releaseAdmissionReservation(root: string, cwd: string, admissionKey: string): void {
+	const file = admissionIndexPath(root, cwd, admissionKey);
+	const index = readAdmissionIndex(root, cwd, admissionKey);
+	if (index?.ownerPid === process.pid && (!index.runId || !readRun(root, index.runId))) rmSync(file, { force: true });
+}
+
+function readAdmissionIndex(root: string, cwd: string, admissionKey: string): { runId?: string; ownerPid?: number } | undefined {
+	const file = admissionIndexPath(root, cwd, admissionKey);
+	if (!existsSync(file)) return undefined;
+	const value = JSON.parse(readFileSync(file, "utf8")) as { cwd?: unknown; admissionKey?: unknown; runId?: unknown; ownerPid?: unknown };
+	if (value.cwd !== path.resolve(cwd) || value.admissionKey !== admissionKey || (value.runId !== undefined && typeof value.runId !== "string") || (value.ownerPid !== undefined && (!Number.isInteger(value.ownerPid) || (value.ownerPid as number) <= 0))) throw new Error(`Invalid delegate admission index: ${admissionKey}`);
+	return { runId: value.runId as string | undefined, ownerPid: value.ownerPid as number | undefined };
+}
+
+function isPidAlive(pid: number | undefined): boolean {
+	if (!pid) return false;
+	try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+}
+
+function admissionIndexPath(root: string, cwd: string, admissionKey: string): string {
+	const id = createHash("sha256").update(path.resolve(cwd)).update("\0").update(admissionKey).digest("hex");
+	return path.join(root, "admissions", `${id}.json`);
 }
 
 export function findLatestSessionFile(sessionDir: string): string | undefined {

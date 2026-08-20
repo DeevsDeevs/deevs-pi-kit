@@ -5,6 +5,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { chainCheckpoints } from "../chains/checkpoint.ts";
 import { getSubagentService } from "../subagents/registry.ts";
+import { SubagentAdmissionReservedError } from "../subagents/service.ts";
 import { getJobManager } from "../jobs/registry.ts";
 import type { DelegateRun } from "../subagents/runtime-types.ts";
 import { runtimeEvents } from "../shared/runtime-events.ts";
@@ -12,6 +13,8 @@ import { MissionState } from "./state.ts";
 import { missionRoot } from "./artifacts.ts";
 import { MAX_MISSION_REVIEW_ADJUDICATIONS } from "./types.ts";
 import type { MissionCompleteInput, MissionCurrent, MissionProgressInput, MissionReviewSeverity, MissionReviewVerdict, MissionUpdateInput } from "./types.ts";
+
+const REVIEW_QUIET_WINDOW_MS = 100;
 
 interface MissionAgentMessage {
 	role?: string;
@@ -53,12 +56,24 @@ export class MissionRuntime {
 		this.updateStatus();
 	}
 
-	onCreated(ctx: ExtensionContext): void {
+	async onCreated(ctx: ExtensionContext): Promise<void> {
 		this.restore(ctx);
-		const mission = this.state.readAny();
+		const mission = this.state.read();
 		if (!mission) return;
+		if (!this.state.readOwner()) {
+			this.state.append(this.pi, this.state.statusEvent("blocked", "Mission creation lacks canonical persisted ownership."));
+			this.updateStatus();
+			throw new Error("Mission creation cannot admit a baseline without canonical persisted ownership.");
+		}
 		chainCheckpoints.current?.activate(mission.chain, mission.chainBranch);
 		chainCheckpoints.current?.due("Mission created", "mission_control");
+		const fingerprint = await worktreeFingerprint(this.pi, ctx.cwd, mission);
+		if (!fingerprint) {
+			this.state.append(this.pi, this.state.statusEvent("blocked", "Mission creation could not capture its initial workspace fingerprint."));
+			this.updateStatus();
+			throw new Error("Mission creation could not capture its initial workspace fingerprint.");
+		}
+		this.state.append(this.pi, this.state.reviewEvent("not_required", { reason: "Initial workspace baseline persisted.", worktreeFingerprint: fingerprint }));
 		void this.maybeContinue(ctx);
 	}
 
@@ -67,7 +82,7 @@ export class MissionRuntime {
 		chainCheckpoints.current?.activate(mission.chain, mission.chainBranch);
 		chainCheckpoints.current?.due("Mission taken over by a new session", "mission_control");
 		this.updateStatus();
-		void this.maybeContinue(ctx);
+		this.scheduleRecovery(ctx);
 	}
 
 	onResumed(ctx: ExtensionContext): void {
@@ -128,9 +143,11 @@ export class MissionRuntime {
 		this.restore(ctx);
 		const mission = this.state.readAny();
 		if (!mission) throw new Error("No Mission exists on this branch.");
-		const nextLimit = (mission.reviewCorrectionLimit ?? 3) + 3;
+		const previousLimit = mission.reviewCorrectionLimit ?? 3;
+		const correctionBlocked = mission.status === "blocked" && (mission.reviewCorrectionCount ?? 0) >= previousLimit;
+		const nextLimit = previousLimit + 3;
 		this.state.append(this.pi, this.state.reviewPolicyEvent(nextLimit));
-		this.state.append(this.pi, this.state.statusEvent("active", "explicit user authorization extended the review correction limit"));
+		if (correctionBlocked && !this.state.limitExceeded()) this.state.append(this.pi, this.state.statusEvent("active", "explicit user authorization extended the review correction limit"));
 		chainCheckpoints.current?.due(`Mission review correction limit extended to ${nextLimit}`, "mission_control");
 		this.updateStatus();
 		void this.maybeContinue(ctx);
@@ -139,6 +156,9 @@ export class MissionRuntime {
 	onObjectiveUpdated(_input: MissionUpdateInput, ctx: ExtensionContext): void {
 		this.restore(ctx);
 		chainCheckpoints.current?.due("Mission objective updated", "mission_control");
+		const mission = this.state.read();
+		if ((mission?.reviewSupersessionCount ?? 0) >= 3) this.state.append(this.pi, this.state.statusEvent("blocked", "review candidate superseded three times", "Mission identity changed repeatedly before review convergence."));
+		else this.scheduleRecovery(ctx);
 		this.updateStatus();
 	}
 
@@ -217,7 +237,10 @@ export class MissionRuntime {
 		});
 		this.pi.on("turn_start", async (_event, ctx) => {
 			this.restore(ctx);
+			const beforeTurn = this.state.read();
+			if (beforeTurn?.initialBaselinePending) { ctx.abort(); return; }
 			this.worktreeBeforeTurn = await this.reconcileWorkspaceFingerprint(ctx);
+			if (beforeTurn?.reviewStatus !== "due" && this.state.read()?.reviewStatus === "due") ctx.abort();
 		});
 		this.pi.on("agent_end", (event, ctx) => {
 			this.lastAgentMessages = [...event.messages];
@@ -276,6 +299,7 @@ export class MissionRuntime {
 		const mission = this.state.readAny();
 		if (!mission || mission.status !== "active") return mission ? [`Mission status is ${mission.status}.`] : ["No Mission exists on this branch."];
 		const blockers: string[] = [];
+		if (mission.initialBaselinePending) blockers.push("initial workspace baseline is pending durable admission");
 		const limit = this.state.budgetExceeded();
 		if (limit) blockers.push(`${limit} limit is exhausted`);
 		try {
@@ -299,7 +323,7 @@ export class MissionRuntime {
 	async maybeContinue(ctx: ExtensionContext): Promise<void> {
 		this.restore(ctx);
 		const mission = this.state.read();
-		if (this.disposed || !mission || mission.status !== "active" || this.continuationInFlight) return;
+		if (this.disposed || !mission || mission.status !== "active" || mission.initialBaselinePending || this.continuationInFlight) return;
 		if (!ctx.isIdle() || ctx.hasPendingMessages() || !ctx.sessionManager.getSessionFile()) return;
 		let activeSubagents: ReturnType<MissionRuntime["activeSubagentWork"]>;
 		try {
@@ -308,7 +332,7 @@ export class MissionRuntime {
 			return;
 		}
 		// Block on "due" as well as "running": a continuation turn during the review-admission window would mutate the worktree while a reviewer is about to start, guaranteeing a review failure and wasting a strike.
-		if (this.state.budgetExceeded() || activeSubagents.runs.length || activeSubagents.groupIds.length || activeSubagents.launchReservations || this.activeJobs().length || mission.reviewStatus === "starting" || mission.reviewStatus === "running" || mission.reviewStatus === "due") return;
+		if (this.state.budgetExceeded() || activeSubagents.runs.length || activeSubagents.groupIds.length || activeSubagents.launchReservations || this.activeJobs().length || mission.reviewStatus === "starting" || mission.reviewStatus === "running" || mission.reviewStatus === "due" || (mission.reviewStatus === "awaiting_adjudication" && (mission.lastContinuationAt ?? 0) >= (mission.reviewUpdatedAt ?? mission.updatedAt))) return;
 		const event = this.state.continuedEvent();
 		this.state.append(this.pi, event);
 		this.continuationInFlight = true;
@@ -339,7 +363,16 @@ export class MissionRuntime {
 		if (this.disposed) return;
 		try {
 			this.restore(ctx);
-			await this.reconcileWorkspaceFingerprint(ctx);
+			const fingerprint = await this.reconcileWorkspaceFingerprint(ctx);
+			const recoveredMission = this.state.read();
+			if (recoveredMission?.status === "active" && !fingerprint) {
+				this.state.append(this.pi, this.state.statusEvent("blocked", "workspace fingerprint unavailable during recovery", "Mission recovery cannot verify its durable candidate."));
+				this.updateStatus();
+				return;
+			}
+			if (recoveredMission?.status === "active" && recoveredMission.initialBaselinePending) {
+				this.state.append(this.pi, this.state.reviewEvent("not_required", { reason: "Recovered initial workspace baseline persisted.", worktreeFingerprint: fingerprint }));
+			}
 			this.bindReviewRecovery(ctx);
 			const recovering = this.state.read();
 			if (recovering?.reviewStatus === "starting" && !this.reviewAdmissionInFlight) {
@@ -348,7 +381,11 @@ export class MissionRuntime {
 				return;
 			}
 			const reviewSettled = await this.reconcileReview();
-			const shouldAdmitReview = reviewSettled || this.reviewAdmissionRetry || this.state.read()?.reviewStatus === "due";
+			if (reviewSettled) {
+				if (this.state.read()?.reviewStatus === "awaiting_adjudication") await this.maybeContinue(ctx);
+				return;
+			}
+			const shouldAdmitReview = this.reviewAdmissionRetry || this.state.read()?.reviewStatus === "due";
 			this.reviewAdmissionRetry = false;
 			if (shouldAdmitReview && await this.admitDueReview(ctx)) return;
 			await this.maybeContinue(ctx);
@@ -427,7 +464,10 @@ export class MissionRuntime {
 
 		const chain = chainCheckpoints.current?.read();
 		if (chain?.status === "due" && chain.dueCodes.includes("material_change")) this.markReviewDue(chain.dueReasons.at(-1) ?? "material mutation");
-		await this.reconcileReview();
+		if (await this.reconcileReview()) {
+			if (this.state.read()?.reviewStatus === "awaiting_adjudication") await this.maybeContinue(ctx);
+			return;
+		}
 		if (await this.admitDueReview(ctx)) return;
 		await this.maybeContinue(ctx);
 	}
@@ -439,10 +479,11 @@ export class MissionRuntime {
 		if (!fingerprint) return undefined;
 		const candidateId = reviewCandidateId(mission, fingerprint);
 		if (mission.completionLatchCandidateId && mission.completionLatchCandidateId !== candidateId) this.state.append(this.pi, this.state.completionLatchClearedEvent());
-		const candidateBoundReview = mission.reviewStatus === "starting" || mission.reviewStatus === "running" || mission.reviewStatus === "awaiting_adjudication" || mission.reviewStatus === "clear";
+		const candidateBoundReview = mission.reviewStatus === "starting" || mission.reviewStatus === "running" || mission.reviewStatus === "awaiting_adjudication" || mission.reviewStatus === "changes_requested" || mission.reviewStatus === "clear";
 		const admitted = candidateBoundReview ? mission.reviewWorktreeFingerprint : mission.admittedWorktreeFingerprint;
 		if (admitted && admitted !== fingerprint) {
-			this.markReviewDue("workspace changed since the last admitted fingerprint");
+			if (mission.reviewStatus === "awaiting_adjudication") this.supersedeReview("workspace changed after independent review settled", reviewCandidateId(mission, fingerprint), fingerprint);
+			else this.markReviewDue("workspace changed since the last admitted fingerprint");
 			return fingerprint;
 		}
 		if (mission.admittedWorktreeFingerprint !== fingerprint && (!mission.admittedWorktreeFingerprint || mission.reviewStatus === "clear")) {
@@ -455,19 +496,60 @@ export class MissionRuntime {
 		const mission = this.state.read();
 		if (!mission || mission.status !== "active" || mission.reviewStatus === "starting" || mission.reviewStatus === "running" || mission.reviewStatus === "due") return;
 		this.state.append(this.pi, this.state.reviewEvent("due", { reason }));
+		if (this.ctx) this.scheduleRecovery(this.ctx);
 		this.updateStatus();
 	}
 
 	private async admitDueReview(ctx: ExtensionContext): Promise<boolean> {
-		const mission = this.state.read();
+		let mission = this.state.read();
 		if (!mission || mission.status !== "active" || mission.reviewStatus !== "due") return false;
+		if (mission.reviewRunId && mission.reviewAdmissionId) {
+			const service = getSubagentService();
+			let priorRun: DelegateRun | undefined;
+			try { priorRun = service.executor.get(mission.reviewRunId); }
+			catch { priorRun = await service.executor.restoreAdmission(ctx.cwd, mission.reviewAdmissionId); }
+			if (priorRun && ["starting", "running", "stopping"].includes(priorRun.runtime.status)) {
+				this.scheduleRecovery(ctx, 1_000);
+				return true;
+			}
+		}
+		if (!ctx.isIdle() || ctx.hasPendingMessages()) return true;
+		const fingerprint = await worktreeFingerprint(this.pi, ctx.cwd, mission);
+		if (!fingerprint) {
+			this.failReview(mission, "could not fingerprint candidate before review admission");
+			return true;
+		}
+		const dueCandidateId = reviewCandidateId(mission, fingerprint);
+		if (mission.reviewCandidateId && mission.reviewCandidateId !== dueCandidateId) {
+			if (mission.reviewOutcome === "superseded" && mission.reviewRunId && mission.reviewAdmissionId) {
+				this.state.append(this.pi, this.state.reviewEvent("due", { reason: "prior candidate reviewer settled; replacement quiet window started", candidateId: dueCandidateId, worktreeFingerprint: fingerprint, notBeforeAt: Date.now() + REVIEW_QUIET_WINDOW_MS }));
+				this.scheduleRecovery(ctx);
+			} else this.supersedeReview("candidate changed during the review quiet window", dueCandidateId, fingerprint);
+			return true;
+		}
+		if (!mission.reviewNotBeforeAt) {
+			const notBeforeAt = Date.now() + REVIEW_QUIET_WINDOW_MS;
+			this.state.append(this.pi, this.state.reviewEvent("due", { reason: mission.reviewReason, notBeforeAt, candidateId: dueCandidateId, admissionId: mission.reviewAdmissionId, worktreeFingerprint: fingerprint }));
+			this.scheduleRecovery(ctx, REVIEW_QUIET_WINDOW_MS);
+			return true;
+		}
+		if (Date.now() < mission.reviewNotBeforeAt) {
+			this.scheduleRecovery(ctx, mission.reviewNotBeforeAt - Date.now());
+			return true;
+		}
 		try {
 			const service = getSubagentService();
-			if (service.restorationComplete?.() === false) return true;
+			if (service.restorationComplete?.() === false) {
+				this.scheduleRecovery(ctx, 100);
+				return true;
+			}
 			const active = this.activeSubagentWork();
 			const recoveredRun = mission.reviewAdmissionId && active.runs.length === 1 && active.runs[0]?.spec.admissionKey === mission.reviewAdmissionId;
 			if ((active.runs.length && !recoveredRun) || active.groupIds.length || active.launchReservations || this.activeJobs().length) return true;
-		} catch { return true; }
+		} catch (error) {
+			this.failReview(mission, `could not verify reviewer admission capacity: ${error instanceof Error ? error.message : String(error)}`);
+			return true;
+		}
 		await this.startReview(ctx, mission);
 		return true;
 	}
@@ -509,6 +591,10 @@ export class MissionRuntime {
 		let current = this.state.read();
 		if (!current || current.reviewStatus !== "due" || current.objectiveVersion !== mission.objectiveVersion) return;
 		const candidateId = reviewCandidateId(current, reviewWorktreeFingerprint);
+		if ((current.reviewCandidateId && current.reviewCandidateId !== candidateId) || (current.reviewWorktreeFingerprint && current.reviewWorktreeFingerprint !== reviewWorktreeFingerprint)) {
+			this.supersedeReview("candidate changed during final review admission", candidateId, reviewWorktreeFingerprint);
+			return;
+		}
 		if (current.completionLatchCandidateId && current.completionLatchCandidateId !== candidateId) {
 			this.state.append(this.pi, this.state.completionLatchClearedEvent());
 			current = this.state.read()!;
@@ -564,8 +650,13 @@ export class MissionRuntime {
 				wallMs: 10 * 60_000,
 			}, ctx);
 		} catch (error) {
-			this.ctx?.ui.notify?.(`Mission reviewer launch outcome is ambiguous: ${error instanceof Error ? error.message : String(error)}`, "warning");
-			this.scheduleRecovery(ctx);
+			const latest = this.state.read();
+			const sameAttempt = latest?.reviewStatus === "starting" && latest.reviewAdmissionId === admissionId && latest.reviewCandidateId === candidateId && latest.objectiveVersion === current.objectiveVersion && latest.generation === current.generation;
+			if (!sameAttempt) this.scheduleRecovery(ctx);
+			else if (error instanceof SubagentAdmissionReservedError) {
+				this.ctx?.ui.notify?.(`Mission reviewer launch outcome is ambiguous: ${error.message}`, "warning");
+				this.scheduleRecovery(ctx);
+			} else this.failReview(latest, `independent reviewer launch failed: ${error instanceof Error ? error.message : String(error)}`);
 			return;
 		} finally {
 			this.reviewAdmissionInFlight = false;
@@ -599,8 +690,34 @@ export class MissionRuntime {
 		const mission = this.state.read();
 		// Only an active Mission may transition review state; reviewEvent()/failReview() call requireActive() and would throw on a paused/blocked Mission whose reviewer settled after the pause.
 		if (!mission?.reviewRunId || mission.reviewStatus !== "running" || mission.status !== "active") return false;
-		let run: DelegateRun;
 		const service = getSubagentService();
+		if (service.restorationComplete?.() === false) {
+			if (this.ctx) this.scheduleRecovery(this.ctx, 1_000);
+			return false;
+		}
+		const preflightFingerprint = this.ctx ? await worktreeFingerprint(this.pi, this.ctx.cwd, mission) : undefined;
+		const preflight = this.state.read();
+		const samePreflightAttempt = preflight?.status === "active" && preflight.reviewStatus === "running" && preflight.reviewRunId === mission.reviewRunId && preflight.reviewCandidateId === mission.reviewCandidateId && preflight.reviewWorktreeFingerprint === mission.reviewWorktreeFingerprint && preflight.objectiveVersion === mission.objectiveVersion && preflight.generation === mission.generation;
+		if (!samePreflightAttempt) return true;
+		if (!preflightFingerprint) {
+			this.failReview(preflight!, "could not fingerprint reviewed worktree before run recovery");
+			return true;
+		}
+		const preflightCandidateId = reviewCandidateId(preflight!, preflightFingerprint);
+		if (preflightFingerprint !== preflight!.reviewWorktreeFingerprint || preflightCandidateId !== preflight!.reviewCandidateId) {
+			let priorRun: DelegateRun | undefined;
+			try { priorRun = service.executor.get(preflight!.reviewRunId!); }
+			catch {
+				if (preflight!.reviewAdmissionId && this.ctx) priorRun = await service.executor.restoreAdmission(this.ctx.cwd, preflight!.reviewAdmissionId);
+			}
+			if (priorRun && ["starting", "running", "stopping"].includes(priorRun.runtime.status)) {
+				if (this.ctx) this.scheduleRecovery(this.ctx, 1_000);
+				return false;
+			}
+			this.supersedeReview("candidate changed after the prior reviewer settled", preflightCandidateId, preflightFingerprint);
+			return true;
+		}
+		let run: DelegateRun;
 		try {
 			run = service.executor.get(mission.reviewRunId);
 		} catch (error) {
@@ -612,23 +729,37 @@ export class MissionRuntime {
 			return true;
 		}
 		if (["starting", "running", "stopping"].includes(run.runtime.status)) return false;
+		const sameAttempt = (latest: MissionCurrent | undefined) => latest?.status === "active" && latest.reviewStatus === "running" && latest.reviewRunId === mission.reviewRunId && latest.reviewCandidateId === mission.reviewCandidateId && latest.reviewWorktreeFingerprint === mission.reviewWorktreeFingerprint && latest.objectiveVersion === mission.objectiveVersion && latest.generation === mission.generation;
+		const fingerprint = this.ctx ? await worktreeFingerprint(this.pi, this.ctx.cwd, mission) : undefined;
+		let latest = this.state.read();
+		if (!sameAttempt(latest)) return true;
+		if (!fingerprint) {
+			this.failReview(latest!, "could not fingerprint reviewed worktree");
+			return true;
+		}
+		const candidateId = reviewCandidateId(latest!, fingerprint);
+		if (!latest!.reviewWorktreeFingerprint || fingerprint !== latest!.reviewWorktreeFingerprint || latest!.reviewCandidateObjectiveVersion !== (latest!.objectiveVersion ?? 1) || latest!.reviewCandidateId !== candidateId) {
+			this.supersedeReview("objective, scope, or worktree changed while independent review was running", candidateId, fingerprint);
+			return true;
+		}
 		if (run.runtime.status !== "completed") {
-			this.failReview(mission, run.runtime.error || "independent review failed");
+			this.failReview(latest!, run.runtime.error || "independent review failed");
 			return true;
 		}
 		const report = await readReviewReport(run);
+		const finalFingerprint = this.ctx ? await worktreeFingerprint(this.pi, this.ctx.cwd, mission) : undefined;
+		latest = this.state.read();
+		if (!sameAttempt(latest)) return true;
+		if (!finalFingerprint) {
+			this.failReview(latest!, "could not revalidate reviewed worktree after report read");
+			return true;
+		}
+		if (finalFingerprint !== fingerprint) {
+			this.supersedeReview("worktree changed while reading the independent review report", reviewCandidateId(latest!, finalFingerprint), finalFingerprint);
+			return true;
+		}
 		if (!report) {
-			this.failReview(mission, "independent reviewer did not submit a valid review_report artifact");
-			return true;
-		}
-		const fingerprint = this.ctx ? await worktreeFingerprint(this.pi, this.ctx.cwd, mission) : undefined;
-		if (!fingerprint) {
-			this.failReview(mission, "could not fingerprint reviewed worktree");
-			return true;
-		}
-		const candidateId = reviewCandidateId(mission, fingerprint);
-		if (!mission.reviewWorktreeFingerprint || fingerprint !== mission.reviewWorktreeFingerprint || mission.reviewCandidateObjectiveVersion !== (mission.objectiveVersion ?? 1) || mission.reviewCandidateId !== candidateId) {
-			this.failReview(mission, "objective, scope, or worktree changed while independent review was running");
+			this.failReview(latest!, "independent reviewer did not submit a valid review_report artifact");
 			return true;
 		}
 		this.state.append(this.pi, this.state.reviewEvent("awaiting_adjudication", { runId: run.spec.id, reason: "Independent review settled; parent must adjudicate the severity-derived result.", suggestedVerdict: report.verdict, worktreeFingerprint: fingerprint, candidateId, highestSeverity: report.highestSeverity, blockingFindingCount: report.blockingFindingCount, backlogFindingCount: report.backlogFindingCount }));
@@ -636,10 +767,19 @@ export class MissionRuntime {
 		return true;
 	}
 
+	private supersedeReview(reason: string, candidateId?: string, fingerprint?: string): void {
+		const shouldBlock = (this.state.read()?.reviewSupersessionCount ?? 0) >= 2;
+		this.state.append(this.pi, this.state.reviewEvent("due", { reason, outcome: "superseded", candidateId, worktreeFingerprint: fingerprint, notBeforeAt: Date.now() + REVIEW_QUIET_WINDOW_MS }));
+		if (shouldBlock) this.state.append(this.pi, this.state.statusEvent("blocked", "review candidate superseded three times", reason));
+		else if (this.ctx) this.scheduleRecovery(this.ctx);
+		this.updateStatus();
+	}
+
 	private failReview(_mission: MissionCurrent, reason: string): void {
 		const shouldBlock = this.state.readReviewFailureCount() >= 2;
-		this.state.append(this.pi, this.state.reviewEvent("due", { reason, failure: true }));
+		this.state.append(this.pi, this.state.reviewEvent("due", { reason, outcome: "failed" }));
 		if (shouldBlock) this.state.append(this.pi, this.state.statusEvent("blocked", "independent review failed three times", reason));
+		else if (this.ctx) this.scheduleRecovery(this.ctx);
 		this.updateStatus();
 	}
 
@@ -706,7 +846,8 @@ function continuationMessage(mission: MissionCurrent): string {
 		`Mission continuation ${mission.generation}/${mission.objectiveVersion ?? 1}.`,
 		`Objective: ${mission.objective}`,
 		`Requirements: ${mission.requirements.map((item) => `• ${item}`).join(" ")}`,
-		`Review: ${mission.reviewStatus ?? "not_required"}${mission.reviewReason ? ` (${mission.reviewReason})` : ""}.`,
+		`Review: ${mission.reviewStatus ?? "not_required"}${mission.reviewOutcome ? ` (${mission.reviewOutcome})` : ""}${mission.reviewReason ? ` — ${mission.reviewReason}` : ""}.`,
+		...(mission.reviewStatus === "awaiting_adjudication" ? [`Review evidence: run=${mission.reviewRunId ?? "missing"}; derivedVerdict=${mission.reviewSuggestedVerdict ?? "unknown"}; highestSeverity=${mission.reviewHighestSeverity ?? "none"}; blocking=${mission.reviewBlockingFindingCount ?? 0}; backlog=${mission.reviewBacklogFindingCount ?? 0}. Retrieve bounded report evidence with subagent_wait on the exact run ID.`] : []),
 		"Choose the highest-leverage next action toward the full objective; do not shrink scope to fit one turn, and work until a natural turn boundary. After starting background work, continue any runnable independent work instead of waiting merely to keep the turn open; terminal delivery wakes idle Pi automatically. Make best judgments without routine questions. Stop for credentials, safety, irreversible operations, explicit approval boundaries, terminal error, or a genuine repeated blocker. Record milestone evidence with mission_progress. Completion requires validation, independent review convergence, child settlement, Chain checkpoint, and a requirement evidence audit.",
 	].join("\n");
 }
@@ -752,11 +893,11 @@ const REVIEW_SEVERITIES: readonly MissionReviewSeverity[] = ["blocker", "major",
 
 async function readReviewReport(run: DelegateRun): Promise<DerivedReviewReport | undefined> {
 	try {
-		const report = JSON.parse(await readFile(join(run.spec.artifactsDir, "review-report.json"), "utf8")) as { version?: unknown; verdict?: unknown; findings?: unknown };
-		if (report.version !== 1 || (report.verdict !== "clear" && report.verdict !== "changes_requested") || !Array.isArray(report.findings) || report.findings.length > 1_000) return undefined;
+		const report = JSON.parse(await readFile(join(run.spec.artifactsDir, "review-report.json"), "utf8")) as { version?: unknown; verdict?: unknown; overallExplanation?: unknown; findings?: unknown };
+		if (report.version !== 1 || (report.verdict !== "clear" && report.verdict !== "changes_requested") || typeof report.overallExplanation !== "string" || !Array.isArray(report.findings) || report.findings.length > 1_000) return undefined;
 		const severities: MissionReviewSeverity[] = [];
 		for (const finding of report.findings) {
-			if (!finding || typeof finding !== "object" || Array.isArray(finding) || !("severity" in finding) || !REVIEW_SEVERITIES.includes(finding.severity as MissionReviewSeverity)) return undefined;
+			if (!finding || typeof finding !== "object" || Array.isArray(finding) || !("severity" in finding) || !REVIEW_SEVERITIES.includes(finding.severity as MissionReviewSeverity) || !("summary" in finding) || typeof finding.summary !== "string" || ("path" in finding && typeof finding.path !== "string") || ("line" in finding && (!Number.isInteger(finding.line) || (finding.line as number) < 1))) return undefined;
 			severities.push(finding.severity as MissionReviewSeverity);
 		}
 		const blockingFindingCount = severities.filter((severity) => severity === "blocker" || severity === "major").length;

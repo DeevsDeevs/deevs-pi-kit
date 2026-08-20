@@ -84,6 +84,8 @@ export interface DelegateRun {
 }
 
 export interface DelegateStartInput {
+	/** Internal durable reservation ID; callers normally let the executor allocate it. */
+	id?: string;
 	persona: string;
 	personaBody: string;
 	personaTools: string[];

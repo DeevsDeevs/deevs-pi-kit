@@ -74,6 +74,18 @@ describe("Mission takeover", () => {
 		expect(await discoverMissionTakeoverCandidates(replacement.ctx)).toEqual([]);
 	});
 
+	it("preserves actionable changes-requested report reference across takeover", async () => {
+		const cwd = mkdtempSync(path.join(tmpdir(), "mission-takeover-review-report-"));
+		cleanup.push(cwd);
+		const source = await sourceMission(cwd);
+		source.state.append(source.pi, source.state.reviewEvent("changes_requested", { runId: "review-major", candidateId: "candidate-major", reason: "Major finding requires correction" }));
+		source.candidate.snapshot = source.state.exportSnapshot(source.state.readOwner()!);
+		const successor = session(cwd, "successor-session");
+		const state = new MissionState();
+		const taken = state.takeover(successor.pi, source.candidate, successor.ctx, "old controller stopped");
+		expect(taken).toMatchObject({ reviewStatus: "changes_requested", reviewRunId: "review-major", reviewReason: "Major finding requires correction" });
+	});
+
 	it("preserves one unchanged adjudicated candidate and its user completion authorization across takeover", async () => {
 		const cwd = mkdtempSync(path.join(tmpdir(), "mission-takeover-candidate-"));
 		cleanup.push(cwd);
@@ -162,6 +174,18 @@ describe("Mission takeover", () => {
 		expect(state.readAny()).toBeUndefined();
 	});
 
+	it("preserves blocked review authorization when takeover exceeds the correction limit", async () => {
+		const cwd = mkdtempSync(path.join(tmpdir(), "mission-takeover-review-limit-"));
+		cleanup.push(cwd);
+		const source = await sourceMission(cwd);
+		source.candidate.snapshot.mission.reviewCorrectionCount = 4;
+		source.candidate.snapshot.mission.reviewCorrectionLimit = 3;
+		const successor = session(cwd, "successor-session");
+		const state = new MissionState();
+		const taken = state.takeover(successor.pi, source.candidate, successor.ctx, "old controller stopped");
+		expect(taken).toMatchObject({ status: "blocked", reviewCorrectionCount: 4, reviewCorrectionLimit: 3 });
+	});
+
 	it("rejects fractional durable correction counters", async () => {
 		const cwd = mkdtempSync(path.join(tmpdir(), "mission-fractional-policy-"));
 		cleanup.push(cwd);
@@ -213,9 +237,10 @@ describe("Mission takeover", () => {
 		const slug = source.candidate.snapshot.mission.slug;
 		const lock = path.join(cwd, ".missions", ".state", ".locks", slug);
 		mkdirSync(lock, { recursive: true });
+		writeFileSync(path.join(lock, "owner.json"), JSON.stringify({ pid: 2_147_483_647, startedAt: Date.now() - 60_000 }));
 		const old = new Date(Date.now() - 60_000);
 		utimesSync(lock, old, old);
-		// A lock left behind by a SIGKILLed holder (stale by age, no live owner) must be reclaimed, not brick the Mission forever.
+		// A lock with an atomically published, provably dead owner must be reclaimed, not brick the Mission forever.
 		expect(withMissionLock(cwd, slug, () => "ran")).toBe("ran");
 		// A freshly-held live lock is still exclusive.
 		withMissionLock(cwd, slug, () => {

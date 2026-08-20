@@ -12,7 +12,7 @@ Missions are durable single-controller workspace objectives. Canonical state liv
 1. Use `mission_create` only when the user explicitly requests a continuing objective.
 2. Use `mission_get` before continuing known Mission work.
 3. If this session controls a paused/blocked Mission and the user authorizes continuation, call `mission_resume` before substantive work.
-4. Record material milestones, validation, review adjudication, and genuine typed blockers with `mission_progress`.
+4. Record material milestones, validation, review adjudication, and genuine typed blockers with `mission_progress`. Candidate supersession is recovery, not reviewer failure; only typed launch/runtime/report failures consume the failure circuit.
 5. Complete only after requirement audit, validation, review, settlement, and Chain gates pass.
 
 ## Cross-session takeover
