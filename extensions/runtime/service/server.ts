@@ -56,7 +56,10 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 		},
 	});
 	wakes = new HostedWakeCoordinator(store, registrations, host, options.wake);
-	participants = new HostedParticipantCoordinator(store, registrations, wakes, options.participant);
+	participants = new HostedParticipantCoordinator(store, registrations, wakes, {
+		...options.participant,
+		stopTarget: options.participant?.stopTarget ?? (host.closeTarget ? (target) => host.closeTarget!(target, join(options.root, "collaborator-sessions")) : undefined),
+	});
 	const socketPath = options.socketPath ?? join(options.root, "runtime.sock");
 	const context: HostedProtocolContext = {
 		runtimeId: instance.runtimeId,

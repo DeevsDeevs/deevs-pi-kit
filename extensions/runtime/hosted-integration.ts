@@ -284,6 +284,26 @@ export class HostedRuntimeIntegration {
 		return { participant: `${protocol}/${participantId}`, outcome: "stood_down" };
 	}
 
+	async stopCollaborator(input: { protocol: string; participantId: string }, ctx: ExtensionContext, signal?: AbortSignal): Promise<{ participant: string; outcome: "stopped" | "already_stopped" | "unmanaged" | "declined" }> {
+		throwIfAborted(signal);
+		if (!ctx.hasUI) throw new HostedRuntimeClientError("host_unavailable", "Collaborator stop confirmation requires an interactive Pi session.");
+		if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Collaborator stop requires a trusted project.");
+		const protocol = collaboratorName(input.protocol, "protocol");
+		const participantId = collaboratorName(input.participantId, "participant ID");
+		const registration = await this.requireRegistration(ctx);
+		const participant = (await this.listParticipants(registration)).find((candidate) => candidate.protocol === protocol && candidate.participantId === participantId);
+		if (!participant) throw new HostedRuntimeClientError("not_found", `No ${protocol}/${participantId} participant exists.`);
+		if (participant.state === "ended") throw new HostedRuntimeClientError("conflict", `Participant ${protocol}/${participantId} has ended and cannot be stopped.`);
+		if (!await ctx.ui.confirm("Stop Runtime collaborator?", `Vacate ${protocol}/${participantId}, preserve its mail, and terminate its exact plugin-managed Herdr tab?`, { signal })) return { participant: `${protocol}/${participantId}`, outcome: "declined" };
+		throwIfAborted(signal);
+		const result = strictObject(await this.client.call("participant.stop_confirmed", { ...auth(registration), participantKey: participant.participantKey, expectedGeneration: participant.generation, confirmed: true }), "Collaborator stop result");
+		const stopped = parseParticipant(result.participant);
+		const outcome = result.outcome;
+		if (outcome !== "stopped" && outcome !== "already_stopped" && outcome !== "unmanaged") throw new HostedRuntimeClientError("invalid_response", "Runtime returned an invalid collaborator stop outcome.");
+		if (this.participantIdentity?.participantKey === stopped.participantKey && stopped.state === "vacant") this.persistParticipant({ ...this.participantIdentity, generation: stopped.generation, disposition: "vacant" });
+		return { participant: `${protocol}/${participantId}`, outcome };
+	}
+
 	async startCollaborator(input: { participantId: string; protocol?: string; callerParticipantId?: string }, ctx: ExtensionContext, signal?: AbortSignal): Promise<{ started: boolean; participant: string; paneId?: string }> {
 		if (this.collaboratorStartActive) throw new HostedRuntimeClientError("busy", "Another collaborator start is already in progress.");
 		this.collaboratorStartActive = true;
@@ -405,7 +425,7 @@ export class HostedRuntimeIntegration {
 			tabId = text(strictObject(result.tab, "Herdr tab").tab_id);
 			const paneId = text(strictObject(result.root_pane, "Herdr root pane").pane_id);
 			throwIfAborted(signal);
-			const agentName = `pi-kit-${participantId}-${randomUUID().slice(0, 8)}`;
+			const agentName = `pi-kit-${randomUUID().replaceAll("-", "").slice(0, 16)}`;
 			childMayBeLive = true;
 			const started = await this.pi.exec("herdr", ["agent", "start", agentName, "--kind", "pi", "--pane", paneId, "--timeout", "15000", "--", "--approve", "--session", sessionFile], { timeout: 20_000 });
 			if (started.code !== 0) throw new HostedRuntimeClientError("host_unavailable", `Herdr did not confirm Pi collaborator startup in ${paneId}; its tab and session were preserved.`);

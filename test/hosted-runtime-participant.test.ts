@@ -54,13 +54,16 @@ function setup() {
 	const requested: string[] = [];
 	let generationNumber = 0;
 	let eventNumber = 0;
+	let stopOutcome: "closed" | "already_absent" | "unmanaged" = "closed";
+	const stoppedTargets: string[] = [];
 	const participants = new HostedParticipantCoordinator(store, registrations, { request: (targetKey) => requested.push(targetKey) }, {
 		now: () => now,
 		epochStartedAt: 1_000,
 		createGeneration: () => `lease_${++generationNumber}`,
 		createEventId: () => `event_${++eventNumber}`,
+		stopTarget: async (target) => { stoppedTargets.push(target.targetKey); return stopOutcome; },
 	});
-	return { root, projectRoot, host, inputs, store, registrations, participants, requested, setNow(value: number) { now = value; } };
+	return { root, projectRoot, host, inputs, store, registrations, participants, requested, stoppedTargets, setStopOutcome(value: typeof stopOutcome) { stopOutcome = value; }, setNow(value: number) { now = value; } };
 }
 
 async function register(test: ReturnType<typeof setup>, name: string): Promise<HostedLiveRegistration> {
@@ -117,6 +120,29 @@ describe("hosted participant coordinator", () => {
 		expect(vacant).toMatchObject({ state: "vacant", holderLive: false, lastTransition: { cause: "stand_down", previousGeneration: fableParticipant.generation } });
 		expect(test.requested).toEqual([fable.targetKey, main.targetKey]);
 		expect(test.participants.standDownConfirmed(main, fableParticipant.participantKey, fableParticipant.generation).generation).toBe(vacant.generation);
+	});
+
+	it("stops an exact other target, preserves mail, and converges when retried", async () => {
+		const test = setup();
+		const { main, fable, fableParticipant } = await acquirePair(test);
+		test.participants.send(main, fableParticipant.participantKey, "queued", "Keep me.");
+		await expect(test.participants.stopConfirmed(fable, fableParticipant.participantKey, fableParticipant.generation)).rejects.toMatchObject({ code: "conflict" });
+		await expect(test.participants.stopConfirmed(main, fableParticipant.participantKey, "stale")).rejects.toMatchObject({ code: "conflict" });
+		expect(test.stoppedTargets).toEqual([]);
+		const stopped = await test.participants.stopConfirmed(main, fableParticipant.participantKey, fableParticipant.generation);
+		expect(stopped).toMatchObject({ outcome: "stopped", participant: { state: "vacant", queued: { pending: 1 } } });
+		expect(test.stoppedTargets).toEqual([fable.targetKey]);
+		test.setStopOutcome("already_absent");
+		const retry = await test.participants.stopConfirmed(main, fableParticipant.participantKey, stopped.participant.generation);
+		expect(retry).toMatchObject({ outcome: "already_stopped", participant: { state: "vacant", generation: stopped.participant.generation } });
+	});
+
+	it("does not mutate an unmanaged collaborator target", async () => {
+		const test = setup();
+		const { main, fableParticipant } = await acquirePair(test);
+		test.setStopOutcome("unmanaged");
+		const result = await test.participants.stopConfirmed(main, fableParticipant.participantKey, fableParticipant.generation);
+		expect(result).toMatchObject({ outcome: "unmanaged", participant: { state: "held", generation: fableParticipant.generation } });
 	});
 
 	it("rejects live or stale-generation takeover and allows it after a seen holder unregisters", async () => {
@@ -206,6 +232,8 @@ describe("participant and mailbox RPC", () => {
 		expect(await call("mailbox.send", { ...mainAuth, recipientParticipantKey: recipient.participantKey, sendId: "bad_extra", body: "x", extra: true })).toMatchObject({ ok: false, error: { code: "invalid_request" } });
 		expect(await call("participant.takeover", { ...mainAuth, participantKey: recipient.participantKey, expectedGeneration: recipient.generation, confirmed: false })).toMatchObject({ ok: false, error: { code: "invalid_request" } });
 		expect(await call("participant.stand_down_confirmed", { ...mainAuth, participantKey: recipient.participantKey, expectedGeneration: recipient.generation, confirmed: false })).toMatchObject({ ok: false, error: { code: "invalid_request" } });
+		expect(await call("participant.stop_confirmed", { ...mainAuth, participantKey: recipient.participantKey, expectedGeneration: recipient.generation, confirmed: false })).toMatchObject({ ok: false, error: { code: "invalid_request" } });
+		expect(await call("participant.stop_confirmed", { ...mainAuth, participantKey: recipient.participantKey, expectedGeneration: recipient.generation, confirmed: true })).toMatchObject({ ok: true, result: { outcome: "stopped", participant: { state: "vacant" } } });
 		expect(await call("participant.stand_down_confirmed", { ...mainAuth, participantKey: recipient.participantKey, expectedGeneration: recipient.generation, confirmed: true })).toMatchObject({ ok: true, result: { state: "vacant" } });
 		expect(await call("participant.get", { ...mainAuth, participantKey: recipient.participantKey, extra: true })).toMatchObject({ ok: false, error: { code: "invalid_request" } });
 	});
