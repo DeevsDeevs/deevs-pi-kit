@@ -103,6 +103,22 @@ describe("hosted collaborator Pi integration", () => {
 		await test.integration.sessionShutdown();
 	});
 
+	it("repairs a missing local participant key before holder stand-down", async () => {
+		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", disposition: "held" } };
+		const test = await setup((request) => {
+			if (request.method === "participant.acquire") return { participant: mainParticipant, revived: false, transitioned: false };
+			if (request.method === "participant.list") return { participants: [mainParticipant] };
+			if (request.method === "participant.stand_down") return { ...mainParticipant, state: "vacant", generation: "lease_vacant", holderTargetKey: undefined, holderLive: false, lastTransition: { cause: "stand_down" } };
+			return baseResponse(request);
+		}, [identity]);
+		await test.integration.sessionStart(test.ctx as never);
+		test.integration.sessionTree(test.ctx as never);
+		await test.integration.command("stand-down", test.ctx as never);
+		expect(test.requests.find((request) => request.method === "participant.stand_down")?.params).toMatchObject({ participantKey: "participant_main" });
+		expect(test.entries.at(-1)).toMatchObject({ customType: HOSTED_PARTICIPANT_ENTRY, data: { disposition: "vacant", generation: "lease_vacant" } });
+		await test.integration.sessionShutdown();
+	});
+
 	it("bootstraps identity from Herdr env and persists exact acquisition", async () => {
 		process.env.PI_RUNTIME_COLLABORATE = "review:main";
 		const test = await setup((request) => {
@@ -419,6 +435,22 @@ describe("hosted collaborator Pi integration", () => {
 		await test.integration.sessionStart(test.ctx as never);
 		await expect(test.integration.startCollaborator({ protocol: "review", callerParticipantId: "main", participantId: "fable" }, test.ctx as never)).rejects.toThrow("could not create");
 		expect(test.requests.some((request) => request.method === "participant.stand_down")).toBe(false);
+		await test.integration.sessionShutdown();
+	});
+
+	it("stands down an exact live collaborator only after trusted confirmation", async () => {
+		const test = await setup((request) => {
+			if (request.method === "participant.list") return { participants: [fableParticipant] };
+			if (request.method === "participant.stand_down_confirmed") return { ...fableParticipant, state: "vacant", generation: "lease_vacant", holderTargetKey: undefined, holderLive: false, lastTransition: { cause: "stand_down" } };
+			return baseResponse(request);
+		});
+		await test.integration.sessionStart(test.ctx as never);
+		test.ctx.ui.confirm = async () => false;
+		expect(await test.integration.standDownCollaborator({ protocol: "review", participantId: "fable" }, test.ctx as never)).toEqual({ participant: "review/fable", stoodDown: false });
+		expect(test.requests.some((request) => request.method === "participant.stand_down_confirmed")).toBe(false);
+		test.ctx.ui.confirm = async () => true;
+		expect(await test.integration.standDownCollaborator({ protocol: "review", participantId: "fable" }, test.ctx as never)).toEqual({ participant: "review/fable", stoodDown: true });
+		expect(test.requests.find((request) => request.method === "participant.stand_down_confirmed")?.params).toMatchObject({ participantKey: "participant_fable", expectedGeneration: "lease_fable", confirmed: true });
 		await test.integration.sessionShutdown();
 	});
 

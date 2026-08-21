@@ -99,6 +99,19 @@ export class HostedParticipantCoordinator {
 		return this.leave(registration, participantKey, "participant.stand_down", expectedGeneration);
 	}
 
+	standDownConfirmed(registration: HostedLiveRegistration, participantKey: string, expectedGeneration: string): HostedParticipantStatus {
+		const target = this.requireTarget(registration.targetKey);
+		const participant = this.requireParticipant(participantKey, target.projectRoot);
+		const latest = participant.transitions.at(-1);
+		if (participant.state === "vacant" && latest?.cause === "stand_down" && latest.previousGeneration === expectedGeneration) return this.status(participant);
+		if (participant.state !== "held" || participant.generation !== expectedGeneration) throw new HostedParticipantError("conflict", "Participant state or generation changed before confirmed stand-down.");
+		const holderTargetKey = participant.holderTargetKey!;
+		this.store.apply({ type: "participant.stand_down", participantKey, targetKey: holderTargetKey, expectedGeneration, generation: this.createGeneration(), at: this.now() });
+		this.wakes.request(holderTargetKey);
+		if (registration.targetKey !== holderTargetKey) this.wakes.request(registration.targetKey);
+		return this.status(this.requireParticipant(participantKey, target.projectRoot));
+	}
+
 	release(registration: HostedLiveRegistration, participantKey: string): HostedParticipantStatus {
 		return this.leave(registration, participantKey, "participant.release");
 	}
