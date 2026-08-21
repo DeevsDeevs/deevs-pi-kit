@@ -266,7 +266,7 @@ export class HostedRuntimeIntegration {
 		return this.listParticipants(await this.requireRegistration(ctx));
 	}
 
-	async standDownCollaborator(input: { protocol: string; participantId: string }, ctx: ExtensionContext, signal?: AbortSignal): Promise<{ participant: string; stoodDown: boolean }> {
+	async standDownCollaborator(input: { protocol: string; participantId: string }, ctx: ExtensionContext, signal?: AbortSignal): Promise<{ participant: string; outcome: "stood_down" | "already_vacant" | "declined" }> {
 		throwIfAborted(signal);
 		if (!ctx.hasUI) throw new HostedRuntimeClientError("host_unavailable", "Collaborator stand-down confirmation requires an interactive Pi session.");
 		if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Collaborator stand-down requires a trusted project.");
@@ -275,13 +275,13 @@ export class HostedRuntimeIntegration {
 		const registration = await this.requireRegistration(ctx);
 		const participant = (await this.listParticipants(registration)).find((candidate) => candidate.protocol === protocol && candidate.participantId === participantId);
 		if (!participant) throw new HostedRuntimeClientError("not_found", `No ${protocol}/${participantId} participant exists.`);
-		if (participant.state === "vacant") return { participant: `${protocol}/${participantId}`, stoodDown: false };
+		if (participant.state === "vacant") return { participant: `${protocol}/${participantId}`, outcome: "already_vacant" };
 		if (participant.state === "ended") throw new HostedRuntimeClientError("conflict", `Participant ${protocol}/${participantId} has ended and cannot stand down.`);
-		if (!await ctx.ui.confirm("Stand down Runtime collaborator?", `Vacate ${protocol}/${participantId} and preserve its queued mail?`, { signal })) return { participant: `${protocol}/${participantId}`, stoodDown: false };
+		if (!await ctx.ui.confirm("Stand down Runtime collaborator?", `Vacate ${protocol}/${participantId} and preserve its queued mail?`, { signal })) return { participant: `${protocol}/${participantId}`, outcome: "declined" };
 		throwIfAborted(signal);
 		const result = parseParticipant(await this.client.call("participant.stand_down_confirmed", { ...auth(registration), participantKey: participant.participantKey, expectedGeneration: participant.generation, confirmed: true }));
 		if (this.participantIdentity?.participantKey === result.participantKey) this.persistParticipant({ ...this.participantIdentity, generation: result.generation, disposition: "vacant" });
-		return { participant: `${protocol}/${participantId}`, stoodDown: true };
+		return { participant: `${protocol}/${participantId}`, outcome: "stood_down" };
 	}
 
 	async startCollaborator(input: { participantId: string; protocol?: string; callerParticipantId?: string }, ctx: ExtensionContext, signal?: AbortSignal): Promise<{ started: boolean; participant: string; paneId?: string }> {
@@ -565,6 +565,7 @@ export class HostedRuntimeIntegration {
 				return;
 			}
 			this.registration = parseRegistration(await this.client.call("pi.heartbeat", auth(registration)));
+			if (this.participantIdentity?.participantKey) await this.restoreHeldParticipant(this.registration, this.ctx);
 			await this.retryAdmissions(this.registration);
 		} catch {
 			this.registration = undefined;

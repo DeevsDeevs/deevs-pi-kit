@@ -41,10 +41,8 @@ export default function runtimeExtension(pi: ExtensionAPI): void {
 		}),
 		async execute(_toolCallId, params: { protocol: string; participantId: string }, signal, _onUpdate, ctx) {
 			const result = await hosted.standDownCollaborator(params, ctx, signal);
-			return {
-				content: [{ type: "text" as const, text: result.stoodDown ? `Stood down ${result.participant}.` : `${result.participant} was already vacant or the user declined.` }],
-				details: result,
-			};
+			const text = result.outcome === "stood_down" ? `Stood down ${result.participant}.` : result.outcome === "already_vacant" ? `${result.participant} is already vacant.` : `User declined standing down ${result.participant}.`;
+			return { content: [{ type: "text" as const, text }], details: result };
 		},
 	});
 	pi.registerTool({
