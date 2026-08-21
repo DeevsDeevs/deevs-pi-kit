@@ -46,6 +46,22 @@ export default function runtimeExtension(pi: ExtensionAPI): void {
 		},
 	});
 	pi.registerTool({
+		name: "collaborator_stop",
+		label: "Stop Runtime Collaborator",
+		description: "After trusted user confirmation, vacate one exact same-project collaborator and terminate only its plugin-managed Herdr tab. Preserves queued mail.",
+		promptSnippet: "Stop an exact plugin-managed Runtime collaborator after trusted user confirmation.",
+		promptGuidelines: ["Use collaborator_stop only when the user explicitly requests process cleanup.", "It preserves mail, refuses self-stop and unmanaged tabs, and requires trusted UI confirmation."],
+		parameters: Type.Object({
+			protocol: Type.String({ description: "Exact collaborator protocol" }),
+			participantId: Type.String({ description: "Exact collaborator participant id" }),
+		}),
+		async execute(_toolCallId, params: { protocol: string; participantId: string }, signal, _onUpdate, ctx) {
+			const result = await hosted.stopCollaborator(params, ctx, signal);
+			const text = result.outcome === "stopped" ? `Stopped ${result.participant}.` : result.outcome === "already_stopped" ? `${result.participant} was already stopped.` : result.outcome === "unmanaged" ? `${result.participant} is not backed by a plugin-managed Herdr tab.` : `User declined stopping ${result.participant}.`;
+			return { content: [{ type: "text" as const, text }], details: result };
+		},
+	});
+	pi.registerTool({
 		name: "collaborator_start",
 		label: "Start Runtime Collaborator",
 		description: "After explicit user confirmation, acquire this Pi session's collaborator identity when needed and start one persistent Pi collaborator in a no-focus Herdr tab. Refuses revival and takeover.",
@@ -69,7 +85,7 @@ export default function runtimeExtension(pi: ExtensionAPI): void {
 		label: "Send Collaborator Mail",
 		description: "Send one durable message from this Pi session's held collaborator identity to another participant in the same project protocol.",
 		promptSnippet: "Send durable mail to a persistent Runtime collaborator.",
-		promptGuidelines: ["Use mail_send only when this Pi session has explicitly acquired a collaborator identity.", "Only confirmed collaborator tools may start or stand down identities; release, revival, and takeover remain user-only commands."],
+		promptGuidelines: ["Use mail_send only when this Pi session has explicitly acquired a collaborator identity.", "Only confirmed collaborator tools may start, stand down, or stop identities; release, revival, and takeover remain user-only commands."],
 		parameters: Type.Object({
 			participantId: Type.String({ description: "Recipient participant id in the sender's current protocol" }),
 			body: Type.String({ description: "Model-visible message body, capped at 16 KiB by Runtime" }),

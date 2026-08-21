@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { closeSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
+import { dirname } from "node:path";
 import type { HostedTarget } from "../hosted-types.ts";
 import { HostedStateStore } from "./state.ts";
 
@@ -29,6 +30,8 @@ export type HostedAgentStatus = "idle" | "working" | "blocked" | "done" | "unkno
 
 export interface HostedLiveAgent {
 	paneId: string;
+	tabId?: string;
+	workspaceId?: string;
 	terminalId: string;
 	cwd: string;
 	name?: string;
@@ -41,6 +44,7 @@ export interface HostedHostVerifier {
 	getPane(paneId: string): Promise<HostedLiveAgent>;
 	findTerminal(terminalId: string): Promise<HostedLiveAgent>;
 	prompt(paneId: string, text: string): Promise<void>;
+	closeTarget?(target: HostedTarget, managedSessionDirectory: string): Promise<"closed" | "already_absent" | "unmanaged">;
 }
 
 export interface RegisterPiInput {
@@ -246,6 +250,42 @@ export class HerdrCliHostVerifier implements HostedHostVerifier {
 	async prompt(paneId: string, text: string): Promise<void> {
 		await runHerdr(["agent", "prompt", paneId, text]);
 	}
+
+	async closeTarget(target: HostedTarget, managedSessionDirectory: string): Promise<"closed" | "already_absent" | "unmanaged"> {
+		let sessionFile: string;
+		try {
+			sessionFile = canonicalFile(target.piSessionFile, "collaborator session file");
+			if (dirname(sessionFile) !== realpathSync(managedSessionDirectory)) return "unmanaged";
+			verifyPiSessionHeader(sessionFile, target.piSessionId);
+		} catch {
+			return "unmanaged";
+		}
+		const find = async () => (await this.listAgents()).filter((agent) => agent.agentSession.kind === "path" && canonicalPath(agent.agentSession.value) === sessionFile);
+		const matches = await find();
+		if (matches.length === 0) return "already_absent";
+		if (matches.length !== 1) throw new RegistrationError("identity_mismatch", "Collaborator session is not unique in Herdr.");
+		const agent = matches[0]!;
+		if (!agent.tabId || !agent.workspaceId || canonicalDirectory(agent.cwd, "Herdr cwd") !== target.projectRoot || agent.agentSession.agent !== "pi" || agent.agentSession.source !== "herdr:pi" || deriveTargetKey(target.projectRoot, target.piSessionId) !== target.targetKey) {
+			throw new RegistrationError("identity_mismatch", "Herdr collaborator identity does not match its Runtime target.");
+		}
+		const response = await runHerdr(["tab", "get", agent.tabId]);
+		const tab = strictObject(strictObject(strictObject(response, "Herdr response").result, "Herdr result").tab, "Herdr tab");
+		if (tab.tab_id !== agent.tabId || tab.workspace_id !== agent.workspaceId || tab.pane_count !== 1) throw new RegistrationError("identity_mismatch", "Collaborator tab identity changed before stop.");
+		try {
+			await runHerdr(["tab", "close", agent.tabId]);
+			return "closed";
+		} catch (error) {
+			if ((await find()).length === 0) return "already_absent";
+			throw error;
+		}
+	}
+
+	private async listAgents(): Promise<HostedLiveAgent[]> {
+		const response = await runHerdr(["agent", "list"]);
+		const agents = strictObject(strictObject(response, "Herdr response").result, "Herdr result").agents;
+		if (!Array.isArray(agents)) throw new RegistrationError("host_unavailable", "Herdr agent list is malformed.");
+		return agents.map(parseLiveAgent);
+	}
 }
 
 export function deriveTargetKey(projectRoot: string, piSessionId: string): string {
@@ -316,6 +356,8 @@ function parseLiveAgent(value: unknown): HostedLiveAgent {
 		if (status !== "idle" && status !== "working" && status !== "blocked" && status !== "done" && status !== "unknown") throw new Error("invalid agent status");
 		return {
 			paneId: text(agent.pane_id),
+			...(typeof agent.tab_id === "string" ? { tabId: agent.tab_id } : {}),
+			...(typeof agent.workspace_id === "string" ? { workspaceId: agent.workspace_id } : {}),
 			terminalId: text(agent.terminal_id),
 			cwd: text(agent.cwd),
 			...(typeof agent.name === "string" ? { name: agent.name } : {}),
@@ -327,6 +369,10 @@ function parseLiveAgent(value: unknown): HostedLiveAgent {
 		if (error instanceof RegistrationError) throw error;
 		throw new RegistrationError("host_unavailable", "Herdr returned malformed agent identity.");
 	}
+}
+
+function canonicalPath(path: string): string | undefined {
+	try { return realpathSync(path); } catch { return undefined; }
 }
 
 function runHerdr(args: string[]): Promise<unknown> {

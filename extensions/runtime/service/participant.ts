@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { HostedMailboxMessageEvent, HostedParticipant } from "../hosted-types.ts";
+import type { HostedMailboxMessageEvent, HostedParticipant, HostedTarget } from "../hosted-types.ts";
 import { RuntimeRegistrationManager, type HostedLiveRegistration } from "./registration.ts";
 import { deriveParticipantKey, HostedStateStore } from "./state.ts";
 
@@ -33,6 +33,7 @@ export interface HostedParticipantCoordinatorOptions {
 	createEventId?: () => string;
 	reconnectGraceMs?: number;
 	epochStartedAt?: number;
+	stopTarget?: (target: HostedTarget) => Promise<"closed" | "already_absent" | "unmanaged">;
 }
 
 export interface HostedParticipantWakeRequester {
@@ -110,6 +111,29 @@ export class HostedParticipantCoordinator {
 		this.wakes.request(holderTargetKey);
 		if (registration.targetKey !== holderTargetKey) this.wakes.request(registration.targetKey);
 		return this.status(this.requireParticipant(participantKey, target.projectRoot));
+	}
+
+	async stopConfirmed(registration: HostedLiveRegistration, participantKey: string, expectedGeneration: string): Promise<{ participant: HostedParticipantStatus; outcome: "stopped" | "already_stopped" | "unmanaged" }> {
+		const caller = this.requireTarget(registration.targetKey);
+		const participant = this.requireParticipant(participantKey, caller.projectRoot);
+		if (participant.generation !== expectedGeneration) throw new HostedParticipantError("conflict", "Participant generation changed before confirmed stop.");
+		const latest = participant.transitions.at(-1)!;
+		const holderTargetKey = participant.state === "held" ? participant.holderTargetKey : participant.state === "vacant" && latest.cause === "stand_down" ? latest.previousHolderTargetKey : undefined;
+		if (!holderTargetKey) throw new HostedParticipantError("conflict", "Participant has no stoppable collaborator target.");
+		if (holderTargetKey === registration.targetKey) throw new HostedParticipantError("conflict", "A Pi target cannot stop its own Herdr tab.");
+		const target = this.requireTarget(holderTargetKey);
+		if (target.projectRoot !== caller.projectRoot) throw new HostedParticipantError("conflict", "Collaborator target belongs to another project.");
+		if (!this.options.stopTarget) return { participant: this.status(participant), outcome: "unmanaged" };
+		const stopped = await this.options.stopTarget(target);
+		if (stopped === "unmanaged") return { participant: this.status(participant), outcome: "unmanaged" };
+		const current = this.requireParticipant(participantKey, caller.projectRoot);
+		if (participant.state === "held") {
+			if (current.state !== "held" || current.generation !== expectedGeneration || current.holderTargetKey !== holderTargetKey) throw new HostedParticipantError("conflict", "Participant changed while its collaborator process was stopping.");
+			this.standDownConfirmed(registration, participantKey, expectedGeneration);
+		} else if (current.state !== "vacant" || current.generation !== expectedGeneration) {
+			throw new HostedParticipantError("conflict", "Participant changed while its prior collaborator process was stopping.");
+		}
+		return { participant: this.status(this.requireParticipant(participantKey, caller.projectRoot)), outcome: stopped === "closed" ? "stopped" : "already_stopped" };
 	}
 
 	release(registration: HostedLiveRegistration, participantKey: string): HostedParticipantStatus {

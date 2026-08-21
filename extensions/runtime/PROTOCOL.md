@@ -115,11 +115,12 @@ busy                     storage_error           internal
 | `participant.list` | List participants in the registered project |
 | `participant.stand_down` | Holder vacates its identity while retaining queued mail |
 | `participant.stand_down_confirmed` | Trusted-confirmed same-project caller vacates one exact generation while retaining queued mail |
+| `participant.stop_confirmed` | Trusted-confirmed same-project caller closes the exact managed Herdr tab and vacates its generation |
 | `participant.release` | End an identity and reject new mail |
 | `participant.takeover` | Explicitly rebind an offline holder generation |
 | `mailbox.send` | Append one idempotent directed message |
 
-All methods except `hello` and `pi.register` require the exact current registration ID and key. Mutations are idempotent on their typed durable keys. `participant.acquire` reports whether that call transitioned ownership; automatic rollback supplies the acquired generation to `participant.stand_down`, which fails if ownership changed. `participant.stand_down_confirmed` additionally requires a schema-validated confirmation boolean and exact expected generation; it can only move a same-project participant from held to vacant.
+All methods except `hello` and `pi.register` require the exact current registration ID and key. Mutations are idempotent on their typed durable keys. `participant.acquire` reports whether that call transitioned ownership; automatic rollback supplies the acquired generation to `participant.stand_down`, which fails if ownership changed. `participant.stand_down_confirmed` additionally requires a schema-validated confirmation boolean and exact expected generation; it can only move a same-project participant from held to vacant. `participant.stop_confirmed` uses the existing target/session identity to close only a plugin-managed single-pane Herdr tab, preserves mail, refuses self-stop, and is retry-safe when the tab is already absent.
 
 Hosted event types are separate from process-local `RuntimeEvent` types in `extensions/shared/runtime-events.ts`.
 

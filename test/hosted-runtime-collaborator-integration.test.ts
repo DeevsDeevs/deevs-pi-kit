@@ -254,6 +254,8 @@ describe("hosted collaborator Pi integration", () => {
 		const started = test.execCalls.find((call) => call.args[0] === "agent" && call.args[1] === "start")!;
 		const sessionFile = started.args[started.args.indexOf("--session") + 1]!;
 		expect(started.args).toContain("pi");
+		expect(started.args[2]).toMatch(/^pi-kit-[a-f0-9]{16}$/);
+		expect(started.args[2]!.length).toBeLessThanOrEqual(32);
 		expect(started.args).toContain("--approve");
 		expect(JSON.parse(readFileSync(sessionFile, "utf8"))).toMatchObject({ type: "session", version: 3, cwd: test.projectRoot });
 		expect(test.execCalls.some((call) => call.args[0] === "tab" && call.args[1] === "close")).toBe(false);
@@ -465,6 +467,23 @@ describe("hosted collaborator Pi integration", () => {
 		test.ctx.ui.confirm = async () => true;
 		expect(await test.integration.standDownCollaborator({ protocol: "review", participantId: "fable" }, test.ctx as never)).toEqual({ participant: "review/fable", outcome: "stood_down" });
 		expect(test.requests.find((request) => request.method === "participant.stand_down_confirmed")?.params).toMatchObject({ participantKey: "participant_fable", expectedGeneration: "lease_fable", confirmed: true });
+		await test.integration.sessionShutdown();
+	});
+
+	it("stops an exact collaborator only after trusted confirmation", async () => {
+		const vacant = { ...fableParticipant, state: "vacant", generation: "lease_vacant", holderTargetKey: undefined, holderLive: false, lastTransition: { cause: "stand_down", previousGeneration: "lease_fable" } };
+		const test = await setup((request) => {
+			if (request.method === "participant.list") return { participants: [fableParticipant] };
+			if (request.method === "participant.stop_confirmed") return { participant: vacant, outcome: "stopped" };
+			return baseResponse(request);
+		});
+		await test.integration.sessionStart(test.ctx as never);
+		test.ctx.ui.confirm = async () => false;
+		expect(await test.integration.stopCollaborator({ protocol: "review", participantId: "fable" }, test.ctx as never)).toEqual({ participant: "review/fable", outcome: "declined" });
+		expect(test.requests.some((request) => request.method === "participant.stop_confirmed")).toBe(false);
+		test.ctx.ui.confirm = async () => true;
+		expect(await test.integration.stopCollaborator({ protocol: "review", participantId: "fable" }, test.ctx as never)).toEqual({ participant: "review/fable", outcome: "stopped" });
+		expect(test.requests.find((request) => request.method === "participant.stop_confirmed")?.params).toMatchObject({ participantKey: "participant_fable", expectedGeneration: "lease_fable", confirmed: true });
 		await test.integration.sessionShutdown();
 	});
 
