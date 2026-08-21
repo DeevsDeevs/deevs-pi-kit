@@ -161,6 +161,20 @@ describe("hosted collaborator Pi integration", () => {
 		await second.integration.sessionShutdown();
 	});
 
+	it("reconciles a remotely stood-down local identity on heartbeat", async () => {
+		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
+		let vacant = false;
+		const test = await setup((request) => {
+			if (request.method === "participant.get") return vacant ? { ...mainParticipant, state: "vacant", generation: "lease_vacant", holderTargetKey: undefined, holderLive: false, lastTransition: { cause: "stand_down" } } : mainParticipant;
+			return baseResponse(request);
+		}, [identity]);
+		await test.integration.sessionStart(test.ctx as never);
+		vacant = true;
+		await (test.integration as unknown as { heartbeat: () => Promise<void> }).heartbeat();
+		expect(test.entries.at(-1)).toMatchObject({ customType: HOSTED_PARTICIPANT_ENTRY, data: { disposition: "vacant", generation: "lease_vacant" } });
+		await test.integration.sessionShutdown();
+	});
+
 	it("persists a vacant correction when a held transcript identity is absent from Runtime", async () => {
 		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
 		const test = await setup((request) => {
@@ -446,11 +460,20 @@ describe("hosted collaborator Pi integration", () => {
 		});
 		await test.integration.sessionStart(test.ctx as never);
 		test.ctx.ui.confirm = async () => false;
-		expect(await test.integration.standDownCollaborator({ protocol: "review", participantId: "fable" }, test.ctx as never)).toEqual({ participant: "review/fable", stoodDown: false });
+		expect(await test.integration.standDownCollaborator({ protocol: "review", participantId: "fable" }, test.ctx as never)).toEqual({ participant: "review/fable", outcome: "declined" });
 		expect(test.requests.some((request) => request.method === "participant.stand_down_confirmed")).toBe(false);
 		test.ctx.ui.confirm = async () => true;
-		expect(await test.integration.standDownCollaborator({ protocol: "review", participantId: "fable" }, test.ctx as never)).toEqual({ participant: "review/fable", stoodDown: true });
+		expect(await test.integration.standDownCollaborator({ protocol: "review", participantId: "fable" }, test.ctx as never)).toEqual({ participant: "review/fable", outcome: "stood_down" });
 		expect(test.requests.find((request) => request.method === "participant.stand_down_confirmed")?.params).toMatchObject({ participantKey: "participant_fable", expectedGeneration: "lease_fable", confirmed: true });
+		await test.integration.sessionShutdown();
+	});
+
+	it("reports an already-vacant collaborator without asking for confirmation", async () => {
+		const vacant = { ...fableParticipant, state: "vacant", holderTargetKey: undefined, holderLive: false, lastTransition: { cause: "stand_down" } };
+		const test = await setup((request) => request.method === "participant.list" ? { participants: [vacant] } : baseResponse(request));
+		test.ctx.ui.confirm = async () => { throw new Error("confirmation must not run"); };
+		await test.integration.sessionStart(test.ctx as never);
+		expect(await test.integration.standDownCollaborator({ protocol: "review", participantId: "fable" }, test.ctx as never)).toEqual({ participant: "review/fable", outcome: "already_vacant" });
 		await test.integration.sessionShutdown();
 	});
 
