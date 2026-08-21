@@ -108,6 +108,17 @@ describe("hosted participant coordinator", () => {
 		expect(() => test.participants.send(main, fableParticipant.participantKey, "send_cross_protocol", "Wrong protocol.")).toThrow(expect.objectContaining({ code: "conflict" }));
 	});
 
+	it("allows a confirmed same-project target to generation-fence a live collaborator stand-down", async () => {
+		const test = setup();
+		const { main, fable, fableParticipant } = await acquirePair(test);
+		test.requested.length = 0;
+		expect(() => test.participants.standDownConfirmed(main, fableParticipant.participantKey, "stale_generation")).toThrow(expect.objectContaining({ code: "conflict" }));
+		const vacant = test.participants.standDownConfirmed(main, fableParticipant.participantKey, fableParticipant.generation);
+		expect(vacant).toMatchObject({ state: "vacant", holderLive: false, lastTransition: { cause: "stand_down", previousGeneration: fableParticipant.generation } });
+		expect(test.requested).toEqual([fable.targetKey, main.targetKey]);
+		expect(test.participants.standDownConfirmed(main, fableParticipant.participantKey, fableParticipant.generation).generation).toBe(vacant.generation);
+	});
+
 	it("rejects live or stale-generation takeover and allows it after a seen holder unregisters", async () => {
 		const test = setup();
 		const { fable, fableParticipant } = await acquirePair(test);
@@ -194,6 +205,8 @@ describe("participant and mailbox RPC", () => {
 		expect(await call("participant.list", { ...mainAuth, registrationKey: "wrong" })).toMatchObject({ ok: false, error: { code: "registration_stale" } });
 		expect(await call("mailbox.send", { ...mainAuth, recipientParticipantKey: recipient.participantKey, sendId: "bad_extra", body: "x", extra: true })).toMatchObject({ ok: false, error: { code: "invalid_request" } });
 		expect(await call("participant.takeover", { ...mainAuth, participantKey: recipient.participantKey, expectedGeneration: recipient.generation, confirmed: false })).toMatchObject({ ok: false, error: { code: "invalid_request" } });
+		expect(await call("participant.stand_down_confirmed", { ...mainAuth, participantKey: recipient.participantKey, expectedGeneration: recipient.generation, confirmed: false })).toMatchObject({ ok: false, error: { code: "invalid_request" } });
+		expect(await call("participant.stand_down_confirmed", { ...mainAuth, participantKey: recipient.participantKey, expectedGeneration: recipient.generation, confirmed: true })).toMatchObject({ ok: true, result: { state: "vacant" } });
 		expect(await call("participant.get", { ...mainAuth, participantKey: recipient.participantKey, extra: true })).toMatchObject({ ok: false, error: { code: "invalid_request" } });
 	});
 });

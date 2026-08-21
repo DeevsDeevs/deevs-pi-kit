@@ -199,10 +199,15 @@ export class HostedRuntimeIntegration {
 				return;
 			}
 			if (action === "stand-down" || action === "leave") {
-				const identity = this.requireParticipantIdentity();
-				if (!identity.participantKey) throw new HostedRuntimeClientError("not_found", "Current collaborator identity has no durable participant key.");
-				if (action === "leave" && !await ctx.ui.confirm("End collaborator identity?", `End ${identity.protocol}/${identity.participantId}? New mail will be rejected until explicit revival.`)) return;
+				let identity = this.requireParticipantIdentity();
 				const registration = await this.requireRegistration(ctx);
+				if (!identity.participantKey) {
+					const current = (await this.listParticipants(registration)).find((participant) => participant.protocol === identity.protocol && participant.participantId === identity.participantId && participant.state === "held" && participant.holderTargetKey === registration.targetKey);
+					if (!current) throw new HostedRuntimeClientError("not_found", "Current collaborator identity has no recoverable durable participant key.");
+					identity = { ...identity, participantKey: current.participantKey, generation: current.generation, disposition: "held" };
+					this.persistParticipant(identity);
+				}
+				if (action === "leave" && !await ctx.ui.confirm("End collaborator identity?", `End ${identity.protocol}/${identity.participantId}? New mail will be rejected until explicit revival.`)) return;
 				const method = action === "stand-down" ? "participant.stand_down" : "participant.release";
 				const participant = parseParticipant(await this.client.call(method, { ...auth(registration), participantKey: identity.participantKey }));
 				this.persistParticipant({ ...identity, generation: participant.generation, disposition: action === "stand-down" ? "vacant" : "ended" });
@@ -259,6 +264,24 @@ export class HostedRuntimeIntegration {
 
 	async listCollaborators(ctx: ExtensionContext): Promise<ClientParticipantStatus[]> {
 		return this.listParticipants(await this.requireRegistration(ctx));
+	}
+
+	async standDownCollaborator(input: { protocol: string; participantId: string }, ctx: ExtensionContext, signal?: AbortSignal): Promise<{ participant: string; stoodDown: boolean }> {
+		throwIfAborted(signal);
+		if (!ctx.hasUI) throw new HostedRuntimeClientError("host_unavailable", "Collaborator stand-down confirmation requires an interactive Pi session.");
+		if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Collaborator stand-down requires a trusted project.");
+		const protocol = collaboratorName(input.protocol, "protocol");
+		const participantId = collaboratorName(input.participantId, "participant ID");
+		const registration = await this.requireRegistration(ctx);
+		const participant = (await this.listParticipants(registration)).find((candidate) => candidate.protocol === protocol && candidate.participantId === participantId);
+		if (!participant) throw new HostedRuntimeClientError("not_found", `No ${protocol}/${participantId} participant exists.`);
+		if (participant.state === "vacant") return { participant: `${protocol}/${participantId}`, stoodDown: false };
+		if (participant.state === "ended") throw new HostedRuntimeClientError("conflict", `Participant ${protocol}/${participantId} has ended and cannot stand down.`);
+		if (!await ctx.ui.confirm("Stand down Runtime collaborator?", `Vacate ${protocol}/${participantId} and preserve its queued mail?`, { signal })) return { participant: `${protocol}/${participantId}`, stoodDown: false };
+		throwIfAborted(signal);
+		const result = parseParticipant(await this.client.call("participant.stand_down_confirmed", { ...auth(registration), participantKey: participant.participantKey, expectedGeneration: participant.generation, confirmed: true }));
+		if (this.participantIdentity?.participantKey === result.participantKey) this.persistParticipant({ ...this.participantIdentity, generation: result.generation, disposition: "vacant" });
+		return { participant: `${protocol}/${participantId}`, stoodDown: true };
 	}
 
 	async startCollaborator(input: { participantId: string; protocol?: string; callerParticipantId?: string }, ctx: ExtensionContext, signal?: AbortSignal): Promise<{ started: boolean; participant: string; paneId?: string }> {
