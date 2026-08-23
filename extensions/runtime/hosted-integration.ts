@@ -116,6 +116,20 @@ export class HostedRuntimeIntegration {
 		} catch {}
 	}
 
+	async beforeAgentStart(ctx: ExtensionContext): Promise<{ message: { customType: string; content: string; display: boolean; details: Record<string, unknown> } } | undefined> {
+		this.ctx = ctx;
+		if (!this.active) return;
+		let registration: LiveClientRegistration;
+		try { registration = await this.requireRegistration(ctx); } catch { return; }
+		let claim: HostedClaimMessage;
+		try { claim = parseClaim(await this.client.call("inbox.claim", auth(registration))); } catch { return; }
+		if (!this.active) {
+			await this.releaseClaim(registration, claim);
+			return;
+		}
+		return { message: this.claimMessage(claim) };
+	}
+
 	async acceptWake(args: string, ctx: ExtensionCommandContext): Promise<void> {
 		const parts = args.trim().split(/\s+/);
 		if (parts.length !== 3 || parts[0] !== "1") return;
@@ -140,18 +154,7 @@ export class HostedRuntimeIntegration {
 		}
 		this.rememberWake(wakeId);
 		try {
-			this.pi.sendMessage({
-				customType: HOSTED_RUNTIME_MESSAGE,
-				content: hostedContent(claim.events),
-				display: false,
-				details: {
-					version: 1,
-					wakeId,
-					claimId: claim.claimId,
-					eventIds: claim.eventIds,
-					mailbox: claim.events.filter((event) => event.type === "mailbox.message").map((event) => ({ eventId: event.eventId, sendId: event.sendId, senderParticipantKey: event.senderParticipantKey, recipientParticipantKey: event.recipientParticipantKey })),
-				},
-			}, { triggerTurn: true, deliverAs: "followUp" });
+			this.pi.sendMessage(this.claimMessage(claim, wakeId), { triggerTurn: true, deliverAs: "followUp" });
 		} catch {
 			this.handledWakeIds.delete(wakeId);
 			await this.releaseClaim(registration, claim);
@@ -671,6 +674,21 @@ export class HostedRuntimeIntegration {
 
 	private async releaseClaim(registration: LiveClientRegistration, claim: HostedClaimMessage): Promise<void> {
 		try { await this.client.call("inbox.release", { ...auth(registration), claimId: claim.claimId, eventIds: claim.eventIds }); } catch {}
+	}
+
+	private claimMessage(claim: HostedClaimMessage, wakeId?: string): { customType: string; content: string; display: boolean; details: Record<string, unknown> } {
+		return {
+			customType: HOSTED_RUNTIME_MESSAGE,
+			content: hostedContent(claim.events),
+			display: false,
+			details: {
+				version: 1,
+				...(wakeId ? { wakeId } : {}),
+				claimId: claim.claimId,
+				eventIds: claim.eventIds,
+				mailbox: claim.events.filter((event) => event.type === "mailbox.message").map((event) => ({ eventId: event.eventId, sendId: event.sendId, senderParticipantKey: event.senderParticipantKey, recipientParticipantKey: event.recipientParticipantKey })),
+			},
+		};
 	}
 
 	private rememberAdmission(receipt: HostedReceipt, retry: boolean): void {

@@ -45,6 +45,12 @@ describe("hosted Pi wake admission", () => {
 							: [{ version: 1, eventId: `evt_${wakeId}`, type: "filesystem.created", summary: `new file: ${wakeId}.md`, payload: { path: join(projectRoot, `${wakeId}.md`) } }],
 					};
 				}
+				if (request.method === "inbox.claim") result = {
+					claimId: "claim_focused",
+					leaseUntil: 99_999,
+					status: "active",
+					events: [{ version: 1, eventId: "evt_focused", type: "mailbox.message", summary: "message from reviewer", payload: { body: "Focused-safe reply.", sendId: "send_focused", senderParticipantKey: "participant_reviewer", recipientParticipantKey: "participant_main" } }],
+				};
 				socket.end(`${JSON.stringify({ v: 1, id: request.id, ok: true, result })}\n`);
 			});
 		});
@@ -95,6 +101,10 @@ describe("hosted Pi wake admission", () => {
 			content: expect.stringContaining("Please inspect the race."),
 			details: { mailbox: [{ eventId: "evt_mail", sendId: "send_mail", senderParticipantKey: "participant_fable", recipientParticipantKey: "participant_main" }] },
 		});
+
+		const injected = await integration.beforeAgentStart(ctx as never);
+		expect(injected?.message).toMatchObject({ customType: HOSTED_RUNTIME_MESSAGE, content: expect.stringContaining("Focused-safe reply."), details: { claimId: "claim_focused", eventIds: ["evt_focused"] } });
+		expect(injected?.message.details).not.toHaveProperty("wakeId");
 
 		sendFails = true;
 		await integration.acceptWake("1 reg_1 wake_2", ctx as never);

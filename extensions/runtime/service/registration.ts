@@ -37,6 +37,7 @@ export interface HostedLiveAgent {
 	name?: string;
 	agentSession: HostedAgentSessionIdentity;
 	status: HostedAgentStatus;
+	focused?: boolean;
 	stateChangeSeq: number;
 }
 
@@ -363,6 +364,7 @@ function parseLiveAgent(value: unknown): HostedLiveAgent {
 			...(typeof agent.name === "string" ? { name: agent.name } : {}),
 			agentSession: { source: text(session.source), agent: text(session.agent), kind: session.kind, value: text(session.value) },
 			status,
+			...(typeof agent.focused === "boolean" ? { focused: agent.focused } : {}),
 			stateChangeSeq: Number(agent.state_change_seq),
 		};
 	} catch (error) {

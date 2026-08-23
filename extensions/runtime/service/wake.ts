@@ -147,7 +147,7 @@ export class HostedWakeCoordinator {
 		const verified = await this.registrations.verifyTarget(targetKey);
 		const registration = this.registrations.authorize(verified.registrationId, verified.registrationKey);
 		if (this.clearWakeWithoutPending(targetKey)) return;
-		if (registration.host.status !== "idle" && registration.host.status !== "done") return;
+		if (registration.host.focused || (registration.host.status !== "idle" && registration.host.status !== "done")) return;
 		let wake: HostedWake | undefined = this.store.read().wakes[targetKey];
 		if (wake && wake.registrationId !== registration.registrationId) {
 			this.store.apply({ type: "wake.clear", targetKey, wakeId: wake.wakeId });
