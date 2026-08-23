@@ -151,13 +151,14 @@ describe("hosted collaborator Pi integration", () => {
 		rotated = true;
 		const second = await setup((request) => {
 			if (request.method === "participant.get") return { ...mainParticipant, holderTargetKey: "target_other" };
+			if (request.method === "participant.list") return { participants: [{ ...mainParticipant, holderTargetKey: "target_other" }] };
 			return baseResponse(request);
 		}, [identity]);
 		await second.integration.sessionStart(second.ctx as never);
 		expect(second.requests.some((request) => request.method === "participant.acquire" || request.method === "participant.takeover")).toBe(false);
 		expect(second.notifications.some((notice) => notice.message.includes("explicit acquire or takeover"))).toBe(true);
 		expect(second.entries.at(-1)).toMatchObject({ customType: HOSTED_PARTICIPANT_ENTRY, data: { disposition: "vacant" } });
-		await expect(second.integration.startCollaborator({ participantId: "other" }, second.ctx as never)).rejects.toThrow("not held");
+		await expect(second.integration.startCollaborator({ participantId: "other" }, second.ctx as never)).rejects.toThrow("held by another Pi target");
 		await second.integration.sessionShutdown();
 	});
 
@@ -179,11 +180,15 @@ describe("hosted collaborator Pi integration", () => {
 		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
 		const test = await setup((request) => {
 			if (request.method === "participant.get") throw new HostedRuntimeClientError("not_found", "missing");
+			if (request.method === "participant.list") return { participants: [] };
 			return baseResponse(request);
 		}, [identity]);
 		await test.integration.sessionStart(test.ctx as never);
 		expect(test.entries.at(-1)).toEqual({ customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", disposition: "vacant" } });
-		await expect(test.integration.startCollaborator({ participantId: "fable" }, test.ctx as never)).rejects.toThrow("not held");
+		let confirmation = "";
+		test.ctx.ui.confirm = async (...args: unknown[]) => { confirmation = String(args[1]); return false; };
+		expect(await test.integration.startCollaborator({ participantId: "fable" }, test.ctx as never)).toEqual({ started: false, participant: "review/fable" });
+		expect(confirmation).toContain("Reacquire review/main and start review/fable");
 		await test.integration.sessionShutdown();
 	});
 
@@ -203,7 +208,7 @@ describe("hosted collaborator Pi integration", () => {
 		}, [identity]);
 		test.ctx.ui.confirm = async () => { starting = true; return true; };
 		await test.integration.sessionStart(test.ctx as never);
-		await expect(test.integration.startCollaborator({ participantId: "fable" }, test.ctx as never)).rejects.toThrow("not held by this Pi target");
+		await expect(test.integration.startCollaborator({ participantId: "fable" }, test.ctx as never)).rejects.toThrow("identity key does not match");
 		expect(starting).toBe(false);
 		expect(test.entries.at(-1)).toEqual({ customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", disposition: "vacant" } });
 		await test.integration.sessionShutdown();
@@ -413,6 +418,29 @@ describe("hosted collaborator Pi integration", () => {
 		expect(await test.integration.startCollaborator({ protocol: "review", callerParticipantId: "main", participantId: "fable" }, test.ctx as never)).toMatchObject({ started: true, participant: "review/fable", paneId: "w1:p9" });
 		expect(test.requests.some((request) => request.method === "participant.acquire" && request.params.participantId === "main")).toBe(true);
 		expect(test.entries.at(-1)).toMatchObject({ customType: HOSTED_PARTICIPANT_ENTRY, data: { participantId: "main", disposition: "held" } });
+		await test.integration.sessionShutdown();
+	});
+
+	it("reacquires a remembered vacant caller and rolls it back when launch fails", async () => {
+		const vacantIdentity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_vacant", disposition: "vacant" } };
+		const vacantMain = { ...mainParticipant, state: "vacant", generation: "lease_vacant", holderTargetKey: undefined, holderLive: false, lastTransition: { cause: "stand_down" } };
+		let acquired = false;
+		const test = await setup((request) => {
+			if (request.method === "participant.list") return { participants: [acquired ? mainParticipant : vacantMain] };
+			if (request.method === "participant.acquire") { acquired = true; return { participant: mainParticipant, revived: false, transitioned: true }; }
+			if (request.method === "participant.stand_down") return { ...vacantMain, generation: "lease_rollback" };
+			return baseResponse(request);
+		}, [vacantIdentity]);
+		test.setExec(async (_command, args) => args[0] === "tab" && args[1] === "create"
+			? { code: 1, stdout: "", stderr: "create failed", killed: false }
+			: args[0] === "pane"
+				? { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false }
+				: { code: 0, stdout: "{}", stderr: "", killed: false });
+		await test.integration.sessionStart(test.ctx as never);
+		await expect(test.integration.startCollaborator({ participantId: "fable" }, test.ctx as never)).rejects.toThrow("could not create");
+		expect(test.requests.some((request) => request.method === "participant.acquire" && request.params.participantId === "main")).toBe(true);
+		expect(test.requests.some((request) => request.method === "participant.stand_down" && request.params.expectedGeneration === "lease_main")).toBe(true);
+		expect(test.entries.at(-1)).toMatchObject({ data: { participantId: "main", disposition: "vacant", generation: "lease_rollback" } });
 		await test.integration.sessionShutdown();
 	});
 

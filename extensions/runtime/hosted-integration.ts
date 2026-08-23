@@ -320,7 +320,7 @@ export class HostedRuntimeIntegration {
 		if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Collaborator start requires a trusted project.");
 		if (process.env.HERDR_ENV !== "1" || !process.env.HERDR_WORKSPACE_ID) throw new HostedRuntimeClientError("host_unavailable", "Collaborator start requires this Pi session to run inside Herdr.");
 		const identity = this.participantIdentity;
-		if (identity && identity.disposition !== "held") throw new HostedRuntimeClientError("conflict", "Current collaborator identity is not held; reacquire it with /runtime collaborate.");
+		if (identity?.disposition === "ended") throw new HostedRuntimeClientError("conflict", "Current collaborator identity has ended; explicit revival is required.");
 		const protocol = collaboratorName(identity?.protocol ?? input.protocol, "protocol");
 		const callerParticipantId = collaboratorName(identity?.participantId ?? input.callerParticipantId, "caller participant ID");
 		const participantId = collaboratorName(input.participantId, "participant ID");
@@ -329,34 +329,40 @@ export class HostedRuntimeIntegration {
 		const registration = await this.requireRegistration(ctx);
 		const participants = await this.listParticipants(registration);
 		throwIfAborted(signal);
+		const caller = (identity?.participantKey ? participants.find((participant) => participant.participantKey === identity.participantKey) : undefined)
+			?? participants.find((participant) => participant.protocol === protocol && participant.participantId === callerParticipantId);
+		const identityMatches = caller?.protocol === protocol && caller.participantId === callerParticipantId;
+		if (identity && caller && !identityMatches) {
+			this.persistParticipant({ version: 1, protocol, participantId: callerParticipantId, disposition: "vacant" });
+			throw new HostedRuntimeClientError("conflict", "Current collaborator identity key does not match its protocol and participant ID.");
+		}
+		if (caller?.state === "ended") {
+			this.persistParticipant({ version: 1, protocol, participantId: callerParticipantId, participantKey: caller.participantKey, generation: caller.generation, disposition: "ended" });
+			throw new HostedRuntimeClientError("conflict", "Ended caller identities require explicit /runtime collaborate revival.");
+		}
 		let expectedCaller: ClientParticipantStatus | undefined;
-		if (identity) {
-			const caller = identity.participantKey
-				? participants.find((participant) => participant.participantKey === identity.participantKey)
-				: participants.find((participant) => participant.protocol === protocol && participant.participantId === callerParticipantId);
-			const identityMatches = caller?.protocol === protocol && caller.participantId === callerParticipantId;
-			if (!caller || !identityMatches || caller.state !== "held" || caller.holderTargetKey !== registration.targetKey) {
-				this.persistParticipant(caller && identityMatches
-					? { version: 1, protocol, participantId: callerParticipantId, participantKey: caller.participantKey, generation: caller.generation, disposition: caller.state === "ended" ? "ended" : "vacant" }
-					: { version: 1, protocol, participantId: callerParticipantId, disposition: "vacant" });
-				throw new HostedRuntimeClientError("conflict", `Current collaborator identity ${protocol}/${callerParticipantId} is not held by this Pi target.`);
-			}
-			if (identity.participantKey !== caller.participantKey || identity.generation !== caller.generation) this.persistParticipant({ version: 1, protocol, participantId: callerParticipantId, participantKey: caller.participantKey, generation: caller.generation, disposition: "held" });
+		if (caller?.state === "held") {
+			if (!identityMatches || caller.holderTargetKey !== registration.targetKey) throw new HostedRuntimeClientError("conflict", `Current collaborator identity ${protocol}/${callerParticipantId} is held by another Pi target.`);
 			expectedCaller = caller;
+			if (identity?.disposition !== "held" || identity.participantKey !== caller.participantKey || identity.generation !== caller.generation) this.persistParticipant({ version: 1, protocol, participantId: callerParticipantId, participantKey: caller.participantKey, generation: caller.generation, disposition: "held" });
+		} else if (identity?.disposition === "held") {
+			this.persistParticipant(identityMatches && caller
+				? { version: 1, protocol, participantId: callerParticipantId, participantKey: caller.participantKey, generation: caller.generation, disposition: "vacant" }
+				: { version: 1, protocol, participantId: callerParticipantId, disposition: "vacant" });
+			throw new HostedRuntimeClientError("conflict", `Current collaborator identity ${protocol}/${callerParticipantId} is not held by this Pi target.`);
 		}
 		const child = participants.find((participant) => participant.protocol === protocol && participant.participantId === participantId);
 		if (child?.state === "held") throw new HostedRuntimeClientError("conflict", "Participant already has a holder.");
 		if (child?.state === "ended") throw new HostedRuntimeClientError("conflict", "Ended collaborator identities require explicit /runtime collaborator-start revival.");
-		const confirmed = await ctx.ui.confirm("Start Runtime collaborator?", `${identity ? `As ${protocol}/${callerParticipantId}, start` : `Acquire ${protocol}/${callerParticipantId} and start`} ${protocol}/${participantId} in a no-focus Herdr tab?`, { signal });
+		const callerAction = expectedCaller ? `As ${protocol}/${callerParticipantId}, start` : identity ? `Reacquire ${protocol}/${callerParticipantId} and start` : `Acquire ${protocol}/${callerParticipantId} and start`;
+		const confirmed = await ctx.ui.confirm("Start Runtime collaborator?", `${callerAction} ${protocol}/${participantId} in a no-focus Herdr tab?`, { signal });
 		throwIfAborted(signal);
 		if (!confirmed) return { started: false, participant: `${protocol}/${participantId}` };
 		let acquiredCaller: ParticipantIdentity | undefined;
 		let rollbackCaller = false;
 		try {
 			let launchCaller = expectedCaller;
-			if (!identity) {
-				const caller = participants.find((participant) => participant.protocol === protocol && participant.participantId === callerParticipantId);
-				if (caller?.state === "ended") throw new HostedRuntimeClientError("conflict", "Ended caller identities require explicit /runtime collaborate revival.");
+			if (!expectedCaller) {
 				const acquired = parseAcquireResult(await this.client.call("participant.acquire", { ...auth(registration), protocol, participantId: callerParticipantId, revive: false }));
 				acquiredCaller = { version: 1, protocol, participantId: callerParticipantId, participantKey: acquired.participant.participantKey, generation: acquired.participant.generation, disposition: "held" };
 				rollbackCaller = acquired.transitioned;
