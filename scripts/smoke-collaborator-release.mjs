@@ -121,7 +121,8 @@ async function stopRuntime() {
 }
 
 async function startPi(name, sessionFile) {
-	const created = cli("workspace", "create", "--cwd", projectRoot, "--label", name, "--no-focus");
+	const workspace = cli("workspace", "create", "--cwd", projectRoot, "--label", `${name}-anchor`, "--no-focus").result.workspace;
+	const created = cli("tab", "create", "--workspace", workspace.workspace_id, "--cwd", projectRoot, "--label", name, "--no-focus");
 	const pane = created.result.root_pane;
 	panes.add(pane.pane_id);
 	cli("agent", "start", name, "--kind", "pi", "--pane", pane.pane_id, "--timeout", "10000", "--", "--approve", "--model", "release-gate/noop", "--session", sessionFile);

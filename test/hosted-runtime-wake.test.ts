@@ -87,6 +87,16 @@ describe("hosted exact wake and inbox", () => {
 		expect(test.host.prompts[1]?.text).toContain(" wake_1");
 	});
 
+	it("does not inject wake commands into a focused human editor", async () => {
+		const test = setup();
+		test.host.agent = { ...test.host.agent, focused: true };
+		const { registration, event } = await enqueue(test);
+		test.wakes.request(registration.targetKey);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(test.host.prompts).toEqual([]);
+		expect(test.store.read().events[event.eventId]?.delivery.status).toBe("pending");
+	});
+
 	it("keeps events pending while busy, then follows the same terminal to its moved idle pane", async () => {
 		const test = setup("working");
 		const { registration } = await enqueue(test);

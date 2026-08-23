@@ -172,9 +172,9 @@ Acknowledgement means the hosted message entered Pi session history; it does not
 
 ## Wake and admission
 
-Runtime keeps at most one outstanding wake per target. Pending events remain queued while the target is offline, unverified, `working`, `blocked`, or unknown.
+Runtime keeps at most one outstanding wake per target. Pending events remain queued while the target is offline, unverified, `working`, `blocked`, unknown, or focused for human input.
 
-For an exact `idle` or `done` target, Runtime:
+For an exact unfocused `idle` or `done` target, Runtime:
 
 1. reverifies Herdr terminal, Pi session, cwd, status, and freshness;
 2. persists a wake ID;
@@ -184,9 +184,9 @@ For an exact `idle` or `done` target, Runtime:
 /pi-kit-runtime-wake 1 <registrationId> <wakeId>
 ```
 
-The Pi command handler checks that Pi is idle with no pending user messages, atomically accepts the wake, and claims the first batch. It then enqueues one hidden `deevs.hosted-runtime.v1` custom message containing the exact claim/event receipt.
+The Pi command handler checks that Pi is idle with no pending user messages, atomically accepts the wake, and claims the first batch. It then enqueues one hidden `deevs.hosted-runtime.v1` custom message containing the exact claim/event receipt. Runtime never injects a slash command into a focused human editor; that Pi claims pending events in-process before the next submitted agent turn and injects the same hidden message into that turn.
 
-- Busy Pi declines without claiming.
+- Busy or focused Pi declines external prompting without claiming.
 - Synchronous enqueue failure releases the claim.
 - `message_start` acknowledges admission.
 - A pre-admission crash returns the claim to pending after lease expiry.
@@ -201,7 +201,7 @@ Mailbox messages are addressed to participants rather than historical Pi session
 
 Bodies are capped at 16 KiB and become model-visible input in the recipient Pi session. They are authored by an identity-verified participant in the same trusted project, but remain untrusted prose: bodies never authorize routing, ownership, takeover, acknowledgement, or verdicts.
 
-Herdr remains the live process and prompt layer. `/runtime collaborator-start` materializes a child Pi session, creates a no-focus tab, starts Pi, and waits for the child to acquire its environment-bootstrapped identity. The identity disposition is mirrored in Pi session history for safe reload/resume. Models may inspect current durable participants with read-only `collaborator_list`, call `mail_send`, and request `collaborator_start`; the latter requires trusted interactive confirmation, can acquire the caller and launch only new or vacant identities, and refuses revival or takeover. Stand-down, release, revival, and takeover remain user commands.
+Herdr remains the live process and prompt layer. `/runtime collaborator-start` materializes a child Pi session, creates a no-focus tab, starts Pi, and waits for the child to acquire its environment-bootstrapped identity. The identity disposition is mirrored in Pi session history for safe reload/resume. Models may inspect current durable participants with read-only `collaborator_list`, call `mail_send`, and request confirmed `collaborator_start`, `collaborator_stand_down`, or `collaborator_stop`. Start may acquire or reacquire the caller and launch only new or vacant identities. Stop closes only an exact managed Herdr tab. Release, revival, and takeover remain user commands.
 
 ## Persistence and retention
 
