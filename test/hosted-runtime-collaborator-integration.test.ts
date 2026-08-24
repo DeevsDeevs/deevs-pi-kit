@@ -12,7 +12,6 @@ const servers: Server[] = [];
 const originalBootstrap = process.env.PI_RUNTIME_COLLABORATE;
 const originalHerdrEnv = process.env.HERDR_ENV;
 const originalHerdrWorkspace = process.env.HERDR_WORKSPACE_ID;
-const originalHerdrTab = process.env.HERDR_TAB_ID;
 afterEach(async () => {
 	await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -22,8 +21,6 @@ afterEach(async () => {
 	else process.env.HERDR_ENV = originalHerdrEnv;
 	if (originalHerdrWorkspace === undefined) delete process.env.HERDR_WORKSPACE_ID;
 	else process.env.HERDR_WORKSPACE_ID = originalHerdrWorkspace;
-	if (originalHerdrTab === undefined) delete process.env.HERDR_TAB_ID;
-	else process.env.HERDR_TAB_ID = originalHerdrTab;
 });
 
 interface Request { method: string; params: Record<string, unknown> }
@@ -31,7 +28,6 @@ interface Request { method: string; params: Record<string, unknown> }
 async function setup(respond: (request: Request) => unknown, branch: unknown[] = []) {
 	process.env.HERDR_ENV = "1";
 	process.env.HERDR_WORKSPACE_ID = "w1";
-	process.env.HERDR_TAB_ID = "w1:t1";
 	const root = mkdtempSync(join(tmpdir(), "hosted-collaborator-integration-"));
 	roots.push(root);
 	const runtimeRoot = join(root, "runtime");
@@ -249,9 +245,9 @@ describe("hosted collaborator Pi integration", () => {
 			return baseResponse(request);
 		});
 		test.setExec(async (_command, args) => {
-			if (args[0] === "pane") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
+			if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
 			if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
-			if (args[0] === "agent") {
+			if (args[0] === "pane" && args[1] === "run") {
 				const sessionFile = args[args.indexOf("--session") + 1]!;
 				childTargetKey = deriveTargetKey(test.projectRoot, JSON.parse(readFileSync(sessionFile, "utf8")).id);
 			}
@@ -260,14 +256,12 @@ describe("hosted collaborator Pi integration", () => {
 		await test.integration.sessionStart(test.ctx as never);
 		await test.integration.command("collaborator-start review fable", test.ctx as never);
 		expect(test.execCalls.find((call) => call.args[0] === "tab" && call.args[1] === "create")?.args).toContain("PI_RUNTIME_COLLABORATE=review:fable");
-		const started = test.execCalls.find((call) => call.args[0] === "agent" && call.args[1] === "start")!;
+		const started = test.execCalls.find((call) => call.args[0] === "pane" && call.args[1] === "run")!;
 		const sessionFile = started.args[started.args.indexOf("--session") + 1]!;
-		expect(started.args).toContain("pi");
-		expect(started.args[2]).toMatch(/^pi-kit-[a-f0-9]{16}$/);
-		expect(started.args[2]!.length).toBeLessThanOrEqual(32);
-		expect(started.args).toContain("--approve");
+		expect(started.args).toEqual(["pane", "run", "w1:p9", "pi", "--approve", "--session", sessionFile]);
+		expect(test.execCalls.some((call) => call.args[0] === "agent" && call.args[1] === "start")).toBe(false);
+		expect(test.execCalls.some((call) => call.args[0] === "tab" && call.args[1] === "focus")).toBe(false);
 		expect(JSON.parse(readFileSync(sessionFile, "utf8"))).toMatchObject({ type: "session", version: 3, cwd: test.projectRoot });
-		expect(test.execCalls.some((call) => call.args[0] === "tab" && call.args[1] === "focus" && call.args[2] === "w1:t1")).toBe(true);
 		expect(test.execCalls.some((call) => call.args[0] === "tab" && call.args[1] === "close")).toBe(false);
 		await test.integration.sessionShutdown();
 
@@ -286,7 +280,7 @@ describe("hosted collaborator Pi integration", () => {
 		await failed.integration.sessionShutdown();
 	});
 
-	it("preserves child resources and caller when agent-start dispatch is ambiguous", async () => {
+	it("preserves child resources and caller when pane-run dispatch is ambiguous", async () => {
 		let listCount = 0;
 		const test = await setup((request) => {
 			if (request.method === "participant.list") return { participants: listCount++ === 0 ? [] : [mainParticipant] };
@@ -295,9 +289,9 @@ describe("hosted collaborator Pi integration", () => {
 		});
 		let childSessionFile = "";
 		test.setExec(async (_command, args) => {
-			if (args[0] === "pane") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
+			if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
 			if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
-			if (args[0] === "agent") {
+			if (args[0] === "pane" && args[1] === "run") {
 				childSessionFile = args[args.indexOf("--session") + 1]!;
 				return { code: 1, stdout: "", stderr: "reply lost", killed: false };
 			}
@@ -326,9 +320,9 @@ describe("hosted collaborator Pi integration", () => {
 		});
 		let childSessionFile = "";
 		test.setExec(async (_command, args) => {
-			if (args[0] === "pane") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
+			if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
 			if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
-			if (args[0] === "agent") childSessionFile = args[args.indexOf("--session") + 1]!;
+			if (args[0] === "pane" && args[1] === "run") childSessionFile = args[args.indexOf("--session") + 1]!;
 			return { code: 0, stdout: "{}", stderr: "", killed: false };
 		});
 		await test.integration.sessionStart(test.ctx as never);
@@ -402,9 +396,9 @@ describe("hosted collaborator Pi integration", () => {
 			return baseResponse(request);
 		});
 		test.setExec(async (_command, args) => {
-			if (args[0] === "pane") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
+			if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
 			if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
-			if (args[0] === "agent") {
+			if (args[0] === "pane" && args[1] === "run") {
 				const sessionFile = args[args.indexOf("--session") + 1]!;
 				childTargetKey = deriveTargetKey(test.projectRoot, JSON.parse(readFileSync(sessionFile, "utf8")).id);
 			}
