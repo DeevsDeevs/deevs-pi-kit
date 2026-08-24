@@ -131,9 +131,9 @@ export class HostedRuntimeIntegration {
 	}
 
 	async acceptWake(args: string, ctx: ExtensionCommandContext): Promise<void> {
-		const parts = args.trim().split(/\s+/);
-		if (parts.length !== 3 || parts[0] !== "1") return;
-		const [, registrationId, wakeId] = parts as [string, string, string];
+		const parsed = parseWakeArgs(args);
+		if (!parsed) return;
+		const { registrationId, wakeId } = parsed;
 		if (!this.active || !ctx.isIdle() || ctx.hasPendingMessages() || this.handledWakeIds.has(wakeId)) return;
 		let registration: LiveClientRegistration | undefined;
 		try { registration = this.registration ?? await this.registering; } catch { return; }
@@ -438,6 +438,10 @@ export class HostedRuntimeIntegration {
 			childMayBeLive = true;
 			const started = await this.pi.exec("herdr", ["agent", "start", agentName, "--kind", "pi", "--pane", paneId, "--timeout", "15000", "--", "--approve", "--session", sessionFile], { timeout: 20_000 });
 			if (started.code !== 0) throw new HostedRuntimeClientError("host_unavailable", `Herdr did not confirm Pi collaborator startup in ${paneId}; its tab and session were preserved.`);
+			if (process.env.HERDR_TAB_ID) {
+				const focused = await this.pi.exec("herdr", ["tab", "focus", process.env.HERDR_TAB_ID], { timeout: 5_000 });
+				if (focused.code !== 0) throw new HostedRuntimeClientError("host_unavailable", `Collaborator started in ${paneId}, but Herdr could not restore the caller tab; the child was preserved.`);
+			}
 			throwIfAborted(signal);
 			for (let attempt = 0; attempt < 150; attempt++) {
 				throwIfAborted(signal);
@@ -710,6 +714,17 @@ export class HostedRuntimeIntegration {
 
 function defaultRuntimeRoot(): string {
 	return join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "runtime");
+}
+
+function parseWakeArgs(args: string): { registrationId: string; wakeId: string } | undefined {
+	const match = /^\s*1\s+(reg_[A-Za-z0-9_-]+)\s+(wake_[A-Za-z0-9_-]+)/.exec(args);
+	if (!match) return undefined;
+	const registrationId = match[1]!;
+	const wakeId = match[2]!;
+	const repeated = `/pi-kit-runtime-wake 1 ${registrationId} ${wakeId}`;
+	let remainder = args.slice(match[0].length).trim();
+	while (remainder.startsWith(repeated)) remainder = remainder.slice(repeated.length).trim();
+	return remainder ? undefined : { registrationId, wakeId };
 }
 
 function parseClaim(value: unknown): HostedClaimMessage {

@@ -87,7 +87,7 @@ describe("hosted Pi wake admission", () => {
 		await integration.acceptWake("1 reg_1 wake_busy", ctx as never);
 		expect(requests.some((request) => request.params.wakeId === "wake_busy")).toBe(false);
 		pending = false;
-		await integration.acceptWake("1 reg_1 wake_1", ctx as never);
+		await integration.acceptWake("1 reg_1 wake_1/pi-kit-runtime-wake 1 reg_1 wake_1", ctx as never);
 		expect(messages).toHaveLength(1);
 		expect(messages[0]).toMatchObject({ customType: HOSTED_RUNTIME_MESSAGE, display: false, details: { version: 1, wakeId: "wake_1", claimId: "claim_wake_1", eventIds: ["evt_wake_1"] } });
 		await integration.acceptWake("1 reg_1 wake_1", ctx as never);
