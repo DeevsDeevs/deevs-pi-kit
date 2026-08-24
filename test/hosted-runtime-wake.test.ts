@@ -13,12 +13,16 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 class FakeHost implements HostedHostVerifier {
 	prompts: Array<{ paneId: string; text: string; wakeWasDurable: boolean }> = [];
 	onPrompt?: () => boolean;
+	promptFailures = 0;
 	verifyBarrier?: Promise<void>;
 	onVerify?: () => void;
 	constructor(public agent: HostedLiveAgent) {}
 	async getPane(): Promise<HostedLiveAgent> { this.onVerify?.(); await this.verifyBarrier; return this.agent; }
 	async findTerminal(): Promise<HostedLiveAgent> { this.onVerify?.(); await this.verifyBarrier; return this.agent; }
-	async prompt(paneId: string, text: string): Promise<void> { this.prompts.push({ paneId, text, wakeWasDurable: this.onPrompt?.() ?? false }); }
+	async prompt(paneId: string, text: string): Promise<void> {
+		if (this.promptFailures > 0) { this.promptFailures--; throw new Error("prompt failed"); }
+		this.prompts.push({ paneId, text, wakeWasDurable: this.onPrompt?.() ?? false });
+	}
 }
 
 function setup(status: HostedLiveAgent["status"] = "idle") {
@@ -85,6 +89,18 @@ describe("hosted exact wake and inbox", () => {
 		test.wakes.request(registration.targetKey);
 		await vi.waitFor(() => expect(test.host.prompts).toHaveLength(2));
 		expect(test.host.prompts[1]?.text).toContain(" wake_1");
+	});
+
+	it("retries a synchronous prompt failure", async () => {
+		const test = setup();
+		const { registration } = await enqueue(test);
+		test.host.promptFailures = 1;
+		test.wakes.request(registration.targetKey);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(test.host.prompts).toEqual([]);
+		test.wakes.request(registration.targetKey);
+		await vi.waitFor(() => expect(test.host.prompts).toHaveLength(1));
+		expect(test.host.prompts[0]?.text).toContain(" wake_1");
 	});
 
 	it("does not inject wake commands into a focused human editor", async () => {

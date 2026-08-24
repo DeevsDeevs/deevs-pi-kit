@@ -12,6 +12,7 @@ const servers: Server[] = [];
 const originalBootstrap = process.env.PI_RUNTIME_COLLABORATE;
 const originalHerdrEnv = process.env.HERDR_ENV;
 const originalHerdrWorkspace = process.env.HERDR_WORKSPACE_ID;
+const originalHerdrTab = process.env.HERDR_TAB_ID;
 afterEach(async () => {
 	await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -21,6 +22,8 @@ afterEach(async () => {
 	else process.env.HERDR_ENV = originalHerdrEnv;
 	if (originalHerdrWorkspace === undefined) delete process.env.HERDR_WORKSPACE_ID;
 	else process.env.HERDR_WORKSPACE_ID = originalHerdrWorkspace;
+	if (originalHerdrTab === undefined) delete process.env.HERDR_TAB_ID;
+	else process.env.HERDR_TAB_ID = originalHerdrTab;
 });
 
 interface Request { method: string; params: Record<string, unknown> }
@@ -28,6 +31,7 @@ interface Request { method: string; params: Record<string, unknown> }
 async function setup(respond: (request: Request) => unknown, branch: unknown[] = []) {
 	process.env.HERDR_ENV = "1";
 	process.env.HERDR_WORKSPACE_ID = "w1";
+	process.env.HERDR_TAB_ID = "w1:t1";
 	const root = mkdtempSync(join(tmpdir(), "hosted-collaborator-integration-"));
 	roots.push(root);
 	const runtimeRoot = join(root, "runtime");
@@ -263,6 +267,7 @@ describe("hosted collaborator Pi integration", () => {
 		expect(started.args[2]!.length).toBeLessThanOrEqual(32);
 		expect(started.args).toContain("--approve");
 		expect(JSON.parse(readFileSync(sessionFile, "utf8"))).toMatchObject({ type: "session", version: 3, cwd: test.projectRoot });
+		expect(test.execCalls.some((call) => call.args[0] === "tab" && call.args[1] === "focus" && call.args[2] === "w1:t1")).toBe(true);
 		expect(test.execCalls.some((call) => call.args[0] === "tab" && call.args[1] === "close")).toBe(false);
 		await test.integration.sessionShutdown();
 
