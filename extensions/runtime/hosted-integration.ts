@@ -434,14 +434,9 @@ export class HostedRuntimeIntegration {
 			tabId = text(strictObject(result.tab, "Herdr tab").tab_id);
 			const paneId = text(strictObject(result.root_pane, "Herdr root pane").pane_id);
 			throwIfAborted(signal);
-			const agentName = `pi-kit-${randomUUID().replaceAll("-", "").slice(0, 16)}`;
 			childMayBeLive = true;
-			const started = await this.pi.exec("herdr", ["agent", "start", agentName, "--kind", "pi", "--pane", paneId, "--timeout", "15000", "--", "--approve", "--session", sessionFile], { timeout: 20_000 });
-			if (started.code !== 0) throw new HostedRuntimeClientError("host_unavailable", `Herdr did not confirm Pi collaborator startup in ${paneId}; its tab and session were preserved.`);
-			if (process.env.HERDR_TAB_ID) {
-				const focused = await this.pi.exec("herdr", ["tab", "focus", process.env.HERDR_TAB_ID], { timeout: 5_000 });
-				if (focused.code !== 0) throw new HostedRuntimeClientError("host_unavailable", `Collaborator started in ${paneId}, but Herdr could not restore the caller tab; the child was preserved.`);
-			}
+			const started = await this.pi.exec("herdr", ["pane", "run", paneId, "pi", "--approve", "--session", sessionFile], { timeout: 5_000 });
+			if (started.code !== 0) throw new HostedRuntimeClientError("host_unavailable", `Herdr could not dispatch Pi collaborator startup in ${paneId}; its tab and session were preserved.`);
 			throwIfAborted(signal);
 			for (let attempt = 0; attempt < 150; attempt++) {
 				throwIfAborted(signal);
