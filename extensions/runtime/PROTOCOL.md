@@ -197,7 +197,7 @@ The Pi command handler checks that Pi is idle with no pending user messages, ato
 
 A participant is addressed by `(canonicalProjectRoot, protocol, participantId)` and has one durable state: `held`, `vacant`, or `ended`. One Pi target may hold one identity. Stand-down explicitly consents to succession; release ends the identity; takeover requires an offline holder, the exact observed generation, restart grace, and Pi-side user confirmation. Ownership never changes on a timer.
 
-Mailbox messages are addressed to participants rather than historical Pi sessions. Runtime resolves the current holder only when claiming/waking, so pending mail follows an explicit succession. Each sender-recipient stream has a durable sequence. `(senderParticipantKey, sendId)` plus a recipient/body fingerprint makes retries idempotent and changed retries conflict.
+Mailbox messages are addressed to participants rather than historical Pi sessions. `mail_send` accepts either a participant ID (`main`) or the equivalent same-protocol reference (`demo/main`); cross-protocol references fail closed. Runtime resolves the current holder only when claiming/waking, so pending mail follows an explicit succession. Each sender-recipient stream has a durable sequence. `(senderParticipantKey, sendId)` plus a recipient/body fingerprint makes retries idempotent and changed retries conflict.
 
 Bodies are capped at 16 KiB and become model-visible input in the recipient Pi session. They are authored by an identity-verified participant in the same trusted project, but remain untrusted prose: bodies never authorize routing, ownership, takeover, acknowledgement, or verdicts.
 

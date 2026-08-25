@@ -394,12 +394,13 @@ export class HostedRuntimeIntegration {
 	async sendMail(participantId: string, body: string, toolCallId: string, ctx: ExtensionContext): Promise<{ eventId: string; sequence: number; recipient: string }> {
 		const identity = this.requireParticipantIdentity();
 		if (identity.disposition !== "held") throw new HostedRuntimeClientError("conflict", "Current collaborator identity is not held.");
+		const recipientId = collaboratorRecipient(participantId, identity.protocol);
 		const registration = await this.requireRegistration(ctx);
-		const recipient = (await this.listParticipants(registration)).find((participant) => participant.protocol === identity.protocol && participant.participantId === participantId);
-		if (!recipient) throw new HostedRuntimeClientError("not_found", `No ${identity.protocol}/${participantId} participant exists.`);
+		const recipient = (await this.listParticipants(registration)).find((participant) => participant.protocol === identity.protocol && participant.participantId === recipientId);
+		if (!recipient) throw new HostedRuntimeClientError("not_found", `No ${identity.protocol}/${recipientId} participant exists.`);
 		const sendId = `send_${createHash("sha256").update(toolCallId).digest("hex").slice(0, 32)}`;
 		const result = strictObject(await this.client.call("mailbox.send", { ...auth(registration), recipientParticipantKey: recipient.participantKey, sendId, body }), "Mailbox send result");
-		return { eventId: text(result.eventId), sequence: integer(result.sequence), recipient: `${identity.protocol}/${participantId}` };
+		return { eventId: text(result.eventId), sequence: integer(result.sequence), recipient: `${identity.protocol}/${recipientId}` };
 	}
 
 	private async launchCollaborator(ctx: ExtensionContext, protocol: string, participantId: string, allowRevive: boolean, signal?: AbortSignal, expectedCaller?: ClientParticipantStatus, model?: string): Promise<string | undefined> {
@@ -864,6 +865,15 @@ function collaboratorName(value: string | undefined, name: string): string {
 function collaboratorModel(value: string | undefined): string | undefined {
 	if (value !== undefined && !COLLABORATOR_MODEL.test(value)) throw new HostedRuntimeClientError("invalid_request", `model must match ${COLLABORATOR_MODEL}.`);
 	return value;
+}
+
+function collaboratorRecipient(value: string, protocol: string): string {
+	const parts = value.split("/");
+	if (parts.length === 1) return collaboratorName(parts[0], "recipient participant ID");
+	if (parts.length !== 2) throw new HostedRuntimeClientError("invalid_request", "Recipient must be a participant ID or protocol/participant ID.");
+	const recipientProtocol = collaboratorName(parts[0], "recipient protocol");
+	if (recipientProtocol !== protocol) throw new HostedRuntimeClientError("conflict", `Recipient protocol ${recipientProtocol} does not match current protocol ${protocol}.`);
+	return collaboratorName(parts[1], "recipient participant ID");
 }
 
 function parseCollaboratorBootstrap(value: string | undefined): { protocol: string; participantId: string; reviveAuthorized?: true } | undefined {

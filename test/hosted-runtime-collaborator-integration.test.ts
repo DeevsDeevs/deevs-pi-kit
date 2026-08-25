@@ -180,7 +180,8 @@ describe("hosted collaborator Pi integration", () => {
 			return baseResponse(request);
 		}, [identity]);
 		await test.integration.sessionStart(test.ctx as never);
-		expect(await test.integration.sendMail("fable", "Review this.", "tool_call_1", test.ctx as never)).toEqual({ eventId: "event_mail", sequence: 4, recipient: "review/fable" });
+		await expect(test.integration.sendMail("other/fable", "Wrong protocol.", "tool_call_0", test.ctx as never)).rejects.toThrow("does not match current protocol");
+		expect(await test.integration.sendMail("review/fable", "Review this.", "tool_call_1", test.ctx as never)).toEqual({ eventId: "event_mail", sequence: 4, recipient: "review/fable" });
 		const send = test.requests.find((request) => request.method === "mailbox.send")!;
 		expect(send.params).toMatchObject({ recipientParticipantKey: "participant_fable", body: "Review this." });
 		expect(String(send.params.sendId)).toMatch(/^send_[a-f0-9]{32}$/);
