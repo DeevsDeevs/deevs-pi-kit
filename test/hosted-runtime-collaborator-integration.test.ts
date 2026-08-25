@@ -91,9 +91,13 @@ function baseResponse(request: Request): unknown {
 }
 
 function paneRunSessionFile(args: string[]): string {
-	const match = /^exec pi --approve --session '([^']+)'$/.exec(args[3] ?? "");
+	const match = /^exec pi --approve --session '([^']+)'(?: --model '[^']+')?$/.exec(args[3] ?? "");
 	if (!match) throw new Error("unexpected pane-run command");
 	return match[1]!;
+}
+
+function paneRunModel(args: string[]): string | undefined {
+	return / --model '([^']+)'$/.exec(args[3] ?? "")?.[1];
 }
 
 describe("hosted collaborator Pi integration", () => {
@@ -419,6 +423,7 @@ describe("hosted collaborator Pi integration", () => {
 	it("requires trust and confirmation before the model acquires and starts collaborators", async () => {
 		let listCount = 0;
 		let childTargetKey = "";
+		let launchedModel: string | undefined;
 		const test = await setup((request) => {
 			if (request.method === "participant.list") {
 				listCount++;
@@ -434,11 +439,13 @@ describe("hosted collaborator Pi integration", () => {
 			if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
 			if (args[0] === "pane" && args[1] === "run") {
 				const sessionFile = paneRunSessionFile(args);
+				launchedModel = paneRunModel(args);
 				childTargetKey = deriveTargetKey(test.projectRoot, JSON.parse(readFileSync(sessionFile, "utf8")).id);
 			}
 			return { code: 0, stdout: "{}", stderr: "", killed: false };
 		});
 		await test.integration.sessionStart(test.ctx as never);
+		await expect(test.integration.startCollaborator({ protocol: "review", callerParticipantId: "main", participantId: "fable", model: "terra; touch /tmp/nope" }, test.ctx as never)).rejects.toThrow("model must match");
 		test.ctx.isProjectTrusted = () => false;
 		await expect(test.integration.startCollaborator({ protocol: "review", callerParticipantId: "main", participantId: "fable" }, test.ctx as never)).rejects.toThrow("trusted project");
 		test.ctx.isProjectTrusted = () => true;
@@ -448,7 +455,8 @@ describe("hosted collaborator Pi integration", () => {
 		expect(test.execCalls.some((call) => call.args[0] === "tab")).toBe(false);
 
 		test.ctx.ui.confirm = async () => true;
-		expect(await test.integration.startCollaborator({ protocol: "review", callerParticipantId: "main", participantId: "fable" }, test.ctx as never)).toMatchObject({ started: true, participant: "review/fable", paneId: "w1:p9" });
+		expect(await test.integration.startCollaborator({ protocol: "review", callerParticipantId: "main", participantId: "fable", model: "openai-codex/gpt-5.6-terra" }, test.ctx as never)).toMatchObject({ started: true, participant: "review/fable", paneId: "w1:p9" });
+		expect(launchedModel).toBe("openai-codex/gpt-5.6-terra");
 		expect(test.requests.some((request) => request.method === "participant.acquire" && request.params.participantId === "main")).toBe(true);
 		expect(test.entries.at(-1)).toMatchObject({ customType: HOSTED_PARTICIPANT_ENTRY, data: { participantId: "main", disposition: "held" } });
 		await test.integration.sessionShutdown();
