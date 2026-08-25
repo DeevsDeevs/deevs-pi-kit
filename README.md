@@ -86,7 +86,7 @@ Tools: `chain_save`, `chain_load`, `chain_fork`, `chain_context`, `chain_list`, 
 
 Commands: `/chains`, `/chain-link`, `/chain-load`, `/chain-fork`, `/chain-list`, `/chain-search`, `/chain-waive <reason>`.
 
-Pi session entries track active `saved` versus `checkpoint due` state across resume and typed durable milestones. At 80% context usage, other tools are blocked until `chain_save`; Pi's native compactor then retains full lifecycle control, and the first post-compaction turn is reminded to reload the saved Chain. See [`extensions/chains/README.md`](extensions/chains/README.md).
+Pi session entries track active `saved` versus `checkpoint due` state across resume and typed durable milestones. At 80% context usage, substantive tools are blocked until `chain_save`; the checkpoint is session metadata even for read-only tasks. A successful pressure checkpoint triggers Pi compaction and a follow-up turn that reloads the Chain and continues. If saving fails, settlement, cancellation, status, clarification, and collaborator-reporting tools remain available. See [`extensions/chains/README.md`](extensions/chains/README.md).
 
 ### Wiki
 
