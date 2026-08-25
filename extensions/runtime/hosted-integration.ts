@@ -7,7 +7,8 @@ import { join, resolve } from "node:path";
 import { HostedRuntimeClient, HostedRuntimeClientError } from "./client.ts";
 import { HOSTED_MAX_DELIVERY_BATCH } from "./hosted-types.ts";
 
-const HEARTBEAT_MS = 10_000;
+// ponytail: two-second host verification is fine for small teams; add Runtime subscriptions if concurrent Pi count makes it measurable.
+const HEARTBEAT_MS = 2_000;
 export const HOSTED_RUNTIME_MESSAGE = "deevs.hosted-runtime.v1";
 export const HOSTED_PARTICIPANT_ENTRY = "deevs.hosted-runtime.participant.v1";
 const COLLABORATOR_ENV = "PI_RUNTIME_COLLABORATE";

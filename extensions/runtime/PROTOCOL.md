@@ -184,7 +184,7 @@ For an exact unfocused `idle` or `done` target, Runtime:
 /pi-kit-runtime-wake 1 <registrationId> <wakeId>
 ```
 
-The Pi command handler checks that Pi is idle with no pending user messages, atomically accepts the wake, and claims the first batch. It then enqueues one hidden `deevs.hosted-runtime.v1` custom message containing the exact claim/event receipt. Runtime never injects a slash command into a focused human editor. Instead, the existing ten-second registration heartbeat returns a typed inbox-ready flag; an idle Pi claims and enqueues the hidden message in-process with `pi.sendMessage`. The next submitted agent turn remains the durable fallback.
+The Pi command handler checks that Pi is idle with no pending user messages, atomically accepts the wake, and claims the first batch. It then enqueues one hidden `deevs.hosted-runtime.v1` custom message containing the exact claim/event receipt. Runtime never injects a slash command into a focused human editor. Instead, the existing two-second registration heartbeat returns a typed inbox-ready flag; an idle Pi claims and enqueues the hidden message in-process with `pi.sendMessage`. The next submitted agent turn remains the durable fallback.
 
 - Busy or focused Pi declines external terminal prompting without claiming.
 - Synchronous enqueue failure releases the claim.
