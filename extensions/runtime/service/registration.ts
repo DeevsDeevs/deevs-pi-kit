@@ -44,7 +44,6 @@ export interface HostedLiveAgent {
 export interface HostedHostVerifier {
 	getPane(paneId: string): Promise<HostedLiveAgent>;
 	findTerminal(terminalId: string): Promise<HostedLiveAgent>;
-	prompt(paneId: string, text: string): Promise<void>;
 	closeTarget?(target: HostedTarget, managedSessionDirectory: string): Promise<"closed" | "already_absent" | "unmanaged">;
 }
 
@@ -246,10 +245,6 @@ export class HerdrCliHostVerifier implements HostedHostVerifier {
 		const matches = agents.map(parseLiveAgent).filter((agent) => agent.terminalId === terminalId);
 		if (matches.length !== 1) throw new RegistrationError("identity_mismatch", "The registered terminal is not uniquely live in Herdr.");
 		return matches[0]!;
-	}
-
-	async prompt(paneId: string, text: string): Promise<void> {
-		await runHerdr(["agent", "prompt", paneId, text]);
 	}
 
 	async closeTarget(target: HostedTarget, managedSessionDirectory: string): Promise<"closed" | "already_absent" | "unmanaged"> {

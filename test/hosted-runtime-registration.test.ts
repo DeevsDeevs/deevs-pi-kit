@@ -157,8 +157,8 @@ describe("registration-authorized Monitor protocol", () => {
 	it("registers, creates/reads/deletes a Monitor, and rejects a stale key", async () => {
 		const test = setup();
 		const monitors = new DirectoryMonitorManager(test.store, { automatic: false, now: () => 1_000, createId: (prefix) => `${prefix}_rpc` });
-		const wakes = new HostedWakeCoordinator(test.store, test.registrations, test.host);
-		const context: HostedProtocolContext = { runtimeId: "rt_test", epoch: "epoch_test", agentWake: "herdr_exact_agent", registrations: test.registrations, monitors, wakes };
+		const wakes = new HostedWakeCoordinator(test.store);
+		const context: HostedProtocolContext = { runtimeId: "rt_test", epoch: "epoch_test", agentWake: "none", registrations: test.registrations, monitors, wakes };
 		const call = (method: string, params: unknown) => dispatchHostedLine(JSON.stringify({ v: 1, id: method, method, params }), context);
 		const registered = await call("pi.register", test.input);
 		expect(registered).toMatchObject({ ok: true, result: { registrationId: "reg_1", registrationKey: "key_1", hostStateChangeSeq: 7 } });

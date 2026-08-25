@@ -66,7 +66,7 @@ export async function dispatchHostedLine(line: string, context: HostedProtocolCo
 		if (method === "pi.heartbeat") {
 			const auth = authParams(params);
 			const registration = await registrations.heartbeat(auth.registrationId, auth.registrationKey);
-			return success(id, { ...registrationResult(registration), inboxReady: registration.host.focused === true && wakes.status(registration).pending > 0 });
+			return success(id, { ...registrationResult(registration), inboxReady: wakes.status(registration).pending > 0 });
 		}
 		if (method === "pi.unregister") {
 			const auth = authParams(params);

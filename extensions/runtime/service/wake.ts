@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { HOSTED_MAX_DELIVERY_BATCH, type HostedClaim, type HostedEvent, type HostedWake } from "../hosted-types.ts";
-import { RuntimeRegistrationManager, type HostedHostVerifier, type HostedLiveRegistration } from "./registration.ts";
+import { HOSTED_MAX_DELIVERY_BATCH, type HostedClaim, type HostedEvent } from "../hosted-types.ts";
+import type { HostedLiveRegistration } from "./registration.ts";
 import { HostedStateStore, hostedEventRoutesToTarget, pendingHostedEvents } from "./state.ts";
 
 const CLAIM_LEASE_MS = 30_000;
@@ -17,9 +17,7 @@ export class HostedInboxError extends Error {
 export interface HostedWakeOptions {
 	now?: () => number;
 	claimLeaseMs?: number;
-	createWakeId?: () => string;
 	createClaimId?: () => string;
-	onError?: (error: unknown) => void;
 }
 
 export interface HostedClaimResult {
@@ -29,31 +27,18 @@ export interface HostedClaimResult {
 
 export class HostedWakeCoordinator {
 	private readonly store: HostedStateStore;
-	private readonly registrations: RuntimeRegistrationManager;
-	private readonly host: HostedHostVerifier;
 	private readonly options: HostedWakeOptions;
-	private readonly active = new Set<string>();
-	private readonly rerun = new Set<string>();
 	private closed = false;
 
-	constructor(store: HostedStateStore, registrations: RuntimeRegistrationManager, host: HostedHostVerifier, options: HostedWakeOptions = {}) {
+	constructor(store: HostedStateStore, options: HostedWakeOptions = {}) {
 		this.store = store;
-		this.registrations = registrations;
-		this.host = host;
 		this.options = options;
 	}
 
 	request(targetKey: string): void {
 		if (this.closed) return;
-		if (this.active.has(targetKey)) {
-			this.rerun.add(targetKey);
-			return;
-		}
-		this.active.add(targetKey);
-		void this.wake(targetKey).catch((error) => this.options.onError?.(error)).finally(() => {
-			this.active.delete(targetKey);
-			if (this.rerun.delete(targetKey) && !this.closed) this.request(targetKey);
-		});
+		this.releaseExpired();
+		this.clearWakeWithoutPending(targetKey);
 	}
 
 	accept(registration: HostedLiveRegistration, wakeId: string): HostedClaimResult {
@@ -137,32 +122,6 @@ export class HostedWakeCoordinator {
 
 	close(): void {
 		this.closed = true;
-		this.active.clear();
-		this.rerun.clear();
-	}
-
-	private async wake(targetKey: string): Promise<void> {
-		this.releaseExpired();
-		if (this.clearWakeWithoutPending(targetKey)) return;
-		const verified = await this.registrations.verifyTarget(targetKey);
-		const registration = this.registrations.authorize(verified.registrationId, verified.registrationKey);
-		if (this.clearWakeWithoutPending(targetKey)) return;
-		if (registration.host.focused || (registration.host.status !== "idle" && registration.host.status !== "done")) return;
-		let wake: HostedWake | undefined = this.store.read().wakes[targetKey];
-		if (wake && wake.registrationId !== registration.registrationId) {
-			this.store.apply({ type: "wake.clear", targetKey, wakeId: wake.wakeId });
-			wake = undefined;
-		}
-		if (!wake) {
-			wake = {
-				wakeId: this.options.createWakeId?.() ?? `wake_${randomUUID()}`,
-				targetKey,
-				registrationId: registration.registrationId,
-				createdAt: this.now(),
-			};
-			this.store.apply({ type: "wake.set", wake });
-		}
-		await this.host.prompt(registration.host.paneId, `/pi-kit-runtime-wake 1 ${registration.registrationId} ${wake.wakeId}`);
 	}
 
 	private clearWakeWithoutPending(targetKey: string): boolean {
