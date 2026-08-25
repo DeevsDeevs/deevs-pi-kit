@@ -368,7 +368,7 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 export function pendingHostedEvents(state: HostedRuntimeState, targetKey: string): HostedEvent[] {
 	return Object.values(state.events)
 		.filter((event) => event.delivery.status === "pending" && hostedEventRoutesToTarget(state, event, targetKey))
-		.sort((a, b) => a.source.sequence - b.source.sequence || a.createdAt - b.createdAt || a.eventId.localeCompare(b.eventId));
+		.sort((a, b) => a.createdAt - b.createdAt || a.source.kind.localeCompare(b.source.kind) || a.source.id.localeCompare(b.source.id) || a.source.generation.localeCompare(b.source.generation) || a.source.sequence - b.source.sequence || a.eventId.localeCompare(b.eventId));
 }
 
 export function deriveParticipantKey(projectRoot: string, protocol: string, participantId: string): string {

@@ -597,11 +597,29 @@ export class HostedRuntimeIntegration {
 				if (existsSync(this.client.socketPath)) await this.register(this.ctx);
 				return;
 			}
-			this.registration = parseRegistration(await this.client.call("pi.heartbeat", auth(registration)));
+			const heartbeat = parseHeartbeat(await this.client.call("pi.heartbeat", auth(registration)));
+			this.registration = heartbeat.registration;
 			if (this.participantIdentity?.participantKey) await this.restoreHeldParticipant(this.registration, this.ctx);
 			await this.retryAdmissions(this.registration);
+			if (heartbeat.inboxReady) await this.admitHeartbeatInbox(this.registration, this.ctx);
 		} catch {
 			this.registration = undefined;
+		}
+	}
+
+	private async admitHeartbeatInbox(registration: LiveClientRegistration, ctx: ExtensionContext): Promise<void> {
+		if (!this.active || !ctx.isIdle() || ctx.hasPendingMessages()) return;
+		let claim: HostedClaimMessage;
+		try { claim = parseClaim(await this.client.call("inbox.claim", auth(registration))); } catch { return; }
+		if (claim.status === "acked") return;
+		if (!this.active || this.registration?.registrationId !== registration.registrationId || !ctx.isIdle() || ctx.hasPendingMessages()) {
+			await this.releaseClaim(registration, claim);
+			return;
+		}
+		try {
+			this.pi.sendMessage(this.claimMessage(claim), { triggerTurn: true, deliverAs: "followUp" });
+		} catch {
+			await this.releaseClaim(registration, claim);
 		}
 	}
 
@@ -783,6 +801,12 @@ function parseRegistration(value: unknown): LiveClientRegistration {
 		hostStateChangeSeq: integer(result.hostStateChangeSeq),
 		paneId: text(result.paneId),
 	};
+}
+
+function parseHeartbeat(value: unknown): { registration: LiveClientRegistration; inboxReady: boolean } {
+	const result = strictObject(value, "Runtime heartbeat");
+	if (result.inboxReady !== undefined && typeof result.inboxReady !== "boolean") throw new HostedRuntimeClientError("invalid_response", "Runtime heartbeat inbox readiness is invalid.");
+	return { registration: parseRegistration(result), inboxReady: result.inboxReady === true };
 }
 
 function auth(registration: LiveClientRegistration): { registrationId: string; registrationKey: string } {

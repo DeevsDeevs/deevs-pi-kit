@@ -23,6 +23,7 @@ describe("hosted Pi wake admission", () => {
 		mkdirSync(projectRoot);
 		writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: "session_1", timestamp: "2026-01-01T00:00:00.000Z", cwd: projectRoot })}\n`);
 		const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
+		let inboxClaims = 0;
 		const server = createServer((socket) => {
 			let buffered = "";
 			socket.setEncoding("utf8");
@@ -33,7 +34,9 @@ describe("hosted Pi wake admission", () => {
 				const request = JSON.parse(buffered.slice(0, newline)) as { id: string; method: string; params: Record<string, unknown> };
 				requests.push({ method: request.method, params: request.params });
 				let result: unknown = { settled: true };
-				if (request.method === "pi.register") result = { targetKey: "pi_target", registrationId: "reg_1", registrationKey: "key_1", leaseUntil: 99_999, hostStateChangeSeq: 1, paneId: "w1:p1" };
+				const registration = { targetKey: "pi_target", registrationId: "reg_1", registrationKey: "key_1", leaseUntil: 99_999, hostStateChangeSeq: 1, paneId: "w1:p1" };
+				if (request.method === "pi.register") result = registration;
+				if (request.method === "pi.heartbeat") result = { ...registration, inboxReady: true };
 				if (request.method === "wake.accept") {
 					const wakeId = String(request.params.wakeId);
 					result = {
@@ -45,12 +48,16 @@ describe("hosted Pi wake admission", () => {
 							: [{ version: 1, eventId: `evt_${wakeId}`, type: "filesystem.created", summary: `new file: ${wakeId}.md`, payload: { path: join(projectRoot, `${wakeId}.md`) } }],
 					};
 				}
-				if (request.method === "inbox.claim") result = {
-					claimId: "claim_focused",
-					leaseUntil: 99_999,
-					status: "active",
-					events: [{ version: 1, eventId: "evt_focused", type: "mailbox.message", summary: "message from reviewer", payload: { body: "Focused-safe reply.", sendId: "send_focused", senderParticipantKey: "participant_reviewer", recipientParticipantKey: "participant_main" } }],
-				};
+				if (request.method === "inbox.claim") {
+					inboxClaims++;
+					const heartbeat = inboxClaims > 1;
+					result = {
+						claimId: heartbeat ? "claim_heartbeat" : "claim_focused",
+						leaseUntil: 99_999,
+						status: "active",
+						events: [{ version: 1, eventId: heartbeat ? "evt_heartbeat" : "evt_focused", type: "mailbox.message", summary: "message from reviewer", payload: { body: heartbeat ? "Automatic focused reply." : "Focused-safe reply.", sendId: heartbeat ? "send_heartbeat" : "send_focused", senderParticipantKey: "participant_reviewer", recipientParticipantKey: "participant_main" } }],
+					};
+				}
 				socket.end(`${JSON.stringify({ v: 1, id: request.id, ok: true, result })}\n`);
 			});
 		});
@@ -58,12 +65,14 @@ describe("hosted Pi wake admission", () => {
 		await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(join(runtimeRoot, "runtime.sock"), resolve); });
 
 		const messages: Array<Record<string, unknown>> = [];
+		const messageOptions: Array<Record<string, unknown>> = [];
 		let sendFails = false;
 		const pi = {
 			exec: async () => ({ code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false }),
-			sendMessage(message: Record<string, unknown>) {
+			sendMessage(message: Record<string, unknown>, options: Record<string, unknown>) {
 				if (sendFails) throw new Error("enqueue failed");
 				messages.push(message);
+				messageOptions.push(options);
 			},
 		};
 		let pending = false;
@@ -105,6 +114,10 @@ describe("hosted Pi wake admission", () => {
 		const injected = await integration.beforeAgentStart(ctx as never);
 		expect(injected?.message).toMatchObject({ customType: HOSTED_RUNTIME_MESSAGE, content: expect.stringContaining("Focused-safe reply."), details: { claimId: "claim_focused", eventIds: ["evt_focused"] } });
 		expect(injected?.message.details).not.toHaveProperty("wakeId");
+
+		await (integration as unknown as { heartbeat(): Promise<void> }).heartbeat();
+		expect(messages[2]).toMatchObject({ customType: HOSTED_RUNTIME_MESSAGE, content: expect.stringContaining("Automatic focused reply."), details: { claimId: "claim_heartbeat", eventIds: ["evt_heartbeat"] } });
+		expect(messageOptions[2]).toEqual({ triggerTurn: true, deliverAs: "followUp" });
 
 		sendFails = true;
 		await integration.acceptWake("1 reg_1 wake_2", ctx as never);
