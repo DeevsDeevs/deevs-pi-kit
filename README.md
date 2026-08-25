@@ -144,7 +144,7 @@ When Pi runs inside Herdr (`HERDR_ENV=1`), normalize legacy and Kitty Alt+Enter 
 
 ### Hosted runtime
 
-Runtime watches newly created direct-child files and delivers them to one exact Pi session across restarts. It stores events before using Herdr to wake the verified idle pane; Herdr remains the process and prompt-delivery layer.
+Runtime watches newly created direct-child files and delivers them to one exact Pi session across restarts. It stores events before using Herdr to wake the verified idle pane; Herdr remains the process and prompt-delivery layer. On first use, a missing Runtime starts in the initial tab of a dedicated, no-focus `pi-kit-services` Herdr workspace instead of altering the caller's workspace.
 
 Runtime can also host persistent Pi collaborators in no-focus Herdr tabs. Participant identities are exclusive and durable; messages use Runtime mailboxes while Herdr delivers exact wakes to unfocused collaborators. Focused human sessions claim mail in-process on their next submitted turn, so Runtime never writes wake commands into a user's editor. A natural-language launch request may use `collaborator_start` to acquire or reacquire this session's vacant caller identity and start the child under one trusted confirmation. Models can inspect durable participants with `collaborator_list`, call `mail_send`, and request `collaborator_start`, `collaborator_stand_down`, or `collaborator_stop`; lifecycle mutations require trusted interactive confirmation. Stand-down preserves the process, while stop also closes the exact plugin-managed single-pane Herdr tab. Both preserve mail. Release, revival, and takeover remain user commands.
 
