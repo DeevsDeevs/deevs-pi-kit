@@ -97,6 +97,34 @@ function paneRunSessionFile(args: string[]): string {
 }
 
 describe("hosted collaborator Pi integration", () => {
+	it("starts Runtime in a dedicated no-focus services workspace", async () => {
+		const test = await setup((request) => request.method === "participant.list" ? { participants: [] } : baseResponse(request));
+		await test.integration.sessionStart(test.ctx as never);
+		const integration = test.integration as unknown as { client: { socketPath: string; hello(): Promise<unknown>; call(method: string, params: unknown): Promise<unknown> } };
+		const client = integration.client;
+		let helloCount = 0;
+		Object.defineProperty(integration, "client", { value: {
+			socketPath: client.socketPath,
+			call: client.call.bind(client),
+			hello: async () => {
+				if (helloCount++ === 0) throw new HostedRuntimeClientError("unavailable", "missing");
+				return { runtimeId: "runtime_1", epoch: "epoch_1" };
+			},
+		} });
+		test.setExec(async (_command, args) => {
+			if (args[0] === "workspace" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { workspace: { workspace_id: "w9" }, root_pane: { pane_id: "w9:p1" }, tab: { tab_id: "w9:t1" } } }), stderr: "", killed: false };
+			return { code: 0, stdout: "{}", stderr: "", killed: false };
+		});
+		await test.integration.command("start", test.ctx as never);
+		expect(test.execCalls.find((call) => call.args[0] === "workspace" && call.args[1] === "create")?.args).toEqual(["workspace", "create", "--cwd", test.runtimeRoot, "--label", "pi-kit-services", "--no-focus"]);
+		expect(test.execCalls).toContainEqual({ command: "herdr", args: ["tab", "rename", "w9:t1", "pi-kit-runtime"] });
+		const launched = test.execCalls.find((call) => call.args[0] === "pane" && call.args[1] === "run")!;
+		expect(launched.args.slice(0, 3)).toEqual(["pane", "run", "w9:p1"]);
+		expect(launched.args[3]).toContain(`--root '${test.runtimeRoot}'`);
+		expect(test.execCalls.some((call) => call.args[0] === "tab" && (call.args[1] === "create" || call.args[1] === "focus"))).toBe(false);
+		await test.integration.sessionShutdown();
+	});
+
 	it("lists durable collaborator state from Runtime instead of session memory", async () => {
 		const test = await setup((request) => request.method === "participant.list"
 			? { participants: [mainParticipant, { ...fableParticipant, state: "vacant", holderTargetKey: undefined, holderLive: false }] }

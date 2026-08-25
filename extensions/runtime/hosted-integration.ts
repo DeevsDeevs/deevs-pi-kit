@@ -500,34 +500,38 @@ export class HostedRuntimeIntegration {
 		this.pi.appendEntry(HOSTED_PARTICIPANT_ENTRY, identity);
 	}
 
-	private async start(ctx: ExtensionCommandContext): Promise<void> {
+	private async start(ctx: Pick<ExtensionContext, "isProjectTrusted">): Promise<void> {
 		try {
 			await this.client.hello();
 			return;
 		} catch {}
-		if (process.env.HERDR_ENV !== "1" || !process.env.HERDR_WORKSPACE_ID) throw new HostedRuntimeClientError("host_unavailable", "Explicit Runtime start requires this Pi session to run inside Herdr.");
+		if (process.env.HERDR_ENV !== "1") throw new HostedRuntimeClientError("host_unavailable", "Runtime start requires this Pi session to run inside Herdr.");
 		if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Runtime start requires a trusted project.");
-		const created = await this.pi.exec("herdr", ["tab", "create", "--workspace", process.env.HERDR_WORKSPACE_ID, "--cwd", ctx.cwd, "--label", "pi-kit-runtime", "--no-focus"], { timeout: 5_000 });
-		if (created.code !== 0) throw new HostedRuntimeClientError("host_unavailable", "Herdr could not create the Runtime service tab.");
+		mkdirSync(this.root, { recursive: true, mode: 0o700 });
+		const created = await this.pi.exec("herdr", ["workspace", "create", "--cwd", this.root, "--label", "pi-kit-services", "--no-focus"], { timeout: 5_000 });
+		if (created.code !== 0) throw new HostedRuntimeClientError("host_unavailable", "Herdr could not create the Runtime services workspace.");
 		const result = strictObject(strictObject(JSON.parse(created.stdout), "Herdr response").result, "Herdr result");
+		const workspaceId = text(strictObject(result.workspace, "Herdr workspace").workspace_id);
 		const paneId = text(strictObject(result.root_pane, "Herdr root pane").pane_id);
 		const tabId = text(strictObject(result.tab, "Herdr tab").tab_id);
+		await this.pi.exec("herdr", ["tab", "rename", tabId, "pi-kit-runtime"], { timeout: 5_000 });
 		const serviceMain = fileURLToPath(new URL("./service/main.ts", import.meta.url));
 		const command = `exec node ${shellQuote(serviceMain)} --root ${shellQuote(this.root)}`;
 		const launched = await this.pi.exec("herdr", ["pane", "run", paneId, command], { timeout: 5_000 });
 		if (launched.code !== 0) {
-			await this.pi.exec("herdr", ["tab", "close", tabId], { timeout: 5_000 });
+			await this.pi.exec("herdr", ["workspace", "close", workspaceId], { timeout: 5_000 });
 			throw new HostedRuntimeClientError("host_unavailable", "Herdr could not launch the Runtime service.");
 		}
 		for (let attempt = 0; attempt < 30; attempt++) {
 			try { await this.client.hello(); return; } catch { await delay(100); }
 		}
-		await this.pi.exec("herdr", ["tab", "close", tabId], { timeout: 5_000 });
+		await this.pi.exec("herdr", ["workspace", "close", workspaceId], { timeout: 5_000 });
 		throw new HostedRuntimeClientError("unavailable", "Runtime service did not become ready.");
 	}
 
 	private async requireRegistration(ctx: ExtensionContext): Promise<LiveClientRegistration> {
 		if (this.registration) return this.registration;
+		await this.start(ctx);
 		return this.register(ctx);
 	}
 
