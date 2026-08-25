@@ -116,6 +116,13 @@ describe("hosted runtime state reducer", () => {
 		expect(Object.keys(replayed.events)).toEqual(["evt_1"]);
 	});
 
+	it("orders events from different sources by Runtime creation time", () => {
+		const older: HostedFilesystemCreatedEvent = { ...event("evt_older", 12), createdAt: 100, source: { kind: "monitor", id: "source_fable", generation: "gen_1", sequence: 12 } };
+		const newer: HostedFilesystemCreatedEvent = { ...event("evt_newer", 2), createdAt: 200, source: { kind: "monitor", id: "source_release_gate", generation: "gen_1", sequence: 2 } };
+		const state = { ...populatedState(), events: { evt_newer: newer, evt_older: older } };
+		expect(pendingHostedEvents(state, "pi_target").map((candidate) => candidate.eventId)).toEqual(["evt_older", "evt_newer"]);
+	});
+
 	it("distinguishes idempotent natural-key retries from conflicts", () => {
 		let state = reduceHostedState(emptyHostedRuntimeState(), { type: "target.ensure", target: target() });
 		expect(reduceHostedState(state, { type: "target.ensure", target: target() })).toBe(state);

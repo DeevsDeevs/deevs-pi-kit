@@ -166,7 +166,7 @@ pending -> claimed -> acked
                   \-> pending  (release or lease expiry)
 ```
 
-Claims contain at most 12 events in source sequence order. Normal acknowledgement or release requires the same registration generation and exact claim/event receipt. Historical registration reconciliation is the only generation-exempt path.
+Claims contain at most 12 events in Runtime creation order, with source identity/generation/sequence used only for deterministic ties. Normal acknowledgement or release requires the same registration generation and exact claim/event receipt. Historical registration reconciliation is the only generation-exempt path.
 
 Acknowledgement means the hosted message entered Pi session history; it does not mean the model completed resulting work.
 
@@ -184,9 +184,9 @@ For an exact unfocused `idle` or `done` target, Runtime:
 /pi-kit-runtime-wake 1 <registrationId> <wakeId>
 ```
 
-The Pi command handler checks that Pi is idle with no pending user messages, atomically accepts the wake, and claims the first batch. It then enqueues one hidden `deevs.hosted-runtime.v1` custom message containing the exact claim/event receipt. Runtime never injects a slash command into a focused human editor; that Pi claims pending events in-process before the next submitted agent turn and injects the same hidden message into that turn.
+The Pi command handler checks that Pi is idle with no pending user messages, atomically accepts the wake, and claims the first batch. It then enqueues one hidden `deevs.hosted-runtime.v1` custom message containing the exact claim/event receipt. Runtime never injects a slash command into a focused human editor. Instead, the existing ten-second registration heartbeat returns a typed inbox-ready flag; an idle Pi claims and enqueues the hidden message in-process with `pi.sendMessage`. The next submitted agent turn remains the durable fallback.
 
-- Busy or focused Pi declines external prompting without claiming.
+- Busy or focused Pi declines external terminal prompting without claiming.
 - Synchronous enqueue failure releases the claim.
 - `message_start` acknowledges admission.
 - A pre-admission crash returns the claim to pending after lease expiry.

@@ -31,8 +31,10 @@ describe("hosted runtime client vertical", () => {
 		const projectRoot = join(root, "project");
 		const watchRoot = join(projectRoot, "reviews");
 		const sessionFile = join(root, "session.jsonl");
+		const fableSessionFile = join(root, "fable.jsonl");
 		mkdirSync(watchRoot, { recursive: true });
 		writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: "session_1", timestamp: "2026-01-01T00:00:00.000Z", cwd: projectRoot })}\n`);
+		writeFileSync(fableSessionFile, `${JSON.stringify({ type: "session", version: 3, id: "session_2", timestamp: "2026-01-01T00:00:00.000Z", cwd: projectRoot })}\n`);
 		const host = new FakeHost({
 			paneId: "w1:p1",
 			terminalId: "term_1",
@@ -41,12 +43,14 @@ describe("hosted runtime client vertical", () => {
 			status: "idle",
 			stateChangeSeq: 4,
 		});
+		const registrationIds = ["reg_client", "reg_fable"];
+		const registrationKeys = ["secret_client", "secret_fable"];
 		const server = await startRuntimeServer({
 			root: join(root, "runtime"),
 			epoch: "epoch_client",
 			host,
 			monitor: { automatic: false, now: () => 1_000, createId: (prefix) => `${prefix}_client` },
-			registration: { now: () => 1_000, createId: () => "reg_client", createKey: () => "secret_client" },
+			registration: { now: () => 1_000, createId: () => registrationIds.shift()!, createKey: () => registrationKeys.shift()! },
 		});
 		servers.push(server);
 		const client = new HostedRuntimeClient(server.socketPath);
@@ -62,11 +66,18 @@ describe("hosted runtime client vertical", () => {
 		expect(registration).toMatchObject({ registrationId: "reg_client", registrationKey: "secret_client", hostStateChangeSeq: 4 });
 		const auth = { registrationId: "reg_client", registrationKey: "secret_client" };
 		expect(await client.call("participant.acquire", { ...auth, protocol: "review", participantId: "main" })).toMatchObject({ participant: { participantId: "main", holderLive: true }, revived: false });
-		expect(await client.call("participant.list", auth)).toMatchObject({ participants: [{ participantId: "main" }] });
+		const mainAgent = host.agent;
+		host.agent = { paneId: "w1:p2", terminalId: "term_2", cwd: projectRoot, agentSession: { source: "herdr:pi", agent: "pi", kind: "path", value: fableSessionFile }, status: "idle", focused: true, stateChangeSeq: 1 };
+		const fableRegistration = await client.call("pi.register", { projectRoot, piSessionId: "session_2", piSessionFile: fableSessionFile, clientGeneration: "client_2", admittedClaims: [], herdr: { paneId: "w1:p2", terminalId: "term_2" } }) as Record<string, unknown>;
+		const fableAuth = { registrationId: String(fableRegistration.registrationId), registrationKey: String(fableRegistration.registrationKey) };
+		const recipient = await client.call("participant.acquire", { ...fableAuth, protocol: "review", participantId: "fable" }) as { participant: { participantKey: string } };
+		expect(await client.call("participant.list", auth)).toMatchObject({ participants: [{ participantId: "fable" }, { participantId: "main" }] });
 		expect(await client.call("monitor.create", { ...auth, directory: watchRoot, settleMs: 250 })).toMatchObject({ monitorId: "mon_client", status: "watching" });
 		expect(await client.call("monitor.get", auth)).toMatchObject({ monitor: { monitorId: "mon_client" } });
-		host.agent = { ...host.agent, paneId: "w1:p9", stateChangeSeq: 5 };
-		expect(await client.call("pi.heartbeat", auth)).toMatchObject({ paneId: "w1:p9", hostStateChangeSeq: 5 });
+		await client.call("mailbox.send", { ...auth, recipientParticipantKey: recipient.participant.participantKey, sendId: "send_client", body: "Focused mail" });
+		expect(await client.call("pi.heartbeat", fableAuth)).toMatchObject({ paneId: "w1:p2", inboxReady: true });
+		host.agent = { ...mainAgent, paneId: "w1:p9", focused: true, stateChangeSeq: 5 };
+		expect(await client.call("pi.heartbeat", auth)).toMatchObject({ paneId: "w1:p9", hostStateChangeSeq: 5, inboxReady: false });
 		await expect(client.call("monitor.get", { ...auth, registrationKey: "wrong" })).rejects.toMatchObject({ code: "registration_stale" });
 		await client.call("monitor.delete", { ...auth, monitorId: "mon_client" });
 		expect(await client.call("monitor.get", auth)).toEqual({ monitor: null });
