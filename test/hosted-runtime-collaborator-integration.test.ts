@@ -90,6 +90,12 @@ function baseResponse(request: Request): unknown {
 	throw new Error(`unexpected ${request.method}`);
 }
 
+function paneRunSessionFile(args: string[]): string {
+	const match = /^exec pi --approve --session '([^']+)'$/.exec(args[3] ?? "");
+	if (!match) throw new Error("unexpected pane-run command");
+	return match[1]!;
+}
+
 describe("hosted collaborator Pi integration", () => {
 	it("lists durable collaborator state from Runtime instead of session memory", async () => {
 		const test = await setup((request) => request.method === "participant.list"
@@ -248,7 +254,7 @@ describe("hosted collaborator Pi integration", () => {
 			if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
 			if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
 			if (args[0] === "pane" && args[1] === "run") {
-				const sessionFile = args[args.indexOf("--session") + 1]!;
+				const sessionFile = paneRunSessionFile(args);
 				childTargetKey = deriveTargetKey(test.projectRoot, JSON.parse(readFileSync(sessionFile, "utf8")).id);
 			}
 			return { code: 0, stdout: "{}", stderr: "", killed: false };
@@ -257,8 +263,8 @@ describe("hosted collaborator Pi integration", () => {
 		await test.integration.command("collaborator-start review fable", test.ctx as never);
 		expect(test.execCalls.find((call) => call.args[0] === "tab" && call.args[1] === "create")?.args).toContain("PI_RUNTIME_COLLABORATE=review:fable");
 		const started = test.execCalls.find((call) => call.args[0] === "pane" && call.args[1] === "run")!;
-		const sessionFile = started.args[started.args.indexOf("--session") + 1]!;
-		expect(started.args).toEqual(["pane", "run", "w1:p9", "pi", "--approve", "--session", sessionFile]);
+		const sessionFile = paneRunSessionFile(started.args);
+		expect(started.args).toEqual(["pane", "run", "w1:p9", `exec pi --approve --session '${sessionFile}'`]);
 		expect(test.execCalls.some((call) => call.args[0] === "agent" && call.args[1] === "start")).toBe(false);
 		expect(test.execCalls.some((call) => call.args[0] === "tab" && call.args[1] === "focus")).toBe(false);
 		expect(JSON.parse(readFileSync(sessionFile, "utf8"))).toMatchObject({ type: "session", version: 3, cwd: test.projectRoot });
@@ -292,7 +298,7 @@ describe("hosted collaborator Pi integration", () => {
 			if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
 			if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
 			if (args[0] === "pane" && args[1] === "run") {
-				childSessionFile = args[args.indexOf("--session") + 1]!;
+				childSessionFile = paneRunSessionFile(args);
 				return { code: 1, stdout: "", stderr: "reply lost", killed: false };
 			}
 			return { code: 0, stdout: "{}", stderr: "", killed: false };
@@ -322,7 +328,7 @@ describe("hosted collaborator Pi integration", () => {
 		test.setExec(async (_command, args) => {
 			if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
 			if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
-			if (args[0] === "pane" && args[1] === "run") childSessionFile = args[args.indexOf("--session") + 1]!;
+			if (args[0] === "pane" && args[1] === "run") childSessionFile = paneRunSessionFile(args);
 			return { code: 0, stdout: "{}", stderr: "", killed: false };
 		});
 		await test.integration.sessionStart(test.ctx as never);
@@ -399,7 +405,7 @@ describe("hosted collaborator Pi integration", () => {
 			if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
 			if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
 			if (args[0] === "pane" && args[1] === "run") {
-				const sessionFile = args[args.indexOf("--session") + 1]!;
+				const sessionFile = paneRunSessionFile(args);
 				childTargetKey = deriveTargetKey(test.projectRoot, JSON.parse(readFileSync(sessionFile, "utf8")).id);
 			}
 			return { code: 0, stdout: "{}", stderr: "", killed: false };
