@@ -102,7 +102,7 @@ subagent({
 
 `extensions/chains` tracks branch-local `saved` versus `checkpoint due` state:
 
-- 80% context usage forces one immediate checkpoint before further work; non-`chain_save` tools are blocked and one hidden recovery turn follows an ignored reminder; after saving, Pi's native compactor retains lifecycle control, resets the one-shot threshold, and the first post-compaction turn is reminded to reload the Chain;
+- 80% context usage forces one immediate checkpoint before further substantive work, including read-only/no-edit tasks; saving triggers Pi compaction and a follow-up that reloads the Chain and continues, while a failed save leaves only settlement, cancellation, status, clarification, and collaborator-reporting tools available;
 - descendant HEAD advances, Mission lifecycle/milestones (including cross-session takeover), review adjudication, new branches, and write-enabled Subagent settlement mark a checkpoint due; ordinary edits and bounded Jobs do not;
 - `chain_save` clears due state; an explicit persisted waiver can also clear it with a reason;
 - `/chains` browses active state and saved links; `/chains <query>` searches them;
