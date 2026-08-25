@@ -435,7 +435,8 @@ export class HostedRuntimeIntegration {
 			const paneId = text(strictObject(result.root_pane, "Herdr root pane").pane_id);
 			throwIfAborted(signal);
 			childMayBeLive = true;
-			const started = await this.pi.exec("herdr", ["pane", "run", paneId, "pi", "--approve", "--session", sessionFile], { timeout: 5_000 });
+			const command = `exec pi --approve --session ${shellQuote(sessionFile)}`;
+			const started = await this.pi.exec("herdr", ["pane", "run", paneId, command], { timeout: 5_000 });
 			if (started.code !== 0) throw new HostedRuntimeClientError("host_unavailable", `Herdr could not dispatch Pi collaborator startup in ${paneId}; its tab and session were preserved.`);
 			throwIfAborted(signal);
 			for (let attempt = 0; attempt < 150; attempt++) {
