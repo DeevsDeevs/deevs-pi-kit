@@ -17,7 +17,7 @@ export default function runtimeExtension(pi: ExtensionAPI): void {
 		label: "List Runtime Collaborators",
 		description: "List durable collaborator participants for this trusted project, including held/vacant/ended state and whether each holder is live.",
 		promptSnippet: "List durable Runtime collaborators and their current ownership state.",
-		promptGuidelines: ["Use collaborator_list instead of conversation memory when checking active collaborators, especially before reporting completion or cleanup."],
+		promptGuidelines: ["Use collaborator_list for participant discovery, ownership/liveness checks, lifecycle cleanup, or explicit status requests.", "Do not call collaborator_list solely to validate a known recipient before mail_send or before reporting task completion; mail_send resolves the recipient authoritatively."],
 		parameters: Type.Object({}),
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 			const participants = await hosted.listCollaborators(ctx);
@@ -86,7 +86,7 @@ export default function runtimeExtension(pi: ExtensionAPI): void {
 		label: "Send Collaborator Mail",
 		description: "Send one durable message from this Pi session's held collaborator identity to another participant in the same project protocol.",
 		promptSnippet: "Send durable mail to a persistent Runtime collaborator.",
-		promptGuidelines: ["Use mail_send only when this Pi session has explicitly acquired a collaborator identity.", "Only confirmed collaborator tools may start, stand down, or stop identities; release, revival, and takeover remain user-only commands."],
+		promptGuidelines: ["Use mail_send only when this Pi session has explicitly acquired a collaborator identity.", "When the user or an identity-verified Runtime message supplies the participant ID, call mail_send directly without a collaborator_list preflight.", "Only confirmed collaborator tools may start, stand down, or stop identities; release, revival, and takeover remain user-only commands."],
 		parameters: Type.Object({
 			participantId: Type.String({ description: "Recipient participant id in the sender's current protocol" }),
 			body: Type.String({ description: "Model-visible message body, capped at 16 KiB by Runtime" }),
