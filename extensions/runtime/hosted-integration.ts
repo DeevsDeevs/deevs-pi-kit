@@ -231,9 +231,9 @@ export class HostedRuntimeIntegration {
 				return;
 			}
 			if (action === "collaborator-start") {
-				const [rawProtocol, rawParticipantId, ...extra] = rest;
-				if (!rawProtocol || !rawParticipantId || extra.length) throw new HostedRuntimeClientError("invalid_request", "Usage: /runtime collaborator-start <protocol> <participant-id>");
-				await this.launchCollaborator(ctx, collaboratorName(rawProtocol, "protocol"), collaboratorName(rawParticipantId, "participant ID"), true);
+				const [rawProtocol, rawParticipantId, rawModel, ...extra] = rest;
+				if (!rawProtocol || !rawParticipantId || extra.length) throw new HostedRuntimeClientError("invalid_request", "Usage: /runtime collaborator-start <protocol> <participant-id> [model]");
+				await this.launchCollaborator(ctx, collaboratorName(rawProtocol, "protocol"), collaboratorName(rawParticipantId, "participant ID"), true, undefined, undefined, collaboratorModel(rawModel));
 				return;
 			}
 			if (action === "monitor") {
@@ -308,7 +308,7 @@ export class HostedRuntimeIntegration {
 		return { participant: `${protocol}/${participantId}`, outcome };
 	}
 
-	async startCollaborator(input: { participantId: string; protocol?: string; callerParticipantId?: string }, ctx: ExtensionContext, signal?: AbortSignal): Promise<{ started: boolean; participant: string; paneId?: string }> {
+	async startCollaborator(input: { participantId: string; protocol?: string; callerParticipantId?: string; model?: string }, ctx: ExtensionContext, signal?: AbortSignal): Promise<{ started: boolean; participant: string; paneId?: string }> {
 		if (this.collaboratorStartActive) throw new HostedRuntimeClientError("busy", "Another collaborator start is already in progress.");
 		this.collaboratorStartActive = true;
 		try {
@@ -318,7 +318,7 @@ export class HostedRuntimeIntegration {
 		}
 	}
 
-	private async startCollaboratorConfirmed(input: { participantId: string; protocol?: string; callerParticipantId?: string }, ctx: ExtensionContext, signal?: AbortSignal): Promise<{ started: boolean; participant: string; paneId?: string }> {
+	private async startCollaboratorConfirmed(input: { participantId: string; protocol?: string; callerParticipantId?: string; model?: string }, ctx: ExtensionContext, signal?: AbortSignal): Promise<{ started: boolean; participant: string; paneId?: string }> {
 		throwIfAborted(signal);
 		if (!ctx.hasUI) throw new HostedRuntimeClientError("host_unavailable", "Collaborator start confirmation requires an interactive Pi session.");
 		if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Collaborator start requires a trusted project.");
@@ -328,6 +328,7 @@ export class HostedRuntimeIntegration {
 		const protocol = collaboratorName(identity?.protocol ?? input.protocol, "protocol");
 		const callerParticipantId = collaboratorName(identity?.participantId ?? input.callerParticipantId, "caller participant ID");
 		const participantId = collaboratorName(input.participantId, "participant ID");
+		const model = collaboratorModel(input.model);
 		if (identity && ((input.protocol && input.protocol !== protocol) || (input.callerParticipantId && input.callerParticipantId !== callerParticipantId))) throw new HostedRuntimeClientError("conflict", `Current collaborator identity is ${protocol}/${callerParticipantId}.`);
 		if (participantId === callerParticipantId) throw new HostedRuntimeClientError("conflict", "Caller and child collaborator identities must differ.");
 		const registration = await this.requireRegistration(ctx);
@@ -359,7 +360,7 @@ export class HostedRuntimeIntegration {
 		if (child?.state === "held") throw new HostedRuntimeClientError("conflict", "Participant already has a holder.");
 		if (child?.state === "ended") throw new HostedRuntimeClientError("conflict", "Ended collaborator identities require explicit /runtime collaborator-start revival.");
 		const callerAction = expectedCaller ? `As ${protocol}/${callerParticipantId}, start` : identity ? `Reacquire ${protocol}/${callerParticipantId} and start` : `Acquire ${protocol}/${callerParticipantId} and start`;
-		const confirmed = await ctx.ui.confirm("Start Runtime collaborator?", `${callerAction} ${protocol}/${participantId} in a no-focus Herdr tab?`, { signal });
+		const confirmed = await ctx.ui.confirm("Start Runtime collaborator?", `${callerAction} ${protocol}/${participantId}${model ? ` using ${model}` : ""} in a no-focus Herdr tab?`, { signal });
 		throwIfAborted(signal);
 		if (!confirmed) return { started: false, participant: `${protocol}/${participantId}` };
 		let acquiredCaller: ParticipantIdentity | undefined;
@@ -374,7 +375,7 @@ export class HostedRuntimeIntegration {
 				this.persistParticipant(acquiredCaller);
 				throwIfAborted(signal);
 			}
-			const paneId = await this.launchCollaborator(ctx, protocol, participantId, false, signal, launchCaller);
+			const paneId = await this.launchCollaborator(ctx, protocol, participantId, false, signal, launchCaller, model);
 			return { started: true, participant: `${protocol}/${participantId}`, paneId };
 		} catch (error) {
 			const childMayBeLive = error instanceof HostedCollaboratorStartError && error.childMayBeLive;
@@ -401,7 +402,7 @@ export class HostedRuntimeIntegration {
 		return { eventId: text(result.eventId), sequence: integer(result.sequence), recipient: `${identity.protocol}/${participantId}` };
 	}
 
-	private async launchCollaborator(ctx: ExtensionContext, protocol: string, participantId: string, allowRevive: boolean, signal?: AbortSignal, expectedCaller?: ClientParticipantStatus): Promise<string | undefined> {
+	private async launchCollaborator(ctx: ExtensionContext, protocol: string, participantId: string, allowRevive: boolean, signal?: AbortSignal, expectedCaller?: ClientParticipantStatus, model?: string): Promise<string | undefined> {
 		throwIfAborted(signal);
 		if (process.env.HERDR_ENV !== "1" || !process.env.HERDR_WORKSPACE_ID) throw new HostedRuntimeClientError("host_unavailable", "Collaborator start requires this Pi session to run inside Herdr.");
 		if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Collaborator start requires a trusted project.");
@@ -436,7 +437,7 @@ export class HostedRuntimeIntegration {
 			const paneId = text(strictObject(result.root_pane, "Herdr root pane").pane_id);
 			throwIfAborted(signal);
 			childMayBeLive = true;
-			const command = `exec pi --approve --session ${shellQuote(sessionFile)}`;
+			const command = `exec pi --approve --session ${shellQuote(sessionFile)}${model ? ` --model ${shellQuote(model)}` : ""}`;
 			const started = await this.pi.exec("herdr", ["pane", "run", paneId, command], { timeout: 5_000 });
 			if (started.code !== 0) throw new HostedRuntimeClientError("host_unavailable", `Herdr could not dispatch Pi collaborator startup in ${paneId}; its tab and session were preserved.`);
 			throwIfAborted(signal);
@@ -853,9 +854,15 @@ function parseParticipantIdentity(value: unknown): ParticipantIdentity | undefin
 }
 
 const COLLABORATOR_NAME = /^[a-z][a-z0-9_-]{0,63}$/;
+const COLLABORATOR_MODEL = /^[A-Za-z0-9][A-Za-z0-9._/*:-]{0,199}$/;
 
 function collaboratorName(value: string | undefined, name: string): string {
 	if (!value || !COLLABORATOR_NAME.test(value)) throw new HostedRuntimeClientError("invalid_request", `${name} must match ${COLLABORATOR_NAME}.`);
+	return value;
+}
+
+function collaboratorModel(value: string | undefined): string | undefined {
+	if (value !== undefined && !COLLABORATOR_MODEL.test(value)) throw new HostedRuntimeClientError("invalid_request", `model must match ${COLLABORATOR_MODEL}.`);
 	return value;
 }
 
