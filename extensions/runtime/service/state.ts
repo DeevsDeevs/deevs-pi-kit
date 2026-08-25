@@ -233,7 +233,7 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 		assertStateTime(operation.at, "Mailbox send time");
 		const sender = state.participants[operation.senderParticipantKey];
 		const recipient = state.participants[operation.recipientParticipantKey];
-		if (!sender || sender.state !== "held" || sender.holderTargetKey !== operation.senderTargetKey) throw new HostedStateConflictError("conflict", "Mailbox sender does not hold its participant identity.");
+		if (!sender || sender.state !== "held" || sender.generation !== operation.expectedSenderGeneration || sender.holderTargetKey !== operation.senderTargetKey) throw new HostedStateConflictError("conflict", "Mailbox sender identity or generation changed before send.");
 		if (!recipient || recipient.state === "ended") throw new HostedStateConflictError("conflict", "Mailbox recipient is unavailable.");
 		if (sender.participantKey === recipient.participantKey || sender.projectRoot !== recipient.projectRoot || sender.protocol !== recipient.protocol) throw new HostedStateConflictError("conflict", "Mailbox participants must be distinct and share one project and protocol.");
 		if (operation.at < sender.updatedAt) throw new HostedStateConflictError("conflict", "Mailbox send time precedes sender state.");

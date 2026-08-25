@@ -169,22 +169,36 @@ describe("hosted collaborator Pi integration", () => {
 		await test.integration.sessionShutdown();
 	});
 
-	it("restores held identity, sends exact tool mail, and never auto-takes over rotation", async () => {
+	it("restores held identity, sends ordered collaborator messages, and never auto-takes over rotation", async () => {
 		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
 		let rotated = false;
+		let sequence = 3;
 		const test = await setup((request) => {
 			if (request.method === "participant.get") return rotated ? { ...mainParticipant, holderTargetKey: "target_other" } : mainParticipant;
 			if (request.method === "participant.acquire") return { participant: mainParticipant, revived: false, transitioned: true };
 			if (request.method === "participant.list") return { participants: [mainParticipant, fableParticipant] };
-			if (request.method === "mailbox.send") return { eventId: "event_mail", sequence: 4 };
+			if (request.method === "mailbox.send") {
+				if (request.params.body === "Fail.") throw new HostedRuntimeClientError("unavailable", "send failed");
+				return { eventId: `event_${++sequence}`, sequence };
+			}
 			return baseResponse(request);
 		}, [identity]);
 		await test.integration.sessionStart(test.ctx as never);
-		await expect(test.integration.sendMail("other/fable", "Wrong protocol.", "tool_call_0", test.ctx as never)).rejects.toThrow("does not match current protocol");
-		expect(await test.integration.sendMail("review/fable", "Review this.", "tool_call_1", test.ctx as never)).toEqual({ eventId: "event_mail", sequence: 4, recipient: "review/fable" });
-		const send = test.requests.find((request) => request.method === "mailbox.send")!;
-		expect(send.params).toMatchObject({ recipientParticipantKey: "participant_fable", body: "Review this." });
-		expect(String(send.params.sendId)).toMatch(/^send_[a-f0-9]{32}$/);
+		await expect(test.integration.sendCollaboratorMessages([{ participantId: "other/fable", body: "Wrong protocol." }], "tool_call_0", test.ctx as never)).rejects.toThrow("does not match current protocol");
+		expect(await test.integration.sendCollaboratorMessages([
+			{ participantId: "review/fable", body: "First." },
+			{ participantId: "fable", body: "Second." },
+			{ participantId: "fable", body: "Fail." },
+		], "tool_call_1", test.ctx as never)).toEqual([
+			{ eventId: "event_4", sequence: 4, recipient: "review/fable", status: "sent" },
+			{ eventId: "event_5", sequence: 5, recipient: "review/fable", status: "sent" },
+			{ recipient: "review/fable", status: "failed", error: "send failed" },
+		]);
+		const sends = test.requests.filter((request) => request.method === "mailbox.send");
+		expect(sends.map((send) => send.params.body)).toEqual(["First.", "Second.", "Fail."]);
+		expect(sends.map((send) => send.params)).toEqual(sends.map((send) => expect.objectContaining({ senderParticipantKey: "participant_main", expectedSenderGeneration: "lease_main", recipientParticipantKey: "participant_fable", body: send.params.body })));
+		expect(new Set(sends.map((send) => String(send.params.sendId))).size).toBe(3);
+		expect(sends.map((send) => String(send.params.sendId))).toEqual(sends.map(() => expect.stringMatching(/^send_[a-f0-9]{32}$/)));
 		await test.integration.sessionShutdown();
 
 		rotated = true;
@@ -316,7 +330,7 @@ describe("hosted collaborator Pi integration", () => {
 			{ participantId: "four" },
 			{ participantId: "five" },
 		];
-		const results = await test.integration.startCollaborators(candidates, test.ctx as never);
+		const results = await test.integration.manageCollaborators({ action: "start", participants: candidates }, test.ctx as never);
 		expect(confirmations).toBe(1);
 		expect(confirmationText).toContain("start 5 collaborators with concurrency up to 4");
 		expect(results.map((result) => result.status)).toEqual(["started", "started", "started", "started", "started"]);
@@ -354,7 +368,7 @@ describe("hosted collaborator Pi integration", () => {
 		controller.abort();
 		await expect(test.integration.startCollaborator({ participantId: "other" }, test.ctx as never)).rejects.toThrow("already in progress");
 		releaseWorkers();
-		await expect(batch).rejects.toThrow("cancelled");
+		expect((await batch).map((result) => result.status)).toEqual(["cancelled", "cancelled", "cancelled", "cancelled", "cancelled"]);
 		expect(startedWorkers).toBe(4);
 		await test.integration.sessionShutdown();
 	});
@@ -607,45 +621,58 @@ describe("hosted collaborator Pi integration", () => {
 		await test.integration.sessionShutdown();
 	});
 
-	it("stands down an exact live collaborator only after trusted confirmation", async () => {
+	it("stands down a batch after one trusted confirmation and preserves input order", async () => {
+		const vacant = { ...fableParticipant, participantKey: "participant_vacant", participantId: "vacant", state: "vacant", holderTargetKey: undefined, holderLive: false, lastTransition: { cause: "stand_down" } };
 		const test = await setup((request) => {
-			if (request.method === "participant.list") return { participants: [fableParticipant] };
+			if (request.method === "participant.list") return { participants: [fableParticipant, vacant] };
 			if (request.method === "participant.stand_down_confirmed") return { ...fableParticipant, state: "vacant", generation: "lease_vacant", holderTargetKey: undefined, holderLive: false, lastTransition: { cause: "stand_down" } };
 			return baseResponse(request);
 		});
 		await test.integration.sessionStart(test.ctx as never);
-		test.ctx.ui.confirm = async () => false;
-		expect(await test.integration.standDownCollaborator({ protocol: "review", participantId: "fable" }, test.ctx as never)).toEqual({ participant: "review/fable", outcome: "declined" });
+		let confirmations = 0;
+		let confirmed = false;
+		test.ctx.ui.confirm = async () => { confirmations++; return confirmed; };
+		expect(await test.integration.manageCollaborators({ action: "stand_down", protocol: "review", participants: [{ participantId: "fable" }] }, test.ctx as never)).toEqual([{ participant: "review/fable", status: "declined" }]);
 		expect(test.requests.some((request) => request.method === "participant.stand_down_confirmed")).toBe(false);
-		test.ctx.ui.confirm = async () => true;
-		expect(await test.integration.standDownCollaborator({ protocol: "review", participantId: "fable" }, test.ctx as never)).toEqual({ participant: "review/fable", outcome: "stood_down" });
+		confirmed = true;
+		expect(await test.integration.manageCollaborators({ action: "stand_down", protocol: "review", participants: [{ participantId: "vacant" }, { participantId: "fable" }] }, test.ctx as never)).toEqual([
+			{ participant: "review/vacant", status: "already_vacant" },
+			{ participant: "review/fable", status: "stood_down" },
+		]);
+		expect(confirmations).toBe(2);
+		expect(test.requests.filter((request) => request.method === "participant.stand_down_confirmed")).toHaveLength(1);
 		expect(test.requests.find((request) => request.method === "participant.stand_down_confirmed")?.params).toMatchObject({ participantKey: "participant_fable", expectedGeneration: "lease_fable", confirmed: true });
 		await test.integration.sessionShutdown();
 	});
 
-	it("stops an exact collaborator only after trusted confirmation", async () => {
-		const vacant = { ...fableParticipant, state: "vacant", generation: "lease_vacant", holderTargetKey: undefined, holderLive: false, lastTransition: { cause: "stand_down", previousGeneration: "lease_fable" } };
+	it("stops a batch after one trusted confirmation", async () => {
+		const other = { ...fableParticipant, participantKey: "participant_other", participantId: "other", generation: "lease_other" };
 		const test = await setup((request) => {
-			if (request.method === "participant.list") return { participants: [fableParticipant] };
-			if (request.method === "participant.stop_confirmed") return { participant: vacant, outcome: "stopped" };
+			if (request.method === "participant.list") return { participants: [fableParticipant, other] };
+			if (request.method === "participant.stop_confirmed") {
+				const participant = request.params.participantKey === "participant_fable" ? fableParticipant : other;
+				return { participant: { ...participant, state: "vacant", holderTargetKey: undefined, holderLive: false }, outcome: "stopped" };
+			}
 			return baseResponse(request);
 		});
 		await test.integration.sessionStart(test.ctx as never);
-		test.ctx.ui.confirm = async () => false;
-		expect(await test.integration.stopCollaborator({ protocol: "review", participantId: "fable" }, test.ctx as never)).toEqual({ participant: "review/fable", outcome: "declined" });
-		expect(test.requests.some((request) => request.method === "participant.stop_confirmed")).toBe(false);
-		test.ctx.ui.confirm = async () => true;
-		expect(await test.integration.stopCollaborator({ protocol: "review", participantId: "fable" }, test.ctx as never)).toEqual({ participant: "review/fable", outcome: "stopped" });
-		expect(test.requests.find((request) => request.method === "participant.stop_confirmed")?.params).toMatchObject({ participantKey: "participant_fable", expectedGeneration: "lease_fable", confirmed: true });
+		let confirmations = 0;
+		test.ctx.ui.confirm = async () => { confirmations++; return true; };
+		expect(await test.integration.manageCollaborators({ action: "stop", protocol: "review", participants: [{ participantId: "fable" }, { participantId: "other" }] }, test.ctx as never)).toEqual([
+			{ participant: "review/fable", status: "stopped" },
+			{ participant: "review/other", status: "stopped" },
+		]);
+		expect(confirmations).toBe(1);
+		expect(test.requests.filter((request) => request.method === "participant.stop_confirmed")).toHaveLength(2);
 		await test.integration.sessionShutdown();
 	});
 
-	it("reports an already-vacant collaborator without asking for confirmation", async () => {
+	it("reports an all-vacant stand-down batch without asking for confirmation", async () => {
 		const vacant = { ...fableParticipant, state: "vacant", holderTargetKey: undefined, holderLive: false, lastTransition: { cause: "stand_down" } };
 		const test = await setup((request) => request.method === "participant.list" ? { participants: [vacant] } : baseResponse(request));
 		test.ctx.ui.confirm = async () => { throw new Error("confirmation must not run"); };
 		await test.integration.sessionStart(test.ctx as never);
-		expect(await test.integration.standDownCollaborator({ protocol: "review", participantId: "fable" }, test.ctx as never)).toEqual({ participant: "review/fable", outcome: "already_vacant" });
+		expect(await test.integration.manageCollaborators({ action: "stand_down", protocol: "review", participants: [{ participantId: "fable" }] }, test.ctx as never)).toEqual([{ participant: "review/fable", status: "already_vacant" }]);
 		await test.integration.sessionShutdown();
 	});
 

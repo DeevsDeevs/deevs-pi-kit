@@ -65,7 +65,8 @@ describe("hosted runtime client vertical", () => {
 		}) as Record<string, unknown>;
 		expect(registration).toMatchObject({ registrationId: "reg_client", registrationKey: "secret_client", hostStateChangeSeq: 4 });
 		const auth = { registrationId: "reg_client", registrationKey: "secret_client" };
-		expect(await client.call("participant.acquire", { ...auth, protocol: "review", participantId: "main" })).toMatchObject({ participant: { participantId: "main", holderLive: true }, revived: false });
+		const sender = await client.call("participant.acquire", { ...auth, protocol: "review", participantId: "main" }) as { participant: { participantKey: string; generation: string } };
+		expect(sender).toMatchObject({ participant: { participantId: "main", holderLive: true }, revived: false });
 		const mainAgent = host.agent;
 		host.agent = { paneId: "w1:p2", terminalId: "term_2", cwd: projectRoot, agentSession: { source: "herdr:pi", agent: "pi", kind: "path", value: fableSessionFile }, status: "idle", focused: false, stateChangeSeq: 1 };
 		const fableRegistration = await client.call("pi.register", { projectRoot, piSessionId: "session_2", piSessionFile: fableSessionFile, clientGeneration: "client_2", admittedClaims: [], herdr: { paneId: "w1:p2", terminalId: "term_2" } }) as Record<string, unknown>;
@@ -74,7 +75,7 @@ describe("hosted runtime client vertical", () => {
 		expect(await client.call("participant.list", auth)).toMatchObject({ participants: [{ participantId: "fable" }, { participantId: "main" }] });
 		expect(await client.call("monitor.create", { ...auth, directory: watchRoot, settleMs: 250 })).toMatchObject({ monitorId: "mon_client", status: "watching" });
 		expect(await client.call("monitor.get", auth)).toMatchObject({ monitor: { monitorId: "mon_client" } });
-		await client.call("mailbox.send", { ...auth, recipientParticipantKey: recipient.participant.participantKey, sendId: "send_client", body: "Focused mail" });
+		await client.call("mailbox.send", { ...auth, senderParticipantKey: sender.participant.participantKey, expectedSenderGeneration: sender.participant.generation, recipientParticipantKey: recipient.participant.participantKey, sendId: "send_client", body: "Focused mail" });
 		expect(await client.call("pi.heartbeat", fableAuth)).toMatchObject({ paneId: "w1:p2", inboxReady: true });
 		host.agent = { ...mainAgent, paneId: "w1:p9", focused: true, stateChangeSeq: 5 };
 		expect(await client.call("pi.heartbeat", auth)).toMatchObject({ paneId: "w1:p9", hostStateChangeSeq: 5, inboxReady: false });
