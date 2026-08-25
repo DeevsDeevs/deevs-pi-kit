@@ -76,14 +76,14 @@ Requests and responses are newline-delimited JSON over the Unix socket. Request 
   "runtimeId": "rt_...",
   "epoch": "epoch_...",
   "capabilities": {
-    "agentWake": "herdr_exact_agent",
+    "agentWake": "none",
     "maxDeliveryBatch": 12,
     "monitor": {"maxEntries": 10000}
   }
 }
 ```
 
-`runtimeId` persists; `epoch` changes on every service start. `agentWake` is `none` when no Herdr adapter is configured.
+`runtimeId` persists; `epoch` changes on every service start. `agentWake` is `none`: Pi claims pending inbox work through its in-process heartbeat and Runtime never prompts a Herdr pane.
 
 Error codes:
 
@@ -172,26 +172,15 @@ Acknowledgement means the hosted message entered Pi session history; it does not
 
 ## Wake and admission
 
-Runtime keeps at most one outstanding wake per target. Repeated submissions carry the same idempotent wake ID, and Pi accepts concatenated exact duplicates as one wake. Pending events remain queued while the target is offline, unverified, `working`, `blocked`, unknown, or focused for human input.
+Pending events remain queued while the target is offline, unverified, or unable to accept a new model-visible turn. Runtime never prompts or focuses a Herdr pane for inbox delivery.
 
-For an exact unfocused `idle` or `done` target, Runtime:
+Every two-second registration heartbeat reverifies the exact Herdr terminal, Pi session, cwd, and freshness, and returns a typed `inboxReady` flag whenever the target has pending events. The Pi client checks that it is idle with no pending messages, atomically claims the first batch, and enqueues one hidden `deevs.hosted-runtime.v1` custom message in-process with `pi.sendMessage`. If Pi is busy, the event remains pending for a later heartbeat. The next submitted user turn remains the durable fallback.
 
-1. reverifies Herdr terminal, Pi session, cwd, status, and freshness;
-2. persists a wake ID;
-3. prompts that exact pane with:
-
-```text
-/pi-kit-runtime-wake 1 <registrationId> <wakeId>
-```
-
-The Pi command handler checks that Pi is idle with no pending user messages, atomically accepts the wake, and claims the first batch. It then enqueues one hidden `deevs.hosted-runtime.v1` custom message containing the exact claim/event receipt. Runtime never injects a slash command into a focused human editor. Instead, the existing two-second registration heartbeat returns a typed inbox-ready flag; an idle Pi claims and enqueues the hidden message in-process with `pi.sendMessage`. The next submitted agent turn remains the durable fallback.
-
-- Busy or focused Pi declines external terminal prompting without claiming.
 - Synchronous enqueue failure releases the claim.
 - `message_start` acknowledges admission.
 - A pre-admission crash returns the claim to pending after lease expiry.
 - A post-admission/pre-ack crash is reconciled from Pi history during registration.
-- Repeated wake IDs and receipt operations are idempotent.
+- Legacy persisted wake IDs remain acceptable during upgrade, but Runtime creates no new prompt wakes.
 
 ## Collaborator mailbox
 
@@ -201,7 +190,7 @@ Mailbox messages are addressed to participants rather than historical Pi session
 
 Bodies are capped at 16 KiB and become model-visible input in the recipient Pi session. They are authored by an identity-verified participant in the same trusted project, but remain untrusted prose: bodies never authorize routing, ownership, takeover, acknowledgement, or verdicts.
 
-Herdr remains the live process and prompt layer. The Runtime daemon occupies the initial `pi-kit-runtime` tab of its dedicated services workspace; collaborator tabs stay in the requesting project workspace. `/runtime collaborator-start <protocol> <participant-id> [model]` materializes a child Pi session, creates a no-focus tab, starts Pi with the optional validated model pattern, and waits for the child to acquire its environment-bootstrapped identity. Runtime never changes pane or tab focus. The identity disposition is mirrored in Pi session history for safe reload/resume. Models may inspect current durable participants with read-only `collaborator_list`, call `mail_send`, and request confirmed `collaborator_start`, `collaborator_stand_down`, or `collaborator_stop`. Start may acquire or reacquire the caller and launch only new or vacant identities. Stop closes only an exact managed Herdr tab. Release, revival, and takeover remain user commands.
+Herdr remains the live process layer. The Runtime daemon occupies the initial `pi-kit-runtime` tab of its dedicated services workspace; collaborator tabs stay in the requesting project workspace. `/runtime collaborator-start <protocol> <participant-id> [model]` materializes a child Pi session, creates a no-focus tab, starts Pi with the optional validated model pattern, and waits for the child to acquire its environment-bootstrapped identity. Runtime never changes pane or tab focus. The identity disposition is mirrored in Pi session history for safe reload/resume. Models may inspect current durable participants with read-only `collaborator_list`, call `mail_send`, and request confirmed `collaborator_start`, `collaborator_start_many`, `collaborator_stand_down`, or `collaborator_stop`. Single start may acquire or reacquire the caller. Batch start requires an already-held caller, confirms 1–12 exact ID/model candidates once, and launches at most four concurrently. Both launch only new or vacant identities. Stop closes only an exact managed Herdr tab. Release, revival, and takeover remain user commands.
 
 ## Persistence and retention
 

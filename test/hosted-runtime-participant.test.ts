@@ -213,8 +213,8 @@ describe("participant and mailbox RPC", () => {
 		const main = await register(test, "main");
 		const fable = await register(test, "fable");
 		const monitors = new DirectoryMonitorManager(test.store, { automatic: false });
-		const wakes = new HostedWakeCoordinator(test.store, test.registrations, test.host);
-		const context: HostedProtocolContext = { runtimeId: "rt_test", epoch: "epoch_test", agentWake: "herdr_exact_agent", registrations: test.registrations, monitors, wakes, participants: test.participants };
+		const wakes = new HostedWakeCoordinator(test.store);
+		const context: HostedProtocolContext = { runtimeId: "rt_test", epoch: "epoch_test", agentWake: "none", registrations: test.registrations, monitors, wakes, participants: test.participants };
 		const call = (method: string, params: unknown) => dispatchHostedLine(JSON.stringify({ v: 1, id: method, method, params }), context);
 		expect(await call("hello", { minVersion: 1, maxVersion: 1 })).toMatchObject({ ok: true, result: { capabilities: { mailbox: { maxBodyBytes: 16_384 } } } });
 		const mainAuth = { registrationId: main.registrationId, registrationKey: main.registrationKey };

@@ -54,7 +54,7 @@ describe("hosted runtime client vertical", () => {
 		});
 		servers.push(server);
 		const client = new HostedRuntimeClient(server.socketPath);
-		expect(await client.hello()).toMatchObject({ epoch: "epoch_client", capabilities: { agentWake: "herdr_exact_agent", mailbox: { maxBodyBytes: 16_384 } } });
+		expect(await client.hello()).toMatchObject({ epoch: "epoch_client", capabilities: { agentWake: "none", mailbox: { maxBodyBytes: 16_384 } } });
 		const registration = await client.call("pi.register", {
 			projectRoot,
 			piSessionId: "session_1",
@@ -67,7 +67,7 @@ describe("hosted runtime client vertical", () => {
 		const auth = { registrationId: "reg_client", registrationKey: "secret_client" };
 		expect(await client.call("participant.acquire", { ...auth, protocol: "review", participantId: "main" })).toMatchObject({ participant: { participantId: "main", holderLive: true }, revived: false });
 		const mainAgent = host.agent;
-		host.agent = { paneId: "w1:p2", terminalId: "term_2", cwd: projectRoot, agentSession: { source: "herdr:pi", agent: "pi", kind: "path", value: fableSessionFile }, status: "idle", focused: true, stateChangeSeq: 1 };
+		host.agent = { paneId: "w1:p2", terminalId: "term_2", cwd: projectRoot, agentSession: { source: "herdr:pi", agent: "pi", kind: "path", value: fableSessionFile }, status: "idle", focused: false, stateChangeSeq: 1 };
 		const fableRegistration = await client.call("pi.register", { projectRoot, piSessionId: "session_2", piSessionFile: fableSessionFile, clientGeneration: "client_2", admittedClaims: [], herdr: { paneId: "w1:p2", terminalId: "term_2" } }) as Record<string, unknown>;
 		const fableAuth = { registrationId: String(fableRegistration.registrationId), registrationKey: String(fableRegistration.registrationKey) };
 		const recipient = await client.call("participant.acquire", { ...fableAuth, protocol: "review", participantId: "fable" }) as { participant: { participantKey: string } };

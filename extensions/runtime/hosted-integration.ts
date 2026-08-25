@@ -58,6 +58,18 @@ interface ParticipantIdentity {
 	reviveAuthorized?: true;
 }
 
+interface CollaboratorStartCandidate {
+	participantId: string;
+	model?: string;
+}
+
+interface CollaboratorBatchResult {
+	participant: string;
+	status: "started" | "failed" | "declined";
+	paneId?: string;
+	error?: string;
+}
+
 class HostedCollaboratorStartError extends HostedRuntimeClientError {
 	readonly childMayBeLive: boolean;
 
@@ -313,6 +325,61 @@ export class HostedRuntimeIntegration {
 		this.collaboratorStartActive = true;
 		try {
 			return await this.startCollaboratorConfirmed(input, ctx, signal);
+		} finally {
+			this.collaboratorStartActive = false;
+		}
+	}
+
+	async startCollaborators(candidates: CollaboratorStartCandidate[], ctx: ExtensionContext, signal?: AbortSignal): Promise<CollaboratorBatchResult[]> {
+		if (this.collaboratorStartActive) throw new HostedRuntimeClientError("busy", "Another collaborator start is already in progress.");
+		this.collaboratorStartActive = true;
+		try {
+			throwIfAborted(signal);
+			if (candidates.length < 1 || candidates.length > 12) throw new HostedRuntimeClientError("invalid_request", "Batch collaborator start requires 1 to 12 candidates.");
+			if (!ctx.hasUI) throw new HostedRuntimeClientError("host_unavailable", "Collaborator start confirmation requires an interactive Pi session.");
+			if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Collaborator start requires a trusted project.");
+			if (process.env.HERDR_ENV !== "1" || !process.env.HERDR_WORKSPACE_ID) throw new HostedRuntimeClientError("host_unavailable", "Collaborator start requires this Pi session to run inside Herdr.");
+			const identity = this.requireParticipantIdentity();
+			if (identity.disposition !== "held") throw new HostedRuntimeClientError("conflict", "Batch collaborator start requires this Pi session to hold its collaborator identity.");
+			const normalized = candidates.map((candidate) => ({ participantId: collaboratorName(candidate.participantId, "participant ID"), model: collaboratorModel(candidate.model) }));
+			if (new Set(normalized.map((candidate) => candidate.participantId)).size !== normalized.length) throw new HostedRuntimeClientError("conflict", "Batch collaborator participant IDs must be unique.");
+			if (normalized.some((candidate) => candidate.participantId === identity.participantId)) throw new HostedRuntimeClientError("conflict", "Caller and child collaborator identities must differ.");
+			const registration = await this.requireRegistration(ctx);
+			const participants = await this.listParticipants(registration);
+			const caller = (identity.participantKey ? participants.find((participant) => participant.participantKey === identity.participantKey) : undefined)
+				?? participants.find((participant) => participant.protocol === identity.protocol && participant.participantId === identity.participantId);
+			const callerMatches = caller?.protocol === identity.protocol && caller.participantId === identity.participantId && caller.state === "held" && caller.holderTargetKey === registration.targetKey && caller.generation === identity.generation;
+			if (!caller || !callerMatches) throw new HostedRuntimeClientError("conflict", `Current collaborator identity ${identity.protocol}/${identity.participantId} is not authoritatively held by this Pi target.`);
+			for (const candidate of normalized) {
+				const existing = participants.find((participant) => participant.protocol === identity.protocol && participant.participantId === candidate.participantId);
+				if (existing?.state === "held") throw new HostedRuntimeClientError("conflict", `Participant ${identity.protocol}/${candidate.participantId} already has a holder.`);
+				if (existing?.state === "ended") throw new HostedRuntimeClientError("conflict", `Ended collaborator ${identity.protocol}/${candidate.participantId} requires explicit revival.`);
+			}
+			const summary = normalized.map((candidate) => `${identity.protocol}/${candidate.participantId}${candidate.model ? ` — ${candidate.model}` : " — default model"}`).join("\n");
+			const confirmed = await ctx.ui.confirm("Start Runtime collaborators?", `As ${identity.protocol}/${identity.participantId}, start ${normalized.length} collaborators with concurrency up to 4 in no-focus Herdr tabs?\n\n${summary}`, { signal });
+			throwIfAborted(signal);
+			if (!confirmed) return normalized.map((candidate) => ({ participant: `${identity.protocol}/${candidate.participantId}`, status: "declined" }));
+			const results = new Array<CollaboratorBatchResult>(normalized.length);
+			let next = 0;
+			const worker = async (): Promise<void> => {
+				while (next < normalized.length) {
+					throwIfAborted(signal);
+					const index = next++;
+					const candidate = normalized[index]!;
+					try {
+						const paneId = await this.launchCollaborator(ctx, identity.protocol, candidate.participantId, false, signal, caller, candidate.model);
+						results[index] = { participant: `${identity.protocol}/${candidate.participantId}`, status: "started", paneId };
+					} catch (error) {
+						throwIfAborted(signal);
+						results[index] = { participant: `${identity.protocol}/${candidate.participantId}`, status: "failed", error: error instanceof Error ? error.message : String(error) };
+					}
+				}
+			};
+			const settled = await Promise.allSettled(Array.from({ length: Math.min(4, normalized.length) }, worker));
+			throwIfAborted(signal);
+			const rejected = settled.find((result): result is PromiseRejectedResult => result.status === "rejected");
+			if (rejected) throw rejected.reason;
+			return results;
 		} finally {
 			this.collaboratorStartActive = false;
 		}

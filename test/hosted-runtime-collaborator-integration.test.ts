@@ -276,6 +276,89 @@ describe("hosted collaborator Pi integration", () => {
 		await test.integration.sessionShutdown();
 	});
 
+	it("starts an exact batch after one confirmation with concurrency capped at four", async () => {
+		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
+		const children = new Map<string, string>();
+		const test = await setup((request) => {
+			if (request.method === "participant.get") return mainParticipant;
+			if (request.method === "participant.list") return { participants: [mainParticipant, ...[...children].map(([participantId, holderTargetKey]) => ({ ...fableParticipant, participantKey: `participant_${participantId}`, participantId, holderTargetKey }))] };
+			return baseResponse(request);
+		}, [identity]);
+		let paneNumber = 8;
+		let activeRuns = 0;
+		let maxActiveRuns = 0;
+		const paneParticipants = new Map<string, string>();
+		test.setExec(async (_command, args) => {
+			if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
+			if (args[0] === "tab" && args[1] === "create") {
+				const paneId = `w1:p${++paneNumber}`;
+				paneParticipants.set(paneId, String(args[args.indexOf("--env") + 1]).split(":")[1]!);
+				return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: paneId }, tab: { tab_id: `w1:t${paneNumber}` } } }), stderr: "", killed: false };
+			}
+			if (args[0] === "pane" && args[1] === "run") {
+				activeRuns++;
+				maxActiveRuns = Math.max(maxActiveRuns, activeRuns);
+				await new Promise((resolve) => setTimeout(resolve, 10));
+				const sessionFile = paneRunSessionFile(args);
+				children.set(paneParticipants.get(args[2]!)!, deriveTargetKey(test.projectRoot, JSON.parse(readFileSync(sessionFile, "utf8")).id));
+				activeRuns--;
+			}
+			return { code: 0, stdout: "{}", stderr: "", killed: false };
+		});
+		let confirmations = 0;
+		let confirmationText = "";
+		test.ctx.ui.confirm = async (...args: unknown[]) => { confirmations++; confirmationText = String(args[1]); return true; };
+		await test.integration.sessionStart(test.ctx as never);
+		const candidates = [
+			{ participantId: "one", model: "openai-codex/gpt-5.6-terra:high" },
+			{ participantId: "two" },
+			{ participantId: "three" },
+			{ participantId: "four" },
+			{ participantId: "five" },
+		];
+		const results = await test.integration.startCollaborators(candidates, test.ctx as never);
+		expect(confirmations).toBe(1);
+		expect(confirmationText).toContain("start 5 collaborators with concurrency up to 4");
+		expect(results.map((result) => result.status)).toEqual(["started", "started", "started", "started", "started"]);
+		expect(maxActiveRuns).toBe(4);
+		expect(test.execCalls.filter((call) => call.args[0] === "tab" && call.args[1] === "create")).toHaveLength(5);
+		expect(test.execCalls.some((call) => call.args[0] === "tab" && call.args[1] === "focus")).toBe(false);
+		expect(test.execCalls.find((call) => call.args[0] === "pane" && call.args[1] === "run")?.args[3]).toContain("--model 'openai-codex/gpt-5.6-terra:high'");
+		await test.integration.sessionShutdown();
+	});
+
+	it("keeps the start guard until every cancelled batch worker settles", async () => {
+		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
+		const test = await setup((request) => {
+			if (request.method === "participant.get") return mainParticipant;
+			if (request.method === "participant.list") return { participants: [mainParticipant] };
+			return baseResponse(request);
+		}, [identity]);
+		let releaseWorkers!: () => void;
+		const barrier = new Promise<void>((resolve) => { releaseWorkers = resolve; });
+		let startedWorkers = 0;
+		let fourStarted!: () => void;
+		const started = new Promise<void>((resolve) => { fourStarted = resolve; });
+		const internal = test.integration as unknown as { launchCollaborator(...args: unknown[]): Promise<string> };
+		internal.launchCollaborator = async (...args: unknown[]) => {
+			startedWorkers++;
+			if (startedWorkers === 4) fourStarted();
+			await barrier;
+			if ((args[4] as AbortSignal).aborted) throw new Error("cancelled worker");
+			return `pane_${startedWorkers}`;
+		};
+		await test.integration.sessionStart(test.ctx as never);
+		const controller = new AbortController();
+		const batch = test.integration.startCollaborators(["one", "two", "three", "four", "five"].map((participantId) => ({ participantId })), test.ctx as never, controller.signal);
+		await started;
+		controller.abort();
+		await expect(test.integration.startCollaborator({ participantId: "other" }, test.ctx as never)).rejects.toThrow("already in progress");
+		releaseWorkers();
+		await expect(batch).rejects.toThrow("cancelled");
+		expect(startedWorkers).toBe(4);
+		await test.integration.sessionShutdown();
+	});
+
 	it("starts a no-focus Pi collaborator with a materialized session and cleans up failed launches", async () => {
 		let listCount = 0;
 		let childTargetKey = "";

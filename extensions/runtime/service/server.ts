@@ -55,7 +55,7 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 			wakes?.request(targetKey);
 		},
 	});
-	wakes = new HostedWakeCoordinator(store, registrations, host, options.wake);
+	wakes = new HostedWakeCoordinator(store, options.wake);
 	participants = new HostedParticipantCoordinator(store, registrations, wakes, {
 		...options.participant,
 		stopTarget: options.participant?.stopTarget ?? (host.closeTarget ? (target) => host.closeTarget!(target, join(options.root, "collaborator-sessions")) : undefined),
@@ -64,7 +64,7 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 	const context: HostedProtocolContext = {
 		runtimeId: instance.runtimeId,
 		epoch: options.epoch ?? `epoch_${randomUUID()}`,
-		agentWake: "herdr_exact_agent",
+		agentWake: "none",
 		registrations,
 		monitors,
 		wakes,
