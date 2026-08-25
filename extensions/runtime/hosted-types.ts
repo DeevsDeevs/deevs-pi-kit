@@ -166,7 +166,7 @@ export type HostedStateOperation =
 	| { type: "participant.stand_down"; participantKey: string; targetKey: string; generation: string; expectedGeneration?: string; at: number }
 	| { type: "participant.release"; participantKey: string; targetKey: string; generation: string; at: number }
 	| { type: "participant.takeover"; participantKey: string; targetKey: string; generation: string; at: number }
-	| { type: "mailbox.send"; senderParticipantKey: string; senderTargetKey: string; recipientParticipantKey: string; sendId: string; eventId: string; body: string; at: number }
+	| { type: "mailbox.send"; senderParticipantKey: string; expectedSenderGeneration: string; senderTargetKey: string; recipientParticipantKey: string; sendId: string; eventId: string; body: string; at: number }
 	| { type: "inbox.claim"; claim: HostedClaim }
 	| { type: "inbox.ack"; targetKey: string; claimId: string; eventIds: string[]; at: number }
 	| { type: "inbox.reconcile"; targetKey: string; claimId: string; eventIds: string[]; at: number }

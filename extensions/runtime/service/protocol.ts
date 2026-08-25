@@ -152,9 +152,9 @@ export async function dispatchHostedLine(line: string, context: HostedProtocolCo
 				const registration = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
 				return success(id, participants.takeover(registration, boundedText(input.participantKey, "participant key", 200), boundedText(input.expectedGeneration, "expected participant generation", 200)));
 			}
-			const input = strictObject(params, "mailbox.send params", ["registrationId", "registrationKey", "recipientParticipantKey", "sendId", "body"]);
+			const input = strictObject(params, "mailbox.send params", ["registrationId", "registrationKey", "senderParticipantKey", "expectedSenderGeneration", "recipientParticipantKey", "sendId", "body"]);
 			const registration = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
-			const event = participants.send(registration, boundedText(input.recipientParticipantKey, "recipient participant key", 200), boundedText(input.sendId, "send ID", 200), boundedText(input.body, "mailbox body", HOSTED_MAILBOX_MAX_BODY_BYTES));
+			const event = participants.send(registration, boundedText(input.senderParticipantKey, "sender participant key", 200), boundedText(input.expectedSenderGeneration, "expected sender generation", 200), boundedText(input.recipientParticipantKey, "recipient participant key", 200), boundedText(input.sendId, "send ID", 200), boundedText(input.body, "mailbox body", HOSTED_MAILBOX_MAX_BODY_BYTES));
 			return success(id, { eventId: event.eventId, sequence: event.source.sequence });
 		}
 		return failure(id, "not_found", "Unknown runtime method.");

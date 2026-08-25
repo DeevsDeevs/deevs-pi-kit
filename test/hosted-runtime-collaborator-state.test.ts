@@ -50,10 +50,11 @@ function acquire(state: HostedRuntimeState, participantId: string, targetKey: st
 	});
 }
 
-function send(state: HostedRuntimeState, sendId: string, eventId: string, body = "Review this."): HostedRuntimeState {
+function send(state: HostedRuntimeState, sendId: string, eventId: string, body = "Review this.", expectedSenderGeneration = "lease_main"): HostedRuntimeState {
 	return reduceHostedState(state, {
 		type: "mailbox.send",
 		senderParticipantKey: participantKey("main"),
+		expectedSenderGeneration,
 		senderTargetKey: "target_main",
 		recipientParticipantKey: participantKey("fable"),
 		sendId,
@@ -193,6 +194,7 @@ describe("hosted Runtime collaborator state", () => {
 		const exactRetry = send(state, "send_1", "event_retry");
 		expect(exactRetry).toBe(state);
 		expect(() => send(state, "send_1", "event_changed", "Changed body")).toThrow(HostedStateConflictError);
+		expect(() => send(state, "send_stale", "event_stale", "Stale sender", "lease_stale")).toThrow(HostedStateConflictError);
 		state = send(state, "send_2", "event_2", "Second body");
 		const events = pendingHostedEvents(state, "target_fable");
 		expect(events.map((event) => [event.eventId, event.source.sequence])).toEqual([["event_1", 1], ["event_2", 2]]);

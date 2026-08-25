@@ -58,15 +58,25 @@ interface ParticipantIdentity {
 	reviveAuthorized?: true;
 }
 
-interface CollaboratorStartCandidate {
+interface CollaboratorCandidate {
 	participantId: string;
 	model?: string;
 }
 
-interface CollaboratorBatchResult {
+type CollaboratorManageAction = "start" | "stand_down" | "stop";
+
+interface CollaboratorManageResult {
 	participant: string;
-	status: "started" | "failed" | "declined";
+	status: "started" | "stood_down" | "stopped" | "already_vacant" | "already_stopped" | "unmanaged" | "failed" | "declined" | "cancelled";
 	paneId?: string;
+	error?: string;
+}
+
+interface CollaboratorMessageResult {
+	recipient: string;
+	status: "sent" | "failed" | "cancelled";
+	eventId?: string;
+	sequence?: number;
 	error?: string;
 }
 
@@ -93,7 +103,7 @@ export class HostedRuntimeIntegration {
 	private readonly admittedClaims = new Map<string, string[]>();
 	private readonly pendingAcks = new Set<string>();
 	private participantIdentity?: ParticipantIdentity;
-	private collaboratorStartActive = false;
+	private collaboratorManageActive = false;
 
 	constructor(pi: ExtensionAPI, root = defaultRuntimeRoot()) {
 		this.pi = pi;
@@ -282,57 +292,104 @@ export class HostedRuntimeIntegration {
 		return this.listParticipants(await this.requireRegistration(ctx));
 	}
 
-	async standDownCollaborator(input: { protocol: string; participantId: string }, ctx: ExtensionContext, signal?: AbortSignal): Promise<{ participant: string; outcome: "stood_down" | "already_vacant" | "declined" }> {
-		throwIfAborted(signal);
-		if (!ctx.hasUI) throw new HostedRuntimeClientError("host_unavailable", "Collaborator stand-down confirmation requires an interactive Pi session.");
-		if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Collaborator stand-down requires a trusted project.");
-		const protocol = collaboratorName(input.protocol, "protocol");
-		const participantId = collaboratorName(input.participantId, "participant ID");
-		const registration = await this.requireRegistration(ctx);
-		const participant = (await this.listParticipants(registration)).find((candidate) => candidate.protocol === protocol && candidate.participantId === participantId);
-		if (!participant) throw new HostedRuntimeClientError("not_found", `No ${protocol}/${participantId} participant exists.`);
-		if (participant.state === "vacant") return { participant: `${protocol}/${participantId}`, outcome: "already_vacant" };
-		if (participant.state === "ended") throw new HostedRuntimeClientError("conflict", `Participant ${protocol}/${participantId} has ended and cannot stand down.`);
-		if (!await ctx.ui.confirm("Stand down Runtime collaborator?", `Vacate ${protocol}/${participantId} and preserve its queued mail?`, { signal })) return { participant: `${protocol}/${participantId}`, outcome: "declined" };
-		throwIfAborted(signal);
-		const result = parseParticipant(await this.client.call("participant.stand_down_confirmed", { ...auth(registration), participantKey: participant.participantKey, expectedGeneration: participant.generation, confirmed: true }));
-		if (this.participantIdentity?.participantKey === result.participantKey) this.persistParticipant({ ...this.participantIdentity, generation: result.generation, disposition: "vacant" });
-		return { participant: `${protocol}/${participantId}`, outcome: "stood_down" };
+	async manageCollaborators(input: { action: CollaboratorManageAction; participants: CollaboratorCandidate[]; protocol?: string; callerParticipantId?: string }, ctx: ExtensionContext, signal?: AbortSignal): Promise<CollaboratorManageResult[]> {
+		if (input.participants.length < 1 || input.participants.length > 12) throw new HostedRuntimeClientError("invalid_request", "Collaborator management requires 1 to 12 participants.");
+		if (input.action === "start") {
+			if (input.participants.length === 1) {
+				const candidate = input.participants[0]!;
+				const result = await this.startCollaborator({ ...candidate, protocol: input.protocol, callerParticipantId: input.callerParticipantId }, ctx, signal);
+				return [{ participant: result.participant, status: result.started ? "started" : "declined", paneId: result.paneId }];
+			}
+			const identity = this.requireParticipantIdentity();
+			if (input.protocol && collaboratorName(input.protocol, "protocol") !== identity.protocol) throw new HostedRuntimeClientError("conflict", `Current collaborator identity uses protocol ${identity.protocol}.`);
+			if (input.callerParticipantId && collaboratorName(input.callerParticipantId, "caller participant ID") !== identity.participantId) throw new HostedRuntimeClientError("conflict", `Current collaborator identity is ${identity.protocol}/${identity.participantId}.`);
+			return this.startCollaborators(input.participants, ctx, signal);
+		}
+		if (input.callerParticipantId || input.participants.some((participant) => participant.model !== undefined)) throw new HostedRuntimeClientError("invalid_request", "Only collaborator starts accept caller identity or model fields.");
+		return this.changeCollaborators(input.action, input.protocol, input.participants, ctx, signal);
 	}
 
-	async stopCollaborator(input: { protocol: string; participantId: string }, ctx: ExtensionContext, signal?: AbortSignal): Promise<{ participant: string; outcome: "stopped" | "already_stopped" | "unmanaged" | "declined" }> {
-		throwIfAborted(signal);
-		if (!ctx.hasUI) throw new HostedRuntimeClientError("host_unavailable", "Collaborator stop confirmation requires an interactive Pi session.");
-		if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Collaborator stop requires a trusted project.");
-		const protocol = collaboratorName(input.protocol, "protocol");
-		const participantId = collaboratorName(input.participantId, "participant ID");
-		const registration = await this.requireRegistration(ctx);
-		const participant = (await this.listParticipants(registration)).find((candidate) => candidate.protocol === protocol && candidate.participantId === participantId);
-		if (!participant) throw new HostedRuntimeClientError("not_found", `No ${protocol}/${participantId} participant exists.`);
-		if (participant.state === "ended") throw new HostedRuntimeClientError("conflict", `Participant ${protocol}/${participantId} has ended and cannot be stopped.`);
-		if (!await ctx.ui.confirm("Stop Runtime collaborator?", `Vacate ${protocol}/${participantId}, preserve its mail, and terminate its exact plugin-managed Herdr tab?`, { signal })) return { participant: `${protocol}/${participantId}`, outcome: "declined" };
-		throwIfAborted(signal);
-		const result = strictObject(await this.client.call("participant.stop_confirmed", { ...auth(registration), participantKey: participant.participantKey, expectedGeneration: participant.generation, confirmed: true }), "Collaborator stop result");
-		const stopped = parseParticipant(result.participant);
-		const outcome = result.outcome;
-		if (outcome !== "stopped" && outcome !== "already_stopped" && outcome !== "unmanaged") throw new HostedRuntimeClientError("invalid_response", "Runtime returned an invalid collaborator stop outcome.");
-		if (this.participantIdentity?.participantKey === stopped.participantKey && stopped.state === "vacant") this.persistParticipant({ ...this.participantIdentity, generation: stopped.generation, disposition: "vacant" });
-		return { participant: `${protocol}/${participantId}`, outcome };
-	}
-
-	async startCollaborator(input: { participantId: string; protocol?: string; callerParticipantId?: string; model?: string }, ctx: ExtensionContext, signal?: AbortSignal): Promise<{ started: boolean; participant: string; paneId?: string }> {
-		if (this.collaboratorStartActive) throw new HostedRuntimeClientError("busy", "Another collaborator start is already in progress.");
-		this.collaboratorStartActive = true;
+	private async changeCollaborators(action: "stand_down" | "stop", requestedProtocol: string | undefined, candidates: CollaboratorCandidate[], ctx: ExtensionContext, signal?: AbortSignal): Promise<CollaboratorManageResult[]> {
+		if (this.collaboratorManageActive) throw new HostedRuntimeClientError("busy", "Another collaborator lifecycle operation is already in progress.");
+		this.collaboratorManageActive = true;
 		try {
-			return await this.startCollaboratorConfirmed(input, ctx, signal);
+			throwIfAborted(signal);
+			if (!ctx.hasUI) throw new HostedRuntimeClientError("host_unavailable", "Collaborator lifecycle confirmation requires an interactive Pi session.");
+			if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Collaborator lifecycle changes require a trusted project.");
+			const protocol = collaboratorName(requestedProtocol ?? this.participantIdentity?.protocol, "protocol");
+			const participantIds = candidates.map((candidate) => collaboratorName(candidate.participantId, "participant ID"));
+			if (new Set(participantIds).size !== participantIds.length) throw new HostedRuntimeClientError("conflict", "Collaborator participant IDs must be unique.");
+			const registration = await this.requireRegistration(ctx);
+			const participants = await this.listParticipants(registration);
+			const targets = participantIds.map((participantId) => {
+				const participant = participants.find((candidate) => candidate.protocol === protocol && candidate.participantId === participantId);
+				if (!participant) throw new HostedRuntimeClientError("not_found", `No ${protocol}/${participantId} participant exists.`);
+				if (participant.state === "ended") throw new HostedRuntimeClientError("conflict", `Participant ${protocol}/${participantId} has ended.`);
+				return participant;
+			});
+			const actionable = action === "stand_down" ? targets.filter((participant) => participant.state === "held") : targets;
+			const results = new Array<CollaboratorManageResult>(targets.length);
+			if (action === "stand_down") targets.forEach((participant, index) => {
+				if (participant.state === "vacant") results[index] = { participant: `${protocol}/${participant.participantId}`, status: "already_vacant" };
+			});
+			if (actionable.length === 0) return results;
+			const summary = actionable.map((participant) => `${protocol}/${participant.participantId}`).join("\n");
+			const detail = action === "stand_down" ? "Vacate these collaborators and preserve their queued messages?" : "Vacate these collaborators, preserve queued messages, and terminate only their exact plugin-managed Herdr tabs?";
+			if (!await ctx.ui.confirm(`${action === "stand_down" ? "Stand down" : "Stop"} Runtime collaborators?`, `${detail}\n\n${summary}`, { signal })) {
+				targets.forEach((participant, index) => {
+					if (!results[index]) results[index] = { participant: `${protocol}/${participant.participantId}`, status: "declined" };
+				});
+				return results;
+			}
+			let next = 0;
+			const worker = async (): Promise<void> => {
+				while (next < actionable.length) {
+					if (signal?.aborted) return;
+					const participant = actionable[next++]!;
+					const index = targets.indexOf(participant);
+					try {
+						if (action === "stand_down") {
+							const changed = parseParticipant(await this.client.call("participant.stand_down_confirmed", { ...auth(registration), participantKey: participant.participantKey, expectedGeneration: participant.generation, confirmed: true }));
+							if (this.participantIdentity?.participantKey === changed.participantKey) this.persistParticipant({ ...this.participantIdentity, generation: changed.generation, disposition: "vacant" });
+							results[index] = { participant: `${protocol}/${participant.participantId}`, status: "stood_down" };
+						} else {
+							const response = strictObject(await this.client.call("participant.stop_confirmed", { ...auth(registration), participantKey: participant.participantKey, expectedGeneration: participant.generation, confirmed: true }), "Collaborator stop result");
+							const changed = parseParticipant(response.participant);
+							const outcome = response.outcome;
+							if (outcome !== "stopped" && outcome !== "already_stopped" && outcome !== "unmanaged") throw new HostedRuntimeClientError("invalid_response", "Runtime returned an invalid collaborator stop outcome.");
+							if (this.participantIdentity?.participantKey === changed.participantKey && changed.state === "vacant") this.persistParticipant({ ...this.participantIdentity, generation: changed.generation, disposition: "vacant" });
+							results[index] = { participant: `${protocol}/${participant.participantId}`, status: outcome };
+						}
+					} catch (error) {
+						results[index] = { participant: `${protocol}/${participant.participantId}`, status: signal?.aborted ? "cancelled" : "failed", error: error instanceof Error ? error.message : String(error) };
+					}
+				}
+			};
+			const settled = await Promise.allSettled(Array.from({ length: Math.min(4, actionable.length) }, worker));
+			const rejected = settled.find((result): result is PromiseRejectedResult => result.status === "rejected");
+			if (rejected) throw rejected.reason;
+			targets.forEach((participant, index) => {
+				if (!results[index]) results[index] = { participant: `${protocol}/${participant.participantId}`, status: "cancelled" };
+			});
+			return results;
 		} finally {
-			this.collaboratorStartActive = false;
+			this.collaboratorManageActive = false;
 		}
 	}
 
-	async startCollaborators(candidates: CollaboratorStartCandidate[], ctx: ExtensionContext, signal?: AbortSignal): Promise<CollaboratorBatchResult[]> {
-		if (this.collaboratorStartActive) throw new HostedRuntimeClientError("busy", "Another collaborator start is already in progress.");
-		this.collaboratorStartActive = true;
+	async startCollaborator(input: { participantId: string; protocol?: string; callerParticipantId?: string; model?: string }, ctx: ExtensionContext, signal?: AbortSignal): Promise<{ started: boolean; participant: string; paneId?: string }> {
+		if (this.collaboratorManageActive) throw new HostedRuntimeClientError("busy", "Another collaborator lifecycle operation is already in progress.");
+		this.collaboratorManageActive = true;
+		try {
+			return await this.startCollaboratorConfirmed(input, ctx, signal);
+		} finally {
+			this.collaboratorManageActive = false;
+		}
+	}
+
+	async startCollaborators(candidates: CollaboratorCandidate[], ctx: ExtensionContext, signal?: AbortSignal): Promise<CollaboratorManageResult[]> {
+		if (this.collaboratorManageActive) throw new HostedRuntimeClientError("busy", "Another collaborator lifecycle operation is already in progress.");
+		this.collaboratorManageActive = true;
 		try {
 			throwIfAborted(signal);
 			if (candidates.length < 1 || candidates.length > 12) throw new HostedRuntimeClientError("invalid_request", "Batch collaborator start requires 1 to 12 candidates.");
@@ -359,29 +416,30 @@ export class HostedRuntimeIntegration {
 			const confirmed = await ctx.ui.confirm("Start Runtime collaborators?", `As ${identity.protocol}/${identity.participantId}, start ${normalized.length} collaborators with concurrency up to 4 in no-focus Herdr tabs?\n\n${summary}`, { signal });
 			throwIfAborted(signal);
 			if (!confirmed) return normalized.map((candidate) => ({ participant: `${identity.protocol}/${candidate.participantId}`, status: "declined" }));
-			const results = new Array<CollaboratorBatchResult>(normalized.length);
+			const results = new Array<CollaboratorManageResult>(normalized.length);
 			let next = 0;
 			const worker = async (): Promise<void> => {
 				while (next < normalized.length) {
-					throwIfAborted(signal);
+					if (signal?.aborted) return;
 					const index = next++;
 					const candidate = normalized[index]!;
 					try {
 						const paneId = await this.launchCollaborator(ctx, identity.protocol, candidate.participantId, false, signal, caller, candidate.model);
 						results[index] = { participant: `${identity.protocol}/${candidate.participantId}`, status: "started", paneId };
 					} catch (error) {
-						throwIfAborted(signal);
-						results[index] = { participant: `${identity.protocol}/${candidate.participantId}`, status: "failed", error: error instanceof Error ? error.message : String(error) };
+						results[index] = { participant: `${identity.protocol}/${candidate.participantId}`, status: signal?.aborted ? "cancelled" : "failed", error: error instanceof Error ? error.message : String(error) };
 					}
 				}
 			};
 			const settled = await Promise.allSettled(Array.from({ length: Math.min(4, normalized.length) }, worker));
-			throwIfAborted(signal);
 			const rejected = settled.find((result): result is PromiseRejectedResult => result.status === "rejected");
 			if (rejected) throw rejected.reason;
+			normalized.forEach((candidate, index) => {
+				if (!results[index]) results[index] = { participant: `${identity.protocol}/${candidate.participantId}`, status: "cancelled" };
+			});
 			return results;
 		} finally {
-			this.collaboratorStartActive = false;
+			this.collaboratorManageActive = false;
 		}
 	}
 
@@ -458,16 +516,34 @@ export class HostedRuntimeIntegration {
 		}
 	}
 
-	async sendMail(participantId: string, body: string, toolCallId: string, ctx: ExtensionContext): Promise<{ eventId: string; sequence: number; recipient: string }> {
+	async sendCollaboratorMessages(messages: Array<{ participantId: string; body: string }>, toolCallId: string, ctx: ExtensionContext, signal?: AbortSignal): Promise<CollaboratorMessageResult[]> {
+		if (messages.length < 1 || messages.length > 12) throw new HostedRuntimeClientError("invalid_request", "Collaborator send requires 1 to 12 messages.");
 		const identity = this.requireParticipantIdentity();
-		if (identity.disposition !== "held") throw new HostedRuntimeClientError("conflict", "Current collaborator identity is not held.");
-		const recipientId = collaboratorRecipient(participantId, identity.protocol);
+		if (identity.disposition !== "held" || !identity.participantKey || !identity.generation) throw new HostedRuntimeClientError("conflict", "Current collaborator identity is not authoritatively held.");
 		const registration = await this.requireRegistration(ctx);
-		const recipient = (await this.listParticipants(registration)).find((participant) => participant.protocol === identity.protocol && participant.participantId === recipientId);
-		if (!recipient) throw new HostedRuntimeClientError("not_found", `No ${identity.protocol}/${recipientId} participant exists.`);
-		const sendId = `send_${createHash("sha256").update(toolCallId).digest("hex").slice(0, 32)}`;
-		const result = strictObject(await this.client.call("mailbox.send", { ...auth(registration), recipientParticipantKey: recipient.participantKey, sendId, body }), "Mailbox send result");
-		return { eventId: text(result.eventId), sequence: integer(result.sequence), recipient: `${identity.protocol}/${recipientId}` };
+		const participants = await this.listParticipants(registration);
+		const resolved = messages.map((message) => {
+			const participantId = collaboratorRecipient(message.participantId, identity.protocol);
+			const recipient = participants.find((participant) => participant.protocol === identity.protocol && participant.participantId === participantId);
+			if (!recipient) throw new HostedRuntimeClientError("not_found", `No ${identity.protocol}/${participantId} participant exists.`);
+			return { ...message, participantId, recipient };
+		});
+		const results: CollaboratorMessageResult[] = [];
+		for (const [index, message] of resolved.entries()) {
+			const recipient = `${identity.protocol}/${message.participantId}`;
+			if (signal?.aborted) {
+				results.push(...resolved.slice(index).map((pending) => ({ recipient: `${identity.protocol}/${pending.participantId}`, status: "cancelled" as const })));
+				break;
+			}
+			try {
+				const sendId = `send_${createHash("sha256").update(`${toolCallId}:${index}`).digest("hex").slice(0, 32)}`;
+				const result = strictObject(await this.client.call("mailbox.send", { ...auth(registration), senderParticipantKey: identity.participantKey, expectedSenderGeneration: identity.generation, recipientParticipantKey: message.recipient.participantKey, sendId, body: message.body }), "Collaborator send result");
+				results.push({ recipient, status: "sent", eventId: text(result.eventId), sequence: integer(result.sequence) });
+			} catch (error) {
+				results.push({ recipient, status: signal?.aborted ? "cancelled" : "failed", error: error instanceof Error ? error.message : String(error) });
+			}
+		}
+		return results;
 	}
 
 	private async launchCollaborator(ctx: ExtensionContext, protocol: string, participantId: string, allowRevive: boolean, signal?: AbortSignal, expectedCaller?: ClientParticipantStatus, model?: string): Promise<string | undefined> {
