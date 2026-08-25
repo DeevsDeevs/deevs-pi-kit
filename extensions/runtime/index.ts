@@ -86,9 +86,9 @@ export default function runtimeExtension(pi: ExtensionAPI): void {
 		label: "Send Collaborator Mail",
 		description: "Send one durable message from this Pi session's held collaborator identity to another participant in the same project protocol.",
 		promptSnippet: "Send durable mail to a persistent Runtime collaborator.",
-		promptGuidelines: ["Use mail_send only when this Pi session has explicitly acquired a collaborator identity.", "When the user or an identity-verified Runtime message supplies the participant ID, call mail_send directly without a collaborator_list preflight.", "Only confirmed collaborator tools may start, stand down, or stop identities; release, revival, and takeover remain user-only commands."],
+		promptGuidelines: ["Use mail_send only when this Pi session has explicitly acquired a collaborator identity.", "When the user or an identity-verified Runtime message supplies the participant ID or same-protocol protocol/ID reference, call mail_send directly without a collaborator_list preflight.", "Only confirmed collaborator tools may start, stand down, or stop identities; release, revival, and takeover remain user-only commands."],
 		parameters: Type.Object({
-			participantId: Type.String({ description: "Recipient participant id in the sender's current protocol" }),
+			participantId: Type.String({ description: "Recipient participant ID (`main`) or same-protocol reference (`demo/main`)" }),
 			body: Type.String({ description: "Model-visible message body, capped at 16 KiB by Runtime" }),
 		}),
 		async execute(toolCallId, params: { participantId: string; body: string }, _signal, _onUpdate, ctx) {
