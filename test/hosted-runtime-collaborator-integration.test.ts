@@ -1,10 +1,11 @@
+import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:net";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { HostedRuntimeClientError } from "../extensions/runtime/client.ts";
-import { HOSTED_PARTICIPANT_ENTRY, HostedRuntimeIntegration } from "../extensions/runtime/hosted-integration.ts";
+import { HOSTED_COLLABORATOR_PROFILE_ENTRY, HOSTED_PARTICIPANT_ENTRY, HostedRuntimeIntegration } from "../extensions/runtime/hosted-integration.ts";
 import { deriveTargetKey } from "../extensions/runtime/service/registration.ts";
 
 const roots: string[] = [];
@@ -91,13 +92,17 @@ function baseResponse(request: Request): unknown {
 }
 
 function paneRunSessionFile(args: string[]): string {
-	const match = /^exec pi --approve --session '([^']+)'(?: --model '[^']+')?$/.exec(args[3] ?? "");
+	const match = /^exec pi --approve --session '([^']+)'(?: --tools '[^']+')?(?: --model '[^']+')?$/.exec(args[3] ?? "");
 	if (!match) throw new Error("unexpected pane-run command");
 	return match[1]!;
 }
 
 function paneRunModel(args: string[]): string | undefined {
 	return / --model '([^']+)'$/.exec(args[3] ?? "")?.[1];
+}
+
+function sessionHeader(sessionFile: string): { id: string } {
+	return JSON.parse(readFileSync(sessionFile, "utf8").split("\n", 1)[0]!);
 }
 
 describe("hosted collaborator Pi integration", () => {
@@ -340,7 +345,7 @@ describe("hosted collaborator Pi integration", () => {
 				maxActiveRuns = Math.max(maxActiveRuns, activeRuns);
 				await new Promise((resolve) => setTimeout(resolve, 10));
 				const sessionFile = paneRunSessionFile(args);
-				children.set(paneParticipants.get(args[2]!)!, deriveTargetKey(test.projectRoot, JSON.parse(readFileSync(sessionFile, "utf8")).id));
+				children.set(paneParticipants.get(args[2]!)!, deriveTargetKey(test.projectRoot, sessionHeader(sessionFile).id));
 				activeRuns--;
 			}
 			return { code: 0, stdout: "{}", stderr: "", killed: false };
@@ -351,7 +356,7 @@ describe("hosted collaborator Pi integration", () => {
 		await test.integration.sessionStart(test.ctx as never);
 		const candidates = [
 			{ participantId: "one", model: "openai-codex/gpt-5.6-terra:high" },
-			{ participantId: "two" },
+			{ participantId: "two", persona: "architect", profile: "workspace-write" as const },
 			{ participantId: "three" },
 			{ participantId: "four" },
 			{ participantId: "five" },
@@ -359,9 +364,15 @@ describe("hosted collaborator Pi integration", () => {
 		const results = await test.integration.manageCollaborators({ action: "start", participants: candidates }, test.ctx as never);
 		expect(confirmations).toBe(1);
 		expect(confirmationText).toContain("start 5 collaborators with concurrency up to 4");
+		expect(confirmationText).toContain("persona architect, profile workspace-write");
 		expect(results.map((result) => result.status)).toEqual(["started", "started", "started", "started", "started"]);
 		expect(maxActiveRuns).toBe(4);
-		expect(test.execCalls.filter((call) => call.args[0] === "tab" && call.args[1] === "create")).toHaveLength(5);
+		const tabCreates = test.execCalls.filter((call) => call.args[0] === "tab" && call.args[1] === "create");
+		expect(tabCreates).toHaveLength(5);
+		const launches = test.execCalls.filter((call) => call.args[0] === "pane" && call.args[1] === "run");
+		const materializedProfiles = launches.flatMap((call) => readFileSync(paneRunSessionFile(call.args), "utf8").trim().split("\n").slice(1).map((line) => JSON.parse(line).data));
+		expect(materializedProfiles).toContainEqual(expect.objectContaining({ version: 1, profile: "workspace-write", persona: expect.objectContaining({ name: "architect" }) }));
+		expect(launches.some((call) => call.args[3]?.includes("--tools 'read,grep,find,ls,collaborator_list,collaborator_send,chain_save,chain_load,chain_context,edit,write'"))).toBe(true);
 		expect(test.execCalls.some((call) => call.args[0] === "tab" && call.args[1] === "focus")).toBe(false);
 		expect(test.execCalls.find((call) => call.args[0] === "pane" && call.args[1] === "run")?.args[3]).toContain("--model 'openai-codex/gpt-5.6-terra:high'");
 		await test.integration.sessionShutdown();
@@ -399,6 +410,69 @@ describe("hosted collaborator Pi integration", () => {
 		await test.integration.sessionShutdown();
 	});
 
+	it("starts a trusted persona read-only by default and rejects incompatible personas before confirmation", async () => {
+		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
+		let childTargetKey = "";
+		const test = await setup((request) => {
+			if (request.method === "participant.get") return mainParticipant;
+			if (request.method === "participant.list") return { participants: childTargetKey ? [mainParticipant, { ...fableParticipant, holderTargetKey: childTargetKey }] : [mainParticipant] };
+			return baseResponse(request);
+		}, [identity]);
+		let confirmation = "";
+		test.ctx.ui.confirm = async (...args: unknown[]) => { confirmation = String(args[1]); return true; };
+		test.setExec(async (_command, args) => {
+			if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
+			if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
+			if (args[0] === "pane" && args[1] === "run") childTargetKey = deriveTargetKey(test.projectRoot, sessionHeader(paneRunSessionFile(args)).id);
+			return { code: 0, stdout: "{}", stderr: "", killed: false };
+		});
+		await test.integration.sessionStart(test.ctx as never);
+		await test.integration.startCollaborator({ participantId: "fable", persona: "architect" }, test.ctx as never);
+		expect(confirmation).toContain("persona architect");
+		expect(confirmation).toContain("profile read-only");
+		const created = test.execCalls.find((call) => call.args[0] === "tab" && call.args[1] === "create")!;
+		expect(created.args.some((argument) => argument.startsWith("PI_RUNTIME_COLLABORATOR_PERSONA="))).toBe(false);
+		const launched = test.execCalls.find((call) => call.args[0] === "pane" && call.args[1] === "run")!;
+		expect(launched.args[3]).toContain("--tools 'read,grep,find,ls,collaborator_list,collaborator_send,chain_save,chain_load,chain_context'");
+		const sessionEntries = readFileSync(paneRunSessionFile(launched.args), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+		expect(sessionEntries[1]).toMatchObject({ type: "custom", customType: HOSTED_COLLABORATOR_PROFILE_ENTRY, data: { version: 1, profile: "read-only", persona: { name: "architect" } }, parentId: null });
+		expect(sessionEntries[1].data.persona.promptHash).toBe(createHash("sha256").update(sessionEntries[1].data.persona.prompt).digest("hex"));
+
+		let incompatibleConfirmed = false;
+		test.ctx.ui.confirm = async () => { incompatibleConfirmed = true; return true; };
+		await expect(test.integration.startCollaborator({ participantId: "other", persona: "reviewer" }, test.ctx as never)).rejects.toThrow("unsupported review_report tooling");
+		expect(incompatibleConfirmed).toBe(false);
+		await test.integration.sessionShutdown();
+	});
+
+	it("restores a persisted persona prompt and enforces its read-only profile", async () => {
+		const prompt = "You are the persisted architect.";
+		const profile = { version: 1, profile: "read-only", persona: { name: "architect", prompt, promptHash: createHash("sha256").update(prompt).digest("hex") } };
+		const restored = await setup(baseResponse, [{ type: "custom", customType: HOSTED_COLLABORATOR_PROFILE_ENTRY, data: profile }]);
+		await restored.integration.sessionStart(restored.ctx as never);
+		const resumed = await restored.integration.beforeAgentStart("RESUMED SYSTEM", restored.ctx as never);
+		expect(resumed?.systemPrompt).toContain("RESUMED SYSTEM\n\n# Collaborator persona: architect\n\nYou are the persisted architect.");
+		expect(restored.integration.guardCollaboratorTool("read", { path: "." }, restored.projectRoot)).toBeUndefined();
+		expect(restored.integration.guardCollaboratorTool("collaborator_send", undefined, restored.projectRoot)).toBeUndefined();
+		expect(restored.integration.guardCollaboratorTool("bash", { command: "pwd" }, restored.projectRoot)).toMatchObject({ block: true });
+		await restored.integration.sessionShutdown();
+
+		const malformed = await setup(baseResponse, [{ type: "custom", customType: HOSTED_COLLABORATOR_PROFILE_ENTRY, data: { ...profile, persona: { ...profile.persona, promptHash: "bad" } } }]);
+		await malformed.integration.sessionStart(malformed.ctx as never);
+		expect(malformed.notifications.some((notice) => notice.message.includes("enforced read-only recovery mode"))).toBe(true);
+		expect(malformed.integration.guardCollaboratorTool("edit", { path: "file.ts" }, malformed.projectRoot)).toMatchObject({ block: true });
+		await malformed.integration.sessionShutdown();
+
+		const writable = await setup(baseResponse, [{ type: "custom", customType: HOSTED_COLLABORATOR_PROFILE_ENTRY, data: { version: 1, profile: "workspace-write" } }]);
+		await writable.integration.sessionStart(writable.ctx as never);
+		expect(writable.integration.guardCollaboratorTool("write", { path: "file.ts" }, writable.projectRoot)).toBeUndefined();
+		expect(writable.integration.guardCollaboratorTool("write", { path: "../outside.ts" }, writable.projectRoot)).toMatchObject({ block: true });
+		symlinkSync(join(writable.root, "outside-new"), join(writable.projectRoot, "dangling"));
+		expect(writable.integration.guardCollaboratorTool("write", { path: "dangling" }, writable.projectRoot)).toMatchObject({ block: true });
+		expect(writable.integration.guardCollaboratorTool("bash", { command: "pwd" }, writable.projectRoot)).toMatchObject({ block: true });
+		await writable.integration.sessionShutdown();
+	});
+
 	it("starts a no-focus Pi collaborator with a materialized session and cleans up failed launches", async () => {
 		let listCount = 0;
 		let childTargetKey = "";
@@ -411,7 +485,7 @@ describe("hosted collaborator Pi integration", () => {
 			if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
 			if (args[0] === "pane" && args[1] === "run") {
 				const sessionFile = paneRunSessionFile(args);
-				childTargetKey = deriveTargetKey(test.projectRoot, JSON.parse(readFileSync(sessionFile, "utf8")).id);
+				childTargetKey = deriveTargetKey(test.projectRoot, sessionHeader(sessionFile).id);
 			}
 			return { code: 0, stdout: "{}", stderr: "", killed: false };
 		});
@@ -593,7 +667,7 @@ describe("hosted collaborator Pi integration", () => {
 			if (args[0] === "pane" && args[1] === "run") {
 				const sessionFile = paneRunSessionFile(args);
 				launchedModel = paneRunModel(args);
-				childTargetKey = deriveTargetKey(test.projectRoot, JSON.parse(readFileSync(sessionFile, "utf8")).id);
+				childTargetKey = deriveTargetKey(test.projectRoot, sessionHeader(sessionFile).id);
 			}
 			return { code: 0, stdout: "{}", stderr: "", killed: false };
 		});
