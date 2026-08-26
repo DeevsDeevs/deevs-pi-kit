@@ -139,6 +139,16 @@ describe("hosted participant coordinator", () => {
 		expect(retry).toMatchObject({ outcome: "already_stopped", participant: { state: "vacant", generation: stopped.participant.generation } });
 	});
 
+	it("refuses to stop a target that now holds another participant", async () => {
+		const test = setup();
+		const { main, fable, fableParticipant } = await acquirePair(test);
+		const vacant = test.participants.standDown(fable, fableParticipant.participantKey);
+		const other = test.participants.acquire(fable, "review", "other").participant;
+		await expect(test.participants.stopConfirmed(main, fableParticipant.participantKey, vacant.generation)).rejects.toMatchObject({ code: "conflict" });
+		expect(test.stoppedTargets).toEqual([]);
+		expect(test.participants.get(fable, other.participantKey)).toMatchObject({ state: "held", holderTargetKey: fable.targetKey });
+	});
+
 	it("fences identity changes while an exact collaborator tab is stopping", async () => {
 		const test = setup();
 		const { main, fable, mainParticipant, fableParticipant } = await acquirePair(test);
@@ -155,6 +165,7 @@ describe("hosted participant coordinator", () => {
 		const stopping = test.participants.stopConfirmed(main, fableParticipant.participantKey, fableParticipant.generation);
 		await started;
 		expect(() => test.participants.acquire(fable, "review", "fable")).toThrow(expect.objectContaining({ code: "busy" }));
+		expect(() => test.participants.acquire(fable, "review", "other")).toThrow(expect.objectContaining({ code: "busy" }));
 		expect(() => test.participants.standDownConfirmed(main, fableParticipant.participantKey, fableParticipant.generation)).toThrow(expect.objectContaining({ code: "busy" }));
 		expect(() => test.participants.send(fable, fableParticipant.participantKey, fableParticipant.generation, mainParticipant.participantKey, "during_stop", "No send.")).toThrow(expect.objectContaining({ code: "busy" }));
 		releaseStop();

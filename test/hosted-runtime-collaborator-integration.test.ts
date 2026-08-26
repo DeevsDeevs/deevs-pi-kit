@@ -101,7 +101,7 @@ function paneRunModel(args: string[]): string | undefined {
 }
 
 describe("hosted collaborator Pi integration", () => {
-	it("starts Runtime in a dedicated no-focus services workspace", async () => {
+	it("starts Runtime once in a dedicated no-focus services workspace across concurrent callers", async () => {
 		const test = await setup((request) => request.method === "participant.list" ? { participants: [] } : baseResponse(request));
 		await test.integration.sessionStart(test.ctx as never);
 		const integration = test.integration as unknown as { client: { socketPath: string; hello(): Promise<unknown>; call(method: string, params: unknown): Promise<unknown> } };
@@ -119,13 +119,39 @@ describe("hosted collaborator Pi integration", () => {
 			if (args[0] === "workspace" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { workspace: { workspace_id: "w9" }, root_pane: { pane_id: "w9:p1" }, tab: { tab_id: "w9:t1" } } }), stderr: "", killed: false };
 			return { code: 0, stdout: "{}", stderr: "", killed: false };
 		});
-		await test.integration.command("start", test.ctx as never);
-		expect(test.execCalls.find((call) => call.args[0] === "workspace" && call.args[1] === "create")?.args).toEqual(["workspace", "create", "--cwd", test.runtimeRoot, "--label", "pi-kit-services", "--no-focus"]);
+		await Promise.all([test.integration.command("start", test.ctx as never), test.integration.command("start", test.ctx as never)]);
+		const workspaceCreates = test.execCalls.filter((call) => call.args[0] === "workspace" && call.args[1] === "create");
+		expect(workspaceCreates).toHaveLength(1);
+		expect(workspaceCreates[0]?.args).toEqual(["workspace", "create", "--cwd", test.runtimeRoot, "--label", "pi-kit-services", "--no-focus"]);
 		expect(test.execCalls).toContainEqual({ command: "herdr", args: ["tab", "rename", "w9:t1", "pi-kit-runtime"] });
 		const launched = test.execCalls.find((call) => call.args[0] === "pane" && call.args[1] === "run")!;
 		expect(launched.args.slice(0, 3)).toEqual(["pane", "run", "w9:p1"]);
 		expect(launched.args[3]).toContain(`--root '${test.runtimeRoot}'`);
 		expect(test.execCalls.some((call) => call.args[0] === "tab" && (call.args[1] === "create" || call.args[1] === "focus"))).toBe(false);
+		await test.integration.sessionShutdown();
+	});
+
+	it("discovers Runtime after starting without a socket", async () => {
+		const test = await setup(baseResponse);
+		const integration = test.integration as unknown as { client: { socketPath: string }; heartbeatTimer?: NodeJS.Timeout; heartbeat(): Promise<void> };
+		const socketPath = integration.client.socketPath;
+		rmSync(socketPath, { force: true });
+		const calls: string[] = [];
+		Object.defineProperty(integration, "client", { value: {
+			socketPath,
+			hello: async () => ({ runtimeId: "runtime_1", epoch: "epoch_1" }),
+			call: async (method: string) => {
+				calls.push(method);
+				if (method === "pi.register" || method === "pi.heartbeat") return registration;
+				if (method === "pi.unregister") return { unregistered: true };
+				throw new Error(`unexpected ${method}`);
+			},
+		} });
+		await test.integration.sessionStart(test.ctx as never);
+		expect(integration.heartbeatTimer).toBeDefined();
+		writeFileSync(socketPath, "available");
+		await integration.heartbeat();
+		expect(calls).toContain("pi.register");
 		await test.integration.sessionShutdown();
 	});
 
@@ -414,6 +440,35 @@ describe("hosted collaborator Pi integration", () => {
 		expect(failed.notifications.some((notice) => notice.message.includes("could not clean up failed collaborator tab"))).toBe(true);
 		expect(readdirSync(join(failed.runtimeRoot, "collaborator-sessions"))).toEqual([]);
 		await failed.integration.sessionShutdown();
+	});
+
+	it("closes the exact root pane when Herdr omits the created tab ID", async () => {
+		const test = await setup((request) => request.method === "participant.list" ? { participants: [mainParticipant] } : baseResponse(request));
+		test.setExec(async (_command, args) => {
+			if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
+			if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9" } } }), stderr: "", killed: false };
+			return { code: 0, stdout: "{}", stderr: "", killed: false };
+		});
+		await test.integration.sessionStart(test.ctx as never);
+		await test.integration.command("collaborator-start review fable", test.ctx as never);
+		expect(test.execCalls).toContainEqual({ command: "herdr", args: ["pane", "close", "w1:p9"] });
+		expect(readdirSync(join(test.runtimeRoot, "collaborator-sessions"))).toEqual([]);
+		await test.integration.sessionShutdown();
+	});
+
+	it("preserves recovery evidence when Herdr returns no authoritative resource ID", async () => {
+		const test = await setup((request) => request.method === "participant.list" ? { participants: [mainParticipant] } : baseResponse(request));
+		test.setExec(async (_command, args) => {
+			if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
+			if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: {} }), stderr: "", killed: false };
+			return { code: 0, stdout: "{}", stderr: "", killed: false };
+		});
+		await test.integration.sessionStart(test.ctx as never);
+		await test.integration.command("collaborator-start review fable", test.ctx as never);
+		expect(test.execCalls.some((call) => (call.args[0] === "tab" || call.args[0] === "pane") && call.args[1] === "close")).toBe(false);
+		expect(readdirSync(join(test.runtimeRoot, "collaborator-sessions"))).toHaveLength(1);
+		expect(test.notifications.some((notice) => notice.message.includes("without returning an authoritative tab or pane ID") && notice.message.includes("preserved for recovery"))).toBe(true);
+		await test.integration.sessionShutdown();
 	});
 
 	it("preserves child resources and caller when pane-run dispatch is ambiguous", async () => {

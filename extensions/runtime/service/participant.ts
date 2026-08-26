@@ -48,6 +48,7 @@ export class HostedParticipantCoordinator {
 	private readonly epochStartedAt: number;
 	private readonly seenTargets = new Set<string>();
 	private readonly stopping = new Set<string>();
+	private readonly stoppingTargets = new Set<string>();
 
 	constructor(store: HostedStateStore, registrations: RuntimeRegistrationManager, wakes: HostedParticipantWakeRequester, options: HostedParticipantCoordinatorOptions = {}) {
 		this.store = store;
@@ -63,6 +64,7 @@ export class HostedParticipantCoordinator {
 
 	acquire(registration: HostedLiveRegistration, protocol: string, participantId: string, allowRevive = false): { participant: HostedParticipantStatus; revived: boolean; transitioned: boolean } {
 		this.seenTargets.add(registration.targetKey);
+		this.assertTargetNotStopping(registration.targetKey);
 		const target = this.requireTarget(registration.targetKey);
 		const participantKey = deriveParticipantKey(target.projectRoot, protocol, participantId);
 		this.assertNotStopping(participantKey);
@@ -119,6 +121,7 @@ export class HostedParticipantCoordinator {
 	async stopConfirmed(registration: HostedLiveRegistration, participantKey: string, expectedGeneration: string): Promise<{ participant: HostedParticipantStatus; outcome: "stopped" | "already_stopped" | "unmanaged" }> {
 		this.assertNotStopping(participantKey);
 		this.stopping.add(participantKey);
+		let stoppingTargetKey: string | undefined;
 		try {
 			const caller = this.requireTarget(registration.targetKey);
 			const participant = this.requireParticipant(participantKey, caller.projectRoot);
@@ -127,6 +130,11 @@ export class HostedParticipantCoordinator {
 			const holderTargetKey = participant.state === "held" ? participant.holderTargetKey : participant.state === "vacant" && latest.cause === "stand_down" ? latest.previousHolderTargetKey : undefined;
 			if (!holderTargetKey) throw new HostedParticipantError("conflict", "Participant has no stoppable collaborator target.");
 			if (holderTargetKey === registration.targetKey) throw new HostedParticipantError("conflict", "A Pi target cannot stop its own Herdr tab.");
+			this.assertTargetNotStopping(holderTargetKey);
+			const otherHolder = Object.values(this.store.read().participants).find((candidate) => candidate.participantKey !== participantKey && candidate.state === "held" && candidate.holderTargetKey === holderTargetKey);
+			if (otherHolder) throw new HostedParticipantError("conflict", `Collaborator target now holds ${otherHolder.protocol}/${otherHolder.participantId}.`);
+			this.stoppingTargets.add(holderTargetKey);
+			stoppingTargetKey = holderTargetKey;
 			const target = this.requireTarget(holderTargetKey);
 			if (target.projectRoot !== caller.projectRoot) throw new HostedParticipantError("conflict", "Collaborator target belongs to another project.");
 			if (!this.options.stopTarget) return { participant: this.status(participant), outcome: "unmanaged" };
@@ -144,6 +152,7 @@ export class HostedParticipantCoordinator {
 			return { participant: this.status(this.requireParticipant(participantKey, caller.projectRoot)), outcome: stopped === "closed" ? "stopped" : "already_stopped" };
 		} finally {
 			this.stopping.delete(participantKey);
+			if (stoppingTargetKey) this.stoppingTargets.delete(stoppingTargetKey);
 		}
 	}
 
@@ -153,6 +162,7 @@ export class HostedParticipantCoordinator {
 
 	takeover(registration: HostedLiveRegistration, participantKey: string, expectedGeneration: string): HostedParticipantStatus {
 		this.assertNotStopping(participantKey);
+		this.assertTargetNotStopping(registration.targetKey);
 		const target = this.requireTarget(registration.targetKey);
 		const participant = this.requireParticipant(participantKey, target.projectRoot);
 		const latest = participant.transitions.at(-1);
@@ -248,6 +258,10 @@ export class HostedParticipantCoordinator {
 
 	private assertNotStopping(participantKey: string): void {
 		if (this.stopping.has(participantKey)) throw new HostedParticipantError("busy", "Participant collaborator process is stopping.");
+	}
+
+	private assertTargetNotStopping(targetKey: string): void {
+		if (this.stoppingTargets.has(targetKey)) throw new HostedParticipantError("busy", "Target collaborator process is stopping.");
 	}
 
 	private hasActiveClaim(participantKey: string): boolean {
