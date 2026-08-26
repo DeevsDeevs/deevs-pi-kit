@@ -96,6 +96,7 @@ export class HostedRuntimeIntegration {
 	private readonly clientGeneration = `client_${randomUUID()}`;
 	private registration?: LiveClientRegistration;
 	private registering?: Promise<LiveClientRegistration>;
+	private starting?: Promise<void>;
 	private heartbeatTimer?: NodeJS.Timeout;
 	private ctx?: ExtensionContext;
 	private active = false;
@@ -116,8 +117,8 @@ export class HostedRuntimeIntegration {
 		this.ctx = ctx;
 		this.restoreAdmissions(ctx);
 		this.restoreParticipantIdentity(ctx);
-		if (!existsSync(this.client.socketPath)) return;
 		this.startHeartbeat();
+		if (!existsSync(this.client.socketPath)) return;
 		try { await this.register(ctx); } catch {}
 	}
 
@@ -572,13 +573,17 @@ export class HostedRuntimeIntegration {
 		const bootstrap = `${protocol}:${participantId}${existing?.state === "ended" ? ":revive" : ""}`;
 		const { sessionFile, targetKey } = this.createCollaboratorSession(ctx.cwd);
 		let tabId: string | undefined;
+		let paneId: string | undefined;
+		let tabCreated = false;
 		let childMayBeLive = false;
 		try {
 			const created = await this.pi.exec("herdr", ["tab", "create", "--workspace", process.env.HERDR_WORKSPACE_ID, "--cwd", ctx.cwd, "--label", `collaborator:${participantId}`, "--env", `${COLLABORATOR_ENV}=${bootstrap}`, "--no-focus"], { timeout: 5_000 });
 			if (created.code !== 0) throw new HostedRuntimeClientError("host_unavailable", "Herdr could not create the collaborator tab.");
+			tabCreated = true;
 			const result = strictObject(strictObject(JSON.parse(created.stdout), "Herdr response").result, "Herdr result");
-			tabId = text(strictObject(result.tab, "Herdr tab").tab_id);
-			const paneId = text(strictObject(result.root_pane, "Herdr root pane").pane_id);
+			try { paneId = text(strictObject(result.root_pane, "Herdr root pane").pane_id); } catch {}
+			try { tabId = text(strictObject(result.tab, "Herdr tab").tab_id); } catch {}
+			if (!paneId || !tabId) throw new HostedRuntimeClientError("invalid_response", "Herdr did not return the created collaborator tab and root pane IDs.");
 			throwIfAborted(signal);
 			childMayBeLive = true;
 			const command = `exec pi --approve --session ${shellQuote(sessionFile)}${model ? ` --model ${shellQuote(model)}` : ""}`;
@@ -602,9 +607,10 @@ export class HostedRuntimeIntegration {
 			throw new HostedRuntimeClientError("unavailable", `Pi started in ${paneId}, but its identity handshake did not settle; the tab and session were preserved for recovery.`);
 		} catch (error) {
 			if (childMayBeLive) throw new HostedCollaboratorStartError(errorCode(error), error instanceof Error ? error.message : String(error), true);
+			if (tabCreated && !tabId && !paneId) throw new HostedCollaboratorStartError("invalid_response", `Herdr created collaborator resources without returning an authoritative tab or pane ID; session ${sessionFile} was preserved for recovery.`, false);
 			throw error;
 		} finally {
-			if (!childMayBeLive) await this.cleanupFailedCollaborator(tabId, sessionFile);
+			if (!childMayBeLive && (tabId || paneId || !tabCreated)) await this.cleanupFailedCollaborator(tabId, paneId, sessionFile);
 		}
 	}
 
@@ -620,11 +626,12 @@ export class HostedRuntimeIntegration {
 		return { sessionFile, targetKey };
 	}
 
-	private async cleanupFailedCollaborator(tabId: string | undefined, sessionFile: string): Promise<void> {
+	private async cleanupFailedCollaborator(tabId: string | undefined, paneId: string | undefined, sessionFile: string): Promise<void> {
 		try {
-			if (!tabId) return;
-			const closed = await this.pi.exec("herdr", ["tab", "close", tabId], { timeout: 5_000 });
-			if (closed.code !== 0) throw new HostedRuntimeClientError("host_unavailable", `Herdr could not clean up failed collaborator tab ${tabId}.`);
+			const resource = tabId ? { type: "tab", id: tabId } : paneId ? { type: "pane", id: paneId } : undefined;
+			if (!resource) return;
+			const closed = await this.pi.exec("herdr", [resource.type, "close", resource.id], { timeout: 5_000 });
+			if (closed.code !== 0) throw new HostedRuntimeClientError("host_unavailable", `Herdr could not clean up failed collaborator ${resource.type} ${resource.id}.`);
 		} finally {
 			rmSync(sessionFile, { force: true });
 		}
@@ -646,7 +653,16 @@ export class HostedRuntimeIntegration {
 		this.pi.appendEntry(HOSTED_PARTICIPANT_ENTRY, identity);
 	}
 
-	private async start(ctx: Pick<ExtensionContext, "isProjectTrusted">): Promise<void> {
+	private start(ctx: Pick<ExtensionContext, "isProjectTrusted">): Promise<void> {
+		if (this.starting) return this.starting;
+		const starting = this.startOnce(ctx);
+		this.starting = starting;
+		const cleanup = () => { if (this.starting === starting) this.starting = undefined; };
+		void starting.then(cleanup, cleanup);
+		return starting;
+	}
+
+	private async startOnce(ctx: Pick<ExtensionContext, "isProjectTrusted">): Promise<void> {
 		try {
 			await this.client.hello();
 			return;
