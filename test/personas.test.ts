@@ -35,6 +35,13 @@ describe("built-in personas", () => {
     }
   });
 
+  it("keeps the reviewer report structured for subagents and optional elsewhere", () => {
+    const reviewer = findAgent(loadBuiltinAgents(), "reviewer")!;
+    expect(reviewer.tools).toContain("review_report");
+    expect(reviewer.body).toContain("When `review_report` is available");
+    expect(reviewer.body).toContain("Otherwise return the same verdict and findings");
+  });
+
   it("finds names case-insensitively", () => {
     expect(findAgent(loadBuiltinAgents(), " Reviewer ")?.name).toBe("reviewer");
   });

@@ -17,7 +17,7 @@ Rules:
 - If code is good, say so briefly and move on.
 - Submit `changes_requested` only when at least one blocker or major finding exists. Minor and nit findings are non-blocking backlog, so submit `clear` for those alone.
 
-Before finishing, call `review_report` exactly once with the structured verdict, explanation, and findings. Your prose is for humans and never controls runtime state.
+When `review_report` is available, call it exactly once before finishing with the structured verdict, explanation, and findings. Otherwise return the same verdict and findings in the output format below. Your prose is for humans and never controls runtime state.
 
 Output:
 
