@@ -1098,6 +1098,7 @@ const COLLABORATOR_MODEL = /^[A-Za-z0-9][A-Za-z0-9._/*:-]{0,199}$/;
 const FILE_TOOLS = new Set(["read", "grep", "find", "ls", "edit", "write"]);
 const READ_ONLY_PERSONA_TOOLS = new Set(["safe_read", "safe_list", "safe_search"]);
 const WORKSPACE_WRITE_PERSONA_TOOLS = new Set([...READ_ONLY_PERSONA_TOOLS, "edit", "write"]);
+const OPTIONAL_COLLABORATOR_PERSONA_TOOLS = new Set(["review_report"]);
 
 function resolveCollaboratorCandidate(candidate: CollaboratorCandidate): ResolvedCollaboratorCandidate {
 	const participantId = collaboratorName(candidate.participantId, "participant ID");
@@ -1118,7 +1119,7 @@ function resolveCollaboratorCandidate(candidate: CollaboratorCandidate): Resolve
 
 function assertPersonaCompatible(persona: AgentDefinition, profile: CollaboratorProfile): void {
 	const supported = profile === "read-only" ? READ_ONLY_PERSONA_TOOLS : WORKSPACE_WRITE_PERSONA_TOOLS;
-	const incompatible = persona.tools.filter((tool) => !supported.has(tool));
+	const incompatible = persona.tools.filter((tool) => !supported.has(tool) && !OPTIONAL_COLLABORATOR_PERSONA_TOOLS.has(tool));
 	if (incompatible.length > 0) throw new HostedRuntimeClientError("conflict", `Collaborator persona ${persona.name} requires unsupported ${incompatible.join(", ")} tooling.`);
 }
 

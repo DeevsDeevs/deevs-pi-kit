@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { loadBuiltinAgents } from "../extensions/subagents/agents.ts";
 import { HostedRuntimeClientError } from "../extensions/runtime/client.ts";
 import { HOSTED_COLLABORATOR_PROFILE_ENTRY, HOSTED_PARTICIPANT_ENTRY, HostedRuntimeIntegration } from "../extensions/runtime/hosted-integration.ts";
 import { deriveTargetKey } from "../extensions/runtime/service/registration.ts";
@@ -410,7 +411,7 @@ describe("hosted collaborator Pi integration", () => {
 		await test.integration.sessionShutdown();
 	});
 
-	it("starts a trusted persona read-only by default and rejects incompatible personas before confirmation", async () => {
+	it("starts a trusted persona read-only by default and rejects unknown personas before confirmation", async () => {
 		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
 		let childTargetKey = "";
 		const test = await setup((request) => {
@@ -438,11 +439,40 @@ describe("hosted collaborator Pi integration", () => {
 		expect(sessionEntries[1]).toMatchObject({ type: "custom", customType: HOSTED_COLLABORATOR_PROFILE_ENTRY, data: { version: 1, profile: "read-only", persona: { name: "architect" } }, parentId: null });
 		expect(sessionEntries[1].data.persona.promptHash).toBe(createHash("sha256").update(sessionEntries[1].data.persona.prompt).digest("hex"));
 
-		let incompatibleConfirmed = false;
-		test.ctx.ui.confirm = async () => { incompatibleConfirmed = true; return true; };
-		await expect(test.integration.startCollaborator({ participantId: "other", persona: "reviewer" }, test.ctx as never)).rejects.toThrow("unsupported review_report tooling");
-		expect(incompatibleConfirmed).toBe(false);
+		let invalidConfirmed = false;
+		test.ctx.ui.confirm = async () => { invalidConfirmed = true; return true; };
+		await expect(test.integration.startCollaborator({ participantId: "other", persona: "missing" }, test.ctx as never)).rejects.toThrow("Unknown or disabled collaborator persona missing");
+		expect(invalidConfirmed).toBe(false);
 		await test.integration.sessionShutdown();
+	});
+
+	it("starts every enabled built-in persona as a read-only collaborator", async () => {
+		for (const persona of loadBuiltinAgents().filter((candidate) => !candidate.disabled)) {
+			let childTargetKey = "";
+			const child = { ...fableParticipant, participantId: persona.name, participantKey: `participant_${persona.name}` };
+			const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
+			const test = await setup((request) => {
+				if (request.method === "participant.get") return mainParticipant;
+				if (request.method === "participant.list") return { participants: childTargetKey ? [mainParticipant, { ...child, holderTargetKey: childTargetKey }] : [mainParticipant] };
+				return baseResponse(request);
+			}, [identity]);
+			test.setExec(async (_command, args) => {
+				if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
+				if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
+				if (args[0] === "pane" && args[1] === "run") childTargetKey = deriveTargetKey(test.projectRoot, sessionHeader(paneRunSessionFile(args)).id);
+				return { code: 0, stdout: "{}", stderr: "", killed: false };
+			});
+			await test.integration.sessionStart(test.ctx as never);
+			await expect(test.integration.startCollaborator({ participantId: persona.name, persona: persona.name }, test.ctx as never)).resolves.toBeDefined();
+			const launch = test.execCalls.find((call) => call.args[0] === "pane" && call.args[1] === "run")!;
+			const profile = readFileSync(paneRunSessionFile(launch.args), "utf8").trim().split("\n").slice(1).map((line) => JSON.parse(line).data)[0];
+			expect(profile).toMatchObject({ profile: "read-only", persona: { name: persona.name } });
+			if (persona.name === "reviewer") {
+				expect(profile.persona.prompt).toContain("When `review_report` is available");
+				expect(launch.args[3]).not.toContain("review_report");
+			}
+			await test.integration.sessionShutdown();
+		}
 	});
 
 	it("restores a persisted persona prompt and enforces its read-only profile", async () => {
