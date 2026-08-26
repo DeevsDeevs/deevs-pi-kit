@@ -111,9 +111,9 @@ describe("hosted Pi wake admission", () => {
 			details: { mailbox: [{ eventId: "evt_mail", sendId: "send_mail", senderParticipantKey: "participant_fable", recipientParticipantKey: "participant_main" }] },
 		});
 
-		const injected = await integration.beforeAgentStart(ctx as never);
+		const injected = await integration.beforeAgentStart("SYSTEM", ctx as never);
 		expect(injected?.message).toMatchObject({ customType: HOSTED_RUNTIME_MESSAGE, content: expect.stringContaining("Focused-safe reply."), details: { claimId: "claim_focused", eventIds: ["evt_focused"] } });
-		expect(injected?.message.details).not.toHaveProperty("wakeId");
+		expect(injected?.message?.details).not.toHaveProperty("wakeId");
 
 		await (integration as unknown as { heartbeat(): Promise<void> }).heartbeat();
 		expect(messages[2]).toMatchObject({ customType: HOSTED_RUNTIME_MESSAGE, content: expect.stringContaining("Automatic focused reply."), details: { claimId: "claim_heartbeat", eventIds: ["evt_heartbeat"] } });

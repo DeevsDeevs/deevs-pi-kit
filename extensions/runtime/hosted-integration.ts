@@ -1,9 +1,11 @@
 import { CURRENT_SESSION_VERSION, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { findAgent, loadBuiltinAgents } from "../subagents/agents.ts";
+import type { AgentDefinition } from "../subagents/catalog-types.ts";
 import { HostedRuntimeClient, HostedRuntimeClientError } from "./client.ts";
 import { HOSTED_MAX_DELIVERY_BATCH } from "./hosted-types.ts";
 
@@ -11,7 +13,12 @@ import { HOSTED_MAX_DELIVERY_BATCH } from "./hosted-types.ts";
 const HEARTBEAT_MS = 2_000;
 export const HOSTED_RUNTIME_MESSAGE = "deevs.hosted-runtime.v1";
 export const HOSTED_PARTICIPANT_ENTRY = "deevs.hosted-runtime.participant.v1";
+export const HOSTED_COLLABORATOR_PROFILE_ENTRY = "deevs.hosted-runtime.collaborator-profile.v1";
 const COLLABORATOR_ENV = "PI_RUNTIME_COLLABORATE";
+const COLLABORATOR_METADATA_TOOLS = ["collaborator_list", "collaborator_send", "chain_save", "chain_load", "chain_context"] as const;
+const READ_ONLY_COLLABORATOR_TOOLS = ["read", "grep", "find", "ls", ...COLLABORATOR_METADATA_TOOLS] as const;
+const WORKSPACE_WRITE_COLLABORATOR_TOOLS = [...READ_ONLY_COLLABORATOR_TOOLS, "edit", "write"] as const;
+const COLLABORATOR_PERSONAS = loadBuiltinAgents();
 
 interface LiveClientRegistration {
 	targetKey: string;
@@ -58,9 +65,32 @@ interface ParticipantIdentity {
 	reviveAuthorized?: true;
 }
 
+type CollaboratorProfile = "read-only" | "workspace-write";
+
+interface CollaboratorPersona {
+	name: string;
+	prompt: string;
+	promptHash: string;
+}
+
+interface CollaboratorProfileState {
+	version: 1;
+	profile: CollaboratorProfile;
+	persona?: CollaboratorPersona;
+}
+
 interface CollaboratorCandidate {
 	participantId: string;
 	model?: string;
+	persona?: string;
+	profile?: CollaboratorProfile;
+}
+
+interface ResolvedCollaboratorCandidate {
+	participantId: string;
+	model?: string;
+	profile?: CollaboratorProfile;
+	persona?: CollaboratorPersona;
 }
 
 type CollaboratorManageAction = "start" | "stand_down" | "stop";
@@ -104,6 +134,7 @@ export class HostedRuntimeIntegration {
 	private readonly admittedClaims = new Map<string, string[]>();
 	private readonly pendingAcks = new Set<string>();
 	private participantIdentity?: ParticipantIdentity;
+	private collaboratorProfile?: CollaboratorProfileState;
 	private collaboratorManageActive = false;
 
 	constructor(pi: ExtensionAPI, root = defaultRuntimeRoot()) {
@@ -117,6 +148,7 @@ export class HostedRuntimeIntegration {
 		this.ctx = ctx;
 		this.restoreAdmissions(ctx);
 		this.restoreParticipantIdentity(ctx);
+		this.restoreCollaboratorProfile(ctx);
 		this.startHeartbeat();
 		if (!existsSync(this.client.socketPath)) return;
 		try { await this.register(ctx); } catch {}
@@ -126,6 +158,7 @@ export class HostedRuntimeIntegration {
 		this.ctx = ctx;
 		this.restoreAdmissions(ctx);
 		this.restoreParticipantIdentity(ctx);
+		this.restoreCollaboratorProfile(ctx);
 	}
 
 	async sessionShutdown(): Promise<void> {
@@ -140,18 +173,30 @@ export class HostedRuntimeIntegration {
 		} catch {}
 	}
 
-	async beforeAgentStart(ctx: ExtensionContext): Promise<{ message: { customType: string; content: string; display: boolean; details: Record<string, unknown> } } | undefined> {
+	async beforeAgentStart(systemPrompt: string, ctx: ExtensionContext): Promise<{ message?: { customType: string; content: string; display: boolean; details: Record<string, unknown> }; systemPrompt?: string } | undefined> {
 		this.ctx = ctx;
 		if (!this.active) return;
+		const result: { message?: { customType: string; content: string; display: boolean; details: Record<string, unknown> }; systemPrompt?: string } = {};
+		if (this.collaboratorProfile?.persona) result.systemPrompt = `${systemPrompt}\n\n# Collaborator persona: ${this.collaboratorProfile.persona.name}\n\n${this.collaboratorProfile.persona.prompt}`;
 		let registration: LiveClientRegistration;
-		try { registration = await this.requireRegistration(ctx); } catch { return; }
+		try { registration = await this.requireRegistration(ctx); } catch { return result.systemPrompt ? result : undefined; }
 		let claim: HostedClaimMessage;
-		try { claim = parseClaim(await this.client.call("inbox.claim", auth(registration))); } catch { return; }
+		try { claim = parseClaim(await this.client.call("inbox.claim", auth(registration))); } catch { return result.systemPrompt ? result : undefined; }
 		if (!this.active) {
 			await this.releaseClaim(registration, claim);
 			return;
 		}
-		return { message: this.claimMessage(claim) };
+		result.message = this.claimMessage(claim);
+		return result;
+	}
+
+	guardCollaboratorTool(toolName: string, input: Record<string, unknown> | undefined, cwd: string): { block: true; reason: string } | undefined {
+		const profile = this.collaboratorProfile?.profile;
+		if (!profile) return;
+		const allowed = profile === "read-only" ? READ_ONLY_COLLABORATOR_TOOLS : WORKSPACE_WRITE_COLLABORATOR_TOOLS;
+		if (!(allowed as readonly string[]).includes(toolName)) return { block: true, reason: `Collaborator profile ${profile} does not permit ${toolName}.` };
+		if (FILE_TOOLS.has(toolName) && !collaboratorPathAllowed(cwd, input?.path, toolName === "write")) return { block: true, reason: `Collaborator profile ${profile} confines ${toolName} to the project workspace.` };
+		return;
 	}
 
 	async acceptWake(args: string, ctx: ExtensionCommandContext): Promise<void> {
@@ -256,7 +301,7 @@ export class HostedRuntimeIntegration {
 			if (action === "collaborator-start") {
 				const [rawProtocol, rawParticipantId, rawModel, ...extra] = rest;
 				if (!rawProtocol || !rawParticipantId || extra.length) throw new HostedRuntimeClientError("invalid_request", "Usage: /runtime collaborator-start <protocol> <participant-id> [model]");
-				await this.launchCollaborator(ctx, collaboratorName(rawProtocol, "protocol"), collaboratorName(rawParticipantId, "participant ID"), true, undefined, undefined, collaboratorModel(rawModel));
+				await this.launchCollaborator(ctx, collaboratorName(rawProtocol, "protocol"), collaboratorName(rawParticipantId, "participant ID"), true, undefined, undefined, resolveCollaboratorCandidate({ participantId: rawParticipantId, model: rawModel }));
 				return;
 			}
 			if (action === "monitor") {
@@ -378,7 +423,7 @@ export class HostedRuntimeIntegration {
 		}
 	}
 
-	async startCollaborator(input: { participantId: string; protocol?: string; callerParticipantId?: string; model?: string }, ctx: ExtensionContext, signal?: AbortSignal): Promise<{ started: boolean; participant: string; paneId?: string }> {
+	async startCollaborator(input: { participantId: string; protocol?: string; callerParticipantId?: string; model?: string; persona?: string; profile?: CollaboratorProfile }, ctx: ExtensionContext, signal?: AbortSignal): Promise<{ started: boolean; participant: string; paneId?: string }> {
 		if (this.collaboratorManageActive) throw new HostedRuntimeClientError("busy", "Another collaborator lifecycle operation is already in progress.");
 		this.collaboratorManageActive = true;
 		try {
@@ -399,7 +444,7 @@ export class HostedRuntimeIntegration {
 			if (process.env.HERDR_ENV !== "1" || !process.env.HERDR_WORKSPACE_ID) throw new HostedRuntimeClientError("host_unavailable", "Collaborator start requires this Pi session to run inside Herdr.");
 			const identity = this.requireParticipantIdentity();
 			if (identity.disposition !== "held") throw new HostedRuntimeClientError("conflict", "Batch collaborator start requires this Pi session to hold its collaborator identity.");
-			const normalized = candidates.map((candidate) => ({ participantId: collaboratorName(candidate.participantId, "participant ID"), model: collaboratorModel(candidate.model) }));
+			const normalized = candidates.map(resolveCollaboratorCandidate);
 			if (new Set(normalized.map((candidate) => candidate.participantId)).size !== normalized.length) throw new HostedRuntimeClientError("conflict", "Batch collaborator participant IDs must be unique.");
 			if (normalized.some((candidate) => candidate.participantId === identity.participantId)) throw new HostedRuntimeClientError("conflict", "Caller and child collaborator identities must differ.");
 			const registration = await this.requireRegistration(ctx);
@@ -413,7 +458,7 @@ export class HostedRuntimeIntegration {
 				if (existing?.state === "held") throw new HostedRuntimeClientError("conflict", `Participant ${identity.protocol}/${candidate.participantId} already has a holder.`);
 				if (existing?.state === "ended") throw new HostedRuntimeClientError("conflict", `Ended collaborator ${identity.protocol}/${candidate.participantId} requires explicit revival.`);
 			}
-			const summary = normalized.map((candidate) => `${identity.protocol}/${candidate.participantId}${candidate.model ? ` — ${candidate.model}` : " — default model"}`).join("\n");
+			const summary = normalized.map((candidate) => `${identity.protocol}/${candidate.participantId} — ${collaboratorConfiguration(candidate)}`).join("\n");
 			const confirmed = await ctx.ui.confirm("Start Runtime collaborators?", `As ${identity.protocol}/${identity.participantId}, start ${normalized.length} collaborators with concurrency up to 4 in no-focus Herdr tabs?\n\n${summary}`, { signal });
 			throwIfAborted(signal);
 			if (!confirmed) return normalized.map((candidate) => ({ participant: `${identity.protocol}/${candidate.participantId}`, status: "declined" }));
@@ -425,7 +470,7 @@ export class HostedRuntimeIntegration {
 					const index = next++;
 					const candidate = normalized[index]!;
 					try {
-						const paneId = await this.launchCollaborator(ctx, identity.protocol, candidate.participantId, false, signal, caller, candidate.model);
+						const paneId = await this.launchCollaborator(ctx, identity.protocol, candidate.participantId, false, signal, caller, candidate);
 						results[index] = { participant: `${identity.protocol}/${candidate.participantId}`, status: "started", paneId };
 					} catch (error) {
 						results[index] = { participant: `${identity.protocol}/${candidate.participantId}`, status: signal?.aborted ? "cancelled" : "failed", error: error instanceof Error ? error.message : String(error) };
@@ -444,7 +489,7 @@ export class HostedRuntimeIntegration {
 		}
 	}
 
-	private async startCollaboratorConfirmed(input: { participantId: string; protocol?: string; callerParticipantId?: string; model?: string }, ctx: ExtensionContext, signal?: AbortSignal): Promise<{ started: boolean; participant: string; paneId?: string }> {
+	private async startCollaboratorConfirmed(input: { participantId: string; protocol?: string; callerParticipantId?: string; model?: string; persona?: string; profile?: CollaboratorProfile }, ctx: ExtensionContext, signal?: AbortSignal): Promise<{ started: boolean; participant: string; paneId?: string }> {
 		throwIfAborted(signal);
 		if (!ctx.hasUI) throw new HostedRuntimeClientError("host_unavailable", "Collaborator start confirmation requires an interactive Pi session.");
 		if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Collaborator start requires a trusted project.");
@@ -453,8 +498,8 @@ export class HostedRuntimeIntegration {
 		if (identity?.disposition === "ended") throw new HostedRuntimeClientError("conflict", "Current collaborator identity has ended; explicit revival is required.");
 		const protocol = collaboratorName(identity?.protocol ?? input.protocol, "protocol");
 		const callerParticipantId = collaboratorName(identity?.participantId ?? input.callerParticipantId, "caller participant ID");
-		const participantId = collaboratorName(input.participantId, "participant ID");
-		const model = collaboratorModel(input.model);
+		const candidate = resolveCollaboratorCandidate(input);
+		const participantId = candidate.participantId;
 		if (identity && ((input.protocol && input.protocol !== protocol) || (input.callerParticipantId && input.callerParticipantId !== callerParticipantId))) throw new HostedRuntimeClientError("conflict", `Current collaborator identity is ${protocol}/${callerParticipantId}.`);
 		if (participantId === callerParticipantId) throw new HostedRuntimeClientError("conflict", "Caller and child collaborator identities must differ.");
 		const registration = await this.requireRegistration(ctx);
@@ -486,7 +531,7 @@ export class HostedRuntimeIntegration {
 		if (child?.state === "held") throw new HostedRuntimeClientError("conflict", "Participant already has a holder.");
 		if (child?.state === "ended") throw new HostedRuntimeClientError("conflict", "Ended collaborator identities require explicit /runtime collaborator-start revival.");
 		const callerAction = expectedCaller ? `As ${protocol}/${callerParticipantId}, start` : identity ? `Reacquire ${protocol}/${callerParticipantId} and start` : `Acquire ${protocol}/${callerParticipantId} and start`;
-		const confirmed = await ctx.ui.confirm("Start Runtime collaborator?", `${callerAction} ${protocol}/${participantId}${model ? ` using ${model}` : ""} in a no-focus Herdr tab?`, { signal });
+		const confirmed = await ctx.ui.confirm("Start Runtime collaborator?", `${callerAction} ${protocol}/${participantId} using ${collaboratorConfiguration(candidate)} in a no-focus Herdr tab?`, { signal });
 		throwIfAborted(signal);
 		if (!confirmed) return { started: false, participant: `${protocol}/${participantId}` };
 		let acquiredCaller: ParticipantIdentity | undefined;
@@ -501,7 +546,7 @@ export class HostedRuntimeIntegration {
 				this.persistParticipant(acquiredCaller);
 				throwIfAborted(signal);
 			}
-			const paneId = await this.launchCollaborator(ctx, protocol, participantId, false, signal, launchCaller, model);
+			const paneId = await this.launchCollaborator(ctx, protocol, participantId, false, signal, launchCaller, candidate);
 			return { started: true, participant: `${protocol}/${participantId}`, paneId };
 		} catch (error) {
 			const childMayBeLive = error instanceof HostedCollaboratorStartError && error.childMayBeLive;
@@ -547,7 +592,7 @@ export class HostedRuntimeIntegration {
 		return results;
 	}
 
-	private async launchCollaborator(ctx: ExtensionContext, protocol: string, participantId: string, allowRevive: boolean, signal?: AbortSignal, expectedCaller?: ClientParticipantStatus, model?: string): Promise<string | undefined> {
+	private async launchCollaborator(ctx: ExtensionContext, protocol: string, participantId: string, allowRevive: boolean, signal: AbortSignal | undefined, expectedCaller: ClientParticipantStatus | undefined, candidate: ResolvedCollaboratorCandidate): Promise<string | undefined> {
 		throwIfAborted(signal);
 		if (process.env.HERDR_ENV !== "1" || !process.env.HERDR_WORKSPACE_ID) throw new HostedRuntimeClientError("host_unavailable", "Collaborator start requires this Pi session to run inside Herdr.");
 		if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Collaborator start requires a trusted project.");
@@ -571,7 +616,7 @@ export class HostedRuntimeIntegration {
 			if (!await ctx.ui.confirm("Revive collaborator identity?", `Start a Pi collaborator and revive ${protocol}/${participantId}?`)) return undefined;
 		}
 		const bootstrap = `${protocol}:${participantId}${existing?.state === "ended" ? ":revive" : ""}`;
-		const { sessionFile, targetKey } = this.createCollaboratorSession(ctx.cwd);
+		const { sessionFile, targetKey } = this.createCollaboratorSession(ctx.cwd, candidate);
 		let tabId: string | undefined;
 		let paneId: string | undefined;
 		let tabCreated = false;
@@ -586,7 +631,8 @@ export class HostedRuntimeIntegration {
 			if (!paneId || !tabId) throw new HostedRuntimeClientError("invalid_response", "Herdr did not return the created collaborator tab and root pane IDs.");
 			throwIfAborted(signal);
 			childMayBeLive = true;
-			const command = `exec pi --approve --session ${shellQuote(sessionFile)}${model ? ` --model ${shellQuote(model)}` : ""}`;
+			const profileTools = candidate.profile === "read-only" ? READ_ONLY_COLLABORATOR_TOOLS : candidate.profile === "workspace-write" ? WORKSPACE_WRITE_COLLABORATOR_TOOLS : undefined;
+			const command = `exec pi --approve --session ${shellQuote(sessionFile)}${profileTools ? ` --tools ${shellQuote(profileTools.join(","))}` : ""}${candidate.model ? ` --model ${shellQuote(candidate.model)}` : ""}`;
 			const started = await this.pi.exec("herdr", ["pane", "run", paneId, command], { timeout: 5_000 });
 			if (started.code !== 0) throw new HostedRuntimeClientError("host_unavailable", `Herdr could not dispatch Pi collaborator startup in ${paneId}; its tab and session were preserved.`);
 			throwIfAborted(signal);
@@ -614,14 +660,23 @@ export class HostedRuntimeIntegration {
 		}
 	}
 
-	private createCollaboratorSession(cwd: string): { sessionFile: string; targetKey: string } {
+	private createCollaboratorSession(cwd: string, candidate: ResolvedCollaboratorCandidate): { sessionFile: string; targetKey: string } {
 		const sessionId = randomUUID();
 		const timestamp = new Date().toISOString();
 		const projectRoot = realpathSync(cwd);
 		const directory = join(this.root, "collaborator-sessions");
 		mkdirSync(directory, { recursive: true, mode: 0o700 });
 		const sessionFile = join(directory, `${timestamp.replace(/[:.]/g, "-")}_${sessionId}.jsonl`);
-		writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: CURRENT_SESSION_VERSION, id: sessionId, timestamp, cwd: projectRoot })}\n`, { flag: "wx", mode: 0o600 });
+		const entries: unknown[] = [{ type: "session", version: CURRENT_SESSION_VERSION, id: sessionId, timestamp, cwd: projectRoot }];
+		if (candidate.profile) entries.push({
+			type: "custom",
+			customType: HOSTED_COLLABORATOR_PROFILE_ENTRY,
+			data: { version: 1, profile: candidate.profile, ...(candidate.persona ? { persona: candidate.persona } : {}) },
+			id: randomUUID(),
+			parentId: null,
+			timestamp,
+		});
+		writeFileSync(sessionFile, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`, { flag: "wx", mode: 0o600 });
 		const targetKey = `pi_${createHash("sha256").update(projectRoot).update("\0").update(sessionId).digest("hex")}`;
 		return { sessionFile, targetKey };
 	}
@@ -807,6 +862,21 @@ export class HostedRuntimeIntegration {
 		if (this.participantIdentity) return;
 		const bootstrap = parseCollaboratorBootstrap(process.env[COLLABORATOR_ENV]);
 		if (bootstrap) this.participantIdentity = { version: 1, ...bootstrap, disposition: "held" };
+	}
+
+	private restoreCollaboratorProfile(ctx: ExtensionContext): void {
+		this.collaboratorProfile = undefined;
+		let warned = false;
+		for (const entry of ctx.sessionManager.getBranch() as readonly unknown[]) {
+			const record = asRecord(entry);
+			if (record?.type !== "custom" || record.customType !== HOSTED_COLLABORATOR_PROFILE_ENTRY) continue;
+			const profile = parseCollaboratorProfileState(record.data);
+			this.collaboratorProfile = profile ?? { version: 1, profile: "read-only" };
+			if (!profile && !warned) {
+				warned = true;
+				ctx.ui.notify("Collaborator profile metadata is invalid; enforced read-only recovery mode.", "warning");
+			}
+		}
 	}
 
 	private async restoreHeldParticipant(registration: LiveClientRegistration, ctx: ExtensionContext): Promise<void> {
@@ -1013,8 +1083,68 @@ function parseParticipantIdentity(value: unknown): ParticipantIdentity | undefin
 	};
 }
 
+function parseCollaboratorProfileState(value: unknown): CollaboratorProfileState | undefined {
+	const record = asRecord(value);
+	if (record?.version !== 1 || (record.profile !== "read-only" && record.profile !== "workspace-write")) return undefined;
+	if (record.persona === undefined) return { version: 1, profile: record.profile };
+	const persona = asRecord(record.persona);
+	if (!persona || typeof persona.name !== "string" || typeof persona.prompt !== "string" || typeof persona.promptHash !== "string") return undefined;
+	if (createHash("sha256").update(persona.prompt).digest("hex") !== persona.promptHash) return undefined;
+	return { version: 1, profile: record.profile, persona: { name: persona.name, prompt: persona.prompt, promptHash: persona.promptHash } };
+}
+
 const COLLABORATOR_NAME = /^[a-z][a-z0-9_-]{0,63}$/;
 const COLLABORATOR_MODEL = /^[A-Za-z0-9][A-Za-z0-9._/*:-]{0,199}$/;
+const FILE_TOOLS = new Set(["read", "grep", "find", "ls", "edit", "write"]);
+const READ_ONLY_PERSONA_TOOLS = new Set(["safe_read", "safe_list", "safe_search"]);
+const WORKSPACE_WRITE_PERSONA_TOOLS = new Set([...READ_ONLY_PERSONA_TOOLS, "edit", "write"]);
+
+function resolveCollaboratorCandidate(candidate: CollaboratorCandidate): ResolvedCollaboratorCandidate {
+	const participantId = collaboratorName(candidate.participantId, "participant ID");
+	const requestedModel = collaboratorModel(candidate.model);
+	const requestedProfile = collaboratorProfile(candidate.profile);
+	if (!candidate.persona) return { participantId, ...(requestedModel ? { model: requestedModel } : {}), ...(requestedProfile ? { profile: requestedProfile } : {}) };
+	const personaName = collaboratorName(candidate.persona, "persona");
+	const definition = findAgent(COLLABORATOR_PERSONAS, personaName);
+	if (!definition || definition.disabled) throw new HostedRuntimeClientError("not_found", `Unknown or disabled collaborator persona ${personaName}.`);
+	const profile = requestedProfile ?? "read-only";
+	assertPersonaCompatible(definition, profile);
+	const prompt = definition.body.trim();
+	if (!prompt || Buffer.byteLength(prompt) > 32 * 1024) throw new HostedRuntimeClientError("invalid_request", `Collaborator persona ${personaName} has an invalid prompt.`);
+	const persona: CollaboratorPersona = { name: definition.name, prompt, promptHash: createHash("sha256").update(prompt).digest("hex") };
+	const model = requestedModel ?? collaboratorModel(definition.model);
+	return { participantId, profile, persona, ...(model ? { model } : {}) };
+}
+
+function assertPersonaCompatible(persona: AgentDefinition, profile: CollaboratorProfile): void {
+	const supported = profile === "read-only" ? READ_ONLY_PERSONA_TOOLS : WORKSPACE_WRITE_PERSONA_TOOLS;
+	const incompatible = persona.tools.filter((tool) => !supported.has(tool));
+	if (incompatible.length > 0) throw new HostedRuntimeClientError("conflict", `Collaborator persona ${persona.name} requires unsupported ${incompatible.join(", ")} tooling.`);
+}
+
+function collaboratorConfiguration(candidate: ResolvedCollaboratorCandidate): string {
+	return [candidate.model ? `model ${candidate.model}` : "default model", candidate.persona ? `persona ${candidate.persona.name}` : undefined, candidate.profile ? `profile ${candidate.profile}` : undefined].filter(Boolean).join(", ");
+}
+
+function collaboratorPathAllowed(cwd: string, value: unknown, allowMissing: boolean): boolean {
+	if (value !== undefined && typeof value !== "string") return false;
+	try {
+		const root = realpathSync(cwd);
+		const requested = resolve(root, value ?? ".");
+		let target: string;
+		try { target = realpathSync(requested); }
+		catch {
+			if (!allowMissing) return false;
+			try { lstatSync(requested); return false; }
+			catch (error) { if (!isNodeError(error) || error.code !== "ENOENT") return false; }
+			target = join(realpathSync(dirname(requested)), basename(requested));
+		}
+		const path = relative(root, target);
+		return path === "" || (!isAbsolute(path) && path !== ".." && !path.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`));
+	} catch {
+		return false;
+	}
+}
 
 function collaboratorName(value: string | undefined, name: string): string {
 	if (!value || !COLLABORATOR_NAME.test(value)) throw new HostedRuntimeClientError("invalid_request", `${name} must match ${COLLABORATOR_NAME}.`);
@@ -1023,6 +1153,11 @@ function collaboratorName(value: string | undefined, name: string): string {
 
 function collaboratorModel(value: string | undefined): string | undefined {
 	if (value !== undefined && !COLLABORATOR_MODEL.test(value)) throw new HostedRuntimeClientError("invalid_request", `model must match ${COLLABORATOR_MODEL}.`);
+	return value;
+}
+
+function collaboratorProfile(value: CollaboratorProfile | undefined): CollaboratorProfile | undefined {
+	if (value !== undefined && value !== "read-only" && value !== "workspace-write") throw new HostedRuntimeClientError("invalid_request", "profile must be read-only or workspace-write.");
 	return value;
 }
 
@@ -1082,6 +1217,10 @@ function booleanValue(value: unknown): boolean {
 
 function shellQuote(value: string): string {
 	return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+	return error instanceof Error && "code" in error;
 }
 
 function delay(ms: number): Promise<void> {
