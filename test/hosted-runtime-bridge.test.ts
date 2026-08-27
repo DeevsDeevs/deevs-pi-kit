@@ -10,7 +10,7 @@ import { HostedParticipantCoordinator } from "../extensions/runtime/service/part
 import { dispatchHostedLine, type HostedProtocolContext } from "../extensions/runtime/service/protocol.ts";
 import { RuntimeRegistrationManager, type HostedHostVerifier, type HostedLiveAgent, type HostedPaneIdentity, type RegisterPiInput } from "../extensions/runtime/service/registration.ts";
 import { startRuntimeServer } from "../extensions/runtime/service/server.ts";
-import { HostedStateStore, runtimeStatePaths } from "../extensions/runtime/service/state.ts";
+import { HostedStateStore, readHostedRuntimeState, runtimeStatePaths } from "../extensions/runtime/service/state.ts";
 import { HostedWakeCoordinator } from "../extensions/runtime/service/wake.ts";
 
 const roots: string[] = [];
@@ -115,6 +115,12 @@ describe("authoritative Runtime bridge launch", () => {
 		expect(first).toMatchObject({ participantKey: expect.stringMatching(/^participant_/), holderGeneration: "lease_bridge", profile: "read-only", metadata: { adapter: "opaque-v1" } });
 		expect(test.store.read().bridgeLaunches[launch.launchId]).toMatchObject({ status: "consumed", clientGeneration: "client_bridge" });
 		expect(test.store.read().targets[launch.targetKey]).toMatchObject({ kind: "bridge", bridgeId: launch.launchId, holderGeneration: "lease_bridge" });
+		const migrationRoot = mkdtempSync(join(tmpdir(), "pi-kit-runtime-v3-to-v4-"));
+		roots.push(migrationRoot);
+		mkdirSync(migrationRoot, { recursive: true });
+		const { workspaces: _workspaces, integrations: _integrations, ...v3 } = structuredClone(test.store.read());
+		writeFileSync(runtimeStatePaths(migrationRoot).state, JSON.stringify({ ...v3, version: 3 }));
+		expect(readHostedRuntimeState(migrationRoot)).toMatchObject({ version: 4, workspaces: {}, integrations: {}, targets: { [launch.targetKey]: { kind: "bridge", bridgeId: launch.launchId } }, bridgeLaunches: { [launch.launchId]: { status: "consumed" } } });
 		expect(test.registrations.isLiveTarget(launch.targetKey)).toBe(true);
 		await expect(test.bridges.register({ launchToken: launch.launchToken, reconnectToken: launch.reconnectToken, clientGeneration: "client_bridge", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" } })).rejects.toMatchObject({ code: "conflict" });
 

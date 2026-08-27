@@ -7,12 +7,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import { loadBuiltinAgents } from "../extensions/subagents/agents.ts";
 import { HostedRuntimeClientError } from "../extensions/runtime/client.ts";
 import { CollaboratorAutoStore } from "../extensions/runtime/auto-mode.ts";
-import { HOSTED_AUTO_LIFECYCLE_ENTRY, HOSTED_COLLABORATOR_PROFILE_ENTRY, HOSTED_MANAGED_COLLABORATOR_ENTRY, HOSTED_PARTICIPANT_ENTRY, HostedRuntimeIntegration } from "../extensions/runtime/hosted-integration.ts";
+import { HOSTED_AUTO_LIFECYCLE_ENTRY, HOSTED_COLLABORATOR_PROFILE_ENTRY, HOSTED_COLLABORATOR_WORKSPACE_ENTRY, HOSTED_MANAGED_COLLABORATOR_ENTRY, HOSTED_PARTICIPANT_ENTRY, HOSTED_WORKSPACE_REQUEST_ENTRY, HostedRuntimeIntegration } from "../extensions/runtime/hosted-integration.ts";
 import { deriveTargetKey } from "../extensions/runtime/service/registration.ts";
 
 const roots: string[] = [];
 const servers: Server[] = [];
 const originalBootstrap = process.env.PI_RUNTIME_COLLABORATE;
+const originalWorkspaceLaunch = process.env.PI_RUNTIME_WORKSPACE_LAUNCH;
 const originalHerdrEnv = process.env.HERDR_ENV;
 const originalHerdrWorkspace = process.env.HERDR_WORKSPACE_ID;
 afterEach(async () => {
@@ -20,6 +21,8 @@ afterEach(async () => {
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 	if (originalBootstrap === undefined) delete process.env.PI_RUNTIME_COLLABORATE;
 	else process.env.PI_RUNTIME_COLLABORATE = originalBootstrap;
+	if (originalWorkspaceLaunch === undefined) delete process.env.PI_RUNTIME_WORKSPACE_LAUNCH;
+	else process.env.PI_RUNTIME_WORKSPACE_LAUNCH = originalWorkspaceLaunch;
 	if (originalHerdrEnv === undefined) delete process.env.HERDR_ENV;
 	else process.env.HERDR_ENV = originalHerdrEnv;
 	if (originalHerdrWorkspace === undefined) delete process.env.HERDR_WORKSPACE_ID;
@@ -204,6 +207,33 @@ describe("hosted collaborator Pi integration", () => {
 		await test.integration.sessionShutdown();
 	});
 
+	it("consumes and strips a workspace launch token before persisting exact workspace participant binding", async () => {
+		process.env.PI_RUNTIME_COLLABORATE = "review:writer";
+		process.env.PI_RUNTIME_WORKSPACE_LAUNCH = `workspace_launch_workspace_test.${"z".repeat(43)}`;
+		const workspaceEntry = { type: "custom", customType: HOSTED_COLLABORATOR_WORKSPACE_ENTRY, data: {} as Record<string, unknown> };
+		const managed = { type: "custom", customType: HOSTED_MANAGED_COLLABORATOR_ENTRY, data: { version: 1, managed: true } };
+		const profile = { type: "custom", customType: HOSTED_COLLABORATOR_PROFILE_ENTRY, data: { version: 2, driver: "pi", profile: "workspace-write" } };
+		const writer = { ...mainParticipant, participantId: "writer", participantKey: "participant_writer", generation: "lease_writer", holderTargetKey: "target_workspace" };
+		let consumedBeforeReply = false;
+		const test = await setup((request) => {
+			if (request.method === "workspace.pi.register") { consumedBeforeReply = true; throw new HostedRuntimeClientError("unavailable", "registration reply lost after consume"); }
+			if (request.method === "workspace.pi.reconnect" && consumedBeforeReply) return { ...registration, targetKey: "target_workspace", workspaceId: "workspace_test", projectRoot: test.projectRoot, workspaceRoot: test.projectRoot, participantKey: "participant_writer", holderGeneration: "lease_writer", participantGeneration: "lease_writer", participantState: "held", protocol: "review", participantId: "writer" };
+			if (request.method === "participant.get") return writer;
+			return baseResponse(request);
+		}, [managed, workspaceEntry, profile]);
+		workspaceEntry.data = { version: 1, workspaceId: "workspace_test", projectRoot: test.projectRoot, workspaceRoot: test.projectRoot };
+		await test.integration.sessionStart(test.ctx as never);
+		expect(test.requests.find((request) => request.method === "workspace.pi.register")?.params).toMatchObject({ launchToken: `workspace_launch_workspace_test.${"z".repeat(43)}`, piSessionId: "session_1" });
+		expect(test.requests.some((request) => request.method === "workspace.pi.reconnect")).toBe(true);
+		expect(process.env.PI_RUNTIME_WORKSPACE_LAUNCH).toBeUndefined();
+		expect(test.entries).toContainEqual({ customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "writer", participantKey: "participant_writer", generation: "lease_writer", disposition: "held" } });
+		expect(test.integration.guardCollaboratorTool("write", { path: "file.ts" }, test.projectRoot)).toBeUndefined();
+		expect(test.integration.guardCollaboratorTool("write", { path: "../outside.ts" }, test.projectRoot)).toMatchObject({ block: true });
+		symlinkSync(join(test.root, "outside-workspace"), join(test.projectRoot, "dangling-workspace"));
+		expect(test.integration.guardCollaboratorTool("write", { path: "dangling-workspace" }, test.projectRoot)).toMatchObject({ block: true });
+		await test.integration.sessionShutdown();
+	});
+
 	it("restores held identity, sends ordered collaborator messages, and never auto-takes over rotation", async () => {
 		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
 		let rotated = false;
@@ -329,6 +359,8 @@ describe("hosted collaborator Pi integration", () => {
 		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
 		let childTargetKey = "";
 		let stopped = false;
+		let workspaceRoot = "";
+		let projectRoot = "";
 		const child = { ...fableParticipant, holderTargetKey: "", holderLive: true };
 		const test = await setup((request) => {
 			if (request.method === "participant.get") return mainParticipant;
@@ -337,21 +369,35 @@ describe("hosted collaborator Pi integration", () => {
 				stopped = true;
 				return { participant: { ...child, state: "vacant", generation: "lease_stopped", holderLive: false, holderTargetKey: undefined }, outcome: "stopped" };
 			}
+			if (request.method === "workspace.launch.create") {
+				childTargetKey = deriveTargetKey(projectRoot, String(request.params.piSessionId));
+				return { workspace: { workspaceId: "workspace_fable", projectRoot, worktreePath: workspaceRoot, targetKey: childTargetKey }, launchToken: `workspace_launch_workspace_fable.${"x".repeat(43)}` };
+			}
+			if (request.method === "workspace.launch.bind") return { state: "bound" };
+			if (request.method === "workspace.cleanup") return { workspace: { state: "cleaned" } };
 			return baseResponse(request);
 		}, [identity]);
+		projectRoot = test.projectRoot;
+		workspaceRoot = join(test.root, "workspace-fable");
+		mkdirSync(workspaceRoot);
 		new CollaboratorAutoStore(test.runtimeRoot).set(true);
 		let confirmations = 0;
 		test.ctx.hasUI = false;
 		test.ctx.ui.confirm = async () => { confirmations++; return false; };
 		test.setExec(async (_command, args) => {
 			if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
-			if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
-			if (args[0] === "pane" && args[1] === "run") childTargetKey = deriveTargetKey(test.projectRoot, sessionHeader(paneRunSessionFile(args)).id);
+			if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9", terminal_id: "term_9" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
 			return { code: 0, stdout: "{}", stderr: "", killed: false };
 		});
 		await test.integration.sessionStart(test.ctx as never);
 		expect(test.statuses.at(-1)).toEqual({ key: "runtime-auto", value: "AUTO" });
 		expect(await test.integration.manageCollaborators({ action: "start", protocol: "review", participants: [{ participantId: "fable", persona: "architect", profile: "workspace-write" }] }, test.ctx as never)).toEqual([expect.objectContaining({ participant: "review/fable", status: "started" })]);
+		const tabCreate = test.execCalls.find((call) => call.args[0] === "tab" && call.args[1] === "create")!;
+		expect(tabCreate.args[tabCreate.args.indexOf("--cwd") + 1]).toBe(workspaceRoot);
+		expect(tabCreate.args).toContain(`PI_RUNTIME_WORKSPACE_LAUNCH=workspace_launch_workspace_fable.${"x".repeat(43)}`);
+		const launched = test.execCalls.find((call) => call.args[0] === "pane" && call.args[1] === "run")!;
+		const workspaceEntry = readFileSync(paneRunSessionFile(launched.args), "utf8").trim().split("\n").map((line) => JSON.parse(line)).find((entry) => entry.customType === HOSTED_COLLABORATOR_WORKSPACE_ENTRY);
+		expect(workspaceEntry?.data).toEqual({ version: 1, workspaceId: "workspace_fable", projectRoot, workspaceRoot });
 		expect(await test.integration.manageCollaborators({ action: "stop", protocol: "review", participants: [{ participantId: "fable" }] }, test.ctx as never)).toEqual([{ participant: "review/fable", status: "stopped" }]);
 		expect(confirmations).toBe(0);
 		expect(test.entries.filter((entry) => entry.customType === HOSTED_AUTO_LIFECYCLE_ENTRY).map((entry) => (entry.data as { phase: string }).phase)).toEqual(["authorized", "settled", "authorized", "settled"]);
@@ -396,6 +442,26 @@ describe("hosted collaborator Pi integration", () => {
 		}
 		expect(confirmations).toBe(0);
 		expect(test.execCalls.some((call) => call.args[0] === "tab" && call.args[1] === "create")).toBe(false);
+		await test.integration.sessionShutdown();
+	});
+
+	it("durably records and retries exact recovery after an ambiguous workspace create response", async () => {
+		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
+		let recoveryAttempts = 0;
+		let createAttempts = 0;
+		const test = await setup((request) => {
+			if (request.method === "participant.get") return mainParticipant;
+			if (request.method === "participant.list") return { participants: [mainParticipant] };
+			if (request.method === "workspace.launch.create") { if (++createAttempts === 1) throw new HostedRuntimeClientError("unavailable", "create response lost"); return { workspace: { workspaceId: "workspace_pending" }, recoveryRequired: true }; }
+			if (request.method === "workspace.launch.recover") { if (++recoveryAttempts < 3) throw new HostedRuntimeClientError("conflict", "create still settling"); return { workspace: { state: "cleaned" } }; }
+			return baseResponse(request);
+		}, [identity]);
+		await test.integration.sessionStart(test.ctx as never);
+		await expect(test.integration.startCollaborator({ participantId: "writer", profile: "workspace-write" }, test.ctx as never)).rejects.toThrow("create response lost");
+		expect(createAttempts).toBe(2);
+		expect(recoveryAttempts).toBe(3);
+		expect(test.execCalls.some((call) => call.args[0] === "tab" && call.args[1] === "create")).toBe(false);
+		expect(test.entries.filter((entry) => entry.customType === HOSTED_WORKSPACE_REQUEST_ENTRY).map((entry) => (entry.data as { status: string }).status)).toEqual(["pending", "recovered"]);
 		await test.integration.sessionShutdown();
 	});
 
@@ -480,7 +546,7 @@ describe("hosted collaborator Pi integration", () => {
 		await test.integration.sessionStart(test.ctx as never);
 		const candidates = [
 			{ participantId: "one", model: "openai-codex/gpt-5.6-terra:high" },
-			{ participantId: "two", persona: "architect", profile: "workspace-write" as const },
+			{ participantId: "two", persona: "architect", profile: "read-only" as const },
 			{ participantId: "three" },
 			{ participantId: "four" },
 			{ participantId: "five" },
@@ -488,7 +554,7 @@ describe("hosted collaborator Pi integration", () => {
 		const results = await test.integration.manageCollaborators({ action: "start", participants: candidates }, test.ctx as never);
 		expect(confirmations).toBe(1);
 		expect(confirmationText).toContain("start 5 collaborators with concurrency up to 4");
-		expect(confirmationText).toContain("driver pi, model pi default, persona architect, profile workspace-write");
+		expect(confirmationText).toContain("driver pi, model pi default, persona architect, profile read-only");
 		expect(confirmationText).toContain("review/three — driver pi, model pi default, persona none, profile none");
 		expect(confirmationText).toContain(`project ${test.projectRoot}, isolated worktree no`);
 		expect(results.map((result) => result.status)).toEqual(["started", "started", "started", "started", "started"]);
@@ -497,8 +563,8 @@ describe("hosted collaborator Pi integration", () => {
 		expect(tabCreates).toHaveLength(5);
 		const launches = test.execCalls.filter((call) => call.args[0] === "pane" && call.args[1] === "run");
 		const materializedProfiles = launches.flatMap((call) => readFileSync(paneRunSessionFile(call.args), "utf8").trim().split("\n").slice(1).map((line) => JSON.parse(line).data));
-		expect(materializedProfiles).toContainEqual(expect.objectContaining({ version: 2, driver: "pi", profile: "workspace-write", persona: expect.objectContaining({ name: "architect" }) }));
-		expect(launches.some((call) => call.args[3]?.includes("--tools 'read,grep,find,ls,safe_diff,collaborator_list,collaborator_send,chain_save,chain_load,chain_context,edit,write'"))).toBe(true);
+		expect(materializedProfiles).toContainEqual(expect.objectContaining({ version: 2, driver: "pi", profile: "read-only", persona: expect.objectContaining({ name: "architect" }) }));
+		expect(launches.every((call) => !call.args[3]?.includes(",edit,write'"))).toBe(true);
 		expect(test.execCalls.some((call) => call.args[0] === "tab" && call.args[1] === "focus")).toBe(false);
 		expect(test.execCalls.find((call) => call.args[0] === "pane" && call.args[1] === "run")?.args[3]).toContain("--model 'openai-codex/gpt-5.6-terra:high'");
 		await test.integration.sessionShutdown();
@@ -629,12 +695,23 @@ describe("hosted collaborator Pi integration", () => {
 
 		const writable = await setup(baseResponse, [{ type: "custom", customType: HOSTED_COLLABORATOR_PROFILE_ENTRY, data: { version: 1, profile: "workspace-write" } }]);
 		await writable.integration.sessionStart(writable.ctx as never);
-		expect(writable.integration.guardCollaboratorTool("write", { path: "file.ts" }, writable.projectRoot)).toBeUndefined();
-		expect(writable.integration.guardCollaboratorTool("write", { path: "../outside.ts" }, writable.projectRoot)).toMatchObject({ block: true });
-		symlinkSync(join(writable.root, "outside-new"), join(writable.projectRoot, "dangling"));
-		expect(writable.integration.guardCollaboratorTool("write", { path: "dangling" }, writable.projectRoot)).toMatchObject({ block: true });
+		expect(writable.integration.guardCollaboratorTool("write", { path: "file.ts" }, writable.projectRoot)).toMatchObject({ block: true, reason: expect.stringContaining("read-only") });
 		expect(writable.integration.guardCollaboratorTool("bash", { command: "pwd" }, writable.projectRoot)).toMatchObject({ block: true });
 		await writable.integration.sessionShutdown();
+
+		const managed = { type: "custom", customType: HOSTED_MANAGED_COLLABORATOR_ENTRY, data: { version: 1, managed: true } };
+		const launch = { type: "custom", customType: HOSTED_COLLABORATOR_PROFILE_ENTRY, data: { version: 2, driver: "pi", profile: "workspace-write" } };
+		const legacyManagedWriter = await setup(baseResponse, [managed, launch]);
+		await legacyManagedWriter.integration.sessionStart(legacyManagedWriter.ctx as never);
+		expect(legacyManagedWriter.integration.guardCollaboratorTool("write", { path: "file.ts" }, legacyManagedWriter.projectRoot)).toMatchObject({ block: true, reason: expect.stringContaining("read-only") });
+		await legacyManagedWriter.integration.sessionShutdown();
+
+		const workspaceEntry = { type: "custom", customType: HOSTED_COLLABORATOR_WORKSPACE_ENTRY, data: {} as Record<string, unknown> };
+		const isolatedWriter = await setup(baseResponse, [managed, workspaceEntry, launch]);
+		workspaceEntry.data = { version: 1, workspaceId: "workspace_test", projectRoot: isolatedWriter.projectRoot, workspaceRoot: isolatedWriter.projectRoot };
+		await isolatedWriter.integration.sessionStart(isolatedWriter.ctx as never);
+		expect(isolatedWriter.integration.guardCollaboratorTool("write", { path: "file.ts" }, isolatedWriter.projectRoot)).toMatchObject({ block: true, reason: expect.stringContaining("read-only") });
+		await isolatedWriter.integration.sessionShutdown();
 	});
 
 	it("starts a no-focus Pi collaborator with a materialized session and cleans up failed launches", async () => {

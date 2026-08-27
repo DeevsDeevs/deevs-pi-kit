@@ -34,6 +34,7 @@ export interface HostedParticipantCoordinatorOptions {
 	reconnectGraceMs?: number;
 	epochStartedAt?: number;
 	stopTarget?: (target: HostedTarget) => Promise<"closed" | "already_absent" | "unmanaged">;
+	onStopped?: (target: HostedTarget, holderGeneration: string) => Promise<void> | void;
 }
 
 export interface HostedParticipantWakeRequester {
@@ -149,6 +150,7 @@ export class HostedParticipantCoordinator {
 			} else if (current.state !== "vacant" || current.generation !== expectedGeneration) {
 				throw new HostedParticipantError("conflict", "Participant changed while its prior collaborator process was stopping.");
 			}
+			await this.options.onStopped?.(target, participant.state === "held" ? expectedGeneration : latest.previousGeneration!);
 			return { participant: this.status(this.requireParticipant(participantKey, caller.projectRoot)), outcome: stopped === "closed" ? "stopped" : "already_stopped" };
 		} finally {
 			this.stopping.delete(participantKey);

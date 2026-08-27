@@ -10,6 +10,7 @@ import { HostedParticipantCoordinator, type HostedParticipantCoordinatorOptions 
 import { HerdrCliHostVerifier, RuntimeRegistrationManager, type HostedHostVerifier, type RegistrationManagerOptions } from "./registration.ts";
 import { HostedStateStore, loadOrCreateRuntimeInstance } from "./state.ts";
 import { HostedWakeCoordinator, type HostedWakeOptions } from "./wake.ts";
+import { RuntimeWorkspaceCoordinator, type WorkspaceCoordinatorOptions } from "./workspace.ts";
 
 export class RuntimeAlreadyRunningError extends Error {
 	readonly code = "conflict" as const;
@@ -25,6 +26,7 @@ export interface RuntimeServerOptions {
 	registration?: RegistrationManagerOptions;
 	participant?: HostedParticipantCoordinatorOptions;
 	bridge?: BridgeCoordinatorOptions;
+	workspace?: WorkspaceCoordinatorOptions;
 	wake?: HostedWakeOptions;
 }
 
@@ -59,9 +61,11 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 	});
 	wakes = new HostedWakeCoordinator(store, options.wake);
 	const bridges = new RuntimeBridgeCoordinator(store, registrations, host, options.bridge);
+	const workspaces = new RuntimeWorkspaceCoordinator(options.root, store, registrations, host, options.workspace);
 	participants = new HostedParticipantCoordinator(store, registrations, wakes, {
 		...options.participant,
 		stopTarget: options.participant?.stopTarget ?? (host.closeTarget ? (target) => host.closeTarget!(target, join(options.root, "collaborator-sessions")) : undefined),
+		onStopped: async (target, holderGeneration) => { await options.participant?.onStopped?.(target, holderGeneration); await workspaces.retainTarget(target.targetKey, holderGeneration); },
 	});
 	const socketPath = options.socketPath ?? join(options.root, "runtime.sock");
 	const context: HostedProtocolContext = {
@@ -73,6 +77,7 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 		wakes,
 		participants,
 		bridges,
+		workspaces,
 	};
 	const sockets = new Set<Socket>();
 	const server = createServer((socket) => handleConnection(socket, context, sockets));
