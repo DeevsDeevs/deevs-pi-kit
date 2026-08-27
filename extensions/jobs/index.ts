@@ -33,7 +33,7 @@ export default function jobsExtension(pi: ExtensionAPI): void {
 	const updateStatus = (): void => {
 		if (!ctx) return;
 		const active = manager.list().filter((job) => ["starting", "running", "stopping"].includes(job.runtime.status)).length;
-		ctx.ui.setStatus("jobs", active ? ctx.ui.theme?.fg("accent", `jobs ${active}`) ?? `jobs ${active}` : undefined);
+		ctx.ui.setStatus("jobs", active ? ctx.ui.theme?.fg("accent", `j${active}`) ?? `j${active}` : undefined);
 	};
 	const unsubscribe = manager.onChange(updateStatus);
 

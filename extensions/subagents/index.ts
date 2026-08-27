@@ -93,7 +93,8 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		const state = service.list();
 		const activeRuns = state.runs.filter((run) => ["starting", "running", "stopping"].includes(run.runtime.status)).length;
 		const activeGroups = state.groups.filter((group) => group.status === "running").length;
-		latestCtx.ui.setStatus("subagents", activeRuns ? latestCtx.ui.theme?.fg("accent", `agents ${activeRuns}${activeGroups ? `/${activeGroups}` : ""}`) ?? `agents ${activeRuns}${activeGroups ? `/${activeGroups}` : ""}` : undefined);
+		const label = activeRuns || activeGroups ? `${activeRuns ? `a${activeRuns}` : ""}${activeGroups ? `${activeRuns ? "/" : ""}g${activeGroups}` : ""}` : undefined;
+		latestCtx.ui.setStatus("subagents", label ? latestCtx.ui.theme?.fg("accent", label) ?? label : undefined);
 	};
 	const unsubscribe = service.executor.onChange(updateStatus);
 
