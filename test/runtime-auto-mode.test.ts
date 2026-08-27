@@ -31,6 +31,17 @@ describe("collaborator Auto mode", () => {
 		expect(store.configureShortcut().changed).toBe(false);
 	});
 
+	it("requires Ctrl+Shift+T to hold thinking cycling before exposing Shift+Tab", () => {
+		const { store } = setup();
+		writeFileSync(store.keybindingsPath, `${JSON.stringify({ "app.thinking.cycle": ["f8"] })}\n`);
+		expect(store.shortcutConfigured()).toBe(false);
+		expect(store.configureShortcut().changed).toBe(true);
+		expect(JSON.parse(readFileSync(store.keybindingsPath, "utf8"))["app.thinking.cycle"]).toEqual(["f8", "ctrl+shift+t"]);
+		expect(store.shortcutConfigured()).toBe(true);
+		writeFileSync(store.keybindingsPath, `${JSON.stringify({ "app.thinking.cycle": ["ctrl+shift+t"], "app.model.select": ["ctrl+shift+t"] })}\n`);
+		expect(store.shortcutConfigured()).toBe(false);
+	});
+
 	it("rejects conflicting or symlinked keybinding state", () => {
 		const first = setup();
 		writeFileSync(first.store.keybindingsPath, `${JSON.stringify({ "app.model.select": "ctrl+shift+t" })}\n`);

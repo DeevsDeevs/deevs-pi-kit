@@ -16,6 +16,7 @@
     "smoke:modes": "node scripts/smoke-modes.mjs",
     "smoke:runtime-release": "node --experimental-strip-types scripts/smoke-runtime-release.mjs",
     "smoke:collaborator-release": "node --experimental-strip-types scripts/smoke-collaborator-release.mjs",
+    "smoke:collaborator-auto-release": "PI_KIT_SMOKE_AUTO=1 node --experimental-strip-types scripts/smoke-collaborator-release.mjs",
     "check": "npm run typecheck && npm test && npm run smoke:modes && npm run audit && npm pack --dry-run"
   },
   "keywords": [

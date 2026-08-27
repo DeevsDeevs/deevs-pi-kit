@@ -56,7 +56,7 @@ export class CollaboratorAutoStore {
 		try {
 			const config = readKeybindings(this.keybindingsPath);
 			const thinking = keys(config[THINKING_ACTION]);
-			return !!thinking && !hasKey(thinking, AUTO_KEY) && !Object.entries(config).some(([action, value]) => action !== THINKING_ACTION && hasKey(keys(value), AUTO_KEY));
+			return !!thinking && hasKey(thinking, THINKING_KEY) && !hasKey(thinking, AUTO_KEY) && !Object.entries(config).some(([action, value]) => action !== THINKING_ACTION && (hasKey(keys(value), AUTO_KEY) || hasKey(keys(value), THINKING_KEY)));
 		} catch { return false; }
 	}
 

@@ -521,7 +521,7 @@ export class HostedRuntimeIntegration {
 			if (process.env.HERDR_ENV !== "1" || !process.env.HERDR_WORKSPACE_ID) throw new HostedRuntimeClientError("host_unavailable", "Collaborator start requires this Pi session to run inside Herdr.");
 			const identity = this.requireParticipantIdentity();
 			if (identity.disposition !== "held") throw new HostedRuntimeClientError("conflict", "Batch collaborator start requires this Pi session to hold its collaborator identity.");
-			const normalized = candidates.map(resolveCollaboratorCandidate);
+			const normalized = candidates.map((candidate) => resolveCollaboratorCandidate(candidate, auto ? "read-only" : undefined));
 			if (new Set(normalized.map((candidate) => candidate.participantId)).size !== normalized.length) throw new HostedRuntimeClientError("conflict", "Batch collaborator participant IDs must be unique.");
 			if (normalized.some((candidate) => candidate.participantId === identity.participantId)) throw new HostedRuntimeClientError("conflict", "Caller and child collaborator identities must differ.");
 			const registration = await this.requireRegistration(ctx);
@@ -582,7 +582,7 @@ export class HostedRuntimeIntegration {
 		if (identity?.disposition === "ended") throw new HostedRuntimeClientError("conflict", "Current collaborator identity has ended; explicit revival is required.");
 		const protocol = collaboratorName(identity?.protocol ?? input.protocol, "protocol");
 		const callerParticipantId = collaboratorName(identity?.participantId ?? input.callerParticipantId, "caller participant ID");
-		const candidate = resolveCollaboratorCandidate(input);
+		const candidate = resolveCollaboratorCandidate(input, auto ? "read-only" : undefined);
 		const participantId = candidate.participantId;
 		if (identity && ((input.protocol && input.protocol !== protocol) || (input.callerParticipantId && input.callerParticipantId !== callerParticipantId))) throw new HostedRuntimeClientError("conflict", `Current collaborator identity is ${protocol}/${callerParticipantId}.`);
 		if (participantId === callerParticipantId) throw new HostedRuntimeClientError("conflict", "Caller and child collaborator identities must differ.");
@@ -1082,8 +1082,8 @@ export class HostedRuntimeIntegration {
 
 	private updateAutoStatus(ctx: ExtensionContext, state = this.autoStore.read().state): void {
 		const ui = (ctx as ExtensionContext & { ui?: { setStatus?: (key: string, value: string | undefined) => void; theme?: { fg?: (color: string, text: string) => string } } }).ui;
-		const label = state.enabled && !this.managedCollaborator ? "AUTO" : undefined;
-		ui?.setStatus?.("runtime-auto", label ? (ui.theme?.fg?.("warning", label) ?? label) : undefined);
+		const label = this.managedCollaborator ? undefined : state.enabled ? "AUTO" : "MANUAL";
+		ui?.setStatus?.("runtime-auto", label ? (ui.theme?.fg?.(state.enabled ? "warning" : "dim", label) ?? label) : undefined);
 	}
 
 	private recordAutoLifecycle(state: CollaboratorAutoState, action: CollaboratorManageAction, phase: "authorized" | "settled", registration: LiveClientRegistration, participants: string[], operationId: string, results?: CollaboratorManageResult[]): void {
@@ -1234,11 +1234,14 @@ const READ_ONLY_PERSONA_TOOLS = new Set(["safe_read", "safe_list", "safe_search"
 const WORKSPACE_WRITE_PERSONA_TOOLS = new Set([...READ_ONLY_PERSONA_TOOLS, "edit", "write"]);
 const OPTIONAL_COLLABORATOR_PERSONA_TOOLS = new Set(["review_report"]);
 
-function resolveCollaboratorCandidate(candidate: CollaboratorCandidate): ResolvedCollaboratorCandidate {
+function resolveCollaboratorCandidate(candidate: CollaboratorCandidate, defaultProfile?: CollaboratorProfile): ResolvedCollaboratorCandidate {
 	const participantId = collaboratorName(candidate.participantId, "participant ID");
 	const requestedModel = collaboratorModel(candidate.model);
 	const requestedProfile = collaboratorProfile(candidate.profile);
-	if (!candidate.persona) return { participantId, ...(requestedModel ? { model: requestedModel } : {}), ...(requestedProfile ? { profile: requestedProfile } : {}) };
+	if (!candidate.persona) {
+		const profile = requestedProfile ?? defaultProfile;
+		return { participantId, ...(requestedModel ? { model: requestedModel } : {}), ...(profile ? { profile } : {}) };
+	}
 	const personaName = collaboratorName(candidate.persona, "persona");
 	const definition = findAgent(COLLABORATOR_PERSONAS, personaName);
 	if (!definition || definition.disabled) throw new HostedRuntimeClientError("not_found", `Unknown or disabled collaborator persona ${personaName}.`);
