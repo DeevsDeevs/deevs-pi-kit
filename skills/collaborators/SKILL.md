@@ -20,7 +20,7 @@ Use `/runtime auto setup` once to move Pi thinking cycling to `Ctrl+Shift+T` and
 ## Operating loop
 
 1. Use `collaborator_manage` only from explicit user lifecycle intent in MANUAL, or from the main Pi's own decision while the AUTO indicator is active.
-2. Keep driver behavior, persona, model, and execution profile conceptually separate. Current shipped starts host Pi collaborators; do not claim native Claude/Codex drivers before they ship.
+2. Select driver, persona, model, and execution profile independently. Driver omission uses Pi; recognized `claude-code` and `codex` starts fail closed before confirmation until their authoritative bridges ship.
 3. Send directly to an exact known participant with `collaborator_send`; do not list merely to validate a known recipient.
 4. Use `safe_diff` for an exact revision review instead of asking a read-only collaborator to infer changes from current files.
 5. Stop exact participants when their ongoing context is no longer useful. Stop preserves queued messages and recovery state.

@@ -219,9 +219,11 @@ async function launchCollaborator(parent, participantId) {
 	assert.equal(header.type, "session");
 	assert.equal(header.version, 3);
 	assert.equal(header.cwd, projectRoot);
+	const launchConfig = sessionEntries(launched.sessionFile).find((entry) => entry.type === "custom" && entry.customType === "deevs.hosted-runtime.collaborator-profile.v1");
+	assert.equal(launchConfig?.data?.version, 2, "Collaborator launch did not persist versioned launch metadata");
+	assert.equal(launchConfig?.data?.driver, "pi", "Omitted collaborator driver did not resolve to Pi");
 	if (autoMode) {
-		const profile = sessionEntries(launched.sessionFile).find((entry) => entry.type === "custom" && entry.customType === "deevs.hosted-runtime.collaborator-profile.v1");
-		assert.equal(profile?.data?.profile, "read-only", "Auto launch did not persist its effective read-only profile");
+		assert.equal(launchConfig?.data?.profile, "read-only", "Auto launch did not persist its effective read-only profile");
 		const childProcess = await waitFor(() => cli("pane", "process-info", "--pane", launched.pane.pane_id).result.process_info.foreground_processes.find((candidate) => candidate.argv?.includes(launched.sessionFile)), "Auto launch child process was not authoritative", 60_000);
 		const toolsIndex = childProcess.argv.indexOf("--tools");
 		assert.equal(childProcess.argv[toolsIndex + 1], readOnlyCollaboratorTools, "Auto launch did not enforce the read-only tool allowlist in the live child argv");
