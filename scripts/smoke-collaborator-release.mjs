@@ -8,6 +8,8 @@ import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
 const repo = process.cwd();
+const autoMode = process.env.PI_KIT_SMOKE_AUTO === "1";
+const readOnlyCollaboratorTools = "read,grep,find,ls,safe_diff,collaborator_list,collaborator_send,chain_save,chain_load,chain_context";
 const { HostedRuntimeClient } = await import(pathToFileURL(join(repo, "extensions/runtime/client.ts")));
 const { startRuntimeServer } = await import(pathToFileURL(join(repo, "extensions/runtime/service/server.ts")));
 const { MissionState, MISSION_CUSTOM_TYPE } = await import(pathToFileURL(join(repo, "extensions/mission/state.ts")));
@@ -190,8 +192,10 @@ async function acquire(pi, participantId) {
 async function launchCollaborator(parent, participantId) {
 	const callerEntriesBefore = sessionEntries(parent.sessionFile).filter((entry) => entry.type === "custom" && entry.customType === participantEntry).length;
 	cli("agent", "prompt", parent.pane.pane_id, "release-gate collaborator tool launch");
-	await waitFor(() => readPane(parent.pane.pane_id, 200).includes("Start Runtime collaborator?"), "collaborator_manage did not request trusted confirmation", 60_000);
-	cli("pane", "send-keys", parent.pane.pane_id, "y", "enter");
+	if (!autoMode) {
+		await waitFor(() => readPane(parent.pane.pane_id, 200).includes("Start Runtime collaborator?"), "collaborator_manage did not request trusted confirmation", 60_000);
+		cli("pane", "send-keys", parent.pane.pane_id, "y", "enter");
+	}
 	await waitFor(() => {
 		const current = participant("review", participantId);
 		return current?.state === "held" ? current : undefined;
@@ -215,6 +219,13 @@ async function launchCollaborator(parent, participantId) {
 	assert.equal(header.type, "session");
 	assert.equal(header.version, 3);
 	assert.equal(header.cwd, projectRoot);
+	if (autoMode) {
+		const profile = sessionEntries(launched.sessionFile).find((entry) => entry.type === "custom" && entry.customType === "deevs.hosted-runtime.collaborator-profile.v1");
+		assert.equal(profile?.data?.profile, "read-only", "Auto launch did not persist its effective read-only profile");
+		const childProcess = await waitFor(() => cli("pane", "process-info", "--pane", launched.pane.pane_id).result.process_info.foreground_processes.find((candidate) => candidate.argv?.includes(launched.sessionFile)), "Auto launch child process was not authoritative", 60_000);
+		const toolsIndex = childProcess.argv.indexOf("--tools");
+		assert.equal(childProcess.argv[toolsIndex + 1], readOnlyCollaboratorTools, "Auto launch did not enforce the read-only tool allowlist in the live child argv");
+	}
 	await waitFor(() => sessionEntries(launched.sessionFile).filter((entry) => entry.type === "custom" && entry.customType === participantEntry).at(-1)?.data?.participantId === participantId, `${participantId} launch identity was not persisted`);
 	await waitFor(() => readPane(parent.pane.pane_id, 200).includes(`Started review/${participantId} in`), `parent tool did not confirm ${participantId} production launch`);
 	return { ...launched, sessionId: header.id, callerAcquired: true };
@@ -417,6 +428,7 @@ try {
 	herdrServer = spawn("herdr", ["--session", sessionName, "server"], { stdio: ["ignore", "pipe", "pipe"], env: herdrEnv });
 	await waitFor(() => existsSync(herdrSocket), "isolated Herdr socket did not start");
 	await startRuntime("epoch_collaborator_1");
+	if (autoMode) writeFileSync(join(runtimeRoot, "auto-mode.v1.json"), `${JSON.stringify({ version: 1, enabled: true, maxConcurrentStarts: 4, maxLiveCollaborators: 12, profileCeiling: "workspace-write", updatedAt: Date.now(), generation: `auto_smoke_${randomUUID()}` }, null, 2)}\n`, { mode: 0o600 });
 
 	let alphaPi = await startPi("collaborator-alpha-1", alphaSessionFile);
 	await assertRuntimeRegistered(alphaPi);
@@ -533,7 +545,8 @@ try {
 		status: "pass",
 		productionLaunch: true,
 		productionToolLaunch: true,
-		trustedConfirmation: true,
+		trustedConfirmation: !autoMode,
+		autoAuthorization: autoMode,
 		callerAcquired: true,
 		materializedChildSession: true,
 		participants: 2,

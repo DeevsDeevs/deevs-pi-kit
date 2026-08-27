@@ -359,6 +359,33 @@ describe("hosted collaborator Pi integration", () => {
 		expect(test.statuses.at(-1)).toEqual({ key: "runtime-auto", value: undefined });
 	});
 
+	it("defaults an omitted Auto launch profile to enforced read-only", async () => {
+		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
+		let childTargetKey = "";
+		const child = { ...fableParticipant, participantId: "bounded", participantKey: "participant_bounded" };
+		const test = await setup((request) => {
+			if (request.method === "participant.get") return mainParticipant;
+			if (request.method === "participant.list") return { participants: childTargetKey ? [mainParticipant, { ...child, holderTargetKey: childTargetKey }] : [mainParticipant] };
+			return baseResponse(request);
+		}, [identity]);
+		new CollaboratorAutoStore(test.runtimeRoot).set(true);
+		test.ctx.hasUI = false;
+		test.setExec(async (_command, args) => {
+			if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
+			if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
+			if (args[0] === "pane" && args[1] === "run") childTargetKey = deriveTargetKey(test.projectRoot, sessionHeader(paneRunSessionFile(args)).id);
+			return { code: 0, stdout: "{}", stderr: "", killed: false };
+		});
+		await test.integration.sessionStart(test.ctx as never);
+		await expect(test.integration.startCollaborator({ participantId: "bounded" }, test.ctx as never)).resolves.toMatchObject({ started: true });
+		const launch = test.execCalls.find((call) => call.args[0] === "pane" && call.args[1] === "run")!;
+		expect(launch.args[3]).toContain("--tools 'read,grep,find,ls,safe_diff,collaborator_list,collaborator_send,chain_save,chain_load,chain_context'");
+		expect(launch.args[3]).not.toContain(",edit,write");
+		const profile = readFileSync(paneRunSessionFile(launch.args), "utf8").trim().split("\n").map((line) => JSON.parse(line)).find((entry) => entry.customType === HOSTED_COLLABORATOR_PROFILE_ENTRY)?.data;
+		expect(profile).toEqual({ version: 1, profile: "read-only" });
+		await test.integration.sessionShutdown();
+	});
+
 	it("does not delegate global Auto authority to a Runtime-managed child", async () => {
 		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "child", participantKey: "participant_child", generation: "lease_child", disposition: "held" } };
 		const managed = { type: "custom", customType: HOSTED_MANAGED_COLLABORATOR_ENTRY, data: { version: 1, managed: true } };
@@ -382,6 +409,7 @@ describe("hosted collaborator Pi integration", () => {
 		await expect(corrupt.integration.startCollaborator({ participantId: "fable" }, corrupt.ctx as never)).rejects.toThrow("interactive Pi session or enabled Runtime Auto mode");
 		expect(corrupt.notifications.some((notice) => notice.message.includes("enforced MANUAL"))).toBe(true);
 		expect(corrupt.notifications.some((notice) => notice.message.includes("recover explicitly"))).toBe(true);
+		expect(corrupt.statuses.at(-1)).toEqual({ key: "runtime-auto", value: "MANUAL" });
 		await corrupt.integration.sessionShutdown();
 
 		const live = Array.from({ length: 12 }, (_, index) => ({ ...fableParticipant, participantKey: `participant_${index}`, participantId: `live-${index}`, holderTargetKey: `target_${index}` }));
