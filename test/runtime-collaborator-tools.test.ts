@@ -6,8 +6,9 @@ it("exposes one collaborator tool per concern", () => {
 	runtimeExtension({
 		registerEntryRenderer() {},
 		registerCommand() {},
+		registerShortcut() {},
 		registerTool(tool: { name: string }) { tools.push(tool.name); },
 		on() {},
 	} as never);
-	expect(tools).toEqual(["collaborator_list", "collaborator_manage", "collaborator_send"]);
+	expect(tools).toEqual(["safe_diff", "collaborator_list", "collaborator_manage", "collaborator_send"]);
 });
