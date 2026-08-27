@@ -235,7 +235,7 @@ export class ChainCheckpointService {
 			this.ctx.ui.setStatus("chains", undefined);
 			return;
 		}
-		this.ctx.ui.setStatus("chains", this.state.status === "due" ? this.ctx.ui.theme?.fg("warning", "chain due") ?? "chain due" : undefined);
+		this.ctx.ui.setStatus("chains", this.state.status === "due" ? this.ctx.ui.theme?.fg("warning", "chain!") ?? "chain!" : undefined);
 	}
 }
 

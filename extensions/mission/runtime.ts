@@ -827,11 +827,10 @@ export class MissionRuntime {
 			return;
 		}
 		const review = mission.reviewStatus;
-		if (review === "due") return this.ctx.ui.setStatus("mission", theme?.fg("warning", "review due") ?? "review due");
-		if (review === "starting") return this.ctx.ui.setStatus("mission", theme?.fg("accent", "review starting") ?? "review starting");
-		if (review === "running") return this.ctx.ui.setStatus("mission", theme?.fg("accent", "review running") ?? "review running");
-		if (review === "awaiting_adjudication") return this.ctx.ui.setStatus("mission", theme?.fg("warning", "review ready") ?? "review ready");
-		if (review === "changes_requested") return this.ctx.ui.setStatus("mission", theme?.fg("error", "review changes") ?? "review changes");
+		if (review === "due") return this.ctx.ui.setStatus("mission", theme?.fg("warning", "review!") ?? "review!");
+		if (review === "starting" || review === "running") return this.ctx.ui.setStatus("mission", theme?.fg("accent", "review") ?? "review");
+		if (review === "awaiting_adjudication") return this.ctx.ui.setStatus("mission", theme?.fg("warning", "review!") ?? "review!");
+		if (review === "changes_requested") return this.ctx.ui.setStatus("mission", theme?.fg("error", "review!") ?? "review!");
 		const usage = this.state.readUsage();
 		if (mission.tokenBudget && usage.totalTokens / mission.tokenBudget >= 0.8) {
 			const text = `mission ${compact(usage.totalTokens)}/${compact(mission.tokenBudget)}`;

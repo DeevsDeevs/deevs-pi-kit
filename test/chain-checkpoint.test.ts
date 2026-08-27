@@ -56,7 +56,7 @@ describe("Chain checkpoint state", () => {
 
 		expect(service.read().status).toBe("due");
 		expect(service.read().dueReasons).toContain("repository HEAD advanced");
-		expect(statuses.at(-1)).toBe("chain due");
+		expect(statuses.at(-1)).toBe("chain!");
 		expect(service.beforeAgentStart("base")).toContain("checkpoint is due");
 		service.due("Mission milestone recorded");
 		expect(service.beforeAgentStart("base")).toContain("call chain_save before starting further substantive work");

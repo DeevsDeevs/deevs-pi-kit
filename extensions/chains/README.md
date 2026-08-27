@@ -38,7 +38,7 @@ Pi custom entries track:
 
 Checkpoint state is restored after resume/tree navigation. At 80% context usage, Pi must save one concise Chain link before further substantive work: the checkpoint is session metadata and remains required for read-only or no-edit tasks. An ignored reminder receives one hidden follow-up turn. A successful pressure checkpoint triggers Pi's native compactor, which aborts the full-context turn; completion then queues a follow-up that reloads the saved Chain and continues. Session switching, forking, and tree navigation are refused until that compaction settles so its summary cannot land on another branch. If saving fails, only settlement, cancellation, status, clarification, and collaborator-reporting tools bypass the gate. Native compaction resets the one-shot threshold. Successful Chain tools update state directly. Descendant advances of repository HEAD are detected without parsing shell commands, while sideways checkouts and resets are ignored. Mission lifecycle changes, explicit Mission milestones/review adjudication, Chain forks, and write-enabled Subagents also mark checkpoints due. Ordinary edits and bounded Jobs do not: activity is not automatically a durable milestone.
 
-The footer stays quiet while saved and shows `chain due` only when attention is needed. Before the next agent turn, a due/resume reminder is injected from state. Mission completion vetoes a due checkpoint unless it is explicitly waived with a reason.
+The footer stays quiet while saved and shows compact `chain!` only when attention is needed. Before the next agent turn, a due/resume reminder is injected from state. Mission completion vetoes a due checkpoint unless it is explicitly waived with a reason.
 
 ## Storage
 
