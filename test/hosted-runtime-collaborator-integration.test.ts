@@ -382,7 +382,20 @@ describe("hosted collaborator Pi integration", () => {
 		expect(launch.args[3]).toContain("--tools 'read,grep,find,ls,safe_diff,collaborator_list,collaborator_send,chain_save,chain_load,chain_context'");
 		expect(launch.args[3]).not.toContain(",edit,write");
 		const profile = readFileSync(paneRunSessionFile(launch.args), "utf8").trim().split("\n").map((line) => JSON.parse(line)).find((entry) => entry.customType === HOSTED_COLLABORATOR_PROFILE_ENTRY)?.data;
-		expect(profile).toEqual({ version: 1, profile: "read-only" });
+		expect(profile).toEqual({ version: 2, driver: "pi", profile: "read-only" });
+		await test.integration.sessionShutdown();
+	});
+
+	it("defaults the orthogonal driver to Pi and rejects unavailable native bridges before confirmation", async () => {
+		const test = await setup(baseResponse);
+		let confirmations = 0;
+		test.ctx.ui.confirm = async () => { confirmations++; return true; };
+		await test.integration.sessionStart(test.ctx as never);
+		for (const driver of ["claude-code", "codex"] as const) {
+			await expect(test.integration.startCollaborator({ participantId: driver, protocol: "review", callerParticipantId: "main", driver }, test.ctx as never)).rejects.toMatchObject({ code: "capability_unavailable" });
+		}
+		expect(confirmations).toBe(0);
+		expect(test.execCalls.some((call) => call.args[0] === "tab" && call.args[1] === "create")).toBe(false);
 		await test.integration.sessionShutdown();
 	});
 
@@ -475,14 +488,16 @@ describe("hosted collaborator Pi integration", () => {
 		const results = await test.integration.manageCollaborators({ action: "start", participants: candidates }, test.ctx as never);
 		expect(confirmations).toBe(1);
 		expect(confirmationText).toContain("start 5 collaborators with concurrency up to 4");
-		expect(confirmationText).toContain("persona architect, profile workspace-write");
+		expect(confirmationText).toContain("driver pi, model pi default, persona architect, profile workspace-write");
+		expect(confirmationText).toContain("review/three — driver pi, model pi default, persona none, profile none");
+		expect(confirmationText).toContain(`project ${test.projectRoot}, isolated worktree no`);
 		expect(results.map((result) => result.status)).toEqual(["started", "started", "started", "started", "started"]);
 		expect(maxActiveRuns).toBe(4);
 		const tabCreates = test.execCalls.filter((call) => call.args[0] === "tab" && call.args[1] === "create");
 		expect(tabCreates).toHaveLength(5);
 		const launches = test.execCalls.filter((call) => call.args[0] === "pane" && call.args[1] === "run");
 		const materializedProfiles = launches.flatMap((call) => readFileSync(paneRunSessionFile(call.args), "utf8").trim().split("\n").slice(1).map((line) => JSON.parse(line).data));
-		expect(materializedProfiles).toContainEqual(expect.objectContaining({ version: 1, profile: "workspace-write", persona: expect.objectContaining({ name: "architect" }) }));
+		expect(materializedProfiles).toContainEqual(expect.objectContaining({ version: 2, driver: "pi", profile: "workspace-write", persona: expect.objectContaining({ name: "architect" }) }));
 		expect(launches.some((call) => call.args[3]?.includes("--tools 'read,grep,find,ls,safe_diff,collaborator_list,collaborator_send,chain_save,chain_load,chain_context,edit,write'"))).toBe(true);
 		expect(test.execCalls.some((call) => call.args[0] === "tab" && call.args[1] === "focus")).toBe(false);
 		expect(test.execCalls.find((call) => call.args[0] === "pane" && call.args[1] === "run")?.args[3]).toContain("--model 'openai-codex/gpt-5.6-terra:high'");
@@ -539,15 +554,17 @@ describe("hosted collaborator Pi integration", () => {
 		});
 		await test.integration.sessionStart(test.ctx as never);
 		await test.integration.startCollaborator({ participantId: "fable", persona: "architect" }, test.ctx as never);
+		expect(confirmation).toContain("driver pi");
 		expect(confirmation).toContain("persona architect");
 		expect(confirmation).toContain("profile read-only");
+		expect(confirmation).toContain(`project ${test.projectRoot}, isolated worktree no`);
 		const created = test.execCalls.find((call) => call.args[0] === "tab" && call.args[1] === "create")!;
 		expect(created.args.some((argument) => argument.startsWith("PI_RUNTIME_COLLABORATOR_PERSONA="))).toBe(false);
 		const launched = test.execCalls.find((call) => call.args[0] === "pane" && call.args[1] === "run")!;
 		expect(launched.args[3]).toContain("--tools 'read,grep,find,ls,safe_diff,collaborator_list,collaborator_send,chain_save,chain_load,chain_context'");
 		const sessionEntries = readFileSync(paneRunSessionFile(launched.args), "utf8").trim().split("\n").map((line) => JSON.parse(line));
 		expect(sessionEntries[1]).toMatchObject({ type: "custom", customType: HOSTED_MANAGED_COLLABORATOR_ENTRY, data: { version: 1, managed: true }, parentId: null });
-		expect(sessionEntries[2]).toMatchObject({ type: "custom", customType: HOSTED_COLLABORATOR_PROFILE_ENTRY, data: { version: 1, profile: "read-only", persona: { name: "architect" } }, parentId: sessionEntries[1].id });
+		expect(sessionEntries[2]).toMatchObject({ type: "custom", customType: HOSTED_COLLABORATOR_PROFILE_ENTRY, data: { version: 2, driver: "pi", profile: "read-only", persona: { name: "architect" } }, parentId: sessionEntries[1].id });
 		expect(sessionEntries[2].data.persona.promptHash).toBe(createHash("sha256").update(sessionEntries[2].data.persona.prompt).digest("hex"));
 
 		let invalidConfirmed = false;
@@ -603,6 +620,12 @@ describe("hosted collaborator Pi integration", () => {
 		expect(malformed.notifications.some((notice) => notice.message.includes("enforced read-only recovery mode"))).toBe(true);
 		expect(malformed.integration.guardCollaboratorTool("edit", { path: "file.ts" }, malformed.projectRoot)).toMatchObject({ block: true });
 		await malformed.integration.sessionShutdown();
+
+		const mismatchedDriver = await setup(baseResponse, [{ type: "custom", customType: HOSTED_COLLABORATOR_PROFILE_ENTRY, data: { version: 2, driver: "codex", profile: "workspace-write" } }]);
+		await mismatchedDriver.integration.sessionStart(mismatchedDriver.ctx as never);
+		expect(mismatchedDriver.notifications.some((notice) => notice.message.includes("enforced read-only recovery mode"))).toBe(true);
+		expect(mismatchedDriver.integration.guardCollaboratorTool("edit", { path: "file.ts" }, mismatchedDriver.projectRoot)).toMatchObject({ block: true });
+		await mismatchedDriver.integration.sessionShutdown();
 
 		const writable = await setup(baseResponse, [{ type: "custom", customType: HOSTED_COLLABORATOR_PROFILE_ENTRY, data: { version: 1, profile: "workspace-write" } }]);
 		await writable.integration.sessionStart(writable.ctx as never);
