@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { closeSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
-import type { HostedBridgeTarget, HostedTarget } from "../hosted-types.ts";
+import type { HostedBridgeTarget, HostedParticipant, HostedPiTarget, HostedTarget } from "../hosted-types.ts";
 import { HostedStateStore } from "./state.ts";
 
 const REGISTRATION_LEASE_MS = 30_000;
@@ -59,6 +59,14 @@ export interface HostedHostVerifier {
 	closeTarget?(target: HostedTarget, managedSessionDirectory: string): Promise<"closed" | "already_absent" | "unmanaged">;
 }
 
+export interface RegisterWorkspacePiInput {
+	piSessionId: string;
+	piSessionFile: string;
+	clientGeneration: string;
+	admittedClaims: Array<{ claimId: string; eventIds: string[] }>;
+	herdr: { paneId: string; terminalId: string; agentName?: string };
+}
+
 export interface RegisterBridgeInput {
 	clientGeneration: string;
 	admittedClaims: Array<{ claimId: string; eventIds: string[] }>;
@@ -110,7 +118,7 @@ export class RuntimeRegistrationManager {
 	async register(input: RegisterPiInput): Promise<HostedLiveRegistration> {
 		const projectRoot = canonicalDirectory(input.projectRoot, "project root");
 		const piSessionFile = canonicalFile(input.piSessionFile, "Pi session file");
-		verifyPiSessionHeader(piSessionFile, input.piSessionId);
+		verifyPiSessionHeader(piSessionFile, input.piSessionId, projectRoot);
 		const targetKey = deriveTargetKey(projectRoot, input.piSessionId);
 		const verified = await this.host.getPane(input.herdr.paneId);
 		this.ensureOpen();
@@ -119,6 +127,23 @@ export class RuntimeRegistrationManager {
 		const target: HostedTarget = { kind: "pi", targetKey, projectRoot, piSessionId: input.piSessionId, piSessionFile, createdAt: this.now() };
 		this.store.apply({ type: "target.ensure", target });
 		return this.install(targetKey, input.clientGeneration, input.admittedClaims, verified);
+	}
+
+	async registerWorkspacePi(input: RegisterWorkspacePiInput, target: HostedPiTarget, onVerified?: () => void): Promise<HostedLiveRegistration> {
+		if (!target.workspaceId || !target.workspaceRoot || target.piSessionId !== input.piSessionId || target.targetKey !== deriveTargetKey(target.projectRoot, input.piSessionId)) throw new RegistrationError("conflict", "Workspace Pi target does not match its session authority.");
+		const sessionFile = canonicalFile(input.piSessionFile, "Pi session file");
+		if (sessionFile !== target.piSessionFile) throw new RegistrationError("identity_mismatch", "Workspace Pi session file changed.");
+		verifyPiSessionHeader(sessionFile, input.piSessionId, target.workspaceRoot);
+		const verified = await this.host.getPane(input.herdr.paneId);
+		this.ensureOpen();
+		verifyIdentity(verified, { projectRoot: target.projectRoot, piSessionId: input.piSessionId, piSessionFile: sessionFile, clientGeneration: input.clientGeneration, admittedClaims: input.admittedClaims, herdr: input.herdr }, false, target.workspaceRoot);
+		this.validateAdmissions(target.targetKey, input.admittedClaims);
+		onVerified?.();
+		const durable = this.store.read().targets[target.targetKey];
+		const workspace = target.workspaceId ? this.store.read().workspaces[target.workspaceId] : undefined;
+		const participant = workspace ? this.store.read().participants[workspace.participantKey] : undefined;
+		if (!durable || durable.kind !== "pi" || !samePiTarget(durable, target) || !workspace || workspace.state !== "active" || !workspaceRegistrationAllowed(participant, target, workspace.holderGeneration)) throw new RegistrationError("registration_stale", "Workspace Pi target or participant succession changed during registration.");
+		return this.install(target.targetKey, input.clientGeneration, input.admittedClaims, verified);
 	}
 
 	async registerBridge(input: RegisterBridgeInput, target: HostedBridgeTarget, credentials: { registrationId: string; registrationKey: string }): Promise<HostedLiveRegistration> {
@@ -187,18 +212,20 @@ export class RuntimeRegistrationManager {
 		this.validateAdmissions(targetKey, admittedClaims);
 		if (existing && existing.clientGeneration === clientGeneration && existing.host.terminalId === verified.terminalId) {
 			if (credentials && (existing.registrationId !== credentials.registrationId || existing.registrationKey !== credentials.registrationKey)) throw new RegistrationError("conflict", "Bridge registration credentials changed for an active target.");
+			this.reconcileAdmissions(targetKey, admittedClaims);
 			const renewed = { ...existing, leaseUntil: this.now() + this.leaseMs(), host: verified };
 			this.registrations.set(renewed.registrationId, renewed);
 			this.ready(renewed.targetKey);
 			return renewed;
 		}
-		if (existing) this.drop(existing.registrationId);
 		const terminalRegistrationId = this.byTerminal.get(verified.terminalId);
-		if (terminalRegistrationId) this.drop(terminalRegistrationId);
 		const registrationId = credentials?.registrationId ?? this.options.createId?.() ?? `reg_${randomUUID()}`;
 		const registrationKey = credentials?.registrationKey ?? this.options.createKey?.() ?? randomBytes(32).toString("base64url");
 		const collision = this.registrations.get(registrationId);
 		if (collision && collision.targetKey !== targetKey) throw new RegistrationError("conflict", "Registration ID already belongs to another target.");
+		this.reconcileAdmissions(targetKey, admittedClaims);
+		if (existing) this.drop(existing.registrationId);
+		if (terminalRegistrationId) this.drop(terminalRegistrationId);
 		const registration: HostedLiveRegistration = { targetKey, registrationId, registrationKey, clientGeneration, leaseUntil: this.now() + this.leaseMs(), host: verified };
 		this.registrations.set(registration.registrationId, registration);
 		this.byTarget.set(targetKey, registration.registrationId);
@@ -217,7 +244,12 @@ export class RuntimeRegistrationManager {
 			const target = this.store.read().targets[current.targetKey];
 			if (!target) throw new RegistrationError("not_found", "Runtime target no longer exists.");
 			if (target.kind === "pi") {
-				verifyIdentity(verified, { projectRoot: target.projectRoot, piSessionId: target.piSessionId, piSessionFile: target.piSessionFile, clientGeneration: current.clientGeneration, admittedClaims: [], herdr: { paneId: current.host.paneId, terminalId: current.host.terminalId, agentName: current.host.name } }, true);
+				verifyIdentity(verified, { projectRoot: target.projectRoot, piSessionId: target.piSessionId, piSessionFile: target.piSessionFile, clientGeneration: current.clientGeneration, admittedClaims: [], herdr: { paneId: current.host.paneId, terminalId: current.host.terminalId, agentName: current.host.name } }, !target.workspaceId, target.workspaceRoot ?? target.projectRoot);
+				if (target.workspaceId) {
+					const workspace = this.store.read().workspaces[target.workspaceId];
+					const participant = workspace ? this.store.read().participants[workspace.participantKey] : undefined;
+					if (!workspace || workspace.state !== "active" || !workspaceRegistrationAllowed(participant, target, workspace.holderGeneration)) throw new RegistrationError("registration_stale", "Workspace Pi participant succession is no longer authorized for this target.");
+				}
 			} else {
 				const participant = this.store.read().participants[target.participantKey];
 				if (!participant || participant.state !== "held" || participant.holderTargetKey !== target.targetKey || participant.generation !== target.holderGeneration) throw new RegistrationError("registration_stale", "Bridge participant generation is no longer held by this target.");
@@ -238,15 +270,15 @@ export class RuntimeRegistrationManager {
 	}
 
 	private validateAdmissions(targetKey: string, admittedClaims: Array<{ claimId: string; eventIds: string[] }>): void {
-		if (admittedClaims.length > MAX_ADMITTED_CLAIMS) throw new RegistrationError("invalid_request", `At most ${MAX_ADMITTED_CLAIMS} admitted claims may be reconciled.`);
-		for (const receipt of admittedClaims) this.reconcileReceipt(targetKey, receipt);
+		if (admittedClaims.length > MAX_ADMITTED_CLAIMS || new Set(admittedClaims.map((receipt) => receipt.claimId)).size !== admittedClaims.length) throw new RegistrationError("invalid_request", `At most ${MAX_ADMITTED_CLAIMS} unique admitted claims may be reconciled.`);
+		for (const receipt of admittedClaims) {
+			const claim = this.store.read().claims[receipt.claimId];
+			if (claim && (claim.targetKey !== targetKey || !sameIds(claim.eventIds, receipt.eventIds))) throw new RegistrationError("conflict", "Admitted claim receipt does not match durable state.");
+		}
 	}
 
-	private reconcileReceipt(targetKey: string, receipt: { claimId: string; eventIds: string[] }): void {
-		const claim = this.store.read().claims[receipt.claimId];
-		if (!claim) return;
-		if (claim.targetKey !== targetKey || !sameIds(claim.eventIds, receipt.eventIds)) throw new RegistrationError("conflict", "Admitted claim receipt does not match durable state.");
-		this.store.apply({ type: "inbox.reconcile", targetKey, claimId: receipt.claimId, eventIds: receipt.eventIds, at: this.now() });
+	private reconcileAdmissions(targetKey: string, admittedClaims: Array<{ claimId: string; eventIds: string[] }>): void {
+		if (admittedClaims.length) this.store.apply({ type: "inbox.reconcile_many", targetKey, receipts: admittedClaims, at: this.now() });
 	}
 
 	private expire(): void {
@@ -305,7 +337,7 @@ export class HerdrCliHostVerifier implements HostedHostVerifier {
 		try {
 			sessionFile = canonicalFile(target.piSessionFile, "collaborator session file");
 			if (dirname(sessionFile) !== realpathSync(managedSessionDirectory)) return "unmanaged";
-			verifyPiSessionHeader(sessionFile, target.piSessionId);
+			verifyPiSessionHeader(sessionFile, target.piSessionId, target.workspaceRoot ?? target.projectRoot);
 		} catch {
 			return "unmanaged";
 		}
@@ -314,7 +346,7 @@ export class HerdrCliHostVerifier implements HostedHostVerifier {
 		if (matches.length === 0) return "already_absent";
 		if (matches.length !== 1) throw new RegistrationError("identity_mismatch", "Collaborator session is not unique in Herdr.");
 		const agent = matches[0]!;
-		if (!agent.tabId || !agent.workspaceId || canonicalDirectory(agent.cwd, "Herdr cwd") !== target.projectRoot || agent.agentSession.agent !== "pi" || agent.agentSession.source !== "herdr:pi" || deriveTargetKey(target.projectRoot, target.piSessionId) !== target.targetKey) {
+		if (!agent.tabId || !agent.workspaceId || canonicalDirectory(agent.cwd, "Herdr cwd") !== (target.workspaceRoot ?? target.projectRoot) || agent.agentSession.agent !== "pi" || agent.agentSession.source !== "herdr:pi" || deriveTargetKey(target.projectRoot, target.piSessionId) !== target.targetKey) {
 			throw new RegistrationError("identity_mismatch", "Herdr collaborator identity does not match its Runtime target.");
 		}
 		const response = await runHerdr(["tab", "get", agent.tabId]);
@@ -360,13 +392,13 @@ export function deriveTargetKey(projectRoot: string, piSessionId: string): strin
 	return `pi_${createHash("sha256").update(projectRoot).update("\0").update(piSessionId).digest("hex")}`;
 }
 
-function verifyIdentity(agent: HostedLiveAgent, input: RegisterPiInput, allowMovedPane: boolean): void {
+function verifyIdentity(agent: HostedLiveAgent, input: RegisterPiInput, allowMovedPane: boolean, expectedHostRoot = input.projectRoot): void {
 	if (!allowMovedPane && agent.paneId !== input.herdr.paneId) throw new RegistrationError("identity_mismatch", "Herdr pane locator does not match.");
 	if (agent.terminalId !== input.herdr.terminalId) throw new RegistrationError("identity_mismatch", "Herdr terminal identity does not match.");
 	if (input.herdr.agentName && agent.name !== input.herdr.agentName) throw new RegistrationError("identity_mismatch", "Herdr agent name does not match.");
 	let hostCwd: string;
 	try { hostCwd = canonicalDirectory(agent.cwd, "Herdr cwd"); } catch { throw new RegistrationError("identity_mismatch", "Herdr cwd is unavailable or not canonical."); }
-	if (hostCwd !== input.projectRoot) throw new RegistrationError("identity_mismatch", "Herdr cwd does not match the canonical project root.");
+	if (hostCwd !== expectedHostRoot) throw new RegistrationError("identity_mismatch", "Herdr cwd does not match the authorized Pi workspace root.");
 	const session = agent.agentSession;
 	if (session.agent !== "pi" || (session.source !== "herdr:pi" && session.source !== "pi-kit-runtime")) throw new RegistrationError("identity_mismatch", "Herdr does not report an authoritative Pi session.");
 	if (session.kind === "id" && session.value !== input.piSessionId) throw new RegistrationError("identity_mismatch", "Herdr Pi session ID does not match.");
@@ -385,6 +417,16 @@ function verifyBridgeIdentity(agent: HostedLiveAgent, target: HostedBridgeTarget
 	if (hostCwd !== target.projectRoot) throw new RegistrationError("identity_mismatch", "Herdr bridge cwd does not match the canonical project root.");
 	const session = agent.agentSession;
 	if (session.source !== "pi-kit-bridge" || session.agent !== "bridge" || session.kind !== "id" || session.value !== target.bridgeId) throw new RegistrationError("identity_mismatch", "Herdr does not report the authoritative generic bridge identity.");
+}
+
+function workspaceRegistrationAllowed(participant: HostedParticipant | undefined, target: HostedPiTarget, holderGeneration: string): boolean {
+	if (participant?.state === "held") return participant.holderTargetKey === target.targetKey && participant.generation === holderGeneration;
+	const latest = participant?.transitions.at(-1);
+	return participant?.state === "vacant" && latest?.cause === "stand_down" && latest.previousHolderTargetKey === target.targetKey && latest.previousGeneration === holderGeneration;
+}
+
+function samePiTarget(left: HostedPiTarget, right: HostedPiTarget): boolean {
+	return left.targetKey === right.targetKey && left.projectRoot === right.projectRoot && left.piSessionId === right.piSessionId && left.piSessionFile === right.piSessionFile && left.workspaceId === right.workspaceId && left.workspaceRoot === right.workspaceRoot;
 }
 
 function sameBridgeTarget(left: HostedBridgeTarget, right: HostedBridgeTarget): boolean {
@@ -411,7 +453,7 @@ function canonicalFile(path: string, name: string): string {
 	}
 }
 
-function verifyPiSessionHeader(path: string, expectedId: string): void {
+function verifyPiSessionHeader(path: string, expectedId: string, expectedCwd: string): void {
 	const buffer = Buffer.alloc(64 * 1024);
 	let descriptor: number | undefined;
 	try {
@@ -420,7 +462,7 @@ function verifyPiSessionHeader(path: string, expectedId: string): void {
 		const newline = buffer.subarray(0, bytes).indexOf(0x0a);
 		if (newline < 0) throw new Error("missing bounded header");
 		const header = strictObject(JSON.parse(buffer.subarray(0, newline).toString("utf8")), "Pi session header");
-		if (header.type !== "session" || header.id !== expectedId) throw new Error("session ID mismatch");
+		if (header.type !== "session" || header.id !== expectedId || canonicalDirectory(text(header.cwd), "Pi session cwd") !== expectedCwd) throw new Error("session identity mismatch");
 	} catch {
 		throw new RegistrationError("invalid_request", "Pi session file header does not match the supplied session ID.");
 	} finally {

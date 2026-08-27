@@ -10,5 +10,5 @@ it("exposes one collaborator tool per concern", () => {
 		registerTool(tool: { name: string }) { tools.push(tool.name); },
 		on() {},
 	} as never);
-	expect(tools).toEqual(["safe_diff", "collaborator_list", "collaborator_manage", "collaborator_send"]);
+	expect(tools).toEqual(["safe_diff", "collaborator_list", "collaborator_manage", "collaborator_workspace", "collaborator_send"]);
 });

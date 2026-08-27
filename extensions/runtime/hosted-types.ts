@@ -24,6 +24,8 @@ export interface HostedPiTarget extends HostedTargetBase {
 	kind: "pi";
 	piSessionId: string;
 	piSessionFile: string;
+	workspaceId?: string;
+	workspaceRoot?: string;
 }
 
 export type HostedCollaboratorProfile = "read-only" | "workspace-write";
@@ -178,6 +180,65 @@ export interface HostedMailboxMessageEvent extends HostedEventBase {
 
 export type HostedEvent = HostedFilesystemCreatedEvent | HostedMailboxMessageEvent;
 
+export type HostedWorkspaceState = "provisioning" | "ready" | "bound" | "active" | "ready_handoff" | "partial" | "retained" | "needs_attention" | "integrated" | "cleaned";
+
+export interface HostedWorkspace {
+	version: 1;
+	workspaceId: string;
+	requestId: string;
+	projectRoot: string;
+	gitCommonDir: string;
+	worktreePath: string;
+	branchRef: string;
+	participantKey: string;
+	protocol: string;
+	participantId: string;
+	expectedParticipantGeneration?: string;
+	holderGeneration: string;
+	targetKey: string;
+	piSessionId: string;
+	profile: "workspace-write";
+	launchDigest: string;
+	callerParticipantKey: string;
+	callerGeneration: string;
+	callerTargetKey: string;
+	baseCommit: string;
+	headCommit: string;
+	herdr?: { paneId: string; terminalId: string; tabId: string; workspaceId: string };
+	state: HostedWorkspaceState;
+	taskStatus?: "completed" | "failed" | "cancelled";
+	commits?: string[];
+	changedFiles?: number;
+	additions?: number;
+	deletions?: number;
+	integratedHead?: string;
+	createdAt: number;
+	expiresAt: number;
+	updatedAt: number;
+}
+
+export type HostedIntegrationState = "preparing" | "prepared" | "conflicted" | "needs_attention" | "finalized" | "cleaned";
+
+export interface HostedIntegration {
+	version: 1;
+	integrationId: string;
+	workspaceId: string;
+	projectRoot: string;
+	gitCommonDir: string;
+	worktreePath: string;
+	branchRef: string;
+	mainBranchRef: string;
+	mainHead: string;
+	sourceHead: string;
+	sourceCommits: string[];
+	state: HostedIntegrationState;
+	preparedHead?: string;
+	conflictPaths?: string[];
+	createdAt: number;
+	updatedAt: number;
+	finalizedAt?: number;
+}
+
 export interface HostedClaim {
 	claimId: string;
 	targetKey: string;
@@ -198,9 +259,11 @@ export interface HostedWake {
 }
 
 export interface HostedRuntimeState {
-	version: 3;
+	version: 4;
 	targets: Record<string, HostedTarget>;
 	bridgeLaunches: Record<string, HostedBridgeLaunch>;
+	workspaces: Record<string, HostedWorkspace>;
+	integrations: Record<string, HostedIntegration>;
 	monitors: Record<string, HostedMonitor>;
 	participants: Record<string, HostedParticipant>;
 	events: Record<string, HostedEvent>;
@@ -215,6 +278,12 @@ export type HostedStateOperation =
 	| { type: "bridge.launch.consume"; launchId: string; launchDigest: string; clientGeneration: string; target: HostedBridgeTarget; at: number }
 	| { type: "bridge.launch.cancel"; launchId: string; callerTargetKey: string; callerParticipantKey: string; callerGeneration: string; at: number }
 	| { type: "bridge.launch.expire"; launchId: string; at: number }
+	| { type: "workspace.ensure"; workspace: HostedWorkspace }
+	| { type: "workspace.replace"; workspace: HostedWorkspace; expectedState: HostedWorkspaceState; expectedUpdatedAt: number }
+	| { type: "workspace.bind"; workspaceId: string; callerTargetKey: string; callerParticipantKey: string; callerGeneration: string; herdr: { paneId: string; terminalId: string; tabId: string; workspaceId: string }; at: number }
+	| { type: "workspace.consume"; workspaceId: string; launchDigest: string; target: HostedPiTarget; at: number }
+	| { type: "integration.ensure"; integration: HostedIntegration }
+	| { type: "integration.replace"; integration: HostedIntegration; expectedState: HostedIntegrationState; expectedUpdatedAt: number }
 	| { type: "monitor.create"; monitor: HostedMonitor }
 	| { type: "monitor.delete"; targetKey: string; monitorId: string }
 	| { type: "monitor.commit"; monitor: HostedMonitor; events: HostedFilesystemCreatedEvent[] }
@@ -226,6 +295,7 @@ export type HostedStateOperation =
 	| { type: "inbox.claim"; claim: HostedClaim }
 	| { type: "inbox.ack"; targetKey: string; claimId: string; eventIds: string[]; at: number }
 	| { type: "inbox.reconcile"; targetKey: string; claimId: string; eventIds: string[]; at: number }
+	| { type: "inbox.reconcile_many"; targetKey: string; receipts: Array<{ claimId: string; eventIds: string[] }>; at: number }
 	| { type: "inbox.release"; targetKey: string; claimId: string; eventIds: string[]; at: number }
 	| { type: "inbox.release_expired"; at: number }
 	| { type: "retention.prune"; before: number }
