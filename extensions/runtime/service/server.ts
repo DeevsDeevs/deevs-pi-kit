@@ -3,6 +3,7 @@ import { chmodSync, lstatSync, renameSync, unlinkSync } from "node:fs";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
 import { TextDecoder } from "node:util";
+import { RuntimeBridgeCoordinator, type BridgeCoordinatorOptions } from "./bridge.ts";
 import { DirectoryMonitorManager, type DirectoryMonitorOptions } from "./monitor.ts";
 import { dispatchHostedLine, encodeHostedResponse, HOSTED_MAX_REQUEST_BYTES, invalidFrame, type HostedProtocolContext } from "./protocol.ts";
 import { HostedParticipantCoordinator, type HostedParticipantCoordinatorOptions } from "./participant.ts";
@@ -23,6 +24,7 @@ export interface RuntimeServerOptions {
 	host?: HostedHostVerifier;
 	registration?: RegistrationManagerOptions;
 	participant?: HostedParticipantCoordinatorOptions;
+	bridge?: BridgeCoordinatorOptions;
 	wake?: HostedWakeOptions;
 }
 
@@ -56,6 +58,7 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 		},
 	});
 	wakes = new HostedWakeCoordinator(store, options.wake);
+	const bridges = new RuntimeBridgeCoordinator(store, registrations, host, options.bridge);
 	participants = new HostedParticipantCoordinator(store, registrations, wakes, {
 		...options.participant,
 		stopTarget: options.participant?.stopTarget ?? (host.closeTarget ? (target) => host.closeTarget!(target, join(options.root, "collaborator-sessions")) : undefined),
@@ -69,6 +72,7 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 		monitors,
 		wakes,
 		participants,
+		bridges,
 	};
 	const sockets = new Set<Socket>();
 	const server = createServer((socket) => handleConnection(socket, context, sockets));

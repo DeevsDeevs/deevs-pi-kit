@@ -5,18 +5,69 @@ export const HOSTED_STATE_MAX_BYTES = 8 * 1024 * 1024;
 export const HOSTED_ACK_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 export const HOSTED_MAILBOX_MAX_BODY_BYTES = 16 * 1024;
 export const HOSTED_PARTICIPANT_TRANSITION_LIMIT = 8;
+export const HOSTED_BRIDGE_MAX_METADATA_ENTRIES = 16;
+export const HOSTED_BRIDGE_MAX_METADATA_VALUE_BYTES = 1_024;
+export const HOSTED_BRIDGE_FORBIDDEN_METADATA_KEYS = ["driver", "model", "persona", "profile", "token", "secret", "secrets", "credential", "credentials", "password", "api_key", "auth", "authorization", "launch_token", "reconnect_token"] as const;
 
 export interface HostedRuntimeInstance {
 	version: 1;
 	runtimeId: string;
 }
 
-export interface HostedTarget {
+interface HostedTargetBase {
 	targetKey: string;
 	projectRoot: string;
+	createdAt: number;
+}
+
+export interface HostedPiTarget extends HostedTargetBase {
+	kind: "pi";
 	piSessionId: string;
 	piSessionFile: string;
+}
+
+export type HostedCollaboratorProfile = "read-only" | "workspace-write";
+
+export interface HostedBridgeTarget extends HostedTargetBase {
+	kind: "bridge";
+	bridgeId: string;
+	participantKey: string;
+	holderGeneration: string;
+	profile: HostedCollaboratorProfile;
+	configurationHash: string;
+	clientGeneration: string;
+	reconnectDigest: string;
+	herdr: { paneId: string; terminalId: string; tabId: string; workspaceId: string };
+	metadata: Record<string, string>;
+}
+
+export type HostedTarget = HostedPiTarget | HostedBridgeTarget;
+
+export interface HostedBridgeLaunch {
+	version: 1;
+	launchId: string;
+	requestId: string;
+	launchDigest: string;
+	reconnectDigest: string;
+	callerParticipantKey: string;
+	callerGeneration: string;
+	callerTargetKey: string;
+	participantKey: string;
+	protocol: string;
+	participantId: string;
+	expectedParticipantGeneration?: string;
+	holderGeneration: string;
+	targetKey: string;
+	projectRoot: string;
+	profile: HostedCollaboratorProfile;
+	configurationHash: string;
+	herdr: { paneId: string; terminalId: string; tabId: string; workspaceId: string };
+	metadata: Record<string, string>;
 	createdAt: number;
+	expiresAt: number;
+	status: "pending" | "consumed" | "cancelled" | "expired";
+	consumedAt?: number;
+	clientGeneration?: string;
 }
 
 export interface HostedFileObservation {
@@ -147,8 +198,9 @@ export interface HostedWake {
 }
 
 export interface HostedRuntimeState {
-	version: 2;
+	version: 3;
 	targets: Record<string, HostedTarget>;
+	bridgeLaunches: Record<string, HostedBridgeLaunch>;
 	monitors: Record<string, HostedMonitor>;
 	participants: Record<string, HostedParticipant>;
 	events: Record<string, HostedEvent>;
@@ -159,6 +211,10 @@ export interface HostedRuntimeState {
 
 export type HostedStateOperation =
 	| { type: "target.ensure"; target: HostedTarget }
+	| { type: "bridge.launch.ensure"; launch: HostedBridgeLaunch }
+	| { type: "bridge.launch.consume"; launchId: string; launchDigest: string; clientGeneration: string; target: HostedBridgeTarget; at: number }
+	| { type: "bridge.launch.cancel"; launchId: string; callerTargetKey: string; callerParticipantKey: string; callerGeneration: string; at: number }
+	| { type: "bridge.launch.expire"; launchId: string; at: number }
 	| { type: "monitor.create"; monitor: HostedMonitor }
 	| { type: "monitor.delete"; targetKey: string; monitorId: string }
 	| { type: "monitor.commit"; monitor: HostedMonitor; events: HostedFilesystemCreatedEvent[] }

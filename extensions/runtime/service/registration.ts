@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { closeSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
-import type { HostedTarget } from "../hosted-types.ts";
+import type { HostedBridgeTarget, HostedTarget } from "../hosted-types.ts";
 import { HostedStateStore } from "./state.ts";
 
 const REGISTRATION_LEASE_MS = 30_000;
@@ -41,10 +41,28 @@ export interface HostedLiveAgent {
 	stateChangeSeq: number;
 }
 
+export interface HostedPaneIdentity {
+	paneId: string;
+	tabId: string;
+	workspaceId: string;
+	terminalId: string;
+	cwd: string;
+	agent?: string;
+	paneCount: number;
+	revision: number;
+}
+
 export interface HostedHostVerifier {
 	getPane(paneId: string): Promise<HostedLiveAgent>;
 	findTerminal(terminalId: string): Promise<HostedLiveAgent>;
+	getPaneIdentity?(paneId: string): Promise<HostedPaneIdentity>;
 	closeTarget?(target: HostedTarget, managedSessionDirectory: string): Promise<"closed" | "already_absent" | "unmanaged">;
+}
+
+export interface RegisterBridgeInput {
+	clientGeneration: string;
+	admittedClaims: Array<{ claimId: string; eventIds: string[] }>;
+	herdr: { paneId: string; terminalId: string };
 }
 
 export interface RegisterPiInput {
@@ -97,36 +115,27 @@ export class RuntimeRegistrationManager {
 		const verified = await this.host.getPane(input.herdr.paneId);
 		this.ensureOpen();
 		verifyIdentity(verified, { ...input, projectRoot, piSessionFile }, false);
-		this.expire();
-		const existingId = this.byTarget.get(targetKey);
-		const existing = existingId ? this.registrations.get(existingId) : undefined;
-		if (existing && existing.host.terminalId !== verified.terminalId) throw new RegistrationError("conflict", "Another live terminal owns this Pi target.");
-		if (input.admittedClaims.length > MAX_ADMITTED_CLAIMS) throw new RegistrationError("invalid_request", `At most ${MAX_ADMITTED_CLAIMS} admitted claims may be reconciled.`);
-		for (const receipt of input.admittedClaims) this.reconcileReceipt(targetKey, receipt);
-		if (existing && existing.clientGeneration === input.clientGeneration && existing.host.terminalId === verified.terminalId) {
-			const renewed = { ...existing, leaseUntil: this.now() + this.leaseMs(), host: verified };
-			this.registrations.set(renewed.registrationId, renewed);
-			this.ready(renewed.targetKey);
-			return renewed;
-		}
-		const target: HostedTarget = { targetKey, projectRoot, piSessionId: input.piSessionId, piSessionFile, createdAt: this.now() };
+		this.validateAdmissions(targetKey, input.admittedClaims);
+		const target: HostedTarget = { kind: "pi", targetKey, projectRoot, piSessionId: input.piSessionId, piSessionFile, createdAt: this.now() };
 		this.store.apply({ type: "target.ensure", target });
-		if (existing) this.drop(existing.registrationId);
-		const terminalRegistrationId = this.byTerminal.get(verified.terminalId);
-		if (terminalRegistrationId) this.drop(terminalRegistrationId);
-		const registration: HostedLiveRegistration = {
-			targetKey,
-			registrationId: this.options.createId?.() ?? `reg_${randomUUID()}`,
-			registrationKey: this.options.createKey?.() ?? randomBytes(32).toString("base64url"),
-			clientGeneration: input.clientGeneration,
-			leaseUntil: this.now() + this.leaseMs(),
-			host: verified,
-		};
-		this.registrations.set(registration.registrationId, registration);
-		this.byTarget.set(targetKey, registration.registrationId);
-		this.byTerminal.set(verified.terminalId, registration.registrationId);
-		this.ready(registration.targetKey);
-		return registration;
+		return this.install(targetKey, input.clientGeneration, input.admittedClaims, verified);
+	}
+
+	async registerBridge(input: RegisterBridgeInput, target: HostedBridgeTarget, credentials: { registrationId: string; registrationKey: string }): Promise<HostedLiveRegistration> {
+		const durable = this.store.read().targets[target.targetKey];
+		if (!durable || durable.kind !== "bridge" || !sameBridgeTarget(durable, target)) throw new RegistrationError("conflict", "Bridge target does not match durable launch authority.");
+		if (this.host.getPaneIdentity) {
+			const pane = await this.host.getPaneIdentity(input.herdr.paneId);
+			if (pane.paneCount !== 1 || pane.paneId !== target.herdr.paneId || pane.terminalId !== target.herdr.terminalId || pane.tabId !== target.herdr.tabId || pane.workspaceId !== target.herdr.workspaceId) throw new RegistrationError("identity_mismatch", "Bridge tab is not the exact authorized single-pane Herdr target.");
+		}
+		const verified = await this.host.getPane(input.herdr.paneId);
+		this.ensureOpen();
+		verifyBridgeIdentity(verified, target, input.herdr, false);
+		const currentTarget = this.store.read().targets[target.targetKey];
+		if (!currentTarget || currentTarget.kind !== "bridge" || !sameBridgeTarget(currentTarget, target)) throw new RegistrationError("registration_stale", "Bridge target changed during host verification.");
+		const participant = this.store.read().participants[target.participantKey];
+		if (!participant || participant.state !== "held" || participant.holderTargetKey !== target.targetKey || participant.generation !== target.holderGeneration) throw new RegistrationError("registration_stale", "Bridge participant generation changed during host verification.");
+		return this.install(target.targetKey, input.clientGeneration, input.admittedClaims, verified, credentials);
 	}
 
 	async heartbeat(registrationId: string, registrationKey: string): Promise<HostedLiveRegistration> {
@@ -139,7 +148,7 @@ export class RuntimeRegistrationManager {
 		this.expire();
 		const registrationId = this.byTarget.get(targetKey);
 		const registration = registrationId ? this.registrations.get(registrationId) : undefined;
-		if (!registration) throw new RegistrationError("registration_stale", "Pi target has no live registration.");
+		if (!registration) throw new RegistrationError("registration_stale", "Target has no live registration.");
 		return this.verify(registration.registrationId, registration.registrationKey, false);
 	}
 
@@ -155,10 +164,12 @@ export class RuntimeRegistrationManager {
 		return registration;
 	}
 
-	hasLiveTarget(targetKey: string): boolean {
+	isLiveTarget(targetKey: string): boolean {
 		this.expire();
 		return this.byTarget.has(targetKey);
 	}
+
+	hasLiveTarget(targetKey: string): boolean { return this.isLiveTarget(targetKey); }
 
 	close(): void {
 		this.closed = true;
@@ -166,6 +177,34 @@ export class RuntimeRegistrationManager {
 		this.byTarget.clear();
 		this.byTerminal.clear();
 		this.verifications.clear();
+	}
+
+	private install(targetKey: string, clientGeneration: string, admittedClaims: Array<{ claimId: string; eventIds: string[] }>, verified: HostedLiveAgent, credentials?: { registrationId: string; registrationKey: string }): HostedLiveRegistration {
+		this.expire();
+		const existingId = this.byTarget.get(targetKey);
+		const existing = existingId ? this.registrations.get(existingId) : undefined;
+		if (existing && existing.host.terminalId !== verified.terminalId) throw new RegistrationError("conflict", "Another live terminal owns this target.");
+		this.validateAdmissions(targetKey, admittedClaims);
+		if (existing && existing.clientGeneration === clientGeneration && existing.host.terminalId === verified.terminalId) {
+			if (credentials && (existing.registrationId !== credentials.registrationId || existing.registrationKey !== credentials.registrationKey)) throw new RegistrationError("conflict", "Bridge registration credentials changed for an active target.");
+			const renewed = { ...existing, leaseUntil: this.now() + this.leaseMs(), host: verified };
+			this.registrations.set(renewed.registrationId, renewed);
+			this.ready(renewed.targetKey);
+			return renewed;
+		}
+		if (existing) this.drop(existing.registrationId);
+		const terminalRegistrationId = this.byTerminal.get(verified.terminalId);
+		if (terminalRegistrationId) this.drop(terminalRegistrationId);
+		const registrationId = credentials?.registrationId ?? this.options.createId?.() ?? `reg_${randomUUID()}`;
+		const registrationKey = credentials?.registrationKey ?? this.options.createKey?.() ?? randomBytes(32).toString("base64url");
+		const collision = this.registrations.get(registrationId);
+		if (collision && collision.targetKey !== targetKey) throw new RegistrationError("conflict", "Registration ID already belongs to another target.");
+		const registration: HostedLiveRegistration = { targetKey, registrationId, registrationKey, clientGeneration, leaseUntil: this.now() + this.leaseMs(), host: verified };
+		this.registrations.set(registration.registrationId, registration);
+		this.byTarget.set(targetKey, registration.registrationId);
+		this.byTerminal.set(verified.terminalId, registration.registrationId);
+		this.ready(registration.targetKey);
+		return registration;
 	}
 
 	private verify(registrationId: string, registrationKey: string, renew: boolean): Promise<HostedLiveRegistration> {
@@ -177,14 +216,13 @@ export class RuntimeRegistrationManager {
 			if (this.registrations.get(registrationId) !== current) throw new RegistrationError("registration_stale", "Registration changed while its host identity was being verified.");
 			const target = this.store.read().targets[current.targetKey];
 			if (!target) throw new RegistrationError("not_found", "Runtime target no longer exists.");
-			verifyIdentity(verified, {
-				projectRoot: target.projectRoot,
-				piSessionId: target.piSessionId,
-				piSessionFile: target.piSessionFile,
-				clientGeneration: current.clientGeneration,
-				admittedClaims: [],
-				herdr: { paneId: current.host.paneId, terminalId: current.host.terminalId, agentName: current.host.name },
-			}, true);
+			if (target.kind === "pi") {
+				verifyIdentity(verified, { projectRoot: target.projectRoot, piSessionId: target.piSessionId, piSessionFile: target.piSessionFile, clientGeneration: current.clientGeneration, admittedClaims: [], herdr: { paneId: current.host.paneId, terminalId: current.host.terminalId, agentName: current.host.name } }, true);
+			} else {
+				const participant = this.store.read().participants[target.participantKey];
+				if (!participant || participant.state !== "held" || participant.holderTargetKey !== target.targetKey || participant.generation !== target.holderGeneration) throw new RegistrationError("registration_stale", "Bridge participant generation is no longer held by this target.");
+				verifyBridgeIdentity(verified, target, { paneId: target.herdr.paneId, terminalId: target.herdr.terminalId }, false);
+			}
 			const next = { ...current, leaseUntil: renew ? this.now() + this.leaseMs() : current.leaseUntil, host: verified };
 			this.registrations.set(registrationId, next);
 			return next;
@@ -197,6 +235,11 @@ export class RuntimeRegistrationManager {
 
 	private ensureOpen(): void {
 		if (this.closed) throw new RegistrationError("registration_stale", "Runtime registration service is closing.");
+	}
+
+	private validateAdmissions(targetKey: string, admittedClaims: Array<{ claimId: string; eventIds: string[] }>): void {
+		if (admittedClaims.length > MAX_ADMITTED_CLAIMS) throw new RegistrationError("invalid_request", `At most ${MAX_ADMITTED_CLAIMS} admitted claims may be reconciled.`);
+		for (const receipt of admittedClaims) this.reconcileReceipt(targetKey, receipt);
 	}
 
 	private reconcileReceipt(targetKey: string, receipt: { claimId: string; eventIds: string[] }): void {
@@ -247,7 +290,17 @@ export class HerdrCliHostVerifier implements HostedHostVerifier {
 		return matches[0]!;
 	}
 
+	async getPaneIdentity(paneId: string): Promise<HostedPaneIdentity> {
+		const response = await runHerdr(["pane", "get", paneId]);
+		const pane = parsePaneIdentity(strictObject(strictObject(response, "Herdr response").result, "Herdr result").pane);
+		const tabResponse = await runHerdr(["tab", "get", pane.tabId]);
+		const tab = strictObject(strictObject(strictObject(tabResponse, "Herdr response").result, "Herdr result").tab, "Herdr tab");
+		if (tab.tab_id !== pane.tabId || tab.workspace_id !== pane.workspaceId || !Number.isSafeInteger(tab.pane_count) || Number(tab.pane_count) < 1) throw new RegistrationError("host_unavailable", "Herdr returned malformed tab identity.");
+		return { ...pane, paneCount: Number(tab.pane_count) };
+	}
+
 	async closeTarget(target: HostedTarget, managedSessionDirectory: string): Promise<"closed" | "already_absent" | "unmanaged"> {
+		if (target.kind === "bridge") return this.closeBridgeTarget(target);
 		let sessionFile: string;
 		try {
 			sessionFile = canonicalFile(target.piSessionFile, "collaborator session file");
@@ -269,6 +322,25 @@ export class HerdrCliHostVerifier implements HostedHostVerifier {
 		if (tab.tab_id !== agent.tabId || tab.workspace_id !== agent.workspaceId || tab.pane_count !== 1) throw new RegistrationError("identity_mismatch", "Collaborator tab identity changed before stop.");
 		try {
 			await runHerdr(["tab", "close", agent.tabId]);
+			return "closed";
+		} catch (error) {
+			if ((await find()).length === 0) return "already_absent";
+			throw error;
+		}
+	}
+
+	private async closeBridgeTarget(target: HostedBridgeTarget): Promise<"closed" | "already_absent"> {
+		const find = async () => (await this.listAgents()).filter((agent) => agent.agentSession.source === "pi-kit-bridge" && agent.agentSession.agent === "bridge" && agent.agentSession.kind === "id" && agent.agentSession.value === target.bridgeId);
+		const matches = await find();
+		if (matches.length === 0) return "already_absent";
+		if (matches.length !== 1) throw new RegistrationError("identity_mismatch", "Bridge identity is not unique in Herdr.");
+		const agent = matches[0]!;
+		if (agent.paneId !== target.herdr.paneId || agent.terminalId !== target.herdr.terminalId || agent.tabId !== target.herdr.tabId || agent.workspaceId !== target.herdr.workspaceId || canonicalDirectory(agent.cwd, "Herdr cwd") !== target.projectRoot) throw new RegistrationError("identity_mismatch", "Herdr bridge identity does not match its Runtime target.");
+		const response = await runHerdr(["tab", "get", target.herdr.tabId]);
+		const tab = strictObject(strictObject(strictObject(response, "Herdr response").result, "Herdr result").tab, "Herdr tab");
+		if (tab.tab_id !== target.herdr.tabId || tab.workspace_id !== target.herdr.workspaceId || tab.pane_count !== 1) throw new RegistrationError("identity_mismatch", "Bridge tab identity changed before stop.");
+		try {
+			await runHerdr(["tab", "close", target.herdr.tabId]);
 			return "closed";
 		} catch (error) {
 			if ((await find()).length === 0) return "already_absent";
@@ -305,6 +377,20 @@ function verifyIdentity(agent: HostedLiveAgent, input: RegisterPiInput, allowMov
 	}
 }
 
+function verifyBridgeIdentity(agent: HostedLiveAgent, target: HostedBridgeTarget, herdr: { paneId: string; terminalId: string }, allowMovedPane: boolean): void {
+	if (!allowMovedPane && agent.paneId !== herdr.paneId) throw new RegistrationError("identity_mismatch", "Herdr bridge pane locator does not match.");
+	if (agent.terminalId !== herdr.terminalId || agent.paneId !== target.herdr.paneId || agent.terminalId !== target.herdr.terminalId || agent.tabId !== target.herdr.tabId || agent.workspaceId !== target.herdr.workspaceId) throw new RegistrationError("identity_mismatch", "Herdr bridge host identity does not match launch authority.");
+	let hostCwd: string;
+	try { hostCwd = canonicalDirectory(agent.cwd, "Herdr cwd"); } catch { throw new RegistrationError("identity_mismatch", "Herdr bridge cwd is unavailable or not canonical."); }
+	if (hostCwd !== target.projectRoot) throw new RegistrationError("identity_mismatch", "Herdr bridge cwd does not match the canonical project root.");
+	const session = agent.agentSession;
+	if (session.source !== "pi-kit-bridge" || session.agent !== "bridge" || session.kind !== "id" || session.value !== target.bridgeId) throw new RegistrationError("identity_mismatch", "Herdr does not report the authoritative generic bridge identity.");
+}
+
+function sameBridgeTarget(left: HostedBridgeTarget, right: HostedBridgeTarget): boolean {
+	return JSON.stringify(left) === JSON.stringify(right);
+}
+
 function canonicalDirectory(path: string, name: string): string {
 	try {
 		const canonical = realpathSync(path);
@@ -339,6 +425,25 @@ function verifyPiSessionHeader(path: string, expectedId: string): void {
 		throw new RegistrationError("invalid_request", "Pi session file header does not match the supplied session ID.");
 	} finally {
 		if (descriptor !== undefined) closeSync(descriptor);
+	}
+}
+
+function parsePaneIdentity(value: unknown): HostedPaneIdentity {
+	try {
+		const pane = strictObject(value, "Herdr pane");
+		if (!Number.isSafeInteger(pane.revision) || Number(pane.revision) < 0) throw new Error("invalid pane revision");
+		return {
+			paneId: text(pane.pane_id),
+			tabId: text(pane.tab_id),
+			workspaceId: text(pane.workspace_id),
+			terminalId: text(pane.terminal_id),
+			cwd: text(pane.cwd),
+			...(typeof pane.agent === "string" ? { agent: pane.agent } : {}),
+			paneCount: 0,
+			revision: Number(pane.revision),
+		};
+	} catch {
+		throw new RegistrationError("host_unavailable", "Herdr returned malformed pane identity.");
 	}
 }
 

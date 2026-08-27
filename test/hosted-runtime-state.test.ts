@@ -30,6 +30,7 @@ function temporaryRoot(): string {
 
 function target(): HostedTarget {
 	return {
+		kind: "pi",
 		targetKey: "pi_target",
 		projectRoot: "/tmp/project",
 		piSessionId: "session-1",
