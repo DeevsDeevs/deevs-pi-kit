@@ -6,7 +6,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadBuiltinAgents } from "../extensions/subagents/agents.ts";
 import { HostedRuntimeClientError } from "../extensions/runtime/client.ts";
-import { HOSTED_COLLABORATOR_PROFILE_ENTRY, HOSTED_PARTICIPANT_ENTRY, HostedRuntimeIntegration } from "../extensions/runtime/hosted-integration.ts";
+import { CollaboratorAutoStore } from "../extensions/runtime/auto-mode.ts";
+import { HOSTED_AUTO_LIFECYCLE_ENTRY, HOSTED_COLLABORATOR_PROFILE_ENTRY, HOSTED_MANAGED_COLLABORATOR_ENTRY, HOSTED_PARTICIPANT_ENTRY, HostedRuntimeIntegration } from "../extensions/runtime/hosted-integration.ts";
 import { deriveTargetKey } from "../extensions/runtime/service/registration.ts";
 
 const roots: string[] = [];
@@ -60,6 +61,7 @@ async function setup(respond: (request: Request) => unknown, branch: unknown[] =
 	await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(join(runtimeRoot, "runtime.sock"), resolve); });
 	const entries: Array<{ customType: string; data: unknown }> = [];
 	const notifications: Array<{ message: string; level: string }> = [];
+	const statuses: Array<{ key: string; value: string | undefined }> = [];
 	const execCalls: Array<{ command: string; args: string[] }> = [];
 	let execHandler = async (command: string, args: string[]) => ({ code: 0, stdout: command === "herdr" && args[0] === "pane" ? JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }) : "{}", stderr: "", killed: false });
 	const pi = {
@@ -74,12 +76,13 @@ async function setup(respond: (request: Request) => unknown, branch: unknown[] =
 		hasPendingMessages: () => false,
 		ui: {
 			notify(message: string, level: string) { notifications.push({ message, level }); },
+			setStatus(key: string, value: string | undefined) { statuses.push({ key, value }); },
 			confirm: async () => true,
 		},
 		sessionManager: { getSessionFile: () => sessionFile, getSessionId: () => "session_1", getBranch: () => branch },
 	};
 	const integration = new HostedRuntimeIntegration(pi as never, runtimeRoot);
-	return { root, runtimeRoot, projectRoot, requests, entries, notifications, execCalls, pi, ctx, integration, setExec(handler: typeof execHandler) { execHandler = handler; } };
+	return { root, runtimeRoot, projectRoot, requests, entries, notifications, statuses, execCalls, pi, ctx, integration, setExec(handler: typeof execHandler) { execHandler = handler; } };
 }
 
 const registration = { targetKey: "target_main", registrationId: "reg_1", registrationKey: "key_1", leaseUntil: 99_999, hostStateChangeSeq: 1, paneId: "w1:p1" };
@@ -322,6 +325,85 @@ describe("hosted collaborator Pi integration", () => {
 		await test.integration.sessionShutdown();
 	});
 
+	it("lets typed global Auto mode start and stop without confirmations and records an audit", async () => {
+		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
+		let childTargetKey = "";
+		let stopped = false;
+		const child = { ...fableParticipant, holderTargetKey: "", holderLive: true };
+		const test = await setup((request) => {
+			if (request.method === "participant.get") return mainParticipant;
+			if (request.method === "participant.list") return { participants: childTargetKey && !stopped ? [mainParticipant, { ...child, holderTargetKey: childTargetKey }] : stopped ? [mainParticipant, { ...child, state: "vacant", generation: "lease_stopped", holderLive: false, holderTargetKey: undefined }] : [mainParticipant] };
+			if (request.method === "participant.stop_confirmed") {
+				stopped = true;
+				return { participant: { ...child, state: "vacant", generation: "lease_stopped", holderLive: false, holderTargetKey: undefined }, outcome: "stopped" };
+			}
+			return baseResponse(request);
+		}, [identity]);
+		new CollaboratorAutoStore(test.runtimeRoot).set(true);
+		let confirmations = 0;
+		test.ctx.hasUI = false;
+		test.ctx.ui.confirm = async () => { confirmations++; return false; };
+		test.setExec(async (_command, args) => {
+			if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
+			if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
+			if (args[0] === "pane" && args[1] === "run") childTargetKey = deriveTargetKey(test.projectRoot, sessionHeader(paneRunSessionFile(args)).id);
+			return { code: 0, stdout: "{}", stderr: "", killed: false };
+		});
+		await test.integration.sessionStart(test.ctx as never);
+		expect(test.statuses.at(-1)).toEqual({ key: "runtime-auto", value: "AUTO" });
+		expect(await test.integration.manageCollaborators({ action: "start", protocol: "review", participants: [{ participantId: "fable", persona: "architect", profile: "workspace-write" }] }, test.ctx as never)).toEqual([expect.objectContaining({ participant: "review/fable", status: "started" })]);
+		expect(await test.integration.manageCollaborators({ action: "stop", protocol: "review", participants: [{ participantId: "fable" }] }, test.ctx as never)).toEqual([{ participant: "review/fable", status: "stopped" }]);
+		expect(confirmations).toBe(0);
+		expect(test.entries.filter((entry) => entry.customType === HOSTED_AUTO_LIFECYCLE_ENTRY).map((entry) => (entry.data as { phase: string }).phase)).toEqual(["authorized", "settled", "authorized", "settled"]);
+		await test.integration.sessionShutdown();
+		expect(test.statuses.at(-1)).toEqual({ key: "runtime-auto", value: undefined });
+	});
+
+	it("does not delegate global Auto authority to a Runtime-managed child", async () => {
+		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "child", participantKey: "participant_child", generation: "lease_child", disposition: "held" } };
+		const managed = { type: "custom", customType: HOSTED_MANAGED_COLLABORATOR_ENTRY, data: { version: 1, managed: true } };
+		const childParticipant = { ...mainParticipant, participantId: "child", participantKey: "participant_child", generation: "lease_child" };
+		const test = await setup((request) => request.method === "participant.get" ? childParticipant : request.method === "participant.list" ? { participants: [childParticipant] } : baseResponse(request), [managed, identity]);
+		new CollaboratorAutoStore(test.runtimeRoot).set(true);
+		test.ctx.hasUI = false;
+		await test.integration.sessionStart(test.ctx as never);
+		expect(test.statuses.at(-1)).toEqual({ key: "runtime-auto", value: undefined });
+		await expect(test.integration.startCollaborator({ participantId: "other" }, test.ctx as never)).rejects.toThrow("interactive Pi session or enabled Runtime Auto mode");
+		await test.integration.sessionShutdown();
+	});
+
+	it("fails closed on corrupt Auto state and enforces the twelve-live cap", async () => {
+		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
+		const corrupt = await setup((request) => request.method === "participant.get" ? mainParticipant : request.method === "participant.list" ? { participants: [mainParticipant] } : baseResponse(request), [identity]);
+		writeFileSync(join(corrupt.runtimeRoot, "auto-mode.v1.json"), "{broken");
+		corrupt.ctx.hasUI = false;
+		await corrupt.integration.sessionStart(corrupt.ctx as never);
+		expect(corrupt.integration.toggleAutoMode(corrupt.ctx as never).enabled).toBe(false);
+		await expect(corrupt.integration.startCollaborator({ participantId: "fable" }, corrupt.ctx as never)).rejects.toThrow("interactive Pi session or enabled Runtime Auto mode");
+		expect(corrupt.notifications.some((notice) => notice.message.includes("enforced MANUAL"))).toBe(true);
+		expect(corrupt.notifications.some((notice) => notice.message.includes("recover explicitly"))).toBe(true);
+		await corrupt.integration.sessionShutdown();
+
+		const live = Array.from({ length: 12 }, (_, index) => ({ ...fableParticipant, participantKey: `participant_${index}`, participantId: `live-${index}`, holderTargetKey: `target_${index}` }));
+		const capped = await setup((request) => request.method === "participant.get" ? mainParticipant : request.method === "participant.list" ? { participants: [mainParticipant, ...live] } : baseResponse(request), [identity]);
+		new CollaboratorAutoStore(capped.runtimeRoot).set(true);
+		capped.ctx.hasUI = false;
+		await capped.integration.sessionStart(capped.ctx as never);
+		await expect(capped.integration.startCollaborator({ participantId: "extra" }, capped.ctx as never)).rejects.toThrow("at most 12 live collaborators");
+		expect(capped.execCalls.some((call) => call.args[0] === "tab" && call.args[1] === "create")).toBe(false);
+		await capped.integration.sessionShutdown();
+	});
+
+	it("configures the trusted Shift+Tab Auto shortcut and requests reload", async () => {
+		const test = await setup(baseResponse);
+		let reloaded = false;
+		(test.ctx as typeof test.ctx & { reload(): Promise<void> }).reload = async () => { reloaded = true; };
+		await test.integration.command("auto setup", test.ctx as never);
+		expect(reloaded).toBe(true);
+		expect(new CollaboratorAutoStore(test.runtimeRoot).shortcutConfigured()).toBe(true);
+		expect(JSON.parse(readFileSync(join(test.root, "keybindings.json"), "utf8"))["app.thinking.cycle"]).toEqual(["ctrl+shift+t"]);
+	});
+
 	it("starts an exact batch after one confirmation with concurrency capped at four", async () => {
 		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
 		const children = new Map<string, string>();
@@ -373,7 +455,7 @@ describe("hosted collaborator Pi integration", () => {
 		const launches = test.execCalls.filter((call) => call.args[0] === "pane" && call.args[1] === "run");
 		const materializedProfiles = launches.flatMap((call) => readFileSync(paneRunSessionFile(call.args), "utf8").trim().split("\n").slice(1).map((line) => JSON.parse(line).data));
 		expect(materializedProfiles).toContainEqual(expect.objectContaining({ version: 1, profile: "workspace-write", persona: expect.objectContaining({ name: "architect" }) }));
-		expect(launches.some((call) => call.args[3]?.includes("--tools 'read,grep,find,ls,collaborator_list,collaborator_send,chain_save,chain_load,chain_context,edit,write'"))).toBe(true);
+		expect(launches.some((call) => call.args[3]?.includes("--tools 'read,grep,find,ls,safe_diff,collaborator_list,collaborator_send,chain_save,chain_load,chain_context,edit,write'"))).toBe(true);
 		expect(test.execCalls.some((call) => call.args[0] === "tab" && call.args[1] === "focus")).toBe(false);
 		expect(test.execCalls.find((call) => call.args[0] === "pane" && call.args[1] === "run")?.args[3]).toContain("--model 'openai-codex/gpt-5.6-terra:high'");
 		await test.integration.sessionShutdown();
@@ -434,10 +516,11 @@ describe("hosted collaborator Pi integration", () => {
 		const created = test.execCalls.find((call) => call.args[0] === "tab" && call.args[1] === "create")!;
 		expect(created.args.some((argument) => argument.startsWith("PI_RUNTIME_COLLABORATOR_PERSONA="))).toBe(false);
 		const launched = test.execCalls.find((call) => call.args[0] === "pane" && call.args[1] === "run")!;
-		expect(launched.args[3]).toContain("--tools 'read,grep,find,ls,collaborator_list,collaborator_send,chain_save,chain_load,chain_context'");
+		expect(launched.args[3]).toContain("--tools 'read,grep,find,ls,safe_diff,collaborator_list,collaborator_send,chain_save,chain_load,chain_context'");
 		const sessionEntries = readFileSync(paneRunSessionFile(launched.args), "utf8").trim().split("\n").map((line) => JSON.parse(line));
-		expect(sessionEntries[1]).toMatchObject({ type: "custom", customType: HOSTED_COLLABORATOR_PROFILE_ENTRY, data: { version: 1, profile: "read-only", persona: { name: "architect" } }, parentId: null });
-		expect(sessionEntries[1].data.persona.promptHash).toBe(createHash("sha256").update(sessionEntries[1].data.persona.prompt).digest("hex"));
+		expect(sessionEntries[1]).toMatchObject({ type: "custom", customType: HOSTED_MANAGED_COLLABORATOR_ENTRY, data: { version: 1, managed: true }, parentId: null });
+		expect(sessionEntries[2]).toMatchObject({ type: "custom", customType: HOSTED_COLLABORATOR_PROFILE_ENTRY, data: { version: 1, profile: "read-only", persona: { name: "architect" } }, parentId: sessionEntries[1].id });
+		expect(sessionEntries[2].data.persona.promptHash).toBe(createHash("sha256").update(sessionEntries[2].data.persona.prompt).digest("hex"));
 
 		let invalidConfirmed = false;
 		test.ctx.ui.confirm = async () => { invalidConfirmed = true; return true; };
@@ -465,7 +548,7 @@ describe("hosted collaborator Pi integration", () => {
 			await test.integration.sessionStart(test.ctx as never);
 			await expect(test.integration.startCollaborator({ participantId: persona.name, persona: persona.name }, test.ctx as never)).resolves.toBeDefined();
 			const launch = test.execCalls.find((call) => call.args[0] === "pane" && call.args[1] === "run")!;
-			const profile = readFileSync(paneRunSessionFile(launch.args), "utf8").trim().split("\n").slice(1).map((line) => JSON.parse(line).data)[0];
+			const profile = readFileSync(paneRunSessionFile(launch.args), "utf8").trim().split("\n").slice(1).map((line) => JSON.parse(line)).find((entry) => entry.customType === HOSTED_COLLABORATOR_PROFILE_ENTRY)?.data;
 			expect(profile).toMatchObject({ profile: "read-only", persona: { name: persona.name } });
 			if (persona.name === "reviewer") {
 				expect(profile.persona.prompt).toContain("When `review_report` is available");
@@ -527,7 +610,9 @@ describe("hosted collaborator Pi integration", () => {
 		expect(started.args).toEqual(["pane", "run", "w1:p9", `exec pi --approve --session '${sessionFile}'`]);
 		expect(test.execCalls.some((call) => call.args[0] === "agent" && call.args[1] === "start")).toBe(false);
 		expect(test.execCalls.some((call) => call.args[0] === "tab" && call.args[1] === "focus")).toBe(false);
-		expect(JSON.parse(readFileSync(sessionFile, "utf8"))).toMatchObject({ type: "session", version: 3, cwd: test.projectRoot });
+		expect(sessionHeader(sessionFile).id).toEqual(expect.any(String));
+		expect(JSON.parse(readFileSync(sessionFile, "utf8").split("\n")[0]!)).toMatchObject({ type: "session", version: 3, cwd: test.projectRoot });
+		expect(readFileSync(sessionFile, "utf8")).toContain(HOSTED_MANAGED_COLLABORATOR_ENTRY);
 		expect(test.execCalls.some((call) => call.args[0] === "tab" && call.args[1] === "close")).toBe(false);
 		await test.integration.sessionShutdown();
 
@@ -542,7 +627,7 @@ describe("hosted collaborator Pi integration", () => {
 		await failed.integration.command("collaborator-start review fable", failed.ctx as never);
 		expect(failed.execCalls.some((call) => call.args[0] === "tab" && call.args[1] === "close" && call.args.includes("w1:t8"))).toBe(true);
 		expect(failed.notifications.some((notice) => notice.message.includes("could not clean up failed collaborator tab"))).toBe(true);
-		expect(readdirSync(join(failed.runtimeRoot, "collaborator-sessions"))).toEqual([]);
+		expect(readdirSync(join(failed.runtimeRoot, "collaborator-sessions"))).toHaveLength(1);
 		await failed.integration.sessionShutdown();
 	});
 
@@ -575,6 +660,46 @@ describe("hosted collaborator Pi integration", () => {
 		await test.integration.sessionShutdown();
 	});
 
+	it("serializes the trusted collaborator-start command through the cross-session lock", async () => {
+		const test = await setup(baseResponse);
+		let releaseLaunch!: () => void;
+		const held = new Promise<void>((resolve) => { releaseLaunch = resolve; });
+		let launchEntered!: () => void;
+		const entered = new Promise<void>((resolve) => { launchEntered = resolve; });
+		const internal = test.integration as unknown as { launchCollaborator(...args: unknown[]): Promise<string> };
+		internal.launchCollaborator = async () => { launchEntered(); await held; return "w1:p9"; };
+		await test.integration.sessionStart(test.ctx as never);
+		const command = test.integration.command("collaborator-start review fable", test.ctx as never);
+		await entered;
+		expect(existsSync(join(test.runtimeRoot, "auto-start.lock"))).toBe(true);
+		await expect(new CollaboratorAutoStore(test.runtimeRoot).acquireStartLock()).rejects.toThrow("already in progress");
+		releaseLaunch();
+		await command;
+		expect(existsSync(join(test.runtimeRoot, "auto-start.lock"))).toBe(false);
+		await test.integration.sessionShutdown();
+	});
+
+	it("retains the command start lock and evidence when dispatch is ambiguous", async () => {
+		const test = await setup((request) => request.method === "participant.list" ? { participants: [mainParticipant] } : baseResponse(request));
+		let childSessionFile = "";
+		test.setExec(async (_command, args) => {
+			if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
+			if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
+			if (args[0] === "pane" && args[1] === "run") {
+				childSessionFile = paneRunSessionFile(args);
+				return { code: 1, stdout: "", stderr: "reply lost", killed: false };
+			}
+			return { code: 0, stdout: "{}", stderr: "", killed: false };
+		});
+		await test.integration.sessionStart(test.ctx as never);
+		await test.integration.command("collaborator-start review fable", test.ctx as never);
+		expect(existsSync(childSessionFile)).toBe(true);
+		expect(existsSync(join(test.runtimeRoot, "auto-start.lock"))).toBe(true);
+		expect(test.execCalls.some((call) => call.args[0] === "tab" && call.args[1] === "close")).toBe(false);
+		expect(test.notifications.some((notice) => notice.message.includes("tab and session were preserved"))).toBe(true);
+		await test.integration.sessionShutdown();
+	});
+
 	it("preserves child resources and caller when pane-run dispatch is ambiguous", async () => {
 		let listCount = 0;
 		const test = await setup((request) => {
@@ -598,6 +723,29 @@ describe("hosted collaborator Pi integration", () => {
 		expect(test.entries.at(-1)).toMatchObject({ customType: HOSTED_PARTICIPANT_ENTRY, data: { participantId: "main", disposition: "held" } });
 		expect(test.execCalls.some((call) => call.args[0] === "tab" && call.args[1] === "close")).toBe(false);
 		expect(existsSync(childSessionFile)).toBe(true);
+		await test.integration.sessionShutdown();
+	});
+
+	it("terminates an ambiguous Auto start before releasing capacity", async () => {
+		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
+		const test = await setup((request) => request.method === "participant.get" ? mainParticipant : request.method === "participant.list" ? { participants: [mainParticipant] } : baseResponse(request), [identity]);
+		new CollaboratorAutoStore(test.runtimeRoot).set(true);
+		test.ctx.hasUI = false;
+		let childSessionFile = "";
+		test.setExec(async (_command, args) => {
+			if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
+			if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
+			if (args[0] === "pane" && args[1] === "run") {
+				childSessionFile = paneRunSessionFile(args);
+				return { code: 1, stdout: "", stderr: "reply lost", killed: false };
+			}
+			return { code: 0, stdout: "{}", stderr: "", killed: false };
+		});
+		await test.integration.sessionStart(test.ctx as never);
+		await expect(test.integration.startCollaborator({ participantId: "fable" }, test.ctx as never)).rejects.toThrow("dispatch Pi collaborator startup");
+		expect(test.execCalls).toContainEqual({ command: "herdr", args: ["tab", "close", "w1:t9"] });
+		expect(existsSync(childSessionFile)).toBe(false);
+		expect(existsSync(join(test.runtimeRoot, "auto-start.lock"))).toBe(false);
 		await test.integration.sessionShutdown();
 	});
 

@@ -3,10 +3,12 @@ import * as path from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import { isToolCallEventType, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { detectDetachedShell } from "../shared/process-safety.ts";
+import { registerSafeDiffTool } from "../shared/safe-diff.ts";
 
 const SKIP_DIRS = new Set([".git", "node_modules", ".pi", ".chains", ".missions"]);
 
 export default function childSafetyRuntime(pi: ExtensionAPI): void {
+	registerSafeDiffTool(pi);
 	pi.registerTool({
 		name: "safe_read",
 		label: "Read project file",

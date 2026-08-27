@@ -13,7 +13,7 @@ describe("read-only child tools", () => {
 			on() {},
 		} as unknown as ExtensionAPI;
 		childSafetyRuntime(pi);
-		expect([...tools.keys()]).toEqual(["safe_read", "safe_list", "review_report", "safe_search"]);
+		expect([...tools.keys()]).toEqual(["safe_diff", "safe_read", "safe_list", "review_report", "safe_search"]);
 		const read = await tools.get("safe_read")!.execute("call", { path: "package.json", maxBytes: 200 });
 		expect(read.content[0]?.text).toContain("deevs-pi-kit");
 		const listed = await tools.get("safe_list")!.execute("call", { path: "extensions/subagents", maxDepth: 1, maxResults: 20 });

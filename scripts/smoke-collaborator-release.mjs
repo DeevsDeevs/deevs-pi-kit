@@ -42,7 +42,7 @@ execFileSync("git", ["add", "release.txt"], { cwd: projectRoot });
 execFileSync("git", ["-c", "user.name=Release Gate", "-c", "user.email=release@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "release baseline"], { cwd: projectRoot });
 writeFileSync(alphaSessionFile, `${JSON.stringify({ type: "session", version: 3, id: alphaSessionId, timestamp: new Date().toISOString(), cwd: projectRoot })}\n`);
 writeFileSync(missionHoldExtension, `import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";\nimport { setJobManager } from ${JSON.stringify(pathToFileURL(join(repo, "extensions/jobs/registry.ts")).href)};\nconst manager = { list: () => [{ spec: { id: "combined-release-hold" }, runtime: { status: "running" } }] };\nlet launchIssued = false;
-function stream(model, context) { const events = createAssistantMessageEventStream(); const launch = !launchIssued && JSON.stringify(context).includes("release-gate collaborator tool launch"); launchIssued ||= launch; const toolCall = { type: "toolCall", id: "release-gate-collaborator-start", name: "collaborator_start", arguments: { participantId: "beta", protocol: "review", callerParticipantId: "alpha" } }; const message = { role: "assistant", content: launch ? [toolCall] : [], api: model.api, provider: model.provider, model: model.id, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: launch ? "toolUse" : "stop", timestamp: Date.now() }; queueMicrotask(() => { events.push({ type: "start", partial: message }); if (launch) { events.push({ type: "toolcall_start", contentIndex: 0, partial: message }); events.push({ type: "toolcall_end", contentIndex: 0, toolCall, partial: message }); } events.push({ type: "done", reason: message.stopReason, message }); events.end(); }); return events; }\nexport default function (pi) { setJobManager(manager); pi.registerProvider("release-gate", { name: "Release Gate", baseUrl: "http://release.invalid", apiKey: "test", api: "release-gate", streamSimple: stream, models: [{ id: "noop", name: "No-op", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 4096, maxTokens: 64 }] }); }\n`);
+function stream(model, context) { const events = createAssistantMessageEventStream(); const serialized = JSON.stringify(context); const launch = !launchIssued && serialized.includes("release-gate collaborator tool launch") && !serialized.includes("Started review/beta"); launchIssued ||= launch; const toolCall = { type: "toolCall", id: "release-gate-collaborator-start", name: "collaborator_manage", arguments: { action: "start", participants: [{ participantId: "beta" }], protocol: "review", callerParticipantId: "alpha" } }; const message = { role: "assistant", content: launch ? [toolCall] : [], api: model.api, provider: model.provider, model: model.id, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: launch ? "toolUse" : "stop", timestamp: Date.now() }; queueMicrotask(() => { events.push({ type: "start", partial: message }); if (launch) { events.push({ type: "toolcall_start", contentIndex: 0, partial: message }); events.push({ type: "toolcall_end", contentIndex: 0, toolCall, partial: message }); } events.push({ type: "done", reason: message.stopReason, message }); events.end(); }); return events; }\nexport default function (pi) { setJobManager(manager); pi.registerProvider("release-gate", { name: "Release Gate", baseUrl: "http://release.invalid", apiKey: "test", api: "release-gate", streamSimple: stream, models: [{ id: "noop", name: "No-op", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 4096, maxTokens: 64 }] }); }\n`);
 writeFileSync(join(agentDir, "settings.json"), `${JSON.stringify({ defaultProjectTrust: "always", extensions: [missionHoldExtension, herdrIntegration, runtimeExtension, missionExtension] }, null, 2)}\n`);
 
 const herdrEnv = { ...process.env, HERDR_SOCKET_PATH: herdrSocket, PI_CODING_AGENT_DIR: agentDir };
@@ -190,18 +190,18 @@ async function acquire(pi, participantId) {
 async function launchCollaborator(parent, participantId) {
 	const callerEntriesBefore = sessionEntries(parent.sessionFile).filter((entry) => entry.type === "custom" && entry.customType === participantEntry).length;
 	cli("agent", "prompt", parent.pane.pane_id, "release-gate collaborator tool launch");
-	await waitFor(() => readPane(parent.pane.pane_id, 200).includes("Start Runtime collaborator?"), "collaborator_start did not request trusted confirmation", 60_000);
+	await waitFor(() => readPane(parent.pane.pane_id, 200).includes("Start Runtime collaborator?"), "collaborator_manage did not request trusted confirmation", 60_000);
 	cli("pane", "send-keys", parent.pane.pane_id, "y", "enter");
 	await waitFor(() => {
 		const current = participant("review", participantId);
 		return current?.state === "held" ? current : undefined;
-	}, `${participantId} did not acquire through the collaborator_start tool`, 60_000);
-	await waitFor(() => participant("review", "alpha")?.state === "held", "collaborator_start did not acquire the caller identity");
+	}, `${participantId} did not acquire through the collaborator_manage tool`, 60_000);
+	await waitFor(() => participant("review", "alpha")?.state === "held", "collaborator_manage did not acquire the caller identity");
 	await waitFor(() => {
 		const entries = sessionEntries(parent.sessionFile).filter((entry) => entry.type === "custom" && entry.customType === participantEntry);
 		const latest = entries.at(-1);
 		return entries.length > callerEntriesBefore && latest?.data?.participantId === "alpha" && latest.data.disposition === "held";
-	}, "collaborator_start did not persist caller acquisition");
+	}, "collaborator_manage did not persist caller acquisition");
 	const launched = await waitFor(() => {
 		const tabs = cli("tab", "list", "--workspace", parent.pane.workspace_id).result.tabs;
 		const tab = tabs.find((candidate) => candidate.label === `collaborator:${participantId}`);
@@ -231,11 +231,25 @@ async function directRegistration(pi, sessionId, clientGeneration) {
 		admittedClaims: receipts,
 		herdr: { paneId: pi.pane.pane_id, terminalId: pi.pane.terminal_id },
 	});
-	return { client, registration };
+	return { client, registration, pi, sessionId };
+}
+
+async function directCall(sender, method, params) {
+	for (let attempt = 0; ; attempt++) {
+		try { return await sender.client.call(method, { ...auth(sender.registration), ...params }); }
+		catch (error) {
+			if (error?.code !== "registration_stale" || attempt >= 4) throw error;
+			const refreshed = await directRegistration(sender.pi, sender.sessionId, `direct_retry_${randomUUID()}`);
+			sender.client = refreshed.client;
+			sender.registration = refreshed.registration;
+		}
+	}
 }
 
 async function send(sender, recipientKey, sendId, body) {
-	return sender.client.call("mailbox.send", { ...auth(sender.registration), recipientParticipantKey: recipientKey, sendId, body });
+	const identity = Object.values(readState().participants).find((candidate) => candidate.state === "held" && candidate.holderTargetKey === sender.registration.targetKey);
+	assert.ok(identity, `registration ${sender.registration.targetKey} has no held sender identity`);
+	return directCall(sender, "mailbox.send", { senderParticipantKey: identity.participantKey, expectedSenderGeneration: identity.generation, recipientParticipantKey: recipientKey, sendId, body });
 }
 
 async function waitMessage(path, body, count) {
@@ -420,7 +434,7 @@ try {
 	await waitMessage(betaSessionFile, "alpha-to-beta release marker", 1);
 	await waitFor(() => readState().events[alphaToBeta.eventId].delivery.status === "acked", "alpha-to-beta mail was not acknowledged");
 	await waitIdle(betaPi);
-	await alphaDirect.client.call("pi.unregister", auth(alphaDirect.registration));
+	await alphaDirect.client.call("pi.unregister", auth(alphaDirect.registration)).catch(() => {});
 	await closePi(alphaPi);
 	alphaPi = await startPi("collaborator-alpha-2", alphaSessionFile);
 	await assertRuntimeRegistered(alphaPi);
@@ -438,7 +452,7 @@ try {
 	alphaPi = await startPi("collaborator-alpha-post-mission", alphaSessionFile);
 	await assertRuntimeRegistered(alphaPi);
 	await waitFor(() => participant("review", "alpha")?.holderTargetKey === alphaDirect.registration.targetKey, "alpha identity did not restore after Mission replay");
-	await assert.rejects(() => betaDirect.client.call("participant.acquire", { ...auth(betaDirect.registration), protocol: "review", participantId: "alpha", revive: false }), (error) => error?.code === "conflict");
+	await assert.rejects(() => directCall(betaDirect, "participant.acquire", { protocol: "review", participantId: "alpha", revive: false }), (error) => error?.code === "conflict");
 
 	cli("agent", "prompt", alphaPi.pane.pane_id, "/runtime stand-down");
 	await waitFor(() => participant("review", "alpha").state === "vacant", "restored alpha identity could not stand down");
@@ -458,30 +472,30 @@ try {
 	await waitIdle(alphaPi);
 
 	alphaDirect = await directRegistration(alphaPi, alphaSessionId, "direct_alpha_3");
-	await alphaDirect.client.call("participant.release", { ...auth(alphaDirect.registration), participantKey: alphaKey });
+	await directCall(alphaDirect, "participant.release", { participantKey: alphaKey });
 	assert.equal(participant("review", "alpha").state, "ended");
 	betaDirect = await directRegistration(betaPi, betaSessionId, "direct_beta_3");
 	await assert.rejects(() => send(betaDirect, alphaKey, "send_ended", "must reject"), (error) => error?.code === "not_found");
-	const revived = await alphaDirect.client.call("participant.acquire", { ...auth(alphaDirect.registration), protocol: "review", participantId: "alpha", revive: true });
+	const revived = await directCall(alphaDirect, "participant.acquire", { protocol: "review", participantId: "alpha", revive: true });
 	assert.equal(revived.revived, true);
 	assert.equal(revived.participant.state, "held");
 
 	betaDirect = await directRegistration(betaPi, betaSessionId, "direct_beta_4");
 	const takeoverMail = await send(betaDirect, alphaKey, "send_takeover", "takeover-claim release marker; do not use tools or modify files");
-	const claimed = await alphaDirect.client.call("inbox.claim", auth(alphaDirect.registration));
+	const claimed = await directCall(alphaDirect, "inbox.claim", {});
 	assert.ok(claimed.events.some((event) => event.eventId === takeoverMail.eventId));
 	await closePi(alphaPi);
-	await alphaDirect.client.call("pi.unregister", auth(alphaDirect.registration));
-	await betaDirect.client.call("participant.stand_down", { ...auth(betaDirect.registration), participantKey: betaKey });
+	await alphaDirect.client.call("pi.unregister", auth(alphaDirect.registration)).catch(() => {});
+	await directCall(betaDirect, "participant.stand_down", { participantKey: betaKey });
 	const generationBeforeTakeover = participant("review", "alpha").generation;
-	await assert.rejects(() => betaDirect.client.call("participant.takeover", { ...auth(betaDirect.registration), participantKey: alphaKey, expectedGeneration: generationBeforeTakeover, confirmed: true }), (error) => error?.code === "busy");
+	await assert.rejects(() => directCall(betaDirect, "participant.takeover", { participantKey: alphaKey, expectedGeneration: generationBeforeTakeover, confirmed: true }), (error) => error?.code === "busy");
 	runtimeNow += 2_000;
-	const taken = await betaDirect.client.call("participant.takeover", { ...auth(betaDirect.registration), participantKey: alphaKey, expectedGeneration: generationBeforeTakeover, confirmed: true });
+	const taken = await directCall(betaDirect, "participant.takeover", { participantKey: alphaKey, expectedGeneration: generationBeforeTakeover, confirmed: true });
 	assert.equal(taken.holderTargetKey, betaDirect.registration.targetKey);
 	assert.equal(readState().events[takeoverMail.eventId].delivery.status, "pending");
 
 	await closePi(betaPi);
-	await betaDirect.client.call("pi.unregister", auth(betaDirect.registration));
+	await betaDirect.client.call("pi.unregister", auth(betaDirect.registration)).catch(() => {});
 	appendParticipantIdentity(betaSessionFile, { version: 1, protocol: "review", participantId: "alpha", participantKey: alphaKey, generation: taken.generation, disposition: "held" });
 	betaPi = await startPi("collaborator-beta-2-takeover", betaSessionFile);
 	await assertRuntimeRegistered(betaPi);

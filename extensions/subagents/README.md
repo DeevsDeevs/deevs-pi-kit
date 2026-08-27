@@ -32,6 +32,7 @@ subagent_wait  status, wait, or cancellation with real settlement
 
 - read-only unless `allowWrite: true` is explicit and the user confirms the run in the TUI;
 - requested tools may narrow but never broaden persona capability;
+- reviewer personas use bounded `safe_diff` for exact revision inspection without shell, hooks, external diff/text conversion, or pagers;
 - detached worker owns the private Pi child and durable artifacts;
 - parent reload restoration, stale-worker reconciliation, bounded JSONL/stderr, partial output, and process-group cancellation;
 - persistent agent identity resumes the exact private Pi session in a new run/generation;
