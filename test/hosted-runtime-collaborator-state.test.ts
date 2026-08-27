@@ -26,7 +26,7 @@ import {
 const projectRoot = "/project";
 
 function target(targetKey: string): HostedTarget {
-	return { targetKey, projectRoot, piSessionId: `session_${targetKey}`, piSessionFile: `/sessions/${targetKey}.jsonl`, createdAt: 1 };
+	return { kind: "pi", targetKey, projectRoot, piSessionId: `session_${targetKey}`, piSessionFile: `/sessions/${targetKey}.jsonl`, createdAt: 1 };
 }
 
 function withTargets(...targetKeys: string[]): HostedRuntimeState {
@@ -111,27 +111,39 @@ function v1MonitorState(): { raw: Record<string, unknown>; event: HostedFilesyst
 		delivery: { status: "pending" },
 	};
 	state = reduceHostedState(state, { type: "monitor.commit", monitor, events: [event] });
-	const { participants: _participants, ...rest } = state;
-	return { raw: { ...rest, version: 1 }, event };
+	const { participants: _participants, bridgeLaunches: _bridgeLaunches, ...rest } = state;
+	const targets = Object.fromEntries(Object.entries(rest.targets).map(([key, value]) => { const { kind: _kind, ...legacy } = value; return [key, legacy]; }));
+	return { raw: { ...rest, targets, version: 1 }, event };
 }
 
 describe("hosted Runtime collaborator state", () => {
 	it("atomically migrates v1 state before use without changing existing Monitor events", () => {
-		const root = mkdtempSync(join(tmpdir(), "hosted-state-v2-"));
+		const root = mkdtempSync(join(tmpdir(), "hosted-state-v3-"));
 		mkdirSync(root, { recursive: true });
 		const { raw, event } = v1MonitorState();
 		writeFileSync(runtimeStatePaths(root).state, `${JSON.stringify(raw, null, 2)}\n`);
 
 		const migrated = readHostedRuntimeState(root);
-		expect(migrated).toMatchObject({ version: 2, participants: {} });
+		expect(migrated).toMatchObject({ version: 3, bridgeLaunches: {}, participants: {}, targets: { target_main: { kind: "pi" } } });
 		expect(migrated.events[event.eventId]).toEqual(event);
 		expect(pendingHostedEvents(migrated, "target_main").map((candidate) => candidate.eventId)).toEqual([event.eventId]);
 		expect(JSON.parse(readFileSync(runtimeStatePaths(root).state, "utf8"))).toEqual(migrated);
 		expect(statSync(runtimeStatePaths(root).state).mode & 0o777).toBe(0o600);
 	});
 
+	it("migrates v2 Pi targets and collaborator ownership into discriminated v3 state", () => {
+		const root = mkdtempSync(join(tmpdir(), "hosted-state-v2-to-v3-"));
+		mkdirSync(root, { recursive: true });
+		const state = pairedState();
+		const { bridgeLaunches: _bridgeLaunches, ...rest } = state;
+		const targets = Object.fromEntries(Object.entries(rest.targets).map(([key, value]) => { const { kind: _kind, ...legacy } = value; return [key, legacy]; }));
+		writeFileSync(runtimeStatePaths(root).state, `${JSON.stringify({ ...rest, version: 2, targets }, null, 2)}\n`);
+		const migrated = readHostedRuntimeState(root);
+		expect(migrated).toMatchObject({ version: 3, bridgeLaunches: {}, targets: { target_main: { kind: "pi" }, target_fable: { kind: "pi" } }, participants: { [participantKey("main")]: { state: "held", holderTargetKey: "target_main" }, [participantKey("fable")]: { state: "held", holderTargetKey: "target_fable" } } });
+	});
+
 	it("fails closed instead of accepting an unknown state version", () => {
-		expect(() => validateHostedRuntimeState({ ...emptyHostedRuntimeState(), version: 3 })).toThrow(HostedStateStorageError);
+		expect(() => validateHostedRuntimeState({ ...emptyHostedRuntimeState(), version: 4 })).toThrow(HostedStateStorageError);
 	});
 
 	it("enforces one held participant identity per target and idempotent same-target acquire", () => {

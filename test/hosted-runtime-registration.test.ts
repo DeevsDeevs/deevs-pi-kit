@@ -106,6 +106,13 @@ describe("hosted Pi registration", () => {
 		await expect(test.registrations.register(test.input)).rejects.toMatchObject({ code: "host_unavailable" });
 	});
 
+	it("validates admitted claims before persisting a new Pi target", async () => {
+		const test = setup();
+		const admittedClaims = Array.from({ length: 13 }, (_, index) => ({ claimId: `claim_${index}`, eventIds: [`event_${index}`] }));
+		await expect(test.registrations.register({ ...test.input, admittedClaims })).rejects.toMatchObject({ code: "invalid_request" });
+		expect(test.store.read().targets).toEqual({});
+	});
+
 	it("rejects a second terminal, rotates a same-terminal generation, follows pane moves, and expires leases", async () => {
 		const test = setup();
 		const first = await test.registrations.register(test.input);

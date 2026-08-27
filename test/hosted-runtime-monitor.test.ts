@@ -17,7 +17,7 @@ function setup(automatic = false) {
 	const watchRoot = join(projectRoot, "reviews");
 	mkdirSync(watchRoot, { recursive: true });
 	const store = new HostedStateStore(runtimeRoot);
-	const target: HostedTarget = { targetKey: "pi_target", projectRoot, piSessionId: "session_1", piSessionFile: join(root, "session.jsonl"), createdAt: 1 };
+	const target: HostedTarget = { kind: "pi", targetKey: "pi_target", projectRoot, piSessionId: "session_1", piSessionFile: join(root, "session.jsonl"), createdAt: 1 };
 	store.apply({ type: "target.ensure", target });
 	let now = 1_000;
 	const manager = new DirectoryMonitorManager(store, {

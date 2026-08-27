@@ -1,4 +1,5 @@
-import { HOSTED_MAILBOX_MAX_BODY_BYTES, HOSTED_MAX_DELIVERY_BATCH, HOSTED_MONITOR_MAX_ENTRIES, HOSTED_PROTOCOL_VERSION, type HostedMonitor } from "../hosted-types.ts";
+import { HOSTED_BRIDGE_FORBIDDEN_METADATA_KEYS, HOSTED_BRIDGE_MAX_METADATA_ENTRIES, HOSTED_BRIDGE_MAX_METADATA_VALUE_BYTES, HOSTED_MAILBOX_MAX_BODY_BYTES, HOSTED_MAX_DELIVERY_BATCH, HOSTED_MONITOR_MAX_ENTRIES, HOSTED_PROTOCOL_VERSION, type HostedMonitor } from "../hosted-types.ts";
+import { RuntimeBridgeCoordinator, type BridgeReconnectInput, type BridgeRegisterInput, type CreateBridgeLaunchInput } from "./bridge.ts";
 import { DirectoryMonitorManager } from "./monitor.ts";
 import { HostedParticipantCoordinator } from "./participant.ts";
 import { RuntimeRegistrationManager, type RegisterPiInput } from "./registration.ts";
@@ -29,6 +30,7 @@ export interface HostedProtocolContext {
 	monitors?: DirectoryMonitorManager;
 	wakes?: HostedWakeCoordinator;
 	participants?: HostedParticipantCoordinator;
+	bridges?: RuntimeBridgeCoordinator;
 }
 
 export type HostedResponse =
@@ -57,8 +59,37 @@ export async function dispatchHostedLine(line: string, context: HostedProtocolCo
 		const monitors = context.monitors;
 		const wakes = context.wakes;
 		const participants = context.participants;
+		const bridges = context.bridges;
 		if (!registrations || !monitors || !wakes) return failure(id, "capability_unavailable", "Hosted runtime methods are unavailable in this process.");
 
+		if (method === "bridge.register" || method === "bridge.reconnect") {
+			if (!bridges) return failure(id, "capability_unavailable", "Runtime bridge registration is unavailable in this process.");
+			const result = method === "bridge.register" ? await bridges.register(bridgeRegisterParams(params)) : await bridges.reconnect(bridgeReconnectParams(params));
+			return success(id, bridgeRegistrationResult(result));
+		}
+		if (method === "bridge.launch.create") {
+			if (!bridges) return failure(id, "capability_unavailable", "Runtime bridge launch authority is unavailable in this process.");
+			const parsed = bridgeLaunchParams(params);
+			const caller = registrations.authorize(parsed.registrationId, parsed.registrationKey);
+			return success(id, await bridges.create(caller, parsed.input));
+		}
+		if (method === "bridge.launch.cancel") {
+			if (!bridges) return failure(id, "capability_unavailable", "Runtime bridge launch authority is unavailable in this process.");
+			const parsed = bridgeCancelParams(params);
+			const caller = registrations.authorize(parsed.registrationId, parsed.registrationKey);
+			bridges.cancel(caller, parsed.input);
+			return success(id, { cancelled: true });
+		}
+		if (method === "bridge.heartbeat") {
+			const auth = authParams(params);
+			const registration = await registrations.heartbeat(auth.registrationId, auth.registrationKey);
+			return success(id, { ...registrationResult(registration), inboxReady: wakes.status(registration).pending > 0 });
+		}
+		if (method === "bridge.unregister") {
+			const auth = authParams(params);
+			registrations.unregister(auth.registrationId, auth.registrationKey);
+			return success(id, { unregistered: true });
+		}
 		if (method === "pi.register") {
 			const registration = await registrations.register(registerParams(params));
 			return success(id, registrationResult(registration));
@@ -188,6 +219,7 @@ function hello(id: string, value: unknown, context: HostedProtocolContext): Host
 			maxDeliveryBatch: HOSTED_MAX_DELIVERY_BATCH,
 			monitor: { maxEntries: HOSTED_MONITOR_MAX_ENTRIES },
 			...(context.participants ? { mailbox: { maxBodyBytes: HOSTED_MAILBOX_MAX_BODY_BYTES } } : {}),
+			...(context.bridges ? { bridge: { launch: "single_use", reconnect: true } } : {}),
 		},
 	});
 }
@@ -213,6 +245,66 @@ function registerParams(value: unknown): RegisterPiInput {
 			...(host.agentName === undefined ? {} : { agentName: boundedText(host.agentName, "Herdr agent name", 200) }),
 		},
 	};
+}
+
+function bridgeLaunchParams(value: unknown): { registrationId: string; registrationKey: string; input: CreateBridgeLaunchInput } {
+	const params = strictObject(value, "bridge.launch.create params", ["registrationId", "registrationKey", "requestId", "callerParticipantKey", "expectedCallerGeneration", "protocol", "participantId", "expectedParticipantGeneration", "profile", "configurationHash", "herdr", "metadata"]);
+	if (params.profile !== "read-only" && params.profile !== "workspace-write") throw new Error("bridge profile must be read-only or workspace-write");
+	const herdr = strictObject(params.herdr, "bridge launch Herdr identity", ["paneId", "terminalId"]);
+	const metadata = strictObject(params.metadata ?? {}, "bridge metadata");
+	const metadataEntries = Object.entries(metadata);
+	if (metadataEntries.length > HOSTED_BRIDGE_MAX_METADATA_ENTRIES) throw new Error(`bridge metadata may contain at most ${HOSTED_BRIDGE_MAX_METADATA_ENTRIES} entries`);
+	const forbiddenMetadata = new Set<string>(HOSTED_BRIDGE_FORBIDDEN_METADATA_KEYS);
+	const parsedMetadata = Object.fromEntries(metadataEntries.map(([key, item]) => {
+		if (!/^[a-z][a-z0-9_-]{0,63}$/.test(key) || forbiddenMetadata.has(key)) throw new Error("bridge metadata key is invalid or reserved");
+		if (typeof item !== "string" || Buffer.byteLength(item) > HOSTED_BRIDGE_MAX_METADATA_VALUE_BYTES) throw new Error("bridge metadata value exceeds its byte limit");
+		return [key, item];
+	}));
+	return {
+		registrationId: boundedText(params.registrationId, "registration ID", 200),
+		registrationKey: boundedText(params.registrationKey, "registration key", 200),
+		input: {
+			requestId: boundedText(params.requestId, "request ID", 200),
+			callerParticipantKey: boundedText(params.callerParticipantKey, "caller participant key", 200),
+			expectedCallerGeneration: boundedText(params.expectedCallerGeneration, "expected caller generation", 200),
+			protocol: participantName(params.protocol, "protocol"),
+			participantId: participantName(params.participantId, "participant ID"),
+			...(params.expectedParticipantGeneration === undefined ? {} : { expectedParticipantGeneration: boundedText(params.expectedParticipantGeneration, "expected participant generation", 200) }),
+			profile: params.profile,
+			configurationHash: boundedText(params.configurationHash, "configuration hash", 64),
+			herdr: { paneId: boundedText(herdr.paneId, "Herdr pane ID", 200), terminalId: boundedText(herdr.terminalId, "Herdr terminal ID", 200) },
+			metadata: parsedMetadata,
+		},
+	};
+}
+
+function bridgeCancelParams(value: unknown): { registrationId: string; registrationKey: string; input: { launchId: string; callerParticipantKey: string; expectedCallerGeneration: string } } {
+	const params = strictObject(value, "bridge.launch.cancel params", ["registrationId", "registrationKey", "launchId", "callerParticipantKey", "expectedCallerGeneration"]);
+	return { registrationId: boundedText(params.registrationId, "registration ID", 200), registrationKey: boundedText(params.registrationKey, "registration key", 200), input: { launchId: boundedText(params.launchId, "launch ID", 200), callerParticipantKey: boundedText(params.callerParticipantKey, "caller participant key", 200), expectedCallerGeneration: boundedText(params.expectedCallerGeneration, "expected caller generation", 200) } };
+}
+
+function bridgeRegisterParams(value: unknown): BridgeRegisterInput {
+	const params = strictObject(value, "bridge.register params", ["launchToken", "reconnectToken", "clientGeneration", "admittedClaims", "herdr"]);
+	return { launchToken: boundedText(params.launchToken, "bridge launch token", 512), reconnectToken: boundedText(params.reconnectToken, "bridge reconnect token", 200), clientGeneration: boundedText(params.clientGeneration, "client generation", 200), admittedClaims: admittedClaimParams(params.admittedClaims), herdr: bridgeRegistrationHerdr(params.herdr) };
+}
+
+function bridgeReconnectParams(value: unknown): BridgeReconnectInput {
+	const params = strictObject(value, "bridge.reconnect params", ["targetKey", "reconnectToken", "clientGeneration", "admittedClaims", "herdr"]);
+	return { targetKey: boundedText(params.targetKey, "bridge target key", 200), reconnectToken: boundedText(params.reconnectToken, "bridge reconnect token", 200), clientGeneration: boundedText(params.clientGeneration, "client generation", 200), admittedClaims: admittedClaimParams(params.admittedClaims), herdr: bridgeRegistrationHerdr(params.herdr) };
+}
+
+function bridgeRegistrationHerdr(value: unknown): { paneId: string; terminalId: string } {
+	const herdr = strictObject(value, "bridge registration Herdr identity", ["paneId", "terminalId"]);
+	return { paneId: boundedText(herdr.paneId, "Herdr pane ID", 200), terminalId: boundedText(herdr.terminalId, "Herdr terminal ID", 200) };
+}
+
+function admittedClaimParams(value: unknown): Array<{ claimId: string; eventIds: string[] }> {
+	return boundedArray(value, "admittedClaims", 12).map((item, index) => {
+		const receipt = strictObject(item, `admittedClaims[${index}]`, ["claimId", "eventIds"]);
+		const eventIds = boundedArray(receipt.eventIds, `admittedClaims[${index}].eventIds`, HOSTED_MAX_DELIVERY_BATCH).map((eventId) => boundedText(eventId, "event ID", 200));
+		if (new Set(eventIds).size !== eventIds.length) throw new Error("Admitted claim event IDs must be unique.");
+		return { claimId: boundedText(receipt.claimId, "claim ID", 200), eventIds };
+	});
 }
 
 function authParams(value: unknown): { registrationId: string; registrationKey: string } {
@@ -261,6 +353,10 @@ function registrationResult(registration: Awaited<ReturnType<RuntimeRegistration
 	};
 }
 
+function bridgeRegistrationResult(result: Awaited<ReturnType<RuntimeBridgeCoordinator["register"]>>): Record<string, unknown> {
+	return { ...registrationResult(result.registration), participantKey: result.participantKey, holderGeneration: result.holderGeneration, profile: result.profile, configurationHash: result.configurationHash, metadata: result.metadata };
+}
+
 function monitorResult(monitor: HostedMonitor): Record<string, unknown> {
 	return { monitorId: monitor.monitorId, generation: monitor.generation, directory: monitor.directory, status: monitor.status, settleMs: monitor.settleMs };
 }
@@ -287,7 +383,7 @@ function errorCode(error: unknown): HostedErrorCode {
 	return error instanceof Error ? "invalid_request" : "internal";
 }
 
-const HOSTED_METHODS = new Set(["pi.register", "pi.heartbeat", "pi.unregister", "monitor.create", "monitor.get", "monitor.delete", "wake.accept", "inbox.claim", "inbox.ack", "inbox.release", "inbox.status", "participant.acquire", "participant.get", "participant.list", "participant.stand_down", "participant.stand_down_confirmed", "participant.stop_confirmed", "participant.release", "participant.takeover", "mailbox.send"]);
+const HOSTED_METHODS = new Set(["pi.register", "pi.heartbeat", "pi.unregister", "bridge.launch.create", "bridge.launch.cancel", "bridge.register", "bridge.reconnect", "bridge.heartbeat", "bridge.unregister", "monitor.create", "monitor.get", "monitor.delete", "wake.accept", "inbox.claim", "inbox.ack", "inbox.release", "inbox.status", "participant.acquire", "participant.get", "participant.list", "participant.stand_down", "participant.stand_down_confirmed", "participant.stop_confirmed", "participant.release", "participant.takeover", "mailbox.send"]);
 
 const ERROR_CODES = new Set<HostedErrorCode>([
 	"invalid_request", "unsupported_version", "capability_unavailable", "not_found", "conflict", "registration_stale", "identity_mismatch", "claim_conflict", "host_unavailable", "busy", "storage_error", "internal",
