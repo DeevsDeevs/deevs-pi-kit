@@ -2,12 +2,12 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { HostedRuntimeClient } from "../extensions/runtime/client.ts";
-import { readRunnerConfig, readWorkerState, writeRunnerConfig, writeWorkerState } from "../extensions/runtime/bridge-runner/journal.ts";
+import { HostedRuntimeClient, HostedRuntimeClientError } from "../extensions/runtime/client.ts";
+import { BridgeJournalStore, readRunnerConfig, readWorkerState, writeRunnerConfig, writeWorkerState } from "../extensions/runtime/bridge-runner/journal.ts";
 import { BridgeRunner } from "../extensions/runtime/bridge-runner/runner.ts";
 import type { BridgeJournal, BridgeRunnerConfig } from "../extensions/runtime/bridge-runner/types.ts";
 import { startRuntimeServer, type RuntimeServerHandle } from "../extensions/runtime/service/server.ts";
-import { ownsProcessIdentity, quiesceProcessGroup } from "../extensions/shared/process-group.ts";
+import { ownsProcessIdentity } from "../extensions/shared/process-group.ts";
 import type { HostedHostVerifier, HostedLiveAgent, HostedPaneIdentity } from "../extensions/runtime/service/registration.ts";
 
 const roots: string[] = [];
@@ -65,11 +65,35 @@ describe("durable common bridge runner", () => {
 		const configPath = join(runnerRoot, "config.v1.json");
 		const config: BridgeRunnerConfig = { version: 1, bridgeId: authority.launchId, driver: "fake", root: runnerRoot, runtimeSocket: server.socketPath, projectRoot, cwd: projectRoot, clientGeneration: "client_bridge", protocol: "review", participantId: "fake", launchToken: authority.launchToken, reconnectToken: authority.reconnectToken, targetKey: authority.targetKey, wallMs: 2_000 };
 		writeRunnerConfig(configPath, config);
-		const runner = new BridgeRunner(configPath, config, undefined, { herdrIdentity: async () => ({ paneId: "pane_bridge", terminalId: "term_bridge" }) });
+		let runner!: BridgeRunner;
+		let admissionBeforeAck: BridgeJournal | undefined;
+		let replyBeforeSend: BridgeJournal | undefined;
+		let replyAttempts = 0;
+		const runnerClient = {
+			async call(method: string, params: unknown): Promise<unknown> {
+				const result = await client.call(method, params);
+				if (method === "inbox.ack" && !admissionBeforeAck) {
+					admissionBeforeAck = structuredClone(runner.state());
+					throw new HostedRuntimeClientError("unavailable", "Injected ACK response loss.");
+				}
+				if (method === "mailbox.send") {
+					replyAttempts++;
+					if (!replyBeforeSend) {
+						replyBeforeSend = structuredClone(runner.state());
+						throw new HostedRuntimeClientError("unavailable", "Injected reply response loss.");
+					}
+				}
+				return result;
+			},
+		};
+		runner = new BridgeRunner(configPath, config, undefined, { client: runnerClient, herdrIdentity: async () => ({ paneId: "pane_bridge", terminalId: "term_bridge" }) });
 		await runner.start();
 		const bridgeParticipantKey = runner.state().participantKey!;
 		await client.call("mailbox.send", { registrationId: senderRegistration.registrationId, registrationKey: senderRegistration.registrationKey, senderParticipantKey: sender.participantKey, expectedSenderGeneration: sender.generation, recipientParticipantKey: bridgeParticipantKey, sendId: "input_1", body: "first" });
 		await settle(runner, 1);
+		expect(admissionBeforeAck).toMatchObject({ admissions: [{ ack: "uncertain" }], turns: [{ state: "pending", body: "first" }] });
+		expect(replyBeforeSend).toMatchObject({ turns: [{ state: "reply_pending", reply: "uncertain", replyBody: "fake:first" }] });
+		expect(replyAttempts).toBe(2);
 		expect(runner.state()).toMatchObject({ status: "running", driverSessionId: expect.stringMatching(/^fake_/), admissions: [{ ack: "confirmed" }], turns: [{ sequence: 1, state: "reply_sent", reply: "sent", terminal: { status: "completed", body: "fake:first", sessionAdvance: "committed" } }] });
 		const workerSpec = readFileSync(join(dirname(runner.state().turns[0]!.worker!.statePath), "spec.v1.json"), "utf8");
 		expect(workerSpec).not.toContain(authority.launchToken);
@@ -77,6 +101,7 @@ describe("durable common bridge runner", () => {
 		expect(workerSpec).not.toContain("registrationKey");
 		expect(workerSpec).not.toContain("runtimeSocket");
 		const firstClaim = await client.call("inbox.claim", { registrationId: senderRegistration.registrationId, registrationKey: senderRegistration.registrationKey }) as { claimId: string; events: Array<{ payload: { body: string } }> };
+		expect(firstClaim.events).toHaveLength(1);
 		expect(firstClaim.events[0]?.payload.body).toBe("fake:first");
 
 		await server.close();
@@ -98,17 +123,29 @@ describe("durable common bridge runner", () => {
 		expect(runner.state().turns[2]?.state).toBe("running");
 		for (let attempt = 0; attempt < 100 && !readWorkerState(runner.state().turns[2]!.worker!.statePath)?.childPid; attempt++) await new Promise((resolve) => setTimeout(resolve, 10));
 		expect(readWorkerState(runner.state().turns[2]!.worker!.statePath)?.childPid).toEqual(expect.any(Number));
-		await runner.cancelActive();
-		await settle(runner, 3);
-		expect(runner.state().turns[2]).toMatchObject({ state: "reply_sent", terminal: { status: "cancelled", sessionAdvance: "uncertain" } });
+		new BridgeJournalStore(runnerRoot, runner.state()).update((state) => ({ ...state, turns: state.turns.map((turn) => turn.eventId === state.turns[2]!.eventId ? { ...turn, worker: { ...turn.worker!, cancelRequested: true }, updatedAt: Date.now() } : turn), updatedAt: Date.now() }));
+		const cancelRecoveryRunner = new BridgeRunner(configPath, readRunnerConfig(configPath), undefined, { client: runnerClient, herdrIdentity: async () => ({ paneId: "pane_bridge", terminalId: "term_bridge" }) });
+		await cancelRecoveryRunner.start();
+		await settle(cancelRecoveryRunner, 3);
+		expect(cancelRecoveryRunner.state().turns[2]).toMatchObject({ state: "reply_sent", worker: { cancelRequested: true }, terminal: { status: "cancelled", sessionAdvance: "uncertain" } });
 
-		await client.call("mailbox.send", { registrationId: senderRegistration.registrationId, registrationKey: senderRegistration.registrationKey, senderParticipantKey: sender.participantKey, expectedSenderGeneration: sender.generation, recipientParticipantKey: bridgeParticipantKey, sendId: "input_4", body: "sleep:200" });
-		await runner.step();
-		await runner.step();
+		let authorizationCrashInjected = false;
+		const crashRunner = new BridgeRunner(configPath, readRunnerConfig(configPath), undefined, { client: runnerClient, herdrIdentity: async () => ({ paneId: "pane_bridge", terminalId: "term_bridge" }), afterWorkerAuthorized: () => { authorizationCrashInjected = true; throw new Error("Injected controller crash after worker authorization."); } });
+		await crashRunner.start();
+		await client.call("mailbox.send", { registrationId: senderRegistration.registrationId, registrationKey: senderRegistration.registrationKey, senderParticipantKey: sender.participantKey, expectedSenderGeneration: sender.generation, recipientParticipantKey: bridgeParticipantKey, sendId: "input_4", body: "fourth" });
+		await crashRunner.step();
+		await expect(crashRunner.step()).rejects.toThrow("Injected controller crash");
+		expect(authorizationCrashInjected).toBe(true);
+		expect(crashRunner.state().turns[3]).toMatchObject({ state: "starting", attempt: 1 });
+		const crashWorkerPath = crashRunner.state().turns[3]!.worker!.statePath;
+		for (let attempt = 0; attempt < 100 && readWorkerState(crashWorkerPath)?.status !== "terminal"; attempt++) await new Promise((resolve) => setTimeout(resolve, 10));
+		const crashTerminal = readWorkerState(crashWorkerPath)?.terminal;
+		expect(crashTerminal).toMatchObject({ status: "completed", body: "fake:fourth", sessionId: expect.stringMatching(/^fake_/) });
 		const restartedRunner = new BridgeRunner(configPath, readRunnerConfig(configPath), undefined, { herdrIdentity: async () => ({ paneId: "pane_bridge", terminalId: "term_bridge" }) });
 		await restartedRunner.start();
+		expect(restartedRunner.state().driverSessionId).toBe(crashTerminal?.sessionId);
 		await settle(restartedRunner, 4);
-		expect(restartedRunner.state().turns[3]).toMatchObject({ sequence: 4, state: "reply_sent", terminal: { status: "completed", body: "fake:sleep:200" } });
+		expect(restartedRunner.state().turns[3]).toMatchObject({ sequence: 4, attempt: 1, state: "reply_sent", terminal: { status: "completed", body: "fake:fourth" } });
 
 		await client.call("mailbox.send", { registrationId: senderRegistration.registrationId, registrationKey: senderRegistration.registrationKey, senderParticipantKey: sender.participantKey, expectedSenderGeneration: sender.generation, recipientParticipantKey: bridgeParticipantKey, sendId: "input_5", body: "sleep:5000" });
 		await restartedRunner.step();
@@ -121,9 +158,8 @@ describe("durable common bridge runner", () => {
 		const attentionRunner = new BridgeRunner(configPath, readRunnerConfig(configPath), undefined, { herdrIdentity: async () => ({ paneId: "pane_bridge", terminalId: "term_bridge" }) });
 		await attentionRunner.start();
 		expect(attentionRunner.state()).toMatchObject({ status: "needs_attention", turns: expect.arrayContaining([expect.objectContaining({ eventId: uncertainTurn.eventId, state: "needs_attention" })]) });
-		expect(await ownsProcessIdentity(ownedWorker.workerPid, ownedWorker.workerIdentity)).toBe(true);
-		expect(await quiesceProcessGroup(ownedWorker.workerPid)).toBe(true);
-	});
+		expect(await ownsProcessIdentity(ownedWorker.workerPid, ownedWorker.workerIdentity)).toBe(false);
+	}, 10_000);
 
 	it("fails closed when a starting worker has no durable identity", async () => {
 		const root = mkdtempSync(join(tmpdir(), "pi-kit-bridge-runner-recovery-"));
@@ -134,6 +170,20 @@ describe("durable common bridge runner", () => {
 		const runner = new BridgeRunner(join(root, "config.v1.json"), config, initial);
 		await (runner as unknown as { recover(): Promise<void> }).recover();
 		expect(runner.state()).toMatchObject({ status: "needs_attention", turns: [{ state: "needs_attention" }] });
+	});
+
+	it("atomically enters attention on a permanent reply error", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-kit-bridge-runner-reply-error-"));
+		roots.push(root);
+		const now = Date.now();
+		const config: BridgeRunnerConfig = { version: 1, bridgeId: "bridge_reply_error", driver: "fake", root, runtimeSocket: join(root, "missing.sock"), projectRoot: root, cwd: root, clientGeneration: "client_reply_error", protocol: "review", participantId: "fake", reconnectToken: "r".repeat(43), targetKey: "bridge_target", wallMs: 1_000 };
+		const initial: BridgeJournal = { version: 1, bridgeId: config.bridgeId, driver: "fake", targetKey: config.targetKey, participantKey: "participant_bridge", holderGeneration: "generation_bridge", protocol: config.protocol, participantId: config.participantId, nextSequence: 2, admissions: [{ claimId: "claim_1", eventIds: ["event_1"], ack: "confirmed", createdAt: now }], turns: [{ turnId: "turn_1", sequence: 1, eventId: "event_1", claimId: "claim_1", senderParticipantKey: "participant_sender", body: "hello", state: "reply_pending", attempt: 1, replySendId: "reply_1", replyBody: "result", reply: "uncertain", terminal: { status: "completed", body: "result", sessionAdvance: "committed", sessionId: "session_1" }, createdAt: now, updatedAt: now }], status: "running", updatedAt: now };
+		const runner = new BridgeRunner(join(root, "config.v1.json"), config, initial, { client: { call: async () => { throw new HostedRuntimeClientError("conflict", "recipient ended"); } } });
+		const internal = runner as unknown as { registration?: { targetKey: string; registrationId: string; registrationKey: string; participantKey: string; holderGeneration: string }; publish(turn: BridgeJournal["turns"][number]): Promise<string> };
+		internal.registration = { targetKey: "bridge_target", registrationId: "registration_1", registrationKey: "key_1", participantKey: "participant_bridge", holderGeneration: "generation_bridge" };
+		expect(await internal.publish(runner.state().turns[0]!)).toBe("needs_attention");
+		expect(runner.state()).toMatchObject({ status: "needs_attention", turns: [{ state: "needs_attention", terminal: { body: "result" } }] });
+		expect(new BridgeJournalStore(root, initial).read()).toMatchObject({ status: "needs_attention", turns: [{ state: "needs_attention" }] });
 	});
 
 	it("quiesces an exact detached worker that misses its readiness deadline", async () => {
