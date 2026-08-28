@@ -27,7 +27,12 @@ const startAuthorization = waitForStartAuthorization();
 persist();
 for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, requestCancel);
 process.send?.({ type: "bridge_worker_ready", workerPid: process.pid, workerIdentity });
-await startAuthorization;
+try { await startAuthorization; }
+catch (error) {
+	const body = error instanceof Error ? error.message : String(error);
+	persist({ status: "terminal", terminal: { status: "failed", body, sessionAdvance: "none" }, error: body, endedAt: Date.now() });
+	process.exit(1);
+}
 process.disconnect?.();
 
 function persist(patch: Partial<BridgeWorkerState> = {}): void {
@@ -102,6 +107,7 @@ try {
 	try { decoder.end(); } catch (error) { protocolError ??= error instanceof Error ? error.message : String(error); }
 	if (!terminal) terminal = { status: cancelRequested ? "cancelled" : "failed", body: protocolError || stderrText.trim().slice(0, 16 * 1024) || `Native process exited without a terminal frame (code ${result.code ?? "?"}).`, sessionAdvance: state.childPid ? "uncertain" : "none", ...(sessionId ? { sessionId } : {}) };
 	else if (protocolError) terminal = { status: "failed", body: protocolError, sessionAdvance: "uncertain", ...(terminal.sessionId ? { sessionId: terminal.sessionId } : {}) };
+	else if (cancelRequested) { /* a validated terminal wins over later cancellation */ }
 	else if (result.code === 0 && terminal.status === "completed") { /* structured completion wins */ }
 	else if (terminal.status === "completed") terminal = { ...terminal, status: "failed", body: stderrText.trim().slice(0, 16 * 1024) || `Native process exited with code ${result.code ?? "?"}.` };
 	persist({ status: "terminal", terminal, endedAt: Date.now(), error: protocolError });

@@ -12,7 +12,7 @@ const WORKER = fileURLToPath(new URL("../extensions/runtime/bridge-runner/worker
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
-async function run(body: string) {
+async function run(body: string, authorize = true, cancelAfterTerminal = false) {
 	const root = mkdtempSync(join(tmpdir(), "pi-kit-bridge-worker-"));
 	roots.push(root);
 	mkdirSync(join(root, "turn"));
@@ -22,15 +22,31 @@ async function run(body: string) {
 	writeWorkerSpec(specPath, spec);
 	const child = fork(WORKER, [specPath], { execArgv: ["--experimental-strip-types"], detached: true, env: { LC_ALL: "C", SHOULD_NOT_REACH_NATIVE_SECRET: "hidden" }, stdio: ["ignore", "ignore", "ignore", "ipc"] });
 	await once(child, "message");
-	child.send({ type: "bridge_worker_start" });
+	if (authorize) child.send({ type: "bridge_worker_start" }); else child.disconnect();
+	if (cancelAfterTerminal) {
+		for (let attempt = 0; attempt < 200 && !readWorkerState(statePath)?.terminal; attempt++) await new Promise((resolve) => setTimeout(resolve, 5));
+		child.kill("SIGTERM");
+	}
 	await once(child, "exit");
 	return readWorkerState(statePath)!;
 }
 
 describe("bridge turn worker", () => {
+	it("fails durably without spawning when the controller disconnects before authorization", async () => {
+		const state = await run("must-not-run", false);
+		expect(state).toMatchObject({ status: "terminal", terminal: { status: "failed", sessionAdvance: "none" } });
+		expect(state.childPid).toBeUndefined();
+		expect(state.terminal?.body).toContain("disconnected before start authorization");
+	});
+
 	it("publishes worker identity before one native process and strips controller secrets", async () => {
 		const state = await run("secret-env");
 		expect(state).toMatchObject({ status: "terminal", workerPid: expect.any(Number), workerIdentity: expect.any(String), childPid: expect.any(Number), childIdentity: expect.any(String), terminal: { status: "completed", body: "secret-free", sessionAdvance: "none" } });
+	});
+
+	it("preserves a validated terminal when cancellation arrives later", async () => {
+		const state = await run("terminal-then-sleep", true, true);
+		expect(state).toMatchObject({ status: "terminal", terminal: { status: "completed", body: "terminal-before-cancel", sessionAdvance: "committed" } });
 	});
 
 	it("requires a validated terminal frame even on exit zero", async () => {

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { HostedRuntimeClient, HostedRuntimeClientError } from "../client.ts";
 import { ownsProcessIdentity, quiesceProcessGroup, readProcessIdentity } from "../../shared/process-group.ts";
 import { BridgeJournalStore, readWorkerState, writeRunnerConfig, writeWorkerSpec } from "./journal.ts";
-import { BRIDGE_RUNNER_MAX_BODY_BYTES, BRIDGE_RUNNER_MAX_TURNS, type BridgeAdmission, type BridgeJournal, type BridgeRunnerConfig, type BridgeTurn, type BridgeWorkerSpec } from "./types.ts";
+import { BRIDGE_RUNNER_MAX_BODY_BYTES, BRIDGE_RUNNER_MAX_TURNS, type BridgeAdmission, type BridgeJournal, type BridgeRunnerConfig, type BridgeTurn, type BridgeWorkerSpec, type BridgeWorkerState } from "./types.ts";
 
 const WORKER = fileURLToPath(new URL("./worker.ts", import.meta.url));
 const HEARTBEAT_MS = 2_000;
@@ -19,7 +19,8 @@ interface RuntimeRegistration {
 	holderGeneration: string;
 }
 
-export interface BridgeRunnerOptions { herdrIdentity?: () => Promise<{ paneId: string; terminalId: string }>; workerPath?: string; readyTimeoutMs?: number; }
+export interface BridgeRuntimeClient { call(method: string, params: unknown): Promise<unknown>; }
+export interface BridgeRunnerOptions { herdrIdentity?: () => Promise<{ paneId: string; terminalId: string }>; workerPath?: string; readyTimeoutMs?: number; client?: BridgeRuntimeClient; afterWorkerAuthorized?: () => void | Promise<void>; }
 
 interface ClaimEvent {
 	eventId: string;
@@ -30,7 +31,7 @@ interface ClaimEvent {
 export class BridgeRunner {
 	private readonly configPath: string;
 	private config: BridgeRunnerConfig;
-	private readonly client: HostedRuntimeClient;
+	private readonly client: BridgeRuntimeClient;
 	private readonly journal: BridgeJournalStore;
 	private readonly options: BridgeRunnerOptions;
 	private registration?: RuntimeRegistration;
@@ -41,7 +42,7 @@ export class BridgeRunner {
 		this.configPath = configPath;
 		this.config = config;
 		this.options = options;
-		this.client = new HostedRuntimeClient(config.runtimeSocket, 5_000);
+		this.client = options.client ?? new HostedRuntimeClient(config.runtimeSocket, 5_000);
 		this.journal = new BridgeJournalStore(config.root, initial ?? { version: 1, bridgeId: config.bridgeId, driver: config.driver, protocol: config.protocol, participantId: config.participantId, nextSequence: 1, admissions: [], turns: [], status: "starting", updatedAt: Date.now() });
 	}
 
@@ -50,7 +51,7 @@ export class BridgeRunner {
 	async start(): Promise<void> {
 		await this.register();
 		await this.recover();
-		this.update((state) => ({ ...state, status: state.status === "needs_attention" ? state.status : "running" }));
+		this.update((state) => ({ ...state, status: state.status === "needs_attention" || state.turns.some((turn) => turn.state === "needs_attention") ? "needs_attention" : "running" }));
 	}
 
 	async step(): Promise<"idle" | "admitted" | "working" | "sent" | "needs_attention"> {
@@ -85,17 +86,7 @@ export class BridgeRunner {
 		const turn = this.journal.read().turns.find((candidate) => candidate.state === "starting" || candidate.state === "running");
 		if (!turn?.worker) return;
 		this.replaceTurn(turn.eventId, (current) => ({ ...current, worker: { ...current.worker!, cancelRequested: true }, updatedAt: Date.now() }));
-		const worker = readWorkerState(turn.worker.statePath);
-		if (!worker || !await ownsProcessIdentity(worker.workerPid, worker.workerIdentity)) {
-			this.needsAttention(turn.eventId);
-			return;
-		}
-		if (!await quiesceProcessGroup(worker.workerPid)) {
-			this.needsAttention(turn.eventId);
-			return;
-		}
-		const terminal = readWorkerState(turn.worker.statePath)?.terminal ?? { status: "cancelled" as const, body: "Bridge turn cancelled after exact worker-group quiescence.", sessionAdvance: worker.childPid ? "uncertain" as const : "none" as const };
-		this.replaceTurn(turn.eventId, (current) => ({ ...current, state: "reply_pending", terminal, replyBody: terminal.body, reply: "unsent", updatedAt: Date.now() }));
+		await this.settleCancellation(turn.eventId, turn.worker.statePath);
 	}
 
 	stop(): void { this.stopped = true; this.update((state) => ({ ...state, status: state.status === "needs_attention" ? state.status : "stopped" })); }
@@ -155,8 +146,9 @@ export class BridgeRunner {
 		if (!admission || admission.ack !== "confirmed") { await this.register(); return "working"; }
 		if (turn.state === "pending") { await this.launchWorker(turn); return "working"; }
 		if (turn.state === "starting" || turn.state === "running") return this.pollWorker(turn);
-		if (turn.state === "terminal") { this.replaceTurn(turn.eventId, (current) => ({ ...current, state: "reply_pending", replyBody: current.terminal!.body, reply: "unsent", updatedAt: Date.now() })); return "working"; }
+		if (turn.state === "terminal") { this.setReplyPending(turn.eventId, turn.terminal!); return "working"; }
 		if (turn.state === "reply_pending") return this.publish(turn);
+		this.needsAttention(turn.eventId);
 		return "needs_attention";
 	}
 
@@ -194,6 +186,7 @@ export class BridgeRunner {
 			this.needsAttention(turn.eventId);
 			return;
 		}
+		await this.options.afterWorkerAuthorized?.();
 		this.replaceTurn(turn.eventId, (current) => ({ ...current, state: "running", worker: { attempt, statePath, workerPid, workerIdentity }, updatedAt: Date.now() }));
 		child.unref();
 	}
@@ -202,11 +195,14 @@ export class BridgeRunner {
 		const worker = turn.worker ? readWorkerState(turn.worker.statePath) : undefined;
 		if (!worker) return "working";
 		if (worker.status === "terminal" && worker.terminal) {
-			this.replaceTurn(turn.eventId, (current) => ({ ...current, state: "terminal", terminal: worker.terminal, updatedAt: Date.now() }));
-			if (worker.terminal.sessionId) this.update((state) => ({ ...state, driverSessionId: worker.terminal!.sessionId }));
+			this.importTerminal(turn.eventId, worker.terminal);
 			return "working";
 		}
-		if (!await ownsProcessIdentity(worker.workerPid, worker.workerIdentity)) { this.needsAttention(turn.eventId); return "needs_attention"; }
+		if (worker.status === "needs_attention" || !await ownsProcessIdentity(worker.workerPid, worker.workerIdentity)) {
+			if (await this.hasProcessWitness(worker)) await quiesceProcessGroup(worker.workerPid);
+			this.needsAttention(turn.eventId);
+			return "needs_attention";
+		}
 		return "working";
 	}
 
@@ -234,14 +230,23 @@ export class BridgeRunner {
 			let worker = turn.worker ? readWorkerState(turn.worker.statePath) : undefined;
 			if (!worker && turn.worker) { await delay(500); worker = readWorkerState(turn.worker.statePath); }
 			if (!worker) { this.needsAttention(turn.eventId); continue; }
-			if (worker.status === "terminal" && worker.terminal) { this.replaceTurn(turn.eventId, (current) => ({ ...current, state: "terminal", terminal: worker!.terminal, updatedAt: Date.now() })); continue; }
-			if (!await ownsProcessIdentity(worker.workerPid, worker.workerIdentity)) { this.needsAttention(turn.eventId); continue; }
-			this.replaceTurn(turn.eventId, (current) => ({ ...current, state: "running", worker: { attempt: worker!.attempt, statePath: turn.worker!.statePath, workerPid: worker!.workerPid, workerIdentity: worker!.workerIdentity }, updatedAt: Date.now() }));
+			if (turn.worker?.cancelRequested) { await this.settleCancellation(turn.eventId, turn.worker.statePath); continue; }
+			if (worker.status === "terminal" && worker.terminal) { this.importTerminal(turn.eventId, worker.terminal); continue; }
+			if (worker.status === "needs_attention" || !await ownsProcessIdentity(worker.workerPid, worker.workerIdentity)) {
+				if (await this.hasProcessWitness(worker)) await quiesceProcessGroup(worker.workerPid);
+				this.needsAttention(turn.eventId);
+				continue;
+			}
+			this.replaceTurn(turn.eventId, (current) => ({ ...current, state: "running", worker: { attempt: worker!.attempt, statePath: turn.worker!.statePath, workerPid: worker!.workerPid, workerIdentity: worker!.workerIdentity, ...(turn.worker!.cancelRequested === undefined ? {} : { cancelRequested: turn.worker!.cancelRequested }) }, updatedAt: Date.now() }));
 		}
 	}
 
 	private confirmAdmission(claimId: string): void { this.update((state) => ({ ...state, admissions: state.admissions.map((item) => item.claimId === claimId ? { ...item, ack: "confirmed" } : item) })); }
-	private needsAttention(eventId: string): void { this.replaceTurn(eventId, (turn) => ({ ...turn, state: "needs_attention", updatedAt: Date.now() })); this.update((state) => ({ ...state, status: "needs_attention" })); }
+	private async settleCancellation(eventId: string, statePath: string): Promise<void> { const worker = readWorkerState(statePath); if (worker?.status === "terminal" && worker.terminal) { this.importTerminal(eventId, worker.terminal); return; } if (!worker || !await this.hasProcessWitness(worker) || !await quiesceProcessGroup(worker.workerPid)) { this.needsAttention(eventId); return; } const terminal = readWorkerState(statePath)?.terminal ?? { status: "cancelled" as const, body: "Bridge turn cancelled after exact worker-group quiescence.", sessionAdvance: worker.childPid ? "uncertain" as const : "none" as const }; this.setReplyPending(eventId, terminal); }
+	private importTerminal(eventId: string, terminal: NonNullable<BridgeTurn["terminal"]>): void { this.update((state) => ({ ...state, ...(terminal.sessionId ? { driverSessionId: terminal.sessionId } : {}), turns: state.turns.map((turn) => turn.eventId === eventId ? { ...turn, state: "terminal", terminal, updatedAt: Date.now() } : turn) })); }
+	private setReplyPending(eventId: string, terminal: NonNullable<BridgeTurn["terminal"]>): void { this.update((state) => ({ ...state, ...(terminal.sessionId ? { driverSessionId: terminal.sessionId } : {}), turns: state.turns.map((turn) => turn.eventId === eventId ? { ...turn, state: "reply_pending", terminal, replyBody: terminal.body, reply: "unsent", updatedAt: Date.now() } : turn) })); }
+	private needsAttention(eventId: string): void { this.update((state) => ({ ...state, status: "needs_attention", turns: state.turns.map((turn) => turn.eventId === eventId ? { ...turn, state: "needs_attention", updatedAt: Date.now() } : turn) })); }
+	private async hasProcessWitness(worker: BridgeWorkerState): Promise<boolean> { return await ownsProcessIdentity(worker.workerPid, worker.workerIdentity) || Boolean(worker.childPid && worker.childIdentity && await ownsProcessIdentity(worker.childPid, worker.childIdentity)); }
 	private replaceTurn(eventId: string, update: (turn: BridgeTurn) => BridgeTurn): void { this.update((state) => ({ ...state, turns: state.turns.map((turn) => turn.eventId === eventId ? update(turn) : turn) })); }
 	private update(update: (state: BridgeJournal) => BridgeJournal): BridgeJournal { return this.journal.update((state) => ({ ...update(state), updatedAt: Date.now() })); }
 	private requireRegistration(): RuntimeRegistration { if (!this.registration) throw new Error("Bridge runner is not registered."); return this.registration; }

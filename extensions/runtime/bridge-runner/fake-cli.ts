@@ -20,6 +20,11 @@ if (directive === "secret-env") {
 	process.stdout.write(`${JSON.stringify({ type: "terminal", status: leaked.length ? "failed" : "completed", body: leaked.join(",") || "secret-free", sessionAdvance: "none", sessionId })}\n`);
 	process.exit(0);
 }
+if (directive === "terminal-then-sleep") {
+	process.stdout.write(`${JSON.stringify({ type: "terminal", status: "completed", body: "terminal-before-cancel", sessionAdvance: "committed", sessionId })}\n`);
+	await new Promise((resolve) => setTimeout(resolve, 30_000));
+	process.exit(0);
+}
 process.stdout.write(`${JSON.stringify({ type: "session", sessionId })}\n`);
 process.stdout.write(`${JSON.stringify({ type: "text", text: `fake:${directive}` })}\n`);
 const failed = directive === "fail";

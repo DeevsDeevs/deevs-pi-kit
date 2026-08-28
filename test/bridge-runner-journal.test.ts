@@ -31,6 +31,9 @@ describe("bridge runner journal", () => {
 		writeFileSync(store.path, JSON.stringify({ ...initial(), extra: true }), { mode: 0o600 });
 		expect(() => new BridgeJournalStore(directory, initial())).toThrow("unknown field");
 		rmSync(store.path);
+		writeFileSync(store.path, JSON.stringify({ ...initial(), nextSequence: 2, admissions: [{ claimId: "claim_1", eventIds: ["event_1"], ack: "confirmed", createdAt: 2 }], turns: [{ turnId: "turn_1", sequence: 1, eventId: "event_1", claimId: "claim_1", senderParticipantKey: "participant_sender", body: "hello", state: "starting", attempt: 1, replySendId: "reply_1", reply: "unsent", worker: { attempt: 1, statePath: "/tmp/worker", cancelRequested: "yes" }, createdAt: 2, updatedAt: 2 }] }), { mode: 0o600 });
+		expect(() => new BridgeJournalStore(directory, initial())).toThrow("cancel request must be boolean");
+		rmSync(store.path);
 		writeFileSync(store.path, JSON.stringify(initial()), { mode: 0o644 });
 		expect(() => new BridgeJournalStore(directory, initial())).toThrow("Cannot read bridge state");
 		rmSync(store.path);
