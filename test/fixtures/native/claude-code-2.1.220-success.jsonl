@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","cwd":"/workspace","session_id":"7f56ddde-9570-45a8-adcf-4f606bd27bce","tools":["Glob","Grep","Read"],"model":"claude-haiku-4-5-20251001","permissionMode":"dontAsk","claude_code_version":"2.1.220"}
+{"type":"assistant","message":{"type":"message","role":"assistant","content":[{"type":"text","text":"FIXTURE_CLAUDE_OK"}]},"session_id":"7f56ddde-9570-45a8-adcf-4f606bd27bce"}
+{"is_error":false,"duration_api_ms":2359,"num_turns":1,"stop_reason":"end_turn","session_id":"7f56ddde-9570-45a8-adcf-4f606bd27bce","permission_denials":[],"terminal_reason":"completed","subtype":"success","result":"FIXTURE_CLAUDE_OK","type":"result"}

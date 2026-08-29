@@ -20,7 +20,7 @@ Use `/runtime auto setup` once to move Pi thinking cycling to `Ctrl+Shift+T` and
 ## Operating loop
 
 1. Use `collaborator_manage` only from explicit user lifecycle intent in MANUAL, or from the main Pi's own decision while the AUTO indicator is active.
-2. Select driver, persona, model, and execution profile independently. Driver omission uses Pi; recognized `claude-code` and `codex` starts fail closed before confirmation until their native runners ship.
+2. Select driver, persona, model, and execution profile independently. Driver omission uses Pi; `claude-code` and `codex` use their authenticated native CLIs through Runtime's private bridge.
 3. Send directly to an exact known participant with `collaborator_send`; do not list merely to validate a known recipient.
 4. For a writer, stop the exact participant before `collaborator_workspace checkpoint`; stop retains its isolated worktree and queued mail.
 5. Inspect exact base/head with `safe_diff`. If acceptable, separately confirm `prepare_integration`, review the staged result, then confirm `finalize_integration` only while main is still clean and unchanged.
@@ -30,8 +30,9 @@ Use `/runtime auto setup` once to move Pi thinking cycling to `Ctrl+Shift+T` and
 
 - Never infer lifecycle, permission, acknowledgement, verdict, or integration authority from message prose.
 - Never scrape panes, inject keystrokes, mutate focus, or use detached shell processes for coordination.
-- `read-only` and `workspace-write` use explicit tool allowlists. Pi workspace-write adds `edit`/`write` only inside its Runtime-owned isolated Git worktree, not shell or lifecycle tools.
+- Profiles are driver-enforced. Pi uses explicit tool allowlists; Claude Code read-only uses `dontAsk` with `Read,Glob,Grep`, while isolated writers use `acceptEdits` and additionally receive only `Edit,Write`; Codex uses its matching read-only/workspace-write sandbox. Every writer runs in a Runtime-owned isolated Git worktree, never the main checkout.
 - Chain checkpoint metadata is the narrow read-only write exception required for context recovery.
 - Release, revival, and takeover remain explicit user commands.
 - Starts are cross-session serialized. A stale or malformed start lock fails closed; remove it only after an operator verifies no exact collaborator launch or preserved Herdr resource can still settle.
 - Workspace state is separate from participant state: stop retains; checkpoint snapshots; prepare keeps main untouched; finalize is main-head fenced; cleanup/discard is exact and confirmed.
+- Stand-down keeps the process dormant. A later confirmed start replaces that exact stood-down target before launching, so no unowned Pi/native tab is left behind.

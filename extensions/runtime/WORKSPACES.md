@@ -11,8 +11,8 @@ Each durable workspace records:
 - logical canonical project root and Git common directory;
 - exact base/head commits and private `refs/heads/runtime/collab/<workspace-id>` ref;
 - exact Runtime-root worktree path;
-- participant key, reserved holder generation, Pi target/session, and profile;
-- single-use launch-token digest, exact Herdr binding, typed state, and handoff statistics.
+- participant key, reserved holder generation, exact Pi-session or bridge owner, and profile;
+- Pi single-use launch-token digest when applicable, exact Herdr binding, typed state, and handoff statistics.
 
 The logical project root continues to derive participant identity. The workspace path is only the writer's cwd. Read-only collaborators keep the project read view and do not create worktrees.
 
@@ -20,9 +20,11 @@ The logical project root continues to derive participant identity. The workspace
 
 A trusted `workspace-write` start reserves a new/vacant participant generation before Git or process launch. Runtime records `provisioning`, verifies a canonical non-bare repository and exact base commit, rejects repository-defined filter/merge attributes, then creates a unique branch/worktree. The worktree becomes `ready` only after exact Git registry/ref/path verification.
 
-The controller durably records the exact create request ID before calling Runtime. If a response is lost, it retries exact `recover_launch` long enough to outlive the Git operation; any unresolved request remains in session history for later explicit recovery rather than becoming an undiscoverable workspace. The controller then creates an empty no-focus, single-pane Herdr tab at that worktree and binds its pane, terminal, tab, workspace, and cwd. The child receives one random launch token through process environment; Pi captures it and deletes the environment variable before tools can inherit it. Only the token digest is durable. Nonsecret workspace ID/project/path metadata is persisted in the child session for Runtime restart reconnect.
+The controller durably records the exact create request ID before calling Runtime. If a response is lost, it retries exact recovery long enough to outlive the Git operation; unresolved authority remains durably visible rather than becoming an undiscoverable workspace. The controller then creates an empty no-focus, single-pane Herdr tab at that worktree and binds its pane, terminal, tab, workspace, and cwd.
 
-Workspace Pi registration verifies the exact Pi session header/file, Herdr identity/cwd, workspace record, caller generation, intended prior participant generation, and launch digest. One state transition creates the workspace Pi target, acquires the reserved holder generation, and marks the workspace active before registration acknowledgement. The token cannot be consumed twice. Reconnect revalidates the exact active holder generation after host awaits.
+For Pi, the child receives one random workspace token through process environment; Pi captures and deletes it before tools can inherit it, while only its digest is durable. Pi registration verifies the exact session header/file, Herdr identity/cwd, workspace record, caller/prior participant generations, and launch digest.
+
+For native Claude Code/Codex, the workspace is owned from creation by the final bridge ID and target key. Bridge launch must repeat that exact workspace, caller, participant, holder generation, and Herdr identity. Registration verifies the reported generic bridge/cwd and atomically creates the final bridge target, activates the workspace, acquires the participant, and consumes bridge launch authority before acknowledgement. Reconnect revalidates the exact active holder/workspace generation after host awaits.
 
 ## Workspace states
 

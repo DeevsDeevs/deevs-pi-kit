@@ -135,8 +135,10 @@ describe("hosted participant coordinator", () => {
 		expect(stopped).toMatchObject({ outcome: "stopped", participant: { state: "vacant", queued: { pending: 1 } } });
 		expect(test.stoppedTargets).toEqual([fable.targetKey]);
 		test.setStopOutcome("already_absent");
-		const retry = await test.participants.stopConfirmed(main, fableParticipant.participantKey, stopped.participant.generation);
-		expect(retry).toMatchObject({ outcome: "already_stopped", participant: { state: "vacant", generation: stopped.participant.generation } });
+		const lostResponseRetry = await test.participants.stopConfirmed(main, fableParticipant.participantKey, fableParticipant.generation);
+		expect(lostResponseRetry).toMatchObject({ outcome: "already_stopped", participant: { state: "vacant", generation: stopped.participant.generation } });
+		const observedRetry = await test.participants.stopConfirmed(main, fableParticipant.participantKey, stopped.participant.generation);
+		expect(observedRetry).toMatchObject({ outcome: "already_stopped", participant: { state: "vacant", generation: stopped.participant.generation } });
 	});
 
 	it("refuses to stop a target that now holds another participant", async () => {
