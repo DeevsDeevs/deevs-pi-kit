@@ -124,14 +124,14 @@ describe("hosted Runtime collaborator state", () => {
 		writeFileSync(runtimeStatePaths(root).state, `${JSON.stringify(raw, null, 2)}\n`);
 
 		const migrated = readHostedRuntimeState(root);
-		expect(migrated).toMatchObject({ version: 5, bridgeLaunches: {}, workspaces: {}, integrations: {}, participants: {}, targets: { target_main: { kind: "pi" } } });
+		expect(migrated).toMatchObject({ version: 6, bridgeLaunches: {}, workspaces: {}, integrations: {}, participants: {}, targets: { target_main: { kind: "pi" } } });
 		expect(migrated.events[event.eventId]).toEqual(event);
 		expect(pendingHostedEvents(migrated, "target_main").map((candidate) => candidate.eventId)).toEqual([event.eventId]);
 		expect(JSON.parse(readFileSync(runtimeStatePaths(root).state, "utf8"))).toEqual(migrated);
 		expect(statSync(runtimeStatePaths(root).state).mode & 0o777).toBe(0o600);
 	});
 
-	it("migrates v2 Pi targets and collaborator ownership into discriminated v5 state", () => {
+	it("migrates v2 Pi targets and collaborator ownership into discriminated v6 state", () => {
 		const root = mkdtempSync(join(tmpdir(), "hosted-state-v2-to-v4-"));
 		mkdirSync(root, { recursive: true });
 		const state = pairedState();
@@ -139,11 +139,20 @@ describe("hosted Runtime collaborator state", () => {
 		const targets = Object.fromEntries(Object.entries(rest.targets).map(([key, value]) => { const { kind: _kind, ...legacy } = value; return [key, legacy]; }));
 		writeFileSync(runtimeStatePaths(root).state, `${JSON.stringify({ ...rest, version: 2, targets }, null, 2)}\n`);
 		const migrated = readHostedRuntimeState(root);
-		expect(migrated).toMatchObject({ version: 5, bridgeLaunches: {}, workspaces: {}, integrations: {}, targets: { target_main: { kind: "pi" }, target_fable: { kind: "pi" } }, participants: { [participantKey("main")]: { state: "held", holderTargetKey: "target_main" }, [participantKey("fable")]: { state: "held", holderTargetKey: "target_fable" } } });
+		expect(migrated).toMatchObject({ version: 6, bridgeLaunches: {}, workspaces: {}, integrations: {}, targets: { target_main: { kind: "pi" }, target_fable: { kind: "pi" } }, participants: { [participantKey("main")]: { state: "held", holderTargetKey: "target_main" }, [participantKey("fable")]: { state: "held", holderTargetKey: "target_fable" } } });
+	});
+
+	it("migrates the released v5 schema to v6 without changing durable references", () => {
+		const root = mkdtempSync(join(tmpdir(), "hosted-state-v5-to-v6-"));
+		mkdirSync(root, { recursive: true });
+		const state = pairedState();
+		writeFileSync(runtimeStatePaths(root).state, `${JSON.stringify({ ...state, version: 5 }, null, 2)}\n`);
+		const migrated = readHostedRuntimeState(root);
+		expect(migrated).toMatchObject({ version: 6, targets: state.targets, participants: state.participants, events: state.events });
 	});
 
 	it("fails closed instead of accepting an unknown state version", () => {
-		expect(() => validateHostedRuntimeState({ ...emptyHostedRuntimeState(), version: 6 })).toThrow(HostedStateStorageError);
+		expect(() => validateHostedRuntimeState({ ...emptyHostedRuntimeState(), version: 7 })).toThrow(HostedStateStorageError);
 	});
 
 	it("enforces one held participant identity per target and idempotent same-target acquire", () => {
@@ -246,6 +255,42 @@ describe("hosted Runtime collaborator state", () => {
 		expect(Object.values(state.dedupe)).not.toContain("event_1");
 		state = send(state, "send_1", "event_after_horizon");
 		expect(state.events.event_after_horizon?.source.sequence).toBe(2);
+	});
+
+	it("retains an acknowledged task while its typed result is still retained", () => {
+		let state = reduceHostedState(pairedState(), { type: "task.send", senderParticipantKey: participantKey("main"), expectedSenderGeneration: "lease_main", senderTargetKey: "target_main", recipientParticipantKey: participantKey("fable"), sendId: "task_1", eventId: "event_task", body: "Bounded.", at: 10 });
+		state = reduceHostedState(state, { type: "task.result", senderParticipantKey: participantKey("fable"), expectedSenderGeneration: "lease_fable", senderTargetKey: "target_fable", sendId: "reply_1", eventId: "event_result", inReplyToEventId: "event_task", status: "completed", body: "Done.", sessionAdvance: "committed", at: 11 });
+		const taskClaim = { ...activeClaim("event_task"), claimId: "claim_task" };
+		state = reduceHostedState(state, { type: "inbox.claim", claim: taskClaim });
+		state = reduceHostedState(state, { type: "inbox.ack", targetKey: "target_fable", claimId: taskClaim.claimId, eventIds: taskClaim.eventIds, at: 60 });
+		state = reduceHostedState(state, { type: "retention.prune", before: 61 });
+		expect(state.events.event_task).toBeDefined();
+		const resultClaim = { ...activeClaim("event_result", "target_main"), claimId: "claim_result", registrationId: "registration_main", clientGeneration: "client_main", createdAt: 61, leaseUntil: 90 };
+		state = reduceHostedState(state, { type: "inbox.claim", claim: resultClaim });
+		state = reduceHostedState(state, { type: "inbox.ack", targetKey: "target_main", claimId: resultClaim.claimId, eventIds: resultClaim.eventIds, at: 100 });
+		state = reduceHostedState(state, { type: "retention.prune", before: 101 });
+		expect(state.events.event_task).toBeUndefined();
+		expect(state.events.event_result).toBeUndefined();
+
+		let reverse = reduceHostedState(pairedState(), { type: "task.send", senderParticipantKey: participantKey("main"), expectedSenderGeneration: "lease_main", senderTargetKey: "target_main", recipientParticipantKey: participantKey("fable"), sendId: "task_reverse", eventId: "event_task_reverse", body: "Bounded.", at: 10 });
+		reverse = reduceHostedState(reverse, { type: "task.result", senderParticipantKey: participantKey("fable"), expectedSenderGeneration: "lease_fable", senderTargetKey: "target_fable", sendId: "reply_reverse", eventId: "event_result_reverse", inReplyToEventId: "event_task_reverse", status: "completed", body: "Done.", sessionAdvance: "committed", at: 11 });
+		const reverseClaim = { ...activeClaim("event_result_reverse", "target_main"), claimId: "claim_reverse", registrationId: "registration_main", clientGeneration: "client_main" };
+		reverse = reduceHostedState(reverse, { type: "inbox.claim", claim: reverseClaim });
+		reverse = reduceHostedState(reverse, { type: "inbox.ack", targetKey: "target_main", claimId: reverseClaim.claimId, eventIds: reverseClaim.eventIds, at: 60 });
+		reverse = reduceHostedState(reverse, { type: "retention.prune", before: 61 });
+		expect(reverse.events.event_task_reverse).toBeDefined();
+		expect(reverse.events.event_result_reverse).toBeDefined();
+
+		let mixed = reduceHostedState(pairedState(), { type: "task.send", senderParticipantKey: participantKey("main"), expectedSenderGeneration: "lease_main", senderTargetKey: "target_main", recipientParticipantKey: participantKey("fable"), sendId: "task_mixed", eventId: "event_task_mixed", body: "Bounded.", at: 10 });
+		mixed = reduceHostedState(mixed, { type: "mailbox.send", senderParticipantKey: participantKey("main"), expectedSenderGeneration: "lease_main", senderTargetKey: "target_main", recipientParticipantKey: participantKey("fable"), sendId: "message_mixed", eventId: "event_message_mixed", body: "Free form.", at: 10 });
+		mixed = reduceHostedState(mixed, { type: "task.result", senderParticipantKey: participantKey("fable"), expectedSenderGeneration: "lease_fable", senderTargetKey: "target_fable", sendId: "reply_mixed", eventId: "event_result_mixed", inReplyToEventId: "event_task_mixed", status: "completed", body: "Done.", sessionAdvance: "committed", at: 11 });
+		const mixedClaim: HostedClaim = { claimId: "claim_mixed", targetKey: "target_fable", registrationId: "registration_fable", clientGeneration: "client_fable", eventIds: ["event_task_mixed", "event_message_mixed"], createdAt: 20, leaseUntil: 50, status: "active" };
+		mixed = reduceHostedState(mixed, { type: "inbox.claim", claim: mixedClaim });
+		mixed = reduceHostedState(mixed, { type: "inbox.ack", targetKey: mixedClaim.targetKey, claimId: mixedClaim.claimId, eventIds: mixedClaim.eventIds, at: 60 });
+		mixed = reduceHostedState(mixed, { type: "retention.prune", before: 61 });
+		expect(mixed.events.event_task_mixed).toBeDefined();
+		expect(mixed.events.event_message_mixed).toBeDefined();
+		expect(validateHostedRuntimeState(mixed)).toEqual(mixed);
 	});
 
 	it("rejects corrupted participant and mailbox references during validation", () => {

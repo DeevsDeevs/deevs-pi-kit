@@ -77,7 +77,7 @@ function validateAdmission(value: unknown): BridgeAdmission {
 }
 
 function validateTurn(value: unknown): BridgeTurn {
-	const item = object(value, "bridge turn", ["turnId", "sequence", "eventId", "claimId", "senderParticipantKey", "body", "state", "attempt", "replySendId", "replyBody", "reply", "worker", "terminal", "createdAt", "updatedAt"]);
+	const item = object(value, "bridge turn", ["turnId", "sequence", "eventId", "claimId", "senderParticipantKey", "body", "task", "state", "attempt", "replySendId", "replyBody", "reply", "worker", "terminal", "createdAt", "updatedAt"]);
 	if (!['pending', 'starting', 'running', 'terminal', 'reply_pending', 'reply_sent', 'needs_attention'].includes(String(item.state)) || !["unsent", "uncertain", "sent"].includes(String(item.reply))) throw new BridgeJournalError("Bridge turn execution or reply state is invalid.");
 	const worker = item.worker === undefined ? undefined : object(item.worker, "turn worker", ["attempt", "statePath", "workerPid", "workerIdentity", "cancelRequested"]);
 	const terminal = item.terminal === undefined ? undefined : object(item.terminal, "turn terminal", ["status", "body", "sessionAdvance", "sessionId"]);
@@ -91,6 +91,7 @@ function validateTurn(value: unknown): BridgeTurn {
 		claimId: text(item.claimId, "claim ID", MAX_ID_BYTES),
 		senderParticipantKey: text(item.senderParticipantKey, "sender participant key", MAX_ID_BYTES),
 		body: string(item.body, "turn body", BRIDGE_RUNNER_MAX_BODY_BYTES),
+		...(item.task === true ? { task: true as const } : item.task === undefined ? {} : invalid("Bridge turn task marker is invalid.")),
 		state: item.state as BridgeTurn["state"],
 		attempt: integer(item.attempt, "attempt"),
 		replySendId: text(item.replySendId, "reply send ID", MAX_ID_BYTES),

@@ -105,6 +105,21 @@ describe("hosted participant coordinator", () => {
 		expect(() => test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "send_1", "Changed.")).toThrow(expect.objectContaining({ code: "conflict" }));
 	});
 
+	it("settles bounded tasks once with deterministic typed results", async () => {
+		const test = setup();
+		const { main, fable, mainParticipant, fableParticipant } = await acquirePair(test);
+		const task = test.participants.sendTask(main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "task_1", "Review the exact change.");
+		expect(task).toMatchObject({ type: "mailbox.task", payload: { sendId: "task_1" } });
+		expect(test.participants.taskStatus(main, mainParticipant.participantKey, mainParticipant.generation, task.eventId)).toEqual({ eventId: task.eventId, recipientParticipantKey: fableParticipant.participantKey, status: "pending" });
+		const result = test.participants.resultTask(fable, fableParticipant.participantKey, fableParticipant.generation, task.eventId, "reply_task_1", "completed", "Reviewed.", "committed");
+		expect(result).toMatchObject({ type: "mailbox.task_result", payload: { inReplyToEventId: task.eventId, replyId: "reply_task_1", status: "completed", body: "Reviewed.", sessionAdvance: "committed" } });
+		expect(test.participants.resultTask(fable, fableParticipant.participantKey, fableParticipant.generation, task.eventId, "reply_task_1", "completed", "Reviewed.", "committed").eventId).toBe(result.eventId);
+		expect(test.participants.taskStatus(main, mainParticipant.participantKey, mainParticipant.generation, task.eventId)).toMatchObject({ status: "completed", resultEventId: result.eventId, replyId: "reply_task_1", body: "Reviewed.", sessionAdvance: "committed" });
+		expect(() => test.participants.resultTask(fable, fableParticipant.participantKey, fableParticipant.generation, task.eventId, "reply_task_1", "failed", "Changed.", "committed")).toThrow(expect.objectContaining({ code: "conflict" }));
+		expect(() => test.participants.resultTask(fable, fableParticipant.participantKey, fableParticipant.generation, task.eventId, "reply_task_other", "completed", "Reviewed.", "committed")).toThrow(expect.objectContaining({ code: "conflict" }));
+		expect(() => test.participants.taskStatus(fable, fableParticipant.participantKey, fableParticipant.generation, task.eventId)).toThrow(expect.objectContaining({ code: "not_found" }));
+	});
+
 	it("rejects cross-protocol send after a target changes identity", async () => {
 		const test = setup();
 		const { main, mainParticipant, fableParticipant } = await acquirePair(test);

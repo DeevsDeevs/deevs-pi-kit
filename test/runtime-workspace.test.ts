@@ -173,6 +173,16 @@ describe("Runtime isolated collaborator workspace", () => {
 		expect(native).toMatchObject({ cwd: workspace.workspace.worktreePath, workspaceId: workspace.workspace.workspaceId, profile: "workspace-write" });
 		expect(test.store.read().workspaces[workspace.workspace.workspaceId]).toMatchObject({ state: "active", targetKey: native.registration.targetKey });
 		expect(test.store.read().targets[native.registration.targetKey]).toMatchObject({ kind: "bridge", workspaceId: workspace.workspace.workspaceId, workspaceRoot: workspace.workspace.worktreePath });
+		writeFileSync(join(workspace.workspace.worktreePath, "task.txt"), "dirty\n");
+		const evidence = await test.coordinator.taskEvidence(native.registration.targetKey);
+		expect(evidence).toMatchObject({ workspaceId: workspace.workspace.workspaceId, baseCommit: workspace.workspace.baseCommit, headCommit: workspace.workspace.headCommit, dirty: true, artifactRef: workspace.workspace.branchRef });
+		const task = test.participants.sendTask(main, mainParticipant.participantKey, mainParticipant.generation, native.participantKey, "task_native", "Write task.txt.");
+		const taskResult = test.participants.resultTask(native.registration, native.participantKey, native.holderGeneration, task.eventId, "reply_native", "completed", "Done.", "committed", evidence);
+		expect(taskResult.payload.workspace).toEqual(evidence);
+		rmSync(join(workspace.workspace.worktreePath, "task.txt"));
+		expect(await test.coordinator.taskEvidence(native.registration.targetKey)).toMatchObject({ dirty: false, capturedAt: expect.any(Number) });
+		expect(test.participants.recoverTaskResult(native.registration, native.participantKey, native.holderGeneration, task.eventId, "reply_native", "completed", "Done.", "committed")?.payload.workspace).toEqual(evidence);
+		expect(test.participants.taskStatus(main, mainParticipant.participantKey, mainParticipant.generation, task.eventId)).toMatchObject({ status: "completed", workspace: { workspaceId: workspace.workspace.workspaceId, dirty: true } });
 		const stopping = new HostedParticipantCoordinator(test.store, test.registrations, { request() {} }, { createGeneration: () => "lease_stopped", stopTarget: async () => "closed", onStopped: (target, generation) => test.coordinator.retainTarget(target.targetKey, generation) });
 		await stopping.stopConfirmed(main, native.participantKey, native.holderGeneration);
 		expect(test.store.read().workspaces[workspace.workspace.workspaceId]?.state).toBe("retained");

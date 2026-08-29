@@ -37,7 +37,7 @@ async function settle(runner: BridgeRunner, expectedTurns: number): Promise<void
 		if (runner.state().turns.length === expectedTurns && runner.state().turns.every((turn) => turn.state === "reply_sent")) return;
 		await new Promise((resolve) => setTimeout(resolve, 20));
 	}
-	throw new Error("Bridge runner did not settle.");
+	throw new Error(`Bridge runner did not settle: ${JSON.stringify(runner.state())}`);
 }
 
 describe("durable common bridge runner", () => {
@@ -69,6 +69,7 @@ describe("durable common bridge runner", () => {
 		let admissionBeforeAck: BridgeJournal | undefined;
 		let replyBeforeSend: BridgeJournal | undefined;
 		let replyAttempts = 0;
+		let taskResultAttempts = 0;
 		const runnerClient = {
 			async call(method: string, params: unknown): Promise<unknown> {
 				const result = await client.call(method, params);
@@ -83,6 +84,7 @@ describe("durable common bridge runner", () => {
 						throw new HostedRuntimeClientError("unavailable", "Injected reply response loss.");
 					}
 				}
+				if (method === "task.result" && ++taskResultAttempts === 1) throw new HostedRuntimeClientError("unavailable", "Injected task result response loss.");
 				return result;
 			},
 		};
@@ -117,17 +119,23 @@ describe("durable common bridge runner", () => {
 		expect(runner.state().turns.map((turn) => [turn.sequence, turn.replySendId, turn.terminal?.body])).toEqual([[1, expect.stringMatching(/^reply_/), "fake:first"], [2, expect.stringMatching(/^reply_/), "fake:second"]]);
 		expect(runner.state().turns[0]!.replySendId).not.toBe(runner.state().turns[1]!.replySendId);
 
+		const task = await client.call("task.send", { registrationId: senderRegistration.registrationId, registrationKey: senderRegistration.registrationKey, senderParticipantKey: sender.participantKey, expectedSenderGeneration: sender.generation, recipientParticipantKey: bridgeParticipantKey, sendId: "task_1", body: "typed" }) as { eventId: string };
+		await settle(runner, 3);
+		expect(await client.call("task.status", { registrationId: senderRegistration.registrationId, registrationKey: senderRegistration.registrationKey, senderParticipantKey: sender.participantKey, expectedSenderGeneration: sender.generation, eventId: task.eventId })).toMatchObject({ status: "completed", replyId: runner.state().turns[2]!.replySendId, body: "fake:typed", sessionAdvance: "committed" });
+		expect(runner.state().turns[2]).toMatchObject({ task: true, state: "reply_sent" });
+		expect(taskResultAttempts).toBe(2);
+
 		await client.call("mailbox.send", { registrationId: senderRegistration.registrationId, registrationKey: senderRegistration.registrationKey, senderParticipantKey: sender.participantKey, expectedSenderGeneration: sender.generation, recipientParticipantKey: bridgeParticipantKey, sendId: "input_3", body: "sleep:5000" });
 		await runner.step();
 		await runner.step();
-		expect(runner.state().turns[2]?.state).toBe("running");
-		for (let attempt = 0; attempt < 100 && !readWorkerState(runner.state().turns[2]!.worker!.statePath)?.childPid; attempt++) await new Promise((resolve) => setTimeout(resolve, 10));
-		expect(readWorkerState(runner.state().turns[2]!.worker!.statePath)?.childPid).toEqual(expect.any(Number));
-		new BridgeJournalStore(runnerRoot, runner.state()).update((state) => ({ ...state, turns: state.turns.map((turn) => turn.eventId === state.turns[2]!.eventId ? { ...turn, worker: { ...turn.worker!, cancelRequested: true }, updatedAt: Date.now() } : turn), updatedAt: Date.now() }));
+		expect(runner.state().turns[3]?.state).toBe("running");
+		for (let attempt = 0; attempt < 100 && !readWorkerState(runner.state().turns[3]!.worker!.statePath)?.childPid; attempt++) await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(readWorkerState(runner.state().turns[3]!.worker!.statePath)?.childPid).toEqual(expect.any(Number));
+		new BridgeJournalStore(runnerRoot, runner.state()).update((state) => ({ ...state, turns: state.turns.map((turn) => turn.eventId === state.turns[3]!.eventId ? { ...turn, worker: { ...turn.worker!, cancelRequested: true }, updatedAt: Date.now() } : turn), updatedAt: Date.now() }));
 		const cancelRecoveryRunner = new BridgeRunner(configPath, readRunnerConfig(configPath), undefined, { client: runnerClient, herdrIdentity: async () => ({ paneId: "pane_bridge", terminalId: "term_bridge" }) });
 		await cancelRecoveryRunner.start();
-		await settle(cancelRecoveryRunner, 3);
-		expect(cancelRecoveryRunner.state().turns[2]).toMatchObject({ state: "reply_sent", worker: { cancelRequested: true }, terminal: { status: "cancelled", sessionAdvance: "uncertain" } });
+		await settle(cancelRecoveryRunner, 4);
+		expect(cancelRecoveryRunner.state().turns[3]).toMatchObject({ state: "reply_sent", worker: { cancelRequested: true }, terminal: { status: "cancelled", sessionAdvance: "uncertain" } });
 
 		let authorizationCrashInjected = false;
 		const crashRunner = new BridgeRunner(configPath, readRunnerConfig(configPath), undefined, { client: runnerClient, herdrIdentity: async () => ({ paneId: "pane_bridge", terminalId: "term_bridge" }), afterWorkerAuthorized: () => { authorizationCrashInjected = true; throw new Error("Injected controller crash after worker authorization."); } });
@@ -136,21 +144,21 @@ describe("durable common bridge runner", () => {
 		await crashRunner.step();
 		await expect(crashRunner.step()).rejects.toThrow("Injected controller crash");
 		expect(authorizationCrashInjected).toBe(true);
-		expect(crashRunner.state().turns[3]).toMatchObject({ state: "starting", attempt: 1 });
-		const crashWorkerPath = crashRunner.state().turns[3]!.worker!.statePath;
+		expect(crashRunner.state().turns[4]).toMatchObject({ state: "starting", attempt: 1 });
+		const crashWorkerPath = crashRunner.state().turns[4]!.worker!.statePath;
 		for (let attempt = 0; attempt < 100 && readWorkerState(crashWorkerPath)?.status !== "terminal"; attempt++) await new Promise((resolve) => setTimeout(resolve, 10));
 		const crashTerminal = readWorkerState(crashWorkerPath)?.terminal;
 		expect(crashTerminal).toMatchObject({ status: "completed", body: "fake:fourth", sessionId: expect.stringMatching(/^fake_/) });
 		const restartedRunner = new BridgeRunner(configPath, readRunnerConfig(configPath), undefined, { herdrIdentity: async () => ({ paneId: "pane_bridge", terminalId: "term_bridge" }) });
 		await restartedRunner.start();
 		expect(restartedRunner.state().driverSessionId).toBe(crashTerminal?.sessionId);
-		await settle(restartedRunner, 4);
-		expect(restartedRunner.state().turns[3]).toMatchObject({ sequence: 4, attempt: 1, state: "reply_sent", terminal: { status: "completed", body: "fake:fourth" } });
+		await settle(restartedRunner, 5);
+		expect(restartedRunner.state().turns[4]).toMatchObject({ sequence: 5, attempt: 1, state: "reply_sent", terminal: { status: "completed", body: "fake:fourth" } });
 
 		await client.call("mailbox.send", { registrationId: senderRegistration.registrationId, registrationKey: senderRegistration.registrationKey, senderParticipantKey: sender.participantKey, expectedSenderGeneration: sender.generation, recipientParticipantKey: bridgeParticipantKey, sendId: "input_5", body: "sleep:5000" });
 		await restartedRunner.step();
 		await restartedRunner.step();
-		const uncertainTurn = restartedRunner.state().turns[4]!;
+		const uncertainTurn = restartedRunner.state().turns[5]!;
 		for (let attempt = 0; attempt < 100 && !readWorkerState(uncertainTurn.worker!.statePath)?.childPid; attempt++) await new Promise((resolve) => setTimeout(resolve, 10));
 		const ownedWorker = readWorkerState(uncertainTurn.worker!.statePath)!;
 		expect(await ownsProcessIdentity(ownedWorker.workerPid, ownedWorker.workerIdentity)).toBe(true);

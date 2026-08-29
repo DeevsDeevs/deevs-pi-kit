@@ -122,7 +122,7 @@ describe("authoritative Runtime bridge launch", () => {
 		(v3.targets[launch.targetKey] as { metadata: Record<string, string> }).metadata = { format: "legacy-v1" };
 		v3.bridgeLaunches[launch.launchId]!.metadata = { format: "legacy-v1" };
 		writeFileSync(runtimeStatePaths(migrationRoot).state, JSON.stringify({ ...v3, version: 3 }));
-		expect(readHostedRuntimeState(migrationRoot)).toMatchObject({ version: 5, workspaces: {}, integrations: {}, targets: { [launch.targetKey]: { kind: "bridge", bridgeId: launch.launchId, metadata: { adapter: "legacy-v1" } } }, bridgeLaunches: { [launch.launchId]: { status: "consumed", metadata: { adapter: "legacy-v1" } } } });
+		expect(readHostedRuntimeState(migrationRoot)).toMatchObject({ version: 6, workspaces: {}, integrations: {}, targets: { [launch.targetKey]: { kind: "bridge", bridgeId: launch.launchId, metadata: { adapter: "legacy-v1" } } }, bridgeLaunches: { [launch.launchId]: { status: "consumed", metadata: { adapter: "legacy-v1" } } } });
 		expect(test.registrations.isLiveTarget(launch.targetKey)).toBe(true);
 		await expect(test.bridges.register({ launchToken: launch.launchToken, reconnectToken: launch.reconnectToken, clientGeneration: "client_bridge", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" } })).rejects.toMatchObject({ code: "conflict" });
 

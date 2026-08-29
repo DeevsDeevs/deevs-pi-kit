@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import type { HostedIntegration, HostedPiTarget, HostedWorkspace } from "../hosted-types.ts";
+import type { HostedIntegration, HostedPiTarget, HostedTaskWorkspaceEvidence, HostedWorkspace } from "../hosted-types.ts";
 import { RuntimeGit, RuntimeGitError, type RuntimeWorktreeIdentity } from "./git.ts";
 import { deriveTargetKey, RuntimeRegistrationManager, type HostedHostVerifier, type HostedLiveRegistration, type RegisterWorkspacePiInput } from "./registration.ts";
 import { deriveBridgeTargetKey, deriveParticipantKey, HostedStateStore } from "./state.ts";
@@ -166,6 +166,21 @@ export class RuntimeWorkspaceCoordinator {
 		if (!target || target.kind !== "pi" || !target.workspaceId || (!held && !stoodDown)) throw new HostedWorkspaceError("conflict", "Workspace Pi participant succession is no longer authorized.");
 		const registration = await this.registrations.registerWorkspacePi(input, target);
 		return this.registrationResult(registration, workspace);
+	}
+
+	async taskEvidence(targetKey: string): Promise<HostedTaskWorkspaceEvidence | undefined> { return this.withTaskEvidence(targetKey, (evidence) => evidence); }
+
+	async withTaskEvidence<T>(targetKey: string, publish: (evidence?: HostedTaskWorkspaceEvidence) => T): Promise<T> {
+		const target = this.store.read().targets[targetKey];
+		if (!target?.workspaceId) return publish();
+		const workspace = this.workspace(target.workspaceId);
+		if (workspace.targetKey !== targetKey || target.workspaceRoot !== workspace.worktreePath) throw new HostedWorkspaceError("conflict", "Task result workspace target does not match Runtime ownership.");
+		const repository = await this.git.discover(workspace.projectRoot);
+		return this.withRepository(repository.commonDir, async () => {
+			await this.git.verifyWorktree(repository, workspace.worktreePath, workspace.branchRef, workspace.headCommit);
+			const status = await this.git.status(workspace.worktreePath);
+			return publish({ workspaceId: workspace.workspaceId, baseCommit: workspace.baseCommit, headCommit: workspace.headCommit, branchRef: workspace.branchRef, state: workspace.state, dirty: !status.clean, artifactRef: workspace.branchRef, capturedAt: this.now() });
+		});
 	}
 
 	inspect(caller: HostedLiveRegistration, workspaceId: string): HostedWorkspace {
