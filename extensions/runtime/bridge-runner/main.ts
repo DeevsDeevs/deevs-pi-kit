@@ -9,7 +9,7 @@ const pane = await currentPane();
 await report(pane.paneId, config.bridgeId, "working");
 const runner = new BridgeRunner(configPath, config);
 const controller = new AbortController();
-for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => controller.abort(signal));
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => controller.abort(signal));
 try {
 	await runner.run(controller.signal);
 	await report(pane.paneId, config.bridgeId, runner.state().status === "needs_attention" ? "blocked" : "idle");

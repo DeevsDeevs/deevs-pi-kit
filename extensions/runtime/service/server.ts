@@ -64,7 +64,7 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 	const workspaces = new RuntimeWorkspaceCoordinator(options.root, store, registrations, host, options.workspace);
 	participants = new HostedParticipantCoordinator(store, registrations, wakes, {
 		...options.participant,
-		stopTarget: options.participant?.stopTarget ?? (host.closeTarget ? (target) => host.closeTarget!(target, join(options.root, "collaborator-sessions")) : undefined),
+		stopTarget: options.participant?.stopTarget ?? (host.closeTarget ? (target) => host.closeTarget!(target, options.root) : undefined),
 		onStopped: async (target, holderGeneration) => { await options.participant?.onStopped?.(target, holderGeneration); await workspaces.retainTarget(target.targetKey, holderGeneration); },
 	});
 	const socketPath = options.socketPath ?? join(options.root, "runtime.sock");

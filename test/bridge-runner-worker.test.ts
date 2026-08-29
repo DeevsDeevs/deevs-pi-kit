@@ -12,7 +12,7 @@ const WORKER = fileURLToPath(new URL("../extensions/runtime/bridge-runner/worker
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
-async function run(body: string, authorize = true, cancelAfterTerminal = false) {
+async function run(body: string, authorize = true, cancelAfterTerminal?: NodeJS.Signals) {
 	const root = mkdtempSync(join(tmpdir(), "pi-kit-bridge-worker-"));
 	roots.push(root);
 	mkdirSync(join(root, "turn"));
@@ -25,7 +25,7 @@ async function run(body: string, authorize = true, cancelAfterTerminal = false) 
 	if (authorize) child.send({ type: "bridge_worker_start" }); else child.disconnect();
 	if (cancelAfterTerminal) {
 		for (let attempt = 0; attempt < 200 && !readWorkerState(statePath)?.terminal; attempt++) await new Promise((resolve) => setTimeout(resolve, 5));
-		child.kill("SIGTERM");
+		child.kill(cancelAfterTerminal);
 	}
 	await once(child, "exit");
 	return readWorkerState(statePath)!;
@@ -44,8 +44,8 @@ describe("bridge turn worker", () => {
 		expect(state).toMatchObject({ status: "terminal", workerPid: expect.any(Number), workerIdentity: expect.any(String), childPid: expect.any(Number), childIdentity: expect.any(String), terminal: { status: "completed", body: "secret-free", sessionAdvance: "none" } });
 	});
 
-	it("preserves a validated terminal when cancellation arrives later", async () => {
-		const state = await run("terminal-then-sleep", true, true);
+	it("preserves a validated terminal when terminal hangup arrives later", async () => {
+		const state = await run("terminal-then-sleep", true, "SIGHUP");
 		expect(state).toMatchObject({ status: "terminal", terminal: { status: "completed", body: "terminal-before-cancel", sessionAdvance: "committed" } });
 	});
 

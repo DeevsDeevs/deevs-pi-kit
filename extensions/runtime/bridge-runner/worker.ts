@@ -27,7 +27,7 @@ if (!workerIdentity) throw new Error("Bridge worker process identity is unavaila
 let state: BridgeWorkerState = { version: 1, turnId: spec.turnId, eventId: spec.eventId, attempt: spec.attempt, status: "starting", workerPid: process.pid, workerIdentity, stdoutBytes: 0, stderrBytes: 0, frames: 0, startedAt, updatedAt: startedAt };
 const startAuthorization = waitForStartAuthorization();
 persist();
-for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, requestCancel);
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, requestCancel);
 process.send?.({ type: "bridge_worker_ready", workerPid: process.pid, workerIdentity });
 try { await startAuthorization; }
 catch (error) {
@@ -123,7 +123,7 @@ try {
 	if (child?.pid || groupStopping) try { process.kill(-process.pid, "SIGKILL"); } catch {}
 }
 
-for (const signal of ["SIGINT", "SIGTERM"] as const) process.removeListener(signal, requestCancel);
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.removeListener(signal, requestCancel);
 
 function waitForStartAuthorization(): Promise<void> {
 	return new Promise((resolve, reject) => {
