@@ -278,8 +278,7 @@ export class RuntimeWorkspaceCoordinator {
 				const picked = await this.git.cherryPick(worktree.path, integration.sourceCommits);
 				next = picked.status === "prepared" ? { ...integration, state: "prepared", preparedHead: picked.headCommit, updatedAt: this.tick(integration.updatedAt) } : { ...integration, state: "conflicted", preparedHead: picked.headCommit, conflictPaths: picked.paths, updatedAt: this.tick(integration.updatedAt) };
 			} else {
-				const recovered = await this.git.handoff(worktree.path, integration.mainHead, worktree.headCommit);
-				if (recovered.commits.length !== integration.sourceCommits.length) throw new HostedWorkspaceError("conflict", "Prepared integration commit count does not match its source handoff.");
+				await this.git.verifyCherryPicks(worktree.path, integration.mainHead, worktree.headCommit, integration.sourceCommits);
 				next = { ...integration, state: "prepared", preparedHead: worktree.headCommit, updatedAt: this.tick(integration.updatedAt) };
 			}
 			this.store.apply({ type: "integration.replace", integration: next, expectedState: integration.state, expectedUpdatedAt: integration.updatedAt });

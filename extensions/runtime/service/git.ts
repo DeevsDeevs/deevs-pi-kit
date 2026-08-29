@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { lstat, readlink, realpath } from "node:fs/promises";
+import { lstat, readFile, readlink, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { TextDecoder } from "node:util";
 
@@ -91,6 +91,7 @@ export class RuntimeGit {
 		const base = commit(baseCommit);
 		const verified = await this.verifyWorktree(repository, worktree.path, worktree.branchRef);
 		await this.requireLinearRange(worktree.path, base, verified.headCommit);
+		await this.rejectChangedAttributes(worktree.path);
 		const before = await this.status(worktree.path);
 		if (!before.clean) {
 			await this.boundChangedPaths(worktree.path, before.paths);
@@ -158,6 +159,19 @@ export class RuntimeGit {
 		return { status: "prepared", headCommit: commit((await this.text(path, ["rev-parse", "--verify", "HEAD^{commit}"])).trim()) };
 	}
 
+	async verifyCherryPicks(path: string, mainHead: string, preparedHead: string, sourceCommits: string[]): Promise<RuntimeCheckpoint> {
+		const sources = sourceCommits.map(commit);
+		const recovered = await this.handoff(path, mainHead, preparedHead);
+		if (recovered.commits.length !== sources.length) throw new RuntimeGitError("Prepared integration commit count does not match its source handoff.");
+		for (let index = 0; index < sources.length; index++) {
+			const source = sources[index]!;
+			const prepared = recovered.commits[index]!;
+			const message = (await this.text(path, ["show", "-s", "--format=%B", prepared])).trimEnd();
+			if (!message.endsWith(`(cherry picked from commit ${source})`) || await this.patchId(path, source) !== await this.patchId(path, prepared)) throw new RuntimeGitError("Prepared integration does not match its exact source commits.");
+		}
+		return recovered;
+	}
+
 	async finalize(repository: RuntimeRepository, expectedMainHead: string, preparedHead: string): Promise<string> {
 		const expected = commit(expectedMainHead);
 		const prepared = commit(preparedHead);
@@ -211,7 +225,31 @@ export class RuntimeGit {
 		if (!match || Number(match[1]) < 2 || (Number(match[1]) === 2 && Number(match[2]) < 42)) throw new RuntimeGitError("Runtime workspaces require Git 2.42 or newer.");
 	}
 
+	private async rejectChangedAttributes(cwd: string): Promise<void> {
+		const listed = splitNul(await this.output(cwd, ["ls-files", "--cached", "--others", "-z"]));
+		if (listed.length > MAX_PATHS) throw new RuntimeGitError(`Repository exceeds the ${MAX_PATHS}-path workspace admission limit.`);
+		const head = new Map<string, string>();
+		for (const record of splitNul(await this.output(cwd, ["ls-tree", "-r", "-z", "HEAD"]))) {
+			const tab = record.indexOf("\t");
+			const metadata = tab < 0 ? [] : record.slice(0, tab).split(/ +/);
+			const path = tab < 0 ? "" : record.slice(tab + 1);
+			if (metadata.length !== 3) throw new RuntimeGitError("Git ls-tree returned malformed attribute metadata.");
+			if (path === ".gitattributes" || path.endsWith("/.gitattributes")) head.set(path, commitish(metadata[2]!, "attribute blob"));
+		}
+		const candidates = new Set([...head.keys(), ...listed.filter((path) => path === ".gitattributes" || path.endsWith("/.gitattributes"))]);
+		for (const path of candidates) {
+			const absolute = resolve(cwd, path);
+			if (!inside(cwd, absolute)) throw new RuntimeGitError("Workspace attribute path escapes its root.");
+			const info = await lstat(absolute).catch(() => undefined);
+			const blob = head.get(path);
+			if (!blob || !info?.isFile() || info.size > MAX_GIT_BUFFER) throw new RuntimeGitError("Changing .gitattributes is not allowed in Runtime workspace handoffs.");
+			const [current, committed] = await Promise.all([readFile(absolute), this.output(cwd, ["cat-file", "blob", blob])]);
+			if (!current.equals(committed)) throw new RuntimeGitError("Changing .gitattributes is not allowed in Runtime workspace handoffs.");
+		}
+	}
+
 	private async rejectExternalAttributes(cwd: string, source: string, paths?: string[], integration = false): Promise<void> {
+		if (paths?.some((path) => path === ".gitattributes" || path.endsWith("/.gitattributes"))) throw new RuntimeGitError("Changing .gitattributes is not allowed in Runtime workspace handoffs.");
 		const candidates = paths ?? splitNul(await this.output(cwd, ["ls-tree", "-r", "--name-only", "-z", source]));
 		if (candidates.length > MAX_PATHS) throw new RuntimeGitError(`Repository exceeds the ${MAX_PATHS}-path workspace admission limit.`);
 		if (candidates.length === 0) return;
@@ -274,6 +312,12 @@ export class RuntimeGit {
 			const resolved = resolve(dirname(absolute), target);
 			if (isAbsolute(target) || !inside(root, resolved)) throw new RuntimeGitError("Workspace symlink escapes its root.");
 		}
+	}
+
+	private async patchId(cwd: string, source: string): Promise<string> {
+		const patch = await this.output(cwd, ["show", "--format=", "--binary", "--no-ext-diff", "--no-textconv", source, "--"]);
+		const value = (await this.text(cwd, ["patch-id", "--stable"], patch)).trim().split(/\s+/, 1)[0];
+		return commitish(value ?? "", "patch ID");
 	}
 
 	private async requireLinearRange(cwd: string, base: string, head: string): Promise<string[]> {

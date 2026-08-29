@@ -169,6 +169,7 @@ npm run check
 npm run smoke:runtime-release       # isolated Monitor release gate; requires Herdr + Pi integration
 npm run smoke:collaborator-release       # Manual production collaborator + Mission completion-once gate
 npm run smoke:collaborator-auto-release  # Auto launch with effective read-only profile + the same recovery gate
+npm run smoke:native-release             # deterministic native runner + isolated Git integration gate
 ```
 
-`npm run check` runs typechecking, tests, RPC/print/JSON mode smokes, the lockfile audit, and a package dry run. The isolated Runtime release gates are separate because they start real Herdr and Pi processes.
+`npm run check` runs typechecking, tests, RPC/print/JSON mode smokes, the lockfile audit, and a package dry run. The isolated Runtime/Collaborator gates are separate because they start real Herdr and Pi processes; the native gate uses deterministic executable shims through the production Runtime/runner boundary.
