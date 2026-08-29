@@ -964,6 +964,33 @@ describe("hosted collaborator Pi integration", () => {
 		await test.integration.sessionShutdown();
 	});
 
+	it("releases native Auto capacity only after typed exact host absence", async () => {
+		for (const [hostCode, releases] of [["tab_not_found", true], ["host_unavailable", false]] as const) {
+			const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
+			const test = await setup((request) => {
+				if (request.method === "participant.get") return mainParticipant;
+				if (request.method === "participant.list") return { participants: [mainParticipant] };
+				if (request.method === "bridge.launch.create") return { launchId: request.params.launchId, targetKey: "target_native", holderGeneration: "lease_native", expiresAt: Date.now() + 30_000, launchToken: `bridge_launch_${request.params.launchId}.${"x".repeat(43)}`, reconnectToken: "y".repeat(43), herdr: { paneId: "w1:p9", terminalId: "term_9", tabId: "w1:t9", workspaceId: "w1" } };
+				if (request.method === "bridge.launch.recover") return { launch: { status: "cancelled" } };
+				return baseResponse(request);
+			}, [identity]);
+			new CollaboratorAutoStore(test.runtimeRoot).set(true);
+			test.ctx.hasUI = false;
+			test.setExec(async (_command, args) => {
+				if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
+				if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9", terminal_id: "term_9" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
+				if (args[0] === "pane" && args[1] === "run") return { code: 1, stdout: "", stderr: "dispatch uncertain", killed: false };
+				if (args[0] === "tab" && args[1] === "close") return { code: 1, stdout: "", stderr: "close uncertain", killed: false };
+				if (args[0] === "tab" && args[1] === "get") return { code: 1, stdout: JSON.stringify({ error: { code: hostCode, message: "typed" } }), stderr: "", killed: false };
+				return { code: 0, stdout: "{}", stderr: "", killed: false };
+			});
+			await test.integration.sessionStart(test.ctx as never);
+			await expect(test.integration.startCollaborator({ participantId: "native", driver: "codex" }, test.ctx as never)).rejects.toThrow(releases ? "dispatch native collaborator startup" : "could not be terminated");
+			expect(existsSync(join(test.runtimeRoot, "auto-start.lock"))).toBe(!releases);
+			await test.integration.sessionShutdown();
+		}
+	});
+
 	it("preserves a started child and caller when identity observation becomes ambiguous", async () => {
 		let listCount = 0;
 		const test = await setup((request) => {
