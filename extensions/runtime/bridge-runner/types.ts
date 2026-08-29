@@ -52,6 +52,7 @@ export interface BridgeTurn {
 	claimId: string;
 	senderParticipantKey: string;
 	body: string;
+	task?: true;
 	state: BridgeExecutionState;
 	attempt: number;
 	replySendId: string;

@@ -32,6 +32,8 @@ import {
 	type HostedFileObservation,
 	type HostedFilesystemCreatedEvent,
 	type HostedMailboxMessageEvent,
+	type HostedMailboxTaskEvent,
+	type HostedMailboxTaskResultEvent,
 	type HostedIntegration,
 	type HostedMonitor,
 	type HostedParticipant,
@@ -40,6 +42,7 @@ import {
 	type HostedRuntimeState,
 	type HostedStateOperation,
 	type HostedTarget,
+	type HostedTaskWorkspaceEvidence,
 	type HostedWake,
 	type HostedWorkspace,
 } from "../hosted-types.ts";
@@ -69,7 +72,7 @@ export class HostedStateConflictError extends Error {
 }
 
 export function emptyHostedRuntimeState(): HostedRuntimeState {
-	return { version: 5, targets: {}, bridgeLaunches: {}, workspaces: {}, integrations: {}, monitors: {}, participants: {}, events: {}, dedupe: {}, claims: {}, wakes: {} };
+	return { version: 6, targets: {}, bridgeLaunches: {}, workspaces: {}, integrations: {}, monitors: {}, participants: {}, events: {}, dedupe: {}, claims: {}, wakes: {} };
 }
 
 export class HostedStateStore {
@@ -358,7 +361,7 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 		}, "held", operation.targetKey));
 	}
 
-	if (operation.type === "mailbox.send") {
+	if (operation.type === "mailbox.send" || operation.type === "task.send") {
 		assertStateId(operation.eventId, "Mailbox event ID");
 		assertStateTime(operation.at, "Mailbox send time");
 		const sender = state.participants[operation.senderParticipantKey];
@@ -370,24 +373,25 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 		if (!operation.body.trim() || Buffer.byteLength(operation.body) > HOSTED_MAILBOX_MAX_BODY_BYTES) throw new HostedStateConflictError("conflict", "Mailbox body is empty or exceeds its byte limit.");
 		if (!operation.sendId.trim() || Buffer.byteLength(operation.sendId) > MAX_ID_BYTES) throw new HostedStateConflictError("conflict", "Mailbox send ID is invalid.");
 		const dedupeKey = mailboxDedupeKey(sender.participantKey, operation.sendId);
-		const fingerprint = mailboxFingerprint(recipient.participantKey, operation.body);
+		const eventType = operation.type === "task.send" ? "mailbox.task" as const : "mailbox.message" as const;
+		const fingerprint = eventType === "mailbox.task" ? taskFingerprint(recipient.participantKey, operation.body) : mailboxFingerprint(recipient.participantKey, operation.body);
 		const existingId = state.dedupe[dedupeKey];
 		if (existingId) {
 			const existing = state.events[existingId];
-			if (existing?.type === "mailbox.message" && existing.payload.senderParticipantKey === sender.participantKey && existing.payload.recipientParticipantKey === recipient.participantKey && existing.payload.sendId === operation.sendId && existing.payload.fingerprint === fingerprint) return state;
+			if (existing?.type === eventType && existing.payload.senderParticipantKey === sender.participantKey && existing.payload.recipientParticipantKey === recipient.participantKey && existing.payload.sendId === operation.sendId && existing.payload.fingerprint === fingerprint) return state;
 			throw new HostedStateConflictError("conflict", "Mailbox send ID was already used with different input.");
 		}
 		if (state.events[operation.eventId]) throw new HostedStateConflictError("conflict", "Mailbox event ID already exists.");
 		const sequence = (sender.outSeq[recipient.participantKey] ?? 0) + 1;
-		const event: HostedMailboxMessageEvent = {
+		const event: HostedMailboxMessageEvent | HostedMailboxTaskEvent = {
 			version: 1,
 			eventId: operation.eventId,
 			dedupeKey,
 			source: { kind: "participant", id: sender.participantKey, generation: sender.generation, sequence },
 			recipientParticipantKey: recipient.participantKey,
-			type: "mailbox.message",
+			type: eventType,
 			createdAt: operation.at,
-			summary: `message from ${sender.participantId} to ${recipient.participantId}`,
+			summary: `${eventType === "mailbox.task" ? "bounded task" : "message"} from ${sender.participantId} to ${recipient.participantId}`,
 			payload: {
 				sendId: operation.sendId,
 				senderParticipantKey: sender.participantKey,
@@ -404,6 +408,37 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 			events: { ...state.events, [event.eventId]: event },
 			dedupe: { ...state.dedupe, [dedupeKey]: event.eventId },
 		};
+	}
+
+	if (operation.type === "task.result") {
+		assertStateId(operation.eventId, "Task result event ID");
+		assertStateId(operation.inReplyToEventId, "Task reply event ID");
+		assertStateTime(operation.at, "Task result time");
+		const task = state.events[operation.inReplyToEventId];
+		if (!task || task.type !== "mailbox.task") throw new HostedStateConflictError("conflict", "Bounded task does not exist.");
+		const sender = state.participants[operation.senderParticipantKey];
+		const recipient = state.participants[task.payload.senderParticipantKey];
+		if (!sender || sender.state !== "held" || sender.generation !== operation.expectedSenderGeneration || sender.holderTargetKey !== operation.senderTargetKey || sender.participantKey !== task.recipientParticipantKey) throw new HostedStateConflictError("conflict", "Task result sender identity or generation changed.");
+		if (!recipient || recipient.state === "ended" || recipient.participantKey !== task.payload.senderParticipantKey || sender.projectRoot !== recipient.projectRoot || sender.protocol !== recipient.protocol) throw new HostedStateConflictError("conflict", "Task result recipient is unavailable.");
+		if (!operation.sendId.trim() || Buffer.byteLength(operation.sendId) > MAX_ID_BYTES || !operation.body.trim() || Buffer.byteLength(operation.body) > HOSTED_MAILBOX_MAX_BODY_BYTES || !["completed", "failed", "cancelled"].includes(operation.status) || (operation.sessionAdvance !== "none" && operation.sessionAdvance !== "committed")) throw new HostedStateConflictError("conflict", "Task result payload is invalid.");
+		const senderTarget = state.targets[operation.senderTargetKey];
+		const targetWorkspace = senderTarget?.workspaceId ? state.workspaces[senderTarget.workspaceId] : undefined;
+		if (targetWorkspace ? !operation.workspace || !sameTaskWorkspaceEvidence(operation.workspace, targetWorkspace) : operation.workspace !== undefined) throw new HostedStateConflictError("conflict", "Task workspace evidence does not match the result target.");
+		const fingerprint = taskResultFingerprint(recipient.participantKey, operation);
+		const dedupeKey = mailboxDedupeKey(sender.participantKey, operation.sendId);
+		const existingId = state.dedupe[dedupeKey];
+		if (existingId) {
+			const existing = state.events[existingId];
+			if (existing?.type === "mailbox.task_result" && existing.payload.inReplyToEventId === task.eventId && existing.payload.fingerprint === fingerprint) return state;
+			throw new HostedStateConflictError("conflict", "Task result send ID was reused with different input.");
+		}
+		const prior = Object.values(state.events).find((event): event is HostedMailboxTaskResultEvent => event.type === "mailbox.task_result" && event.payload.inReplyToEventId === task.eventId);
+		if (prior) throw new HostedStateConflictError("conflict", "Bounded task already has a result with another reply identity.");
+		if (state.events[operation.eventId]) throw new HostedStateConflictError("conflict", "Task result event ID already exists.");
+		const sequence = (sender.outSeq[recipient.participantKey] ?? 0) + 1;
+		const event: HostedMailboxTaskResultEvent = { version: 1, eventId: operation.eventId, dedupeKey, source: { kind: "participant", id: sender.participantKey, generation: sender.generation, sequence }, recipientParticipantKey: recipient.participantKey, type: "mailbox.task_result", createdAt: operation.at, summary: `${operation.status} task result from ${sender.participantId} to ${recipient.participantId}`, payload: { sendId: operation.sendId, replyId: operation.sendId, senderParticipantKey: sender.participantKey, recipientParticipantKey: recipient.participantKey, body: operation.body, fingerprint, inReplyToEventId: task.eventId, status: operation.status, sessionAdvance: operation.sessionAdvance, ...(operation.workspace ? { workspace: operation.workspace } : {}) }, delivery: { status: "pending" } };
+		const nextSender = { ...sender, outSeq: { ...sender.outSeq, [recipient.participantKey]: sequence }, updatedAt: operation.at };
+		return { ...state, participants: { ...state.participants, [sender.participantKey]: nextSender }, events: { ...state.events, [event.eventId]: event }, dedupe: { ...state.dedupe, [dedupeKey]: event.eventId } };
 	}
 
 	if (operation.type === "inbox.claim") return claimEvents(state, operation.claim);
@@ -537,8 +572,8 @@ export function readHostedRuntimeState(root: string): HostedRuntimeState {
 	if (value === undefined) return emptyHostedRuntimeState();
 	if (!value || typeof value !== "object" || Array.isArray(value)) return validateHostedRuntimeState(value);
 	const version = (value as Record<string, unknown>).version;
-	if (version !== 1 && version !== 2 && version !== 3 && version !== 4) return validateHostedRuntimeState(value);
-	const migrated = version === 1 ? migrateHostedRuntimeStateV1(value) : version === 2 ? migrateHostedRuntimeStateV2(value) : version === 3 ? migrateHostedRuntimeStateV3(value) : migrateHostedRuntimeStateV4(value);
+	if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5) return validateHostedRuntimeState(value);
+	const migrated = version === 1 ? migrateHostedRuntimeStateV1(value) : version === 2 ? migrateHostedRuntimeStateV2(value) : version === 3 ? migrateHostedRuntimeStateV3(value) : version === 4 ? migrateHostedRuntimeStateV4(value) : migrateHostedRuntimeStateV5(value);
 	writeAtomicJson(root, path, migrated, HOSTED_STATE_MAX_BYTES);
 	return migrated;
 }
@@ -551,9 +586,9 @@ export function writeHostedRuntimeState(root: string, state: HostedRuntimeState)
 export function validateHostedRuntimeState(value: unknown): HostedRuntimeState {
 	try {
 		const state = strictObject(value, "runtime state", ["version", "targets", "bridgeLaunches", "workspaces", "integrations", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
-		if (state.version !== 5) throw new Error("unsupported runtime state version");
+		if (state.version !== 6) throw new Error("unsupported runtime state version");
 		const result: HostedRuntimeState = {
-			version: 5,
+			version: 6,
 			targets: mapValues(state.targets, "targets", validateTarget),
 			bridgeLaunches: mapValues(state.bridgeLaunches, "bridge launches", validateBridgeLaunch),
 			workspaces: mapValues(state.workspaces, "workspaces", validateWorkspace),
@@ -577,7 +612,7 @@ function migrateHostedRuntimeStateV1(value: unknown): HostedRuntimeState {
 		const state = strictObject(value, "runtime state v1", ["version", "targets", "monitors", "events", "dedupe", "claims", "wakes"]);
 		if (state.version !== 1) throw new Error("unsupported source runtime state version");
 		const result: HostedRuntimeState = {
-			version: 5,
+			version: 6,
 			targets: mapValues(state.targets, "targets", validateLegacyPiTarget),
 			bridgeLaunches: {},
 			workspaces: {},
@@ -601,7 +636,7 @@ function migrateHostedRuntimeStateV2(value: unknown): HostedRuntimeState {
 		const state = strictObject(value, "runtime state v2", ["version", "targets", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
 		if (state.version !== 2) throw new Error("unsupported source runtime state version");
 		const result: HostedRuntimeState = {
-			version: 5,
+			version: 6,
 			targets: mapValues(state.targets, "targets", validateLegacyPiTarget),
 			bridgeLaunches: {},
 			workspaces: {},
@@ -625,7 +660,7 @@ function migrateHostedRuntimeStateV3(value: unknown): HostedRuntimeState {
 		const state = strictObject(value, "runtime state v3", ["version", "targets", "bridgeLaunches", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
 		if (state.version !== 3) throw new Error("unsupported source runtime state version");
 		const result: HostedRuntimeState = {
-			version: 5,
+			version: 6,
 			targets: mapValues(state.targets, "targets", (item, key) => validateTarget(item, key, true)),
 			bridgeLaunches: mapValues(state.bridgeLaunches, "bridge launches", (item, key) => validateBridgeLaunch(item, key, true)),
 			workspaces: {},
@@ -649,7 +684,7 @@ function migrateHostedRuntimeStateV4(value: unknown): HostedRuntimeState {
 		const state = strictObject(value, "runtime state v4", ["version", "targets", "bridgeLaunches", "workspaces", "integrations", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
 		if (state.version !== 4) throw new Error("unsupported source runtime state version");
 		const result: HostedRuntimeState = {
-			version: 5,
+			version: 6,
 			targets: mapValues(state.targets, "targets", (item, key) => validateTarget(item, key, true)),
 			bridgeLaunches: mapValues(state.bridgeLaunches, "bridge launches", (item, key) => validateBridgeLaunch(item, key, true)),
 			workspaces: mapValues(state.workspaces, "workspaces", validateWorkspaceV4),
@@ -665,6 +700,16 @@ function migrateHostedRuntimeStateV4(value: unknown): HostedRuntimeState {
 		return result;
 	} catch (error) {
 		throw storageError("Runtime state v4 migration failed", error);
+	}
+}
+
+function migrateHostedRuntimeStateV5(value: unknown): HostedRuntimeState {
+	try {
+		const state = strictObject(value, "runtime state v5", ["version", "targets", "bridgeLaunches", "workspaces", "integrations", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
+		if (state.version !== 5) throw new Error("unsupported source runtime state version");
+		return validateHostedRuntimeState({ ...state, version: 6 });
+	} catch (error) {
+		throw storageError("Runtime state v5 migration failed", error);
 	}
 }
 
@@ -712,6 +757,14 @@ function pruneAcknowledged(state: HostedRuntimeState, before: number): HostedRun
 			const count = claim.eventIds.filter((eventId) => removable.has(eventId)).length;
 			if (count === 0 || (count === claim.eventIds.length && claim.status !== "active")) continue;
 			for (const eventId of claim.eventIds) if (removable.delete(eventId)) changed = true;
+		}
+		for (const event of Object.values(state.events)) if (event.type === "mailbox.task_result") {
+			const resultRemovable = removable.has(event.eventId);
+			const taskRemovable = removable.has(event.payload.inReplyToEventId);
+			if (resultRemovable !== taskRemovable) {
+				if (removable.delete(event.eventId)) changed = true;
+				if (removable.delete(event.payload.inReplyToEventId)) changed = true;
+			}
 		}
 	}
 	if (removable.size === 0) return state;
@@ -1065,7 +1118,8 @@ function validateParticipantTransition(value: unknown): HostedParticipantTransit
 function validateEvent(value: unknown, key: string): HostedEvent {
 	const candidate = strictObject(value, "hosted event");
 	if (candidate.type === "filesystem.created") return validateFilesystemEvent(value, key);
-	if (candidate.type === "mailbox.message") return validateMailboxEvent(value, key);
+	if (candidate.type === "mailbox.message" || candidate.type === "mailbox.task") return validateMailboxEvent(value, key);
+	if (candidate.type === "mailbox.task_result") return validateTaskResultEvent(value, key);
 	throw new Error("invalid hosted event type");
 }
 
@@ -1103,15 +1157,16 @@ function validateFilesystemEvent(value: unknown, key: string): HostedFilesystemC
 	return result;
 }
 
-function validateMailboxEvent(value: unknown, key: string): HostedMailboxMessageEvent {
+function validateMailboxEvent(value: unknown, key: string): HostedMailboxMessageEvent | HostedMailboxTaskEvent {
 	const event = strictObject(value, "hosted mailbox event", ["version", "eventId", "dedupeKey", "source", "recipientParticipantKey", "type", "createdAt", "summary", "payload", "delivery"]);
-	if (event.version !== 1 || event.type !== "mailbox.message") throw new Error("invalid hosted mailbox event version or type");
+	if (event.version !== 1 || (event.type !== "mailbox.message" && event.type !== "mailbox.task")) throw new Error("invalid hosted mailbox event version or type");
 	const source = strictObject(event.source, "mailbox source", ["kind", "id", "generation", "sequence"]);
 	if (source.kind !== "participant") throw new Error("invalid mailbox source kind");
 	const payload = strictObject(event.payload, "mailbox payload", ["sendId", "senderParticipantKey", "recipientParticipantKey", "body", "fingerprint"]);
 	const body = text(payload.body, "mailbox body", HOSTED_MAILBOX_MAX_BODY_BYTES);
 	const recipientParticipantKey = text(event.recipientParticipantKey, "recipient participant key", MAX_ID_BYTES);
-	const result: HostedMailboxMessageEvent = {
+	const eventType = event.type;
+	const result: HostedMailboxMessageEvent | HostedMailboxTaskEvent = {
 		version: 1,
 		eventId: text(event.eventId, "event id", MAX_ID_BYTES),
 		dedupeKey: text(event.dedupeKey, "event dedupe key", MAX_PATH_BYTES),
@@ -1122,7 +1177,7 @@ function validateMailboxEvent(value: unknown, key: string): HostedMailboxMessage
 			sequence: integer(source.sequence, "source sequence"),
 		},
 		recipientParticipantKey,
-		type: "mailbox.message",
+		type: eventType,
 		createdAt: nonNegativeNumber(event.createdAt, "event creation time"),
 		summary: stringValue(event.summary, "event summary", MAX_SUMMARY_BYTES),
 		payload: {
@@ -1135,7 +1190,35 @@ function validateMailboxEvent(value: unknown, key: string): HostedMailboxMessage
 		delivery: validateDelivery(event.delivery),
 	};
 	if (result.eventId !== key || result.source.id !== result.payload.senderParticipantKey || recipientParticipantKey !== result.payload.recipientParticipantKey) throw new Error("mailbox event identity is inconsistent");
-	if (result.dedupeKey !== mailboxDedupeKey(result.source.id, result.payload.sendId) || result.payload.fingerprint !== mailboxFingerprint(recipientParticipantKey, body)) throw new Error("mailbox event dedupe or fingerprint is invalid");
+	const expectedFingerprint = eventType === "mailbox.task" ? taskFingerprint(recipientParticipantKey, body) : mailboxFingerprint(recipientParticipantKey, body);
+	if (result.dedupeKey !== mailboxDedupeKey(result.source.id, result.payload.sendId) || result.payload.fingerprint !== expectedFingerprint) throw new Error("mailbox event dedupe or fingerprint is invalid");
+	return result;
+}
+
+function validateTaskResultEvent(value: unknown, key: string): HostedMailboxTaskResultEvent {
+	const event = strictObject(value, "hosted task result event", ["version", "eventId", "dedupeKey", "source", "recipientParticipantKey", "type", "createdAt", "summary", "payload", "delivery"]);
+	if (event.version !== 1 || event.type !== "mailbox.task_result") throw new Error("invalid hosted task result version or type");
+	const source = strictObject(event.source, "task result source", ["kind", "id", "generation", "sequence"]);
+	if (source.kind !== "participant") throw new Error("invalid task result source kind");
+	const payload = strictObject(event.payload, "task result payload", ["sendId", "replyId", "senderParticipantKey", "recipientParticipantKey", "body", "fingerprint", "inReplyToEventId", "status", "sessionAdvance", "workspace"]);
+	if (payload.status !== "completed" && payload.status !== "failed" && payload.status !== "cancelled" || payload.sessionAdvance !== "none" && payload.sessionAdvance !== "committed") throw new Error("invalid task result status or session advancement");
+	const body = text(payload.body, "task result body", HOSTED_MAILBOX_MAX_BODY_BYTES);
+	const recipientParticipantKey = text(event.recipientParticipantKey, "task result recipient key", MAX_ID_BYTES);
+	const workspace = payload.workspace === undefined ? undefined : validateTaskWorkspaceEvidence(payload.workspace);
+	const status = payload.status as "completed" | "failed" | "cancelled";
+	const sessionAdvance = payload.sessionAdvance as "none" | "committed";
+	const operation: Extract<HostedStateOperation, { type: "task.result" }> = { type: "task.result",  senderParticipantKey: text(payload.senderParticipantKey, "task result sender key", MAX_ID_BYTES), expectedSenderGeneration: text(source.generation, "task result source generation", MAX_ID_BYTES), senderTargetKey: "validation", sendId: text(payload.sendId, "task result send ID", MAX_ID_BYTES), eventId: text(event.eventId, "task result event ID", MAX_ID_BYTES), inReplyToEventId: text(payload.inReplyToEventId, "task result reply event ID", MAX_ID_BYTES), status, body, sessionAdvance, ...(workspace ? { workspace } : {}), at: nonNegativeNumber(event.createdAt, "task result creation time") };
+	const result: HostedMailboxTaskResultEvent = { version: 1, eventId: operation.eventId, dedupeKey: text(event.dedupeKey, "task result dedupe key", MAX_PATH_BYTES), source: { kind: "participant", id: operation.senderParticipantKey, generation: operation.expectedSenderGeneration, sequence: integer(source.sequence, "task result source sequence") }, recipientParticipantKey, type: "mailbox.task_result", createdAt: operation.at, summary: stringValue(event.summary, "task result summary", MAX_SUMMARY_BYTES), payload: { sendId: operation.sendId, replyId: text(payload.replyId, "task result reply ID", MAX_ID_BYTES), senderParticipantKey: operation.senderParticipantKey, recipientParticipantKey: text(payload.recipientParticipantKey, "task result payload recipient", MAX_ID_BYTES), body, fingerprint: text(payload.fingerprint, "task result fingerprint", MAX_ID_BYTES), inReplyToEventId: operation.inReplyToEventId, status: operation.status, sessionAdvance: operation.sessionAdvance, ...(workspace ? { workspace } : {}) }, delivery: validateDelivery(event.delivery) };
+	if (result.eventId !== key || result.source.id !== result.payload.senderParticipantKey || result.recipientParticipantKey !== result.payload.recipientParticipantKey || result.payload.replyId !== result.payload.sendId || result.dedupeKey !== mailboxDedupeKey(result.source.id, result.payload.sendId) || result.payload.fingerprint !== taskResultFingerprint(recipientParticipantKey, operation)) throw new Error("task result identity, dedupe, or fingerprint is invalid");
+	return result;
+}
+
+function validateTaskWorkspaceEvidence(value: unknown): HostedTaskWorkspaceEvidence {
+	const item = strictObject(value, "task workspace evidence", ["workspaceId", "baseCommit", "headCommit", "branchRef", "state", "dirty", "artifactRef", "capturedAt"]);
+	if (!["provisioning", "ready", "bound", "active", "ready_handoff", "partial", "retained", "needs_attention", "integrated", "cleaned"].includes(String(item.state)) || typeof item.dirty !== "boolean") throw new Error("task workspace evidence state is invalid");
+	const branchRef = text(item.branchRef, "task workspace branch", MAX_PATH_BYTES);
+	const result: HostedTaskWorkspaceEvidence = { workspaceId: text(item.workspaceId, "task workspace ID", MAX_ID_BYTES), baseCommit: gitOid(item.baseCommit, "task workspace base"), headCommit: gitOid(item.headCommit, "task workspace head"), branchRef, state: item.state as HostedTaskWorkspaceEvidence["state"], dirty: item.dirty, artifactRef: text(item.artifactRef, "task workspace artifact", MAX_PATH_BYTES), capturedAt: nonNegativeNumber(item.capturedAt, "task workspace capture time") };
+	if (result.artifactRef !== branchRef) throw new Error("task workspace artifact does not match its branch");
 	return result;
 }
 
@@ -1238,6 +1321,7 @@ function validateReferences(state: HostedRuntimeState): void {
 		const event = state.events[eventId];
 		if (!event || event.dedupeKey !== dedupeKey) throw new Error("event dedupe reference is invalid");
 	}
+	const settledTasks = new Set<string>();
 	for (const event of Object.values(state.events)) {
 		if (state.dedupe[event.dedupeKey] !== event.eventId) throw new Error("event dedupe reference is invalid");
 		if (event.type === "filesystem.created") {
@@ -1246,6 +1330,11 @@ function validateReferences(state: HostedRuntimeState): void {
 			const sender = state.participants[event.payload.senderParticipantKey];
 			const recipient = state.participants[event.recipientParticipantKey];
 			if (!sender || !recipient || sender.projectRoot !== recipient.projectRoot || sender.protocol !== recipient.protocol) throw new Error("mailbox event participant reference is invalid");
+			if (event.type === "mailbox.task_result") {
+				const task = state.events[event.payload.inReplyToEventId];
+				if (!task || task.type !== "mailbox.task" || task.recipientParticipantKey !== sender.participantKey || task.payload.senderParticipantKey !== recipient.participantKey || settledTasks.has(task.eventId)) throw new Error("task result reference is invalid or duplicated");
+				settledTasks.add(task.eventId);
+			}
 		}
 		const claimId = event.delivery.status === "pending" ? event.delivery.latestClaimId : event.delivery.claimId;
 		const claim = claimId ? state.claims[claimId] : undefined;
@@ -1391,6 +1480,18 @@ function mailboxDedupeKey(senderParticipantKey: string, sendId: string): string 
 
 function mailboxFingerprint(recipientParticipantKey: string, body: string): string {
 	return createHash("sha256").update(recipientParticipantKey).update("\0").update(body).digest("hex");
+}
+
+function taskFingerprint(recipientParticipantKey: string, body: string): string {
+	return createHash("sha256").update("task\0").update(recipientParticipantKey).update("\0").update(body).digest("hex");
+}
+
+function taskResultFingerprint(recipientParticipantKey: string, operation: Extract<HostedStateOperation, { type: "task.result" }>): string {
+	return createHash("sha256").update("task-result\0").update(recipientParticipantKey).update("\0").update(operation.inReplyToEventId).update("\0").update(operation.status).update("\0").update(operation.sessionAdvance).update("\0").update(operation.body).update("\0").update(JSON.stringify(operation.workspace ?? null)).digest("hex");
+}
+
+function sameTaskWorkspaceEvidence(evidence: HostedTaskWorkspaceEvidence, workspace: HostedWorkspace): boolean {
+	return evidence.workspaceId === workspace.workspaceId && evidence.baseCommit === workspace.baseCommit && evidence.headCommit === workspace.headCommit && evidence.branchRef === workspace.branchRef && evidence.state === workspace.state && evidence.artifactRef === workspace.branchRef && typeof evidence.dirty === "boolean" && Number.isFinite(evidence.capturedAt) && evidence.capturedAt >= 0;
 }
 
 function assertParticipantName(value: string, name: string): void {

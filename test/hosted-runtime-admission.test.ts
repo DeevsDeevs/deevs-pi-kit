@@ -44,7 +44,11 @@ describe("hosted Pi wake admission", () => {
 						leaseUntil: 99_999,
 						status: "active",
 						events: wakeId === "wake_mail"
-							? [{ version: 1, eventId: "evt_mail", type: "mailbox.message", summary: "message from fable", payload: { body: "Please inspect the race.", sendId: "send_mail", senderParticipantKey: "participant_fable", recipientParticipantKey: "participant_main" } }]
+							? [
+								{ version: 1, eventId: "evt_mail", type: "mailbox.message", summary: "message from fable", payload: { body: "Please inspect the race.", sendId: "send_mail", senderParticipantKey: "participant_fable", recipientParticipantKey: "participant_main" } },
+								{ version: 1, eventId: "evt_task", type: "mailbox.task", summary: "bounded task from fable", payload: { body: "Return a typed result.", sendId: "send_task", senderParticipantKey: "participant_fable", recipientParticipantKey: "participant_main" } },
+								{ version: 1, eventId: "evt_result", type: "mailbox.task_result", summary: "completed task result", payload: { body: "Done.", sendId: "reply_task", replyId: "reply_task", inReplyToEventId: "evt_prior_task", status: "completed", sessionAdvance: "committed", senderParticipantKey: "participant_fable", recipientParticipantKey: "participant_main" } },
+							]
 							: [{ version: 1, eventId: `evt_${wakeId}`, type: "filesystem.created", summary: `new file: ${wakeId}.md`, payload: { path: join(projectRoot, `${wakeId}.md`) } }],
 					};
 				}
@@ -107,8 +111,12 @@ describe("hosted Pi wake admission", () => {
 		await integration.acceptWake("1 reg_1 wake_mail", ctx as never);
 		expect(messages[1]).toMatchObject({
 			customType: HOSTED_RUNTIME_MESSAGE,
-			content: expect.stringContaining("Please inspect the race."),
-			details: { mailbox: [{ eventId: "evt_mail", sendId: "send_mail", senderParticipantKey: "participant_fable", recipientParticipantKey: "participant_main" }] },
+			content: expect.stringContaining("Settle structurally with collaborator_task action=result and eventId=evt_task."),
+			details: {
+				mailbox: [{ eventId: "evt_mail", sendId: "send_mail", senderParticipantKey: "participant_fable", recipientParticipantKey: "participant_main" }],
+				tasks: [{ eventId: "evt_task", sendId: "send_task", senderParticipantKey: "participant_fable", recipientParticipantKey: "participant_main" }],
+				taskResults: [{ eventId: "evt_result", inReplyToEventId: "evt_prior_task", replyId: "reply_task", status: "completed", sessionAdvance: "committed" }],
+			},
 		});
 
 		const injected = await integration.beforeAgentStart("SYSTEM", ctx as never);

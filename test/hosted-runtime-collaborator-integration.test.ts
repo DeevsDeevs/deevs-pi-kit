@@ -280,6 +280,27 @@ describe("hosted collaborator Pi integration", () => {
 		await second.integration.sessionShutdown();
 	});
 
+	it("sends, settles, and collects bounded tasks without parsing prose", async () => {
+		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
+		const test = await setup((request) => {
+			if (request.method === "participant.get") return mainParticipant;
+			if (request.method === "participant.list") return { participants: [mainParticipant, fableParticipant] };
+			if (request.method === "task.send") return { eventId: "event_task", sequence: 1 };
+			if (request.method === "task.result") return { eventId: "event_result", sequence: 2, replyId: request.params.sendId };
+			if (request.method === "task.status") return { eventId: request.params.eventId, status: "completed", resultEventId: "event_result", replyId: "reply_task", body: "Done.", sessionAdvance: "committed" };
+			return baseResponse(request);
+		}, [identity]);
+		await test.integration.sessionStart(test.ctx as never);
+		expect(await test.integration.manageCollaboratorTask({ action: "send", tasks: [{ participantId: "fable", body: "Bounded." }] }, "tool_task", test.ctx as never)).toEqual({ results: [{ recipient: "review/fable", eventId: "event_task", sequence: 1 }] });
+		expect(await test.integration.manageCollaboratorTask({ action: "result", eventId: "event_incoming", status: "completed", body: "Done." }, "ignored", test.ctx as never)).toMatchObject({ eventId: "event_result", replyId: expect.stringMatching(/^task_result_[a-f0-9]{40}$/) });
+		expect(await test.integration.manageCollaboratorTask({ action: "status", eventIds: ["event_task"] }, "ignored", test.ctx as never)).toEqual({ results: [{ eventId: "event_task", status: "completed", resultEventId: "event_result", replyId: "reply_task", body: "Done.", sessionAdvance: "committed" }] });
+		const sent = test.requests.find((request) => request.method === "task.send")!;
+		expect(sent.params).toMatchObject({ senderParticipantKey: "participant_main", expectedSenderGeneration: "lease_main", recipientParticipantKey: "participant_fable", sendId: expect.stringMatching(/^task_[a-f0-9]{40}$/), body: "Bounded." });
+		const result = test.requests.find((request) => request.method === "task.result")!;
+		expect(result.params).toMatchObject({ eventId: "event_incoming", status: "completed", body: "Done.", sessionAdvance: "committed", sendId: expect.stringMatching(/^task_result_[a-f0-9]{40}$/) });
+		await test.integration.sessionShutdown();
+	});
+
 	it("reconciles a remotely stood-down local identity on heartbeat", async () => {
 		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
 		let vacant = false;
@@ -426,7 +447,7 @@ describe("hosted collaborator Pi integration", () => {
 		await test.integration.sessionStart(test.ctx as never);
 		await expect(test.integration.startCollaborator({ participantId: "bounded" }, test.ctx as never)).resolves.toMatchObject({ started: true });
 		const launch = test.execCalls.find((call) => call.args[0] === "pane" && call.args[1] === "run")!;
-		expect(launch.args[3]).toContain("--tools 'read,grep,find,ls,safe_diff,collaborator_list,collaborator_send,chain_save,chain_load,chain_context'");
+		expect(launch.args[3]).toContain("--tools 'read,grep,find,ls,safe_diff,collaborator_list,collaborator_send,collaborator_task,chain_save,chain_load,chain_context'");
 		expect(launch.args[3]).not.toContain(",edit,write");
 		const profile = readFileSync(paneRunSessionFile(launch.args), "utf8").trim().split("\n").map((line) => JSON.parse(line)).find((entry) => entry.customType === HOSTED_COLLABORATOR_PROFILE_ENTRY)?.data;
 		expect(profile).toEqual({ version: 2, driver: "pi", profile: "read-only" });
@@ -714,7 +735,7 @@ describe("hosted collaborator Pi integration", () => {
 		const created = test.execCalls.find((call) => call.args[0] === "tab" && call.args[1] === "create")!;
 		expect(created.args.some((argument) => argument.startsWith("PI_RUNTIME_COLLABORATOR_PERSONA="))).toBe(false);
 		const launched = test.execCalls.find((call) => call.args[0] === "pane" && call.args[1] === "run")!;
-		expect(launched.args[3]).toContain("--tools 'read,grep,find,ls,safe_diff,collaborator_list,collaborator_send,chain_save,chain_load,chain_context'");
+		expect(launched.args[3]).toContain("--tools 'read,grep,find,ls,safe_diff,collaborator_list,collaborator_send,collaborator_task,chain_save,chain_load,chain_context'");
 		const sessionEntries = readFileSync(paneRunSessionFile(launched.args), "utf8").trim().split("\n").map((line) => JSON.parse(line));
 		expect(sessionEntries[1]).toMatchObject({ type: "custom", customType: HOSTED_MANAGED_COLLABORATOR_ENTRY, data: { version: 1, managed: true }, parentId: null });
 		expect(sessionEntries[2]).toMatchObject({ type: "custom", customType: HOSTED_COLLABORATOR_PROFILE_ENTRY, data: { version: 2, driver: "pi", profile: "read-only", persona: { name: "architect" } }, parentId: sessionEntries[1].id });

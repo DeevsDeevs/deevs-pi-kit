@@ -175,6 +175,22 @@ export async function dispatchHostedLine(line: string, context: HostedProtocolCo
 			const auth = authParams(params);
 			return success(id, wakes.status(registrations.authorize(auth.registrationId, auth.registrationKey)));
 		}
+		if (method === "task.send" || method === "task.result" || method === "task.status") {
+			if (!participants) return failure(id, "capability_unavailable", "Collaborator task methods are unavailable in this process.");
+			const parsed = taskParams(params, method);
+			const registration = registrations.authorize(parsed.registrationId, parsed.registrationKey);
+			if (method === "task.send") {
+				const event = participants.sendTask(registration, parsed.senderParticipantKey!, parsed.expectedSenderGeneration!, parsed.recipientParticipantKey!, parsed.sendId!, parsed.body!);
+				return success(id, { eventId: event.eventId, sequence: event.source.sequence });
+			}
+			if (method === "task.result") {
+				const existing = participants.recoverTaskResult(registration, parsed.senderParticipantKey!, parsed.expectedSenderGeneration!, parsed.eventId!, parsed.sendId!, parsed.status!, parsed.body!, parsed.sessionAdvance!);
+				const publish = (workspace?: Awaited<ReturnType<RuntimeWorkspaceCoordinator["taskEvidence"]>>) => participants.resultTask(registration, parsed.senderParticipantKey!, parsed.expectedSenderGeneration!, parsed.eventId!, parsed.sendId!, parsed.status!, parsed.body!, parsed.sessionAdvance!, workspace);
+				const event = existing ?? (workspaces ? await workspaces.withTaskEvidence(registration.targetKey, publish) : publish());
+				return success(id, { eventId: event.eventId, sequence: event.source.sequence, replyId: event.payload.replyId, workspace: event.payload.workspace });
+			}
+			return success(id, participants.taskStatus(registration, parsed.senderParticipantKey!, parsed.expectedSenderGeneration!, parsed.eventId!));
+		}
 		if (method.startsWith("participant.") || method === "mailbox.send") {
 			if (!participants) return failure(id, "capability_unavailable", "Collaborator mailbox methods are unavailable in this process.");
 			if (method === "participant.acquire") {
@@ -251,7 +267,7 @@ function hello(id: string, value: unknown, context: HostedProtocolContext): Host
 			...(context.degradedReason ? { degradedReason: context.degradedReason } : {}),
 			maxDeliveryBatch: HOSTED_MAX_DELIVERY_BATCH,
 			monitor: { maxEntries: HOSTED_MONITOR_MAX_ENTRIES },
-			...(context.participants ? { mailbox: { maxBodyBytes: HOSTED_MAILBOX_MAX_BODY_BYTES } } : {}),
+			...(context.participants ? { mailbox: { maxBodyBytes: HOSTED_MAILBOX_MAX_BODY_BYTES }, task: { typedResults: true, maxBodyBytes: HOSTED_MAILBOX_MAX_BODY_BYTES } } : {}),
 			...(context.bridges ? { bridge: { launch: "single_use", reconnect: true } } : {}),
 			...(context.workspaces ? { workspace: { isolatedWrite: true, stagedIntegration: true } } : {}),
 		},
@@ -413,6 +429,31 @@ function admittedClaimParams(value: unknown): Array<{ claimId: string; eventIds:
 	});
 }
 
+interface TaskParams {
+	registrationId: string;
+	registrationKey: string;
+	senderParticipantKey?: string;
+	expectedSenderGeneration?: string;
+	recipientParticipantKey?: string;
+	sendId?: string;
+	eventId?: string;
+	status?: "completed" | "failed" | "cancelled";
+	body?: string;
+	sessionAdvance?: "none" | "committed";
+}
+
+function taskParams(value: unknown, method: string): TaskParams {
+	const allowed = method === "task.send" ? ["registrationId", "registrationKey", "senderParticipantKey", "expectedSenderGeneration", "recipientParticipantKey", "sendId", "body"] : method === "task.result" ? ["registrationId", "registrationKey", "senderParticipantKey", "expectedSenderGeneration", "eventId", "sendId", "status", "body", "sessionAdvance"] : ["registrationId", "registrationKey", "senderParticipantKey", "expectedSenderGeneration", "eventId"];
+	const params = strictObject(value, `${method} params`, allowed);
+	const common = { registrationId: boundedText(params.registrationId, "registration ID", 200), registrationKey: boundedText(params.registrationKey, "registration key", 200), senderParticipantKey: boundedText(params.senderParticipantKey, "task sender key", 200), expectedSenderGeneration: boundedText(params.expectedSenderGeneration, "task sender generation", 200) };
+	if (method === "task.send") return { ...common, recipientParticipantKey: boundedText(params.recipientParticipantKey, "task recipient key", 200), sendId: boundedText(params.sendId, "task send ID", 200), body: boundedText(params.body, "task body", HOSTED_MAILBOX_MAX_BODY_BYTES) };
+	const eventId = boundedText(params.eventId, "task event ID", 200);
+	if (method === "task.status") return { ...common, eventId };
+	if (params.status !== "completed" && params.status !== "failed" && params.status !== "cancelled") throw new Error("task result status is invalid");
+	if (params.sessionAdvance !== "none" && params.sessionAdvance !== "committed") throw new Error("task session advancement is invalid");
+	return { ...common, eventId, sendId: boundedText(params.sendId, "task result send ID", 200), status: params.status, body: boundedText(params.body, "task result body", HOSTED_MAILBOX_MAX_BODY_BYTES), sessionAdvance: params.sessionAdvance };
+}
+
 function authParams(value: unknown): { registrationId: string; registrationKey: string } {
 	const params = strictObject(value, "registration params", ["registrationId", "registrationKey"]);
 	return {
@@ -493,7 +534,7 @@ function errorCode(error: unknown): HostedErrorCode {
 	return error instanceof Error ? "invalid_request" : "internal";
 }
 
-const HOSTED_METHODS = new Set(["pi.register", "pi.heartbeat", "pi.unregister", "bridge.launch.create", "bridge.launch.recover", "bridge.launch.cancel", "bridge.register", "bridge.reconnect", "bridge.heartbeat", "bridge.unregister", "workspace.launch.create", "workspace.bridge.create", "workspace.launch.bind", "workspace.launch.recover", "workspace.pi.register", "workspace.pi.reconnect", "workspace.inspect", "workspace.integration.inspect", "workspace.retain", "workspace.reconcile", "workspace.checkpoint", "workspace.integration.prepare", "workspace.integration.reconcile", "workspace.integration.finalize", "workspace.cleanup", "workspace.integration.cleanup", "monitor.create", "monitor.get", "monitor.delete", "wake.accept", "inbox.claim", "inbox.ack", "inbox.release", "inbox.status", "participant.acquire", "participant.get", "participant.list", "participant.stand_down", "participant.stand_down_confirmed", "participant.stop_confirmed", "participant.release", "participant.takeover", "mailbox.send"]);
+const HOSTED_METHODS = new Set(["pi.register", "pi.heartbeat", "pi.unregister", "bridge.launch.create", "bridge.launch.recover", "bridge.launch.cancel", "bridge.register", "bridge.reconnect", "bridge.heartbeat", "bridge.unregister", "workspace.launch.create", "workspace.bridge.create", "workspace.launch.bind", "workspace.launch.recover", "workspace.pi.register", "workspace.pi.reconnect", "workspace.inspect", "workspace.integration.inspect", "workspace.retain", "workspace.reconcile", "workspace.checkpoint", "workspace.integration.prepare", "workspace.integration.reconcile", "workspace.integration.finalize", "workspace.cleanup", "workspace.integration.cleanup", "monitor.create", "monitor.get", "monitor.delete", "wake.accept", "inbox.claim", "inbox.ack", "inbox.release", "inbox.status", "participant.acquire", "participant.get", "participant.list", "participant.stand_down", "participant.stand_down_confirmed", "participant.stop_confirmed", "participant.release", "participant.takeover", "mailbox.send", "task.send", "task.result", "task.status"]);
 
 const ERROR_CODES = new Set<HostedErrorCode>([
 	"invalid_request", "unsupported_version", "capability_unavailable", "not_found", "conflict", "registration_stale", "identity_mismatch", "claim_conflict", "host_unavailable", "busy", "storage_error", "internal",

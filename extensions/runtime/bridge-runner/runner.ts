@@ -25,7 +25,7 @@ export interface BridgeRunnerOptions { herdrIdentity?: () => Promise<{ paneId: s
 
 interface ClaimEvent {
 	eventId: string;
-	type: string;
+	type: "mailbox.message" | "mailbox.task";
 	payload: { senderParticipantKey: string; body: string };
 }
 
@@ -127,7 +127,7 @@ export class BridgeRunner {
 			const turns = [...state.turns];
 			let nextSequence = state.nextSequence;
 			for (const event of claim.events) if (!known.has(event.eventId)) {
-				turns.push({ turnId: `turn_${randomUUID()}`, sequence: nextSequence++, eventId: event.eventId, claimId: claim.claimId, senderParticipantKey: event.payload.senderParticipantKey, body: event.payload.body, state: "pending", attempt: 0, replySendId: replySendId(state.bridgeId, event.eventId), reply: "unsent", createdAt: now, updatedAt: now });
+				turns.push({ turnId: `turn_${randomUUID()}`, sequence: nextSequence++, eventId: event.eventId, claimId: claim.claimId, senderParticipantKey: event.payload.senderParticipantKey, body: event.payload.body, ...(event.type === "mailbox.task" ? { task: true as const } : {}), state: "pending", attempt: 0, replySendId: replySendId(state.bridgeId, event.eventId), reply: "unsent", createdAt: now, updatedAt: now });
 			}
 			const admissions = state.admissions.some((item) => item.claimId === claim.claimId) ? state.admissions : [...state.admissions, { claimId: claim.claimId, eventIds: claim.eventIds, ack: "uncertain", createdAt: now } satisfies BridgeAdmission];
 			return { ...state, admissions, turns, nextSequence };
@@ -215,7 +215,8 @@ export class BridgeRunner {
 		const body = (turn.replyBody ?? turn.terminal?.body ?? "Bridge turn failed without a result.").slice(0, BRIDGE_RUNNER_MAX_BODY_BYTES);
 		if (turn.reply !== "uncertain" || turn.replyBody !== body) this.replaceTurn(turn.eventId, (current) => ({ ...current, replyBody: body, reply: "uncertain", updatedAt: Date.now() }));
 		try {
-			await this.client.call("mailbox.send", { ...auth(registration), senderParticipantKey: registration.participantKey, expectedSenderGeneration: registration.holderGeneration, recipientParticipantKey: turn.senderParticipantKey, sendId: turn.replySendId, body });
+			if (turn.task) await this.client.call("task.result", { ...auth(registration), senderParticipantKey: registration.participantKey, expectedSenderGeneration: registration.holderGeneration, eventId: turn.eventId, sendId: turn.replySendId, status: turn.terminal!.status, body, sessionAdvance: turn.terminal!.sessionAdvance });
+			else await this.client.call("mailbox.send", { ...auth(registration), senderParticipantKey: registration.participantKey, expectedSenderGeneration: registration.holderGeneration, recipientParticipantKey: turn.senderParticipantKey, sendId: turn.replySendId, body });
 			this.replaceTurn(turn.eventId, (current) => ({ ...current, state: "reply_sent", reply: "sent", replyBody: body, updatedAt: Date.now() }));
 			return "sent";
 		} catch (error) {
@@ -269,8 +270,9 @@ function parseClaim(value: unknown): { claimId: string; eventIds: string[]; even
 	const events = item.events.map((value) => {
 		const event = object(value);
 		const payload = object(event.payload);
-		if (event.type !== "mailbox.message") throw new Error("Bridge runner accepts mailbox events only.");
-		return { eventId: text(event.eventId), type: event.type, payload: { senderParticipantKey: text(payload.senderParticipantKey), body: boundedBody(payload.body) } };
+		const type = event.type;
+		if (type !== "mailbox.message" && type !== "mailbox.task") throw new Error("Bridge runner accepts mailbox message or task events only.");
+		return { eventId: text(event.eventId), type: type as ClaimEvent["type"], payload: { senderParticipantKey: text(payload.senderParticipantKey), body: boundedBody(payload.body) } };
 	});
 	const eventIds = events.map((event) => event.eventId);
 	return { claimId: text(item.claimId), eventIds, events };

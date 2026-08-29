@@ -73,6 +73,8 @@ Checkpoint returns structural evidence, not approval:
 
 Human summaries and collaborator messages remain display-only. They never authorize checkpoint, integration, finalization, or discard. Review exact `baseCommit..headCommit` with `safe_diff`.
 
+A typed bounded-task result from a workspace-bound participant includes Runtime-derived snapshot evidence: workspace ID, current durable base/head, private branch artifact reference, durable state, capture timestamp, and whether bounded Git status observed dirty paths. Publishing a result does not checkpoint, commit, stop, integrate, or clean the workspace. Dirty evidence therefore honestly means the reported head does not yet include all working-tree effects.
+
 ## Staged integration
 
 `prepare_integration` is separately confirmed and records current main branch/head `M`. Runtime creates `refs/heads/runtime/integrate/<integration-id>` in another isolated worktree at `M`, then cherry-picks the complete ordered source commit list.
