@@ -476,7 +476,10 @@ describe("hosted collaborator Pi integration", () => {
 			return { code: 0, stdout: "{}", stderr: "", killed: false };
 		});
 		await test.integration.sessionStart(test.ctx as never);
-		for (const driver of ["claude-code", "codex"] as const) await expect(test.integration.startCollaborator({ participantId: driver, protocol: "review", callerParticipantId: "main", driver }, test.ctx as never)).resolves.toMatchObject({ started: true, paneId: "w1:p9" });
+		await expect(test.integration.startCollaborator({ participantId: "native-reviewer", protocol: "review", callerParticipantId: "main", driver: "codex", persona: "reviewer" }, test.ctx as never)).rejects.toThrow("requires unsupported safe_diff tooling");
+		expect(confirmations).toBe(0);
+		expect(test.execCalls.some((call) => call.args[0] === "tab" && call.args[1] === "create")).toBe(false);
+		for (const driver of ["claude-code", "codex"] as const) await expect(test.integration.startCollaborator({ participantId: driver, protocol: "review", callerParticipantId: "main", driver, ...(driver === "claude-code" ? { persona: "architect" } : {}) }, test.ctx as never)).resolves.toMatchObject({ started: true, paneId: "w1:p9" });
 		expect(confirmations).toBe(2);
 		const tabs = test.execCalls.filter((call) => call.args[0] === "tab" && call.args[1] === "create");
 		expect(tabs).toHaveLength(2);
