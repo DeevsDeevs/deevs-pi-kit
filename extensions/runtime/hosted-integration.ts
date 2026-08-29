@@ -974,10 +974,12 @@ export class HostedRuntimeIntegration {
 			const targetKey = text(launch.targetKey);
 			const config: BridgeRunnerConfig = { version: 1, bridgeId, driver: candidate.driver, root: bridgeRoot, runtimeSocket: join(this.root, "runtime.sock"), projectRoot, cwd: launchCwd, clientGeneration: `bridge_client_${randomUUID()}`, protocol, participantId, profile: candidate.profile, configurationHash, ...(candidate.model ? { model: candidate.model } : {}), ...(candidate.persona ? { persona: candidate.persona } : {}), launchToken, reconnectToken, targetKey, wallMs: BRIDGE_TURN_WALL_MS };
 			writeRunnerConfig(configPath, config);
+			const runnerLog = join(bridgeRoot, "runner.log");
+			writeFileSync(runnerLog, "", { flag: "wx", mode: 0o600 });
 			this.pi.appendEntry(HOSTED_BRIDGE_REQUEST_ENTRY, { version: 1, requestId: bridgeRequestId, bridgeId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, workspaceId: workspace?.workspaceId, targetKey, status: "authorized" });
 			throwIfAborted(signal);
 			childMayBeLive = true;
-			const command = `exec ${shellQuote(process.execPath)} --experimental-strip-types ${shellQuote(BRIDGE_MAIN)} ${shellQuote(configPath)}`;
+			const command = `exec node --experimental-strip-types ${shellQuote(BRIDGE_MAIN)} ${shellQuote(configPath)} >>${shellQuote(runnerLog)} 2>&1`;
 			const started = await this.pi.exec("herdr", ["pane", "run", paneId, command], { timeout: 5_000 });
 			if (started.code !== 0) throw new HostedRuntimeClientError("host_unavailable", `Herdr could not dispatch native collaborator startup in ${paneId}; its tab and bridge state were preserved.`);
 			for (let attempt = 0; attempt < 150; attempt++) {
@@ -999,7 +1001,10 @@ export class HostedRuntimeIntegration {
 			if (childMayBeLive && terminateAmbiguous && (tabId || paneId)) {
 				const resource = tabId ? ["tab", "close", tabId] : ["pane", "close", paneId!];
 				const closed = await this.pi.exec("herdr", resource, { timeout: 5_000 });
-				if (closed.code !== 0) throw new HostedCollaboratorStartError("host_unavailable", "Ambiguous native collaborator startup could not be terminated; its capacity lock and recovery artifacts were preserved.", true);
+				if (closed.code !== 0) {
+					const stillLive = await this.pi.exec("herdr", [tabId ? "tab" : "pane", "get", tabId ?? paneId!], { timeout: 2_000 });
+					if (!herdrNotFound(stillLive.stdout, tabId ? "tab_not_found" : "pane_not_found")) throw new HostedCollaboratorStartError("host_unavailable", "Ambiguous native collaborator startup could not be terminated; its capacity lock and recovery artifacts were preserved.", true);
+				}
 				if (bridgeRequestId && !await this.recoverBridgeRequest(registration, expectedCaller, bridgeRequestId)) throw new HostedCollaboratorStartError("unavailable", "Native collaborator tab closed, but launch authority recovery remains uncertain; capacity evidence was preserved.", true);
 				if (workspace) await this.client.call("workspace.retain", { ...authority, workspaceId: workspace.workspaceId });
 				preserved = true;
@@ -1060,13 +1065,16 @@ export class HostedRuntimeIntegration {
 
 	private async waitForHerdrPaneCwd(paneId: string, terminalId: string, cwd: string, signal?: AbortSignal): Promise<void> {
 		const expectedCwd = realpathSync(cwd);
+		let consecutiveMatches = 0;
 		for (let attempt = 0; attempt < 50; attempt++) {
 			throwIfAborted(signal);
 			const response = await this.pi.exec("herdr", ["pane", "get", paneId], { timeout: 2_000 });
 			if (response.code === 0) try {
 				const pane = strictObject(strictObject(strictObject(JSON.parse(response.stdout), "Herdr response").result, "Herdr result").pane, "Herdr pane");
-				if (pane.pane_id === paneId && pane.terminal_id === terminalId && realpathSync(text(pane.cwd)) === expectedCwd) return;
-			} catch {}
+				if (pane.pane_id === paneId && pane.terminal_id === terminalId && realpathSync(text(pane.cwd)) === expectedCwd) {
+					if (++consecutiveMatches >= 3) return;
+				} else consecutiveMatches = 0;
+			} catch { consecutiveMatches = 0; }
 			await delay(100);
 		}
 		throw new HostedRuntimeClientError("host_unavailable", `Herdr pane ${paneId} did not settle at its authorized cwd.`);
@@ -1726,6 +1734,10 @@ function integer(value: unknown): number {
 function booleanValue(value: unknown): boolean {
 	if (typeof value !== "boolean") throw new HostedRuntimeClientError("invalid_response", "Expected a boolean.");
 	return value;
+}
+
+function herdrNotFound(stdout: string, expectedCode: "tab_not_found" | "pane_not_found"): boolean {
+	try { return strictObject(strictObject(JSON.parse(stdout), "Herdr response").error, "Herdr error").code === expectedCode; } catch { return false; }
 }
 
 function shellQuote(value: string): string {
