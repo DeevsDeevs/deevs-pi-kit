@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -168,6 +169,32 @@ describe("durable common bridge runner", () => {
 		expect(attentionRunner.state()).toMatchObject({ status: "needs_attention", turns: expect.arrayContaining([expect.objectContaining({ eventId: uncertainTurn.eventId, state: "needs_attention" })]) });
 		expect(await ownsProcessIdentity(ownedWorker.workerPid, ownedWorker.workerIdentity)).toBe(false);
 	}, 10_000);
+
+	it("compacts confirmed settled turns and keeps admitting work beyond the journal window", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-kit-bridge-runner-compaction-"));
+		roots.push(root);
+		const now = Date.now();
+		const admissions = Array.from({ length: 1_000 }, (_, index) => ({ claimId: `claim_${index + 1}`, eventIds: [`event_${index + 1}`], ack: index === 0 ? "uncertain" as const : "confirmed" as const, createdAt: now + index }));
+		const prunedTurnId = `turn_${randomUUID()}`;
+		const turns = Array.from({ length: 1_000 }, (_, index) => ({ turnId: index === 1 ? prunedTurnId : `turn_${index + 1}`, sequence: index + 1, eventId: `event_${index + 1}`, claimId: `claim_${index + 1}`, senderParticipantKey: "participant_sender", body: "input", state: "reply_sent" as const, attempt: 1, replySendId: `reply_${index + 1}`, replyBody: "output", reply: "sent" as const, terminal: { status: "completed" as const, body: "output", sessionAdvance: "committed" as const, sessionId: "session_1" }, createdAt: now + index, updatedAt: now + index }));
+		mkdirSync(join(root, "turns", prunedTurnId), { recursive: true });
+		writeFileSync(join(root, "turns", prunedTurnId, "worker.v1.json"), "settled\n");
+		const config: BridgeRunnerConfig = { version: 1, bridgeId: "bridge_compaction", driver: "fake", root, runtimeSocket: join(root, "missing.sock"), projectRoot: root, cwd: root, clientGeneration: "client_compaction", protocol: "review", participantId: "fake", reconnectToken: "r".repeat(43), targetKey: "bridge_target", wallMs: 1_000 };
+		const initial: BridgeJournal = { version: 1, bridgeId: config.bridgeId, driver: "fake", targetKey: config.targetKey, participantKey: "participant_bridge", holderGeneration: "generation_bridge", protocol: config.protocol, participantId: config.participantId, driverSessionId: "session_1", nextSequence: 1_001, admissions, turns, status: "running", updatedAt: now };
+		const client = { call: async (method: string) => method === "inbox.claim" ? { claimId: "claim_1001", eventIds: ["event_1001"], events: [{ eventId: "event_1001", type: "mailbox.message", payload: { senderParticipantKey: "participant_sender", body: "next" } }] } : {} };
+		const runner = new BridgeRunner(join(root, "config.v1.json"), config, initial, { client });
+		const internal = runner as unknown as { registration: { targetKey: string; registrationId: string; registrationKey: string; participantKey: string; holderGeneration: string }; heartbeatAt: number };
+		internal.registration = { targetKey: "bridge_target", registrationId: "registration_1", registrationKey: "key_1", participantKey: "participant_bridge", holderGeneration: "generation_bridge" };
+		internal.heartbeatAt = Date.now();
+		expect(runner.state().turns).toHaveLength(64);
+		expect(existsSync(join(root, "turns", prunedTurnId))).toBe(false);
+		expect(runner.state()).toMatchObject({ admissions: expect.arrayContaining([expect.objectContaining({ claimId: "claim_1", ack: "uncertain" })]), turns: expect.arrayContaining([expect.objectContaining({ eventId: "event_1" })]) });
+		expect(await runner.step()).toBe("admitted");
+		expect(runner.state().turns).toHaveLength(64);
+		expect(runner.state().turns.some((turn) => turn.eventId === "event_1")).toBe(true);
+		expect(runner.state().turns.at(-1)).toMatchObject({ sequence: 1_001, eventId: "event_1001", state: "pending" });
+		expect(runner.state().nextSequence).toBe(1_002);
+	});
 
 	it("fails closed when a starting worker has no durable identity", async () => {
 		const root = mkdtempSync(join(tmpdir(), "pi-kit-bridge-runner-recovery-"));

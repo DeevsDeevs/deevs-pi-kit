@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { BRIDGE_RUNNER_MAX_BODY_BYTES, BRIDGE_RUNNER_MAX_FRAMES, BRIDGE_RUNNER_MAX_STATE_BYTES, BRIDGE_RUNNER_MAX_STDERR_BYTES, BRIDGE_RUNNER_MAX_STDOUT_BYTES, BRIDGE_RUNNER_MAX_TURNS, type BridgeAdmission, type BridgeJournal, type BridgeRunnerConfig, type BridgeTurn, type BridgeWorkerState } from "./types.ts";
 
 const MAX_ID_BYTES = 200;
 const MAX_PATH_BYTES = 8 * 1024;
+const TURN_DIRECTORY = /^turn_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 export class BridgeJournalError extends Error {
 	readonly code = "journal_error" as const;
@@ -34,6 +35,31 @@ export class BridgeJournalStore {
 	}
 
 	update(update: (state: BridgeJournal) => BridgeJournal): BridgeJournal { return this.write(update(structuredClone(this.state))); }
+
+	pruneTurnArtifacts(retainedTurnIds: readonly string[]): void {
+		const turnsRoot = join(this.root, "turns");
+		let info;
+		try { info = lstatSync(turnsRoot); }
+		catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw new BridgeJournalError(`Cannot inspect bridge turn directory: ${turnsRoot}`); }
+		if (info.isSymbolicLink() || !info.isDirectory()) throw new BridgeJournalError(`Bridge turn path is not an owned directory: ${turnsRoot}`);
+		const canonicalRoot = realpathSync(this.root);
+		const canonicalTurns = realpathSync(turnsRoot);
+		if (canonicalTurns !== join(canonicalRoot, "turns")) throw new BridgeJournalError("Bridge turn directory escaped its runner root.");
+		const retained = new Set(retainedTurnIds);
+		let changed = false;
+		for (const name of readdirSync(canonicalTurns)) {
+			if (retained.has(name) || !TURN_DIRECTORY.test(name)) continue;
+			const path = join(canonicalTurns, name);
+			const entry = lstatSync(path);
+			if (entry.isSymbolicLink()) unlinkSync(path);
+			else {
+				if (!entry.isDirectory() || realpathSync(path) !== path) throw new BridgeJournalError(`Bridge turn artifact escaped its runner root: ${name}`);
+				rmSync(path, { recursive: true });
+			}
+			changed = true;
+		}
+		if (changed) { const directory = openSync(canonicalTurns, constants.O_RDONLY | constants.O_NOFOLLOW); try { fsyncSync(directory); } finally { closeSync(directory); } }
+	}
 }
 
 export function readRunnerConfig(path: string): BridgeRunnerConfig { return validateConfig(requiredJson(path, 64 * 1024)); }

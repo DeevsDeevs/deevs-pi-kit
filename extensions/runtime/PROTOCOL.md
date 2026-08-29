@@ -13,9 +13,9 @@ It does not replace Herdr, bounded Jobs, Subagents, Workflows, Missions, or sess
 - Routing and authorization use validated IDs, generations, keys, statuses, and receipts. Prose is display-only.
 - Runtime restart preserves monitors, events, claims, receipts, and wake state but invalidates live registrations.
 
-## Release 1 scope
+## Original Release 1 baseline
 
-Included:
+The first release included:
 
 - one Runtime service per Pi agent directory;
 - one direct-child, created-regular-file Monitor per target;
@@ -25,12 +25,11 @@ Included:
 - authoritative directory scans with `fs.watch` as a latency hint;
 - exclusive Pi collaborator identities and durable directed mailboxes.
 
-Deferred:
+The current release additionally ships native Claude Code/Codex collaborators, Runtime-owned bridge runners, isolated writable workspaces, and optional typed task outcomes. Still deferred:
 
 - recursive/content/modification/deletion monitoring;
-- non-Pi collaborators, groups, broadcasts, and attachments;
+- collaborator groups, broadcasts, and attachments;
 - durable schedules and automatic takeover;
-- Runtime-owned workers;
 - native service installers and Windows transport.
 
 ## Operation
@@ -225,7 +224,7 @@ A zero exit without exactly one validated terminal frame is failure. Terminal re
 
 Native computation is honestly **at least once**. A crash after execution may have begun but before terminal persistence records `sessionAdvance: uncertain`. The runner resumes an exact live worker or its durable terminal result; if the worker leader is lost while its exact recorded native child remains, Runtime quiesces that owned group before entering attention. Cancel intent is durable before signaling. Without an exact worker/child identity witness, or when the witnessed group cannot be proven quiescent, the turn and controller atomically enter typed `needs_attention`; Runtime never guesses a PID/PGID, replays, replies, ACKs a later claim, or claims exactly-once effects.
 
-Runner journal/config/worker records are owner-private, size-capped, strict-schema atomic snapshots (temporary write, file fsync, rename, directory fsync). Corruption, unknown fields, symlinks, overflow, unterminated/invalid/deep JSON, duplicate terminal frames, and output-limit violations fail closed. The reconnect credential is confined to the controller config; journal, worker spec/state, and native environment never contain it.
+Runner journal/config/worker records are owner-private, size-capped, strict-schema atomic snapshots (temporary write, file fsync, rename, directory fsync). After Runtime durably confirms replies, the runner retains the newest 64 settled turns and atomically compacts older confirmed admissions, then removes only their exact UUID-named turn directories beneath the canonical runner root; restart scavenges artifacts left by a crash between those steps without following symlinks. Active turns, uncertain admissions/publications, and attention turns are never compacted, sequence/session cursors remain monotonic, and Runtime remains the authoritative delivery/result dedupe record. Corruption, unknown fields, symlinks, overflow, unterminated/invalid/deep JSON, duplicate terminal frames, and output-limit violations fail closed. The reconnect credential is confined to the controller config; journal, worker spec/state, and native environment never contain it.
 
 ### Isolated writable workspaces
 
@@ -257,6 +256,7 @@ Run from a source checkout with Herdr and its Pi integration installed:
 npm run smoke:runtime-release
 npm run smoke:collaborator-release
 npm run smoke:collaborator-auto-release
+npm run smoke:native-release
 ```
 
-These isolated gates use unique Herdr servers/sessions/sockets, Pi agent directories, Runtime state, projects, and Pi sessions. The Runtime gate proves offline Monitor queuing, restarts, exact wake/admission, historical reconciliation, foreign-session rejection, and no redelivery. The two-Pi Collaborator gates launch their child through production `collaborator_manage` in Manual and Auto modes, verify v3 session materialization and identity binding, prove Auto's omitted profile persists and enforces read-only, and prove bidirectional mail, identity conflict, stand-down queuing and reacquisition, release/revival, claimed-mail takeover after lease expiry, historical mailbox reconciliation, and no redelivery across a full heartbeat interval. It also creates a production Mission in the real parent Pi, delivers and acknowledges the collaborator reply while that Mission is active, restores its canonical state after the parent closes, records/adjudicates through registered Mission tools, admits and recovers exactly one typed reviewer across parent reloads, and commits exactly one completion/effect across replay. Both clean all isolated resources and never connect to the user's active Herdr server.
+These isolated gates use unique Herdr servers/sessions/sockets, Pi agent directories, Runtime state, projects, and Pi sessions. The Runtime gate proves offline Monitor queuing, restarts, exact wake/admission, historical reconciliation, foreign-session rejection, and no redelivery. The two-Pi Collaborator gates launch their child through production `collaborator_manage` in Manual and Auto modes, verify v3 session materialization and identity binding, prove Auto's omitted profile persists and enforces read-only, and prove bidirectional mail, identity conflict, stand-down queuing and reacquisition, release/revival, claimed-mail takeover after lease expiry, historical mailbox reconciliation, and no redelivery across a full heartbeat interval. They also create a production Mission in the real parent Pi, deliver and acknowledge the collaborator reply while that Mission is active, restore its canonical state after the parent closes, record/adjudicate through registered Mission tools, admit and recover exactly one typed reviewer across parent reloads, and commit exactly one completion/effect across replay. The deterministic native gate executes Claude/Codex shims through the production bridge controller/worker and Runtime socket, proves driver-owned read-only/workspace-write argv, then checkpoints, stages, finalizes, and cleans a real isolated Git worktree while keeping main untouched before finalization. All gates clean isolated resources and never connect to the user's active Herdr server.

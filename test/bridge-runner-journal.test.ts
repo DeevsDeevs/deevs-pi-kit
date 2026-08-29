@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -41,6 +41,23 @@ describe("bridge runner journal", () => {
 		writeFileSync(outside, "{}");
 		symlinkSync(outside, store.path);
 		expect(() => new BridgeJournalStore(directory, initial())).toThrow();
+	});
+
+	it("prunes only exact unreferenced turn artifacts without following symlinks", () => {
+		const directory = root();
+		const store = new BridgeJournalStore(directory, initial());
+		const turns = join(directory, "turns");
+		const outside = join(directory, "outside-turn");
+		mkdirSync(turns);
+		mkdirSync(outside);
+		writeFileSync(join(outside, "marker"), "keep\n");
+		const linked = join(turns, "turn_00000000-0000-4000-8000-000000000001");
+		symlinkSync(outside, linked, "dir");
+		mkdirSync(join(turns, "turn_1"));
+		store.pruneTurnArtifacts([]);
+		expect(existsSync(linked)).toBe(false);
+		expect(readFileSync(join(outside, "marker"), "utf8")).toBe("keep\n");
+		expect(existsSync(join(turns, "turn_1"))).toBe(true);
 	});
 
 	it("keeps reconnect credentials only in the private controller config", () => {

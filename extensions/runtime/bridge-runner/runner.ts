@@ -11,6 +11,7 @@ import { BRIDGE_RUNNER_MAX_BODY_BYTES, BRIDGE_RUNNER_MAX_TURNS, type BridgeAdmis
 
 const WORKER = fileURLToPath(new URL("./worker.ts", import.meta.url));
 const HEARTBEAT_MS = 2_000;
+const RETAINED_SETTLED_TURNS = 64;
 
 interface RuntimeRegistration {
 	targetKey: string;
@@ -45,6 +46,7 @@ export class BridgeRunner {
 		this.options = options;
 		this.client = options.client ?? new HostedRuntimeClient(config.runtimeSocket, 5_000);
 		this.journal = new BridgeJournalStore(config.root, initial ?? { version: 1, bridgeId: config.bridgeId, driver: config.driver, protocol: config.protocol, participantId: config.participantId, nextSequence: 1, admissions: [], turns: [], status: "starting", updatedAt: Date.now() });
+		this.update((state) => state);
 	}
 
 	state(): BridgeJournal { return this.journal.read(); }
@@ -254,8 +256,33 @@ export class BridgeRunner {
 	private needsAttention(eventId: string): void { this.update((state) => ({ ...state, status: "needs_attention", turns: state.turns.map((turn) => turn.eventId === eventId ? { ...turn, state: "needs_attention", updatedAt: Date.now() } : turn) })); }
 	private async hasProcessWitness(worker: BridgeWorkerState): Promise<boolean> { return await ownsProcessIdentity(worker.workerPid, worker.workerIdentity) || Boolean(worker.childPid && worker.childIdentity && await ownsProcessIdentity(worker.childPid, worker.childIdentity)); }
 	private replaceTurn(eventId: string, update: (turn: BridgeTurn) => BridgeTurn): void { this.update((state) => ({ ...state, turns: state.turns.map((turn) => turn.eventId === eventId ? update(turn) : turn) })); }
-	private update(update: (state: BridgeJournal) => BridgeJournal): BridgeJournal { return this.journal.update((state) => ({ ...update(state), updatedAt: Date.now() })); }
+	private update(update: (state: BridgeJournal) => BridgeJournal): BridgeJournal {
+		const state = this.journal.update((current) => ({ ...compactSettled(update(current)), updatedAt: Date.now() }));
+		this.journal.pruneTurnArtifacts(state.turns.map((turn) => turn.turnId));
+		return state;
+	}
 	private requireRegistration(): RuntimeRegistration { if (!this.registration) throw new Error("Bridge runner is not registered."); return this.registration; }
+}
+
+function compactSettled(state: BridgeJournal): BridgeJournal {
+	if (state.turns.length <= RETAINED_SETTLED_TURNS) return state;
+	const turns = new Map(state.turns.map((turn) => [turn.eventId, turn]));
+	const uncertain = new Set(state.admissions.filter((admission) => admission.ack === "uncertain").flatMap((admission) => admission.eventIds));
+	const settled = state.admissions
+		.filter((admission) => admission.ack === "confirmed" && admission.eventIds.every((eventId) => !uncertain.has(eventId) && turns.get(eventId)?.state === "reply_sent"))
+		.sort((left, right) => Math.max(...left.eventIds.map((eventId) => turns.get(eventId)!.sequence)) - Math.max(...right.eventIds.map((eventId) => turns.get(eventId)!.sequence)));
+	const removed = new Set<string>();
+	let remaining = state.turns.length;
+	for (const admission of settled) {
+		if (remaining <= RETAINED_SETTLED_TURNS) break;
+		for (const eventId of admission.eventIds) if (!removed.has(eventId)) { removed.add(eventId); remaining--; }
+	}
+	if (!removed.size) return state;
+	return {
+		...state,
+		admissions: state.admissions.filter((admission) => admission.ack !== "confirmed" || admission.eventIds.some((eventId) => !removed.has(eventId))),
+		turns: state.turns.filter((turn) => !removed.has(turn.eventId)),
+	};
 }
 
 function parseRegistration(value: unknown, config: BridgeRunnerConfig): RuntimeRegistration {
