@@ -1,7 +1,8 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { closeSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
+import { quiesceBridgeRunner } from "../bridge-runner/stop.ts";
 import type { HostedBridgeTarget, HostedParticipant, HostedPiTarget, HostedTarget } from "../hosted-types.ts";
 import { HostedStateStore } from "./state.ts";
 
@@ -56,7 +57,7 @@ export interface HostedHostVerifier {
 	getPane(paneId: string): Promise<HostedLiveAgent>;
 	findTerminal(terminalId: string): Promise<HostedLiveAgent>;
 	getPaneIdentity?(paneId: string): Promise<HostedPaneIdentity>;
-	closeTarget?(target: HostedTarget, managedSessionDirectory: string): Promise<"closed" | "already_absent" | "unmanaged">;
+	closeTarget?(target: HostedTarget, runtimeRoot: string): Promise<"closed" | "already_absent" | "unmanaged">;
 }
 
 export interface RegisterWorkspacePiInput {
@@ -334,12 +335,12 @@ export class HerdrCliHostVerifier implements HostedHostVerifier {
 		return { ...pane, paneCount: Number(tab.pane_count) };
 	}
 
-	async closeTarget(target: HostedTarget, managedSessionDirectory: string): Promise<"closed" | "already_absent" | "unmanaged"> {
-		if (target.kind === "bridge") return this.closeBridgeTarget(target);
+	async closeTarget(target: HostedTarget, runtimeRoot: string): Promise<"closed" | "already_absent" | "unmanaged"> {
+		if (target.kind === "bridge") return this.closeBridgeTarget(target, runtimeRoot);
 		let sessionFile: string;
 		try {
 			sessionFile = canonicalFile(target.piSessionFile, "collaborator session file");
-			if (dirname(sessionFile) !== realpathSync(managedSessionDirectory)) return "unmanaged";
+			if (dirname(sessionFile) !== realpathSync(join(runtimeRoot, "collaborator-sessions"))) return "unmanaged";
 			verifyPiSessionHeader(sessionFile, target.piSessionId, target.workspaceRoot ?? target.projectRoot);
 		} catch {
 			return "unmanaged";
@@ -364,23 +365,26 @@ export class HerdrCliHostVerifier implements HostedHostVerifier {
 		}
 	}
 
-	private async closeBridgeTarget(target: HostedBridgeTarget): Promise<"closed" | "already_absent"> {
+	private async closeBridgeTarget(target: HostedBridgeTarget, runtimeRoot: string): Promise<"closed" | "already_absent"> {
 		const find = async () => (await this.listAgents()).filter((agent) => agent.agentSession.source === "pi-kit-bridge" && agent.agentSession.agent === "bridge" && agent.agentSession.kind === "id" && agent.agentSession.value === target.bridgeId);
 		const matches = await find();
-		if (matches.length === 0) return "already_absent";
-		if (matches.length !== 1) throw new RegistrationError("identity_mismatch", "Bridge identity is not unique in Herdr.");
-		const agent = matches[0]!;
-		if (agent.paneId !== target.herdr.paneId || agent.terminalId !== target.herdr.terminalId || agent.tabId !== target.herdr.tabId || agent.workspaceId !== target.herdr.workspaceId || canonicalDirectory(agent.cwd, "Herdr cwd") !== (target.workspaceRoot ?? target.projectRoot)) throw new RegistrationError("identity_mismatch", "Herdr bridge identity does not match its Runtime target.");
-		const response = await runHerdr(["tab", "get", target.herdr.tabId]);
-		const tab = strictObject(strictObject(strictObject(response, "Herdr response").result, "Herdr result").tab, "Herdr tab");
-		if (tab.tab_id !== target.herdr.tabId || tab.workspace_id !== target.herdr.workspaceId || tab.pane_count !== 1) throw new RegistrationError("identity_mismatch", "Bridge tab identity changed before stop.");
-		try {
-			await runHerdr(["tab", "close", target.herdr.tabId]);
-			return "closed";
-		} catch (error) {
-			if ((await find()).length === 0) return "already_absent";
-			throw error;
+		if (matches.length > 1) throw new RegistrationError("identity_mismatch", "Bridge identity is not unique in Herdr.");
+		let outcome: "closed" | "already_absent" = "already_absent";
+		if (matches.length === 1) {
+			const agent = matches[0]!;
+			if (agent.paneId !== target.herdr.paneId || agent.terminalId !== target.herdr.terminalId || agent.tabId !== target.herdr.tabId || agent.workspaceId !== target.herdr.workspaceId || canonicalDirectory(agent.cwd, "Herdr cwd") !== (target.workspaceRoot ?? target.projectRoot)) throw new RegistrationError("identity_mismatch", "Herdr bridge identity does not match its Runtime target.");
+			const response = await runHerdr(["tab", "get", target.herdr.tabId]);
+			const tab = strictObject(strictObject(strictObject(response, "Herdr response").result, "Herdr result").tab, "Herdr tab");
+			if (tab.tab_id !== target.herdr.tabId || tab.workspace_id !== target.herdr.workspaceId || tab.pane_count !== 1) throw new RegistrationError("identity_mismatch", "Bridge tab identity changed before stop.");
+			try { await runHerdr(["tab", "close", target.herdr.tabId]); outcome = "closed"; }
+			catch (error) { if ((await find()).length !== 0) throw error; }
 		}
+		try {
+			await quiesceBridgeRunner(join(realpathSync(runtimeRoot), "bridges", target.bridgeId), target);
+		} catch (error) {
+			throw new RegistrationError("identity_mismatch", `Bridge stop could not prove worker quiescence: ${error instanceof Error ? error.message : String(error)}`);
+		}
+		return outcome;
 	}
 
 	private async listAgents(): Promise<HostedLiveAgent[]> {

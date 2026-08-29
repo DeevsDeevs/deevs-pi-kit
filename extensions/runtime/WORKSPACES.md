@@ -39,7 +39,7 @@ For native Claude Code/Codex, the workspace is owned from creation by the final 
 - `integrated`: exact staged result was finalized into main.
 - `cleaned`: exact worktree/ref were removed and the tombstone remains.
 
-Stop and cleanup are separate. Stand-down preserves the process and workspace. Exact stop closes the target and changes an active workspace to retained. Ambiguous Auto launch cleanup retains any workspace that a child may have modified; Auto never discards it.
+Stop and cleanup are separate. Stand-down preserves the process and workspace. Exact native stop first fences the bridge controller, then uses its authority-matched durable worker identity to prove the detached native process group quiescent before vacating the participant and changing an active workspace to retained. Missing/mismatched identity or failed quiescence leaves lifecycle/workspace settlement blocked for attention; an absent Herdr tab alone is insufficient. Ambiguous Auto launch cleanup retains any workspace that a child may have modified; Auto never discards it.
 
 ## Safe Git boundary
 

@@ -62,6 +62,7 @@ export class BridgeJournalStore {
 	}
 }
 
+export function readBridgeJournal(root: string): BridgeJournal | undefined { const value = readJson(join(root, "journal.v1.json"), BRIDGE_RUNNER_MAX_STATE_BYTES); return value === undefined ? undefined : validateJournal(value); }
 export function readRunnerConfig(path: string): BridgeRunnerConfig { return validateConfig(requiredJson(path, 64 * 1024)); }
 export function writeRunnerConfig(path: string, config: BridgeRunnerConfig): void { writeAtomic(path, validateConfig(config), 64 * 1024); }
 export function readWorkerState(path: string): BridgeWorkerState | undefined { const value = readJson(path, BRIDGE_RUNNER_MAX_STATE_BYTES); return value === undefined ? undefined : validateWorkerState(value); }

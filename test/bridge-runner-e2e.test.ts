@@ -6,9 +6,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { HostedRuntimeClient, HostedRuntimeClientError } from "../extensions/runtime/client.ts";
 import { BridgeJournalStore, readRunnerConfig, readWorkerState, writeRunnerConfig, writeWorkerState } from "../extensions/runtime/bridge-runner/journal.ts";
 import { BridgeRunner } from "../extensions/runtime/bridge-runner/runner.ts";
+import { quiesceBridgeRunner } from "../extensions/runtime/bridge-runner/stop.ts";
 import type { BridgeJournal, BridgeRunnerConfig } from "../extensions/runtime/bridge-runner/types.ts";
 import { startRuntimeServer, type RuntimeServerHandle } from "../extensions/runtime/service/server.ts";
-import { ownsProcessIdentity } from "../extensions/shared/process-group.ts";
+import { isProcessGroupAlive, ownsProcessIdentity, quiesceProcessGroup } from "../extensions/shared/process-group.ts";
 import type { HostedHostVerifier, HostedLiveAgent, HostedPaneIdentity } from "../extensions/runtime/service/registration.ts";
 
 const roots: string[] = [];
@@ -168,6 +169,53 @@ describe("durable common bridge runner", () => {
 		await attentionRunner.start();
 		expect(attentionRunner.state()).toMatchObject({ status: "needs_attention", turns: expect.arrayContaining([expect.objectContaining({ eventId: uncertainTurn.eventId, state: "needs_attention" })]) });
 		expect(await ownsProcessIdentity(ownedWorker.workerPid, ownedWorker.workerIdentity)).toBe(false);
+	}, 10_000);
+
+	it("quiesces every retained exact native group before stop can settle", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-kit-bridge-stop-e2e-"));
+		roots.push(root);
+		const turnId = `turn_${randomUUID()}`;
+		const now = Date.now();
+		const authority = { bridgeId: "bridge_stop", targetKey: "bridge_target", participantKey: "participant_bridge", holderGeneration: "generation_bridge" };
+		const config: BridgeRunnerConfig = { version: 1, bridgeId: authority.bridgeId, driver: "fake", root, runtimeSocket: join(root, "missing.sock"), projectRoot: root, cwd: root, clientGeneration: "client_stop", protocol: "review", participantId: "fake", reconnectToken: "r".repeat(43), targetKey: authority.targetKey, wallMs: 30_000 };
+		const initial: BridgeJournal = { version: 1, bridgeId: authority.bridgeId, driver: "fake", targetKey: authority.targetKey, participantKey: authority.participantKey, holderGeneration: authority.holderGeneration, protocol: config.protocol, participantId: config.participantId, nextSequence: 2, admissions: [{ claimId: "claim_1", eventIds: ["event_1"], ack: "confirmed", createdAt: now }], turns: [{ turnId, sequence: 1, eventId: "event_1", claimId: "claim_1", senderParticipantKey: "participant_sender", body: "sleep:30000", state: "pending", attempt: 0, replySendId: "reply_1", reply: "unsent", createdAt: now, updatedAt: now }], status: "running", updatedAt: now };
+		const runner = new BridgeRunner(join(root, "config.v1.json"), config, initial);
+		await (runner as unknown as { launchWorker(turn: BridgeJournal["turns"][number]): Promise<void> }).launchWorker(runner.state().turns[0]!);
+		const statePath = runner.state().turns[0]!.worker!.statePath;
+		for (let attempt = 0; attempt < 100 && !readWorkerState(statePath)?.childPid; attempt++) await new Promise((resolve) => setTimeout(resolve, 10));
+		const worker = readWorkerState(statePath)!;
+		expect(await ownsProcessIdentity(worker.workerPid, worker.workerIdentity)).toBe(true);
+		expect(await ownsProcessIdentity(worker.childPid!, worker.childIdentity)).toBe(true);
+		runner.stop();
+		const laterTurnId = `turn_${randomUUID()}`;
+		new BridgeJournalStore(root, runner.state()).update((state) => ({ ...state, nextSequence: 3, admissions: [...state.admissions, { claimId: "claim_2", eventIds: ["event_2"], ack: "confirmed", createdAt: now + 1 }], turns: [{ ...state.turns[0]!, state: "reply_sent", reply: "sent", terminal: { status: "completed", body: "settled-before-group-exit", sessionAdvance: "committed" }, updatedAt: now + 1 }, { turnId: laterTurnId, sequence: 2, eventId: "event_2", claimId: "claim_2", senderParticipantKey: "participant_sender", body: "later", state: "pending", attempt: 0, replySendId: "reply_2", reply: "unsent", createdAt: now + 1, updatedAt: now + 1 }], updatedAt: now + 1 }));
+		try {
+			expect(await quiesceBridgeRunner(root, authority)).toBe("quiesced");
+			expect(isProcessGroupAlive(worker.workerPid)).toBe(false);
+			expect(await ownsProcessIdentity(worker.workerPid, worker.workerIdentity)).toBe(false);
+			expect(await ownsProcessIdentity(worker.childPid!, worker.childIdentity)).toBe(false);
+		} finally { await quiesceProcessGroup(worker.workerPid); }
+	}, 10_000);
+
+	it("fails closed instead of signaling a worker whose durable identity changed", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-kit-bridge-stop-mismatch-"));
+		roots.push(root);
+		const turnId = `turn_${randomUUID()}`;
+		const now = Date.now();
+		const authority = { bridgeId: "bridge_stop_mismatch", targetKey: "bridge_target", participantKey: "participant_bridge", holderGeneration: "generation_bridge" };
+		const config: BridgeRunnerConfig = { version: 1, bridgeId: authority.bridgeId, driver: "fake", root, runtimeSocket: join(root, "missing.sock"), projectRoot: root, cwd: root, clientGeneration: "client_stop", protocol: "review", participantId: "fake", reconnectToken: "r".repeat(43), targetKey: authority.targetKey, wallMs: 30_000 };
+		const initial: BridgeJournal = { version: 1, bridgeId: authority.bridgeId, driver: "fake", targetKey: authority.targetKey, participantKey: authority.participantKey, holderGeneration: authority.holderGeneration, protocol: config.protocol, participantId: config.participantId, nextSequence: 2, admissions: [{ claimId: "claim_1", eventIds: ["event_1"], ack: "confirmed", createdAt: now }], turns: [{ turnId, sequence: 1, eventId: "event_1", claimId: "claim_1", senderParticipantKey: "participant_sender", body: "sleep:30000", state: "pending", attempt: 0, replySendId: "reply_1", reply: "unsent", createdAt: now, updatedAt: now }], status: "running", updatedAt: now };
+		const runner = new BridgeRunner(join(root, "config.v1.json"), config, initial);
+		await (runner as unknown as { launchWorker(turn: BridgeJournal["turns"][number]): Promise<void> }).launchWorker(runner.state().turns[0]!);
+		const statePath = runner.state().turns[0]!.worker!.statePath;
+		for (let attempt = 0; attempt < 100 && !readWorkerState(statePath)?.childPid; attempt++) await new Promise((resolve) => setTimeout(resolve, 10));
+		const worker = readWorkerState(statePath)!;
+		writeWorkerState(statePath, { ...worker, workerIdentity: "mismatched-worker-identity" });
+		runner.stop();
+		try {
+			await expect(quiesceBridgeRunner(root, authority)).rejects.toThrow("inconsistent");
+			expect(await ownsProcessIdentity(worker.workerPid, worker.workerIdentity)).toBe(true);
+		} finally { await quiesceProcessGroup(worker.workerPid); }
 	}, 10_000);
 
 	it("compacts confirmed settled turns and keeps admitting work beyond the journal window", async () => {
