@@ -54,6 +54,13 @@ describe("Runtime Git workspace adapter", () => {
 		const preparedAlice = await runtime.cherryPick(stageAlice.path, aliceHandoff.commits);
 		expect(preparedAlice.status).toBe("prepared");
 		const aliceTip = preparedAlice.status === "prepared" ? preparedAlice.headCommit : "";
+		expect(await runtime.verifyCherryPicks(stageAlice.path, repo.headCommit, aliceTip, aliceHandoff.commits)).toMatchObject({ commits: [aliceTip] });
+		const spoof = await runtime.createIntegrationWorktree(repo, join(fixture.managed, "stage-spoof"), "refs/heads/runtime/integrate/spoof", repo.headCommit);
+		writeFileSync(join(spoof.path, "unrelated.txt"), "unrelated\n");
+		git(spoof.path, ["add", "-A"]);
+		git(spoof.path, ["commit", "-m", `alice checkpoint\n\n(cherry picked from commit ${aliceHandoff.commits[0]})`]);
+		const spoofHead = git(spoof.path, ["rev-parse", "HEAD"]);
+		await expect(runtime.verifyCherryPicks(spoof.path, repo.headCommit, spoofHead, aliceHandoff.commits)).rejects.toThrow("exact source commits");
 		expect(readFileSync(join(fixture.project, "shared.txt"), "utf8")).toBe("base\n");
 		expect(await runtime.finalize(repo, repo.headCommit, aliceTip)).toBe(aliceTip);
 		expect(await runtime.finalize(repo, repo.headCommit, aliceTip)).toBe(aliceTip);
@@ -70,6 +77,7 @@ describe("Runtime Git workspace adapter", () => {
 
 		await runtime.removeWorktree(current, { ...stageAlice, headCommit: aliceTip });
 		await runtime.removeWorktree(current, { ...stageAlice, headCommit: aliceTip });
+		await runtime.discardWorktree(current, { ...spoof, headCommit: spoofHead });
 		await runtime.removeWorktree(current, { ...alice, headCommit: aliceHandoff.headCommit });
 		await runtime.removeWorktree(current, { ...bob, headCommit: bobHandoff.headCommit });
 	});
@@ -151,8 +159,14 @@ describe("Runtime Git workspace adapter", () => {
 		rmSync(join(fixture.project, ".gitattributes"));
 		git(fixture.project, ["add", "-A"]);
 		git(fixture.project, ["commit", "-m", "remove attributes"]);
+		rmSync(marker, { force: true });
 		const repo = await runtime.discover(fixture.project);
 		const writer = await runtime.createWorktree(repo, join(fixture.managed, "unsafe"), "refs/heads/runtime/collab/unsafe", repo.headCommit);
+		rmSync(marker, { force: true });
+		writeFileSync(join(writer.path, ".gitattributes"), "shared.txt filter=evil\n");
+		await expect(runtime.checkpoint(repo, writer, repo.headCommit, "unsafe attributes")).rejects.toThrow("Changing .gitattributes");
+		expect(existsSync(marker)).toBe(false);
+		rmSync(join(writer.path, ".gitattributes"));
 		symlinkSync("../../outside", join(writer.path, "escape"));
 		await expect(runtime.checkpoint(repo, writer, repo.headCommit, "unsafe")).rejects.toThrow("symlink escapes");
 		rmSync(join(writer.path, "escape"));

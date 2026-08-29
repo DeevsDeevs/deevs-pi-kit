@@ -45,7 +45,7 @@ Stop and cleanup are separate. Stand-down preserves the process and workspace. E
 
 Runtime requires Git 2.42 or newer. All commands are argv-only with bounded output/time and a scrubbed environment. Runtime disables inherited `GIT_*`, system/global configuration and attributes, hooks, signing, pagers/editors, fsmonitor, replacement refs, lazy fetch, terminal prompts, autostash, and submodule recursion.
 
-Before checkout, checkpoint, or integration, Runtime inspects attributes at the exact source tree and rejects external clean/smudge filters and custom merge behavior. Changed path count/bytes, checked-out tree blobs, and committed handoff blobs are bounded. Escaping symlinks are rejected. Gitlink/submodule entries are rejected entirely for this initial workspace profile so nested state cannot be omitted. Sequencer state, overflow, identity drift, or an ambiguous Git result becomes `needs_attention` and remains preserved.
+Before checkout, checkpoint, or integration, Runtime inspects attributes at the exact source tree and rejects external clean/smudge filters and custom merge behavior. Any `.gitattributes` change at any depth is rejected because it could change policy for otherwise-unchanged paths. Changed path count/bytes, checked-out tree blobs, and committed handoff blobs are bounded. Escaping symlinks are rejected. Gitlink/submodule entries are rejected entirely for this initial workspace profile so nested state cannot be omitted. Sequencer state, overflow, identity drift, or an ambiguous Git result becomes `needs_attention` and remains preserved.
 
 Checkpointing stages tracked/deleted/untracked nonignored paths, writes a tree, creates a fixed-identity `commit-tree`, and advances only the exact private ref with `update-ref <new> <old>` compare-and-swap. Existing commits must form a bounded linear nonempty range from base; merge and empty commits are rejected. Binary files, modes, renames (reported as delete/add for exact stats), deletions, and untracked files remain durable in commits.
 
@@ -80,6 +80,7 @@ A typed bounded-task result from a workspace-bound participant includes Runtime-
 `prepare_integration` is separately confirmed and records current main branch/head `M`. Runtime creates `refs/heads/runtime/integrate/<integration-id>` in another isolated worktree at `M`, then cherry-picks the complete ordered source commit list.
 
 - Clean preparation records exact prepared head `I`; main remains unchanged.
+- Crash recovery accepts an already-prepared clean range only when its ordered commits carry the exact source trailers and stable patch IDs; equal count or linear history alone is insufficient.
 - Conflict records bounded paths and current integration head, retains index/sequencer/worktree state, and leaves main unchanged.
 - No automatic abort, reset, skip, rebase, or conflict resolution occurs.
 
