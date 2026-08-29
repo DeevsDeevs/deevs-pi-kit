@@ -1,10 +1,10 @@
-import { HOSTED_BRIDGE_FORBIDDEN_METADATA_KEYS, HOSTED_BRIDGE_MAX_METADATA_ENTRIES, HOSTED_BRIDGE_MAX_METADATA_VALUE_BYTES, HOSTED_MAILBOX_MAX_BODY_BYTES, HOSTED_MAX_DELIVERY_BATCH, HOSTED_MONITOR_MAX_ENTRIES, HOSTED_PROTOCOL_VERSION, type HostedMonitor } from "../hosted-types.ts";
+import { HOSTED_BRIDGE_MAX_METADATA_ENTRIES, HOSTED_BRIDGE_MAX_METADATA_VALUE_BYTES, HOSTED_MAILBOX_MAX_BODY_BYTES, HOSTED_MAX_DELIVERY_BATCH, HOSTED_MONITOR_MAX_ENTRIES, HOSTED_PROTOCOL_VERSION, type HostedMonitor } from "../hosted-types.ts";
 import { RuntimeBridgeCoordinator, type BridgeReconnectInput, type BridgeRegisterInput, type CreateBridgeLaunchInput } from "./bridge.ts";
 import { DirectoryMonitorManager } from "./monitor.ts";
 import { HostedParticipantCoordinator } from "./participant.ts";
 import { RuntimeRegistrationManager, type RegisterPiInput, type RegisterWorkspacePiInput } from "./registration.ts";
 import { HostedWakeCoordinator, type HostedClaimResult } from "./wake.ts";
-import { RuntimeWorkspaceCoordinator, type CreateWorkspaceInput, type WorkspaceAuthority } from "./workspace.ts";
+import { RuntimeWorkspaceCoordinator, type CreateBridgeWorkspaceInput, type CreateWorkspaceInput, type WorkspaceAuthority } from "./workspace.ts";
 
 export const HOSTED_MAX_REQUEST_BYTES = 64 * 1024;
 
@@ -75,6 +75,7 @@ export async function dispatchHostedLine(line: string, context: HostedProtocolCo
 			const parsed = workspaceAuthorizedParams(params, method);
 			const caller = registrations.authorize(parsed.registrationId, parsed.registrationKey);
 			if (method === "workspace.launch.create") return success(id, await workspaces.create(caller, parsed.input as CreateWorkspaceInput));
+			if (method === "workspace.bridge.create") return success(id, await workspaces.createBridge(caller, parsed.input as CreateBridgeWorkspaceInput));
 			if (method === "workspace.launch.bind") return success(id, await workspaces.bind(caller, parsed.input as WorkspaceAuthority & { workspaceId: string; herdr: { paneId: string; terminalId: string } }));
 			if (method === "workspace.launch.recover") return success(id, { workspace: await workspaces.recoverLaunch(caller, parsed.input as WorkspaceAuthority & { requestId: string }) });
 			if (method === "workspace.inspect") return success(id, { workspace: workspaces.inspect(caller, (parsed.input as { workspaceId: string }).workspaceId) });
@@ -98,6 +99,12 @@ export async function dispatchHostedLine(line: string, context: HostedProtocolCo
 			const parsed = bridgeLaunchParams(params);
 			const caller = registrations.authorize(parsed.registrationId, parsed.registrationKey);
 			return success(id, await bridges.create(caller, parsed.input));
+		}
+		if (method === "bridge.launch.recover") {
+			if (!bridges) return failure(id, "capability_unavailable", "Runtime bridge launch authority is unavailable in this process.");
+			const parsed = bridgeRecoverParams(params);
+			const caller = registrations.authorize(parsed.registrationId, parsed.registrationKey);
+			return success(id, { launch: bridges.recoverLaunch(caller, parsed.input) });
 		}
 		if (method === "bridge.launch.cancel") {
 			if (!bridges) return failure(id, "capability_unavailable", "Runtime bridge launch authority is unavailable in this process.");
@@ -292,6 +299,7 @@ function workspacePiRegistration(params: Record<string, unknown>): RegisterWorks
 function workspaceAuthorizedParams(value: unknown, method: string): { registrationId: string; registrationKey: string; input: unknown } {
 	const schemas: Record<string, readonly string[]> = {
 		"workspace.launch.create": ["registrationId", "registrationKey", "requestId", "callerParticipantKey", "expectedCallerGeneration", "protocol", "participantId", "expectedParticipantGeneration", "piSessionId"],
+		"workspace.bridge.create": ["registrationId", "registrationKey", "requestId", "callerParticipantKey", "expectedCallerGeneration", "protocol", "participantId", "expectedParticipantGeneration", "bridgeId"],
 		"workspace.launch.bind": ["registrationId", "registrationKey", "callerParticipantKey", "expectedCallerGeneration", "workspaceId", "herdr"],
 		"workspace.launch.recover": ["registrationId", "registrationKey", "callerParticipantKey", "expectedCallerGeneration", "requestId"],
 		"workspace.inspect": ["registrationId", "registrationKey", "workspaceId"],
@@ -310,6 +318,10 @@ function workspaceAuthorizedParams(value: unknown, method: string): { registrati
 	const registrationKey = boundedText(params.registrationKey, "registration key", 200);
 	if (method === "workspace.launch.create") {
 		const input: CreateWorkspaceInput = { requestId: boundedText(params.requestId, "request ID", 200), callerParticipantKey: boundedText(params.callerParticipantKey, "caller participant key", 200), expectedCallerGeneration: boundedText(params.expectedCallerGeneration, "expected caller generation", 200), protocol: participantName(params.protocol, "protocol"), participantId: participantName(params.participantId, "participant ID"), ...(params.expectedParticipantGeneration === undefined ? {} : { expectedParticipantGeneration: boundedText(params.expectedParticipantGeneration, "expected participant generation", 200) }), piSessionId: boundedText(params.piSessionId, "Pi session ID", 200) };
+		return { registrationId, registrationKey, input };
+	}
+	if (method === "workspace.bridge.create") {
+		const input: CreateBridgeWorkspaceInput = { requestId: boundedText(params.requestId, "request ID", 200), callerParticipantKey: boundedText(params.callerParticipantKey, "caller participant key", 200), expectedCallerGeneration: boundedText(params.expectedCallerGeneration, "expected caller generation", 200), protocol: participantName(params.protocol, "protocol"), participantId: participantName(params.participantId, "participant ID"), ...(params.expectedParticipantGeneration === undefined ? {} : { expectedParticipantGeneration: boundedText(params.expectedParticipantGeneration, "expected participant generation", 200) }), bridgeId: boundedText(params.bridgeId, "bridge ID", 200) };
 		return { registrationId, registrationKey, input };
 	}
 	if (method === "workspace.inspect") return { registrationId, registrationKey, input: { workspaceId: boundedText(params.workspaceId, "workspace ID", 200) } };
@@ -336,15 +348,14 @@ function workspaceAuthorizedParams(value: unknown, method: string): { registrati
 }
 
 function bridgeLaunchParams(value: unknown): { registrationId: string; registrationKey: string; input: CreateBridgeLaunchInput } {
-	const params = strictObject(value, "bridge.launch.create params", ["registrationId", "registrationKey", "requestId", "callerParticipantKey", "expectedCallerGeneration", "protocol", "participantId", "expectedParticipantGeneration", "profile", "configurationHash", "herdr", "metadata"]);
+	const params = strictObject(value, "bridge.launch.create params", ["registrationId", "registrationKey", "requestId", "launchId", "workspaceId", "callerParticipantKey", "expectedCallerGeneration", "protocol", "participantId", "expectedParticipantGeneration", "profile", "configurationHash", "herdr", "metadata"]);
 	if (params.profile !== "read-only" && params.profile !== "workspace-write") throw new Error("bridge profile must be read-only or workspace-write");
 	const herdr = strictObject(params.herdr, "bridge launch Herdr identity", ["paneId", "terminalId"]);
 	const metadata = strictObject(params.metadata ?? {}, "bridge metadata");
 	const metadataEntries = Object.entries(metadata);
 	if (metadataEntries.length > HOSTED_BRIDGE_MAX_METADATA_ENTRIES) throw new Error(`bridge metadata may contain at most ${HOSTED_BRIDGE_MAX_METADATA_ENTRIES} entries`);
-	const forbiddenMetadata = new Set<string>(HOSTED_BRIDGE_FORBIDDEN_METADATA_KEYS);
 	const parsedMetadata = Object.fromEntries(metadataEntries.map(([key, item]) => {
-		if (!/^[a-z][a-z0-9_-]{0,63}$/.test(key) || forbiddenMetadata.has(key)) throw new Error("bridge metadata key is invalid or reserved");
+		if (key !== "adapter") throw new Error("bridge metadata key is not allowlisted");
 		if (typeof item !== "string" || Buffer.byteLength(item) > HOSTED_BRIDGE_MAX_METADATA_VALUE_BYTES) throw new Error("bridge metadata value exceeds its byte limit");
 		return [key, item];
 	}));
@@ -353,6 +364,8 @@ function bridgeLaunchParams(value: unknown): { registrationId: string; registrat
 		registrationKey: boundedText(params.registrationKey, "registration key", 200),
 		input: {
 			requestId: boundedText(params.requestId, "request ID", 200),
+			...(params.launchId === undefined ? {} : { launchId: boundedText(params.launchId, "launch ID", 200) }),
+			...(params.workspaceId === undefined ? {} : { workspaceId: boundedText(params.workspaceId, "workspace ID", 200) }),
 			callerParticipantKey: boundedText(params.callerParticipantKey, "caller participant key", 200),
 			expectedCallerGeneration: boundedText(params.expectedCallerGeneration, "expected caller generation", 200),
 			protocol: participantName(params.protocol, "protocol"),
@@ -364,6 +377,11 @@ function bridgeLaunchParams(value: unknown): { registrationId: string; registrat
 			metadata: parsedMetadata,
 		},
 	};
+}
+
+function bridgeRecoverParams(value: unknown): { registrationId: string; registrationKey: string; input: { requestId: string; callerParticipantKey: string; expectedCallerGeneration: string } } {
+	const params = strictObject(value, "bridge.launch.recover params", ["registrationId", "registrationKey", "requestId", "callerParticipantKey", "expectedCallerGeneration"]);
+	return { registrationId: boundedText(params.registrationId, "registration ID", 200), registrationKey: boundedText(params.registrationKey, "registration key", 200), input: { requestId: boundedText(params.requestId, "request ID", 200), callerParticipantKey: boundedText(params.callerParticipantKey, "caller participant key", 200), expectedCallerGeneration: boundedText(params.expectedCallerGeneration, "expected caller generation", 200) } };
 }
 
 function bridgeCancelParams(value: unknown): { registrationId: string; registrationKey: string; input: { launchId: string; callerParticipantKey: string; expectedCallerGeneration: string } } {
@@ -446,7 +464,7 @@ function workspaceRegistrationResult(result: Awaited<ReturnType<RuntimeWorkspace
 }
 
 function bridgeRegistrationResult(result: Awaited<ReturnType<RuntimeBridgeCoordinator["register"]>>): Record<string, unknown> {
-	return { ...registrationResult(result.registration), participantKey: result.participantKey, holderGeneration: result.holderGeneration, profile: result.profile, configurationHash: result.configurationHash, metadata: result.metadata };
+	return { ...registrationResult(result.registration), participantKey: result.participantKey, holderGeneration: result.holderGeneration, profile: result.profile, configurationHash: result.configurationHash, projectRoot: result.projectRoot, cwd: result.cwd, ...(result.workspaceId ? { workspaceId: result.workspaceId } : {}), metadata: result.metadata };
 }
 
 function monitorResult(monitor: HostedMonitor): Record<string, unknown> {
@@ -475,7 +493,7 @@ function errorCode(error: unknown): HostedErrorCode {
 	return error instanceof Error ? "invalid_request" : "internal";
 }
 
-const HOSTED_METHODS = new Set(["pi.register", "pi.heartbeat", "pi.unregister", "bridge.launch.create", "bridge.launch.cancel", "bridge.register", "bridge.reconnect", "bridge.heartbeat", "bridge.unregister", "workspace.launch.create", "workspace.launch.bind", "workspace.launch.recover", "workspace.pi.register", "workspace.pi.reconnect", "workspace.inspect", "workspace.integration.inspect", "workspace.retain", "workspace.reconcile", "workspace.checkpoint", "workspace.integration.prepare", "workspace.integration.reconcile", "workspace.integration.finalize", "workspace.cleanup", "workspace.integration.cleanup", "monitor.create", "monitor.get", "monitor.delete", "wake.accept", "inbox.claim", "inbox.ack", "inbox.release", "inbox.status", "participant.acquire", "participant.get", "participant.list", "participant.stand_down", "participant.stand_down_confirmed", "participant.stop_confirmed", "participant.release", "participant.takeover", "mailbox.send"]);
+const HOSTED_METHODS = new Set(["pi.register", "pi.heartbeat", "pi.unregister", "bridge.launch.create", "bridge.launch.recover", "bridge.launch.cancel", "bridge.register", "bridge.reconnect", "bridge.heartbeat", "bridge.unregister", "workspace.launch.create", "workspace.bridge.create", "workspace.launch.bind", "workspace.launch.recover", "workspace.pi.register", "workspace.pi.reconnect", "workspace.inspect", "workspace.integration.inspect", "workspace.retain", "workspace.reconcile", "workspace.checkpoint", "workspace.integration.prepare", "workspace.integration.reconcile", "workspace.integration.finalize", "workspace.cleanup", "workspace.integration.cleanup", "monitor.create", "monitor.get", "monitor.delete", "wake.accept", "inbox.claim", "inbox.ack", "inbox.release", "inbox.status", "participant.acquire", "participant.get", "participant.list", "participant.stand_down", "participant.stand_down_confirmed", "participant.stop_confirmed", "participant.release", "participant.takeover", "mailbox.send"]);
 
 const ERROR_CODES = new Set<HostedErrorCode>([
 	"invalid_request", "unsupported_version", "capability_unavailable", "not_found", "conflict", "registration_stale", "identity_mismatch", "claim_conflict", "host_unavailable", "busy", "storage_error", "internal",

@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { chmodSync, closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { chmodSync, closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { BRIDGE_RUNNER_MAX_BODY_BYTES, BRIDGE_RUNNER_MAX_FRAMES, BRIDGE_RUNNER_MAX_STATE_BYTES, BRIDGE_RUNNER_MAX_STDERR_BYTES, BRIDGE_RUNNER_MAX_STDOUT_BYTES, BRIDGE_RUNNER_MAX_TURNS, type BridgeAdmission, type BridgeJournal, type BridgeRunnerConfig, type BridgeTurn, type BridgeWorkerState } from "./types.ts";
 
@@ -44,13 +44,13 @@ export function writeWorkerSpec(path: string, value: unknown): void { writeAtomi
 
 function validateJournal(value: unknown): BridgeJournal {
 	const state = object(value, "bridge journal", ["version", "bridgeId", "driver", "targetKey", "participantKey", "holderGeneration", "protocol", "participantId", "driverSessionId", "nextSequence", "admissions", "turns", "status", "updatedAt"]);
-	if (state.version !== 1 || state.driver !== "fake" || !["starting", "running", "needs_attention", "stopped"].includes(String(state.status))) throw new BridgeJournalError("Bridge journal version, driver, or status is invalid.");
+	if (state.version !== 1 || !["fake", "claude-code", "codex"].includes(String(state.driver)) || !["starting", "running", "needs_attention", "stopped"].includes(String(state.status))) throw new BridgeJournalError("Bridge journal version, driver, or status is invalid.");
 	const admissions = array(state.admissions, "admissions", BRIDGE_RUNNER_MAX_TURNS).map(validateAdmission);
 	const turns = array(state.turns, "turns", BRIDGE_RUNNER_MAX_TURNS).map(validateTurn);
 	const result: BridgeJournal = {
 		version: 1,
 		bridgeId: text(state.bridgeId, "bridge ID", MAX_ID_BYTES),
-		driver: "fake",
+		driver: state.driver as BridgeJournal["driver"],
 		...(state.targetKey === undefined ? {} : { targetKey: text(state.targetKey, "target key", MAX_ID_BYTES) }),
 		...(state.participantKey === undefined ? {} : { participantKey: text(state.participantKey, "participant key", MAX_ID_BYTES) }),
 		...(state.holderGeneration === undefined ? {} : { holderGeneration: text(state.holderGeneration, "holder generation", MAX_ID_BYTES) }),
@@ -108,9 +108,16 @@ function validateTurn(value: unknown): BridgeTurn {
 }
 
 function validateConfig(value: unknown): BridgeRunnerConfig {
-	const item = object(value, "bridge runner config", ["version", "bridgeId", "driver", "root", "runtimeSocket", "projectRoot", "cwd", "clientGeneration", "protocol", "participantId", "launchToken", "reconnectToken", "targetKey", "wallMs"]);
-	if (item.version !== 1 || item.driver !== "fake") throw new BridgeJournalError("Bridge runner config version or driver is invalid.");
-	return { version: 1, bridgeId: text(item.bridgeId, "bridge ID", MAX_ID_BYTES), driver: "fake", root: text(item.root, "runner root", MAX_PATH_BYTES), runtimeSocket: text(item.runtimeSocket, "Runtime socket", MAX_PATH_BYTES), projectRoot: text(item.projectRoot, "project root", MAX_PATH_BYTES), cwd: text(item.cwd, "runner cwd", MAX_PATH_BYTES), clientGeneration: text(item.clientGeneration, "client generation", MAX_ID_BYTES), protocol: text(item.protocol, "protocol", 64), participantId: text(item.participantId, "participant ID", 64), ...(item.launchToken === undefined ? {} : { launchToken: text(item.launchToken, "launch token", 512) }), reconnectToken: text(item.reconnectToken, "reconnect token", 200), ...(item.targetKey === undefined ? {} : { targetKey: text(item.targetKey, "target key", MAX_ID_BYTES) }), wallMs: positiveInteger(item.wallMs, "wall limit") };
+	const item = object(value, "bridge runner config", ["version", "bridgeId", "driver", "root", "runtimeSocket", "projectRoot", "cwd", "clientGeneration", "protocol", "participantId", "profile", "configurationHash", "model", "persona", "launchToken", "reconnectToken", "targetKey", "wallMs"]);
+	if (item.version !== 1 || !["fake", "claude-code", "codex"].includes(String(item.driver))) throw new BridgeJournalError("Bridge runner config version or driver is invalid.");
+	const driver = item.driver as BridgeRunnerConfig["driver"];
+	const profile = item.profile === undefined ? undefined : item.profile === "read-only" || item.profile === "workspace-write" ? item.profile : invalid("Bridge runner profile is invalid.");
+	const configurationHash = item.configurationHash === undefined ? undefined : hash(item.configurationHash, "configuration hash");
+	if (driver !== "fake" && (!profile || !configurationHash)) throw new BridgeJournalError("Native bridge runner requires an authorized profile and configuration hash.");
+	const projectRoot = canonicalDirectory(item.projectRoot, "project root");
+	const cwd = canonicalDirectory(item.cwd, "runner cwd");
+	if (profile === "read-only" && cwd !== projectRoot) throw new BridgeJournalError("Read-only bridge runner cwd must equal its project root.");
+	return { version: 1, bridgeId: text(item.bridgeId, "bridge ID", MAX_ID_BYTES), driver, root: text(item.root, "runner root", MAX_PATH_BYTES), runtimeSocket: text(item.runtimeSocket, "Runtime socket", MAX_PATH_BYTES), projectRoot, cwd, clientGeneration: text(item.clientGeneration, "client generation", MAX_ID_BYTES), protocol: text(item.protocol, "protocol", 64), participantId: text(item.participantId, "participant ID", 64), ...(profile ? { profile } : {}), ...(configurationHash ? { configurationHash } : {}), ...(item.model === undefined ? {} : { model: model(item.model) }), ...(item.persona === undefined ? {} : { persona: persona(item.persona) }), ...(item.launchToken === undefined ? {} : { launchToken: text(item.launchToken, "launch token", 512) }), reconnectToken: text(item.reconnectToken, "reconnect token", 200), ...(item.targetKey === undefined ? {} : { targetKey: text(item.targetKey, "target key", MAX_ID_BYTES) }), wallMs: positiveInteger(item.wallMs, "wall limit") };
 }
 
 function validateWorkerState(value: unknown): BridgeWorkerState {
@@ -121,6 +128,17 @@ function validateWorkerState(value: unknown): BridgeWorkerState {
 	if (result.stdoutBytes > BRIDGE_RUNNER_MAX_STDOUT_BYTES || result.stderrBytes > BRIDGE_RUNNER_MAX_STDERR_BYTES || result.frames > BRIDGE_RUNNER_MAX_FRAMES || result.updatedAt < result.startedAt || (result.endedAt !== undefined && result.endedAt < result.startedAt) || (result.status === "terminal" && !result.terminal)) throw new BridgeJournalError("Bridge worker counters, time, or terminal state is inconsistent.");
 	return result;
 }
+
+function persona(value: unknown): NonNullable<BridgeRunnerConfig["persona"]> {
+	const item = object(value, "bridge persona", ["name", "prompt", "promptHash"]);
+	const result = { name: text(item.name, "persona name", 64), prompt: text(item.prompt, "persona prompt", 32 * 1024), promptHash: hash(item.promptHash, "persona prompt hash") };
+	if (createHash("sha256").update(result.prompt).digest("hex") !== result.promptHash) throw new BridgeJournalError("Bridge persona prompt hash does not match.");
+	return result;
+}
+function model(value: unknown): string { const result = text(value, "model", 200); if (!/^[A-Za-z0-9][A-Za-z0-9._/*:-]{0,199}$/.test(result)) throw new BridgeJournalError("Bridge model is invalid."); return result; }
+function hash(value: unknown, name: string): string { const result = text(value, name, 64); if (!/^[0-9a-f]{64}$/.test(result)) throw new BridgeJournalError(`${name} is invalid.`); return result; }
+function canonicalDirectory(value: unknown, name: string): string { const path = text(value, name, MAX_PATH_BYTES); try { const result = realpathSync(path); if (!lstatSync(result).isDirectory()) throw new Error(); return result; } catch { throw new BridgeJournalError(`${name} is unavailable.`); } }
+function invalid(message: string): never { throw new BridgeJournalError(message); }
 
 function prepareDirectory(path: string): void {
 	try { mkdirSync(path, { recursive: true, mode: 0o700 }); const info = lstatSync(path); if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(); chmodSync(path, 0o700); }

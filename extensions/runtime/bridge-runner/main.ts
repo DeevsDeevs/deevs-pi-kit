@@ -27,13 +27,15 @@ async function currentPane(): Promise<{ paneId: string; terminalId: string }> {
 }
 
 async function report(paneId: string, bridgeId: string, state: "working" | "idle" | "blocked"): Promise<void> {
-	await run(["pane", "report-agent-session", paneId, "--source", "pi-kit-bridge", "--agent", "bridge", "--agent-session-id", bridgeId]);
-	await run(["pane", "report-agent", paneId, "--source", "pi-kit-bridge", "--agent", "bridge", "--state", state === "blocked" ? "blocked" : state, "--agent-session-id", bridgeId]);
+	const label = `bridge:${bridgeId}`;
+	await run(["pane", "report-agent-session", paneId, "--source", "pi-kit-bridge", "--agent", label, "--agent-session-id", bridgeId]);
+	await run(["pane", "report-agent", paneId, "--source", "pi-kit-bridge", "--agent", label, "--state", state === "blocked" ? "blocked" : state, "--agent-session-id", bridgeId]);
 }
 
 function run(args: string[]): Promise<unknown> {
 	return new Promise((resolve, reject) => execFile("herdr", args, { encoding: "utf8", timeout: 2_000, maxBuffer: 64 * 1024 }, (error, stdout) => {
 		if (error) { reject(new Error("Herdr bridge reporting failed.")); return; }
+		if (!stdout.trim()) { resolve(undefined); return; }
 		try { resolve(JSON.parse(stdout)); } catch { reject(new Error("Herdr bridge response is invalid.")); }
 	}));
 }

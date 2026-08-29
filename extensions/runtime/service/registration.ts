@@ -146,9 +146,9 @@ export class RuntimeRegistrationManager {
 		return this.install(target.targetKey, input.clientGeneration, input.admittedClaims, verified);
 	}
 
-	async registerBridge(input: RegisterBridgeInput, target: HostedBridgeTarget, credentials: { registrationId: string; registrationKey: string }): Promise<HostedLiveRegistration> {
+	async registerBridge(input: RegisterBridgeInput, target: HostedBridgeTarget, credentials: { registrationId: string; registrationKey: string }, onVerified?: () => void): Promise<HostedLiveRegistration> {
 		const durable = this.store.read().targets[target.targetKey];
-		if (!durable || durable.kind !== "bridge" || !sameBridgeTarget(durable, target)) throw new RegistrationError("conflict", "Bridge target does not match durable launch authority.");
+		if (!onVerified && (!durable || durable.kind !== "bridge" || !sameBridgeTarget(durable, target))) throw new RegistrationError("conflict", "Bridge target does not match durable launch authority.");
 		if (this.host.getPaneIdentity) {
 			const pane = await this.host.getPaneIdentity(input.herdr.paneId);
 			if (pane.paneCount !== 1 || pane.paneId !== target.herdr.paneId || pane.terminalId !== target.herdr.terminalId || pane.tabId !== target.herdr.tabId || pane.workspaceId !== target.herdr.workspaceId) throw new RegistrationError("identity_mismatch", "Bridge tab is not the exact authorized single-pane Herdr target.");
@@ -156,10 +156,13 @@ export class RuntimeRegistrationManager {
 		const verified = await this.host.getPane(input.herdr.paneId);
 		this.ensureOpen();
 		verifyBridgeIdentity(verified, target, input.herdr, false);
+		this.validateAdmissions(target.targetKey, input.admittedClaims);
+		onVerified?.();
 		const currentTarget = this.store.read().targets[target.targetKey];
 		if (!currentTarget || currentTarget.kind !== "bridge" || !sameBridgeTarget(currentTarget, target)) throw new RegistrationError("registration_stale", "Bridge target changed during host verification.");
 		const participant = this.store.read().participants[target.participantKey];
-		if (!participant || participant.state !== "held" || participant.holderTargetKey !== target.targetKey || participant.generation !== target.holderGeneration) throw new RegistrationError("registration_stale", "Bridge participant generation changed during host verification.");
+		const workspace = target.workspaceId ? this.store.read().workspaces[target.workspaceId] : undefined;
+		if (!participant || participant.state !== "held" || participant.holderTargetKey !== target.targetKey || participant.generation !== target.holderGeneration || target.workspaceId && (!workspace || workspace.state !== "active" || workspace.targetKey !== target.targetKey || workspace.holderGeneration !== target.holderGeneration)) throw new RegistrationError("registration_stale", "Bridge participant or workspace generation changed during host verification.");
 		return this.install(target.targetKey, input.clientGeneration, input.admittedClaims, verified, credentials);
 	}
 
@@ -367,7 +370,7 @@ export class HerdrCliHostVerifier implements HostedHostVerifier {
 		if (matches.length === 0) return "already_absent";
 		if (matches.length !== 1) throw new RegistrationError("identity_mismatch", "Bridge identity is not unique in Herdr.");
 		const agent = matches[0]!;
-		if (agent.paneId !== target.herdr.paneId || agent.terminalId !== target.herdr.terminalId || agent.tabId !== target.herdr.tabId || agent.workspaceId !== target.herdr.workspaceId || canonicalDirectory(agent.cwd, "Herdr cwd") !== target.projectRoot) throw new RegistrationError("identity_mismatch", "Herdr bridge identity does not match its Runtime target.");
+		if (agent.paneId !== target.herdr.paneId || agent.terminalId !== target.herdr.terminalId || agent.tabId !== target.herdr.tabId || agent.workspaceId !== target.herdr.workspaceId || canonicalDirectory(agent.cwd, "Herdr cwd") !== (target.workspaceRoot ?? target.projectRoot)) throw new RegistrationError("identity_mismatch", "Herdr bridge identity does not match its Runtime target.");
 		const response = await runHerdr(["tab", "get", target.herdr.tabId]);
 		const tab = strictObject(strictObject(strictObject(response, "Herdr response").result, "Herdr result").tab, "Herdr tab");
 		if (tab.tab_id !== target.herdr.tabId || tab.workspace_id !== target.herdr.workspaceId || tab.pane_count !== 1) throw new RegistrationError("identity_mismatch", "Bridge tab identity changed before stop.");
@@ -414,7 +417,7 @@ function verifyBridgeIdentity(agent: HostedLiveAgent, target: HostedBridgeTarget
 	if (agent.terminalId !== herdr.terminalId || agent.paneId !== target.herdr.paneId || agent.terminalId !== target.herdr.terminalId || agent.tabId !== target.herdr.tabId || agent.workspaceId !== target.herdr.workspaceId) throw new RegistrationError("identity_mismatch", "Herdr bridge host identity does not match launch authority.");
 	let hostCwd: string;
 	try { hostCwd = canonicalDirectory(agent.cwd, "Herdr cwd"); } catch { throw new RegistrationError("identity_mismatch", "Herdr bridge cwd is unavailable or not canonical."); }
-	if (hostCwd !== target.projectRoot) throw new RegistrationError("identity_mismatch", "Herdr bridge cwd does not match the canonical project root.");
+	if (hostCwd !== (target.workspaceRoot ?? target.projectRoot)) throw new RegistrationError("identity_mismatch", "Herdr bridge cwd does not match its authorized project/workspace root.");
 	const session = agent.agentSession;
 	if (session.source !== "pi-kit-bridge" || session.agent !== "bridge" || session.kind !== "id" || session.value !== target.bridgeId) throw new RegistrationError("identity_mismatch", "Herdr does not report the authoritative generic bridge identity.");
 }
@@ -492,7 +495,9 @@ function parsePaneIdentity(value: unknown): HostedPaneIdentity {
 function parseLiveAgent(value: unknown): HostedLiveAgent {
 	try {
 		const agent = strictObject(value, "Herdr agent");
-		const session = strictObject(agent.agent_session, "Herdr agent session");
+		const label = text(agent.agent);
+		const bridge = /^bridge:([A-Za-z0-9_-]{1,200})$/.exec(label);
+		const session = agent.agent_session === undefined && bridge ? { source: "pi-kit-bridge", agent: "bridge", kind: "id", value: bridge[1] } : strictObject(agent.agent_session, "Herdr agent session");
 		if (session.kind !== "id" && session.kind !== "path") throw new Error("invalid session kind");
 		if (!Number.isSafeInteger(agent.state_change_seq) || Number(agent.state_change_seq) < 0) throw new Error("invalid state sequence");
 		const status = agent.agent_status;

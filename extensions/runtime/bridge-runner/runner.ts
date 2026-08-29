@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { HostedRuntimeClient, HostedRuntimeClientError } from "../client.ts";
 import { ownsProcessIdentity, quiesceProcessGroup, readProcessIdentity } from "../../shared/process-group.ts";
 import { BridgeJournalStore, readWorkerState, writeRunnerConfig, writeWorkerSpec } from "./journal.ts";
+import { bridgeProcessEnvironment } from "./adapters.ts";
 import { BRIDGE_RUNNER_MAX_BODY_BYTES, BRIDGE_RUNNER_MAX_TURNS, type BridgeAdmission, type BridgeJournal, type BridgeRunnerConfig, type BridgeTurn, type BridgeWorkerSpec, type BridgeWorkerState } from "./types.ts";
 
 const WORKER = fileURLToPath(new URL("./worker.ts", import.meta.url));
@@ -98,14 +99,14 @@ export class BridgeRunner {
 		if (this.config.launchToken) {
 			try { result = await this.client.call("bridge.register", { ...common, launchToken: this.config.launchToken, reconnectToken: this.config.reconnectToken }); }
 			catch (error) {
-				if (!this.config.targetKey) throw error;
+				if (!this.config.targetKey || !(error instanceof HostedRuntimeClientError) || error.code !== "unavailable") throw error;
 				result = await this.client.call("bridge.reconnect", { ...common, targetKey: this.config.targetKey, reconnectToken: this.config.reconnectToken });
 			}
 		} else {
 			if (!this.config.targetKey) throw new Error("Bridge runner has no launch or reconnect target authority.");
 			result = await this.client.call("bridge.reconnect", { ...common, targetKey: this.config.targetKey, reconnectToken: this.config.reconnectToken });
 		}
-		const registration = parseRegistration(result);
+		const registration = parseRegistration(result, this.config);
 		this.registration = registration;
 		this.heartbeatAt = Date.now();
 		this.config = { ...this.config, targetKey: registration.targetKey, launchToken: undefined };
@@ -142,6 +143,7 @@ export class BridgeRunner {
 	}
 
 	private async advance(turn: BridgeTurn): Promise<"working" | "sent" | "needs_attention"> {
+		if (turn.terminal && this.rejectUncertainNativeSession(turn.eventId, turn.terminal)) return "needs_attention";
 		const admission = this.journal.read().admissions.find((item) => item.claimId === turn.claimId);
 		if (!admission || admission.ack !== "confirmed") { await this.register(); return "working"; }
 		if (turn.state === "pending") { await this.launchWorker(turn); return "working"; }
@@ -158,10 +160,12 @@ export class BridgeRunner {
 		mkdirSync(turnRoot, { recursive: true, mode: 0o700 });
 		const statePath = join(turnRoot, "worker.v1.json");
 		const specPath = join(turnRoot, "spec.v1.json");
-		const spec: BridgeWorkerSpec = { version: 1, turnId: turn.turnId, eventId: turn.eventId, attempt, driver: this.config.driver, cwd: this.config.cwd, body: turn.body, ...(this.journal.read().driverSessionId ? { sessionId: this.journal.read().driverSessionId } : {}), statePath, wallMs: this.config.wallMs };
+		const priorSessionId = this.journal.read().driverSessionId;
+		const sessionId = priorSessionId ?? (this.config.driver === "claude-code" ? randomUUID() : undefined);
+		const spec: BridgeWorkerSpec = { version: 1, turnId: turn.turnId, eventId: turn.eventId, attempt, driver: this.config.driver, cwd: this.config.cwd, body: turn.body, ...(this.config.profile ? { profile: this.config.profile } : {}), ...(this.config.model ? { model: this.config.model } : {}), ...(this.config.persona ? { persona: this.config.persona } : {}), ...(sessionId ? { sessionId } : {}), ...(priorSessionId ? { resumeSession: true } : {}), statePath, wallMs: this.config.wallMs };
 		writeWorkerSpec(specPath, spec);
 		this.replaceTurn(turn.eventId, (current) => ({ ...current, state: "starting", attempt, worker: { attempt, statePath }, updatedAt: Date.now() }));
-		const child = fork(this.options.workerPath ?? WORKER, [specPath], { execArgv: ["--experimental-strip-types"], cwd: this.config.cwd, detached: true, env: { LC_ALL: "C" }, stdio: ["ignore", "ignore", "ignore", "ipc"] });
+		const child = fork(this.options.workerPath ?? WORKER, [specPath], { execArgv: ["--experimental-strip-types"], cwd: this.config.cwd, detached: true, env: bridgeProcessEnvironment(), stdio: ["ignore", "ignore", "ignore", "ipc"] });
 		const readyOutcome = waitReady(child, this.options.readyTimeoutMs ?? 5_000).then((ready) => ({ ready }), (error: Error) => ({ error }));
 		const workerPid = child.pid;
 		const workerIdentity = workerPid ? await readProcessIdentity(workerPid) : undefined;
@@ -243,8 +247,9 @@ export class BridgeRunner {
 
 	private confirmAdmission(claimId: string): void { this.update((state) => ({ ...state, admissions: state.admissions.map((item) => item.claimId === claimId ? { ...item, ack: "confirmed" } : item) })); }
 	private async settleCancellation(eventId: string, statePath: string): Promise<void> { const worker = readWorkerState(statePath); if (worker?.status === "terminal" && worker.terminal) { this.importTerminal(eventId, worker.terminal); return; } if (!worker || !await this.hasProcessWitness(worker) || !await quiesceProcessGroup(worker.workerPid)) { this.needsAttention(eventId); return; } const terminal = readWorkerState(statePath)?.terminal ?? { status: "cancelled" as const, body: "Bridge turn cancelled after exact worker-group quiescence.", sessionAdvance: worker.childPid ? "uncertain" as const : "none" as const }; this.setReplyPending(eventId, terminal); }
-	private importTerminal(eventId: string, terminal: NonNullable<BridgeTurn["terminal"]>): void { this.update((state) => ({ ...state, ...(terminal.sessionId ? { driverSessionId: terminal.sessionId } : {}), turns: state.turns.map((turn) => turn.eventId === eventId ? { ...turn, state: "terminal", terminal, updatedAt: Date.now() } : turn) })); }
-	private setReplyPending(eventId: string, terminal: NonNullable<BridgeTurn["terminal"]>): void { this.update((state) => ({ ...state, ...(terminal.sessionId ? { driverSessionId: terminal.sessionId } : {}), turns: state.turns.map((turn) => turn.eventId === eventId ? { ...turn, state: "reply_pending", terminal, replyBody: terminal.body, reply: "unsent", updatedAt: Date.now() } : turn) })); }
+	private importTerminal(eventId: string, terminal: NonNullable<BridgeTurn["terminal"]>): void { if (this.rejectUncertainNativeSession(eventId, terminal)) return; this.update((state) => ({ ...state, ...(terminal.sessionId ? { driverSessionId: terminal.sessionId } : {}), turns: state.turns.map((turn) => turn.eventId === eventId ? { ...turn, state: "terminal", terminal, updatedAt: Date.now() } : turn) })); }
+	private setReplyPending(eventId: string, terminal: NonNullable<BridgeTurn["terminal"]>): void { if (this.rejectUncertainNativeSession(eventId, terminal)) return; this.update((state) => ({ ...state, ...(terminal.sessionId ? { driverSessionId: terminal.sessionId } : {}), turns: state.turns.map((turn) => turn.eventId === eventId ? { ...turn, state: "reply_pending", terminal, replyBody: terminal.body, reply: "unsent", updatedAt: Date.now() } : turn) })); }
+	private rejectUncertainNativeSession(eventId: string, terminal: NonNullable<BridgeTurn["terminal"]>): boolean { if (this.config.driver === "fake" || terminal.sessionAdvance !== "uncertain") return false; this.update((state) => ({ ...state, status: "needs_attention", turns: state.turns.map((turn) => turn.eventId === eventId ? { ...turn, state: "needs_attention", terminal, updatedAt: Date.now() } : turn) })); return true; }
 	private needsAttention(eventId: string): void { this.update((state) => ({ ...state, status: "needs_attention", turns: state.turns.map((turn) => turn.eventId === eventId ? { ...turn, state: "needs_attention", updatedAt: Date.now() } : turn) })); }
 	private async hasProcessWitness(worker: BridgeWorkerState): Promise<boolean> { return await ownsProcessIdentity(worker.workerPid, worker.workerIdentity) || Boolean(worker.childPid && worker.childIdentity && await ownsProcessIdentity(worker.childPid, worker.childIdentity)); }
 	private replaceTurn(eventId: string, update: (turn: BridgeTurn) => BridgeTurn): void { this.update((state) => ({ ...state, turns: state.turns.map((turn) => turn.eventId === eventId ? update(turn) : turn) })); }
@@ -252,8 +257,9 @@ export class BridgeRunner {
 	private requireRegistration(): RuntimeRegistration { if (!this.registration) throw new Error("Bridge runner is not registered."); return this.registration; }
 }
 
-function parseRegistration(value: unknown): RuntimeRegistration {
+function parseRegistration(value: unknown, config: BridgeRunnerConfig): RuntimeRegistration {
 	const item = object(value);
+	if (config.driver !== "fake" && (item.profile !== config.profile || item.configurationHash !== config.configurationHash || item.projectRoot !== config.projectRoot || item.cwd !== config.cwd)) throw new Error("Bridge registration authority does not match the runner configuration.");
 	return { targetKey: text(item.targetKey), registrationId: text(item.registrationId), registrationKey: text(item.registrationKey), participantKey: text(item.participantKey), holderGeneration: text(item.holderGeneration) };
 }
 

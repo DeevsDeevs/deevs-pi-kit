@@ -9,6 +9,8 @@ import type { AgentDefinition } from "../subagents/catalog-types.ts";
 import { HostedRuntimeClient, HostedRuntimeClientError } from "./client.ts";
 import { AUTO_MAX_LIVE_COLLABORATORS, CollaboratorAutoStore, type CollaboratorAutoState } from "./auto-mode.ts";
 import { HOSTED_MAX_DELIVERY_BATCH } from "./hosted-types.ts";
+import { writeRunnerConfig } from "./bridge-runner/journal.ts";
+import type { BridgeRunnerConfig } from "./bridge-runner/types.ts";
 
 // ponytail: two-second host verification is fine for small teams; add Runtime subscriptions if concurrent Pi count makes it measurable.
 const HEARTBEAT_MS = 2_000;
@@ -19,12 +21,15 @@ export const HOSTED_AUTO_LIFECYCLE_ENTRY = "deevs.hosted-runtime.auto-lifecycle.
 export const HOSTED_MANAGED_COLLABORATOR_ENTRY = "deevs.hosted-runtime.managed-collaborator.v1";
 export const HOSTED_COLLABORATOR_WORKSPACE_ENTRY = "deevs.hosted-runtime.collaborator-workspace.v1";
 export const HOSTED_WORKSPACE_REQUEST_ENTRY = "deevs.hosted-runtime.workspace-request.v1";
+export const HOSTED_BRIDGE_REQUEST_ENTRY = "deevs.hosted-runtime.bridge-request.v1";
 const COLLABORATOR_ENV = "PI_RUNTIME_COLLABORATE";
 const COLLABORATOR_WORKSPACE_ENV = "PI_RUNTIME_WORKSPACE_LAUNCH";
 const COLLABORATOR_METADATA_TOOLS = ["collaborator_list", "collaborator_send", "chain_save", "chain_load", "chain_context"] as const;
 const READ_ONLY_COLLABORATOR_TOOLS = ["read", "grep", "find", "ls", "safe_diff", ...COLLABORATOR_METADATA_TOOLS] as const;
 const WORKSPACE_WRITE_COLLABORATOR_TOOLS = [...READ_ONLY_COLLABORATOR_TOOLS, "edit", "write"] as const;
 const COLLABORATOR_PERSONAS = loadBuiltinAgents();
+const BRIDGE_MAIN = fileURLToPath(new URL("./bridge-runner/main.ts", import.meta.url));
+const BRIDGE_TURN_WALL_MS = 30 * 60_000;
 
 interface LiveClientRegistration {
 	targetKey: string;
@@ -550,7 +555,6 @@ export class HostedRuntimeIntegration {
 			const identity = this.requireParticipantIdentity();
 			if (identity.disposition !== "held") throw new HostedRuntimeClientError("conflict", "Batch collaborator start requires this Pi session to hold its collaborator identity.");
 			const normalized = candidates.map((candidate) => resolveCollaboratorCandidate(candidate, auto ? "read-only" : undefined));
-			normalized.forEach(assertCollaboratorDriverAvailable);
 			if (new Set(normalized.map((candidate) => candidate.participantId)).size !== normalized.length) throw new HostedRuntimeClientError("conflict", "Batch collaborator participant IDs must be unique.");
 			if (normalized.some((candidate) => candidate.participantId === identity.participantId)) throw new HostedRuntimeClientError("conflict", "Caller and child collaborator identities must differ.");
 			const registration = await this.requireRegistration(ctx);
@@ -568,7 +572,7 @@ export class HostedRuntimeIntegration {
 			const participantNames = normalized.map((candidate) => `${identity.protocol}/${candidate.participantId}`);
 			const operationId = `auto_op_${randomUUID()}`;
 			const projectRoot = realpathSync(ctx.cwd);
-			const summary = normalized.map((candidate) => `${identity.protocol}/${candidate.participantId} — ${collaboratorConfiguration(candidate)}, project ${projectRoot}, isolated worktree ${candidate.profile === "workspace-write" ? "yes" : "no"}`).join("\n");
+			const summary = normalized.map((candidate) => { const prior = participants.find((participant) => participant.protocol === identity.protocol && participant.participantId === candidate.participantId); return `${identity.protocol}/${candidate.participantId} — ${collaboratorConfiguration(candidate)}, project ${projectRoot}, isolated worktree ${candidate.profile === "workspace-write" ? "yes" : "no"}, replace stood-down process ${prior?.state === "vacant" && prior.lastTransition.cause === "stand_down" ? "yes" : "no"}`; }).join("\n");
 			const confirmed = auto ? true : await ctx.ui.confirm("Start Runtime collaborators?", `As ${identity.protocol}/${identity.participantId}, start ${normalized.length} collaborators with concurrency up to 4 in no-focus Herdr tabs?\n\n${summary}`, { signal });
 			throwIfAborted(signal);
 			if (!confirmed) return normalized.map((candidate) => ({ participant: `${identity.protocol}/${candidate.participantId}`, status: "declined" }));
@@ -613,7 +617,6 @@ export class HostedRuntimeIntegration {
 		const protocol = collaboratorName(identity?.protocol ?? input.protocol, "protocol");
 		const callerParticipantId = collaboratorName(identity?.participantId ?? input.callerParticipantId, "caller participant ID");
 		const candidate = resolveCollaboratorCandidate(input, auto ? "read-only" : undefined);
-		assertCollaboratorDriverAvailable(candidate);
 		const participantId = candidate.participantId;
 		if (identity && ((input.protocol && input.protocol !== protocol) || (input.callerParticipantId && input.callerParticipantId !== callerParticipantId))) throw new HostedRuntimeClientError("conflict", `Current collaborator identity is ${protocol}/${callerParticipantId}.`);
 		if (participantId === callerParticipantId) throw new HostedRuntimeClientError("conflict", "Caller and child collaborator identities must differ.");
@@ -650,7 +653,8 @@ export class HostedRuntimeIntegration {
 		const operationId = `auto_op_${randomUUID()}`;
 		const participantName = `${protocol}/${participantId}`;
 		const projectRoot = realpathSync(ctx.cwd);
-		const confirmed = auto ? true : await ctx.ui.confirm("Start Runtime collaborator?", `${callerAction} ${participantName} using ${collaboratorConfiguration(candidate)}, project ${projectRoot}, isolated worktree ${candidate.profile === "workspace-write" ? "yes" : "no"}, in a no-focus Herdr tab?`, { signal });
+		const replacesStoodDown = child?.state === "vacant" && child.lastTransition.cause === "stand_down";
+		const confirmed = auto ? true : await ctx.ui.confirm("Start Runtime collaborator?", `${callerAction} ${participantName} using ${collaboratorConfiguration(candidate)}, project ${projectRoot}, isolated worktree ${candidate.profile === "workspace-write" ? "yes" : "no"}${replacesStoodDown ? ", replacing its exact stood-down process" : ""}, in a no-focus Herdr tab?`, { signal });
 		throwIfAborted(signal);
 		if (!confirmed) return { started: false, participant: participantName };
 		if (auto) this.recordAutoLifecycle(auto, "start", "authorized", registration, [participantName], operationId);
@@ -756,7 +760,6 @@ export class HostedRuntimeIntegration {
 
 	private async launchCollaborator(ctx: ExtensionContext, protocol: string, participantId: string, allowRevive: boolean, signal: AbortSignal | undefined, expectedCaller: ClientParticipantStatus | undefined, candidate: ResolvedCollaboratorCandidate, terminateAmbiguous = false): Promise<string | undefined> {
 		throwIfAborted(signal);
-		assertCollaboratorDriverAvailable(candidate);
 		if (process.env.HERDR_ENV !== "1" || !process.env.HERDR_WORKSPACE_ID) throw new HostedRuntimeClientError("host_unavailable", "Collaborator start requires this Pi session to run inside Herdr.");
 		if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Collaborator start requires a trusted project.");
 		const registration = await this.requireRegistration(ctx);
@@ -776,8 +779,13 @@ export class HostedRuntimeIntegration {
 		if (existing?.state === "held") throw new HostedRuntimeClientError("conflict", "Participant already has a holder.");
 		if (existing?.state === "ended") {
 			if (!allowRevive) throw new HostedRuntimeClientError("conflict", "Ended collaborator identities require explicit /runtime collaborator-start revival.");
-			if (!await ctx.ui.confirm("Revive collaborator identity?", `Start a Pi collaborator and revive ${protocol}/${participantId}?`)) return undefined;
+			if (!await ctx.ui.confirm("Revive collaborator identity?", `Start a ${candidate.driver} collaborator and revive ${protocol}/${participantId}?`)) return undefined;
 		}
+		if (existing?.state === "vacant" && existing.lastTransition.cause === "stand_down") {
+			const stopped = strictObject(await this.client.call("participant.stop_confirmed", { ...auth(registration), participantKey: existing.participantKey, expectedGeneration: existing.generation, confirmed: true }), "Stood-down collaborator replacement");
+			if (stopped.outcome !== "stopped" && stopped.outcome !== "already_stopped") throw new HostedRuntimeClientError("conflict", "The exact stood-down collaborator process could not be replaced safely.");
+		}
+		if (candidate.driver !== "pi") return this.launchBridgeCollaborator(ctx, protocol, participantId, signal, expectedCaller, candidate, existing, terminateAmbiguous);
 		const bootstrap = `${protocol}:${participantId}${existing?.state === "ended" ? ":revive" : ""}`;
 		const sessionId = randomUUID();
 		const timestamp = new Date().toISOString();
@@ -841,6 +849,7 @@ export class HostedRuntimeIntegration {
 					if (pane.code === 0) terminalId = text(strictObject(strictObject(strictObject(JSON.parse(pane.stdout), "Herdr response").result, "Herdr result").pane, "Herdr pane").terminal_id);
 				}
 				if (!terminalId || !expectedCaller) throw new HostedRuntimeClientError("invalid_response", "Herdr did not return the workspace terminal identity.");
+				await this.waitForHerdrPaneCwd(paneId, terminalId, launchCwd, signal);
 				await this.client.call("workspace.launch.bind", { ...auth(registration), callerParticipantKey: expectedCaller.participantKey, expectedCallerGeneration: expectedCaller.generation, workspaceId: workspace.workspaceId, herdr: { paneId, terminalId } });
 			}
 			throwIfAborted(signal);
@@ -886,6 +895,136 @@ export class HostedRuntimeIntegration {
 		}
 	}
 
+	private async launchBridgeCollaborator(ctx: ExtensionContext, protocol: string, participantId: string, signal: AbortSignal | undefined, expectedCaller: ClientParticipantStatus | undefined, candidate: ResolvedCollaboratorCandidate, existing: ClientParticipantStatus | undefined, terminateAmbiguous: boolean): Promise<string> {
+		if (!expectedCaller || candidate.driver === "pi" || !candidate.profile) throw new HostedRuntimeClientError("conflict", "Native collaborator launch requires an authoritatively held caller and resolved profile.");
+		const registration = await this.requireRegistration(ctx);
+		const projectRoot = realpathSync(ctx.cwd);
+		const bridgeId = `launch_${randomUUID()}`;
+		const bridgeRoot = join(this.root, "bridges", bridgeId);
+		const configPath = join(bridgeRoot, "config.v1.json");
+		const configurationHash = collaboratorConfigurationHash(candidate);
+		const authority = { ...auth(registration), callerParticipantKey: expectedCaller.participantKey, expectedCallerGeneration: expectedCaller.generation };
+		let workspace: { workspaceId: string; projectRoot: string; workspaceRoot: string; targetKey: string } | undefined;
+		let tabId: string | undefined;
+		let paneId: string | undefined;
+		let tabCreated = false;
+		let childMayBeLive = false;
+		let bridgeRequestId: string | undefined;
+		let preserved = false;
+		try {
+			if (candidate.profile === "workspace-write") {
+				const requestId = `workspace_request_${randomUUID()}`;
+				this.pi.appendEntry(HOSTED_WORKSPACE_REQUEST_ENTRY, { version: 1, requestId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, bridgeId, status: "pending" });
+				const params = { ...authority, requestId, protocol, participantId, ...(existing ? { expectedParticipantGeneration: existing.generation } : {}), bridgeId };
+				let created: Record<string, unknown> | undefined;
+				let createError: unknown;
+				try { created = strictObject(await this.client.call("workspace.bridge.create", params), "Bridge workspace result"); }
+				catch (error) {
+					createError = error;
+					try { created = strictObject(await this.client.call("workspace.bridge.create", params), "Bridge workspace retry"); } catch {}
+				}
+				if (!created || created.recoveryRequired === true) {
+					const recovered = await this.recoverWorkspaceRequest(registration, expectedCaller, requestId);
+					this.pi.appendEntry(HOSTED_WORKSPACE_REQUEST_ENTRY, { version: 1, requestId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, bridgeId, status: recovered ? "recovered" : "needs_attention" });
+					if (!recovered) throw new HostedCollaboratorStartError("unavailable", "Bridge workspace response and recovery are uncertain; capacity and durable evidence were preserved.", true);
+					throw createError ?? new HostedRuntimeClientError("conflict", "Bridge workspace response was uncertain and has been safely recovered; retry start.");
+				}
+				const record = strictObject(created.workspace, "Bridge workspace");
+				workspace = { workspaceId: text(record.workspaceId), projectRoot: text(record.projectRoot), workspaceRoot: text(record.worktreePath), targetKey: text(record.targetKey) };
+				if (workspace.projectRoot !== projectRoot) throw new HostedRuntimeClientError("identity_mismatch", "Runtime bridge workspace belongs to another project.");
+				this.pi.appendEntry(HOSTED_WORKSPACE_REQUEST_ENTRY, { version: 1, requestId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, bridgeId, workspaceId: workspace.workspaceId, status: "provisioned" });
+			}
+			throwIfAborted(signal);
+			const launchCwd = workspace?.workspaceRoot ?? projectRoot;
+			const created = await this.pi.exec("herdr", ["tab", "create", "--workspace", process.env.HERDR_WORKSPACE_ID!, "--cwd", launchCwd, "--label", `collaborator:${participantId}`, "--no-focus"], { timeout: 5_000 });
+			if (created.code !== 0) throw new HostedRuntimeClientError("host_unavailable", "Herdr could not create the native collaborator tab.");
+			tabCreated = true;
+			const result = strictObject(strictObject(JSON.parse(created.stdout), "Herdr response").result, "Herdr result");
+			const rootPane = strictObject(result.root_pane, "Herdr root pane");
+			paneId = text(rootPane.pane_id);
+			tabId = text(strictObject(result.tab, "Herdr tab").tab_id);
+			let terminalId = typeof rootPane.terminal_id === "string" ? rootPane.terminal_id : undefined;
+			if (!terminalId) {
+				const pane = await this.pi.exec("herdr", ["pane", "get", paneId], { timeout: 2_000 });
+				if (pane.code === 0) terminalId = text(strictObject(strictObject(strictObject(JSON.parse(pane.stdout), "Herdr response").result, "Herdr result").pane, "Herdr pane").terminal_id);
+			}
+			if (!terminalId) throw new HostedRuntimeClientError("invalid_response", "Herdr did not return the native collaborator terminal identity.");
+			if (workspace) {
+				await this.waitForHerdrPaneCwd(paneId, terminalId, launchCwd, signal);
+				await this.client.call("workspace.launch.bind", { ...authority, workspaceId: workspace.workspaceId, herdr: { paneId, terminalId } });
+			}
+			bridgeRequestId = `bridge_request_${randomUUID()}`;
+			this.pi.appendEntry(HOSTED_BRIDGE_REQUEST_ENTRY, { version: 1, requestId: bridgeRequestId, bridgeId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, workspaceId: workspace?.workspaceId, status: "pending" });
+			const launchParams = { ...authority, requestId: bridgeRequestId, launchId: bridgeId, ...(workspace ? { workspaceId: workspace.workspaceId } : {}), protocol, participantId, ...(existing ? { expectedParticipantGeneration: existing.generation } : {}), profile: candidate.profile, configurationHash, herdr: { paneId, terminalId }, metadata: { adapter: "native-v1" } };
+			let launch: Record<string, unknown> | undefined;
+			let launchError: unknown;
+			try { launch = strictObject(await this.client.call("bridge.launch.create", launchParams), "Bridge launch result"); }
+			catch (error) {
+				launchError = error;
+				try { launch = strictObject(await this.client.call("bridge.launch.create", launchParams), "Bridge launch retry"); } catch {}
+			}
+			if (!launch) {
+				const recovered = await this.recoverBridgeRequest(registration, expectedCaller, bridgeRequestId);
+				this.pi.appendEntry(HOSTED_BRIDGE_REQUEST_ENTRY, { version: 1, requestId: bridgeRequestId, bridgeId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, workspaceId: workspace?.workspaceId, status: recovered ? "recovered" : "needs_attention" });
+				if (!recovered) throw new HostedCollaboratorStartError("unavailable", "Bridge launch response and recovery are uncertain; capacity and durable evidence were preserved.", true);
+				throw launchError ?? new HostedRuntimeClientError("conflict", "Bridge launch response was uncertain and has been safely recovered; retry start.");
+			}
+			const launchToken = text(launch.launchToken);
+			const reconnectToken = text(launch.reconnectToken);
+			const targetKey = text(launch.targetKey);
+			const config: BridgeRunnerConfig = { version: 1, bridgeId, driver: candidate.driver, root: bridgeRoot, runtimeSocket: join(this.root, "runtime.sock"), projectRoot, cwd: launchCwd, clientGeneration: `bridge_client_${randomUUID()}`, protocol, participantId, profile: candidate.profile, configurationHash, ...(candidate.model ? { model: candidate.model } : {}), ...(candidate.persona ? { persona: candidate.persona } : {}), launchToken, reconnectToken, targetKey, wallMs: BRIDGE_TURN_WALL_MS };
+			writeRunnerConfig(configPath, config);
+			this.pi.appendEntry(HOSTED_BRIDGE_REQUEST_ENTRY, { version: 1, requestId: bridgeRequestId, bridgeId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, workspaceId: workspace?.workspaceId, targetKey, status: "authorized" });
+			throwIfAborted(signal);
+			childMayBeLive = true;
+			const command = `exec ${shellQuote(process.execPath)} --experimental-strip-types ${shellQuote(BRIDGE_MAIN)} ${shellQuote(configPath)}`;
+			const started = await this.pi.exec("herdr", ["pane", "run", paneId, command], { timeout: 5_000 });
+			if (started.code !== 0) throw new HostedRuntimeClientError("host_unavailable", `Herdr could not dispatch native collaborator startup in ${paneId}; its tab and bridge state were preserved.`);
+			for (let attempt = 0; attempt < 150; attempt++) {
+				throwIfAborted(signal);
+				const participant = (await this.listParticipants(registration)).find((item) => item.protocol === protocol && item.participantId === participantId);
+				if (participant?.state === "held" && participant.holderLive && participant.holderTargetKey === targetKey && participant.generation !== existing?.generation) {
+					ctx.ui.notify(`Native ${candidate.driver} collaborator ${protocol}/${participantId} started in ${paneId}.`, "info");
+					return paneId;
+				}
+				await delay(100);
+			}
+			throw new HostedRuntimeClientError("unavailable", `Native collaborator started in ${paneId}, but its identity handshake did not settle; its tab and bridge state were preserved.`);
+		} catch (error) {
+			if (error instanceof HostedCollaboratorStartError && error.childMayBeLive) childMayBeLive = true;
+			if (tabCreated && !tabId && !paneId) {
+				childMayBeLive = true;
+				throw new HostedCollaboratorStartError("invalid_response", "Herdr created native collaborator resources without returning exact identities; recovery artifacts were preserved.", true);
+			}
+			if (childMayBeLive && terminateAmbiguous && (tabId || paneId)) {
+				const resource = tabId ? ["tab", "close", tabId] : ["pane", "close", paneId!];
+				const closed = await this.pi.exec("herdr", resource, { timeout: 5_000 });
+				if (closed.code !== 0) throw new HostedCollaboratorStartError("host_unavailable", "Ambiguous native collaborator startup could not be terminated; its capacity lock and recovery artifacts were preserved.", true);
+				if (bridgeRequestId && !await this.recoverBridgeRequest(registration, expectedCaller, bridgeRequestId)) throw new HostedCollaboratorStartError("unavailable", "Native collaborator tab closed, but launch authority recovery remains uncertain; capacity evidence was preserved.", true);
+				if (workspace) await this.client.call("workspace.retain", { ...authority, workspaceId: workspace.workspaceId });
+				preserved = true;
+				childMayBeLive = false;
+			}
+			if (childMayBeLive) throw new HostedCollaboratorStartError(errorCode(error), error instanceof Error ? error.message : String(error), true);
+			throw error;
+		} finally {
+			if (!childMayBeLive && !preserved) {
+				if (tabId || paneId) {
+					const resource = tabId ? ["tab", "close", tabId] : ["pane", "close", paneId!];
+					const closed = await this.pi.exec("herdr", resource, { timeout: 5_000 });
+					if (closed.code !== 0) throw new HostedRuntimeClientError("host_unavailable", "Herdr could not clean up failed native collaborator resources.");
+				}
+				if (bridgeRequestId && !await this.recoverBridgeRequest(registration, expectedCaller, bridgeRequestId)) {
+					childMayBeLive = true;
+					throw new HostedCollaboratorStartError("unavailable", "Failed native launch authority could not be recovered; capacity evidence was preserved.", true);
+				}
+				rmSync(bridgeRoot, { recursive: true, force: true });
+				if (workspace) await this.client.call("workspace.cleanup", { ...authority, workspaceId: workspace.workspaceId, discardConfirmed: true });
+			}
+		}
+		throw new HostedRuntimeClientError("internal", "Native collaborator launch did not settle.");
+	}
+
 	private createCollaboratorSession(projectRoot: string, cwd: string, sessionId: string, timestamp: string, candidate: ResolvedCollaboratorCandidate, workspace?: { workspaceId: string; projectRoot: string; workspaceRoot: string }): string {
 		const sessionCwd = realpathSync(cwd);
 		const directory = join(this.root, "collaborator-sessions");
@@ -913,6 +1052,30 @@ export class HostedRuntimeIntegration {
 		for (let attempt = 0; attempt < 310; attempt++) {
 			try {
 				await this.client.call("workspace.launch.recover", { ...auth(registration), requestId, callerParticipantKey: caller.participantKey, expectedCallerGeneration: caller.generation });
+				return true;
+			} catch { if (attempt < 309) await delay(100); }
+		}
+		return false;
+	}
+
+	private async waitForHerdrPaneCwd(paneId: string, terminalId: string, cwd: string, signal?: AbortSignal): Promise<void> {
+		const expectedCwd = realpathSync(cwd);
+		for (let attempt = 0; attempt < 50; attempt++) {
+			throwIfAborted(signal);
+			const response = await this.pi.exec("herdr", ["pane", "get", paneId], { timeout: 2_000 });
+			if (response.code === 0) try {
+				const pane = strictObject(strictObject(strictObject(JSON.parse(response.stdout), "Herdr response").result, "Herdr result").pane, "Herdr pane");
+				if (pane.pane_id === paneId && pane.terminal_id === terminalId && realpathSync(text(pane.cwd)) === expectedCwd) return;
+			} catch {}
+			await delay(100);
+		}
+		throw new HostedRuntimeClientError("host_unavailable", `Herdr pane ${paneId} did not settle at its authorized cwd.`);
+	}
+
+	private async recoverBridgeRequest(registration: LiveClientRegistration, caller: ClientParticipantStatus, requestId: string): Promise<boolean> {
+		for (let attempt = 0; attempt < 310; attempt++) {
+			try {
+				await this.client.call("bridge.launch.recover", { ...auth(registration), requestId, callerParticipantKey: caller.participantKey, expectedCallerGeneration: caller.generation });
 				return true;
 			} catch { if (attempt < 309) await delay(100); }
 		}
@@ -1436,7 +1599,7 @@ function resolveCollaboratorCandidate(candidate: CollaboratorCandidate, defaultP
 	const requestedModel = collaboratorModel(candidate.model);
 	const requestedProfile = collaboratorProfile(candidate.profile);
 	if (!candidate.persona) {
-		const profile = requestedProfile ?? defaultProfile;
+		const profile = requestedProfile ?? defaultProfile ?? (driver === "pi" ? undefined : "read-only");
 		return { participantId, driver, ...(requestedModel ? { model: requestedModel } : {}), ...(profile ? { profile } : {}) };
 	}
 	const personaName = collaboratorName(candidate.persona, "persona");
@@ -1447,7 +1610,7 @@ function resolveCollaboratorCandidate(candidate: CollaboratorCandidate, defaultP
 	const prompt = definition.body.trim();
 	if (!prompt || Buffer.byteLength(prompt) > 32 * 1024) throw new HostedRuntimeClientError("invalid_request", `Collaborator persona ${personaName} has an invalid prompt.`);
 	const persona: CollaboratorPersona = { name: definition.name, prompt, promptHash: createHash("sha256").update(prompt).digest("hex") };
-	const model = requestedModel ?? collaboratorModel(definition.model);
+	const model = requestedModel ?? (driver === "pi" ? collaboratorModel(definition.model) : undefined);
 	return { participantId, driver, profile, persona, ...(model ? { model } : {}) };
 }
 
@@ -1461,8 +1624,8 @@ function collaboratorConfiguration(candidate: ResolvedCollaboratorCandidate): st
 	return [`driver ${candidate.driver}`, candidate.model ? `model ${candidate.model}` : `model ${candidate.driver} default`, candidate.persona ? `persona ${candidate.persona.name}` : "persona none", candidate.profile ? `profile ${candidate.profile}` : "profile none"].join(", ");
 }
 
-function assertCollaboratorDriverAvailable(candidate: ResolvedCollaboratorCandidate): void {
-	if (candidate.driver !== "pi") throw new HostedRuntimeClientError("capability_unavailable", `Collaborator driver ${candidate.driver} is recognized but not available until its authoritative Runtime bridge is installed.`);
+function collaboratorConfigurationHash(candidate: ResolvedCollaboratorCandidate): string {
+	return createHash("sha256").update(JSON.stringify({ driver: candidate.driver, model: candidate.model ?? null, profile: candidate.profile ?? null, persona: candidate.persona ? { name: candidate.persona.name, promptHash: candidate.persona.promptHash } : null })).digest("hex");
 }
 
 function assertAutoCapacity(participants: ClientParticipantStatus[], requested: number, callerParticipantKey: string | undefined): void {

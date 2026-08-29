@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { bridgeDriver } from "./adapters.ts";
@@ -19,6 +20,7 @@ let stderrBytes = 0;
 let stderrText = "";
 let killTimer: NodeJS.Timeout | undefined;
 let frames = 0;
+let outputText = "";
 const startedAt = Date.now();
 const workerIdentity = await readProcessIdentity(process.pid);
 if (!workerIdentity) throw new Error("Bridge worker process identity is unavailable.");
@@ -44,9 +46,10 @@ function acceptFrame(frame: BridgeDriverFrame): void {
 	frames++;
 	if (frames > BRIDGE_RUNNER_MAX_FRAMES) throw new Error(`Bridge frame count exceeds ${BRIDGE_RUNNER_MAX_FRAMES}.`);
 	if (frame.type === "session") sessionId = frame.sessionId;
+	if (frame.type === "text") outputText = frame.text;
 	if (frame.type === "terminal") {
 		if (terminal) throw new Error("Bridge driver emitted more than one terminal frame.");
-		terminal = { status: frame.status, body: frame.body, sessionAdvance: frame.sessionAdvance, ...(frame.sessionId ?? sessionId ? { sessionId: frame.sessionId ?? sessionId } : {}) };
+		terminal = { status: frame.status, body: frame.body || outputText || "Native turn completed without display text.", sessionAdvance: frame.sessionAdvance, ...(frame.sessionId ?? sessionId ? { sessionId: frame.sessionId ?? sessionId } : {}) };
 	}
 	persist({ frames, terminal });
 }
@@ -72,9 +75,10 @@ function stopGroup(): void {
 }
 
 try {
-	const execution = bridgeDriver(spec.driver).build(spec);
+	const driver = bridgeDriver(spec.driver);
+	const execution = driver.build(spec);
 	const decoder = new BoundedJsonlDecoder((line) => {
-		try { acceptFrame(bridgeDriver(spec.driver).decode(line)); }
+		try { const frame = driver.decode(line); if (frame) acceptFrame(frame); }
 		catch (error) { protocolError = error instanceof Error ? error.message : String(error); requestFailure(); }
 	});
 	if (groupStopping) throw new Error(cancelRequested ? "Bridge worker was cancelled before native spawn." : "Bridge worker stopped before native spawn.");
@@ -139,9 +143,18 @@ function waitForStartAuthorization(): Promise<void> {
 function validateSpec(value: unknown): BridgeWorkerSpec {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Bridge worker spec must be an object.");
 	const item = value as Record<string, unknown>;
-	const allowed = ["version", "turnId", "eventId", "attempt", "driver", "cwd", "body", "sessionId", "statePath", "wallMs"];
-	if (Object.keys(item).some((key) => !allowed.includes(key)) || item.version !== 1 || item.driver !== "fake") throw new Error("Bridge worker spec is invalid.");
+	const allowed = ["version", "turnId", "eventId", "attempt", "driver", "cwd", "body", "profile", "model", "persona", "sessionId", "resumeSession", "statePath", "wallMs"];
+	if (Object.keys(item).some((key) => !allowed.includes(key)) || item.version !== 1 || !["fake", "claude-code", "codex"].includes(String(item.driver))) throw new Error("Bridge worker spec is invalid.");
 	for (const key of ["turnId", "eventId", "cwd", "body", "statePath"] as const) if (typeof item[key] !== "string") throw new Error(`Bridge worker ${key} is invalid.`);
-	if (!Number.isSafeInteger(item.attempt) || Number(item.attempt) < 1 || !Number.isSafeInteger(item.wallMs) || Number(item.wallMs) < 1) throw new Error("Bridge worker limits are invalid.");
+	if (!Number.isSafeInteger(item.attempt) || Number(item.attempt) < 1 || !Number.isSafeInteger(item.wallMs) || Number(item.wallMs) < 1 || (item.resumeSession !== undefined && typeof item.resumeSession !== "boolean")) throw new Error("Bridge worker limits are invalid.");
+	if (item.driver !== "fake" && item.profile !== "read-only" && item.profile !== "workspace-write") throw new Error("Native bridge worker profile is invalid.");
+	if (item.model !== undefined && (typeof item.model !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._/*:-]{0,199}$/.test(item.model))) throw new Error("Bridge worker model is invalid.");
+	if (item.persona !== undefined) {
+		if (!item.persona || typeof item.persona !== "object" || Array.isArray(item.persona)) throw new Error("Bridge worker persona is invalid.");
+		const persona = item.persona as Record<string, unknown>;
+		if (Object.keys(persona).some((key) => !["name", "prompt", "promptHash"].includes(key)) || typeof persona.name !== "string" || typeof persona.prompt !== "string" || typeof persona.promptHash !== "string" || Buffer.byteLength(persona.prompt) > 32 * 1024 || createHash("sha256").update(persona.prompt).digest("hex") !== persona.promptHash) throw new Error("Bridge worker persona is invalid.");
+	}
+	if (item.driver === "claude-code" && typeof item.sessionId !== "string") throw new Error("Claude Code worker session ID is invalid.");
+	if (item.resumeSession === true && typeof item.sessionId !== "string") throw new Error("Resumed bridge worker session ID is invalid.");
 	return item as unknown as BridgeWorkerSpec;
 }

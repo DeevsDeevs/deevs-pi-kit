@@ -9,6 +9,14 @@ export const BRIDGE_RUNNER_MAX_STATE_BYTES = 4 * 1024 * 1024;
 export type BridgeExecutionState = "pending" | "starting" | "running" | "terminal" | "reply_pending" | "reply_sent" | "needs_attention";
 export type BridgeSessionAdvance = "none" | "committed" | "uncertain";
 export type BridgeTerminalStatus = "completed" | "failed" | "cancelled";
+export type BridgeDriver = "fake" | "claude-code" | "codex";
+export type BridgeProfile = "read-only" | "workspace-write";
+
+export interface BridgePersona {
+	name: string;
+	prompt: string;
+	promptHash: string;
+}
 
 export interface BridgeClaimReceipt {
 	claimId: string;
@@ -58,7 +66,7 @@ export interface BridgeTurn {
 export interface BridgeJournal {
 	version: 1;
 	bridgeId: string;
-	driver: "fake";
+	driver: BridgeDriver;
 	targetKey?: string;
 	participantKey?: string;
 	holderGeneration?: string;
@@ -75,7 +83,7 @@ export interface BridgeJournal {
 export interface BridgeRunnerConfig {
 	version: 1;
 	bridgeId: string;
-	driver: "fake";
+	driver: BridgeDriver;
 	root: string;
 	runtimeSocket: string;
 	projectRoot: string;
@@ -83,6 +91,10 @@ export interface BridgeRunnerConfig {
 	clientGeneration: string;
 	protocol: string;
 	participantId: string;
+	profile?: BridgeProfile;
+	configurationHash?: string;
+	model?: string;
+	persona?: BridgePersona;
 	launchToken?: string;
 	reconnectToken: string;
 	targetKey?: string;
@@ -99,10 +111,14 @@ export interface BridgeWorkerSpec {
 	turnId: string;
 	eventId: string;
 	attempt: number;
-	driver: "fake";
+	driver: BridgeDriver;
 	cwd: string;
 	body: string;
+	profile?: BridgeProfile;
+	model?: string;
+	persona?: BridgePersona;
 	sessionId?: string;
+	resumeSession?: boolean;
 	statePath: string;
 	wallMs: number;
 }

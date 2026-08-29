@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { loadBuiltinAgents } from "../extensions/subagents/agents.ts";
 import { HostedRuntimeClientError } from "../extensions/runtime/client.ts";
 import { CollaboratorAutoStore } from "../extensions/runtime/auto-mode.ts";
-import { HOSTED_AUTO_LIFECYCLE_ENTRY, HOSTED_COLLABORATOR_PROFILE_ENTRY, HOSTED_COLLABORATOR_WORKSPACE_ENTRY, HOSTED_MANAGED_COLLABORATOR_ENTRY, HOSTED_PARTICIPANT_ENTRY, HOSTED_WORKSPACE_REQUEST_ENTRY, HostedRuntimeIntegration } from "../extensions/runtime/hosted-integration.ts";
+import { HOSTED_AUTO_LIFECYCLE_ENTRY, HOSTED_BRIDGE_REQUEST_ENTRY, HOSTED_COLLABORATOR_PROFILE_ENTRY, HOSTED_COLLABORATOR_WORKSPACE_ENTRY, HOSTED_MANAGED_COLLABORATOR_ENTRY, HOSTED_PARTICIPANT_ENTRY, HOSTED_WORKSPACE_REQUEST_ENTRY, HostedRuntimeIntegration } from "../extensions/runtime/hosted-integration.ts";
 import { deriveTargetKey } from "../extensions/runtime/service/registration.ts";
 
 const roots: string[] = [];
@@ -387,6 +387,7 @@ describe("hosted collaborator Pi integration", () => {
 		test.setExec(async (_command, args) => {
 			if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
 			if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9", terminal_id: "term_9" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
+			if (args[0] === "pane" && args[1] === "get") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p9", terminal_id: "term_9", cwd: workspaceRoot } } }), stderr: "", killed: false };
 			return { code: 0, stdout: "{}", stderr: "", killed: false };
 		});
 		await test.integration.sessionStart(test.ctx as never);
@@ -432,16 +433,102 @@ describe("hosted collaborator Pi integration", () => {
 		await test.integration.sessionShutdown();
 	});
 
-	it("defaults the orthogonal driver to Pi and rejects unavailable native bridges before confirmation", async () => {
-		const test = await setup(baseResponse);
+	it("launches native drivers through owner-private bridge configs after one confirmation", async () => {
+		const holders = new Map<string, string>();
+		const test = await setup((request) => {
+			if (request.method === "participant.list") return { participants: [mainParticipant, ...[...holders].map(([participantId, targetKey]) => ({ ...fableParticipant, participantId, participantKey: `participant_${participantId}`, holderTargetKey: targetKey }))] };
+			if (request.method === "bridge.launch.create") {
+				const launchId = String(request.params.launchId);
+				return { launchId, targetKey: `target_${launchId}`, holderGeneration: `lease_${launchId}`, expiresAt: Date.now() + 30_000, launchToken: `bridge_launch_${launchId}.${"x".repeat(43)}`, reconnectToken: "y".repeat(43), herdr: { paneId: "w1:p9", terminalId: "term_native", tabId: "w1:t9", workspaceId: "w1" } };
+			}
+			return baseResponse(request);
+		});
 		let confirmations = 0;
 		test.ctx.ui.confirm = async () => { confirmations++; return true; };
+		test.setExec(async (_command, args) => {
+			if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
+			if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9", terminal_id: "term_native" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
+			if (args[0] === "pane" && args[1] === "run") {
+				const request = test.requests.filter((item) => item.method === "bridge.launch.create").at(-1)!;
+				holders.set(String(request.params.participantId), `target_${request.params.launchId}`);
+			}
+			return { code: 0, stdout: "{}", stderr: "", killed: false };
+		});
 		await test.integration.sessionStart(test.ctx as never);
-		for (const driver of ["claude-code", "codex"] as const) {
-			await expect(test.integration.startCollaborator({ participantId: driver, protocol: "review", callerParticipantId: "main", driver }, test.ctx as never)).rejects.toMatchObject({ code: "capability_unavailable" });
-		}
-		expect(confirmations).toBe(0);
+		for (const driver of ["claude-code", "codex"] as const) await expect(test.integration.startCollaborator({ participantId: driver, protocol: "review", callerParticipantId: "main", driver }, test.ctx as never)).resolves.toMatchObject({ started: true, paneId: "w1:p9" });
+		expect(confirmations).toBe(2);
+		const tabs = test.execCalls.filter((call) => call.args[0] === "tab" && call.args[1] === "create");
+		expect(tabs).toHaveLength(2);
+		expect(tabs.every((call) => call.args.includes("--no-focus"))).toBe(true);
+		const runs = test.execCalls.filter((call) => call.args[0] === "pane" && call.args[1] === "run");
+		expect(runs.every((call) => call.args[3]?.includes("bridge-runner/main.ts") && !call.args[3]?.includes("exec pi"))).toBe(true);
+		const configs = readdirSync(join(test.runtimeRoot, "bridges")).map((bridgeId) => JSON.parse(readFileSync(join(test.runtimeRoot, "bridges", bridgeId, "config.v1.json"), "utf8")));
+		expect(configs.map((config) => config.driver).sort()).toEqual(["claude-code", "codex"]);
+		expect(configs.every((config) => config.profile === "read-only" && typeof config.configurationHash === "string" && config.launchToken)).toBe(true);
+		await test.integration.sessionShutdown();
+	});
+
+	it("replaces an exact stood-down native process before restarting its participant", async () => {
+		const vacant = { ...fableParticipant, participantId: "native", participantKey: "participant_native", state: "vacant", generation: "lease_vacant", holderTargetKey: undefined, holderLive: false, lastTransition: { cause: "stand_down" } };
+		let launched = false;
+		const test = await setup((request) => {
+			if (request.method === "participant.list") return { participants: [mainParticipant, ...(launched ? [{ ...vacant, state: "held", generation: "lease_native", holderTargetKey: "target_native", holderLive: true, lastTransition: { cause: "acquire" } }] : [vacant])] };
+			if (request.method === "participant.stop_confirmed") return { participant: vacant, outcome: "stopped" };
+			if (request.method === "bridge.launch.create") return { launchId: request.params.launchId, targetKey: "target_native", holderGeneration: "lease_native", expiresAt: Date.now() + 30_000, launchToken: `bridge_launch_${request.params.launchId}.${"x".repeat(43)}`, reconnectToken: "y".repeat(43), herdr: { paneId: "w1:p9", terminalId: "term_native", tabId: "w1:t9", workspaceId: "w1" } };
+			return baseResponse(request);
+		});
+		test.setExec(async (_command, args) => {
+			if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
+			if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9", terminal_id: "term_native" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
+			if (args[0] === "pane" && args[1] === "run") launched = true;
+			return { code: 0, stdout: "{}", stderr: "", killed: false };
+		});
+		await test.integration.sessionStart(test.ctx as never);
+		await expect(test.integration.startCollaborator({ participantId: "native", protocol: "review", callerParticipantId: "main", driver: "codex" }, test.ctx as never)).resolves.toMatchObject({ started: true });
+		const methods = test.requests.map((request) => request.method);
+		expect(methods.indexOf("participant.stop_confirmed")).toBeLessThan(methods.indexOf("bridge.launch.create"));
+		expect(test.requests.find((request) => request.method === "participant.stop_confirmed")?.params).toMatchObject({ participantKey: "participant_native", expectedGeneration: "lease_vacant", confirmed: true });
+		await test.integration.sessionShutdown();
+	});
+
+	it("recovers an ambiguous native workspace response before creating host resources", async () => {
+		let createAttempts = 0;
+		let recoveryAttempts = 0;
+		const test = await setup((request) => {
+			if (request.method === "participant.list") return { participants: [mainParticipant] };
+			if (request.method === "workspace.bridge.create") { if (++createAttempts === 1) throw new HostedRuntimeClientError("unavailable", "native create response lost"); return { workspace: { workspaceId: "workspace_native" }, recoveryRequired: true }; }
+			if (request.method === "workspace.launch.recover") { recoveryAttempts++; return { workspace: { state: "cleaned" } }; }
+			return baseResponse(request);
+		});
+		await test.integration.sessionStart(test.ctx as never);
+		await expect(test.integration.startCollaborator({ participantId: "native", protocol: "review", callerParticipantId: "main", driver: "codex", profile: "workspace-write" }, test.ctx as never)).rejects.toThrow("native create response lost");
+		expect(createAttempts).toBe(2);
+		expect(recoveryAttempts).toBe(1);
 		expect(test.execCalls.some((call) => call.args[0] === "tab" && call.args[1] === "create")).toBe(false);
+		expect(test.entries.filter((entry) => entry.customType === HOSTED_WORKSPACE_REQUEST_ENTRY).map((entry) => (entry.data as { status: string }).status)).toEqual(["pending", "recovered"]);
+		await test.integration.sessionShutdown();
+	});
+
+	it("recovers ambiguous native bridge authority and closes its exact empty tab", async () => {
+		let createAttempts = 0;
+		let recoveryAttempts = 0;
+		const test = await setup((request) => {
+			if (request.method === "participant.list") return { participants: [mainParticipant] };
+			if (request.method === "bridge.launch.create") { createAttempts++; throw new HostedRuntimeClientError(createAttempts === 1 ? "unavailable" : "conflict", createAttempts === 1 ? "bridge response lost" : "explicit recovery required"); }
+			if (request.method === "bridge.launch.recover") { recoveryAttempts++; return { launch: { status: "cancelled" } }; }
+			return baseResponse(request);
+		});
+		test.setExec(async (_command, args) => {
+			if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
+			if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9", terminal_id: "term_native" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
+			return { code: 0, stdout: "{}", stderr: "", killed: false };
+		});
+		await test.integration.sessionStart(test.ctx as never);
+		await expect(test.integration.startCollaborator({ participantId: "native", protocol: "review", callerParticipantId: "main", driver: "claude-code" }, test.ctx as never)).rejects.toThrow("bridge response lost");
+		expect(createAttempts).toBe(2);
+		expect(recoveryAttempts).toBe(2);
+		expect(test.execCalls).toContainEqual({ command: "herdr", args: ["tab", "close", "w1:t9"] });
+		expect(test.entries.filter((entry) => entry.customType === HOSTED_BRIDGE_REQUEST_ENTRY).map((entry) => (entry.data as { status: string }).status)).toEqual(["pending", "recovered"]);
 		await test.integration.sessionShutdown();
 	});
 

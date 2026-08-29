@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { HostedIntegration, HostedPiTarget, HostedWorkspace } from "../hosted-types.ts";
 import { RuntimeGit, RuntimeGitError, type RuntimeWorktreeIdentity } from "./git.ts";
 import { deriveTargetKey, RuntimeRegistrationManager, type HostedHostVerifier, type HostedLiveRegistration, type RegisterWorkspacePiInput } from "./registration.ts";
-import { deriveParticipantKey, HostedStateStore } from "./state.ts";
+import { deriveBridgeTargetKey, deriveParticipantKey, HostedStateStore } from "./state.ts";
 
 const TOKEN = /^workspace_launch_([A-Za-z0-9_-]{1,200})\.([A-Za-z0-9_-]{43})$/;
 const SECRET = /^[A-Za-z0-9_-]{43}$/;
@@ -24,6 +24,10 @@ export interface CreateWorkspaceInput {
 	participantId: string;
 	expectedParticipantGeneration?: string;
 	piSessionId: string;
+}
+
+export interface CreateBridgeWorkspaceInput extends Omit<CreateWorkspaceInput, "piSessionId"> {
+	bridgeId: string;
 }
 
 export interface WorkspaceAuthority {
@@ -59,65 +63,53 @@ export class RuntimeWorkspaceCoordinator {
 	}
 
 	async create(caller: HostedLiveRegistration, input: CreateWorkspaceInput): Promise<{ workspace: HostedWorkspace; launchToken?: string; recoveryRequired?: true }> {
+		return this.createOwned(caller, input, { kind: "pi", id: bounded(input.piSessionId, "Pi session ID", 200) });
+	}
+
+	async createBridge(caller: HostedLiveRegistration, input: CreateBridgeWorkspaceInput): Promise<{ workspace: HostedWorkspace; recoveryRequired?: true }> {
+		const bridgeId = bounded(input.bridgeId, "bridge ID", 200);
+		if (!/^[A-Za-z0-9_-]{1,200}$/.test(bridgeId)) throw new HostedWorkspaceError("invalid_request", "Bridge ID has invalid syntax.");
+		return this.createOwned(caller, input, { kind: "bridge", id: bridgeId });
+	}
+
+	private async createOwned(caller: HostedLiveRegistration, input: Omit<CreateWorkspaceInput, "piSessionId">, owner: { kind: "pi" | "bridge"; id: string }): Promise<{ workspace: HostedWorkspace; launchToken?: string; recoveryRequired?: true }> {
 		const target = this.requirePiCaller(caller, input);
 		const requestId = bounded(input.requestId, "request ID", 200);
 		const callerParticipantKey = bounded(input.callerParticipantKey, "caller participant key", 200);
 		const callerGeneration = bounded(input.expectedCallerGeneration, "caller generation", 200);
 		const protocol = participantName(input.protocol, "protocol");
 		const participantId = participantName(input.participantId, "participant ID");
-		const piSessionId = bounded(input.piSessionId, "Pi session ID", 200);
 		const expectedParticipantGeneration = input.expectedParticipantGeneration === undefined ? undefined : bounded(input.expectedParticipantGeneration, "expected participant generation", 200);
 		const prior = Object.values(this.store.read().workspaces).find((candidate) => candidate.callerTargetKey === caller.targetKey && candidate.requestId === requestId);
 		if (prior) {
-			if (!["provisioning", "ready", "bound"].includes(prior.state) || prior.callerParticipantKey !== callerParticipantKey || prior.callerGeneration !== callerGeneration || prior.protocol !== protocol || prior.participantId !== participantId || prior.piSessionId !== piSessionId || prior.expectedParticipantGeneration !== expectedParticipantGeneration) throw new HostedWorkspaceError("conflict", "Workspace request ID was reused with different or settled authority.");
+			const sameOwner = prior.ownerKind === owner.kind && (owner.kind === "pi" ? prior.piSessionId === owner.id : prior.bridgeId === owner.id);
+			if (!["provisioning", "ready", "bound"].includes(prior.state) || !sameOwner || prior.callerParticipantKey !== callerParticipantKey || prior.callerGeneration !== callerGeneration || prior.protocol !== protocol || prior.participantId !== participantId || prior.expectedParticipantGeneration !== expectedParticipantGeneration) throw new HostedWorkspaceError("conflict", "Workspace request ID was reused with different or settled authority.");
 			return { workspace: prior, recoveryRequired: true };
 		}
 		const repository = await this.git.discover(target.projectRoot);
 		const workspaceId = this.id("workspace");
 		const holderGeneration = this.options.createGeneration?.() ?? `lease_${randomUUID()}`;
-		const launchSecret = secret(this.options.createSecret?.() ?? randomBytes(32).toString("base64url"));
-		const launchToken = `workspace_launch_${workspaceId}.${launchSecret}`;
+		const launchToken = owner.kind === "pi" ? `workspace_launch_${workspaceId}.${secret(this.options.createSecret?.() ?? randomBytes(32).toString("base64url"))}` : undefined;
 		const workspacesRoot = join(this.root, "workspaces");
 		mkdirSync(workspacesRoot, { recursive: true, mode: 0o700 });
 		const worktreePath = join(realpathSync(workspacesRoot), workspaceId);
 		const now = this.now();
-		const workspace: HostedWorkspace = {
-			version: 1,
-			workspaceId,
-			requestId,
-			projectRoot: repository.root,
-			gitCommonDir: repository.commonDir,
-			worktreePath,
-			branchRef: `refs/heads/runtime/collab/${workspaceId}`,
-			participantKey: deriveParticipantKey(repository.root, protocol, participantId),
-			protocol,
-			participantId,
-			...(expectedParticipantGeneration === undefined ? {} : { expectedParticipantGeneration }),
-			holderGeneration,
-			targetKey: deriveTargetKey(repository.root, piSessionId),
-			piSessionId,
-			profile: "workspace-write",
-			launchDigest: sha256(launchToken),
-			callerParticipantKey,
-			callerGeneration,
-			callerTargetKey: caller.targetKey,
-			baseCommit: repository.headCommit,
-			headCommit: repository.headCommit,
-			state: "provisioning",
-			createdAt: now,
-			expiresAt: now + (this.options.launchLeaseMs ?? 5 * 60_000),
-			updatedAt: now,
+		const common = {
+			version: 1 as const, workspaceId, requestId, projectRoot: repository.root, gitCommonDir: repository.commonDir, worktreePath, branchRef: `refs/heads/runtime/collab/${workspaceId}`, participantKey: deriveParticipantKey(repository.root, protocol, participantId), protocol, participantId, ...(expectedParticipantGeneration === undefined ? {} : { expectedParticipantGeneration }), holderGeneration, targetKey: owner.kind === "pi" ? deriveTargetKey(repository.root, owner.id) : deriveBridgeTargetKey(repository.root, owner.id), profile: "workspace-write" as const, callerParticipantKey, callerGeneration, callerTargetKey: caller.targetKey, baseCommit: repository.headCommit, headCommit: repository.headCommit, state: "provisioning" as const, createdAt: now, expiresAt: now + (this.options.launchLeaseMs ?? 5 * 60_000), updatedAt: now,
 		};
+		const workspace: HostedWorkspace = owner.kind === "pi" ? { ...common, ownerKind: "pi", piSessionId: owner.id, launchDigest: sha256(launchToken!) } : { ...common, ownerKind: "bridge", bridgeId: owner.id };
 		this.store.apply({ type: "workspace.ensure", workspace });
-		try {
-			await this.withRepository(repository.commonDir, async () => this.git.createWorktree(repository, workspace.worktreePath, workspace.branchRef, workspace.baseCommit));
-			const ready = { ...workspace, state: "ready" as const, updatedAt: this.tick(workspace.updatedAt) };
-			this.store.apply({ type: "workspace.replace", workspace: ready, expectedState: "provisioning", expectedUpdatedAt: workspace.updatedAt });
-			return { workspace: ready, launchToken };
-		} catch (error) {
-			this.attention(workspace, "provisioning");
-			throw workspaceError(error);
-		}
+		return this.withRepository(repository.commonDir, async () => {
+			try {
+				await this.git.createWorktree(repository, workspace.worktreePath, workspace.branchRef, workspace.baseCommit);
+				const ready = { ...workspace, state: "ready" as const, updatedAt: this.tick(workspace.updatedAt) };
+				this.store.apply({ type: "workspace.replace", workspace: ready, expectedState: "provisioning", expectedUpdatedAt: workspace.updatedAt });
+				return { workspace: ready, ...(launchToken ? { launchToken } : {}) };
+			} catch (error) {
+				this.attention(workspace, "provisioning");
+				throw workspaceError(error);
+			}
+		});
 	}
 
 	async recoverLaunch(caller: HostedLiveRegistration, input: WorkspaceAuthority & { requestId: string }): Promise<HostedWorkspace> {
@@ -126,15 +118,20 @@ export class RuntimeWorkspaceCoordinator {
 		this.assertCaller(caller, workspace.projectRoot, input);
 		if (!['provisioning', 'ready', 'bound'].includes(workspace.state)) throw new HostedWorkspaceError("conflict", "Workspace launch is no longer recoverable as an unconsumed reservation.");
 		const repository = await this.git.discover(workspace.projectRoot);
-		try {
-			await this.withRepository(repository.commonDir, () => this.git.discardWorktree(repository, worktree(workspace)));
-			const cleaned = { ...workspace, state: "cleaned" as const, updatedAt: this.tick(workspace.updatedAt) };
-			this.store.apply({ type: "workspace.replace", workspace: cleaned, expectedState: workspace.state, expectedUpdatedAt: workspace.updatedAt });
-			return cleaned;
-		} catch (error) {
-			this.attention(workspace, workspace.state);
-			throw workspaceError(error);
-		}
+		return this.withRepository(repository.commonDir, async () => {
+			const current = this.workspace(workspace.workspaceId);
+			this.assertCaller(caller, current.projectRoot, input);
+			if (!["provisioning", "ready", "bound"].includes(current.state)) throw new HostedWorkspaceError("conflict", "Workspace launch is no longer recoverable as an unconsumed reservation.");
+			try {
+				await this.git.discardWorktree(repository, worktree(current));
+				const cleaned = { ...current, state: "cleaned" as const, updatedAt: this.tick(current.updatedAt) };
+				this.store.apply({ type: "workspace.replace", workspace: cleaned, expectedState: current.state, expectedUpdatedAt: current.updatedAt });
+				return cleaned;
+			} catch (error) {
+				this.attention(current, current.state);
+				throw workspaceError(error);
+			}
+		});
 	}
 
 	async bind(caller: HostedLiveRegistration, input: WorkspaceAuthority & { workspaceId: string; herdr: { paneId: string; terminalId: string } }): Promise<HostedWorkspace> {
@@ -153,7 +150,7 @@ export class RuntimeWorkspaceCoordinator {
 	async register(input: RegisterWorkspacePiInput & { launchToken: string }): Promise<WorkspaceRegistrationResult> {
 		const parsed = parseToken(input.launchToken);
 		const workspace = this.workspace(parsed.workspaceId);
-		if (workspace.state !== "bound" || !equalDigest(sha256(input.launchToken), workspace.launchDigest) || !workspace.herdr) throw new HostedWorkspaceError("conflict", "Workspace launch capability is absent, consumed, or does not match.");
+		if (workspace.ownerKind !== "pi" || workspace.state !== "bound" || !equalDigest(sha256(input.launchToken), workspace.launchDigest) || !workspace.herdr) throw new HostedWorkspaceError("conflict", "Workspace Pi launch capability is absent, consumed, or does not match.");
 		const target = workspaceTarget(workspace, input.piSessionFile);
 		const registration = await this.registrations.registerWorkspacePi(input, target, () => this.store.apply({ type: "workspace.consume", workspaceId: workspace.workspaceId, launchDigest: workspace.launchDigest, target, at: this.tick(workspace.updatedAt) }));
 		return this.registrationResult(registration, this.workspace(workspace.workspaceId));
@@ -396,7 +393,7 @@ export interface WorkspaceRegistrationResult {
 	participantId: string;
 }
 
-function workspaceTarget(workspace: HostedWorkspace, piSessionFile: string): HostedPiTarget {
+function workspaceTarget(workspace: HostedWorkspace & { ownerKind: "pi" }, piSessionFile: string): HostedPiTarget {
 	return { kind: "pi", targetKey: workspace.targetKey, projectRoot: workspace.projectRoot, piSessionId: workspace.piSessionId, piSessionFile: realpathSync(piSessionFile), workspaceId: workspace.workspaceId, workspaceRoot: workspace.worktreePath, createdAt: workspace.updatedAt + 1 };
 }
 

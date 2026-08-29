@@ -40,6 +40,8 @@ export interface HostedBridgeTarget extends HostedTargetBase {
 	clientGeneration: string;
 	reconnectDigest: string;
 	herdr: { paneId: string; terminalId: string; tabId: string; workspaceId: string };
+	workspaceId?: string;
+	workspaceRoot?: string;
 	metadata: Record<string, string>;
 }
 
@@ -64,6 +66,8 @@ export interface HostedBridgeLaunch {
 	profile: HostedCollaboratorProfile;
 	configurationHash: string;
 	herdr: { paneId: string; terminalId: string; tabId: string; workspaceId: string };
+	workspaceId?: string;
+	workspaceRoot?: string;
 	metadata: Record<string, string>;
 	createdAt: number;
 	expiresAt: number;
@@ -182,7 +186,7 @@ export type HostedEvent = HostedFilesystemCreatedEvent | HostedMailboxMessageEve
 
 export type HostedWorkspaceState = "provisioning" | "ready" | "bound" | "active" | "ready_handoff" | "partial" | "retained" | "needs_attention" | "integrated" | "cleaned";
 
-export interface HostedWorkspace {
+interface HostedWorkspaceBase {
 	version: 1;
 	workspaceId: string;
 	requestId: string;
@@ -196,9 +200,7 @@ export interface HostedWorkspace {
 	expectedParticipantGeneration?: string;
 	holderGeneration: string;
 	targetKey: string;
-	piSessionId: string;
 	profile: "workspace-write";
-	launchDigest: string;
 	callerParticipantKey: string;
 	callerGeneration: string;
 	callerTargetKey: string;
@@ -216,6 +218,11 @@ export interface HostedWorkspace {
 	expiresAt: number;
 	updatedAt: number;
 }
+
+export type HostedWorkspace = HostedWorkspaceBase & (
+	| { ownerKind: "pi"; piSessionId: string; bridgeId?: never; launchDigest: string }
+	| { ownerKind: "bridge"; bridgeId: string; piSessionId?: never; launchDigest?: never }
+);
 
 export type HostedIntegrationState = "preparing" | "prepared" | "conflicted" | "needs_attention" | "finalized" | "cleaned";
 
@@ -259,7 +266,7 @@ export interface HostedWake {
 }
 
 export interface HostedRuntimeState {
-	version: 4;
+	version: 5;
 	targets: Record<string, HostedTarget>;
 	bridgeLaunches: Record<string, HostedBridgeLaunch>;
 	workspaces: Record<string, HostedWorkspace>;

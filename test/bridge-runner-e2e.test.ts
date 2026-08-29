@@ -59,7 +59,7 @@ describe("durable common bridge runner", () => {
 		let senderRegistration = await client.call("pi.register", senderInput) as Record<string, unknown>;
 		const main = (await client.call("participant.acquire", { registrationId: mainRegistration.registrationId, registrationKey: mainRegistration.registrationKey, protocol: "review", participantId: "main" }) as { participant: { participantKey: string; generation: string } }).participant;
 		let sender = (await client.call("participant.acquire", { registrationId: senderRegistration.registrationId, registrationKey: senderRegistration.registrationKey, protocol: "review", participantId: "sender" }) as { participant: { participantKey: string; generation: string } }).participant;
-		const authority = await client.call("bridge.launch.create", { registrationId: mainRegistration.registrationId, registrationKey: mainRegistration.registrationKey, requestId: "runner_e2e", callerParticipantKey: main.participantKey, expectedCallerGeneration: main.generation, protocol: "review", participantId: "fake", profile: "read-only", configurationHash: "f".repeat(64), herdr: { paneId: "pane_bridge", terminalId: "term_bridge" }, metadata: { format: "fake-v1" } }) as { launchId: string; targetKey: string; launchToken: string; reconnectToken: string };
+		const authority = await client.call("bridge.launch.create", { registrationId: mainRegistration.registrationId, registrationKey: mainRegistration.registrationKey, requestId: "runner_e2e", callerParticipantKey: main.participantKey, expectedCallerGeneration: main.generation, protocol: "review", participantId: "fake", profile: "read-only", configurationHash: "f".repeat(64), herdr: { paneId: "pane_bridge", terminalId: "term_bridge" }, metadata: { adapter: "fake-v1" } }) as { launchId: string; targetKey: string; launchToken: string; reconnectToken: string };
 		host.agents.set("pane_bridge", { paneId: "pane_bridge", tabId: "tab_bridge", workspaceId: "workspace_test", terminalId: "term_bridge", cwd: projectRoot, agentSession: { source: "pi-kit-bridge", agent: "bridge", kind: "id", value: authority.launchId }, status: "idle", stateChangeSeq: 2 });
 		mkdirSync(runnerRoot);
 		const configPath = join(runnerRoot, "config.v1.json");
@@ -170,6 +170,19 @@ describe("durable common bridge runner", () => {
 		const runner = new BridgeRunner(join(root, "config.v1.json"), config, initial);
 		await (runner as unknown as { recover(): Promise<void> }).recover();
 		expect(runner.state()).toMatchObject({ status: "needs_attention", turns: [{ state: "needs_attention" }] });
+	});
+
+	it("never resumes or replies after uncertain native session advancement", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-kit-native-session-uncertain-"));
+		roots.push(root);
+		const now = Date.now();
+		const config: BridgeRunnerConfig = { version: 1, bridgeId: "bridge_native_uncertain", driver: "codex", root, runtimeSocket: join(root, "missing.sock"), projectRoot: root, cwd: root, clientGeneration: "client_native", protocol: "review", participantId: "native", profile: "read-only", configurationHash: "a".repeat(64), reconnectToken: "r".repeat(43), targetKey: "bridge_target", wallMs: 1_000 };
+		const initial: BridgeJournal = { version: 1, bridgeId: config.bridgeId, driver: "codex", protocol: config.protocol, participantId: config.participantId, driverSessionId: "session_prior", nextSequence: 2, admissions: [{ claimId: "claim_1", eventIds: ["event_1"], ack: "confirmed", createdAt: now }], turns: [{ turnId: "turn_1", sequence: 1, eventId: "event_1", claimId: "claim_1", senderParticipantKey: "sender_1", body: "hello", state: "reply_pending", attempt: 1, replySendId: "reply_1", replyBody: "uncertain", reply: "unsent", terminal: { status: "cancelled", body: "uncertain", sessionAdvance: "uncertain", sessionId: "session_uncertain" }, createdAt: now, updatedAt: now }], status: "running", updatedAt: now };
+		let calls = 0;
+		const runner = new BridgeRunner(join(root, "config.v1.json"), config, initial, { client: { call: async () => { calls++; throw new Error("must not publish"); } } });
+		expect(await (runner as unknown as { advance(turn: BridgeJournal["turns"][number]): Promise<string> }).advance(initial.turns[0]!)).toBe("needs_attention");
+		expect(calls).toBe(0);
+		expect(runner.state()).toMatchObject({ status: "needs_attention", driverSessionId: "session_prior", turns: [{ state: "needs_attention", reply: "unsent", terminal: { sessionId: "session_uncertain", sessionAdvance: "uncertain" } }] });
 	});
 
 	it("atomically enters attention on a permanent reply error", async () => {

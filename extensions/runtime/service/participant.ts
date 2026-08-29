@@ -126,9 +126,11 @@ export class HostedParticipantCoordinator {
 		try {
 			const caller = this.requireTarget(registration.targetKey);
 			const participant = this.requireParticipant(participantKey, caller.projectRoot);
-			if (participant.generation !== expectedGeneration) throw new HostedParticipantError("conflict", "Participant generation changed before confirmed stop.");
 			const latest = participant.transitions.at(-1)!;
-			const holderTargetKey = participant.state === "held" ? participant.holderTargetKey : participant.state === "vacant" && latest.cause === "stand_down" ? latest.previousHolderTargetKey : undefined;
+			const vacantStoppedTarget = participant.state === "vacant" && latest.cause === "stand_down" ? latest.previousHolderTargetKey : undefined;
+			const retryingLostResponse = vacantStoppedTarget !== undefined && latest.previousGeneration === expectedGeneration;
+			if (participant.generation !== expectedGeneration && !retryingLostResponse) throw new HostedParticipantError("conflict", "Participant generation changed before confirmed stop.");
+			const holderTargetKey = participant.state === "held" ? participant.holderTargetKey : vacantStoppedTarget;
 			if (!holderTargetKey) throw new HostedParticipantError("conflict", "Participant has no stoppable collaborator target.");
 			if (holderTargetKey === registration.targetKey) throw new HostedParticipantError("conflict", "A Pi target cannot stop its own Herdr tab.");
 			this.assertTargetNotStopping(holderTargetKey);
@@ -147,7 +149,7 @@ export class HostedParticipantCoordinator {
 				this.store.apply({ type: "participant.stand_down", participantKey, targetKey: holderTargetKey, expectedGeneration, generation: this.createGeneration(), at: this.now() });
 				this.wakes.request(holderTargetKey);
 				if (registration.targetKey !== holderTargetKey) this.wakes.request(registration.targetKey);
-			} else if (current.state !== "vacant" || current.generation !== expectedGeneration) {
+			} else if (current.state !== "vacant" || current.generation !== participant.generation) {
 				throw new HostedParticipantError("conflict", "Participant changed while its prior collaborator process was stopping.");
 			}
 			await this.options.onStopped?.(target, participant.state === "held" ? expectedGeneration : latest.previousGeneration!);

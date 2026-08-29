@@ -119,8 +119,10 @@ describe("authoritative Runtime bridge launch", () => {
 		roots.push(migrationRoot);
 		mkdirSync(migrationRoot, { recursive: true });
 		const { workspaces: _workspaces, integrations: _integrations, ...v3 } = structuredClone(test.store.read());
+		(v3.targets[launch.targetKey] as { metadata: Record<string, string> }).metadata = { format: "legacy-v1" };
+		v3.bridgeLaunches[launch.launchId]!.metadata = { format: "legacy-v1" };
 		writeFileSync(runtimeStatePaths(migrationRoot).state, JSON.stringify({ ...v3, version: 3 }));
-		expect(readHostedRuntimeState(migrationRoot)).toMatchObject({ version: 4, workspaces: {}, integrations: {}, targets: { [launch.targetKey]: { kind: "bridge", bridgeId: launch.launchId } }, bridgeLaunches: { [launch.launchId]: { status: "consumed" } } });
+		expect(readHostedRuntimeState(migrationRoot)).toMatchObject({ version: 5, workspaces: {}, integrations: {}, targets: { [launch.targetKey]: { kind: "bridge", bridgeId: launch.launchId, metadata: { adapter: "legacy-v1" } } }, bridgeLaunches: { [launch.launchId]: { status: "consumed", metadata: { adapter: "legacy-v1" } } } });
 		expect(test.registrations.isLiveTarget(launch.targetKey)).toBe(true);
 		await expect(test.bridges.register({ launchToken: launch.launchToken, reconnectToken: launch.reconnectToken, clientGeneration: "client_bridge", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" } })).rejects.toMatchObject({ code: "conflict" });
 
@@ -137,6 +139,18 @@ describe("authoritative Runtime bridge launch", () => {
 		expect(stopped).toMatchObject({ outcome: "stopped", participant: { state: "vacant" } });
 		expect(stoppedTargets).toMatchObject([{ kind: "bridge", targetKey: launch.targetKey }]);
 		await expect(restartedBridges.reconnect({ targetKey: launch.targetKey, reconnectToken: launch.reconnectToken, clientGeneration: "client_bridge", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" } })).rejects.toMatchObject({ code: "conflict" });
+	});
+
+	it("recovers an uncertain launch response without regenerating authority", async () => {
+		const test = setup();
+		const main = await registerPi(test, "main");
+		const caller = test.participants.acquire(main, "review", "main").participant;
+		const input = { requestId: "response_lost", callerParticipantKey: caller.participantKey, expectedCallerGeneration: caller.generation, protocol: "review", participantId: "fable", profile: "read-only" as const, configurationHash: "f".repeat(64), herdr: { paneId: "w1:p9", terminalId: "term_bridge" } };
+		const launch = await test.bridges.create(main, input);
+		await expect(test.bridges.create(main, input)).rejects.toThrow("explicit recovery");
+		expect(test.bridges.recoverLaunch(main, { requestId: input.requestId, callerParticipantKey: caller.participantKey, expectedCallerGeneration: caller.generation })).toMatchObject({ launchId: launch.launchId, status: "cancelled" });
+		expect(test.bridges.recoverLaunch(main, { requestId: input.requestId, callerParticipantKey: caller.participantKey, expectedCallerGeneration: caller.generation })).toMatchObject({ status: "cancelled" });
+		await expect(test.bridges.register({ launchToken: launch.launchToken, reconnectToken: launch.reconnectToken, clientGeneration: "client_bridge", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" } })).rejects.toThrow("no longer pending");
 	});
 
 	it("does not reinstall a bridge registration after its holder generation changes during host verification", async () => {
@@ -199,10 +213,10 @@ describe("authoritative Runtime bridge launch", () => {
 			const registered = await client.call("pi.register", { projectRoot, piSessionId: "session_main", piSessionFile: sessionFile, clientGeneration: "client_main", admittedClaims: [], herdr: { paneId: "w1:p1", terminalId: "term_main" } }) as Record<string, unknown>;
 			const auth = { registrationId: String(registered.registrationId), registrationKey: String(registered.registrationKey) };
 			const acquired = await client.call("participant.acquire", { ...auth, protocol: "review", participantId: "main" }) as { participant: { participantKey: string; generation: string } };
-			const authority = await client.call("bridge.launch.create", { ...auth, requestId: "socket_request", callerParticipantKey: acquired.participant.participantKey, expectedCallerGeneration: acquired.participant.generation, protocol: "review", participantId: "fable", profile: "read-only", configurationHash: "e".repeat(64), herdr: { paneId: "w1:p9", terminalId: "term_bridge" }, metadata: { format: "fake-v1" } }) as { launchId: string; targetKey: string; launchToken: string; reconnectToken: string };
+			const authority = await client.call("bridge.launch.create", { ...auth, requestId: "socket_request", callerParticipantKey: acquired.participant.participantKey, expectedCallerGeneration: acquired.participant.generation, protocol: "review", participantId: "fable", profile: "read-only", configurationHash: "e".repeat(64), herdr: { paneId: "w1:p9", terminalId: "term_bridge" }, metadata: { adapter: "fake-v1" } }) as { launchId: string; targetKey: string; launchToken: string; reconnectToken: string };
 			host.agents.set("w1:p9", { paneId: "w1:p9", tabId: "w1:t9", workspaceId: "w1", terminalId: "term_bridge", cwd: projectRoot, agentSession: { source: "pi-kit-bridge", agent: "bridge", kind: "id", value: authority.launchId }, status: "idle", stateChangeSeq: 2 });
 			const bridge = await client.call("bridge.register", { launchToken: authority.launchToken, reconnectToken: authority.reconnectToken, clientGeneration: "client_bridge", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" } }) as Record<string, unknown>;
-			expect(bridge).toMatchObject({ targetKey: authority.targetKey, holderGeneration: "lease_bridge_socket", profile: "read-only", metadata: { format: "fake-v1" } });
+			expect(bridge).toMatchObject({ targetKey: authority.targetKey, holderGeneration: "lease_bridge_socket", profile: "read-only", metadata: { adapter: "fake-v1" } });
 			expect(await client.call("bridge.heartbeat", { registrationId: bridge.registrationId, registrationKey: bridge.registrationKey })).toMatchObject({ targetKey: authority.targetKey, inboxReady: false });
 			const durable = readFileSync(runtimeStatePaths(runtimeRoot).state, "utf8");
 			expect(durable).not.toContain(authority.launchToken);
@@ -219,7 +233,7 @@ describe("authoritative Runtime bridge launch", () => {
 		test.host.panes.set("w1:p9", { ...test.host.panes.get("w1:p9")!, agent: "pi" });
 		await expect(test.bridges.create(main, { requestId: "occupied", callerParticipantKey: mainParticipant.participantKey, expectedCallerGeneration: mainParticipant.generation, protocol: "review", participantId: "fable", profile: "read-only", configurationHash: "b".repeat(64), herdr: { paneId: "w1:p9", terminalId: "term_bridge" } })).rejects.toMatchObject({ code: "identity_mismatch" });
 		test.host.panes.set("w1:p9", { ...test.host.panes.get("w1:p9")!, agent: undefined });
-		await expect(test.bridges.create(main, { requestId: "reserved_metadata", callerParticipantKey: mainParticipant.participantKey, expectedCallerGeneration: mainParticipant.generation, protocol: "review", participantId: "fable", profile: "read-only", configurationHash: "b".repeat(64), herdr: { paneId: "w1:p9", terminalId: "term_bridge" }, metadata: { driver: "codex" } })).rejects.toThrow("reserved");
+		await expect(test.bridges.create(main, { requestId: "reserved_metadata", callerParticipantKey: mainParticipant.participantKey, expectedCallerGeneration: mainParticipant.generation, protocol: "review", participantId: "fable", profile: "read-only", configurationHash: "b".repeat(64), herdr: { paneId: "w1:p9", terminalId: "term_bridge" }, metadata: { driver: "codex" } })).rejects.toThrow("allowlisted");
 		const launch = await test.bridges.create(main, { requestId: "expires", callerParticipantKey: mainParticipant.participantKey, expectedCallerGeneration: mainParticipant.generation, protocol: "review", participantId: "fable", profile: "read-only", configurationHash: "b".repeat(64), herdr: { paneId: "w1:p9", terminalId: "term_bridge" } });
 		test.host.agents.set("w1:p9", { paneId: "w1:p9", tabId: "w1:t9", workspaceId: "w1", terminalId: "term_bridge", cwd: test.projectRoot, agentSession: { source: "pi-kit-bridge", agent: "bridge", kind: "id", value: launch.launchId }, status: "idle", stateChangeSeq: 2 });
 		test.participants.standDown(main, mainParticipant.participantKey);
