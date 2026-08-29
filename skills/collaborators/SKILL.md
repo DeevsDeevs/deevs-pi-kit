@@ -32,7 +32,7 @@ Use `/runtime auto setup` once to move Pi thinking cycling to `Ctrl+Shift+T` and
 - Never infer lifecycle, permission, acknowledgement, task status, verdict, or integration authority from message prose.
 - Typed task results provide only settlement and Runtime-derived session/workspace evidence. They never complete a Mission or authorize checkpoint/integration/discard by themselves.
 - Never scrape panes, inject keystrokes, mutate focus, or use detached shell processes for coordination.
-- Profiles are driver-enforced. Pi uses explicit tool allowlists; Claude Code read-only uses `dontAsk` with `Read,Glob,Grep`, while isolated writers use `acceptEdits` and additionally receive only `Edit,Write`; Codex uses its matching read-only/workspace-write sandbox. Every writer runs in a Runtime-owned isolated Git worktree, never the main checkout.
+- Profiles are driver-enforced. Pi uses explicit tool allowlists; Claude Code read-only uses `dontAsk` with `Read,Glob,Grep`, while isolated writers use `acceptEdits` and additionally receive only `Edit,Write`; Codex uses its matching read-only/workspace-write sandbox. Native persona launches are rejected before confirmation when the persona requires `safe_diff`, which native adapters do not expose. Every writer runs in a Runtime-owned isolated Git worktree, never the main checkout.
 - Chain checkpoint metadata is the narrow read-only write exception required for context recovery.
 - Release, revival, and takeover remain explicit user commands.
 - Starts are cross-session serialized. A stale or malformed start lock fails closed; remove it only after an operator verifies no exact collaborator launch or preserved Herdr resource can still settle.

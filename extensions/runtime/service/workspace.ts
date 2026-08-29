@@ -290,22 +290,27 @@ export class RuntimeWorkspaceCoordinator {
 	}
 
 	async finalizeIntegration(caller: HostedLiveRegistration, input: WorkspaceAuthority & { integrationId: string }): Promise<HostedIntegration> {
-		const integration = this.integration(input.integrationId);
-		this.assertCaller(caller, integration.projectRoot, input);
-		if ((integration.state !== "prepared" && integration.state !== "finalized") || !integration.preparedHead) throw new HostedWorkspaceError("conflict", "Integration is not prepared/finalized for recovery.");
-		const repository = await this.git.discover(integration.projectRoot);
-		if (repository.commonDir !== integration.gitCommonDir || repository.branchRef !== integration.mainBranchRef) throw new HostedWorkspaceError("identity_mismatch", "Main repository identity changed.");
-		await this.git.verifyWorktree(repository, integration.worktreePath, integration.branchRef, integration.preparedHead);
-		await this.git.assertClean(integration.worktreePath);
-		const finalizedHead = await this.withRepository(repository.commonDir, () => this.git.finalize(repository, integration.mainHead, integration.preparedHead!));
-		const finalized: HostedIntegration = integration.state === "finalized" ? integration : { ...integration, state: "finalized", preparedHead: finalizedHead, updatedAt: this.tick(integration.updatedAt), finalizedAt: this.tick(integration.updatedAt) };
-		if (integration.state === "prepared") this.store.apply({ type: "integration.replace", integration: finalized, expectedState: "prepared", expectedUpdatedAt: integration.updatedAt });
-		const workspace = this.workspace(integration.workspaceId);
-		if (workspace.state !== "integrated") {
-			const integrated = { ...workspace, state: "integrated" as const, integratedHead: finalizedHead, updatedAt: this.tick(workspace.updatedAt) };
-			this.store.apply({ type: "workspace.replace", workspace: integrated, expectedState: workspace.state, expectedUpdatedAt: workspace.updatedAt });
-		} else if (workspace.integratedHead !== finalizedHead) throw new HostedWorkspaceError("conflict", "Workspace integration evidence does not match finalized main.");
-		return finalized;
+		const observed = this.integration(input.integrationId);
+		this.assertCaller(caller, observed.projectRoot, input);
+		const discovered = await this.git.discover(observed.projectRoot);
+		return this.withRepository(discovered.commonDir, async () => {
+			const integration = this.integration(input.integrationId);
+			this.assertCaller(caller, integration.projectRoot, input);
+			if ((integration.state !== "prepared" && integration.state !== "finalized") || !integration.preparedHead) throw new HostedWorkspaceError("conflict", "Integration is not prepared/finalized for recovery.");
+			const repository = await this.git.discover(integration.projectRoot);
+			if (repository.commonDir !== discovered.commonDir || repository.commonDir !== integration.gitCommonDir || repository.branchRef !== integration.mainBranchRef) throw new HostedWorkspaceError("identity_mismatch", "Main repository identity changed.");
+			await this.git.verifyWorktree(repository, integration.worktreePath, integration.branchRef, integration.preparedHead);
+			await this.git.assertClean(integration.worktreePath);
+			const finalizedHead = await this.git.finalize(repository, integration.mainHead, integration.preparedHead);
+			const finalized: HostedIntegration = integration.state === "finalized" ? integration : { ...integration, state: "finalized", preparedHead: finalizedHead, updatedAt: this.tick(integration.updatedAt), finalizedAt: this.tick(integration.updatedAt) };
+			if (integration.state === "prepared") this.store.apply({ type: "integration.replace", integration: finalized, expectedState: "prepared", expectedUpdatedAt: integration.updatedAt });
+			const workspace = this.workspace(integration.workspaceId);
+			if (workspace.state !== "integrated") {
+				const integrated = { ...workspace, state: "integrated" as const, integratedHead: finalizedHead, updatedAt: this.tick(workspace.updatedAt) };
+				this.store.apply({ type: "workspace.replace", workspace: integrated, expectedState: workspace.state, expectedUpdatedAt: workspace.updatedAt });
+			} else if (workspace.integratedHead !== finalizedHead) throw new HostedWorkspaceError("conflict", "Workspace integration evidence does not match finalized main.");
+			return finalized;
+		});
 	}
 
 	async cleanupWorkspace(caller: HostedLiveRegistration, input: WorkspaceAuthority & { workspaceId: string; discardConfirmed: boolean }): Promise<HostedWorkspace> {
@@ -323,16 +328,26 @@ export class RuntimeWorkspaceCoordinator {
 	}
 
 	async cleanupIntegration(caller: HostedLiveRegistration, input: WorkspaceAuthority & { integrationId: string; discardConfirmed: boolean }): Promise<HostedIntegration> {
-		const integration = this.integration(input.integrationId);
-		this.assertCaller(caller, integration.projectRoot, input);
-		if (!integration.preparedHead || !["finalized", "prepared", "conflicted"].includes(integration.state)) throw new HostedWorkspaceError("conflict", "Integration is not safely identifiable for cleanup.");
-		if (integration.state !== "finalized" && !input.discardConfirmed) throw new HostedWorkspaceError("conflict", "Unfinalized integration cleanup requires explicit discard confirmation.");
-		const repository = await this.git.discover(integration.projectRoot);
-		const worktree = { path: integration.worktreePath, branchRef: integration.branchRef, headCommit: integration.preparedHead };
-		await this.withRepository(repository.commonDir, () => integration.state === "finalized" ? this.git.removeWorktree(repository, worktree) : this.git.discardWorktree(repository, worktree));
-		const cleaned = { ...integration, state: "cleaned" as const, updatedAt: this.tick(integration.updatedAt) };
-		this.store.apply({ type: "integration.replace", integration: cleaned, expectedState: integration.state, expectedUpdatedAt: integration.updatedAt });
-		return cleaned;
+		const observed = this.integration(input.integrationId);
+		this.assertCaller(caller, observed.projectRoot, input);
+		const discovered = await this.git.discover(observed.projectRoot);
+		return this.withRepository(discovered.commonDir, async () => {
+			const integration = this.integration(input.integrationId);
+			this.assertCaller(caller, integration.projectRoot, input);
+			if (!integration.preparedHead || !["finalized", "prepared", "conflicted"].includes(integration.state)) throw new HostedWorkspaceError("conflict", "Integration is not safely identifiable for cleanup.");
+			if (integration.state !== "finalized" && !input.discardConfirmed) throw new HostedWorkspaceError("conflict", "Unfinalized integration cleanup requires explicit discard confirmation.");
+			if (integration.state === "finalized") {
+				const workspace = this.workspace(integration.workspaceId);
+				if (workspace.state !== "integrated" || workspace.integratedHead !== integration.preparedHead) throw new HostedWorkspaceError("conflict", "Finalized integration workspace evidence has not settled.");
+			}
+			const repository = await this.git.discover(integration.projectRoot);
+			if (repository.commonDir !== discovered.commonDir || repository.commonDir !== integration.gitCommonDir) throw new HostedWorkspaceError("identity_mismatch", "Integration repository identity changed.");
+			const worktree = { path: integration.worktreePath, branchRef: integration.branchRef, headCommit: integration.preparedHead };
+			if (integration.state === "finalized") await this.git.removeWorktree(repository, worktree); else await this.git.discardWorktree(repository, worktree);
+			const cleaned = { ...integration, state: "cleaned" as const, updatedAt: this.tick(integration.updatedAt) };
+			this.store.apply({ type: "integration.replace", integration: cleaned, expectedState: integration.state, expectedUpdatedAt: integration.updatedAt });
+			return cleaned;
+		});
 	}
 
 	private async checkpointWorkspace(workspace: HostedWorkspace, taskStatus?: HostedWorkspace["taskStatus"]): Promise<HostedWorkspace> {

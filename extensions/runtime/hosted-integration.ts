@@ -1659,7 +1659,7 @@ function resolveCollaboratorCandidate(candidate: CollaboratorCandidate, defaultP
 	const definition = findAgent(COLLABORATOR_PERSONAS, personaName);
 	if (!definition || definition.disabled) throw new HostedRuntimeClientError("not_found", `Unknown or disabled collaborator persona ${personaName}.`);
 	const profile = requestedProfile ?? "read-only";
-	assertPersonaCompatible(definition, profile);
+	assertPersonaCompatible(definition, profile, driver);
 	const prompt = definition.body.trim();
 	if (!prompt || Buffer.byteLength(prompt) > 32 * 1024) throw new HostedRuntimeClientError("invalid_request", `Collaborator persona ${personaName} has an invalid prompt.`);
 	const persona: CollaboratorPersona = { name: definition.name, prompt, promptHash: createHash("sha256").update(prompt).digest("hex") };
@@ -1667,7 +1667,8 @@ function resolveCollaboratorCandidate(candidate: CollaboratorCandidate, defaultP
 	return { participantId, driver, profile, persona, ...(model ? { model } : {}) };
 }
 
-function assertPersonaCompatible(persona: AgentDefinition, profile: CollaboratorProfile): void {
+function assertPersonaCompatible(persona: AgentDefinition, profile: CollaboratorProfile, driver: CollaboratorDriver): void {
+	if (driver !== "pi" && persona.tools.includes("safe_diff")) throw new HostedRuntimeClientError("conflict", `Native collaborator persona ${persona.name} requires unsupported safe_diff tooling.`);
 	const supported = profile === "read-only" ? READ_ONLY_PERSONA_TOOLS : WORKSPACE_WRITE_PERSONA_TOOLS;
 	const incompatible = persona.tools.filter((tool) => !supported.has(tool) && !OPTIONAL_COLLABORATOR_PERSONA_TOOLS.has(tool));
 	if (incompatible.length > 0) throw new HostedRuntimeClientError("conflict", `Collaborator persona ${persona.name} requires unsupported ${incompatible.join(", ")} tooling.`);

@@ -122,16 +122,28 @@ describe("Runtime isolated collaborator workspace", () => {
 		const integration = await restarted.prepareIntegration(restartedMain, { workspaceId: checkpoint.workspaceId, callerParticipantKey: mainParticipant.participantKey, expectedCallerGeneration: mainParticipant.generation });
 		expect(integration.state).toBe("prepared");
 		let failWorkspaceEvidence = true;
+		const coordinatorInternals = restarted as unknown as { locks: Set<string> };
+		let finalizedUnderLease = false;
+		let integratedUnderLease = false;
+		let cleanedUnderLease = false;
 		test.store.apply = ((operation) => {
+			if (operation.type === "integration.replace" && operation.integration.state === "finalized") finalizedUnderLease = coordinatorInternals.locks.has(integration.gitCommonDir);
+			if (operation.type === "integration.replace" && operation.integration.state === "cleaned") cleanedUnderLease = coordinatorInternals.locks.has(integration.gitCommonDir);
+			if (operation.type === "workspace.replace" && operation.workspace.state === "integrated") integratedUnderLease = coordinatorInternals.locks.has(integration.gitCommonDir);
 			if (failWorkspaceEvidence && operation.type === "workspace.replace" && operation.workspace.state === "integrated") { failWorkspaceEvidence = false; throw new Error("injected workspace evidence failure"); }
 			return originalApply(operation);
 		}) as typeof test.store.apply;
 		await expect(restarted.finalizeIntegration(restartedMain, { integrationId: integration.integrationId, callerParticipantKey: mainParticipant.participantKey, expectedCallerGeneration: mainParticipant.generation })).rejects.toThrow("injected workspace evidence failure");
 		expect(test.store.read().integrations[integration.integrationId]?.state).toBe("finalized");
+		expect(finalizedUnderLease).toBe(true);
+		expect(integratedUnderLease).toBe(true);
+		await expect(restarted.cleanupIntegration(restartedMain, { integrationId: integration.integrationId, callerParticipantKey: mainParticipant.participantKey, expectedCallerGeneration: mainParticipant.generation, discardConfirmed: false })).rejects.toThrow("workspace evidence has not settled");
+		expect(existsSync(integration.worktreePath)).toBe(true);
 		const finalized = await restarted.finalizeIntegration(restartedMain, { integrationId: integration.integrationId, callerParticipantKey: mainParticipant.participantKey, expectedCallerGeneration: mainParticipant.generation });
 		expect(finalized.state).toBe("finalized");
 		expect(readFileSync(join(test.project, "app.txt"), "utf8")).toBe("writer\n");
 		expect(await restarted.cleanupIntegration(restartedMain, { integrationId: integration.integrationId, callerParticipantKey: mainParticipant.participantKey, expectedCallerGeneration: mainParticipant.generation, discardConfirmed: false })).toMatchObject({ state: "cleaned" });
+		expect(cleanedUnderLease).toBe(true);
 		expect(await restarted.cleanupWorkspace(restartedMain, { workspaceId: checkpoint.workspaceId, callerParticipantKey: mainParticipant.participantKey, expectedCallerGeneration: mainParticipant.generation, discardConfirmed: false })).toMatchObject({ state: "cleaned" });
 		expect(existsSync(provisioned.workspace.worktreePath)).toBe(false);
 	});
