@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 
 const repo = process.cwd();
 const autoMode = process.env.PI_KIT_SMOKE_AUTO === "1";
-const readOnlyCollaboratorTools = "read,grep,find,ls,safe_diff,collaborator_list,collaborator_send,chain_save,chain_load,chain_context";
+const readOnlyCollaboratorTools = "read,grep,find,ls,safe_diff,collaborator_list,collaborator_send,collaborator_task,chain_save,chain_load,chain_context";
 const { HostedRuntimeClient } = await import(pathToFileURL(join(repo, "extensions/runtime/client.ts")));
 const { startRuntimeServer } = await import(pathToFileURL(join(repo, "extensions/runtime/service/server.ts")));
 const { MissionState, MISSION_CUSTOM_TYPE } = await import(pathToFileURL(join(repo, "extensions/mission/state.ts")));
