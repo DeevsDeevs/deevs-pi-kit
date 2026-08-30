@@ -12,7 +12,7 @@ import { runtimeEvents } from "../shared/runtime-events.ts";
 import { MissionState } from "./state.ts";
 import { missionRoot } from "./artifacts.ts";
 import { MAX_MISSION_REVIEW_ADJUDICATIONS } from "./types.ts";
-import type { MissionCompleteInput, MissionCurrent, MissionProgressInput, MissionReviewSeverity, MissionReviewVerdict, MissionUpdateInput } from "./types.ts";
+import type { MissionCompleteInput, MissionCurrent, MissionProgressInput, MissionReviewFinding, MissionReviewRevision, MissionReviewSeverity, MissionReviewVerdict, MissionUpdateInput } from "./types.ts";
 
 const REVIEW_QUIET_WINDOW_MS = 100;
 
@@ -624,9 +624,16 @@ export class MissionRuntime {
 		const paths = reviewPaths(reviewCwd, workspace);
 		const scope = `Review only these typed Mission workspace paths: ${paths.join(", ")}.`;
 		const correctionReview = (current.reviewCorrectionCount ?? 0) > 0 || (current.reviewAdjudications?.length ?? 0) > 0;
+		const correctionScope = correctionReview ? await correctionReviewScope(this.pi, ctx.cwd, reviewCwd, workspace, missionIgnoredPaths(ctx.cwd)) : undefined;
+		if (correctionReview && !correctionScope) {
+			this.state.append(this.pi, this.state.statusEvent("blocked", "correction review requires one exact clean correction commit", "Commit the bounded correction before review so Runtime can persist and enforce its exact changed paths and base/head revisions."));
+			this.updateStatus();
+			return;
+		}
 		const latestProgress = this.state.readProgress().at(-1);
+		const accepted = current.reviewAcceptedFindings ?? [];
 		const reviewMode = correctionReview
-			? `This is a bounded correction review. Prior adjudicated evidence remains authoritative for untouched areas. Review only the accepted corrections, current changed code, and directly affected invariants. Latest correction record: ${latestProgress?.summary ?? "none"}${latestProgress?.evidence.length ? `; evidence: ${latestProgress.evidence.join(" | ")}` : ""}. An unrelated concern is non-blocking follow-up unless it has a typed Mission requirementIndex or criticalImpact of security or data_loss.`
+			? `This is a bounded correction review. Prior adjudicated evidence remains authoritative for untouched areas. Review only these Runtime-enforced changed paths: ${correctionScope!.paths.join(", ")}. Exact revisions: ${correctionScope!.revisions.map((revision) => `${revision.root}:${revision.base}..${revision.head}`).join(", ")}. Accepted findings: ${accepted.length ? accepted.map((finding) => `#${finding.index} requirement=${finding.requirementIndex ?? "none"} criticalImpact=${finding.criticalImpact ?? "none"} path=${finding.path ?? "none"}: ${finding.summary}`).join(" | ") : "legacy correction scope; use only the exact changed paths"}. Latest correction record: ${latestProgress?.summary ?? "none"}.`
 			: "This is the initial full Mission review.";
 		const sameReservedCandidate = current.reviewCandidateId === candidateId && current.reviewWorktreeFingerprint === reviewWorktreeFingerprint;
 		if (current.reviewAdmissionId && !sameReservedCandidate) {
@@ -638,13 +645,13 @@ export class MissionRuntime {
 			if (prior && ["starting", "running", "stopping"].includes(prior.runtime.status)) return;
 		}
 		const admissionId = sameReservedCandidate && current.reviewAdmissionId ? current.reviewAdmissionId : `review_${randomUUID()}`;
-		this.state.append(this.pi, this.state.reviewEvent("starting", { reason: current.reviewReason, worktreeFingerprint: reviewWorktreeFingerprint, candidateId, admissionId }));
+		this.state.append(this.pi, this.state.reviewEvent("starting", { reason: current.reviewReason, worktreeFingerprint: reviewWorktreeFingerprint, candidateId, admissionId, scopePaths: correctionScope?.paths, scopeRevisions: correctionScope?.revisions }));
 		this.reviewAdmissionInFlight = true;
 		let run;
 		try {
 			run = await service.start({
 				agent: "reviewer",
-				task: `Fresh independent Mission review. ${scope} ${reviewMode} Ignore unrelated pre-existing working-tree changes. Mission: ${current.title}. Objective: ${current.objective}. Requirements: ${current.requirements.map((requirement, index) => `[${index}] ${requirement}`).join(" | ")}. A blocker/major finding must include either its violated requirementIndex or a typed criticalImpact of security or data_loss; otherwise record it as minor/nit follow-up. Call the schema-validated review_report tool exactly once, then summarize for the parent. Do not edit files.`,
+				task: `Fresh independent Mission review. ${scope} ${reviewMode} Ignore unrelated pre-existing working-tree changes. Mission: ${current.title}. Objective: ${current.objective}. Requirements: ${current.requirements.map((requirement, index) => `[${index}] ${requirement}`).join(" | ")}. A blocker/major finding must name a Runtime-enforced changed path and include either its violated requirementIndex or a typed criticalImpact of security or data_loss; otherwise record it as minor/nit follow-up. Call the schema-validated review_report tool exactly once, then summarize for the parent. Do not edit files.`,
 				cwd: reviewCwd,
 				context: "fresh",
 				allowWrite: false,
@@ -750,7 +757,7 @@ export class MissionRuntime {
 			this.failReview(latest!, run.runtime.error || "independent review failed");
 			return true;
 		}
-		const report = await readReviewReport(run, mission.requirements.length);
+		const report = await readReviewReport(run, mission.requirements.length, mission.reviewScopePaths, mission.reviewAcceptedFindings);
 		const finalFingerprint = this.ctx ? await worktreeFingerprint(this.pi, this.ctx.cwd, mission) : undefined;
 		latest = this.state.read();
 		if (!sameAttempt(latest)) return true;
@@ -766,7 +773,7 @@ export class MissionRuntime {
 			this.failReview(latest!, "independent reviewer did not submit a valid review_report artifact");
 			return true;
 		}
-		this.state.append(this.pi, this.state.reviewEvent("awaiting_adjudication", { runId: run.spec.id, reason: "Independent review settled; parent must adjudicate the severity-derived result.", suggestedVerdict: report.verdict, worktreeFingerprint: fingerprint, candidateId, highestSeverity: report.highestSeverity, blockingFindingCount: report.blockingFindingCount, backlogFindingCount: report.backlogFindingCount }));
+		this.state.append(this.pi, this.state.reviewEvent("awaiting_adjudication", { runId: run.spec.id, reason: "Independent review settled; parent must adjudicate the severity-derived result.", suggestedVerdict: report.verdict, worktreeFingerprint: fingerprint, candidateId, highestSeverity: report.highestSeverity, blockingFindingCount: report.blockingFindingCount, backlogFindingCount: report.backlogFindingCount, findings: report.findings, scopePaths: mission.reviewScopePaths, scopeRevisions: mission.reviewScopeRevisions }));
 		this.updateStatus();
 		return true;
 	}
@@ -890,31 +897,46 @@ interface DerivedReviewReport {
 	highestSeverity?: MissionReviewSeverity;
 	blockingFindingCount: number;
 	backlogFindingCount: number;
+	findings: MissionReviewFinding[];
 }
 
 const REVIEW_SEVERITIES: readonly MissionReviewSeverity[] = ["blocker", "major", "minor", "nit"];
 
-async function readReviewReport(run: DelegateRun, requirementCount: number): Promise<DerivedReviewReport | undefined> {
+async function readReviewReport(run: DelegateRun, requirementCount: number, scopePaths?: string[], acceptedFindings?: MissionReviewFinding[]): Promise<DerivedReviewReport | undefined> {
 	try {
 		const report = JSON.parse(await readFile(join(run.spec.artifactsDir, "review-report.json"), "utf8")) as { version?: unknown; verdict?: unknown; overallExplanation?: unknown; findings?: unknown };
 		if (report.version !== 1 || (report.verdict !== "clear" && report.verdict !== "changes_requested") || typeof report.overallExplanation !== "string" || !Array.isArray(report.findings) || report.findings.length > 1_000) return undefined;
-		const severities: MissionReviewSeverity[] = [];
-		for (const finding of report.findings) {
+		const acceptedRequirements = new Set((acceptedFindings ?? []).flatMap((finding) => finding.requirementIndex === undefined ? [] : [finding.requirementIndex]));
+		const findings: MissionReviewFinding[] = [];
+		for (const [index, finding] of report.findings.entries()) {
 			if (!finding || typeof finding !== "object" || Array.isArray(finding) || !("severity" in finding) || !REVIEW_SEVERITIES.includes(finding.severity as MissionReviewSeverity) || !("summary" in finding) || typeof finding.summary !== "string" || ("path" in finding && typeof finding.path !== "string") || ("line" in finding && (!Number.isInteger(finding.line) || (finding.line as number) < 1)) || ("requirementIndex" in finding && (!Number.isInteger(finding.requirementIndex) || (finding.requirementIndex as number) < 0)) || ("criticalImpact" in finding && finding.criticalImpact !== "security" && finding.criticalImpact !== "data_loss")) return undefined;
-			const severity = finding.severity as MissionReviewSeverity;
-			const blocking = severity === "blocker" || severity === "major";
-			const requirementLinked = "requirementIndex" in finding && (finding.requirementIndex as number) < requirementCount;
-			const critical = finding.criticalImpact === "security" || finding.criticalImpact === "data_loss";
-			severities.push(blocking && !requirementLinked && !critical ? "minor" : severity);
+			const submitted = finding.severity as MissionReviewSeverity;
+			const path = typeof finding.path === "string" ? normalizeReviewPath(finding.path) : undefined;
+			if (typeof finding.path === "string" && !path) return undefined;
+			const requirementIndex = Number.isInteger(finding.requirementIndex) ? finding.requirementIndex as number : undefined;
+			const criticalImpact = finding.criticalImpact === "security" || finding.criticalImpact === "data_loss" ? finding.criticalImpact : undefined;
+			const blocking = submitted === "blocker" || submitted === "major";
+			const requirementLinked = requirementIndex !== undefined && requirementIndex < requirementCount;
+			const accepted = !acceptedRequirements.size || requirementIndex !== undefined && acceptedRequirements.has(requirementIndex) || criticalImpact !== undefined;
+			const withinScope = scopePaths === undefined || path !== undefined && scopePaths.includes(path);
+			const severity = blocking && (!requirementLinked && !criticalImpact || !accepted || !withinScope) ? "minor" : submitted;
+			findings.push({ index, severity, summary: finding.summary.slice(0, 4_000), ...(path ? { path } : {}), ...(Number.isInteger(finding.line) ? { line: finding.line as number } : {}), ...(requirementIndex !== undefined ? { requirementIndex } : {}), ...(criticalImpact ? { criticalImpact } : {}) });
 		}
+		const severities = findings.map((finding) => finding.severity);
 		const blockingFindingCount = severities.filter((severity) => severity === "blocker" || severity === "major").length;
 		return {
 			verdict: blockingFindingCount > 0 ? "changes_requested" : "clear",
 			highestSeverity: REVIEW_SEVERITIES.find((severity) => severities.includes(severity)),
 			blockingFindingCount,
 			backlogFindingCount: severities.length - blockingFindingCount,
+			findings,
 		};
 	} catch { return undefined; }
+}
+
+function normalizeReviewPath(path: string): string | undefined {
+	const normalized = path.replace(/^\.\//, "");
+	return normalized && !normalized.startsWith("/") && !normalized.includes("\\") && !normalized.split("/").includes("..") ? normalized : undefined;
 }
 
 function reviewCandidateId(mission: MissionCurrent, fingerprint: string): string {
@@ -982,6 +1004,43 @@ function reviewPaths(reviewCwd: string, workspace: MissionWorkspaceRoot[]): stri
 		if (!scopes.length) return [prefix || "."];
 		return scopes.map((scope) => [prefix, scope].filter(Boolean).join("/"));
 	});
+}
+
+async function correctionReviewScope(pi: ExtensionAPI, cwd: string, reviewCwd: string, workspace: MissionWorkspaceRoot[], ignoredPaths: string[]): Promise<{ paths: string[]; revisions: MissionReviewRevision[] } | undefined> {
+	const canonicalCwd = await canonicalPath(cwd);
+	if (!canonicalCwd) return undefined;
+	const paths = new Set<string>();
+	const revisions: MissionReviewRevision[] = [];
+	for (const { root, scopes } of workspace) {
+		const literalScopes = scopes.map((scope) => `:(literal)${scope}`);
+		const exclusions = ignoredPaths.flatMap((ignored) => {
+			const canonicalIgnored = resolve(canonicalCwd, relative(resolve(cwd), resolve(ignored)));
+			const path = relative(root, canonicalIgnored).replaceAll("\\", "/");
+			return path && path !== ".." && !path.startsWith("../") ? [`:(top,exclude,literal)${path}/`] : [];
+		});
+		const gitPathspecs = [...literalScopes, ...exclusions];
+		const pathspec = gitPathspecs.length ? ["--", ...gitPathspecs] : [];
+		const [status, base, head] = await Promise.all([
+			pi.exec("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=no", ...pathspec], { cwd: root }),
+			pi.exec("git", ["rev-parse", "--verify", "HEAD^"], { cwd: root }),
+			pi.exec("git", ["rev-parse", "--verify", "HEAD"], { cwd: root }),
+		]);
+		const baseCommit = base.stdout.trim();
+		const headCommit = head.stdout.trim();
+		if (status.code !== 0 || status.stdout || base.code !== 0 || head.code !== 0 || !/^[0-9a-f]{40,64}$/.test(baseCommit) || !/^[0-9a-f]{40,64}$/.test(headCommit)) return undefined;
+		const changed = await pi.exec("git", ["diff", "--name-only", "--no-renames", "-z", baseCommit, headCommit, ...pathspec], { cwd: root });
+		if (changed.code !== 0 || changed.stdout.length > MAX_FINGERPRINT_PATH_BYTES) return undefined;
+		const prefix = relative(reviewCwd, root).replaceAll("\\", "/");
+		for (const item of changed.stdout.split("\0").filter(Boolean)) {
+			const path = normalizeReviewPath([prefix, item].filter(Boolean).join("/"));
+			if (!path) return undefined;
+			paths.add(path);
+		}
+		const revisionRoot = normalizeReviewPath(prefix || ".");
+		if (!revisionRoot) return undefined;
+		revisions.push({ root: revisionRoot, base: baseCommit, head: headCommit });
+	}
+	return paths.size && paths.size <= 1_000 ? { paths: [...paths].sort(), revisions } : undefined;
 }
 
 // Exclude all Mission and Chain durable state: their snapshot/link writes mutate the tree every turn and would otherwise churn the fingerprint into a permanent review-due loop. Admission and completion must use the identical list or their fingerprints can never match.

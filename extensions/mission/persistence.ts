@@ -254,6 +254,20 @@ function validateMission(value: Record<string, unknown>, cwd: string, slug: stri
 		mission.reviewAdjudications = [...(mission.reviewAdjudications ?? []).filter((item) => item.candidateId !== mission.reviewAdjudicatedCandidateId), { candidateId: mission.reviewAdjudicatedCandidateId, verdict: mission.reviewAdjudicatedVerdict }];
 	}
 	if (mission.reviewHighestSeverity !== undefined && !["blocker", "major", "minor", "nit"].includes(mission.reviewHighestSeverity)) throw new Error("Invalid Mission review severity.");
+	if (value.reviewFindings !== undefined) mission.reviewFindings = reviewFindings(value.reviewFindings, "Mission review findings");
+	if (value.reviewAcceptedFindings !== undefined) mission.reviewAcceptedFindings = reviewFindings(value.reviewAcceptedFindings, "Mission accepted review findings");
+	if (value.reviewScopePaths !== undefined) {
+		mission.reviewScopePaths = stringArray(value.reviewScopePaths, "Mission review scope paths", 1_000, 2_000);
+		if (mission.reviewScopePaths.some((path) => !reviewPath(path))) throw new Error("Invalid Mission review scope path.");
+	}
+	if (value.reviewScopeRevisions !== undefined) mission.reviewScopeRevisions = array(value.reviewScopeRevisions, "Mission review scope revisions", 100).map((item) => {
+		const revision = object(item, "Mission review scope revision");
+		const root = text(revision.root, "Mission review scope root", 2_000);
+		const base = text(revision.base, "Mission review scope base", 64);
+		const head = text(revision.head, "Mission review scope head", 64);
+		if (!reviewPath(root) || !/^[0-9a-f]{40,64}$/.test(base) || !/^[0-9a-f]{40,64}$/.test(head)) throw new Error("Invalid Mission review scope revision.");
+		return { root, base, head };
+	});
 	if (mission.completionLatchReviewStatus !== undefined && !["not_required", "clear", "skipped"].includes(mission.completionLatchReviewStatus)) throw new Error("Invalid Mission completion latch review status.");
 	if (mission.completionEffectsStatus !== undefined && mission.completionEffectsStatus !== "pending" && mission.completionEffectsStatus !== "done") throw new Error("Invalid Mission completion effects status.");
 	if (value.completionAudit !== undefined) mission.completionAudit = array(value.completionAudit, "Mission completion audit", 12).map((item) => {
@@ -272,6 +286,31 @@ function validateMission(value: Record<string, unknown>, cwd: string, slug: stri
 		mission.reviewAdjudicationHistoryComplete = true;
 	}
 	return mission;
+}
+
+function reviewFindings(value: unknown, label: string) {
+	return array(value, label, 1_000).map((item) => {
+		const finding = object(item, "Mission review finding");
+		const severity = text(finding.severity, "Mission review finding severity", 20);
+		if (!["blocker", "major", "minor", "nit"].includes(severity)) throw new Error("Invalid Mission review finding severity.");
+		const criticalImpact = finding.criticalImpact === undefined ? undefined : text(finding.criticalImpact, "Mission review critical impact", 20);
+		if (criticalImpact !== undefined && criticalImpact !== "security" && criticalImpact !== "data_loss") throw new Error("Invalid Mission review critical impact.");
+		const path = finding.path === undefined ? undefined : text(finding.path, "Mission review finding path", 2_000);
+		if (path !== undefined && !reviewPath(path)) throw new Error("Invalid Mission review finding path.");
+		return {
+			index: boundedInteger(finding.index, "Mission review finding index", 0, 999),
+			severity: severity as "blocker" | "major" | "minor" | "nit",
+			summary: text(finding.summary, "Mission review finding summary", 4_000),
+			...(path ? { path } : {}),
+			...(finding.line === undefined ? {} : { line: boundedInteger(finding.line, "Mission review finding line", 1, Number.MAX_SAFE_INTEGER) }),
+			...(finding.requirementIndex === undefined ? {} : { requirementIndex: boundedInteger(finding.requirementIndex, "Mission review finding requirement", 0, 11) }),
+			...(criticalImpact ? { criticalImpact: criticalImpact as "security" | "data_loss" } : {}),
+		};
+	});
+}
+
+function reviewPath(path: string): boolean {
+	return path === "." || !path.startsWith("/") && !path.includes("\\") && !path.split("/").includes("..");
 }
 
 function validateProgress(value: unknown): MissionProgressRecord {

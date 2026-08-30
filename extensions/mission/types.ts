@@ -4,6 +4,17 @@ export type MissionConvergedReviewStatus = "not_required" | "clear" | "skipped";
 export type MissionReviewSeverity = "blocker" | "major" | "minor" | "nit";
 export type MissionReviewVerdict = "clear" | "changes_requested";
 export type MissionReviewOutcome = "superseded" | "failed";
+export type MissionReviewCriticalImpact = "security" | "data_loss";
+export interface MissionReviewFinding {
+	index: number;
+	severity: MissionReviewSeverity;
+	summary: string;
+	path?: string;
+	line?: number;
+	requirementIndex?: number;
+	criticalImpact?: MissionReviewCriticalImpact;
+}
+export interface MissionReviewRevision { root: string; base: string; head: string }
 export const MAX_MISSION_REVIEW_ADJUDICATIONS = 256;
 
 export interface MissionValidationInput {
@@ -82,6 +93,10 @@ export interface MissionEvent {
 	reviewHighestSeverity?: MissionReviewSeverity;
 	reviewBlockingFindingCount?: number;
 	reviewBacklogFindingCount?: number;
+	reviewFindings?: MissionReviewFinding[];
+	reviewAcceptedFindings?: MissionReviewFinding[];
+	reviewScopePaths?: string[];
+	reviewScopeRevisions?: MissionReviewRevision[];
 	reviewCorrectionCount?: number;
 	reviewCorrectionLimit?: number;
 	completionLatchCandidateId?: string;
@@ -158,6 +173,10 @@ export interface MissionCurrent {
 	reviewHighestSeverity?: MissionReviewSeverity;
 	reviewBlockingFindingCount?: number;
 	reviewBacklogFindingCount?: number;
+	reviewFindings?: MissionReviewFinding[];
+	reviewAcceptedFindings?: MissionReviewFinding[];
+	reviewScopePaths?: string[];
+	reviewScopeRevisions?: MissionReviewRevision[];
 	reviewCorrectionCount?: number;
 	reviewCorrectionLimit?: number;
 	completionLatchCandidateId?: string;

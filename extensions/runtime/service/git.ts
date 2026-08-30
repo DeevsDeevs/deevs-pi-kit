@@ -229,8 +229,16 @@ export class RuntimeGit {
 	}
 
 	async assertFullCheckout(path: string): Promise<void> {
-		const records = splitNul(await this.output(path, ["ls-files", "-v", "-z", "--"]));
-		if (records.length > MAX_PATHS || records.some((record) => !/^H .+$/s.test(record) || Buffer.byteLength(record.slice(2)) > MAX_PATH_BYTES)) throw new RuntimeGitError("Worktree index is sparse, assumed-unchanged, incomplete, or exceeds safety bounds.");
+		const indexed = splitNul(await this.output(path, ["ls-files", "-v", "--stage", "-z", "--"]));
+		if (indexed.length > MAX_PATHS) throw new RuntimeGitError("Worktree index exceeds safety bounds.");
+		const symlinks: string[] = [];
+		for (const record of indexed) {
+			const match = /^H (\d{6}) [0-9a-f]+ (\d)\t([\s\S]+)$/.exec(record);
+			if (!match || match[2] !== "0" || Buffer.byteLength(match[3]!) > MAX_PATH_BYTES) throw new RuntimeGitError("Worktree index is sparse, assumed-unchanged, incomplete, unmerged, or exceeds safety bounds.");
+			if (match[1] === "160000") throw new RuntimeGitError("Git submodules are not allowed in Runtime collaborator workspaces.");
+			if (match[1] === "120000") symlinks.push(match[3]!);
+		}
+		await this.rejectEscapingSymlinks(path, symlinks);
 	}
 
 	async assertMaterialized(path: string): Promise<void> { await this.assertClean(path); await this.assertFullCheckout(path); }
