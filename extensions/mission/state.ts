@@ -448,6 +448,9 @@ export class MissionState {
 		const acceptedFindings = status === "changes_requested"
 			? (mission.reviewFindings ?? []).filter((finding) => finding.severity === "blocker" || finding.severity === "major").map((finding) => ({ ...finding }))
 			: status === "clear" ? [] : undefined;
+		const acceptedRevisions = status === "changes_requested" || status === "clear"
+			? mission.reviewScopeRevisions?.map((revision) => ({ root: revision.root, base: revision.head, head: revision.head }))
+			: undefined;
 		let previousAdjudications = [...(mission.reviewAdjudications ?? [])];
 		if (mission.reviewAdjudicatedCandidateId && mission.reviewAdjudicatedVerdict) {
 			previousAdjudications = [...previousAdjudications.filter((item) => item.candidateId !== mission.reviewAdjudicatedCandidateId), { candidateId: mission.reviewAdjudicatedCandidateId, verdict: mission.reviewAdjudicatedVerdict }];
@@ -491,6 +494,7 @@ export class MissionState {
 			reviewAcceptedFindings: acceptedFindings,
 			reviewScopePaths: input.scopePaths,
 			reviewScopeRevisions: input.scopeRevisions,
+			reviewAcceptedRevisions: acceptedRevisions,
 			reviewCorrectionCount: correctionCount,
 		};
 	}
@@ -651,6 +655,7 @@ export class MissionState {
 				reviewAcceptedFindings: event.reviewAcceptedFindings?.map((finding) => ({ ...finding })),
 				reviewScopePaths: event.reviewScopePaths ? [...event.reviewScopePaths] : undefined,
 				reviewScopeRevisions: event.reviewScopeRevisions?.map((revision) => ({ ...revision })),
+				reviewAcceptedRevisions: event.reviewAcceptedRevisions?.map((revision) => ({ ...revision })),
 				reviewCorrectionCount: event.reviewCorrectionCount ?? 0,
 				reviewCorrectionLimit: event.reviewCorrectionLimit ?? DEFAULT_REVIEW_CORRECTION_LIMIT,
 				completionLatchCandidateId: event.completionLatchCandidateId,
@@ -705,6 +710,7 @@ export class MissionState {
 				this.current.reviewAcceptedFindings = undefined;
 				this.current.reviewScopePaths = undefined;
 				this.current.reviewScopeRevisions = undefined;
+				this.current.reviewAcceptedRevisions = undefined;
 				this.current.reviewCorrectionCount = 0;
 				this.current.completionLatchCandidateId = undefined;
 				this.current.completionLatchReviewStatus = undefined;
@@ -760,6 +766,7 @@ export class MissionState {
 		if (event.reviewAcceptedFindings !== undefined) this.current.reviewAcceptedFindings = event.reviewAcceptedFindings.map((finding) => ({ ...finding }));
 		if (event.reviewScopePaths !== undefined) this.current.reviewScopePaths = [...event.reviewScopePaths];
 		if (event.reviewScopeRevisions !== undefined) this.current.reviewScopeRevisions = event.reviewScopeRevisions.map((revision) => ({ ...revision }));
+		if (event.reviewAcceptedRevisions !== undefined) this.current.reviewAcceptedRevisions = event.reviewAcceptedRevisions.map((revision) => ({ ...revision }));
 		if (event.reviewCorrectionCount !== undefined) this.current.reviewCorrectionCount = event.reviewCorrectionCount;
 		if (event.reviewSupersessionCount !== undefined) this.current.reviewSupersessionCount = event.reviewSupersessionCount;
 		if (event.reviewCorrectionLimit !== undefined) this.current.reviewCorrectionLimit = event.reviewCorrectionLimit;

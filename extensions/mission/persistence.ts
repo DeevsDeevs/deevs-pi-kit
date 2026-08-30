@@ -260,14 +260,8 @@ function validateMission(value: Record<string, unknown>, cwd: string, slug: stri
 		mission.reviewScopePaths = stringArray(value.reviewScopePaths, "Mission review scope paths", 1_000, 2_000);
 		if (mission.reviewScopePaths.some((path) => !reviewPath(path))) throw new Error("Invalid Mission review scope path.");
 	}
-	if (value.reviewScopeRevisions !== undefined) mission.reviewScopeRevisions = array(value.reviewScopeRevisions, "Mission review scope revisions", 100).map((item) => {
-		const revision = object(item, "Mission review scope revision");
-		const root = text(revision.root, "Mission review scope root", 2_000);
-		const base = text(revision.base, "Mission review scope base", 64);
-		const head = text(revision.head, "Mission review scope head", 64);
-		if (!reviewPath(root) || !/^[0-9a-f]{40,64}$/.test(base) || !/^[0-9a-f]{40,64}$/.test(head)) throw new Error("Invalid Mission review scope revision.");
-		return { root, base, head };
-	});
+	if (value.reviewScopeRevisions !== undefined) mission.reviewScopeRevisions = reviewRevisions(value.reviewScopeRevisions, "Mission review scope revisions");
+	if (value.reviewAcceptedRevisions !== undefined) mission.reviewAcceptedRevisions = reviewRevisions(value.reviewAcceptedRevisions, "Mission accepted review revisions");
 	if (mission.completionLatchReviewStatus !== undefined && !["not_required", "clear", "skipped"].includes(mission.completionLatchReviewStatus)) throw new Error("Invalid Mission completion latch review status.");
 	if (mission.completionEffectsStatus !== undefined && mission.completionEffectsStatus !== "pending" && mission.completionEffectsStatus !== "done") throw new Error("Invalid Mission completion effects status.");
 	if (value.completionAudit !== undefined) mission.completionAudit = array(value.completionAudit, "Mission completion audit", 12).map((item) => {
@@ -286,6 +280,17 @@ function validateMission(value: Record<string, unknown>, cwd: string, slug: stri
 		mission.reviewAdjudicationHistoryComplete = true;
 	}
 	return mission;
+}
+
+function reviewRevisions(value: unknown, label: string) {
+	return array(value, label, 100).map((item) => {
+		const revision = object(item, "Mission review revision");
+		const root = text(revision.root, "Mission review revision root", 2_000);
+		const base = text(revision.base, "Mission review revision base", 64);
+		const head = text(revision.head, "Mission review revision head", 64);
+		if (!reviewPath(root) || !/^[0-9a-f]{40,64}$/.test(base) || !/^[0-9a-f]{40,64}$/.test(head)) throw new Error("Invalid Mission review revision.");
+		return { root, base, head };
+	});
 }
 
 function reviewFindings(value: unknown, label: string) {
