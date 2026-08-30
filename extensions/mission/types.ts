@@ -97,6 +97,7 @@ export interface MissionEvent {
 	reviewAcceptedFindings?: MissionReviewFinding[];
 	reviewScopePaths?: string[];
 	reviewScopeRevisions?: MissionReviewRevision[];
+	reviewAcceptedRevisions?: MissionReviewRevision[];
 	reviewCorrectionCount?: number;
 	reviewCorrectionLimit?: number;
 	completionLatchCandidateId?: string;
@@ -177,6 +178,7 @@ export interface MissionCurrent {
 	reviewAcceptedFindings?: MissionReviewFinding[];
 	reviewScopePaths?: string[];
 	reviewScopeRevisions?: MissionReviewRevision[];
+	reviewAcceptedRevisions?: MissionReviewRevision[];
 	reviewCorrectionCount?: number;
 	reviewCorrectionLimit?: number;
 	completionLatchCandidateId?: string;

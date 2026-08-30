@@ -624,9 +624,10 @@ export class MissionRuntime {
 		const paths = reviewPaths(reviewCwd, workspace);
 		const scope = `Review only these typed Mission workspace paths: ${paths.join(", ")}.`;
 		const correctionReview = (current.reviewCorrectionCount ?? 0) > 0 || (current.reviewAdjudications?.length ?? 0) > 0;
-		const correctionScope = correctionReview ? await correctionReviewScope(this.pi, ctx.cwd, reviewCwd, workspace, missionIgnoredPaths(ctx.cwd)) : undefined;
-		if (correctionReview && !correctionScope) {
-			this.state.append(this.pi, this.state.statusEvent("blocked", "correction review requires one exact clean correction commit", "Commit the bounded correction before review so Runtime can persist and enforce its exact changed paths and base/head revisions."));
+		const correctionScope = correctionReview ? await correctionReviewScope(this.pi, ctx.cwd, reviewCwd, workspace, missionIgnoredPaths(ctx.cwd), current.reviewAcceptedRevisions) : undefined;
+		const initialRevisions = correctionReview ? undefined : await reviewedWorkspaceRevisions(this.pi, ctx.cwd, reviewCwd, workspace, missionIgnoredPaths(ctx.cwd));
+		if ((correctionReview && !correctionScope) || (!correctionReview && !initialRevisions)) {
+			this.state.append(this.pi, this.state.statusEvent("blocked", "independent review requires one exact clean candidate commit", "Commit the bounded candidate before review so Runtime can persist and enforce exact reviewed heads and correction topology."));
 			this.updateStatus();
 			return;
 		}
@@ -635,6 +636,9 @@ export class MissionRuntime {
 		const reviewMode = correctionReview
 			? `This is a bounded correction review. Prior adjudicated evidence remains authoritative for untouched areas. Review only these Runtime-enforced changed paths: ${correctionScope!.paths.join(", ")}. Exact revisions: ${correctionScope!.revisions.map((revision) => `${revision.root}:${revision.base}..${revision.head}`).join(", ")}. Accepted findings: ${accepted.length ? accepted.map((finding) => `#${finding.index} requirement=${finding.requirementIndex ?? "none"} criticalImpact=${finding.criticalImpact ?? "none"} path=${finding.path ?? "none"}: ${finding.summary}`).join(" | ") : "legacy correction scope; use only the exact changed paths"}. Latest correction record: ${latestProgress?.summary ?? "none"}.`
 			: "This is the initial full Mission review.";
+		const blockingRule = correctionReview
+			? "A blocker/major finding must name a Runtime-enforced changed path and include either an accepted requirementIndex or a typed criticalImpact of security or data_loss."
+			: "A blocker/major finding must name a path in the typed Mission workspace and include either its violated requirementIndex or a typed criticalImpact of security or data_loss.";
 		const sameReservedCandidate = current.reviewCandidateId === candidateId && current.reviewWorktreeFingerprint === reviewWorktreeFingerprint;
 		if (current.reviewAdmissionId && !sameReservedCandidate) {
 			if (service.restorationComplete?.() === false) {
@@ -645,13 +649,13 @@ export class MissionRuntime {
 			if (prior && ["starting", "running", "stopping"].includes(prior.runtime.status)) return;
 		}
 		const admissionId = sameReservedCandidate && current.reviewAdmissionId ? current.reviewAdmissionId : `review_${randomUUID()}`;
-		this.state.append(this.pi, this.state.reviewEvent("starting", { reason: current.reviewReason, worktreeFingerprint: reviewWorktreeFingerprint, candidateId, admissionId, scopePaths: correctionScope?.paths, scopeRevisions: correctionScope?.revisions }));
+		this.state.append(this.pi, this.state.reviewEvent("starting", { reason: current.reviewReason, worktreeFingerprint: reviewWorktreeFingerprint, candidateId, admissionId, scopePaths: correctionScope?.paths, scopeRevisions: correctionScope?.revisions ?? initialRevisions }));
 		this.reviewAdmissionInFlight = true;
 		let run;
 		try {
 			run = await service.start({
 				agent: "reviewer",
-				task: `Fresh independent Mission review. ${scope} ${reviewMode} Ignore unrelated pre-existing working-tree changes. Mission: ${current.title}. Objective: ${current.objective}. Requirements: ${current.requirements.map((requirement, index) => `[${index}] ${requirement}`).join(" | ")}. A blocker/major finding must name a Runtime-enforced changed path and include either its violated requirementIndex or a typed criticalImpact of security or data_loss; otherwise record it as minor/nit follow-up. Call the schema-validated review_report tool exactly once, then summarize for the parent. Do not edit files.`,
+				task: `Fresh independent Mission review. ${scope} ${reviewMode} Ignore unrelated pre-existing working-tree changes. Mission: ${current.title}. Objective: ${current.objective}. Requirements: ${current.requirements.map((requirement, index) => `[${index}] ${requirement}`).join(" | ")}. ${blockingRule} Otherwise record it as minor/nit follow-up. Call the schema-validated review_report tool exactly once, then summarize for the parent. Do not edit files.`,
 				cwd: reviewCwd,
 				context: "fresh",
 				allowWrite: false,
@@ -917,7 +921,7 @@ async function readReviewReport(run: DelegateRun, requirementCount: number, scop
 			const criticalImpact = finding.criticalImpact === "security" || finding.criticalImpact === "data_loss" ? finding.criticalImpact : undefined;
 			const blocking = submitted === "blocker" || submitted === "major";
 			const requirementLinked = requirementIndex !== undefined && requirementIndex < requirementCount;
-			const accepted = !acceptedRequirements.size || requirementIndex !== undefined && acceptedRequirements.has(requirementIndex) || criticalImpact !== undefined;
+			const accepted = acceptedFindings === undefined || acceptedFindings.length === 0 || (requirementIndex !== undefined && acceptedRequirements.has(requirementIndex)) || criticalImpact !== undefined;
 			const withinScope = scopePaths === undefined || path !== undefined && scopePaths.includes(path);
 			const severity = blocking && (!requirementLinked && !criticalImpact || !accepted || !withinScope) ? "minor" : submitted;
 			findings.push({ index, severity, summary: finding.summary.slice(0, 4_000), ...(path ? { path } : {}), ...(Number.isInteger(finding.line) ? { line: finding.line as number } : {}), ...(requirementIndex !== undefined ? { requirementIndex } : {}), ...(criticalImpact ? { criticalImpact } : {}) });
@@ -1006,10 +1010,9 @@ function reviewPaths(reviewCwd: string, workspace: MissionWorkspaceRoot[]): stri
 	});
 }
 
-async function correctionReviewScope(pi: ExtensionAPI, cwd: string, reviewCwd: string, workspace: MissionWorkspaceRoot[], ignoredPaths: string[]): Promise<{ paths: string[]; revisions: MissionReviewRevision[] } | undefined> {
+async function reviewedWorkspaceRevisions(pi: ExtensionAPI, cwd: string, reviewCwd: string, workspace: MissionWorkspaceRoot[], ignoredPaths: string[]): Promise<MissionReviewRevision[] | undefined> {
 	const canonicalCwd = await canonicalPath(cwd);
 	if (!canonicalCwd) return undefined;
-	const paths = new Set<string>();
 	const revisions: MissionReviewRevision[] = [];
 	for (const { root, scopes } of workspace) {
 		const literalScopes = scopes.map((scope) => `:(literal)${scope}`);
@@ -1020,25 +1023,57 @@ async function correctionReviewScope(pi: ExtensionAPI, cwd: string, reviewCwd: s
 		});
 		const gitPathspecs = [...literalScopes, ...exclusions];
 		const pathspec = gitPathspecs.length ? ["--", ...gitPathspecs] : [];
-		const [status, base, head] = await Promise.all([
+		const [status, head] = await Promise.all([
 			pi.exec("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=no", ...pathspec], { cwd: root }),
-			pi.exec("git", ["rev-parse", "--verify", "HEAD^"], { cwd: root }),
 			pi.exec("git", ["rev-parse", "--verify", "HEAD"], { cwd: root }),
 		]);
-		const baseCommit = base.stdout.trim();
 		const headCommit = head.stdout.trim();
-		if (status.code !== 0 || status.stdout || base.code !== 0 || head.code !== 0 || !/^[0-9a-f]{40,64}$/.test(baseCommit) || !/^[0-9a-f]{40,64}$/.test(headCommit)) return undefined;
-		const changed = await pi.exec("git", ["diff", "--name-only", "--no-renames", "-z", baseCommit, headCommit, ...pathspec], { cwd: root });
+		const revisionRoot = normalizeReviewPath(relative(reviewCwd, root).replaceAll("\\", "/") || ".");
+		if (status.code !== 0 || status.stdout || head.code !== 0 || !revisionRoot || !/^[0-9a-f]{40,64}$/.test(headCommit)) return undefined;
+		revisions.push({ root: revisionRoot, base: headCommit, head: headCommit });
+	}
+	return revisions;
+}
+
+async function correctionReviewScope(pi: ExtensionAPI, cwd: string, reviewCwd: string, workspace: MissionWorkspaceRoot[], ignoredPaths: string[], acceptedRevisions: MissionReviewRevision[] | undefined): Promise<{ paths: string[]; revisions: MissionReviewRevision[] } | undefined> {
+	const current = await reviewedWorkspaceRevisions(pi, cwd, reviewCwd, workspace, ignoredPaths);
+	if (!current || (acceptedRevisions && (acceptedRevisions.length !== current.length || new Set(acceptedRevisions.map((revision) => revision.root)).size !== acceptedRevisions.length))) return undefined;
+	const paths = new Set<string>();
+	const revisions: MissionReviewRevision[] = [];
+	for (const [index, { root, scopes }] of workspace.entries()) {
+		const head = current[index];
+		if (!head) return undefined;
+		let baseCommit: string;
+		if (acceptedRevisions === undefined) {
+			const legacyBase = await pi.exec("git", ["rev-parse", "--verify", "HEAD^"], { cwd: root });
+			baseCommit = legacyBase.stdout.trim();
+			if (legacyBase.code !== 0 || !/^[0-9a-f]{40,64}$/.test(baseCommit)) return undefined;
+		} else {
+			const accepted = acceptedRevisions.find((revision) => revision.root === head.root);
+			if (!accepted) return undefined;
+			baseCommit = accepted.head;
+			const ancestor = await pi.exec("git", ["merge-base", "--is-ancestor", baseCommit, head.head], { cwd: root });
+			if (ancestor.code !== 0) return undefined;
+		}
+		const literalScopes = scopes.map((scope) => `:(literal)${scope}`);
+		const canonicalCwd = await canonicalPath(cwd);
+		if (!canonicalCwd) return undefined;
+		const exclusions = ignoredPaths.flatMap((ignored) => {
+			const canonicalIgnored = resolve(canonicalCwd, relative(resolve(cwd), resolve(ignored)));
+			const path = relative(root, canonicalIgnored).replaceAll("\\", "/");
+			return path && path !== ".." && !path.startsWith("../") ? [`:(top,exclude,literal)${path}/`] : [];
+		});
+		const gitPathspecs = [...literalScopes, ...exclusions];
+		const pathspec = gitPathspecs.length ? ["--", ...gitPathspecs] : [];
+		const changed = await pi.exec("git", ["diff", "--name-only", "--no-renames", "-z", baseCommit, head.head, ...pathspec], { cwd: root });
 		if (changed.code !== 0 || changed.stdout.length > MAX_FINGERPRINT_PATH_BYTES) return undefined;
-		const prefix = relative(reviewCwd, root).replaceAll("\\", "/");
+		const prefix = head.root === "." ? "" : head.root;
 		for (const item of changed.stdout.split("\0").filter(Boolean)) {
 			const path = normalizeReviewPath([prefix, item].filter(Boolean).join("/"));
 			if (!path) return undefined;
 			paths.add(path);
 		}
-		const revisionRoot = normalizeReviewPath(prefix || ".");
-		if (!revisionRoot) return undefined;
-		revisions.push({ root: revisionRoot, base: baseCommit, head: headCommit });
+		revisions.push({ root: head.root, base: baseCommit, head: head.head });
 	}
 	return paths.size && paths.size <= 1_000 ? { paths: [...paths].sort(), revisions } : undefined;
 }

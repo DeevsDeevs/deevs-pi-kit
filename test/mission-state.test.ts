@@ -41,6 +41,16 @@ describe("Mission state", () => {
 		expect(mission.reviewSkippedReason).toBe("Documentation-only change");
 	});
 
+	it("persists reviewed head anchors across clear adjudication and later review due", async () => {
+		const test = setup();
+		const head = "a".repeat(40);
+		test.state.append(test.pi, await test.state.create({ objective: "Review topology", requirements: ["Bounded review"], chain: "kit" }, test.ctx));
+		test.state.append(test.pi, test.state.reviewEvent("awaiting_adjudication", { runId: "review-1", candidateId: "candidate-1", suggestedVerdict: "clear", scopeRevisions: [{ root: ".", base: head, head }] }));
+		test.state.append(test.pi, test.state.reviewEvent("clear", { runId: "review-1", candidateId: "candidate-1" }));
+		test.state.append(test.pi, test.state.reviewEvent("due", { reason: "candidate changed" }));
+		expect(test.state.read()).toMatchObject({ reviewAcceptedFindings: [], reviewAcceptedRevisions: [{ root: ".", base: head, head }] });
+	});
+
 	it("preserves candidate identity for limit-only and normalized no-op updates", async () => {
 		const test = setup();
 		test.state.append(test.pi, await test.state.create({ objective: "Implement runtime", requirements: ["Works"], paths: ["src", "test"], chain: "kit" }, test.ctx));

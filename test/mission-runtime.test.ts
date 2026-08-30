@@ -771,6 +771,26 @@ describe("Mission runtime", () => {
 		}
 	});
 
+	it("does not treat a present impact-only accepted set as unrestricted requirement scope", async () => {
+		const test = await setup();
+		const artifactsDir = mkdtempSync(join(tmpdir(), "mission-impact-only-major-"));
+		const candidateId = await test.runtime.completionCandidateId(test.ctx);
+		const run = { spec: { id: "review-impact-only-major", artifactsDir }, runtime: { status: "completed", output: "" } } as unknown as DelegateRun;
+		const service = { list: () => ({ runs: [], groups: [] }), executor: { get: () => run, onChange: () => () => undefined } } as unknown as SubagentService;
+		setSubagentService(service);
+		try {
+			test.state.append(test.pi, test.state.reviewEvent("awaiting_adjudication", { runId: "prior-critical-review", suggestedVerdict: "changes_requested", candidateId: "prior-critical-candidate", findings: [{ index: 0, severity: "major", summary: "security correction", path: "extensions/mission/runtime.ts", criticalImpact: "security" }] }));
+			test.state.append(test.pi, test.state.reviewEvent("changes_requested", { runId: "prior-critical-review", candidateId: "prior-critical-candidate" }));
+			test.state.append(test.pi, test.state.reviewEvent("running", { runId: run.spec.id, candidateId, worktreeFingerprint: expectedFingerprint(), scopePaths: ["extensions/mission/runtime.ts"] }));
+			writeFileSync(join(artifactsDir, "review-report.json"), JSON.stringify({ version: 1, overallExplanation: "unrelated requirement", verdict: "changes_requested", findings: [{ severity: "major", summary: "different requirement", path: "extensions/mission/runtime.ts", requirementIndex: 0 }] }));
+			expect(await (test.runtime as unknown as { reconcileReview: () => Promise<boolean> }).reconcileReview()).toBe(true);
+			expect(test.state.read()).toMatchObject({ reviewStatus: "awaiting_adjudication", reviewSuggestedVerdict: "clear", reviewBlockingFindingCount: 0, reviewBacklogFindingCount: 1, reviewHighestSeverity: "minor" });
+		} finally {
+			rmSync(artifactsDir, { recursive: true, force: true });
+			clearSubagentService(service);
+		}
+	});
+
 	it("blocks the fourth valid correction cycle until trusted authorization allows one more", async () => {
 		const test = await setup();
 		for (let cycle = 1; cycle <= 4; cycle++) {
@@ -1249,15 +1269,20 @@ describe("Mission runtime", () => {
 		}
 	});
 
-	it("reviews the whole repository for a path-less Mission started in a subdirectory", async () => {
+	it("anchors a multi-commit correction to the exact previously reviewed head", async () => {
 		const parent = mkdtempSync(join(tmpdir(), "mission-pathless-subdir-"));
 		const repo = createGitRepo(parent, "repo");
-		writeFileSync(join(repo, "tracked.txt"), "correction\n");
-		execFileSync("git", ["add", "tracked.txt"], { cwd: repo });
-		execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "correction"], { cwd: repo });
+		const reviewedHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
 		const subdir = join(repo, "nested");
 		mkdirSync(subdir);
 		const test = await setup({ cwd: subdir, exec: actualGitExec });
+		writeFileSync(join(repo, "tracked.txt"), "correction one\n");
+		execFileSync("git", ["add", "tracked.txt"], { cwd: repo });
+		execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "correction one"], { cwd: repo });
+		writeFileSync(join(repo, "added.txt"), "correction two\n");
+		execFileSync("git", ["add", "added.txt"], { cwd: repo });
+		execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "correction two"], { cwd: repo });
+		const correctionHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
 		let started: { cwd?: string; task?: string } | undefined;
 		const service = {
 			list: () => ({ runs: [], groups: [] }),
@@ -1269,7 +1294,10 @@ describe("Mission runtime", () => {
 		} as unknown as SubagentService;
 		setSubagentService(service);
 		try {
-			test.state.append(test.pi, test.state.reviewEvent("clear", { candidateId: "prior_candidate" }));
+			test.state.append(test.pi, test.state.reviewEvent("awaiting_adjudication", { candidateId: "prior_candidate", runId: "prior-review", suggestedVerdict: "changes_requested", findings: [{ index: 0, severity: "major", summary: "bounded correction", path: "tracked.txt", requirementIndex: 0 }], scopeRevisions: [{ root: ".", base: reviewedHead, head: reviewedHead }] }));
+			test.state.append(test.pi, test.state.reviewEvent("changes_requested", { candidateId: "prior_candidate", runId: "prior-review" }));
+			test.state.loadFromSession(test.ctx);
+			expect(test.state.read()?.reviewAcceptedRevisions).toEqual([{ root: ".", base: reviewedHead, head: reviewedHead }]);
 			test.state.append(test.pi, test.state.reviewEvent("due", { reason: "test correction review" }));
 			const internal = test.runtime as unknown as { startReview: (ctx: ExtensionContext, mission: MissionCurrent) => Promise<void> };
 			await internal.startReview(test.ctx, test.state.read()!);
@@ -1278,6 +1306,8 @@ describe("Mission runtime", () => {
 			expect(started?.task).toContain("bounded correction review");
 			expect(started?.task).toContain("Runtime-enforced changed path");
 			expect(started?.task).toContain("tracked.txt");
+			expect(started?.task).toContain("added.txt");
+			expect(started?.task).toContain(`.:${reviewedHead}..${correctionHead}`);
 			expect(started?.task).toContain("Exact revisions:");
 			expect(started?.task).not.toContain("nested");
 		} finally {
