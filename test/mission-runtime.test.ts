@@ -67,6 +67,9 @@ async function setup(options: { pending?: boolean; fingerprint?: () => string; h
 				writeFileSync(join(cwd, SYNTHETIC_FINGERPRINT_PATH), `${options.head?.() ?? "head"}\0${options.fingerprint?.() ?? ""}`);
 				return { code: 0, stdout: `${SYNTHETIC_FINGERPRINT_PATH}\0`, stderr: "" };
 			}
+			if (args[0] === "rev-parse" && args.includes("HEAD^")) return { code: 0, stdout: "b".repeat(40), stderr: "" };
+			if (args[0] === "rev-parse" && args.includes("HEAD")) return { code: 0, stdout: "a".repeat(40), stderr: "" };
+			if (args[0] === "diff" && args.includes("--name-only")) return { code: 0, stdout: `${SYNTHETIC_FINGERPRINT_PATH}\0`, stderr: "" };
 			return { code: 0, stdout: "", stderr: "" };
 		}),
 	} as unknown as ExtensionAPI;
@@ -741,6 +744,33 @@ describe("Mission runtime", () => {
 		}
 	});
 
+	it("structurally downgrades a correction finding outside accepted requirements and exact changed paths", async () => {
+		const test = await setup();
+		const artifactsDir = mkdtempSync(join(tmpdir(), "mission-out-of-scope-major-"));
+		const candidateId = await test.runtime.completionCandidateId(test.ctx);
+		const run = { spec: { id: "review-out-of-scope-major", artifactsDir }, runtime: { status: "completed", output: "" } } as unknown as DelegateRun;
+		const service = { list: () => ({ runs: [], groups: [] }), executor: { get: () => run, onChange: () => () => undefined } } as unknown as SubagentService;
+		setSubagentService(service);
+		try {
+			test.state.append(test.pi, test.state.reviewEvent("awaiting_adjudication", { runId: "prior-review", suggestedVerdict: "changes_requested", candidateId: "prior-candidate", findings: [{ index: 0, severity: "major", summary: "bounded review", path: "extensions/mission/runtime.ts", requirementIndex: 10 }] }));
+			test.state.append(test.pi, test.state.reviewEvent("changes_requested", { runId: "prior-review", candidateId: "prior-candidate" }));
+			test.state.loadFromSession(test.ctx);
+			expect(test.state.read()?.reviewAcceptedFindings).toMatchObject([{ requirementIndex: 10, path: "extensions/mission/runtime.ts" }]);
+			test.state.append(test.pi, test.state.reviewEvent("running", {
+				runId: run.spec.id,
+				candidateId,
+				worktreeFingerprint: expectedFingerprint(),
+				scopePaths: ["extensions/mission/runtime.ts"],
+			}));
+			writeFileSync(join(artifactsDir, "review-report.json"), JSON.stringify({ version: 1, overallExplanation: "unrelated", verdict: "changes_requested", findings: [{ severity: "major", summary: "outside correction", path: "extensions/runtime/service/git.ts", requirementIndex: 4 }] }));
+			expect(await (test.runtime as unknown as { reconcileReview: () => Promise<boolean> }).reconcileReview()).toBe(true);
+			expect(test.state.read()).toMatchObject({ reviewStatus: "awaiting_adjudication", reviewSuggestedVerdict: "clear", reviewBlockingFindingCount: 0, reviewBacklogFindingCount: 1, reviewHighestSeverity: "minor" });
+		} finally {
+			rmSync(artifactsDir, { recursive: true, force: true });
+			clearSubagentService(service);
+		}
+	});
+
 	it("blocks the fourth valid correction cycle until trusted authorization allows one more", async () => {
 		const test = await setup();
 		for (let cycle = 1; cycle <= 4; cycle++) {
@@ -1222,6 +1252,9 @@ describe("Mission runtime", () => {
 	it("reviews the whole repository for a path-less Mission started in a subdirectory", async () => {
 		const parent = mkdtempSync(join(tmpdir(), "mission-pathless-subdir-"));
 		const repo = createGitRepo(parent, "repo");
+		writeFileSync(join(repo, "tracked.txt"), "correction\n");
+		execFileSync("git", ["add", "tracked.txt"], { cwd: repo });
+		execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "correction"], { cwd: repo });
 		const subdir = join(repo, "nested");
 		mkdirSync(subdir);
 		const test = await setup({ cwd: subdir, exec: actualGitExec });
@@ -1243,7 +1276,9 @@ describe("Mission runtime", () => {
 			expect(started?.cwd).toBe(realpathSync(repo));
 			expect(started?.task).toContain("workspace paths: .");
 			expect(started?.task).toContain("bounded correction review");
-			expect(started?.task).toContain("typed Mission requirementIndex");
+			expect(started?.task).toContain("Runtime-enforced changed path");
+			expect(started?.task).toContain("tracked.txt");
+			expect(started?.task).toContain("Exact revisions:");
 			expect(started?.task).not.toContain("nested");
 		} finally {
 			await test.emit("session_shutdown");

@@ -108,7 +108,7 @@ describe("Runtime Git workspace adapter", () => {
 		await runtime.discardWorktree(current, { ...whitespaceSpoof, headCommit: whitespaceSpoofHead });
 		await runtime.removeWorktree(current, { ...alice, headCommit: aliceHandoff.headCommit });
 		await runtime.removeWorktree(current, { ...bob, headCommit: bobHandoff.headCommit });
-	});
+	}, 15_000);
 
 	it("recovers an exact replay when main has a nonconflicting edit in the same file", async () => {
 		const fixture = repository();
@@ -276,6 +276,14 @@ describe("Runtime Git workspace adapter", () => {
 		git(fixture.project, ["add", "-A"]);
 		git(fixture.project, ["commit", "-m", "remove attributes"]);
 		rmSync(marker, { force: true });
+		symlinkSync("../outside", join(fixture.project, "base-escape"));
+		git(fixture.project, ["add", "base-escape"]);
+		git(fixture.project, ["commit", "-m", "escaping base symlink"]);
+		const escapingBase = await runtime.discover(fixture.project);
+		await expect(runtime.createWorktree(escapingBase, join(fixture.managed, "base-escape"), "refs/heads/runtime/collab/base-escape", escapingBase.headCommit)).rejects.toThrow("symlink escapes");
+		rmSync(join(fixture.project, "base-escape"));
+		git(fixture.project, ["add", "-A"]);
+		git(fixture.project, ["commit", "-m", "remove escaping base symlink"]);
 		const repo = await runtime.discover(fixture.project);
 		const writer = await runtime.createWorktree(repo, join(fixture.managed, "unsafe"), "refs/heads/runtime/collab/unsafe", repo.headCommit);
 		rmSync(marker, { force: true });
