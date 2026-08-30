@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { HostedIntegration, HostedPiTarget, HostedTaskWorkspaceEvidence, HostedWorkspace } from "../hosted-types.ts";
-import { RuntimeGit, RuntimeGitError, type RuntimeWorktreeIdentity } from "./git.ts";
+import { RuntimeGit, RuntimeGitError, type RuntimeRepository, type RuntimeWorktreeIdentity } from "./git.ts";
 import { deriveTargetKey, RuntimeRegistrationManager, type HostedHostVerifier, type HostedLiveRegistration, type RegisterWorkspacePiInput } from "./registration.ts";
 import { deriveBridgeTargetKey, deriveParticipantKey, HostedStateStore } from "./state.ts";
 
@@ -51,7 +51,7 @@ export class RuntimeWorkspaceCoordinator {
 	private readonly host: HostedHostVerifier;
 	private readonly options: WorkspaceCoordinatorOptions;
 	private readonly git: RuntimeGit;
-	private readonly locks = new Set<string>();
+	private readonly locks = new Map<string, Promise<void>>();
 
 	constructor(root: string, store: HostedStateStore, registrations: RuntimeRegistrationManager, host: HostedHostVerifier, options: WorkspaceCoordinatorOptions = {}) {
 		this.root = root;
@@ -117,13 +117,15 @@ export class RuntimeWorkspaceCoordinator {
 		if (!workspace) throw new HostedWorkspaceError("not_found", "Workspace launch request does not exist.");
 		this.assertCaller(caller, workspace.projectRoot, input);
 		if (!['provisioning', 'ready', 'bound'].includes(workspace.state)) throw new HostedWorkspaceError("conflict", "Workspace launch is no longer recoverable as an unconsumed reservation.");
-		const repository = await this.git.discover(workspace.projectRoot);
+		const repository = await this.durableRepository(workspace);
 		return this.withRepository(repository.commonDir, async () => {
 			const current = this.workspace(workspace.workspaceId);
 			this.assertCaller(caller, current.projectRoot, input);
 			if (!["provisioning", "ready", "bound"].includes(current.state)) throw new HostedWorkspaceError("conflict", "Workspace launch is no longer recoverable as an unconsumed reservation.");
+			const currentRepository = await this.durableRepository(current);
+			if (currentRepository.commonDir !== repository.commonDir) throw new HostedWorkspaceError("identity_mismatch", "Workspace repository identity changed.");
 			try {
-				await this.git.discardWorktree(repository, worktree(current));
+				await this.git.discardWorktree(currentRepository, worktree(current));
 				const cleaned = { ...current, state: "cleaned" as const, updatedAt: this.tick(current.updatedAt) };
 				this.store.apply({ type: "workspace.replace", workspace: cleaned, expectedState: current.state, expectedUpdatedAt: current.updatedAt });
 				return cleaned;
@@ -149,23 +151,40 @@ export class RuntimeWorkspaceCoordinator {
 
 	async register(input: RegisterWorkspacePiInput & { launchToken: string }): Promise<WorkspaceRegistrationResult> {
 		const parsed = parseToken(input.launchToken);
-		const workspace = this.workspace(parsed.workspaceId);
-		if (workspace.ownerKind !== "pi" || workspace.state !== "bound" || !equalDigest(sha256(input.launchToken), workspace.launchDigest) || !workspace.herdr) throw new HostedWorkspaceError("conflict", "Workspace Pi launch capability is absent, consumed, or does not match.");
-		const target = workspaceTarget(workspace, input.piSessionFile);
-		const registration = await this.registrations.registerWorkspacePi(input, target, () => this.store.apply({ type: "workspace.consume", workspaceId: workspace.workspaceId, launchDigest: workspace.launchDigest, target, at: this.tick(workspace.updatedAt) }));
-		return this.registrationResult(registration, this.workspace(workspace.workspaceId));
+		const observed = this.workspace(parsed.workspaceId);
+		if (observed.ownerKind !== "pi" || observed.state !== "bound" || !equalDigest(sha256(input.launchToken), observed.launchDigest) || !observed.herdr) throw new HostedWorkspaceError("conflict", "Workspace Pi launch capability is absent, consumed, or does not match.");
+		const repository = await this.durableRepository(observed);
+		return this.withRepository(repository.commonDir, async () => {
+			const workspace = this.workspace(parsed.workspaceId);
+			if (workspace.ownerKind !== "pi" || workspace.state !== "bound" || !equalDigest(sha256(input.launchToken), workspace.launchDigest) || !workspace.herdr) throw new HostedWorkspaceError("conflict", "Workspace Pi launch capability is absent, consumed, or does not match.");
+			const currentRepository = await this.durableRepository(workspace);
+			if (currentRepository.commonDir !== repository.commonDir) throw new HostedWorkspaceError("identity_mismatch", "Workspace repository identity changed.");
+			await this.git.verifyWorktree(currentRepository, workspace.worktreePath, workspace.branchRef, workspace.headCommit);
+			await this.git.assertMaterialized(workspace.worktreePath);
+			const target = workspaceTarget(workspace, input.piSessionFile);
+			const registration = await this.registrations.registerWorkspacePi(input, target, () => this.store.apply({ type: "workspace.consume", workspaceId: workspace.workspaceId, launchDigest: workspace.launchDigest, target, at: this.tick(workspace.updatedAt) }));
+			return this.registrationResult(registration, this.workspace(workspace.workspaceId));
+		});
 	}
 
 	async reconnect(input: RegisterWorkspacePiInput & { workspaceId: string }): Promise<WorkspaceRegistrationResult> {
-		const workspace = this.workspace(input.workspaceId);
-		const target = this.store.read().targets[workspace.targetKey];
-		const participant = this.store.read().participants[workspace.participantKey];
-		const latest = participant?.transitions.at(-1);
-		const held = participant?.state === "held" && participant.holderTargetKey === target?.targetKey && participant.generation === workspace.holderGeneration;
-		const stoodDown = participant?.state === "vacant" && latest?.cause === "stand_down" && latest.previousHolderTargetKey === target?.targetKey && latest.previousGeneration === workspace.holderGeneration;
-		if (!target || target.kind !== "pi" || !target.workspaceId || (!held && !stoodDown)) throw new HostedWorkspaceError("conflict", "Workspace Pi participant succession is no longer authorized.");
-		const registration = await this.registrations.registerWorkspacePi(input, target);
-		return this.registrationResult(registration, workspace);
+		const observed = this.workspace(input.workspaceId);
+		const repository = await this.durableRepository(observed);
+		return this.withRepository(repository.commonDir, async () => {
+			const workspace = this.workspace(input.workspaceId);
+			const currentRepository = await this.durableRepository(workspace);
+			if (currentRepository.commonDir !== repository.commonDir) throw new HostedWorkspaceError("identity_mismatch", "Workspace repository identity changed.");
+			await this.git.verifyWorktree(currentRepository, workspace.worktreePath, workspace.branchRef, workspace.headCommit);
+			await this.git.assertFullCheckout(workspace.worktreePath);
+			const target = this.store.read().targets[workspace.targetKey];
+			const participant = this.store.read().participants[workspace.participantKey];
+			const latest = participant?.transitions.at(-1);
+			const held = participant?.state === "held" && participant.holderTargetKey === target?.targetKey && participant.generation === workspace.holderGeneration;
+			const stoodDown = participant?.state === "vacant" && latest?.cause === "stand_down" && latest.previousHolderTargetKey === target?.targetKey && latest.previousGeneration === workspace.holderGeneration;
+			if (!target || target.kind !== "pi" || !target.workspaceId || (!held && !stoodDown)) throw new HostedWorkspaceError("conflict", "Workspace Pi participant succession is no longer authorized.");
+			const registration = await this.registrations.registerWorkspacePi(input, target);
+			return this.registrationResult(registration, workspace);
+		});
 	}
 
 	async taskEvidence(targetKey: string): Promise<HostedTaskWorkspaceEvidence | undefined> { return this.withTaskEvidence(targetKey, (evidence) => evidence); }
@@ -175,11 +194,30 @@ export class RuntimeWorkspaceCoordinator {
 		if (!target?.workspaceId) return publish();
 		const workspace = this.workspace(target.workspaceId);
 		if (workspace.targetKey !== targetKey || target.workspaceRoot !== workspace.worktreePath) throw new HostedWorkspaceError("conflict", "Task result workspace target does not match Runtime ownership.");
-		const repository = await this.git.discover(workspace.projectRoot);
+		const repository = await this.durableRepository(workspace);
 		return this.withRepository(repository.commonDir, async () => {
-			await this.git.verifyWorktree(repository, workspace.worktreePath, workspace.branchRef, workspace.headCommit);
-			const status = await this.git.status(workspace.worktreePath);
-			return publish({ workspaceId: workspace.workspaceId, baseCommit: workspace.baseCommit, headCommit: workspace.headCommit, branchRef: workspace.branchRef, state: workspace.state, dirty: !status.clean, artifactRef: workspace.branchRef, capturedAt: this.now() });
+			const current = this.workspace(workspace.workspaceId);
+			if (current.targetKey !== targetKey || target.workspaceRoot !== current.worktreePath) throw new HostedWorkspaceError("conflict", "Task result workspace target changed.");
+			const currentRepository = await this.durableRepository(current);
+			if (currentRepository.commonDir !== repository.commonDir) throw new HostedWorkspaceError("identity_mismatch", "Workspace repository identity changed.");
+			await this.git.verifyWorktree(currentRepository, current.worktreePath, current.branchRef, current.headCommit);
+			const status = await this.git.status(current.worktreePath);
+			return publish({ workspaceId: current.workspaceId, baseCommit: current.baseCommit, headCommit: current.headCommit, branchRef: current.branchRef, state: current.state, dirty: !status.clean, artifactRef: current.branchRef, capturedAt: this.now() });
+		});
+	}
+
+	async withVerifiedBridgeWorkspace<T>(workspaceId: string, targetKey: string, expectedState: "bound" | "active", operation: () => Promise<T>): Promise<T> {
+		const observed = this.workspace(workspaceId);
+		if (observed.ownerKind !== "bridge" || observed.targetKey !== targetKey || observed.state !== expectedState) throw new HostedWorkspaceError("conflict", "Bridge workspace authority changed.");
+		const repository = await this.durableRepository(observed);
+		return this.withRepository(repository.commonDir, async () => {
+			const current = this.workspace(workspaceId);
+			if (current.ownerKind !== "bridge" || current.targetKey !== targetKey || current.state !== expectedState) throw new HostedWorkspaceError("conflict", "Bridge workspace authority changed.");
+			const currentRepository = await this.durableRepository(current);
+			if (currentRepository.commonDir !== repository.commonDir) throw new HostedWorkspaceError("identity_mismatch", "Bridge workspace repository identity changed.");
+			await this.git.verifyWorktree(currentRepository, current.worktreePath, current.branchRef, current.headCommit);
+			if (expectedState === "bound") await this.git.assertMaterialized(current.worktreePath); else await this.git.assertFullCheckout(current.worktreePath);
+			return operation();
 		});
 	}
 
@@ -198,7 +236,7 @@ export class RuntimeWorkspaceCoordinator {
 	retain(caller: HostedLiveRegistration, input: WorkspaceAuthority & { workspaceId: string }): HostedWorkspace {
 		const workspace = this.workspace(input.workspaceId);
 		this.assertCaller(caller, workspace.projectRoot, input);
-		if (!["ready", "bound", "active", "ready_handoff", "partial", "retained"].includes(workspace.state)) throw new HostedWorkspaceError("conflict", "Workspace is not retainable from its current state.");
+		if (!["ready", "bound", "ready_handoff", "partial", "retained"].includes(workspace.state)) throw new HostedWorkspaceError("conflict", "Active workspaces may be retained only after exact target stop.");
 		if (workspace.state === "retained") return workspace;
 		const retained = { ...workspace, state: "retained" as const, updatedAt: this.tick(workspace.updatedAt) };
 		this.store.apply({ type: "workspace.replace", workspace: retained, expectedState: workspace.state, expectedUpdatedAt: workspace.updatedAt });
@@ -215,22 +253,33 @@ export class RuntimeWorkspaceCoordinator {
 	async reconcile(caller: HostedLiveRegistration, input: WorkspaceAuthority & { workspaceId: string }): Promise<HostedWorkspace> {
 		const workspace = this.workspace(input.workspaceId);
 		this.assertCaller(caller, workspace.projectRoot, input);
-		if (workspace.state !== "provisioning") return workspace;
-		const repository = await this.git.discover(workspace.projectRoot);
-		try {
-			await this.git.verifyWorktree(repository, workspace.worktreePath, workspace.branchRef, workspace.baseCommit);
-			const ready = { ...workspace, state: "ready" as const, updatedAt: this.tick(workspace.updatedAt) };
-			this.store.apply({ type: "workspace.replace", workspace: ready, expectedState: workspace.state, expectedUpdatedAt: workspace.updatedAt });
-			return ready;
-		} catch (error) {
-			this.attention(workspace, workspace.state);
-			throw workspaceError(error);
-		}
+		if (workspace.state === "cleaned") return workspace;
+		const repository = await this.durableRepository(workspace);
+		return this.withRepository(repository.commonDir, async () => {
+			const current = this.workspace(input.workspaceId);
+			this.assertCaller(caller, current.projectRoot, input);
+			if (current.state === "cleaned") return current;
+			const currentRepository = await this.durableRepository(current);
+			if (currentRepository.commonDir !== repository.commonDir) throw new HostedWorkspaceError("identity_mismatch", "Workspace repository identity changed.");
+			try {
+				await this.git.verifyWorktree(currentRepository, current.worktreePath, current.branchRef, current.state === "provisioning" ? current.baseCommit : current.headCommit);
+				if (current.state === "provisioning" || current.state === "ready" || current.state === "bound") await this.git.assertMaterialized(current.worktreePath); else await this.git.assertFullCheckout(current.worktreePath);
+				if (current.state !== "provisioning") return current;
+				const ready = { ...current, state: "ready" as const, updatedAt: this.tick(current.updatedAt) };
+				this.store.apply({ type: "workspace.replace", workspace: ready, expectedState: current.state, expectedUpdatedAt: current.updatedAt });
+				return ready;
+			} catch (error) {
+				this.attention(current, current.state);
+				throw workspaceError(error);
+			}
+		});
 	}
 
 	async checkpoint(caller: HostedLiveRegistration, input: WorkspaceAuthority & { workspaceId: string; taskStatus?: "completed" | "failed" | "cancelled" }): Promise<HostedWorkspace> {
 		const workspace = this.workspace(input.workspaceId);
 		this.assertCaller(caller, workspace.projectRoot, input);
+		if (this.hasRetainedIntegration(workspace.workspaceId)) throw new HostedWorkspaceError("conflict", "Workspace checkpointing is frozen while an integration is retained.");
+		this.assertWorkspaceStopped(workspace);
 		if (!['retained', 'ready_handoff', 'partial'].includes(workspace.state)) throw new HostedWorkspaceError("conflict", "Workspace must be stopped/retained before checkpointing.");
 		return this.checkpointWorkspace(workspace, input.taskStatus);
 	}
@@ -238,55 +287,69 @@ export class RuntimeWorkspaceCoordinator {
 	async prepareIntegration(caller: HostedLiveRegistration, input: WorkspaceAuthority & { workspaceId: string }): Promise<HostedIntegration> {
 		const workspace = this.workspace(input.workspaceId);
 		this.assertCaller(caller, workspace.projectRoot, input);
-		const pending = Object.values(this.store.read().integrations).find((candidate) => candidate.workspaceId === workspace.workspaceId && candidate.state === "preparing");
-		if (pending) return this.reconcileIntegration(caller, { ...input, integrationId: pending.integrationId });
+		const existing = Object.values(this.store.read().integrations).find((candidate) => candidate.workspaceId === workspace.workspaceId && candidate.state !== "cleaned");
+		if (existing) return existing.state === "preparing" ? this.reconcileIntegration(caller, { ...input, integrationId: existing.integrationId }) : existing;
 		if (!['ready_handoff', 'retained', 'partial'].includes(workspace.state) || !workspace.commits?.length) throw new HostedWorkspaceError("conflict", "Workspace has no checkpointed handoff to integrate.");
 		const repository = await this.git.discover(workspace.projectRoot);
 		if (repository.commonDir !== workspace.gitCommonDir) throw new HostedWorkspaceError("identity_mismatch", "Workspace repository identity changed.");
-		const integrationId = this.id("integration");
-		const integrationsRoot = join(this.root, "integrations");
-		mkdirSync(integrationsRoot, { recursive: true, mode: 0o700 });
-		const now = this.now();
-		const integration: HostedIntegration = { version: 1, integrationId, workspaceId: workspace.workspaceId, projectRoot: workspace.projectRoot, gitCommonDir: workspace.gitCommonDir, worktreePath: join(realpathSync(integrationsRoot), integrationId), branchRef: `refs/heads/runtime/integrate/${integrationId}`, mainBranchRef: repository.branchRef, mainHead: repository.headCommit, sourceHead: workspace.headCommit, sourceCommits: workspace.commits, state: "preparing", createdAt: now, updatedAt: now };
-		this.store.apply({ type: "integration.ensure", integration });
-		try {
-			const result = await this.withRepository(repository.commonDir, async () => {
+		return this.withRepository(repository.commonDir, async () => {
+			const currentWorkspace = this.workspace(input.workspaceId);
+			this.assertCaller(caller, currentWorkspace.projectRoot, input);
+			const raced = Object.values(this.store.read().integrations).find((candidate) => candidate.workspaceId === currentWorkspace.workspaceId && candidate.state !== "cleaned");
+			if (raced) return raced;
+			const sourceCommits = currentWorkspace.commits;
+			if (!['ready_handoff', 'retained', 'partial'].includes(currentWorkspace.state) || !sourceCommits?.length) throw new HostedWorkspaceError("conflict", "Workspace has no checkpointed handoff to integrate.");
+			const currentRepository = await this.git.discover(currentWorkspace.projectRoot);
+			if (currentRepository.commonDir !== repository.commonDir || currentRepository.commonDir !== currentWorkspace.gitCommonDir) throw new HostedWorkspaceError("identity_mismatch", "Workspace repository identity changed.");
+			const integrationId = this.id("integration");
+			const integrationsRoot = join(this.root, "integrations");
+			mkdirSync(integrationsRoot, { recursive: true, mode: 0o700 });
+			const now = this.now();
+			const integration: HostedIntegration = { version: 1, integrationId, workspaceId: currentWorkspace.workspaceId, projectRoot: currentWorkspace.projectRoot, gitCommonDir: currentWorkspace.gitCommonDir, worktreePath: join(realpathSync(integrationsRoot), integrationId), branchRef: `refs/heads/runtime/integrate/${integrationId}`, mainBranchRef: currentRepository.branchRef, mainHead: currentRepository.headCommit, sourceHead: currentWorkspace.headCommit, sourceCommits, state: "preparing", createdAt: now, updatedAt: now };
+			this.store.apply({ type: "integration.ensure", integration });
+			try {
 				const worktree = await this.git.createIntegrationWorktree(repository, integration.worktreePath, integration.branchRef, integration.mainHead);
-				return { worktree, picked: await this.git.cherryPick(worktree.path, integration.sourceCommits) };
-			});
-			const next: HostedIntegration = result.picked.status === "prepared" ? { ...integration, state: "prepared", preparedHead: result.picked.headCommit, updatedAt: this.tick(integration.updatedAt) } : { ...integration, state: "conflicted", preparedHead: result.picked.headCommit, conflictPaths: result.picked.paths, updatedAt: this.tick(integration.updatedAt) };
-			this.store.apply({ type: "integration.replace", integration: next, expectedState: "preparing", expectedUpdatedAt: integration.updatedAt });
-			return next;
-		} catch (error) {
-			const next = { ...integration, state: "needs_attention" as const, updatedAt: this.tick(integration.updatedAt) };
-			this.store.apply({ type: "integration.replace", integration: next, expectedState: "preparing", expectedUpdatedAt: integration.updatedAt });
-			throw workspaceError(error);
-		}
+				const picked = await this.git.cherryPick(worktree.path, integration.sourceCommits);
+				const next: HostedIntegration = picked.status === "prepared" ? { ...integration, state: "prepared", preparedHead: picked.headCommit, updatedAt: this.tick(integration.updatedAt) } : { ...integration, state: "conflicted", preparedHead: picked.headCommit, conflictPaths: picked.paths, updatedAt: this.tick(integration.updatedAt) };
+				this.store.apply({ type: "integration.replace", integration: next, expectedState: "preparing", expectedUpdatedAt: integration.updatedAt });
+				return next;
+			} catch (error) {
+				const next = { ...integration, state: "needs_attention" as const, updatedAt: this.tick(integration.updatedAt) };
+				this.store.apply({ type: "integration.replace", integration: next, expectedState: "preparing", expectedUpdatedAt: integration.updatedAt });
+				throw workspaceError(error);
+			}
+		});
 	}
 
 	async reconcileIntegration(caller: HostedLiveRegistration, input: WorkspaceAuthority & { integrationId: string }): Promise<HostedIntegration> {
 		const integration = this.integration(input.integrationId);
 		this.assertCaller(caller, integration.projectRoot, input);
 		if (integration.state !== "preparing") return integration;
-		const repository = await this.git.discover(integration.projectRoot);
-		try {
-			const worktree = await this.git.verifyWorktree(repository, integration.worktreePath, integration.branchRef);
-			const status = await this.git.status(worktree.path);
-			let next: HostedIntegration;
-			if (!status.clean) next = { ...integration, state: "conflicted", preparedHead: worktree.headCommit, conflictPaths: status.paths.slice(0, 10_000), updatedAt: this.tick(integration.updatedAt) };
-			else if (worktree.headCommit === integration.mainHead) {
-				const picked = await this.git.cherryPick(worktree.path, integration.sourceCommits);
-				next = picked.status === "prepared" ? { ...integration, state: "prepared", preparedHead: picked.headCommit, updatedAt: this.tick(integration.updatedAt) } : { ...integration, state: "conflicted", preparedHead: picked.headCommit, conflictPaths: picked.paths, updatedAt: this.tick(integration.updatedAt) };
-			} else {
-				await this.git.verifyCherryPicks(worktree.path, integration.mainHead, worktree.headCommit, integration.sourceCommits);
-				next = { ...integration, state: "prepared", preparedHead: worktree.headCommit, updatedAt: this.tick(integration.updatedAt) };
+		const repository = await this.durableRepository(integration);
+		return this.withRepository(repository.commonDir, async () => {
+			try {
+				const current = this.integration(input.integrationId);
+				if (current.state !== "preparing") return current;
+				const currentRepository = await this.durableRepository(current);
+				if (currentRepository.commonDir !== repository.commonDir) throw new HostedWorkspaceError("identity_mismatch", "Integration repository identity changed.");
+				const worktree = await this.git.verifyWorktree(currentRepository, current.worktreePath, current.branchRef);
+				const status = await this.git.status(worktree.path);
+				let next: HostedIntegration;
+				if (!status.clean) next = { ...current, state: "conflicted", preparedHead: worktree.headCommit, conflictPaths: status.paths.slice(0, 10_000), updatedAt: this.tick(current.updatedAt) };
+				else if (worktree.headCommit === current.mainHead) {
+					const picked = await this.git.cherryPick(worktree.path, current.sourceCommits);
+					next = picked.status === "prepared" ? { ...current, state: "prepared", preparedHead: picked.headCommit, updatedAt: this.tick(current.updatedAt) } : { ...current, state: "conflicted", preparedHead: picked.headCommit, conflictPaths: picked.paths, updatedAt: this.tick(current.updatedAt) };
+				} else {
+					await this.git.verifyCherryPicks(worktree.path, current.mainHead, worktree.headCommit, current.sourceCommits);
+					next = { ...current, state: "prepared", preparedHead: worktree.headCommit, updatedAt: this.tick(current.updatedAt) };
+				}
+				this.store.apply({ type: "integration.replace", integration: next, expectedState: current.state, expectedUpdatedAt: current.updatedAt });
+				return next;
+			} catch (error) {
+				this.attentionIntegration(this.integration(input.integrationId));
+				throw workspaceError(error);
 			}
-			this.store.apply({ type: "integration.replace", integration: next, expectedState: integration.state, expectedUpdatedAt: integration.updatedAt });
-			return next;
-		} catch (error) {
-			this.attentionIntegration(integration);
-			throw workspaceError(error);
-		}
+		});
 	}
 
 	async finalizeIntegration(caller: HostedLiveRegistration, input: WorkspaceAuthority & { integrationId: string }): Promise<HostedIntegration> {
@@ -301,10 +364,11 @@ export class RuntimeWorkspaceCoordinator {
 			if (repository.commonDir !== discovered.commonDir || repository.commonDir !== integration.gitCommonDir || repository.branchRef !== integration.mainBranchRef) throw new HostedWorkspaceError("identity_mismatch", "Main repository identity changed.");
 			await this.git.verifyWorktree(repository, integration.worktreePath, integration.branchRef, integration.preparedHead);
 			await this.git.assertClean(integration.worktreePath);
+			const workspace = this.workspace(integration.workspaceId);
+			if (!["ready_handoff", "partial", "retained", "integrated"].includes(workspace.state) || workspace.headCommit !== integration.sourceHead || !sameOrdered(workspace.commits ?? [], integration.sourceCommits) || (workspace.state === "integrated" && workspace.integratedHead !== integration.preparedHead)) throw new HostedWorkspaceError("conflict", "Workspace state or handoff changed after integration preparation.");
 			const finalizedHead = await this.git.finalize(repository, integration.mainHead, integration.preparedHead);
 			const finalized: HostedIntegration = integration.state === "finalized" ? integration : { ...integration, state: "finalized", preparedHead: finalizedHead, updatedAt: this.tick(integration.updatedAt), finalizedAt: this.tick(integration.updatedAt) };
 			if (integration.state === "prepared") this.store.apply({ type: "integration.replace", integration: finalized, expectedState: "prepared", expectedUpdatedAt: integration.updatedAt });
-			const workspace = this.workspace(integration.workspaceId);
 			if (workspace.state !== "integrated") {
 				const integrated = { ...workspace, state: "integrated" as const, integratedHead: finalizedHead, updatedAt: this.tick(workspace.updatedAt) };
 				this.store.apply({ type: "workspace.replace", workspace: integrated, expectedState: workspace.state, expectedUpdatedAt: workspace.updatedAt });
@@ -316,15 +380,25 @@ export class RuntimeWorkspaceCoordinator {
 	async cleanupWorkspace(caller: HostedLiveRegistration, input: WorkspaceAuthority & { workspaceId: string; discardConfirmed: boolean }): Promise<HostedWorkspace> {
 		let workspace = this.workspace(input.workspaceId);
 		this.assertCaller(caller, workspace.projectRoot, input);
+		if (this.hasRetainedIntegration(workspace.workspaceId)) throw new HostedWorkspaceError("conflict", "Workspace cleanup is frozen while an integration is retained.");
 		if (workspace.state !== "integrated") {
 			if (!input.discardConfirmed || !["ready", "bound", "retained", "ready_handoff", "partial"].includes(workspace.state)) throw new HostedWorkspaceError("conflict", "Unintegrated workspace cleanup requires exact retained/provisioned state and explicit discard confirmation.");
 			if (!["ready", "bound"].includes(workspace.state)) workspace = await this.checkpointWorkspace(workspace, "cancelled");
 		}
 		const repository = await this.git.discover(workspace.projectRoot);
-		await this.withRepository(repository.commonDir, () => this.git.removeWorktree(repository, worktree(workspace)));
-		const cleaned = { ...workspace, state: "cleaned" as const, updatedAt: this.tick(workspace.updatedAt) };
-		this.store.apply({ type: "workspace.replace", workspace: cleaned, expectedState: workspace.state, expectedUpdatedAt: workspace.updatedAt });
-		return cleaned;
+		return this.withRepository(repository.commonDir, async () => {
+			const current = this.workspace(workspace.workspaceId);
+			this.assertCaller(caller, current.projectRoot, input);
+			if (current.updatedAt !== workspace.updatedAt || current.state !== workspace.state || current.headCommit !== workspace.headCommit) throw new HostedWorkspaceError("conflict", "Workspace changed before cleanup.");
+			if (this.hasRetainedIntegration(current.workspaceId)) throw new HostedWorkspaceError("conflict", "Workspace cleanup is frozen while an integration is retained.");
+			if (current.state !== "integrated" && (!input.discardConfirmed || !["ready", "bound", "ready_handoff", "partial"].includes(current.state))) throw new HostedWorkspaceError("conflict", "Workspace cleanup authority changed.");
+			const currentRepository = await this.git.discover(current.projectRoot);
+			if (currentRepository.commonDir !== repository.commonDir || currentRepository.commonDir !== current.gitCommonDir) throw new HostedWorkspaceError("identity_mismatch", "Workspace repository identity changed.");
+			await this.git.removeWorktree(currentRepository, worktree(current));
+			const cleaned = { ...current, state: "cleaned" as const, updatedAt: this.tick(current.updatedAt) };
+			this.store.apply({ type: "workspace.replace", workspace: cleaned, expectedState: current.state, expectedUpdatedAt: current.updatedAt });
+			return cleaned;
+		});
 	}
 
 	async cleanupIntegration(caller: HostedLiveRegistration, input: WorkspaceAuthority & { integrationId: string; discardConfirmed: boolean }): Promise<HostedIntegration> {
@@ -353,16 +427,22 @@ export class RuntimeWorkspaceCoordinator {
 	private async checkpointWorkspace(workspace: HostedWorkspace, taskStatus?: HostedWorkspace["taskStatus"]): Promise<HostedWorkspace> {
 		const repository = await this.git.discover(workspace.projectRoot);
 		if (repository.commonDir !== workspace.gitCommonDir) throw new HostedWorkspaceError("identity_mismatch", "Workspace repository identity changed.");
-		try {
-			const handoff = await this.withRepository(repository.commonDir, () => this.git.checkpoint(repository, worktree(workspace), workspace.baseCommit, `Runtime checkpoint ${workspace.workspaceId}`));
-			const state = taskStatus === "failed" || taskStatus === "cancelled" ? "partial" as const : "ready_handoff" as const;
-			const next: HostedWorkspace = { ...workspace, ...handoff, state, ...(taskStatus ? { taskStatus } : {}), updatedAt: this.tick(workspace.updatedAt) };
-			this.store.apply({ type: "workspace.replace", workspace: next, expectedState: workspace.state, expectedUpdatedAt: workspace.updatedAt });
-			return next;
-		} catch (error) {
-			this.attention(workspace, workspace.state);
-			throw workspaceError(error);
-		}
+		return this.withRepository(repository.commonDir, async () => {
+			const current = this.workspace(workspace.workspaceId);
+			if (current.updatedAt !== workspace.updatedAt || current.state !== workspace.state || current.headCommit !== workspace.headCommit) throw new HostedWorkspaceError("conflict", "Workspace changed before checkpointing.");
+			this.assertWorkspaceStopped(current);
+			if (this.hasRetainedIntegration(current.workspaceId)) throw new HostedWorkspaceError("conflict", "Workspace checkpointing is frozen while an integration is retained.");
+			try {
+				const handoff = await this.git.checkpoint(repository, worktree(current), current.baseCommit, `Runtime checkpoint ${current.workspaceId}`);
+				const state = taskStatus === "failed" || taskStatus === "cancelled" ? "partial" as const : "ready_handoff" as const;
+				const next: HostedWorkspace = { ...current, ...handoff, state, ...(taskStatus ? { taskStatus } : {}), updatedAt: this.tick(current.updatedAt) };
+				this.store.apply({ type: "workspace.replace", workspace: next, expectedState: current.state, expectedUpdatedAt: current.updatedAt });
+				return next;
+			} catch (error) {
+				this.attention(current, current.state);
+				throw workspaceError(error);
+			}
+		});
 	}
 
 	private registrationResult(registration: HostedLiveRegistration, workspace: HostedWorkspace): WorkspaceRegistrationResult {
@@ -408,7 +488,19 @@ export class RuntimeWorkspaceCoordinator {
 	private id(kind: "workspace" | "integration"): string { const value = this.options.createId?.(kind) ?? `${kind}_${randomUUID()}`; if (!/^[A-Za-z0-9_-]{1,200}$/.test(value)) throw new HostedWorkspaceError("invalid_request", `${kind} ID has invalid syntax.`); return value; }
 	private now(): number { return this.options.now?.() ?? Date.now(); }
 	private tick(previous: number): number { return Math.max(this.now(), previous + 1); }
-	private async withRepository<T>(key: string, operation: () => Promise<T>): Promise<T> { if (this.locks.has(key)) throw new HostedWorkspaceError("conflict", "Another Runtime Git operation is active for this repository."); this.locks.add(key); try { return await operation(); } finally { this.locks.delete(key); } }
+	private async durableRepository(record: Pick<HostedWorkspace | HostedIntegration, "projectRoot" | "gitCommonDir">): Promise<RuntimeRepository> { const repository = await this.git.discover(record.projectRoot); if (repository.commonDir !== record.gitCommonDir) throw new HostedWorkspaceError("identity_mismatch", "Runtime repository identity changed."); return repository; }
+	private assertWorkspaceStopped(workspace: HostedWorkspace): void { if (this.store.read().participants[workspace.participantKey]?.state === "held") throw new HostedWorkspaceError("conflict", "Workspace participant is still held and may mutate the worktree."); }
+	private hasRetainedIntegration(workspaceId: string): boolean { return Object.values(this.store.read().integrations).some((integration) => integration.workspaceId === workspaceId && integration.state !== "cleaned"); }
+	private async withRepository<T>(key: string, operation: () => Promise<T>): Promise<T> {
+		const previous = this.locks.get(key) ?? Promise.resolve();
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => { release = resolve; });
+		const tail = previous.then(() => gate);
+		this.locks.set(key, tail);
+		await previous;
+		try { return await operation(); }
+		finally { release(); if (this.locks.get(key) === tail) this.locks.delete(key); }
+	}
 }
 
 export interface WorkspaceRegistrationResult {
@@ -427,6 +519,7 @@ function workspaceTarget(workspace: HostedWorkspace & { ownerKind: "pi" }, piSes
 }
 
 function worktree(workspace: HostedWorkspace): RuntimeWorktreeIdentity { return { path: workspace.worktreePath, branchRef: workspace.branchRef, headCommit: workspace.headCommit }; }
+function sameOrdered(left: readonly string[], right: readonly string[]): boolean { return left.length === right.length && left.every((value, index) => value === right[index]); }
 function parseToken(value: string): { workspaceId: string } { const match = TOKEN.exec(value); if (!match) throw new HostedWorkspaceError("invalid_request", "Workspace launch token has invalid syntax."); return { workspaceId: match[1]! }; }
 function participantName(value: string, name: string): string { if (!NAME.test(value)) throw new HostedWorkspaceError("invalid_request", `${name} has invalid syntax.`); return value; }
 function bounded(value: string, name: string, max: number): string { if (typeof value !== "string" || !value.trim() || Buffer.byteLength(value) > max) throw new HostedWorkspaceError("invalid_request", `${name} is invalid.`); return value; }

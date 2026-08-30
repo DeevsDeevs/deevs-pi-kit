@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -61,6 +61,15 @@ describe("Runtime Git workspace adapter", () => {
 		git(spoof.path, ["commit", "-m", `alice checkpoint\n\n(cherry picked from commit ${aliceHandoff.commits[0]})`]);
 		const spoofHead = git(spoof.path, ["rev-parse", "HEAD"]);
 		await expect(runtime.verifyCherryPicks(spoof.path, repo.headCommit, spoofHead, aliceHandoff.commits)).rejects.toThrow("exact source commits");
+		const whitespaceSpoof = await runtime.createIntegrationWorktree(repo, join(fixture.managed, "stage-whitespace-spoof"), "refs/heads/runtime/integrate/whitespace-spoof", repo.headCommit);
+		writeFileSync(join(whitespaceSpoof.path, "shared.txt"), "alice \n");
+		renameSync(join(whitespaceSpoof.path, "old.txt"), join(whitespaceSpoof.path, "renamed.txt"));
+		rmSync(join(whitespaceSpoof.path, "delete.txt"));
+		writeFileSync(join(whitespaceSpoof.path, "binary.bin"), Buffer.from([0, 1, 2, 3]));
+		git(whitespaceSpoof.path, ["add", "-A"]);
+		git(whitespaceSpoof.path, ["commit", "-m", `alice checkpoint\n\n(cherry picked from commit ${aliceHandoff.commits[0]})`]);
+		const whitespaceSpoofHead = git(whitespaceSpoof.path, ["rev-parse", "HEAD"]);
+		await expect(runtime.verifyCherryPicks(whitespaceSpoof.path, repo.headCommit, whitespaceSpoofHead, aliceHandoff.commits)).rejects.toThrow("exact source commits");
 		expect(readFileSync(join(fixture.project, "shared.txt"), "utf8")).toBe("base\n");
 		expect(await runtime.finalize(repo, repo.headCommit, aliceTip)).toBe(aliceTip);
 		expect(await runtime.finalize(repo, repo.headCommit, aliceTip)).toBe(aliceTip);
@@ -75,11 +84,59 @@ describe("Runtime Git workspace adapter", () => {
 		if (conflicted.status === "conflicted") await runtime.discardWorktree(current, { ...stageBob, headCommit: conflicted.headCommit });
 		expect(existsSync(stageBob.path)).toBe(false);
 
+		const ambiguous = await runtime.createIntegrationWorktree(current, join(fixture.managed, "stage-ambiguous-cleanup"), "refs/heads/runtime/integrate/ambiguous-cleanup", current.headCommit);
+		const movedAmbiguous = join(fixture.managed, "stage-ambiguous-moved");
+		git(current.root, ["worktree", "move", ambiguous.path, movedAmbiguous]);
+		git(movedAmbiguous, ["checkout", "--detach"]);
+		await expect(runtime.removeWorktree(current, ambiguous)).rejects.toThrow();
+		expect(git(current.root, ["rev-parse", ambiguous.branchRef])).toBe(ambiguous.headCommit);
+		git(movedAmbiguous, ["checkout", ambiguous.branchRef.slice("refs/heads/".length)]);
+		git(current.root, ["worktree", "move", movedAmbiguous, ambiguous.path]);
+		await runtime.removeWorktree(current, ambiguous);
+
+		const interrupted = await runtime.createIntegrationWorktree(current, join(fixture.managed, "stage-interrupted-cleanup"), "refs/heads/runtime/integrate/interrupted-cleanup", current.headCommit);
+		git(current.root, ["worktree", "remove", "--", interrupted.path]);
+		expect(existsSync(interrupted.path)).toBe(false);
+		expect(git(current.root, ["rev-parse", interrupted.branchRef])).toBe(interrupted.headCommit);
+		await runtime.removeWorktree(current, interrupted);
+		expect(() => git(current.root, ["show-ref", "--verify", interrupted.branchRef])).toThrow();
+		await runtime.removeWorktree(current, interrupted);
+
 		await runtime.removeWorktree(current, { ...stageAlice, headCommit: aliceTip });
 		await runtime.removeWorktree(current, { ...stageAlice, headCommit: aliceTip });
 		await runtime.discardWorktree(current, { ...spoof, headCommit: spoofHead });
+		await runtime.discardWorktree(current, { ...whitespaceSpoof, headCommit: whitespaceSpoofHead });
 		await runtime.removeWorktree(current, { ...alice, headCommit: aliceHandoff.headCommit });
 		await runtime.removeWorktree(current, { ...bob, headCommit: bobHandoff.headCommit });
+	});
+
+	it("recovers an exact replay when main has a nonconflicting edit in the same file", async () => {
+		const fixture = repository();
+		const runtime = new RuntimeGit();
+		const original = Array.from({ length: 20 }, (_, index) => `line ${index + 1}`);
+		writeFileSync(join(fixture.project, "replay.txt"), `${original.join("\n")}\n`);
+		git(fixture.project, ["add", "replay.txt"]);
+		git(fixture.project, ["commit", "-m", "replay base"]);
+		const base = await runtime.discover(fixture.project);
+		const writer = await runtime.createWorktree(base, join(fixture.managed, "replay-writer"), "refs/heads/runtime/collab/replay-writer", base.headCommit);
+		const writerLines = [...original];
+		writerLines[0] = "writer change";
+		writeFileSync(join(writer.path, "replay.txt"), `${writerLines.join("\n")}\n`);
+		const handoff = await runtime.checkpoint(base, writer, base.headCommit, "writer replay");
+
+		const mainLines = [...original];
+		mainLines[19] = "main change";
+		writeFileSync(join(fixture.project, "replay.txt"), `${mainLines.join("\n")}\n`);
+		git(fixture.project, ["add", "replay.txt"]);
+		git(fixture.project, ["commit", "-m", "main same-file change"]);
+		const current = await runtime.discover(fixture.project);
+		const stage = await runtime.createIntegrationWorktree(current, join(fixture.managed, "replay-stage"), "refs/heads/runtime/integrate/replay", current.headCommit);
+		const prepared = await runtime.cherryPick(stage.path, handoff.commits);
+		if (prepared.status !== "prepared") throw new Error("Expected clean replay preparation.");
+		const expected = [...writerLines];
+		expected[19] = "main change";
+		expect(readFileSync(join(stage.path, "replay.txt"), "utf8")).toBe(`${expected.join("\n")}\n`);
+		expect(await runtime.verifyCherryPicks(stage.path, current.headCommit, prepared.headCommit, handoff.commits)).toMatchObject({ commits: [prepared.headCommit] });
 	});
 
 	it("fails finalization when main advances and preserves the prepared candidate", async () => {
@@ -97,6 +154,65 @@ describe("Runtime Git workspace adapter", () => {
 		git(fixture.project, ["commit", "-m", "main advances"]);
 		await expect(runtime.finalize(repo, repo.headCommit, prepared.status === "prepared" ? prepared.headCommit : "")).rejects.toThrow("changed before finalization");
 		expect(readFileSync(join(stage.path, "new.txt"), "utf8")).toBe("candidate\n");
+	});
+
+	it("refuses ignored-data collisions while preserving unrelated ignored main data", async () => {
+		const fixture = repository();
+		const runtime = new RuntimeGit();
+		const repo = await runtime.discover(fixture.project);
+		const writer = await runtime.createWorktree(repo, join(fixture.managed, "ignored-writer"), "refs/heads/runtime/collab/ignored-writer", repo.headCommit);
+		writeFileSync(join(writer.path, "collision.ignored"), "candidate\n");
+		writeFileSync(join(writer.path, "cache"), "tracked file\n");
+		mkdirSync(join(writer.path, "ancestor.ignored"));
+		writeFileSync(join(writer.path, "ancestor.ignored", "new.txt"), "tracked descendant\n");
+		git(writer.path, ["add", "-f", "collision.ignored", "cache", "ancestor.ignored/new.txt"]);
+		git(writer.path, ["commit", "-m", "tracked ignored path"]);
+		const handoff = await runtime.handoff(writer.path, repo.headCommit, git(writer.path, ["rev-parse", "HEAD"]));
+		const stage = await runtime.createIntegrationWorktree(repo, join(fixture.managed, "ignored-stage"), "refs/heads/runtime/integrate/ignored", repo.headCommit);
+		const prepared = await runtime.cherryPick(stage.path, handoff.commits);
+		if (prepared.status !== "prepared") throw new Error("Expected prepared ignored-path integration.");
+
+		writeFileSync(join(fixture.project, "collision.ignored"), "user data\n");
+		await expect(runtime.finalize(repo, repo.headCommit, prepared.headCommit)).rejects.toThrow("overwrite ignored main-worktree data");
+		expect(readFileSync(join(fixture.project, "collision.ignored"), "utf8")).toBe("user data\n");
+		expect(git(fixture.project, ["rev-parse", "HEAD"])).toBe(repo.headCommit);
+
+		rmSync(join(fixture.project, "collision.ignored"));
+		git(fixture.project, ["config", "core.ignoreCase", "true"]);
+		writeFileSync(join(fixture.project, "COLLISION.ignored"), "case-aliased user data\n");
+		await expect(runtime.finalize(repo, repo.headCommit, prepared.headCommit)).rejects.toThrow("overwrite ignored main-worktree data");
+		expect(readFileSync(join(fixture.project, "COLLISION.ignored"), "utf8")).toBe("case-aliased user data\n");
+		rmSync(join(fixture.project, "COLLISION.ignored"));
+		git(fixture.project, ["config", "core.ignoreCase", "false"]);
+
+		mkdirSync(join(fixture.project, "cache"));
+		writeFileSync(join(fixture.project, "cache", "child.ignored"), "nested user data\n");
+		await expect(runtime.finalize(repo, repo.headCommit, prepared.headCommit)).rejects.toThrow("overwrite ignored main-worktree data");
+		expect(readFileSync(join(fixture.project, "cache", "child.ignored"), "utf8")).toBe("nested user data\n");
+
+		rmSync(join(fixture.project, "cache"), { recursive: true });
+		writeFileSync(join(fixture.project, "ancestor.ignored"), "blocking user data\n");
+		await expect(runtime.finalize(repo, repo.headCommit, prepared.headCommit)).rejects.toThrow("overwrite ignored main-worktree data");
+		expect(readFileSync(join(fixture.project, "ancestor.ignored"), "utf8")).toBe("blocking user data\n");
+
+		rmSync(join(fixture.project, "ancestor.ignored"));
+		const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+		const bin = join(fixture.root, "bin");
+		mkdirSync(bin);
+		writeFileSync(join(bin, "git"), `#!/bin/sh\nfor argument do\n  if [ "$argument" = merge ]; then printf 'racing user data\\n' > ${JSON.stringify(join(fixture.project, "collision.ignored"))}; fi\ndone\nexec ${JSON.stringify(realGit)} "$@"\n`);
+		chmodSync(join(bin, "git"), 0o755);
+		const path = process.env.PATH;
+		try {
+			process.env.PATH = `${bin}:${path ?? ""}`;
+			await expect(runtime.finalize(repo, repo.headCommit, prepared.headCommit)).rejects.toThrow("Git merge failed");
+		} finally { process.env.PATH = path; }
+		expect(readFileSync(join(fixture.project, "collision.ignored"), "utf8")).toBe("racing user data\n");
+		expect(git(fixture.project, ["rev-parse", "HEAD"])).toBe(repo.headCommit);
+
+		rmSync(join(fixture.project, "collision.ignored"));
+		writeFileSync(join(fixture.project, "unrelated.ignored"), "preserve me\n");
+		expect(await runtime.finalize(repo, repo.headCommit, prepared.headCommit)).toBe(prepared.headCommit);
+		expect(readFileSync(join(fixture.project, "unrelated.ignored"), "utf8")).toBe("preserve me\n");
 	});
 
 	it("rejects destination merge drivers and oversized blobs from already-committed handoffs", async () => {

@@ -143,12 +143,11 @@ export class MissionRuntime {
 		this.restore(ctx);
 		const mission = this.state.readAny();
 		if (!mission) throw new Error("No Mission exists on this branch.");
-		const previousLimit = mission.reviewCorrectionLimit ?? 3;
-		const correctionBlocked = mission.status === "blocked" && (mission.reviewCorrectionCount ?? 0) >= previousLimit;
-		const nextLimit = previousLimit + 3;
-		this.state.append(this.pi, this.state.reviewPolicyEvent(nextLimit));
-		if (correctionBlocked && !this.state.limitExceeded()) this.state.append(this.pi, this.state.statusEvent("active", "explicit user authorization extended the review correction limit"));
-		chainCheckpoints.current?.due(`Mission review correction limit extended to ${nextLimit}`, "mission_control");
+		const correctionCount = mission.reviewCorrectionCount ?? 0;
+		const correctionBlocked = mission.status === "blocked" && correctionCount > (mission.reviewCorrectionLimit ?? 3);
+		this.state.append(this.pi, this.state.reviewPolicyEvent(correctionCount));
+		if (correctionBlocked && !this.state.limitExceeded()) this.state.append(this.pi, this.state.statusEvent("active", "explicit user authorization allowed one additional review correction"));
+		chainCheckpoints.current?.due(`Mission review correction cycle ${correctionCount} authorized`, "mission_control");
 		this.updateStatus();
 		void this.maybeContinue(ctx);
 	}
@@ -624,6 +623,11 @@ export class MissionRuntime {
 		const reviewCwd = workspace.length === 1 ? workspace[0]!.root : ctx.cwd;
 		const paths = reviewPaths(reviewCwd, workspace);
 		const scope = `Review only these typed Mission workspace paths: ${paths.join(", ")}.`;
+		const correctionReview = (current.reviewCorrectionCount ?? 0) > 0 || (current.reviewAdjudications?.length ?? 0) > 0;
+		const latestProgress = this.state.readProgress().at(-1);
+		const reviewMode = correctionReview
+			? `This is a bounded correction review. Prior adjudicated evidence remains authoritative for untouched areas. Review only the accepted corrections, current changed code, and directly affected invariants. Latest correction record: ${latestProgress?.summary ?? "none"}${latestProgress?.evidence.length ? `; evidence: ${latestProgress.evidence.join(" | ")}` : ""}. An unrelated concern is non-blocking follow-up unless it has a typed Mission requirementIndex or criticalImpact of security or data_loss.`
+			: "This is the initial full Mission review.";
 		const sameReservedCandidate = current.reviewCandidateId === candidateId && current.reviewWorktreeFingerprint === reviewWorktreeFingerprint;
 		if (current.reviewAdmissionId && !sameReservedCandidate) {
 			if (service.restorationComplete?.() === false) {
@@ -640,7 +644,7 @@ export class MissionRuntime {
 		try {
 			run = await service.start({
 				agent: "reviewer",
-				task: `Fresh independent Mission review. ${scope} Ignore unrelated pre-existing working-tree changes. Mission: ${current.title}. Objective: ${current.objective}. Requirements: ${current.requirements.join(" | ")}. Review normally, call the schema-validated review_report tool exactly once, then summarize for the parent. Do not edit files.`,
+				task: `Fresh independent Mission review. ${scope} ${reviewMode} Ignore unrelated pre-existing working-tree changes. Mission: ${current.title}. Objective: ${current.objective}. Requirements: ${current.requirements.map((requirement, index) => `[${index}] ${requirement}`).join(" | ")}. A blocker/major finding must include either its violated requirementIndex or a typed criticalImpact of security or data_loss; otherwise record it as minor/nit follow-up. Call the schema-validated review_report tool exactly once, then summarize for the parent. Do not edit files.`,
 				cwd: reviewCwd,
 				context: "fresh",
 				allowWrite: false,
@@ -746,7 +750,7 @@ export class MissionRuntime {
 			this.failReview(latest!, run.runtime.error || "independent review failed");
 			return true;
 		}
-		const report = await readReviewReport(run);
+		const report = await readReviewReport(run, mission.requirements.length);
 		const finalFingerprint = this.ctx ? await worktreeFingerprint(this.pi, this.ctx.cwd, mission) : undefined;
 		latest = this.state.read();
 		if (!sameAttempt(latest)) return true;
@@ -890,14 +894,18 @@ interface DerivedReviewReport {
 
 const REVIEW_SEVERITIES: readonly MissionReviewSeverity[] = ["blocker", "major", "minor", "nit"];
 
-async function readReviewReport(run: DelegateRun): Promise<DerivedReviewReport | undefined> {
+async function readReviewReport(run: DelegateRun, requirementCount: number): Promise<DerivedReviewReport | undefined> {
 	try {
 		const report = JSON.parse(await readFile(join(run.spec.artifactsDir, "review-report.json"), "utf8")) as { version?: unknown; verdict?: unknown; overallExplanation?: unknown; findings?: unknown };
 		if (report.version !== 1 || (report.verdict !== "clear" && report.verdict !== "changes_requested") || typeof report.overallExplanation !== "string" || !Array.isArray(report.findings) || report.findings.length > 1_000) return undefined;
 		const severities: MissionReviewSeverity[] = [];
 		for (const finding of report.findings) {
-			if (!finding || typeof finding !== "object" || Array.isArray(finding) || !("severity" in finding) || !REVIEW_SEVERITIES.includes(finding.severity as MissionReviewSeverity) || !("summary" in finding) || typeof finding.summary !== "string" || ("path" in finding && typeof finding.path !== "string") || ("line" in finding && (!Number.isInteger(finding.line) || (finding.line as number) < 1))) return undefined;
-			severities.push(finding.severity as MissionReviewSeverity);
+			if (!finding || typeof finding !== "object" || Array.isArray(finding) || !("severity" in finding) || !REVIEW_SEVERITIES.includes(finding.severity as MissionReviewSeverity) || !("summary" in finding) || typeof finding.summary !== "string" || ("path" in finding && typeof finding.path !== "string") || ("line" in finding && (!Number.isInteger(finding.line) || (finding.line as number) < 1)) || ("requirementIndex" in finding && (!Number.isInteger(finding.requirementIndex) || (finding.requirementIndex as number) < 0)) || ("criticalImpact" in finding && finding.criticalImpact !== "security" && finding.criticalImpact !== "data_loss")) return undefined;
+			const severity = finding.severity as MissionReviewSeverity;
+			const blocking = severity === "blocker" || severity === "major";
+			const requirementLinked = "requirementIndex" in finding && (finding.requirementIndex as number) < requirementCount;
+			const critical = finding.criticalImpact === "security" || finding.criticalImpact === "data_loss";
+			severities.push(blocking && !requirementLinked && !critical ? "minor" : severity);
 		}
 		const blockingFindingCount = severities.filter((severity) => severity === "blocker" || severity === "major").length;
 		return {
@@ -919,8 +927,10 @@ interface MissionWorkspaceRoot {
 	scopes: string[];
 }
 
-const MAX_UNTRACKED_FILE_BYTES = 16 * 1024 * 1024;
-const MAX_UNTRACKED_TOTAL_BYTES = 64 * 1024 * 1024;
+const MAX_FINGERPRINT_FILE_BYTES = 64 * 1024 * 1024;
+const MAX_FINGERPRINT_TOTAL_BYTES = 1024 * 1024 * 1024;
+const MAX_FINGERPRINT_PATH_BYTES = 8 * 1024 * 1024;
+const MAX_FINGERPRINT_PATHS = 100_000;
 
 async function resolveMissionWorkspace(pi: ExtensionAPI, cwd: string, paths: string[]): Promise<MissionWorkspaceRoot[] | undefined> {
 	const pathless = paths.length === 0;
@@ -990,7 +1000,8 @@ async function workspaceFingerprint(pi: ExtensionAPI, cwd: string, workspace: Mi
 		const hash = createHash("sha256");
 		const canonicalCwd = await canonicalPath(cwd);
 		if (!canonicalCwd) return undefined;
-		let untrackedBytes = 0;
+		let totalBytes = 0;
+		let totalPaths = 0;
 		for (const { root, scopes } of workspace) {
 			const literalScopes = scopes.map((scope) => `:(literal)${scope}`);
 			const exclusions = ignoredPaths.flatMap((ignored) => {
@@ -998,46 +1009,64 @@ async function workspaceFingerprint(pi: ExtensionAPI, cwd: string, workspace: Mi
 				const path = relative(root, canonicalIgnored).replaceAll("\\", "/");
 				return path && path !== ".." && !path.startsWith("../") ? [`:(top,exclude,literal)${path}/`] : [];
 			});
-			// No positive sentinel for the pathless case: `:(top,literal).` matches nothing (literal magic), silently blinding the fingerprint. An exclusion-only pathspec means "everything except", and an empty pathspec means the whole repo.
+			// No positive sentinel for the pathless case: `:(top,literal).` matches nothing. An exclusion-only pathspec means "everything except", and an empty pathspec means the whole repo.
 			const gitPathspecs = [...literalScopes, ...exclusions];
 			const pathspec = gitPathspecs.length ? ["--", ...gitPathspecs] : [];
-			const [baseline, diff, untracked] = await Promise.all([
-				scopes.length
-					? pi.exec("git", ["ls-tree", "-r", "--full-tree", "HEAD", "--", ...literalScopes], { cwd: root })
-					: pi.exec("git", ["rev-parse", "HEAD"], { cwd: root }),
-				pi.exec("git", ["diff", "--binary", "--no-ext-diff", "HEAD", ...pathspec], { cwd: root }),
+			const [staged, flags, untracked] = await Promise.all([
+				pi.exec("git", ["ls-files", "--cached", "--stage", "-z", ...pathspec], { cwd: root }),
+				pi.exec("git", ["ls-files", "--cached", "-v", "-z", ...pathspec], { cwd: root }),
 				pi.exec("git", ["ls-files", "--others", "--exclude-standard", "-z", ...pathspec], { cwd: root }),
 			]);
-			if (baseline.code !== 0 || diff.code !== 0 || untracked.code !== 0) return undefined;
-			hash.update(relative(canonicalCwd, root) || ".").update("\0").update(scopes.join("\0")).update("\0");
-			hash.update(scopes.length ? "scoped-tree\0" : "whole-head\0").update(baseline.stdout.trim()).update("\0").update(diff.stdout).update("\0");
-			for (const path of untracked.stdout.split("\0").filter(Boolean).sort()) {
-				const consumed = await hashUntrackedPath(hash, join(root, path), path, untrackedBytes);
+			if (staged.code !== 0 || flags.code !== 0 || untracked.code !== 0 || staged.stdout.length + flags.stdout.length + untracked.stdout.length > MAX_FINGERPRINT_PATH_BYTES) return undefined;
+			const tracked = new Map<string, string>();
+			for (const record of staged.stdout.split("\0").filter(Boolean)) {
+				const match = /^(\d{6}) [0-9a-f]+ (\d)\t([\s\S]+)$/.exec(record);
+				if (!match || match[2] !== "0" || tracked.has(match[3]!)) return undefined;
+				tracked.set(match[3]!, match[1]!);
+			}
+			const trackedFlags = new Map<string, string>();
+			for (const record of flags.stdout.split("\0").filter(Boolean)) {
+				if (record.length < 3 || record[1] !== " ") return undefined;
+				trackedFlags.set(record.slice(2), record[0]!);
+			}
+			if (trackedFlags.size !== tracked.size || [...tracked].some(([path]) => trackedFlags.get(path) !== "H")) return undefined;
+			const paths = [...new Set([...tracked.keys(), ...untracked.stdout.split("\0").filter(Boolean)])].sort();
+			totalPaths += paths.length;
+			if (totalPaths > MAX_FINGERPRINT_PATHS) return undefined;
+			hash.update(relative(canonicalCwd, root) || ".").update("\0").update(scopes.join("\0")).update("\0content-tree\0");
+			for (const path of paths) {
+				const consumed = await hashWorkspacePath(hash, root, path, tracked.get(path), totalBytes);
 				if (consumed === undefined) return undefined;
-				untrackedBytes += consumed;
+				totalBytes += consumed;
 			}
 		}
 		return hash.digest("hex");
 	} catch { return undefined; }
 }
 
-async function hashUntrackedPath(hash: Hash, target: string, path: string, totalBytes: number): Promise<number | undefined> {
+async function hashWorkspacePath(hash: Hash, root: string, path: string, indexMode: string | undefined, totalBytes: number): Promise<number | undefined> {
+	const target = resolve(root, path);
+	const relativeTarget = relative(root, target).replaceAll("\\", "/");
+	if (relativeTarget !== path || relativeTarget === ".." || relativeTarget.startsWith("../")) return undefined;
 	const info = await lstat(target).catch(() => undefined);
-	if (!info) return undefined;
+	// An ordinary indexed path absent from the worktree is a deletion and contributes no final-tree entry. Sparse and hidden index entries were rejected by the caller.
+	if (!info) return indexMode ? 0 : undefined;
 	hash.update(path).update("\0");
 	if (info.isSymbolicLink()) {
 		const link = await readlink(target).catch(() => undefined);
 		if (link === undefined) return undefined;
-		hash.update("symlink\0").update(link).update("\0");
+		hash.update("120000\0").update(link).update("\0");
 		return 0;
 	}
-	if (!info.isFile() || info.size > MAX_UNTRACKED_FILE_BYTES || totalBytes + info.size > MAX_UNTRACKED_TOTAL_BYTES) return undefined;
+	// Submodule worktrees require a separate recursive ownership model; fail closed rather than fingerprinting only the gitlink while nested contents may be dirty.
+	if (indexMode === "160000" || info.isDirectory()) return undefined;
+	if (!info.isFile() || info.size > MAX_FINGERPRINT_FILE_BYTES || totalBytes + info.size > MAX_FINGERPRINT_TOTAL_BYTES) return undefined;
 	const handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK).catch(() => undefined);
 	if (!handle) return undefined;
 	try {
 		const opened = await handle.stat();
-		if (!opened.isFile() || opened.size > MAX_UNTRACKED_FILE_BYTES || totalBytes + opened.size > MAX_UNTRACKED_TOTAL_BYTES) return undefined;
-		hash.update("file\0").update(String(opened.size)).update("\0");
+		if (!opened.isFile() || opened.size > MAX_FINGERPRINT_FILE_BYTES || totalBytes + opened.size > MAX_FINGERPRINT_TOTAL_BYTES) return undefined;
+		hash.update(opened.mode & 0o111 ? "100755\0" : "100644\0").update(String(opened.size)).update("\0");
 		const buffer = Buffer.allocUnsafe(64 * 1024);
 		let position = 0;
 		while (position < opened.size) {
@@ -1048,7 +1077,7 @@ async function hashUntrackedPath(hash: Hash, target: string, path: string, total
 			position += bytesRead;
 		}
 		const final = await handle.stat();
-		if (final.size !== opened.size) return undefined;
+		if (final.size !== opened.size || (final.mode & 0o111) !== (opened.mode & 0o111)) return undefined;
 		hash.update("\0");
 		return opened.size;
 	} finally {

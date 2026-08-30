@@ -45,6 +45,19 @@ interface HostedReceipt {
 	eventIds: string[];
 }
 
+interface RecoveredBridgeLaunch {
+	launchId: string;
+	requestId: string;
+	callerParticipantKey: string;
+	callerGeneration: string;
+	participantKey: string;
+	protocol: string;
+	participantId: string;
+	holderGeneration: string;
+	targetKey: string;
+	status: "pending" | "consumed" | "cancelled" | "expired";
+}
+
 type HostedClaimEvent =
 	| { eventId: string; type: "filesystem.created"; summary: string; path: string }
 	| { eventId: string; type: "mailbox.message"; summary: string; body: string; sendId: string; senderParticipantKey: string; recipientParticipantKey: string }
@@ -313,7 +326,22 @@ export class HostedRuntimeIntegration {
 		try {
 			if (action === "auto") {
 				const [requested = "status", ...extra] = rest;
-				if (extra.length || !["status", "on", "off", "toggle", "setup"].includes(requested)) throw new HostedRuntimeClientError("invalid_request", "Usage: /runtime auto [status|on|off|toggle|setup]");
+				if (!["status", "on", "off", "toggle", "setup", "recover"].includes(requested) || (requested === "recover" ? extra.length > 1 : extra.length > 0)) throw new HostedRuntimeClientError("invalid_request", "Usage: /runtime auto [status|on|off|toggle|setup|recover [operation-id]]");
+				if (requested === "recover") {
+					if (this.collaboratorManageActive) throw new HostedRuntimeClientError("busy", "A collaborator lifecycle operation is still active.");
+					if (!ctx.hasUI || !ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Auto capacity recovery requires a trusted interactive Pi session.");
+					const registration = await this.requireRegistration(ctx);
+					const listed = strictObject(await this.client.call("participant.auto_capacity.list", auth(registration)), "Auto capacity reservations");
+					const reservations = Array.isArray(listed.reservations) ? listed.reservations.map((item) => strictObject(item, "Auto capacity reservation")) : [];
+					const operationId = extra[0] ?? (reservations.length === 1 ? text(reservations[0]!.operationId) : undefined);
+					if (!operationId && reservations.length > 1) throw new HostedRuntimeClientError("conflict", `Multiple Auto capacity reservations exist; retry with one exact operation ID: ${reservations.map((reservation) => text(reservation.operationId)).join(", ")}.`);
+					if (operationId && reservations.length > 0 && !reservations.some((reservation) => reservation.operationId === operationId)) throw new HostedRuntimeClientError("not_found", "That Auto capacity reservation is not owned by this Pi target.");
+					if (!await ctx.ui.confirm("Recover Runtime Auto capacity?", `Only continue after verifying that every collaborator from ${operationId ?? "the stale start lock"} is durably held or its exact preserved Herdr resource cannot still settle. Release the reservation and remove this Pi target's stale start lock?`)) return;
+					if (operationId) await this.client.call("participant.auto_capacity.recover", { ...auth(registration), operationId, confirmedAbsent: true });
+					const lockRemoved = this.autoStore.recoverStartLock();
+					ctx.ui.notify(`Runtime Auto recovery settled${operationId ? ` ${operationId}` : " no reservation"}; stale start lock ${lockRemoved ? "removed" : "was already absent"}.`, "info");
+					return;
+				}
 				if (requested === "setup") {
 					if (!ctx.hasUI || !await ctx.ui.confirm("Configure Runtime Auto shortcut?", "Move Pi thinking-level cycling from Shift+Tab to Ctrl+Shift+T, bind Shift+Tab to Runtime Auto/Manual mode, then reload Pi?")) return;
 					const result = this.autoStore.configureShortcut();
@@ -322,7 +350,7 @@ export class HostedRuntimeIntegration {
 				}
 				const state = requested === "on" ? this.autoStore.set(true) : requested === "off" ? this.autoStore.set(false) : requested === "toggle" ? this.autoStore.toggle() : this.autoStore.read().state;
 				this.updateAutoStatus(ctx, state);
-				ctx.ui.notify(`Runtime collaborator mode: ${state.enabled ? "AUTO" : "MANUAL"}; up to ${state.maxConcurrentStarts} concurrent starts, ${state.maxLiveCollaborators} live collaborators, profile ceiling ${state.profileCeiling}; Shift+Tab ${this.autoStore.shortcutConfigured() ? "configured" : "requires /runtime auto setup"}.`, state.enabled ? "warning" : "info");
+				ctx.ui.notify(`Runtime collaborator mode: ${state.enabled ? "AUTO" : "MANUAL"}; up to ${state.maxConcurrentStarts} concurrent starts, ${state.maxLiveCollaborators} held or reserved collaborators, profile ceiling ${state.profileCeiling}; Shift+Tab ${this.autoStore.shortcutConfigured() ? "configured" : "requires /runtime auto setup"}.`, state.enabled ? "warning" : "info");
 				return;
 			}
 			if (action === "start") {
@@ -534,15 +562,23 @@ export class HostedRuntimeIntegration {
 		const auto = this.activeAutoState(ctx);
 		let releaseStartLock: (() => void) | undefined;
 		let retainStartLock = false;
+		const capacity: { registration?: LiveClientRegistration; operationId?: string } = {};
 		try {
 			releaseStartLock = await this.autoStore.acquireStartLock();
-			return await this.startCollaboratorConfirmed(input, ctx, signal, auto);
+			return await this.startCollaboratorConfirmed(input, ctx, signal, auto, capacity);
 		} catch (error) {
 			retainStartLock = error instanceof HostedCollaboratorStartError && error.childMayBeLive;
 			throw error;
 		} finally {
-			if (!retainStartLock) releaseStartLock?.();
-			this.collaboratorManageActive = false;
+			try {
+				if (!retainStartLock && capacity.registration && capacity.operationId) await this.client.call("participant.auto_capacity.release", { ...auth(capacity.registration), operationId: capacity.operationId });
+			} catch (error) {
+				retainStartLock = true;
+				throw new HostedCollaboratorStartError("unavailable", `Runtime Auto capacity ${capacity.operationId} could not be released; its launch lock and reservation were preserved. Recover with /runtime auto recover ${capacity.operationId}: ${error instanceof Error ? error.message : String(error)}`, true);
+			} finally {
+				if (!retainStartLock) releaseStartLock?.();
+				this.collaboratorManageActive = false;
+			}
 		}
 	}
 
@@ -552,6 +588,7 @@ export class HostedRuntimeIntegration {
 		const auto = this.activeAutoState(ctx);
 		let releaseStartLock: (() => void) | undefined;
 		let retainStartLock = false;
+		const capacity: { registration?: LiveClientRegistration; operationId?: string } = {};
 		try {
 			releaseStartLock = await this.autoStore.acquireStartLock();
 			throwIfAborted(signal);
@@ -583,7 +620,12 @@ export class HostedRuntimeIntegration {
 			const confirmed = auto ? true : await ctx.ui.confirm("Start Runtime collaborators?", `As ${identity.protocol}/${identity.participantId}, start ${normalized.length} collaborators with concurrency up to 4 in no-focus Herdr tabs?\n\n${summary}`, { signal });
 			throwIfAborted(signal);
 			if (!confirmed) return normalized.map((candidate) => ({ participant: `${identity.protocol}/${candidate.participantId}`, status: "declined" }));
-			if (auto) this.recordAutoLifecycle(auto, "start", "authorized", registration, participantNames, operationId);
+			if (auto) {
+				capacity.registration = registration;
+				capacity.operationId = operationId;
+				await this.client.call("participant.auto_capacity.reserve", { ...auth(registration), operationId, protocol: identity.protocol, callerParticipantId: identity.participantId, expectedCallerGeneration: caller.generation, participantIds: normalized.map((candidate) => candidate.participantId) });
+				this.recordAutoLifecycle(auto, "start", "authorized", registration, participantNames, operationId);
+			}
 			const results = new Array<CollaboratorManageResult>(normalized.length);
 			let next = 0;
 			const worker = async (): Promise<void> => {
@@ -609,12 +651,19 @@ export class HostedRuntimeIntegration {
 			if (auto) this.recordAutoLifecycle(auto, "start", "settled", registration, participantNames, operationId, results);
 			return results;
 		} finally {
-			if (!retainStartLock) releaseStartLock?.();
-			this.collaboratorManageActive = false;
+			try {
+				if (!retainStartLock && capacity.registration && capacity.operationId) await this.client.call("participant.auto_capacity.release", { ...auth(capacity.registration), operationId: capacity.operationId });
+			} catch (error) {
+				retainStartLock = true;
+				throw new HostedCollaboratorStartError("unavailable", `Runtime Auto capacity ${capacity.operationId} could not be released; its launch lock and reservation were preserved. Recover with /runtime auto recover ${capacity.operationId}: ${error instanceof Error ? error.message : String(error)}`, true);
+			} finally {
+				if (!retainStartLock) releaseStartLock?.();
+				this.collaboratorManageActive = false;
+			}
 		}
 	}
 
-	private async startCollaboratorConfirmed(input: { participantId: string; protocol?: string; callerParticipantId?: string; driver?: CollaboratorDriver; model?: string; persona?: string; profile?: CollaboratorProfile }, ctx: ExtensionContext, signal?: AbortSignal, auto?: CollaboratorAutoState): Promise<{ started: boolean; participant: string; paneId?: string }> {
+	private async startCollaboratorConfirmed(input: { participantId: string; protocol?: string; callerParticipantId?: string; driver?: CollaboratorDriver; model?: string; persona?: string; profile?: CollaboratorProfile }, ctx: ExtensionContext, signal: AbortSignal | undefined, auto: CollaboratorAutoState | undefined, capacity: { registration?: LiveClientRegistration; operationId?: string }): Promise<{ started: boolean; participant: string; paneId?: string }> {
 		throwIfAborted(signal);
 		if (!ctx.hasUI && !auto) throw new HostedRuntimeClientError("host_unavailable", "Collaborator start confirmation requires an interactive Pi session or enabled Runtime Auto mode.");
 		if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Collaborator start requires a trusted project.");
@@ -664,7 +713,12 @@ export class HostedRuntimeIntegration {
 		const confirmed = auto ? true : await ctx.ui.confirm("Start Runtime collaborator?", `${callerAction} ${participantName} using ${collaboratorConfiguration(candidate)}, project ${projectRoot}, isolated worktree ${candidate.profile === "workspace-write" ? "yes" : "no"}${replacesStoodDown ? ", replacing its exact stood-down process" : ""}, in a no-focus Herdr tab?`, { signal });
 		throwIfAborted(signal);
 		if (!confirmed) return { started: false, participant: participantName };
-		if (auto) this.recordAutoLifecycle(auto, "start", "authorized", registration, [participantName], operationId);
+		if (auto) {
+			capacity.registration = registration;
+			capacity.operationId = operationId;
+			await this.client.call("participant.auto_capacity.reserve", { ...auth(registration), operationId, protocol, callerParticipantId, ...(expectedCaller ? { expectedCallerGeneration: expectedCaller.generation } : {}), participantIds: [participantId] });
+			this.recordAutoLifecycle(auto, "start", "authorized", registration, [participantName], operationId);
+		}
 		let acquiredCaller: ParticipantIdentity | undefined;
 		let rollbackCaller = false;
 		try {
@@ -1001,9 +1055,10 @@ export class HostedRuntimeIntegration {
 				try { launch = strictObject(await this.client.call("bridge.launch.create", launchParams), "Bridge launch retry"); } catch {}
 			}
 			if (!launch) {
-				const recovered = await this.recoverBridgeRequest(registration, expectedCaller, bridgeRequestId);
+				const recovered = await this.recoverBridgeRequest(registration, expectedCaller, bridgeRequestId, { bridgeId, protocol, participantId });
 				this.pi.appendEntry(HOSTED_BRIDGE_REQUEST_ENTRY, { version: 1, requestId: bridgeRequestId, bridgeId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, workspaceId: workspace?.workspaceId, status: recovered ? "recovered" : "needs_attention" });
 				if (!recovered) throw new HostedCollaboratorStartError("unavailable", "Bridge launch response and recovery are uncertain; capacity and durable evidence were preserved.", true);
+				if (recovered.status === "consumed") childMayBeLive = true;
 				throw launchError ?? new HostedRuntimeClientError("conflict", "Bridge launch response was uncertain and has been safely recovered; retry start.");
 			}
 			const launchToken = text(launch.launchToken);
@@ -1036,13 +1091,17 @@ export class HostedRuntimeIntegration {
 				throw new HostedCollaboratorStartError("invalid_response", "Herdr created native collaborator resources without returning exact identities; recovery artifacts were preserved.", true);
 			}
 			if (childMayBeLive && terminateAmbiguous && (tabId || paneId)) {
-				const resource = tabId ? ["tab", "close", tabId] : ["pane", "close", paneId!];
-				const closed = await this.pi.exec("herdr", resource, { timeout: 5_000 });
-				if (closed.code !== 0) {
-					const stillLive = await this.pi.exec("herdr", [tabId ? "tab" : "pane", "get", tabId ?? paneId!], { timeout: 2_000 });
-					if (!herdrNotFound(stillLive.stdout, tabId ? "tab_not_found" : "pane_not_found")) throw new HostedCollaboratorStartError("host_unavailable", "Ambiguous native collaborator startup could not be terminated; its capacity lock and recovery artifacts were preserved.", true);
+				const recovered = bridgeRequestId ? await this.recoverBridgeRequest(registration, expectedCaller, bridgeRequestId, { bridgeId, protocol, participantId }) : undefined;
+				if (bridgeRequestId && !recovered) throw new HostedCollaboratorStartError("unavailable", "Native collaborator launch authority recovery remains uncertain; capacity evidence was preserved.", true);
+				if (recovered?.status === "consumed") await this.stopRecoveredBridge(registration, recovered);
+				else {
+					const resource = tabId ? ["tab", "close", tabId] : ["pane", "close", paneId!];
+					const closed = await this.pi.exec("herdr", resource, { timeout: 5_000 });
+					if (closed.code !== 0) {
+						const stillLive = await this.pi.exec("herdr", [tabId ? "tab" : "pane", "get", tabId ?? paneId!], { timeout: 2_000 });
+						if (!herdrNotFound(stillLive.stdout, tabId ? "tab_not_found" : "pane_not_found")) throw new HostedCollaboratorStartError("host_unavailable", "Ambiguous native collaborator startup could not be terminated; its capacity lock and recovery artifacts were preserved.", true);
+					}
 				}
-				if (bridgeRequestId && !await this.recoverBridgeRequest(registration, expectedCaller, bridgeRequestId)) throw new HostedCollaboratorStartError("unavailable", "Native collaborator tab closed, but launch authority recovery remains uncertain; capacity evidence was preserved.", true);
 				if (workspace) await this.client.call("workspace.retain", { ...authority, workspaceId: workspace.workspaceId });
 				preserved = true;
 				childMayBeLive = false;
@@ -1051,17 +1110,24 @@ export class HostedRuntimeIntegration {
 			throw error;
 		} finally {
 			if (!childMayBeLive && !preserved) {
-				if (tabId || paneId) {
-					const resource = tabId ? ["tab", "close", tabId] : ["pane", "close", paneId!];
-					const closed = await this.pi.exec("herdr", resource, { timeout: 5_000 });
-					if (closed.code !== 0) throw new HostedRuntimeClientError("host_unavailable", "Herdr could not clean up failed native collaborator resources.");
-				}
-				if (bridgeRequestId && !await this.recoverBridgeRequest(registration, expectedCaller, bridgeRequestId)) {
+				const recovered = bridgeRequestId ? await this.recoverBridgeRequest(registration, expectedCaller, bridgeRequestId, { bridgeId, protocol, participantId }) : undefined;
+				if (bridgeRequestId && !recovered) {
 					childMayBeLive = true;
 					throw new HostedCollaboratorStartError("unavailable", "Failed native launch authority could not be recovered; capacity evidence was preserved.", true);
 				}
-				rmSync(bridgeRoot, { recursive: true, force: true });
-				if (workspace) await this.client.call("workspace.cleanup", { ...authority, workspaceId: workspace.workspaceId, discardConfirmed: true });
+				if (recovered?.status === "consumed") {
+					await this.stopRecoveredBridge(registration, recovered);
+					if (workspace) await this.client.call("workspace.retain", { ...authority, workspaceId: workspace.workspaceId });
+					preserved = true;
+				} else {
+					if (tabId || paneId) {
+						const resource = tabId ? ["tab", "close", tabId] : ["pane", "close", paneId!];
+						const closed = await this.pi.exec("herdr", resource, { timeout: 5_000 });
+						if (closed.code !== 0) throw new HostedRuntimeClientError("host_unavailable", "Herdr could not clean up failed native collaborator resources.");
+					}
+					rmSync(bridgeRoot, { recursive: true, force: true });
+					if (workspace) await this.client.call("workspace.cleanup", { ...authority, workspaceId: workspace.workspaceId, discardConfirmed: true });
+				}
 			}
 		}
 		throw new HostedRuntimeClientError("internal", "Native collaborator launch did not settle.");
@@ -1117,14 +1183,27 @@ export class HostedRuntimeIntegration {
 		throw new HostedRuntimeClientError("host_unavailable", `Herdr pane ${paneId} did not settle at its authorized cwd.`);
 	}
 
-	private async recoverBridgeRequest(registration: LiveClientRegistration, caller: ClientParticipantStatus, requestId: string): Promise<boolean> {
+	private async recoverBridgeRequest(registration: LiveClientRegistration, caller: ClientParticipantStatus, requestId: string, expected: { bridgeId: string; protocol: string; participantId: string }): Promise<RecoveredBridgeLaunch | undefined> {
 		for (let attempt = 0; attempt < 310; attempt++) {
 			try {
-				await this.client.call("bridge.launch.recover", { ...auth(registration), requestId, callerParticipantKey: caller.participantKey, expectedCallerGeneration: caller.generation });
-				return true;
-			} catch { if (attempt < 309) await delay(100); }
+				const response = strictObject(await this.client.call("bridge.launch.recover", { ...auth(registration), requestId, callerParticipantKey: caller.participantKey, expectedCallerGeneration: caller.generation }), "Bridge recovery result");
+				const launch = strictObject(response.launch, "Recovered bridge launch");
+				const status = launch.status;
+				if (status !== "pending" && status !== "consumed" && status !== "cancelled" && status !== "expired") throw new HostedRuntimeClientError("invalid_response", "Recovered bridge launch status is invalid.");
+				const recovered: RecoveredBridgeLaunch = { launchId: text(launch.launchId), requestId: text(launch.requestId), callerParticipantKey: text(launch.callerParticipantKey), callerGeneration: text(launch.callerGeneration), participantKey: text(launch.participantKey), protocol: text(launch.protocol), participantId: text(launch.participantId), holderGeneration: text(launch.holderGeneration), targetKey: text(launch.targetKey), status: status as RecoveredBridgeLaunch["status"] };
+				if (recovered.requestId !== requestId || recovered.launchId !== expected.bridgeId || recovered.protocol !== expected.protocol || recovered.participantId !== expected.participantId || recovered.callerParticipantKey !== caller.participantKey || recovered.callerGeneration !== caller.generation) throw new HostedRuntimeClientError("identity_mismatch", "Recovered bridge launch authority does not match the failed start.");
+				return recovered;
+			} catch (error) {
+				if (error instanceof HostedRuntimeClientError && (error.code === "invalid_response" || error.code === "identity_mismatch")) return undefined;
+				if (attempt < 309) await delay(100);
+			}
 		}
-		return false;
+		return undefined;
+	}
+
+	private async stopRecoveredBridge(registration: LiveClientRegistration, launch: RecoveredBridgeLaunch): Promise<void> {
+		try { await this.client.call("participant.stop_confirmed", { ...auth(registration), participantKey: launch.participantKey, expectedGeneration: launch.holderGeneration, confirmed: true }); }
+		catch (error) { throw new HostedCollaboratorStartError(errorCode(error), `Consumed native launch ${launch.launchId} could not be stopped with exact worker quiescence; its capacity evidence was preserved: ${error instanceof Error ? error.message : String(error)}`, true); }
 	}
 
 	private async cleanupFailedCollaborator(tabId: string | undefined, paneId: string | undefined, sessionFile: string, workspace?: { workspaceId: string }, registration?: LiveClientRegistration, caller?: ClientParticipantStatus, mode: "discard" | "retain" = "discard"): Promise<void> {
@@ -1683,8 +1762,8 @@ function collaboratorConfigurationHash(candidate: ResolvedCollaboratorCandidate)
 }
 
 function assertAutoCapacity(participants: ClientParticipantStatus[], requested: number, callerParticipantKey: string | undefined): void {
-	const live = participants.filter((participant) => participant.participantKey !== callerParticipantKey && participant.state === "held" && participant.holderLive).length;
-	if (live + requested > AUTO_MAX_LIVE_COLLABORATORS) throw new HostedRuntimeClientError("conflict", `Runtime Auto mode permits at most ${AUTO_MAX_LIVE_COLLABORATORS} live collaborators; ${live} are already live and ${requested} were requested.`);
+	const held = participants.filter((participant) => participant.participantKey !== callerParticipantKey && participant.state === "held").length;
+	if (held + requested > AUTO_MAX_LIVE_COLLABORATORS) throw new HostedRuntimeClientError("conflict", `Runtime Auto mode permits at most ${AUTO_MAX_LIVE_COLLABORATORS} held or reserved collaborators; ${held} are already held and ${requested} were requested.`);
 }
 
 function collaboratorPathAllowed(cwd: string, value: unknown, allowMissing: boolean): boolean {

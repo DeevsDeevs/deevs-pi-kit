@@ -111,7 +111,7 @@ function v1MonitorState(): { raw: Record<string, unknown>; event: HostedFilesyst
 		delivery: { status: "pending" },
 	};
 	state = reduceHostedState(state, { type: "monitor.commit", monitor, events: [event] });
-	const { participants: _participants, bridgeLaunches: _bridgeLaunches, workspaces: _workspaces, integrations: _integrations, ...rest } = state;
+	const { participants: _participants, autoCapacityReservations: _autoCapacityReservations, bridgeLaunches: _bridgeLaunches, workspaces: _workspaces, integrations: _integrations, ...rest } = state;
 	const targets = Object.fromEntries(Object.entries(rest.targets).map(([key, value]) => { const { kind: _kind, ...legacy } = value; return [key, legacy]; }));
 	return { raw: { ...rest, targets, version: 1 }, event };
 }
@@ -124,35 +124,51 @@ describe("hosted Runtime collaborator state", () => {
 		writeFileSync(runtimeStatePaths(root).state, `${JSON.stringify(raw, null, 2)}\n`);
 
 		const migrated = readHostedRuntimeState(root);
-		expect(migrated).toMatchObject({ version: 6, bridgeLaunches: {}, workspaces: {}, integrations: {}, participants: {}, targets: { target_main: { kind: "pi" } } });
+		expect(migrated).toMatchObject({ version: 7, autoCapacityReservations: {}, bridgeLaunches: {}, workspaces: {}, integrations: {}, participants: {}, targets: { target_main: { kind: "pi" } } });
 		expect(migrated.events[event.eventId]).toEqual(event);
 		expect(pendingHostedEvents(migrated, "target_main").map((candidate) => candidate.eventId)).toEqual([event.eventId]);
 		expect(JSON.parse(readFileSync(runtimeStatePaths(root).state, "utf8"))).toEqual(migrated);
 		expect(statSync(runtimeStatePaths(root).state).mode & 0o777).toBe(0o600);
 	});
 
-	it("migrates v2 Pi targets and collaborator ownership into discriminated v6 state", () => {
+	it("migrates v2 Pi targets and collaborator ownership into discriminated v7 state", () => {
 		const root = mkdtempSync(join(tmpdir(), "hosted-state-v2-to-v4-"));
 		mkdirSync(root, { recursive: true });
 		const state = pairedState();
-		const { bridgeLaunches: _bridgeLaunches, workspaces: _workspaces, integrations: _integrations, ...rest } = state;
+		const { autoCapacityReservations: _autoCapacityReservations, bridgeLaunches: _bridgeLaunches, workspaces: _workspaces, integrations: _integrations, ...rest } = state;
 		const targets = Object.fromEntries(Object.entries(rest.targets).map(([key, value]) => { const { kind: _kind, ...legacy } = value; return [key, legacy]; }));
 		writeFileSync(runtimeStatePaths(root).state, `${JSON.stringify({ ...rest, version: 2, targets }, null, 2)}\n`);
 		const migrated = readHostedRuntimeState(root);
-		expect(migrated).toMatchObject({ version: 6, bridgeLaunches: {}, workspaces: {}, integrations: {}, targets: { target_main: { kind: "pi" }, target_fable: { kind: "pi" } }, participants: { [participantKey("main")]: { state: "held", holderTargetKey: "target_main" }, [participantKey("fable")]: { state: "held", holderTargetKey: "target_fable" } } });
+		expect(migrated).toMatchObject({ version: 7, autoCapacityReservations: {}, bridgeLaunches: {}, workspaces: {}, integrations: {}, targets: { target_main: { kind: "pi" }, target_fable: { kind: "pi" } }, participants: { [participantKey("main")]: { state: "held", holderTargetKey: "target_main" }, [participantKey("fable")]: { state: "held", holderTargetKey: "target_fable" } } });
 	});
 
-	it("migrates the released v5 schema to v6 without changing durable references", () => {
-		const root = mkdtempSync(join(tmpdir(), "hosted-state-v5-to-v6-"));
+	it.each([5, 6])("migrates the released v%i schema to v7 without changing durable references", (version) => {
+		const root = mkdtempSync(join(tmpdir(), `hosted-state-v${version}-to-v7-`));
 		mkdirSync(root, { recursive: true });
 		const state = pairedState();
-		writeFileSync(runtimeStatePaths(root).state, `${JSON.stringify({ ...state, version: 5 }, null, 2)}\n`);
+		const { autoCapacityReservations: _autoCapacityReservations, ...legacy } = state;
+		writeFileSync(runtimeStatePaths(root).state, `${JSON.stringify({ ...legacy, version }, null, 2)}\n`);
 		const migrated = readHostedRuntimeState(root);
-		expect(migrated).toMatchObject({ version: 6, targets: state.targets, participants: state.participants, events: state.events });
+		expect(migrated).toMatchObject({ version: 7, autoCapacityReservations: {}, targets: state.targets, participants: state.participants, events: state.events });
 	});
 
 	it("fails closed instead of accepting an unknown state version", () => {
-		expect(() => validateHostedRuntimeState({ ...emptyHostedRuntimeState(), version: 7 })).toThrow(HostedStateStorageError);
+		expect(() => validateHostedRuntimeState({ ...emptyHostedRuntimeState(), version: 8 })).toThrow(HostedStateStorageError);
+	});
+
+	it("atomically reserves Auto capacity across held targets and concurrent acquisitions", () => {
+		const childIds = Array.from({ length: 12 }, (_, index) => `child${index}`);
+		let state = withTargets("target_main", ...childIds.map((id) => `target_${id}`), "target_extra", "target_intruder");
+		state = acquire(state, "main", "target_main", "lease_main", 2);
+		for (const [index, childId] of childIds.entries()) state = acquire(state, childId, `target_${childId}`, `lease_${childId}`, 3 + index);
+		const reservation = { version: 1 as const, operationId: "auto_op_test", projectRoot, callerTargetKey: "target_main", callerParticipantKey: participantKey("main"), expectedCallerGeneration: "lease_main", participantKeys: [participantKey("extra")], createdAt: 20 };
+		expect(() => reduceHostedState(state, { type: "auto_capacity.ensure", reservation })).toThrow("at most 12");
+		state = reduceHostedState(state, { type: "participant.stand_down", participantKey: participantKey("child11"), targetKey: "target_child11", generation: "lease_child11_vacant", at: 21 });
+		state = reduceHostedState(state, { type: "auto_capacity.ensure", reservation: { ...reservation, createdAt: 22 } });
+		expect(() => acquire(state, "intruder", "target_intruder", "lease_intruder", 23)).toThrow("at most 12");
+		state = acquire(state, "extra", "target_extra", "lease_extra", 23);
+		state = reduceHostedState(state, { type: "auto_capacity.release", operationId: reservation.operationId, callerTargetKey: "target_main" });
+		expect(acquire(state, "intruder", "target_intruder", "lease_intruder", 24).participants[participantKey("intruder")]?.state).toBe("held");
 	});
 
 	it("enforces one held participant identity per target and idempotent same-target acquire", () => {

@@ -288,7 +288,7 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 			"Not for every tiny result; prefer over manual artifact edits.",
 			"checkpoint=true only for milestones, handoffs, cleanup, or final validation.",
 			"Use blocked=true with a stable blockerId for a genuine blocker; runtime never infers blockers from prose.",
-			"Use reviewContinue=true only after the user explicitly authorizes more correction cycles at the typed limit.",
+			"Use reviewContinue=true only after the user explicitly authorizes one additional correction cycle at the typed limit.",
 		],
 		parameters: ProgressSchema,
 		renderCall: (args: MissionProgressInput, theme: Theme) => missionCall("progress", args.summary, theme),
@@ -312,7 +312,7 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 				if (params.reviewVerdict !== current.reviewSuggestedVerdict) throw new Error(`Adjudication must match the severity-derived reviewer verdict: ${current.reviewSuggestedVerdict ?? "unknown"}.`);
 			}
 			if (params.reviewContinue && !ctx.hasUI) throw new Error("Headless sessions cannot authorize additional review correction cycles; use the trusted Mission command in an interactive session.");
-			if (params.reviewContinue && !await ctx.ui.confirm("Continue Mission review corrections?", `Authorize three additional correction cycles? ${params.reviewContinueReason!.trim()}`)) throw new Error("Additional review correction cycles were not authorized by the user.");
+			if (params.reviewContinue && !await ctx.ui.confirm("Continue Mission review corrections?", `Authorize one additional correction cycle? ${params.reviewContinueReason!.trim()}`)) throw new Error("An additional review correction cycle was not authorized by the user.");
 			if (params.reviewSkip && !ctx.hasUI) throw new Error("Headless sessions cannot waive independent review. Let the reviewer subagent run and adjudicate its result with reviewVerdict, or end the Mission with /mission end.");
 			if (params.reviewSkip && !await ctx.ui.confirm("Skip Mission review?", `Record this review waiver: ${params.reviewSkipReason!.trim()}`)) throw new Error("Mission review waiver was not authorized by the user.");
 			const waiverFingerprint = params.reviewSkip ? await hooks.workspaceFingerprint?.(ctx) : undefined;

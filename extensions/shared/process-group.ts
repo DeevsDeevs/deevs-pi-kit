@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile, readlink } from "node:fs/promises";
+import { readFile, readdir, readlink } from "node:fs/promises";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -32,6 +32,28 @@ export async function ownsProcessIdentity(pid: number, expected: string | undefi
 	return expected !== undefined && await readProcessIdentity(pid) === expected;
 }
 
+export async function readProcessGroupId(pid: number): Promise<number | undefined> {
+	if (!Number.isInteger(pid) || pid <= 0) return undefined;
+	if (process.platform === "linux") {
+		try {
+			const stat = await readFile(`/proc/${pid}/stat`, "utf8");
+			const close = stat.lastIndexOf(")");
+			const fields = stat.slice(close + 2).trim().split(/\s+/);
+			const pgid = Number(fields[2]);
+			return Number.isInteger(pgid) && pgid > 0 ? pgid : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+	try {
+		const { stdout } = await execFileAsync("ps", ["-o", "pgid=", "-p", String(pid)], { timeout: 1_000, maxBuffer: 64 * 1024 });
+		const pgid = Number(stdout.trim());
+		return Number.isInteger(pgid) && pgid > 0 ? pgid : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 export async function quiesceProcessGroup(pgid: number, options: { graceful?: boolean; graceMs?: number; killWaitMs?: number } = {}): Promise<boolean> {
 	if (!isProcessGroupAlive(pgid)) return true;
 	if (options.graceful !== false) {
@@ -47,6 +69,24 @@ export async function quiesceProcessGroup(pgid: number, options: { graceful?: bo
 export function isProcessGroupAlive(pgid: number): boolean {
 	try {
 		process.kill(-pgid, 0);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export async function isProcessGroupQuiescent(pgid: number): Promise<boolean> {
+	if (!isProcessGroupAlive(pgid)) return true;
+	if (process.platform !== "linux") return false;
+	try {
+		for (const entry of await readdir("/proc", { withFileTypes: true })) {
+			if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
+			const stat = await readFile(`/proc/${entry.name}/stat`, "utf8").catch(() => undefined);
+			if (!stat) continue;
+			const close = stat.lastIndexOf(")");
+			const fields = stat.slice(close + 2).trim().split(/\s+/);
+			if (Number(fields[2]) === pgid && fields[0] !== "Z") return false;
+		}
 		return true;
 	} catch {
 		return false;

@@ -45,12 +45,17 @@ export interface BridgeReconnectInput extends RegisterBridgeInput {
 	reconnectToken: string;
 }
 
+export interface BridgeWorkspaceAuthority {
+	withVerifiedBridgeWorkspace<T>(workspaceId: string, targetKey: string, expectedState: "bound" | "active", operation: () => Promise<T>): Promise<T>;
+}
+
 export interface BridgeCoordinatorOptions {
 	now?: () => number;
 	leaseMs?: number;
 	createId?: () => string;
 	createGeneration?: () => string;
 	createSecret?: () => string;
+	workspaceAuthority?: BridgeWorkspaceAuthority;
 }
 
 export class RuntimeBridgeCoordinator {
@@ -122,8 +127,13 @@ export class RuntimeBridgeCoordinator {
 		}
 		if (launch.status !== "pending") throw new HostedBridgeError("conflict", "Bridge launch capability is no longer pending; reconnect with the separate credential.");
 		const target = bridgeTarget(launch, input.clientGeneration, now);
-		const registration = await this.registrations.registerBridge(input, target, bridgeCredentials(target.targetKey, input.reconnectToken), () => this.store.apply({ type: "bridge.launch.consume", launchId: launch.launchId, launchDigest: launch.launchDigest, clientGeneration: input.clientGeneration, target, at: now }));
-		return result(registration, target);
+		const register = async () => {
+			const registration = await this.registrations.registerBridge(input, target, bridgeCredentials(target.targetKey, input.reconnectToken), () => this.store.apply({ type: "bridge.launch.consume", launchId: launch.launchId, launchDigest: launch.launchDigest, clientGeneration: input.clientGeneration, target, at: now }));
+			return result(registration, target);
+		};
+		if (!launch.workspaceId) return register();
+		if (!this.options.workspaceAuthority) throw new HostedBridgeError("capability_unavailable", "Bridge workspace verification is unavailable.");
+		return this.options.workspaceAuthority.withVerifiedBridgeWorkspace(launch.workspaceId, launch.targetKey, "bound", register);
 	}
 
 	async reconnect(input: BridgeReconnectInput): Promise<BridgeRegistrationResult> {
@@ -132,8 +142,13 @@ export class RuntimeBridgeCoordinator {
 		if (input.clientGeneration !== target.clientGeneration || !equalDigest(sha256(secret(input.reconnectToken)), target.reconnectDigest)) throw new HostedBridgeError("conflict", "Bridge reconnect authority does not match its target generation.");
 		const participant = this.store.read().participants[target.participantKey];
 		if (!participant || participant.state !== "held" || participant.holderTargetKey !== target.targetKey || participant.generation !== target.holderGeneration) throw new HostedBridgeError("conflict", "Bridge participant generation is no longer held.");
-		const registration = await this.registrations.registerBridge(input, target, bridgeCredentials(target.targetKey, input.reconnectToken));
-		return result(registration, target);
+		const reconnect = async () => {
+			const registration = await this.registrations.registerBridge(input, target, bridgeCredentials(target.targetKey, input.reconnectToken));
+			return result(registration, target);
+		};
+		if (!target.workspaceId) return reconnect();
+		if (!this.options.workspaceAuthority) throw new HostedBridgeError("capability_unavailable", "Bridge workspace verification is unavailable.");
+		return this.options.workspaceAuthority.withVerifiedBridgeWorkspace(target.workspaceId, target.targetKey, "active", reconnect);
 	}
 
 	recoverLaunch(caller: HostedLiveRegistration, input: { requestId: string; callerParticipantKey: string; expectedCallerGeneration: string }): HostedBridgeLaunch {

@@ -68,6 +68,8 @@ export default function childSafetyRuntime(pi: ExtensionAPI): void {
 				summary: Type.String(),
 				path: Type.Optional(Type.String()),
 				line: Type.Optional(Type.Integer({ minimum: 1 })),
+				requirementIndex: Type.Optional(Type.Integer({ minimum: 0, description: "Exact zero-based Mission requirement violated by a blocker/major finding" })),
+				criticalImpact: Type.Optional(Type.Union([Type.Literal("security"), Type.Literal("data_loss")], { description: "Critical impact when no Mission requirement covers a blocker/major finding" })),
 			}), { maxItems: 1_000 }),
 		}),
 		async execute(_id, input) {

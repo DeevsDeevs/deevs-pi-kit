@@ -60,8 +60,8 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 		},
 	});
 	wakes = new HostedWakeCoordinator(store, options.wake);
-	const bridges = new RuntimeBridgeCoordinator(store, registrations, host, options.bridge);
 	const workspaces = new RuntimeWorkspaceCoordinator(options.root, store, registrations, host, options.workspace);
+	const bridges = new RuntimeBridgeCoordinator(store, registrations, host, { ...options.bridge, workspaceAuthority: workspaces });
 	participants = new HostedParticipantCoordinator(store, registrations, wakes, {
 		...options.participant,
 		stopTarget: options.participant?.stopTarget ?? (host.closeTarget ? (target) => host.closeTarget!(target, options.root) : undefined),

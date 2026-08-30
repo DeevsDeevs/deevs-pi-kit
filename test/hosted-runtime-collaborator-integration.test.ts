@@ -95,7 +95,15 @@ const fableParticipant = { participantKey: "participant_fable", projectRoot: "/p
 function baseResponse(request: Request): unknown {
 	if (request.method === "pi.register" || request.method === "pi.heartbeat") return registration;
 	if (request.method === "pi.unregister") return { unregistered: true };
+	if (request.method === "participant.auto_capacity.reserve") return { reservation: { operationId: request.params.operationId } };
+	if (request.method === "participant.auto_capacity.release") return { released: true };
 	throw new Error(`unexpected ${request.method}`);
+}
+
+function recoveredBridge(create: Request, status: "consumed" | "cancelled") {
+	const participantId = String(create.params.participantId);
+	const launchId = String(create.params.launchId);
+	return { launch: { launchId, requestId: String(create.params.requestId), callerParticipantKey: String(create.params.callerParticipantKey), callerGeneration: String(create.params.expectedCallerGeneration), participantKey: `participant_${participantId}`, protocol: String(create.params.protocol), participantId, holderGeneration: `lease_${participantId}`, targetKey: `target_${launchId}`, status } };
 }
 
 function paneRunSessionFile(args: string[]): string {
@@ -536,10 +544,11 @@ describe("hosted collaborator Pi integration", () => {
 	it("recovers ambiguous native bridge authority and closes its exact empty tab", async () => {
 		let createAttempts = 0;
 		let recoveryAttempts = 0;
+		let launchRequest: Request | undefined;
 		const test = await setup((request) => {
 			if (request.method === "participant.list") return { participants: [mainParticipant] };
-			if (request.method === "bridge.launch.create") { createAttempts++; throw new HostedRuntimeClientError(createAttempts === 1 ? "unavailable" : "conflict", createAttempts === 1 ? "bridge response lost" : "explicit recovery required"); }
-			if (request.method === "bridge.launch.recover") { recoveryAttempts++; return { launch: { status: "cancelled" } }; }
+			if (request.method === "bridge.launch.create") { launchRequest = request; createAttempts++; throw new HostedRuntimeClientError(createAttempts === 1 ? "unavailable" : "conflict", createAttempts === 1 ? "bridge response lost" : "explicit recovery required"); }
+			if (request.method === "bridge.launch.recover") { recoveryAttempts++; return recoveredBridge(launchRequest!, "cancelled"); }
 			return baseResponse(request);
 		});
 		test.setExec(async (_command, args) => {
@@ -589,7 +598,7 @@ describe("hosted collaborator Pi integration", () => {
 		await test.integration.sessionShutdown();
 	});
 
-	it("fails closed on corrupt Auto state and enforces the twelve-live cap", async () => {
+	it("fails closed on corrupt Auto state and counts held collaborators through registration loss", async () => {
 		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
 		const corrupt = await setup((request) => request.method === "participant.get" ? mainParticipant : request.method === "participant.list" ? { participants: [mainParticipant] } : baseResponse(request), [identity]);
 		writeFileSync(join(corrupt.runtimeRoot, "auto-mode.v1.json"), "{broken");
@@ -602,12 +611,12 @@ describe("hosted collaborator Pi integration", () => {
 		expect(corrupt.statuses.at(-1)).toEqual({ key: "runtime-auto", value: "MANUAL" });
 		await corrupt.integration.sessionShutdown();
 
-		const live = Array.from({ length: 12 }, (_, index) => ({ ...fableParticipant, participantKey: `participant_${index}`, participantId: `live-${index}`, holderTargetKey: `target_${index}` }));
+		const live = Array.from({ length: 12 }, (_, index) => ({ ...fableParticipant, participantKey: `participant_${index}`, participantId: `live-${index}`, holderTargetKey: `target_${index}`, holderLive: false }));
 		const capped = await setup((request) => request.method === "participant.get" ? mainParticipant : request.method === "participant.list" ? { participants: [mainParticipant, ...live] } : baseResponse(request), [identity]);
 		new CollaboratorAutoStore(capped.runtimeRoot).set(true);
 		capped.ctx.hasUI = false;
 		await capped.integration.sessionStart(capped.ctx as never);
-		await expect(capped.integration.startCollaborator({ participantId: "extra" }, capped.ctx as never)).rejects.toThrow("at most 12 live collaborators");
+		await expect(capped.integration.startCollaborator({ participantId: "extra" }, capped.ctx as never)).rejects.toThrow("at most 12 held or reserved collaborators");
 		expect(capped.execCalls.some((call) => call.args[0] === "tab" && call.args[1] === "create")).toBe(false);
 		await capped.integration.sessionShutdown();
 	});
@@ -620,6 +629,23 @@ describe("hosted collaborator Pi integration", () => {
 		expect(reloaded).toBe(true);
 		expect(new CollaboratorAutoStore(test.runtimeRoot).shortcutConfigured()).toBe(true);
 		expect(JSON.parse(readFileSync(join(test.root, "keybindings.json"), "utf8"))["app.thinking.cycle"]).toEqual(["ctrl+shift+t"]);
+	});
+
+	it("recovers one exact retained Auto reservation and stale same-process lock after trusted verification", async () => {
+		const test = await setup((request) => {
+			if (request.method === "participant.auto_capacity.list") return { reservations: [{ operationId: "auto_op_recovery", participantKeys: ["participant_child"], createdAt: 1 }] };
+			if (request.method === "participant.auto_capacity.recover") return { released: true, confirmedAbsent: true };
+			return baseResponse(request);
+		});
+		writeFileSync(join(test.runtimeRoot, "auto-start.lock"), `${JSON.stringify({ token: "stale", pid: process.pid })}\n`);
+		let confirmation = "";
+		test.ctx.ui.confirm = async (...args: unknown[]) => { confirmation = String(args[1]); return true; };
+		await test.integration.sessionStart(test.ctx as never);
+		await test.integration.command("auto recover auto_op_recovery", test.ctx as never);
+		expect(confirmation).toContain("exact preserved Herdr resource cannot still settle");
+		expect(test.requests.find((request) => request.method === "participant.auto_capacity.recover")?.params).toMatchObject({ operationId: "auto_op_recovery", confirmedAbsent: true });
+		expect(existsSync(join(test.runtimeRoot, "auto-start.lock"))).toBe(false);
+		await test.integration.sessionShutdown();
 	});
 
 	it("starts an exact batch after one confirmation with concurrency capped at four", async () => {
@@ -967,22 +993,31 @@ describe("hosted collaborator Pi integration", () => {
 
 	it("terminates an ambiguous Auto start before releasing capacity", async () => {
 		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
-		const test = await setup((request) => request.method === "participant.get" ? mainParticipant : request.method === "participant.list" ? { participants: [mainParticipant] } : baseResponse(request), [identity]);
+		const timeline: string[] = [];
+		const test = await setup((request) => {
+			if (request.method === "participant.get") return mainParticipant;
+			if (request.method === "participant.list") return { participants: [mainParticipant] };
+			if (request.method === "participant.auto_capacity.reserve") timeline.push("reserve");
+			if (request.method === "participant.auto_capacity.release") timeline.push("release");
+			return baseResponse(request);
+		}, [identity]);
 		new CollaboratorAutoStore(test.runtimeRoot).set(true);
 		test.ctx.hasUI = false;
 		let childSessionFile = "";
 		test.setExec(async (_command, args) => {
 			if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
-			if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
+			if (args[0] === "tab" && args[1] === "create") { timeline.push("create"); return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false }; }
 			if (args[0] === "pane" && args[1] === "run") {
 				childSessionFile = paneRunSessionFile(args);
 				return { code: 1, stdout: "", stderr: "reply lost", killed: false };
 			}
+			if (args[0] === "tab" && args[1] === "close") timeline.push("close");
 			return { code: 0, stdout: "{}", stderr: "", killed: false };
 		});
 		await test.integration.sessionStart(test.ctx as never);
 		await expect(test.integration.startCollaborator({ participantId: "fable" }, test.ctx as never)).rejects.toThrow("dispatch Pi collaborator startup");
 		expect(test.execCalls).toContainEqual({ command: "herdr", args: ["tab", "close", "w1:t9"] });
+		expect(timeline).toEqual(["reserve", "create", "close", "release"]);
 		expect(existsSync(childSessionFile)).toBe(false);
 		expect(existsSync(join(test.runtimeRoot, "auto-start.lock"))).toBe(false);
 		await test.integration.sessionShutdown();
@@ -991,11 +1026,12 @@ describe("hosted collaborator Pi integration", () => {
 	it("releases native Auto capacity only after typed exact host absence", async () => {
 		for (const [hostCode, releases] of [["tab_not_found", true], ["host_unavailable", false]] as const) {
 			const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
+			let launchRequest: Request | undefined;
 			const test = await setup((request) => {
 				if (request.method === "participant.get") return mainParticipant;
 				if (request.method === "participant.list") return { participants: [mainParticipant] };
-				if (request.method === "bridge.launch.create") return { launchId: request.params.launchId, targetKey: "target_native", holderGeneration: "lease_native", expiresAt: Date.now() + 30_000, launchToken: `bridge_launch_${request.params.launchId}.${"x".repeat(43)}`, reconnectToken: "y".repeat(43), herdr: { paneId: "w1:p9", terminalId: "term_9", tabId: "w1:t9", workspaceId: "w1" } };
-				if (request.method === "bridge.launch.recover") return { launch: { status: "cancelled" } };
+				if (request.method === "bridge.launch.create") { launchRequest = request; return { launchId: request.params.launchId, targetKey: "target_native", holderGeneration: "lease_native", expiresAt: Date.now() + 30_000, launchToken: `bridge_launch_${request.params.launchId}.${"x".repeat(43)}`, reconnectToken: "y".repeat(43), herdr: { paneId: "w1:p9", terminalId: "term_9", tabId: "w1:t9", workspaceId: "w1" } }; }
+				if (request.method === "bridge.launch.recover") return recoveredBridge(launchRequest!, "cancelled");
 				return baseResponse(request);
 			}, [identity]);
 			new CollaboratorAutoStore(test.runtimeRoot).set(true);
@@ -1011,6 +1047,40 @@ describe("hosted collaborator Pi integration", () => {
 			await test.integration.sessionStart(test.ctx as never);
 			await expect(test.integration.startCollaborator({ participantId: "native", driver: "codex" }, test.ctx as never)).rejects.toThrow(releases ? "dispatch native collaborator startup" : "could not be terminated");
 			expect(existsSync(join(test.runtimeRoot, "auto-start.lock"))).toBe(!releases);
+			expect(test.requests.filter((request) => request.method === "participant.auto_capacity.release")).toHaveLength(releases ? 1 : 0);
+			await test.integration.sessionShutdown();
+		}
+	});
+
+	it("stops a consumed native Auto launch through Runtime quiescence before releasing capacity", async () => {
+		for (const stopFails of [false, true]) {
+			const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
+			const timeline: string[] = [];
+			let launchRequest: Request | undefined;
+			const test = await setup((request) => {
+				if (request.method === "participant.get") return mainParticipant;
+				if (request.method === "participant.list") return { participants: [mainParticipant] };
+				if (request.method === "participant.auto_capacity.reserve") { timeline.push("reserve"); return baseResponse(request); }
+				if (request.method === "bridge.launch.create") { launchRequest = request; timeline.push("authorize"); return { launchId: request.params.launchId, targetKey: `target_${request.params.launchId}`, holderGeneration: "lease_native", expiresAt: Date.now() + 30_000, launchToken: `bridge_launch_${request.params.launchId}.${"x".repeat(43)}`, reconnectToken: "y".repeat(43), herdr: { paneId: "w1:p9", terminalId: "term_9", tabId: "w1:t9", workspaceId: "w1" } }; }
+				if (request.method === "bridge.launch.recover") { timeline.push("recover_consumed"); return recoveredBridge(launchRequest!, "consumed"); }
+				if (request.method === "participant.stop_confirmed") { timeline.push("stop_quiesced"); if (stopFails) throw new HostedRuntimeClientError("identity_mismatch", "worker group uncertain"); return { outcome: "stopped" }; }
+				if (request.method === "participant.auto_capacity.release") { timeline.push("release"); return baseResponse(request); }
+				return baseResponse(request);
+			}, [identity]);
+			new CollaboratorAutoStore(test.runtimeRoot).set(true);
+			test.ctx.hasUI = false;
+			test.setExec(async (_command, args) => {
+				if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
+				if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9", terminal_id: "term_9" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
+				if (args[0] === "pane" && args[1] === "run") return { code: 1, stdout: "", stderr: "dispatch response lost", killed: false };
+				return { code: 0, stdout: "{}", stderr: "", killed: false };
+			});
+			await test.integration.sessionStart(test.ctx as never);
+			await expect(test.integration.startCollaborator({ participantId: "native", driver: "codex" }, test.ctx as never)).rejects.toThrow(stopFails ? "exact worker quiescence" : "dispatch native collaborator startup");
+			expect(test.requests.find((request) => request.method === "participant.stop_confirmed")?.params).toMatchObject({ participantKey: "participant_native", expectedGeneration: "lease_native", confirmed: true });
+			expect(test.execCalls.some((call) => call.args[0] === "tab" && call.args[1] === "close")).toBe(false);
+			expect(timeline).toEqual(stopFails ? ["reserve", "authorize", "recover_consumed", "stop_quiesced"] : ["reserve", "authorize", "recover_consumed", "stop_quiesced", "release"]);
+			expect(existsSync(join(test.runtimeRoot, "auto-start.lock"))).toBe(stopFails);
 			await test.integration.sessionShutdown();
 		}
 	});

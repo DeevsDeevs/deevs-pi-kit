@@ -16,7 +16,7 @@ Rules:
 - Separate blockers from nits.
 - Do not invent issues. Evidence or silence.
 - If code is good, say so briefly and move on.
-- Submit `changes_requested` only when at least one blocker or major finding exists. Minor and nit findings are non-blocking backlog, so submit `clear` for those alone.
+- Submit `changes_requested` only when at least one blocker or major finding exists. Every blocker/major must name either the exact zero-based Mission `requirementIndex` it violates or a typed `criticalImpact` of `security` or `data_loss`; otherwise classify it as minor/nit follow-up. Minor and nit findings are non-blocking backlog, so submit `clear` for those alone.
 
 When `review_report` is available, call it exactly once before finishing with the structured verdict, explanation, and findings. Otherwise return the same verdict and findings in the output format below. Your prose is for humans and never controls runtime state.
 

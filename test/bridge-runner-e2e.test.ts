@@ -67,6 +67,15 @@ describe("durable common bridge runner", () => {
 		const configPath = join(runnerRoot, "config.v1.json");
 		const config: BridgeRunnerConfig = { version: 1, bridgeId: authority.launchId, driver: "fake", root: runnerRoot, runtimeSocket: server.socketPath, projectRoot, cwd: projectRoot, clientGeneration: "client_bridge", protocol: "review", participantId: "fake", launchToken: authority.launchToken, reconnectToken: authority.reconnectToken, targetKey: authority.targetKey, wallMs: 2_000 };
 		writeRunnerConfig(configPath, config);
+		const consumptionCrashRunner = new BridgeRunner(configPath, config, undefined, { client: {
+			async call(method: string, params: unknown): Promise<unknown> {
+				const result = await client.call(method, params);
+				if (method === "bridge.register") throw new Error("Injected controller crash after Runtime consumed launch authority.");
+				return result;
+			},
+		}, herdrIdentity: async () => ({ paneId: "pane_bridge", terminalId: "term_bridge" }) });
+		await expect(consumptionCrashRunner.start()).rejects.toThrow("after Runtime consumed launch authority");
+		expect(readRunnerConfig(configPath).launchToken).toBe(authority.launchToken);
 		let runner!: BridgeRunner;
 		let admissionBeforeAck: BridgeJournal | undefined;
 		let replyBeforeSend: BridgeJournal | undefined;
@@ -90,8 +99,9 @@ describe("durable common bridge runner", () => {
 				return result;
 			},
 		};
-		runner = new BridgeRunner(configPath, config, undefined, { client: runnerClient, herdrIdentity: async () => ({ paneId: "pane_bridge", terminalId: "term_bridge" }) });
+		runner = new BridgeRunner(configPath, readRunnerConfig(configPath), undefined, { client: runnerClient, herdrIdentity: async () => ({ paneId: "pane_bridge", terminalId: "term_bridge" }) });
 		await runner.start();
+		expect(readRunnerConfig(configPath).launchToken).toBeUndefined();
 		const bridgeParticipantKey = runner.state().participantKey!;
 		await client.call("mailbox.send", { registrationId: senderRegistration.registrationId, registrationKey: senderRegistration.registrationKey, senderParticipantKey: sender.participantKey, expectedSenderGeneration: sender.generation, recipientParticipantKey: bridgeParticipantKey, sendId: "input_1", body: "first" });
 		await settle(runner, 1);
@@ -171,6 +181,51 @@ describe("durable common bridge runner", () => {
 		expect(await ownsProcessIdentity(ownedWorker.workerPid, ownedWorker.workerIdentity)).toBe(false);
 	}, 10_000);
 
+	it("re-reads a durable terminal when an exact worker exits between poll observations", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-kit-bridge-terminal-poll-race-"));
+		roots.push(root);
+		const turnId = `turn_${randomUUID()}`;
+		const eventId = "event_poll_race";
+		const now = Date.now();
+		let workerPid = 900_000;
+		while (isProcessGroupAlive(workerPid)) workerPid++;
+		const statePath = join(root, "turns", turnId, "attempt-1", "worker.v1.json");
+		mkdirSync(dirname(statePath), { recursive: true });
+		const worker = { version: 1 as const, turnId, eventId, attempt: 1, status: "running" as const, workerPid, workerIdentity: "dead-worker", stdoutBytes: 0, stderrBytes: 0, frames: 0, startedAt: now, updatedAt: now };
+		writeWorkerState(statePath, worker);
+		const config: BridgeRunnerConfig = { version: 1, bridgeId: "bridge_terminal_poll_race", driver: "fake", root, runtimeSocket: join(root, "missing.sock"), projectRoot: root, cwd: root, clientGeneration: "client_terminal", protocol: "review", participantId: "fake", reconnectToken: "r".repeat(43), targetKey: "bridge_target", wallMs: 30_000 };
+		const initial: BridgeJournal = { version: 1, bridgeId: config.bridgeId, driver: "fake", targetKey: config.targetKey, participantKey: "participant_bridge", holderGeneration: "generation_bridge", protocol: config.protocol, participantId: config.participantId, nextSequence: 2, admissions: [{ claimId: "claim_1", eventIds: [eventId], ack: "confirmed", createdAt: now }], turns: [{ turnId, sequence: 1, eventId, claimId: "claim_1", senderParticipantKey: "participant_sender", body: "fast", state: "running", attempt: 1, replySendId: "reply_1", reply: "unsent", worker: { attempt: 1, statePath, workerPid, workerIdentity: worker.workerIdentity }, createdAt: now, updatedAt: now }], status: "running", updatedAt: now };
+		const runner = new BridgeRunner(join(root, "config.v1.json"), config, initial);
+		setTimeout(() => writeWorkerState(statePath, { ...worker, status: "terminal", terminal: { status: "completed", body: "durable fast terminal", sessionAdvance: "committed", sessionId: "fake_fast" }, endedAt: Date.now(), updatedAt: Date.now() }), 50);
+		expect(await (runner as unknown as { pollWorker(turn: BridgeJournal["turns"][number]): Promise<string> }).pollWorker(runner.state().turns[0]!)).toBe("working");
+		expect(runner.state().turns[0]).toMatchObject({ state: "terminal", terminal: { body: "durable fast terminal" }, worker: { quiescedAt: expect.any(Number) } });
+	});
+
+	it("revalidates and quiesces an exact terminal worker group before crash recovery imports output", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-kit-bridge-terminal-quiescence-"));
+		roots.push(root);
+		const turnId = `turn_${randomUUID()}`;
+		const now = Date.now();
+		const configPath = join(root, "config.v1.json");
+		const config: BridgeRunnerConfig = { version: 1, bridgeId: "bridge_terminal_quiescence", driver: "fake", root, runtimeSocket: join(root, "missing.sock"), projectRoot: root, cwd: root, clientGeneration: "client_terminal", protocol: "review", participantId: "fake", reconnectToken: "r".repeat(43), targetKey: "bridge_target", wallMs: 30_000 };
+		const initial: BridgeJournal = { version: 1, bridgeId: config.bridgeId, driver: "fake", targetKey: config.targetKey, participantKey: "participant_bridge", holderGeneration: "generation_bridge", protocol: config.protocol, participantId: config.participantId, nextSequence: 2, admissions: [{ claimId: "claim_1", eventIds: ["event_1"], ack: "confirmed", createdAt: now }], turns: [{ turnId, sequence: 1, eventId: "event_1", claimId: "claim_1", senderParticipantKey: "participant_sender", body: "sleep:30000", state: "pending", attempt: 0, replySendId: "reply_1", reply: "unsent", createdAt: now, updatedAt: now }], status: "running", updatedAt: now };
+		const runner = new BridgeRunner(configPath, config, initial);
+		await (runner as unknown as { launchWorker(turn: BridgeJournal["turns"][number]): Promise<void> }).launchWorker(runner.state().turns[0]!);
+		const statePath = runner.state().turns[0]!.worker!.statePath;
+		for (let attempt = 0; attempt < 100 && !readWorkerState(statePath)?.childPid; attempt++) await new Promise((resolve) => setTimeout(resolve, 10));
+		const worker = readWorkerState(statePath)!;
+		writeWorkerState(statePath, { ...worker, status: "terminal", terminal: { status: "completed", body: "durable terminal", sessionAdvance: "committed", sessionId: "fake_terminal" }, endedAt: Date.now(), updatedAt: Date.now() });
+		expect(isProcessGroupAlive(worker.workerPid)).toBe(true);
+		const recovered = new BridgeRunner(configPath, config);
+		try {
+			await (recovered as unknown as { recover(): Promise<void> }).recover();
+			expect(isProcessGroupAlive(worker.workerPid)).toBe(false);
+			expect(recovered.state().turns[0]).toMatchObject({ state: "terminal", worker: { workerPid: worker.workerPid, workerIdentity: worker.workerIdentity, quiescedAt: expect.any(Number) }, terminal: { body: expect.stringContaining("Native process exited without a terminal frame") } });
+			await (recovered as unknown as { advance(turn: BridgeJournal["turns"][number]): Promise<string> }).advance(recovered.state().turns[0]!);
+			expect(recovered.state().turns[0]).toMatchObject({ state: "reply_pending", worker: { quiescedAt: expect.any(Number) } });
+		} finally { await quiesceProcessGroup(worker.workerPid); }
+	}, 10_000);
+
 	it("quiesces every retained exact native group before stop can settle", async () => {
 		const root = mkdtempSync(join(tmpdir(), "pi-kit-bridge-stop-e2e-"));
 		roots.push(root);
@@ -191,6 +246,7 @@ describe("durable common bridge runner", () => {
 		new BridgeJournalStore(root, runner.state()).update((state) => ({ ...state, nextSequence: 3, admissions: [...state.admissions, { claimId: "claim_2", eventIds: ["event_2"], ack: "confirmed", createdAt: now + 1 }], turns: [{ ...state.turns[0]!, state: "reply_sent", reply: "sent", terminal: { status: "completed", body: "settled-before-group-exit", sessionAdvance: "committed" }, updatedAt: now + 1 }, { turnId: laterTurnId, sequence: 2, eventId: "event_2", claimId: "claim_2", senderParticipantKey: "participant_sender", body: "later", state: "pending", attempt: 0, replySendId: "reply_2", reply: "unsent", createdAt: now + 1, updatedAt: now + 1 }], updatedAt: now + 1 }));
 		try {
 			expect(await quiesceBridgeRunner(root, authority)).toBe("quiesced");
+			expect(await quiesceBridgeRunner(root, authority)).toBe("idle");
 			expect(isProcessGroupAlive(worker.workerPid)).toBe(false);
 			expect(await ownsProcessIdentity(worker.workerPid, worker.workerIdentity)).toBe(false);
 			expect(await ownsProcessIdentity(worker.childPid!, worker.childIdentity)).toBe(false);
@@ -224,7 +280,10 @@ describe("durable common bridge runner", () => {
 		const now = Date.now();
 		const admissions = Array.from({ length: 1_000 }, (_, index) => ({ claimId: `claim_${index + 1}`, eventIds: [`event_${index + 1}`], ack: index === 0 ? "uncertain" as const : "confirmed" as const, createdAt: now + index }));
 		const prunedTurnId = `turn_${randomUUID()}`;
-		const turns = Array.from({ length: 1_000 }, (_, index) => ({ turnId: index === 1 ? prunedTurnId : `turn_${index + 1}`, sequence: index + 1, eventId: `event_${index + 1}`, claimId: `claim_${index + 1}`, senderParticipantKey: "participant_sender", body: "input", state: "reply_sent" as const, attempt: 1, replySendId: `reply_${index + 1}`, replyBody: "output", reply: "sent" as const, terminal: { status: "completed" as const, body: "output", sessionAdvance: "committed" as const, sessionId: "session_1" }, createdAt: now + index, updatedAt: now + index }));
+		const turns = Array.from({ length: 1_000 }, (_, index) => {
+			const turnId = index === 1 ? prunedTurnId : `turn_${index + 1}`;
+			return { turnId, sequence: index + 1, eventId: `event_${index + 1}`, claimId: `claim_${index + 1}`, senderParticipantKey: "participant_sender", body: "input", state: "reply_sent" as const, attempt: 1, replySendId: `reply_${index + 1}`, replyBody: "output", reply: "sent" as const, worker: { attempt: 1, statePath: join(root, "turns", turnId, "attempt-1", "worker.v1.json"), workerPid: 1, workerIdentity: "settled-worker", quiescedAt: now + index }, terminal: { status: "completed" as const, body: "output", sessionAdvance: "committed" as const, sessionId: "session_1" }, createdAt: now + index, updatedAt: now + index };
+		});
 		mkdirSync(join(root, "turns", prunedTurnId), { recursive: true });
 		writeFileSync(join(root, "turns", prunedTurnId, "worker.v1.json"), "settled\n");
 		const config: BridgeRunnerConfig = { version: 1, bridgeId: "bridge_compaction", driver: "fake", root, runtimeSocket: join(root, "missing.sock"), projectRoot: root, cwd: root, clientGeneration: "client_compaction", protocol: "review", participantId: "fake", reconnectToken: "r".repeat(43), targetKey: "bridge_target", wallMs: 1_000 };
@@ -253,6 +312,19 @@ describe("durable common bridge runner", () => {
 		const runner = new BridgeRunner(join(root, "config.v1.json"), config, initial);
 		await (runner as unknown as { recover(): Promise<void> }).recover();
 		expect(runner.state()).toMatchObject({ status: "needs_attention", turns: [{ state: "needs_attention" }] });
+	});
+
+	it("fails closed when a persisted terminal has no worker receipt", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-kit-native-workerless-terminal-"));
+		roots.push(root);
+		const now = Date.now();
+		const config: BridgeRunnerConfig = { version: 1, bridgeId: "bridge_workerless", driver: "codex", root, runtimeSocket: join(root, "missing.sock"), projectRoot: root, cwd: root, clientGeneration: "client_workerless", protocol: "review", participantId: "native", profile: "read-only", configurationHash: "a".repeat(64), reconnectToken: "r".repeat(43), targetKey: "bridge_target", wallMs: 1_000 };
+		const initial: BridgeJournal = { version: 1, bridgeId: config.bridgeId, driver: "codex", targetKey: "bridge_target", participantKey: "participant_bridge", holderGeneration: "generation_bridge", protocol: config.protocol, participantId: config.participantId, nextSequence: 2, admissions: [{ claimId: "claim_1", eventIds: ["event_1"], ack: "confirmed", createdAt: now }], turns: [{ turnId: "turn_1", sequence: 1, eventId: "event_1", claimId: "claim_1", senderParticipantKey: "sender_1", body: "hello", state: "reply_pending", attempt: 1, replySendId: "reply_1", replyBody: "result", reply: "unsent", terminal: { status: "completed", body: "result", sessionAdvance: "committed", sessionId: "session_1" }, createdAt: now, updatedAt: now }], status: "running", updatedAt: now };
+		const runner = new BridgeRunner(join(root, "config.v1.json"), config, initial);
+		expect(runner.state().status).toBe("needs_attention");
+		await (runner as unknown as { recover(): Promise<void> }).recover();
+		expect(runner.state()).toMatchObject({ status: "needs_attention", turns: [{ state: "needs_attention", reply: "unsent" }] });
+		await expect(quiesceBridgeRunner(root, { bridgeId: config.bridgeId, targetKey: "bridge_target", participantKey: "participant_bridge", holderGeneration: "generation_bridge" })).rejects.toThrow("without an exact worker receipt");
 	});
 
 	it("never resumes or replies after uncertain native session advancement", async () => {

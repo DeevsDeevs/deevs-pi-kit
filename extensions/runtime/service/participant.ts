@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { HostedMailboxMessageEvent, HostedMailboxTaskEvent, HostedMailboxTaskResultEvent, HostedParticipant, HostedTarget, HostedTaskWorkspaceEvidence } from "../hosted-types.ts";
+import type { HostedAutoCapacityReservation, HostedMailboxMessageEvent, HostedMailboxTaskEvent, HostedMailboxTaskResultEvent, HostedParticipant, HostedTarget, HostedTaskWorkspaceEvidence } from "../hosted-types.ts";
 import { RuntimeRegistrationManager, type HostedLiveRegistration } from "./registration.ts";
 import { deriveParticipantKey, HostedStateStore } from "./state.ts";
 
@@ -99,6 +99,47 @@ export class HostedParticipantCoordinator {
 			.filter((participant) => participant.projectRoot === target.projectRoot)
 			.sort((left, right) => left.protocol.localeCompare(right.protocol) || left.participantId.localeCompare(right.participantId))
 			.map((participant) => this.status(participant, false));
+	}
+
+	reserveAutoCapacity(registration: HostedLiveRegistration, operationId: string, protocol: string, callerParticipantId: string, expectedCallerGeneration: string | undefined, participantIds: string[]): HostedAutoCapacityReservation {
+		const target = this.requireTarget(registration.targetKey);
+		if (target.kind !== "pi") throw new HostedParticipantError("conflict", "Only an authenticated Pi target may reserve Runtime Auto capacity.");
+		const reservation: HostedAutoCapacityReservation = {
+			version: 1,
+			operationId,
+			projectRoot: target.projectRoot,
+			callerTargetKey: target.targetKey,
+			callerParticipantKey: deriveParticipantKey(target.projectRoot, protocol, callerParticipantId),
+			...(expectedCallerGeneration === undefined ? {} : { expectedCallerGeneration }),
+			participantKeys: participantIds.map((participantId) => deriveParticipantKey(target.projectRoot, protocol, participantId)),
+			createdAt: this.now(),
+		};
+		this.store.apply({ type: "auto_capacity.ensure", reservation });
+		return this.store.read().autoCapacityReservations[operationId]!;
+	}
+
+	listAutoCapacity(registration: HostedLiveRegistration): HostedAutoCapacityReservation[] {
+		this.requireTarget(registration.targetKey);
+		return Object.values(this.store.read().autoCapacityReservations).filter((reservation) => reservation.callerTargetKey === registration.targetKey).sort((left, right) => left.createdAt - right.createdAt || left.operationId.localeCompare(right.operationId));
+	}
+
+	releaseAutoCapacity(registration: HostedLiveRegistration, operationId: string): void {
+		this.requireTarget(registration.targetKey);
+		this.store.apply({ type: "auto_capacity.release", operationId, callerTargetKey: registration.targetKey });
+	}
+
+	recoverAutoCapacity(registration: HostedLiveRegistration, operationId: string, confirmedAbsent: boolean): { released: boolean; confirmedAbsent: boolean } {
+		this.requireTarget(registration.targetKey);
+		const reservation = this.store.read().autoCapacityReservations[operationId];
+		if (!reservation) return { released: false, confirmedAbsent: false };
+		if (reservation.callerTargetKey !== registration.targetKey) throw new HostedParticipantError("conflict", "Only the exact Auto capacity caller may recover its reservation.");
+		const absenceRequired = reservation.participantKeys.some((participantKey) => {
+			const participant = this.store.read().participants[participantKey];
+			return !participant || participant.state === "vacant";
+		});
+		if (absenceRequired && !confirmedAbsent) throw new HostedParticipantError("conflict", "Unsettled Auto capacity requires explicit exact-host absence confirmation.");
+		this.store.apply({ type: "auto_capacity.release", operationId, callerTargetKey: registration.targetKey });
+		return { released: true, confirmedAbsent: absenceRequired };
 	}
 
 	standDown(registration: HostedLiveRegistration, participantKey: string, expectedGeneration?: string): HostedParticipantStatus {
