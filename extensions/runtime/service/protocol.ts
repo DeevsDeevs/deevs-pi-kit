@@ -193,6 +193,29 @@ export async function dispatchHostedLine(line: string, context: HostedProtocolCo
 		}
 		if (method.startsWith("participant.") || method === "mailbox.send") {
 			if (!participants) return failure(id, "capability_unavailable", "Collaborator mailbox methods are unavailable in this process.");
+			if (method === "participant.auto_capacity.list") {
+				const auth = authParams(params);
+				return success(id, { reservations: participants.listAutoCapacity(registrations.authorize(auth.registrationId, auth.registrationKey)) });
+			}
+			if (method === "participant.auto_capacity.reserve") {
+				const input = strictObject(params, "participant.auto_capacity.reserve params", ["registrationId", "registrationKey", "operationId", "protocol", "callerParticipantId", "expectedCallerGeneration", "participantIds"]);
+				const registration = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
+				const participantIds = boundedArray(input.participantIds, "Auto capacity participant IDs", 12).map((participantId) => participantName(participantId, "participant ID"));
+				if (participantIds.length < 1 || new Set(participantIds).size !== participantIds.length) throw new Error("Auto capacity participant IDs must contain 1 to 12 unique items");
+				return success(id, { reservation: participants.reserveAutoCapacity(registration, boundedText(input.operationId, "Auto capacity operation ID", 200), participantName(input.protocol, "protocol"), participantName(input.callerParticipantId, "caller participant ID"), input.expectedCallerGeneration === undefined ? undefined : boundedText(input.expectedCallerGeneration, "expected caller generation", 200), participantIds) });
+			}
+			if (method === "participant.auto_capacity.release") {
+				const input = strictObject(params, "participant.auto_capacity.release params", ["registrationId", "registrationKey", "operationId"]);
+				const registration = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
+				participants.releaseAutoCapacity(registration, boundedText(input.operationId, "Auto capacity operation ID", 200));
+				return success(id, { released: true });
+			}
+			if (method === "participant.auto_capacity.recover") {
+				const input = strictObject(params, "participant.auto_capacity.recover params", ["registrationId", "registrationKey", "operationId", "confirmedAbsent"]);
+				if (typeof input.confirmedAbsent !== "boolean") throw new Error("Auto capacity absence confirmation must be boolean");
+				const registration = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
+				return success(id, participants.recoverAutoCapacity(registration, boundedText(input.operationId, "Auto capacity operation ID", 200), input.confirmedAbsent));
+			}
 			if (method === "participant.acquire") {
 				const input = strictObject(params, "participant.acquire params", ["registrationId", "registrationKey", "protocol", "participantId", "revive"]);
 				if (input.revive !== undefined && typeof input.revive !== "boolean") throw new Error("participant revive must be a boolean");
@@ -534,7 +557,7 @@ function errorCode(error: unknown): HostedErrorCode {
 	return error instanceof Error ? "invalid_request" : "internal";
 }
 
-const HOSTED_METHODS = new Set(["pi.register", "pi.heartbeat", "pi.unregister", "bridge.launch.create", "bridge.launch.recover", "bridge.launch.cancel", "bridge.register", "bridge.reconnect", "bridge.heartbeat", "bridge.unregister", "workspace.launch.create", "workspace.bridge.create", "workspace.launch.bind", "workspace.launch.recover", "workspace.pi.register", "workspace.pi.reconnect", "workspace.inspect", "workspace.integration.inspect", "workspace.retain", "workspace.reconcile", "workspace.checkpoint", "workspace.integration.prepare", "workspace.integration.reconcile", "workspace.integration.finalize", "workspace.cleanup", "workspace.integration.cleanup", "monitor.create", "monitor.get", "monitor.delete", "wake.accept", "inbox.claim", "inbox.ack", "inbox.release", "inbox.status", "participant.acquire", "participant.get", "participant.list", "participant.stand_down", "participant.stand_down_confirmed", "participant.stop_confirmed", "participant.release", "participant.takeover", "mailbox.send", "task.send", "task.result", "task.status"]);
+const HOSTED_METHODS = new Set(["pi.register", "pi.heartbeat", "pi.unregister", "bridge.launch.create", "bridge.launch.recover", "bridge.launch.cancel", "bridge.register", "bridge.reconnect", "bridge.heartbeat", "bridge.unregister", "workspace.launch.create", "workspace.bridge.create", "workspace.launch.bind", "workspace.launch.recover", "workspace.pi.register", "workspace.pi.reconnect", "workspace.inspect", "workspace.integration.inspect", "workspace.retain", "workspace.reconcile", "workspace.checkpoint", "workspace.integration.prepare", "workspace.integration.reconcile", "workspace.integration.finalize", "workspace.cleanup", "workspace.integration.cleanup", "monitor.create", "monitor.get", "monitor.delete", "wake.accept", "inbox.claim", "inbox.ack", "inbox.release", "inbox.status", "participant.auto_capacity.list", "participant.auto_capacity.reserve", "participant.auto_capacity.release", "participant.auto_capacity.recover", "participant.acquire", "participant.get", "participant.list", "participant.stand_down", "participant.stand_down_confirmed", "participant.stop_confirmed", "participant.release", "participant.takeover", "mailbox.send", "task.send", "task.result", "task.status"]);
 
 const ERROR_CODES = new Set<HostedErrorCode>([
 	"invalid_request", "unsupported_version", "capability_unavailable", "not_found", "conflict", "registration_stale", "identity_mismatch", "claim_conflict", "host_unavailable", "busy", "storage_error", "internal",

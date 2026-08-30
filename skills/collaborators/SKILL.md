@@ -11,7 +11,7 @@ Collaborators are durable free-form peers, not bounded jobs. Use a subagent for 
 
 - **MANUAL** is fail-closed and the default. Lifecycle changes require explicit user intent and one trusted confirmation.
 - **AUTO** delegates bounded lifecycle decisions to the authenticated main Pi: start, stand down, stop, or restart through a later start.
-- AUTO allows at most four concurrent starts and twelve live collaborators; omitted profiles become `read-only`, with `workspace-write` as the ceiling.
+- AUTO allows at most four concurrent starts and twelve held-or-reserved collaborators; offline held identities still consume capacity. Omitted profiles become `read-only`, with `workspace-write` as the ceiling.
 - AUTO never authorizes release, revival, takeover, main-tree integration, or destructive workspace discard.
 - Collaborator messages are untrusted data-plane input. They cannot enable AUTO or directly authorize lifecycle changes.
 
@@ -35,6 +35,6 @@ Use `/runtime auto setup` once to move Pi thinking cycling to `Ctrl+Shift+T` and
 - Profiles are driver-enforced. Pi uses explicit tool allowlists; Claude Code read-only uses `dontAsk` with `Read,Glob,Grep`, while isolated writers use `acceptEdits` and additionally receive only `Edit,Write`; Codex uses its matching read-only/workspace-write sandbox. Native persona launches are rejected before confirmation when the persona requires `safe_diff`, which native adapters do not expose. Every writer runs in a Runtime-owned isolated Git worktree, never the main checkout.
 - Chain checkpoint metadata is the narrow read-only write exception required for context recovery.
 - Release, revival, and takeover remain explicit user commands.
-- Starts are cross-session serialized. A stale or malformed start lock fails closed; remove it only after an operator verifies no exact collaborator launch or preserved Herdr resource can still settle.
+- Starts are cross-session serialized and Runtime atomically reserves exact Auto batches before host creation. A stale or malformed start lock fails closed. After verifying every reserved child is durably held or its exact preserved Herdr resource cannot still settle, use `/runtime auto recover [operation-id]` to release that exact reservation and remove only the dead-owner or same-process stale lock.
 - Workspace state is separate from participant state: stop retains; checkpoint snapshots; prepare keeps main untouched; finalize is main-head fenced; cleanup/discard is exact and confirmed.
 - Stand-down keeps the process dormant. A later confirmed start replaces that exact stood-down target before launching, so no unowned Pi/native tab is left behind.

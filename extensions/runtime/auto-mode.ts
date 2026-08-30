@@ -1,9 +1,10 @@
 import { closeSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
+import { HOSTED_AUTO_MAX_COLLABORATORS } from "./hosted-types.ts";
 
 export const AUTO_MAX_CONCURRENT_STARTS = 4;
-export const AUTO_MAX_LIVE_COLLABORATORS = 12;
+export const AUTO_MAX_LIVE_COLLABORATORS = HOSTED_AUTO_MAX_COLLABORATORS;
 const MAX_STATE_BYTES = 4 * 1024;
 const MAX_KEYBINDINGS_BYTES = 64 * 1024;
 const THINKING_ACTION = "app.thinking.cycle";
@@ -102,6 +103,24 @@ export class CollaboratorAutoStore {
 			const owner = lockOwner(this.lockPath);
 			if (owner?.token === token) try { unlinkSync(this.lockPath); } catch {}
 		};
+	}
+
+	recoverStartLock(): boolean {
+		if (!existsSync(this.lockPath)) return false;
+		if (lstatSync(this.lockPath).isSymbolicLink()) throw new Error("Auto start lock is a symbolic link; refusing recovery.");
+		const owner = lockOwner(this.lockPath);
+		if (!owner) throw new Error("Auto start lock is malformed; inspect it before manual recovery.");
+		if (owner.pid !== process.pid) {
+			let live = true;
+			try { process.kill(owner.pid, 0); }
+			catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "ESRCH") live = false;
+				else throw error;
+			}
+			if (live) throw new Error(`Auto start lock owner PID ${owner.pid} is still live; refusing recovery.`);
+		}
+		unlinkSync(this.lockPath);
+		return true;
 	}
 
 	async withStartLock<T>(operation: () => Promise<T>): Promise<T> {

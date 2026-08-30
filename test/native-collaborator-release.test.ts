@@ -56,7 +56,7 @@ it("runs deterministic native drivers through Runtime and stages an isolated wor
 		const sessionFile = join(root, "main.jsonl");
 		writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: "session_main", timestamp: new Date().toISOString(), cwd: project })}\n`);
 		host.agents.set("w1:p1", { paneId: "w1:p1", tabId: "w1:t1", workspaceId: "w1", terminalId: "term_main", cwd: project, agentSession: { source: "herdr:pi", agent: "pi", kind: "path", value: sessionFile }, status: "idle", stateChangeSeq: 1 });
-		const server = await startRuntimeServer({ root: runtimeRoot, socketPath: join(runtimeRoot, "runtime.sock"), host });
+		const server = await startRuntimeServer({ root: runtimeRoot, socketPath: join(runtimeRoot, "runtime.sock"), host, participant: { stopTarget: async () => "closed" } });
 		servers.push(server);
 		const client = new HostedRuntimeClient(server.socketPath);
 		const registration = await client.call("pi.register", { projectRoot: project, piSessionId: "session_main", piSessionFile: sessionFile, clientGeneration: "client_main", admittedClaims: [], herdr: { paneId: "w1:p1", terminalId: "term_main" } }) as Record<string, string>;
@@ -70,7 +70,7 @@ it("runs deterministic native drivers through Runtime and stages an isolated wor
 		expect(readFileSync(join(codex.cwd, "native-release.txt"), "utf8")).toBe("codex workspace write\n");
 		expect(existsSync(join(project, "native-release.txt"))).toBe(false);
 		const authority = { ...auth(registration), callerParticipantKey: caller.participantKey, expectedCallerGeneration: caller.generation };
-		await client.call("workspace.retain", { ...authority, workspaceId: codex.workspaceId });
+		await client.call("participant.stop_confirmed", { ...auth(registration), participantKey: codex.participantKey, expectedGeneration: codex.holderGeneration, confirmed: true });
 		const checkpoint = await client.call("workspace.checkpoint", { ...authority, workspaceId: codex.workspaceId, taskStatus: "completed" }) as { workspace: { state: string } };
 		expect(checkpoint.workspace.state).toBe("ready_handoff");
 		expect([git(project, ["rev-parse", "HEAD"]), git(project, ["status", "--porcelain"])]).toEqual([baseHead, ""]);
@@ -105,7 +105,7 @@ async function runNative(input: {
 	terminalId: string;
 	launchId: string;
 	expectedReply: string;
-}): Promise<{ cwd: string; workspaceId?: string; branchRef?: string }> {
+}): Promise<{ cwd: string; participantKey: string; holderGeneration: string; workspaceId?: string; branchRef?: string }> {
 	const authority = { ...auth(input.registration), callerParticipantKey: input.caller.participantKey, expectedCallerGeneration: input.caller.generation };
 	let cwd = input.project;
 	let workspaceId: string | undefined;
@@ -134,7 +134,7 @@ async function runNative(input: {
 	expect(reply.events.at(-1)?.payload.body).toBe(input.expectedReply);
 	await input.client.call("inbox.ack", { ...auth(input.registration), claimId: reply.claimId, eventIds: reply.events.map((event) => event.eventId) });
 	runner.stop();
-	return { cwd, ...(workspaceId ? { workspaceId, branchRef } : {}) };
+	return { cwd, participantKey: runner.state().participantKey!, holderGeneration: runner.state().holderGeneration!, ...(workspaceId ? { workspaceId, branchRef } : {}) };
 }
 
 function auth(registration: Record<string, string>) { return { registrationId: registration.registrationId, registrationKey: registration.registrationKey }; }

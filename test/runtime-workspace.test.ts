@@ -8,7 +8,7 @@ import { DirectoryMonitorManager } from "../extensions/runtime/service/monitor.t
 import { HostedParticipantCoordinator } from "../extensions/runtime/service/participant.ts";
 import { dispatchHostedLine, type HostedProtocolContext } from "../extensions/runtime/service/protocol.ts";
 import { RuntimeRegistrationManager, type HostedHostVerifier, type HostedLiveAgent, type HostedPaneIdentity, type RegisterPiInput } from "../extensions/runtime/service/registration.ts";
-import { HostedStateStore, readHostedRuntimeState, runtimeStatePaths } from "../extensions/runtime/service/state.ts";
+import { HostedStateStore, readHostedRuntimeState, runtimeStatePaths, validateHostedRuntimeState } from "../extensions/runtime/service/state.ts";
 import { HostedWakeCoordinator } from "../extensions/runtime/service/wake.ts";
 import { RuntimeWorkspaceCoordinator } from "../extensions/runtime/service/workspace.ts";
 
@@ -67,8 +67,9 @@ describe("Runtime isolated collaborator workspace", () => {
 		expect(readFileSync(join(test.project, "app.txt"), "utf8")).toBe("base\n");
 		const migrationRoot = join(test.root, "migration-runtime");
 		mkdirSync(migrationRoot);
-		const v4 = structuredClone(test.store.read()) as unknown as { version: number; workspaces: Record<string, { ownerKind?: string }> };
+		const v4 = structuredClone(test.store.read()) as unknown as { version: number; autoCapacityReservations?: unknown; workspaces: Record<string, { ownerKind?: string }> };
 		v4.version = 4;
+		delete v4.autoCapacityReservations;
 		for (const record of Object.values(v4.workspaces)) delete record.ownerKind;
 		writeFileSync(runtimeStatePaths(migrationRoot).state, JSON.stringify(v4));
 		expect(readHostedRuntimeState(migrationRoot).workspaces[provisioned.workspace.workspaceId]).toMatchObject({ ownerKind: "pi", piSessionId: "session_writer" });
@@ -98,6 +99,7 @@ describe("Runtime isolated collaborator workspace", () => {
 		test.registrations.close();
 		const restartedRegistrations = new RuntimeRegistrationManager(test.store, test.host, test.registrationOptions);
 		const restarted = new RuntimeWorkspaceCoordinator(join(test.root, "runtime"), test.store, restartedRegistrations, test.host, { createId: (kind) => kind === "integration" ? "integration_1" : "unused" });
+		const coordinatorInternals = restarted as unknown as { locks: Map<string, Promise<void>> };
 		const reconnected = await restarted.reconnect({ workspaceId: provisioned.workspace.workspaceId, piSessionId: "session_writer", piSessionFile: writerSession, clientGeneration: "client_writer", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_writer" } });
 		expect(reconnected.registration.targetKey).toBe(writer.registration.targetKey);
 		const restartedMain = await restartedRegistrations.register(test.input);
@@ -119,10 +121,26 @@ describe("Runtime isolated collaborator workspace", () => {
 		await expect(restarted.prepareIntegration(restartedMain, { workspaceId: checkpoint.workspaceId, callerParticipantKey: mainParticipant.participantKey, expectedCallerGeneration: mainParticipant.generation })).rejects.toThrow();
 		expect(Object.values(test.store.read().integrations)).toContainEqual(expect.objectContaining({ state: "preparing" }));
 		crashPreparation = false;
-		const integration = await restarted.prepareIntegration(restartedMain, { workspaceId: checkpoint.workspaceId, callerParticipantKey: mainParticipant.participantKey, expectedCallerGeneration: mainParticipant.generation });
+		const integrationInput = { workspaceId: checkpoint.workspaceId, callerParticipantKey: mainParticipant.participantKey, expectedCallerGeneration: mainParticipant.generation };
+		const integration = await restarted.prepareIntegration(restartedMain, integrationInput);
 		expect(integration.state).toBe("prepared");
+		expect(await restarted.prepareIntegration(restartedMain, integrationInput)).toEqual(integration);
+		expect(Object.values(test.store.read().integrations)).toHaveLength(1);
+		const duplicate = { ...integration, integrationId: "integration_duplicate", worktreePath: `${integration.worktreePath}-duplicate`, branchRef: "refs/heads/runtime/integrate/integration_duplicate", state: "preparing" as const, preparedHead: undefined, createdAt: integration.createdAt + 1, updatedAt: integration.updatedAt + 1 };
+		expect(() => test.store.apply({ type: "integration.ensure", integration: duplicate })).toThrow("Integration reservation is invalid");
+		const duplicatedState = structuredClone(test.store.read());
+		duplicatedState.integrations[duplicate.integrationId] = duplicate;
+		expect(() => validateHostedRuntimeState(duplicatedState)).toThrow("multiple non-cleaned integrations");
+		await expect(restarted.checkpoint(restartedMain, { ...integrationInput, taskStatus: "completed" })).rejects.toThrow("checkpointing is frozen");
+		const exactWorkspace = test.store.read().workspaces[checkpoint.workspaceId]!;
+		await expect((restarted as unknown as { checkpointWorkspace(workspace: typeof exactWorkspace): Promise<unknown> }).checkpointWorkspace(exactWorkspace)).rejects.toThrow("checkpointing is frozen");
+		await expect(restarted.cleanupWorkspace(restartedMain, { ...integrationInput, discardConfirmed: true })).rejects.toThrow("cleanup is frozen");
+		expect(existsSync(checkpoint.worktreePath)).toBe(true);
+		const changedHandoff = { ...exactWorkspace, headCommit: integration.preparedHead!, updatedAt: exactWorkspace.updatedAt + 1 };
+		test.store.apply({ type: "workspace.replace", workspace: changedHandoff, expectedState: exactWorkspace.state, expectedUpdatedAt: exactWorkspace.updatedAt });
+		await expect(restarted.finalizeIntegration(restartedMain, { integrationId: integration.integrationId, callerParticipantKey: mainParticipant.participantKey, expectedCallerGeneration: mainParticipant.generation })).rejects.toThrow("handoff changed after integration preparation");
+		test.store.apply({ type: "workspace.replace", workspace: { ...changedHandoff, headCommit: exactWorkspace.headCommit, updatedAt: changedHandoff.updatedAt + 1 }, expectedState: changedHandoff.state, expectedUpdatedAt: changedHandoff.updatedAt });
 		let failWorkspaceEvidence = true;
-		const coordinatorInternals = restarted as unknown as { locks: Set<string> };
 		let finalizedUnderLease = false;
 		let integratedUnderLease = false;
 		let cleanedUnderLease = false;
@@ -160,13 +178,43 @@ describe("Runtime isolated collaborator workspace", () => {
 		const entered = new Promise<void>((resolve) => { started = resolve; });
 		internals.git.createWorktree = async (...args: unknown[]) => { started(); await barrier; return originalCreate(...args); };
 		const input = { requestId: "racing_create", callerParticipantKey: caller.participantKey, expectedCallerGeneration: caller.generation, protocol: "review", participantId: "writer", piSessionId: "session_writer" };
+		const secondInput = { ...input, requestId: "queued_create", participantId: "writer_two", piSessionId: "session_writer_two" };
 		const creating = test.coordinator.create(main, input);
 		await entered;
-		await expect(test.coordinator.recoverLaunch(main, { requestId: input.requestId, callerParticipantKey: caller.participantKey, expectedCallerGeneration: caller.generation })).rejects.toThrow("Another Runtime Git operation");
+		const queued = test.coordinator.create(main, secondInput);
+		const recovering = test.coordinator.recoverLaunch(main, { requestId: input.requestId, callerParticipantKey: caller.participantKey, expectedCallerGeneration: caller.generation });
 		release();
-		const created = await creating;
+		const [created, queuedCreated, recovered] = await Promise.all([creating, queued, recovering]);
 		expect(created.workspace.state).toBe("ready");
-		expect(await test.coordinator.recoverLaunch(main, { requestId: input.requestId, callerParticipantKey: caller.participantKey, expectedCallerGeneration: caller.generation })).toMatchObject({ state: "cleaned" });
+		expect(queuedCreated.workspace.state).toBe("ready");
+		expect(recovered).toMatchObject({ state: "cleaned" });
+		expect(await test.coordinator.recoverLaunch(main, { requestId: secondInput.requestId, callerParticipantKey: caller.participantKey, expectedCallerGeneration: caller.generation })).toMatchObject({ state: "cleaned" });
+	});
+
+	it("does not reconcile an unmaterialized no-checkout worktree to ready", async () => {
+		const test = setup();
+		const main = await test.registrations.register(test.input);
+		const caller = test.participants.acquire(main, "review", "main").participant;
+		const internals = test.coordinator as unknown as { git: { createWorktree(repository: { root: string }, path: string, branchRef: string, baseCommit: string): Promise<unknown> } };
+		const originalCreate = internals.git.createWorktree.bind(internals.git);
+		internals.git.createWorktree = async (repository, path, branchRef, baseCommit) => {
+			git(repository.root, ["worktree", "add", "--no-checkout", "--no-track", "-b", branchRef.slice("refs/heads/".length), "--", path, baseCommit]);
+			throw new Error("Injected controller crash before checkout.");
+		};
+		const originalApply = test.store.apply.bind(test.store);
+		test.store.apply = ((operation) => {
+			if (operation.type === "workspace.replace" && operation.workspace.state === "needs_attention") throw new Error("Injected state-loss crash.");
+			return originalApply(operation);
+		}) as typeof test.store.apply;
+		const input = { requestId: "incomplete_checkout", callerParticipantKey: caller.participantKey, expectedCallerGeneration: caller.generation, protocol: "review", participantId: "writer", piSessionId: "session_writer" };
+		await expect(test.coordinator.create(main, input)).rejects.toThrow("before checkout");
+		test.store.apply = originalApply;
+		internals.git.createWorktree = originalCreate;
+		const workspace = Object.values(test.store.read().workspaces)[0]!;
+		expect(workspace.state).toBe("provisioning");
+		expect(existsSync(join(workspace.worktreePath, "app.txt"))).toBe(false);
+		await expect(test.coordinator.reconcile(main, { workspaceId: workspace.workspaceId, callerParticipantKey: caller.participantKey, expectedCallerGeneration: caller.generation })).rejects.toThrow("clean");
+		expect(test.store.read().workspaces[workspace.workspaceId]!.state).toBe("needs_attention");
 	});
 
 	it("activates and retains an isolated workspace through its final bridge target", async () => {
@@ -178,13 +226,17 @@ describe("Runtime isolated collaborator workspace", () => {
 		test.host.panes.set("w1:p9", { paneId: "w1:p9", tabId: "w1:t9", workspaceId: "w1", terminalId: "term_native", cwd: workspace.workspace.worktreePath, paneCount: 1, revision: 1 });
 		await test.coordinator.bind(main, { workspaceId: workspace.workspace.workspaceId, callerParticipantKey: mainParticipant.participantKey, expectedCallerGeneration: mainParticipant.generation, herdr: { paneId: "w1:p9", terminalId: "term_native" } });
 		const secrets = [Buffer.alloc(32, 7).toString("base64url"), Buffer.alloc(32, 8).toString("base64url")];
-		const bridges = new RuntimeBridgeCoordinator(test.store, test.registrations, test.host, { createSecret: () => secrets.shift()! });
+		const bridges = new RuntimeBridgeCoordinator(test.store, test.registrations, test.host, { createSecret: () => secrets.shift()!, workspaceAuthority: test.coordinator });
 		const launch = await bridges.create(main, { requestId: "bridge_launch", launchId: "launch_native", workspaceId: workspace.workspace.workspaceId, callerParticipantKey: mainParticipant.participantKey, expectedCallerGeneration: mainParticipant.generation, protocol: "review", participantId: "native", profile: "workspace-write", configurationHash: "a".repeat(64), herdr: { paneId: "w1:p9", terminalId: "term_native" }, metadata: { adapter: "native-v1" } });
 		test.host.agents.set("w1:p9", { paneId: "w1:p9", tabId: "w1:t9", workspaceId: "w1", terminalId: "term_native", cwd: workspace.workspace.worktreePath, agentSession: { source: "pi-kit-bridge", agent: "bridge", kind: "id", value: "launch_native" }, status: "idle", stateChangeSeq: 2 });
 		const native = await bridges.register({ launchToken: launch.launchToken, reconnectToken: launch.reconnectToken, clientGeneration: "client_native", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_native" } });
 		expect(native).toMatchObject({ cwd: workspace.workspace.worktreePath, workspaceId: workspace.workspace.workspaceId, profile: "workspace-write" });
 		expect(test.store.read().workspaces[workspace.workspace.workspaceId]).toMatchObject({ state: "active", targetKey: native.registration.targetKey });
 		expect(test.store.read().targets[native.registration.targetKey]).toMatchObject({ kind: "bridge", workspaceId: workspace.workspace.workspaceId, workspaceRoot: workspace.workspace.worktreePath });
+		git(workspace.workspace.worktreePath, ["checkout", "--detach"]);
+		await expect(bridges.reconnect({ targetKey: native.registration.targetKey, reconnectToken: launch.reconnectToken, clientGeneration: "client_native", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_native" } })).rejects.toThrow();
+		git(workspace.workspace.worktreePath, ["checkout", workspace.workspace.branchRef.slice("refs/heads/".length)]);
+		expect(await bridges.reconnect({ targetKey: native.registration.targetKey, reconnectToken: launch.reconnectToken, clientGeneration: "client_native", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_native" } })).toMatchObject({ workspaceId: workspace.workspace.workspaceId });
 		writeFileSync(join(workspace.workspace.worktreePath, "task.txt"), "dirty\n");
 		const evidence = await test.coordinator.taskEvidence(native.registration.targetKey);
 		expect(evidence).toMatchObject({ workspaceId: workspace.workspace.workspaceId, baseCommit: workspace.workspace.baseCommit, headCommit: workspace.workspace.headCommit, dirty: true, artifactRef: workspace.workspace.branchRef });

@@ -36,6 +36,7 @@ export interface BridgeTurnWorker {
 	workerPid?: number;
 	workerIdentity?: string;
 	cancelRequested?: boolean;
+	quiescedAt?: number;
 }
 
 export interface BridgeTurnTerminal {

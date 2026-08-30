@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -66,7 +66,13 @@ describe("collaborator Auto mode", () => {
 		const lockPath = join(root, "runtime", "auto-start.lock");
 		writeFileSync(lockPath, `${JSON.stringify({ token: "stale", pid: 999999 })}\n`);
 		await expect(store.withStartLock(async () => "unsafe")).rejects.toThrow("stale locks fail closed");
-		unlinkSync(lockPath);
+		expect(store.recoverStartLock()).toBe(true);
+		writeFileSync(lockPath, `${JSON.stringify({ token: "same-process-settled", pid: process.pid })}\n`);
+		expect(store.recoverStartLock()).toBe(true);
+		expect(store.recoverStartLock()).toBe(false);
+		writeFileSync(lockPath, "{broken");
+		expect(() => store.recoverStartLock()).toThrow("malformed");
+		rmSync(lockPath);
 		expect(await store.withStartLock(async () => "operator-recovered")).toBe("operator-recovered");
 	});
 });

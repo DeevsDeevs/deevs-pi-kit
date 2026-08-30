@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { fork, type ChildProcess } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { HostedRuntimeClient, HostedRuntimeClientError } from "../client.ts";
-import { ownsProcessIdentity, quiesceProcessGroup, readProcessIdentity } from "../../shared/process-group.ts";
+import { isProcessGroupQuiescent, ownsProcessIdentity, quiesceProcessGroup, readProcessGroupId, readProcessIdentity } from "../../shared/process-group.ts";
 import { BridgeJournalStore, readWorkerState, writeRunnerConfig, writeWorkerSpec } from "./journal.ts";
 import { bridgeProcessEnvironment } from "./adapters.ts";
 import { BRIDGE_RUNNER_MAX_BODY_BYTES, BRIDGE_RUNNER_MAX_TURNS, type BridgeAdmission, type BridgeJournal, type BridgeRunnerConfig, type BridgeTurn, type BridgeWorkerSpec, type BridgeWorkerState } from "./types.ts";
@@ -12,6 +12,7 @@ import { BRIDGE_RUNNER_MAX_BODY_BYTES, BRIDGE_RUNNER_MAX_TURNS, type BridgeAdmis
 const WORKER = fileURLToPath(new URL("./worker.ts", import.meta.url));
 const HEARTBEAT_MS = 2_000;
 const RETAINED_SETTLED_TURNS = 64;
+const TURN_ID = /^turn_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 interface RuntimeRegistration {
 	targetKey: string;
@@ -101,7 +102,7 @@ export class BridgeRunner {
 		if (this.config.launchToken) {
 			try { result = await this.client.call("bridge.register", { ...common, launchToken: this.config.launchToken, reconnectToken: this.config.reconnectToken }); }
 			catch (error) {
-				if (!this.config.targetKey || !(error instanceof HostedRuntimeClientError) || error.code !== "unavailable") throw error;
+				if (!this.config.targetKey || !(error instanceof HostedRuntimeClientError) || (error.code !== "unavailable" && error.code !== "conflict")) throw error;
 				result = await this.client.call("bridge.reconnect", { ...common, targetKey: this.config.targetKey, reconnectToken: this.config.reconnectToken });
 			}
 		} else {
@@ -145,13 +146,21 @@ export class BridgeRunner {
 	}
 
 	private async advance(turn: BridgeTurn): Promise<"working" | "sent" | "needs_attention"> {
+		if (turn.terminal && turn.worker?.quiescedAt === undefined && !await this.ensureTurnQuiesced(turn)) return "needs_attention";
 		if (turn.terminal && this.rejectUncertainNativeSession(turn.eventId, turn.terminal)) return "needs_attention";
 		const admission = this.journal.read().admissions.find((item) => item.claimId === turn.claimId);
 		if (!admission || admission.ack !== "confirmed") { await this.register(); return "working"; }
 		if (turn.state === "pending") { await this.launchWorker(turn); return "working"; }
 		if (turn.state === "starting" || turn.state === "running") return this.pollWorker(turn);
-		if (turn.state === "terminal") { this.setReplyPending(turn.eventId, turn.terminal!); return "working"; }
-		if (turn.state === "reply_pending") return this.publish(turn);
+		if (turn.state === "terminal") {
+			if (!await this.ensureTurnQuiesced(turn)) return "needs_attention";
+			this.setReplyPending(turn.eventId, turn.terminal!);
+			return "working";
+		}
+		if (turn.state === "reply_pending") {
+			if (!await this.ensureTurnQuiesced(turn)) return "needs_attention";
+			return this.publish(turn);
+		}
 		this.needsAttention(turn.eventId);
 		return "needs_attention";
 	}
@@ -198,18 +207,30 @@ export class BridgeRunner {
 	}
 
 	private async pollWorker(turn: BridgeTurn): Promise<"working" | "needs_attention"> {
-		const worker = turn.worker ? readWorkerState(turn.worker.statePath) : undefined;
+		let worker = turn.worker ? readWorkerState(turn.worker.statePath) : undefined;
 		if (!worker) return "working";
-		if (worker.status === "terminal" && worker.terminal) {
-			this.importTerminal(turn.eventId, worker.terminal);
-			return "working";
+		for (let observation = 0; observation < 2; observation++) {
+			if (!this.workerReceiptMatches(turn, worker)) { await this.failWorkerReceipt(turn); return "needs_attention"; }
+			if (worker.status === "terminal" && worker.terminal) {
+				if (!await this.ensureTurnQuiesced(turn, worker)) return "needs_attention";
+				const settled = readWorkerState(turn.worker!.statePath);
+				if (!settled?.terminal) { this.needsAttention(turn.eventId); return "needs_attention"; }
+				this.importTerminal(turn.eventId, settled.terminal);
+				return "working";
+			}
+			if (worker.status === "needs_attention") {
+				if (await this.hasProcessWitness(worker)) await quiesceProcessGroup(worker.workerPid);
+				this.needsAttention(turn.eventId);
+				return "needs_attention";
+			}
+			if (await ownsProcessIdentity(worker.workerPid, worker.workerIdentity)) return "working";
+			if (observation === 0) {
+				await delay(500);
+				worker = readWorkerState(turn.worker!.statePath) ?? worker;
+			}
 		}
-		if (worker.status === "needs_attention" || !await ownsProcessIdentity(worker.workerPid, worker.workerIdentity)) {
-			if (await this.hasProcessWitness(worker)) await quiesceProcessGroup(worker.workerPid);
-			this.needsAttention(turn.eventId);
-			return "needs_attention";
-		}
-		return "working";
+		this.needsAttention(turn.eventId);
+		return "needs_attention";
 	}
 
 	private async publish(turn: BridgeTurn): Promise<"working" | "sent" | "needs_attention"> {
@@ -233,12 +254,23 @@ export class BridgeRunner {
 
 	private async recover(): Promise<void> {
 		for (const turn of this.journal.read().turns) {
+			if ((turn.terminal !== undefined || ["terminal", "reply_pending", "reply_sent"].includes(turn.state)) && turn.worker?.quiescedAt === undefined) await this.ensureTurnQuiesced(turn);
+		}
+		if (this.journal.read().status === "needs_attention") return;
+		for (const turn of this.journal.read().turns) {
 			if (turn.state !== "starting" && turn.state !== "running") continue;
 			let worker = turn.worker ? readWorkerState(turn.worker.statePath) : undefined;
 			if (!worker && turn.worker) { await delay(500); worker = readWorkerState(turn.worker.statePath); }
-			if (!worker) { this.needsAttention(turn.eventId); continue; }
+			if (!worker || !this.workerReceiptMatches(turn, worker)) { await this.failWorkerReceipt(turn); continue; }
 			if (turn.worker?.cancelRequested) { await this.settleCancellation(turn.eventId, turn.worker.statePath); continue; }
-			if (worker.status === "terminal" && worker.terminal) { this.importTerminal(turn.eventId, worker.terminal); continue; }
+			if (worker.status === "terminal" && worker.terminal) {
+				if (await this.ensureTurnQuiesced(turn, worker)) {
+					const settled = readWorkerState(turn.worker!.statePath);
+					if (settled?.terminal) this.importTerminal(turn.eventId, settled.terminal);
+					else this.needsAttention(turn.eventId);
+				}
+				continue;
+			}
 			if (worker.status === "needs_attention" || !await ownsProcessIdentity(worker.workerPid, worker.workerIdentity)) {
 				if (await this.hasProcessWitness(worker)) await quiesceProcessGroup(worker.workerPid);
 				this.needsAttention(turn.eventId);
@@ -249,11 +281,54 @@ export class BridgeRunner {
 	}
 
 	private confirmAdmission(claimId: string): void { this.update((state) => ({ ...state, admissions: state.admissions.map((item) => item.claimId === claimId ? { ...item, ack: "confirmed" } : item) })); }
-	private async settleCancellation(eventId: string, statePath: string): Promise<void> { const worker = readWorkerState(statePath); if (worker?.status === "terminal" && worker.terminal) { this.importTerminal(eventId, worker.terminal); return; } if (!worker || !await this.hasProcessWitness(worker) || !await quiesceProcessGroup(worker.workerPid)) { this.needsAttention(eventId); return; } const terminal = readWorkerState(statePath)?.terminal ?? { status: "cancelled" as const, body: "Bridge turn cancelled after exact worker-group quiescence.", sessionAdvance: worker.childPid ? "uncertain" as const : "none" as const }; this.setReplyPending(eventId, terminal); }
+	private async settleCancellation(eventId: string, statePath: string): Promise<void> {
+		const turn = this.journal.read().turns.find((candidate) => candidate.eventId === eventId);
+		const worker = readWorkerState(statePath);
+		if (!turn || !worker || !await this.ensureTurnQuiesced(turn, worker)) { if (turn && !worker) this.needsAttention(eventId); return; }
+		const terminal = readWorkerState(statePath)?.terminal ?? { status: "cancelled" as const, body: "Bridge turn cancelled after exact worker-group quiescence.", sessionAdvance: worker.childPid ? "uncertain" as const : "none" as const };
+		this.setReplyPending(eventId, terminal);
+	}
+	private async ensureTurnQuiesced(turn: BridgeTurn, loaded?: BridgeWorkerState): Promise<boolean> {
+		if (!turn.worker) { this.needsAttention(turn.eventId); return false; }
+		if (turn.worker.quiescedAt !== undefined) return true;
+		if (!this.workerStatePathMatches(turn)) { this.needsAttention(turn.eventId); return false; }
+		const worker = loaded ?? readWorkerState(turn.worker.statePath);
+		if (!this.workerReceiptMatches(turn, worker) || !await this.proveWorkerQuiescence(worker)) { this.needsAttention(turn.eventId); return false; }
+		const settled = readWorkerState(turn.worker.statePath);
+		if (!this.workerReceiptMatches(turn, settled)) { this.needsAttention(turn.eventId); return false; }
+		const quiescedAt = Date.now();
+		this.replaceTurn(turn.eventId, (current) => ({ ...current, worker: { ...current.worker!, workerPid: settled.workerPid, workerIdentity: settled.workerIdentity, quiescedAt }, updatedAt: quiescedAt }));
+		return true;
+	}
+	private workerStatePathMatches(turn: BridgeTurn): boolean {
+		if (!turn.worker || !TURN_ID.test(turn.turnId)) return false;
+		try {
+			const expected = join(realpathSync(this.config.root), "turns", turn.turnId, `attempt-${turn.worker.attempt}`, "worker.v1.json");
+			return resolve(turn.worker.statePath) === expected && realpathSync(dirname(expected)) === dirname(expected);
+		} catch { return false; }
+	}
+	private workerReceiptMatches(turn: BridgeTurn, worker: BridgeWorkerState | undefined): worker is BridgeWorkerState {
+		return Boolean(worker && turn.worker && worker.turnId === turn.turnId && worker.eventId === turn.eventId && worker.attempt === turn.worker.attempt && (turn.worker.workerPid === undefined || turn.worker.workerPid === worker.workerPid) && (turn.worker.workerIdentity === undefined || turn.worker.workerIdentity === worker.workerIdentity));
+	}
+	private async proveWorkerQuiescence(worker: BridgeWorkerState): Promise<boolean> {
+		const workerOwned = await ownsProcessIdentity(worker.workerPid, worker.workerIdentity);
+		const childOwned = Boolean(worker.childPid && worker.childIdentity && await ownsProcessIdentity(worker.childPid, worker.childIdentity));
+		if (!workerOwned && !childOwned) {
+			for (let attempt = 0; attempt < 20; attempt++) {
+				if (await isProcessGroupQuiescent(worker.workerPid)) return true;
+				await delay(25);
+			}
+			return isProcessGroupQuiescent(worker.workerPid);
+		}
+		if (!workerOwned && worker.childPid && await readProcessGroupId(worker.childPid) !== worker.workerPid) return false;
+		if (!await quiesceProcessGroup(worker.workerPid) && !await isProcessGroupQuiescent(worker.workerPid)) return false;
+		return !await ownsProcessIdentity(worker.workerPid, worker.workerIdentity) && !(worker.childPid && worker.childIdentity && await ownsProcessIdentity(worker.childPid, worker.childIdentity));
+	}
 	private importTerminal(eventId: string, terminal: NonNullable<BridgeTurn["terminal"]>): void { if (this.rejectUncertainNativeSession(eventId, terminal)) return; this.update((state) => ({ ...state, ...(terminal.sessionId ? { driverSessionId: terminal.sessionId } : {}), turns: state.turns.map((turn) => turn.eventId === eventId ? { ...turn, state: "terminal", terminal, updatedAt: Date.now() } : turn) })); }
 	private setReplyPending(eventId: string, terminal: NonNullable<BridgeTurn["terminal"]>): void { if (this.rejectUncertainNativeSession(eventId, terminal)) return; this.update((state) => ({ ...state, ...(terminal.sessionId ? { driverSessionId: terminal.sessionId } : {}), turns: state.turns.map((turn) => turn.eventId === eventId ? { ...turn, state: "reply_pending", terminal, replyBody: terminal.body, reply: "unsent", updatedAt: Date.now() } : turn) })); }
 	private rejectUncertainNativeSession(eventId: string, terminal: NonNullable<BridgeTurn["terminal"]>): boolean { if (this.config.driver === "fake" || terminal.sessionAdvance !== "uncertain") return false; this.update((state) => ({ ...state, status: "needs_attention", turns: state.turns.map((turn) => turn.eventId === eventId ? { ...turn, state: "needs_attention", terminal, updatedAt: Date.now() } : turn) })); return true; }
-	private needsAttention(eventId: string): void { this.update((state) => ({ ...state, status: "needs_attention", turns: state.turns.map((turn) => turn.eventId === eventId ? { ...turn, state: "needs_attention", updatedAt: Date.now() } : turn) })); }
+	private needsAttention(eventId: string): void { this.update((state) => ({ ...state, status: "needs_attention", turns: state.turns.map((turn) => turn.eventId === eventId && turn.reply !== "sent" ? { ...turn, state: "needs_attention", updatedAt: Date.now() } : turn) })); }
+	private async failWorkerReceipt(turn: BridgeTurn): Promise<void> { if (turn.worker?.workerPid && turn.worker.workerIdentity && await ownsProcessIdentity(turn.worker.workerPid, turn.worker.workerIdentity)) await quiesceProcessGroup(turn.worker.workerPid); this.needsAttention(turn.eventId); }
 	private async hasProcessWitness(worker: BridgeWorkerState): Promise<boolean> { return await ownsProcessIdentity(worker.workerPid, worker.workerIdentity) || Boolean(worker.childPid && worker.childIdentity && await ownsProcessIdentity(worker.childPid, worker.childIdentity)); }
 	private replaceTurn(eventId: string, update: (turn: BridgeTurn) => BridgeTurn): void { this.update((state) => ({ ...state, turns: state.turns.map((turn) => turn.eventId === eventId ? update(turn) : turn) })); }
 	private update(update: (state: BridgeJournal) => BridgeJournal): BridgeJournal {
@@ -269,7 +344,10 @@ function compactSettled(state: BridgeJournal): BridgeJournal {
 	const turns = new Map(state.turns.map((turn) => [turn.eventId, turn]));
 	const uncertain = new Set(state.admissions.filter((admission) => admission.ack === "uncertain").flatMap((admission) => admission.eventIds));
 	const settled = state.admissions
-		.filter((admission) => admission.ack === "confirmed" && admission.eventIds.every((eventId) => !uncertain.has(eventId) && turns.get(eventId)?.state === "reply_sent"))
+		.filter((admission) => admission.ack === "confirmed" && admission.eventIds.every((eventId) => {
+			const turn = turns.get(eventId);
+			return !uncertain.has(eventId) && turn?.state === "reply_sent" && turn.worker?.quiescedAt !== undefined;
+		}))
 		.sort((left, right) => Math.max(...left.eventIds.map((eventId) => turns.get(eventId)!.sequence)) - Math.max(...right.eventIds.map((eventId) => turns.get(eventId)!.sequence)));
 	const removed = new Set<string>();
 	let remaining = state.turns.length;

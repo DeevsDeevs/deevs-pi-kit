@@ -92,6 +92,7 @@ function validateJournal(value: unknown): BridgeJournal {
 	};
 	const admitted = new Map(admissions.map((item) => [item.claimId, new Set(item.eventIds)]));
 	if (result.nextSequence < 1 || new Set(admissions.map((item) => item.claimId)).size !== admissions.length || new Set(turns.map((item) => item.eventId)).size !== turns.length || new Set(turns.map((item) => item.sequence)).size !== turns.length || turns.some((turn) => turn.sequence < 1 || turn.sequence >= result.nextSequence || !admitted.get(turn.claimId)?.has(turn.eventId))) throw new BridgeJournalError("Bridge journal admission or turn identity is inconsistent.");
+	if (turns.some((turn) => (turn.terminal !== undefined || ["terminal", "reply_pending", "reply_sent"].includes(turn.state)) && !turn.worker)) result.status = "needs_attention";
 	return result;
 }
 
@@ -106,7 +107,7 @@ function validateAdmission(value: unknown): BridgeAdmission {
 function validateTurn(value: unknown): BridgeTurn {
 	const item = object(value, "bridge turn", ["turnId", "sequence", "eventId", "claimId", "senderParticipantKey", "body", "task", "state", "attempt", "replySendId", "replyBody", "reply", "worker", "terminal", "createdAt", "updatedAt"]);
 	if (!['pending', 'starting', 'running', 'terminal', 'reply_pending', 'reply_sent', 'needs_attention'].includes(String(item.state)) || !["unsent", "uncertain", "sent"].includes(String(item.reply))) throw new BridgeJournalError("Bridge turn execution or reply state is invalid.");
-	const worker = item.worker === undefined ? undefined : object(item.worker, "turn worker", ["attempt", "statePath", "workerPid", "workerIdentity", "cancelRequested"]);
+	const worker = item.worker === undefined ? undefined : object(item.worker, "turn worker", ["attempt", "statePath", "workerPid", "workerIdentity", "cancelRequested", "quiescedAt"]);
 	const terminal = item.terminal === undefined ? undefined : object(item.terminal, "turn terminal", ["status", "body", "sessionAdvance", "sessionId"]);
 	if (worker?.cancelRequested !== undefined && typeof worker.cancelRequested !== "boolean") throw new BridgeJournalError("Bridge worker cancel request must be boolean.");
 	if (terminal && !["completed", "failed", "cancelled"].includes(String(terminal.status))) throw new BridgeJournalError("Bridge terminal status is invalid.");
@@ -124,14 +125,14 @@ function validateTurn(value: unknown): BridgeTurn {
 		replySendId: text(item.replySendId, "reply send ID", MAX_ID_BYTES),
 		...(item.replyBody === undefined ? {} : { replyBody: string(item.replyBody, "reply body", BRIDGE_RUNNER_MAX_BODY_BYTES) }),
 		reply: item.reply as BridgeTurn["reply"],
-		...(worker ? { worker: { attempt: integer(worker.attempt, "worker attempt"), statePath: text(worker.statePath, "worker state path", MAX_PATH_BYTES), ...(worker.workerPid === undefined ? {} : { workerPid: positiveInteger(worker.workerPid, "worker PID") }), ...(worker.workerIdentity === undefined ? {} : { workerIdentity: text(worker.workerIdentity, "worker identity", MAX_PATH_BYTES) }), ...(worker.cancelRequested === undefined ? {} : { cancelRequested: worker.cancelRequested }) } } : {}),
+		...(worker ? { worker: { attempt: integer(worker.attempt, "worker attempt"), statePath: text(worker.statePath, "worker state path", MAX_PATH_BYTES), ...(worker.workerPid === undefined ? {} : { workerPid: positiveInteger(worker.workerPid, "worker PID") }), ...(worker.workerIdentity === undefined ? {} : { workerIdentity: text(worker.workerIdentity, "worker identity", MAX_PATH_BYTES) }), ...(worker.cancelRequested === undefined ? {} : { cancelRequested: worker.cancelRequested }), ...(worker.quiescedAt === undefined ? {} : { quiescedAt: time(worker.quiescedAt, "worker quiescence time") }) } } : {}),
 		...(terminal ? { terminal: { status: terminal.status as BridgeTurn["terminal"] extends infer _ ? "completed" | "failed" | "cancelled" : never, body: string(terminal.body, "terminal body", BRIDGE_RUNNER_MAX_BODY_BYTES), sessionAdvance: terminal.sessionAdvance as "none" | "committed" | "uncertain", ...(terminal.sessionId === undefined ? {} : { sessionId: text(terminal.sessionId, "terminal session ID", MAX_ID_BYTES) }) } } : {}),
 		createdAt: time(item.createdAt, "turn creation time"),
 		updatedAt: time(item.updatedAt, "turn updated time"),
 	};
 	const terminalRequired = ["terminal", "reply_pending", "reply_sent"].includes(result.state);
 	const terminalAllowed = terminalRequired || result.state === "needs_attention";
-	if (result.updatedAt < result.createdAt || (result.state === "reply_sent") !== (result.reply === "sent") || (terminalRequired && !result.terminal) || (!terminalAllowed && result.terminal !== undefined)) throw new BridgeJournalError("Bridge turn terminal, reply, or time is inconsistent.");
+	if (result.updatedAt < result.createdAt || (result.state === "reply_sent") !== (result.reply === "sent") || (terminalRequired && !result.terminal) || (!terminalAllowed && result.terminal !== undefined) || result.worker?.quiescedAt !== undefined && (!result.worker.workerPid || !result.worker.workerIdentity)) throw new BridgeJournalError("Bridge turn terminal, reply, worker quiescence, or time is inconsistent.");
 	return result;
 }
 
