@@ -262,7 +262,7 @@ export class MissionRuntime {
 		this.pi.on("before_agent_start", (event, ctx) => {
 			this.restore(ctx);
 			const mission = this.state.readAny();
-			const systemPrompt = typeof event.systemPrompt === "string" ? event.systemPrompt : "";
+			const systemPrompt = event.systemPrompt;
 			const ownershipConflict = this.state.readOwnershipConflict();
 			if (!mission && ownershipConflict) return { systemPrompt: `${systemPrompt}\n\nMission ${ownershipConflict.missionId} was transferred to another Pi session. Do not continue its work or act on stale Mission wakes in this session.` };
 			if (!mission || mission.status === "complete" || mission.status === "ended") return undefined;
