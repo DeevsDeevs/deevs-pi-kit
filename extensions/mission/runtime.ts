@@ -892,18 +892,44 @@ function suspendedMissionContext(mission: MissionCurrent, progress: ReturnType<M
 	].join("\n");
 }
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-	// SAFETY: The runtime checks exclude null, primitives, and arrays before key access.
-	return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+interface PersistedMissionWakeDetails {
+	kind?: string | null;
+	missionId?: string | null;
+	generation?: string | null;
+	objectiveVersion?: number | null;
+}
+
+interface PersistedMissionWakeEntry {
+	type?: string | null;
+	customType?: string | null;
+	details?: PersistedMissionWakeDetails | null;
+}
+
+interface PersistedReviewFinding {
+	severity?: string | null;
+	summary?: string | null;
+	path?: string | null;
+	line?: number | null;
+	requirementIndex?: number | null;
+	criticalImpact?: string | null;
+}
+
+interface PersistedReviewReport {
+	version?: number | null;
+	verdict?: string | null;
+	overallExplanation?: string | null;
+	findings?: Array<PersistedReviewFinding | null> | null;
 }
 
 function latestMissionWakeIsStale(ctx: ExtensionContext, mission: MissionCurrent): boolean {
 	const branch = ctx.sessionManager.getBranch();
-	const entry = asRecord(branch.at(-1));
+	// SAFETY: Session entries are untrusted; all consumed wake fields are validated below before comparison.
+	const entry = branch.at(-1) as PersistedMissionWakeEntry | undefined;
 	if (entry?.type !== "custom_message" || entry.customType !== "mission") return false;
-	const details = asRecord(entry.details);
-	if (details?.kind === "limit_wrapup") return false;
-	return details?.missionId !== mission.missionId || details?.generation !== mission.generation || details?.objectiveVersion !== mission.objectiveVersion;
+	const details = entry.details;
+	if (!details || details.constructor !== Object) return true;
+	if (details.kind === "limit_wrapup") return false;
+	return details.missionId !== mission.missionId || details.generation !== mission.generation || details.objectiveVersion !== mission.objectiveVersion;
 }
 
 interface DerivedReviewReport {
@@ -924,19 +950,19 @@ function isCorrectionReview(mission: MissionCurrent): boolean {
 
 async function readReviewReport(run: DelegateRun, requirementCount: number, scopePaths: string[], acceptedFindings: MissionReviewFinding[] | undefined, scopeKind: ReviewScopeKind): Promise<DerivedReviewReport | undefined> {
 	try {
-		const report = asRecord(JSON.parse(await readFile(join(run.spec.artifactsDir, "review-report.json"), "utf8")));
-		if (!report || report.version !== 1 || (report.verdict !== "clear" && report.verdict !== "changes_requested") || typeof report.overallExplanation !== "string" || !Array.isArray(report.findings) || report.findings.length > 1_000) return undefined;
+		// SAFETY: The persisted report remains untrusted; every consumed field is validated below before domain construction.
+		const report = JSON.parse(await readFile(join(run.spec.artifactsDir, "review-report.json"), "utf8")) as PersistedReviewReport | null;
+		if (!report || report.constructor !== Object || report.version !== 1 || (report.verdict !== "clear" && report.verdict !== "changes_requested") || !isPersistedString(report.overallExplanation) || !Array.isArray(report.findings) || report.findings.length > 1_000) return undefined;
 		const acceptedRequirements = new Set((acceptedFindings ?? []).flatMap((finding) => finding.requirementIndex === undefined ? [] : [finding.requirementIndex]));
 		const findings: MissionReviewFinding[] = [];
-		for (const [index, rawFinding] of report.findings.entries()) {
-			const finding = asRecord(rawFinding);
-			if (!finding || typeof finding.summary !== "string" || (finding.path !== undefined && typeof finding.path !== "string") || (finding.criticalImpact !== undefined && finding.criticalImpact !== "security" && finding.criticalImpact !== "data_loss")) return undefined;
+		for (const [index, finding] of report.findings.entries()) {
+			if (!finding || finding.constructor !== Object || !isPersistedString(finding.summary) || (finding.path !== undefined && !isPersistedString(finding.path)) || (finding.criticalImpact !== undefined && finding.criticalImpact !== "security" && finding.criticalImpact !== "data_loss")) return undefined;
 			const submitted = reviewSeverity(finding.severity);
 			const line = optionalInteger(finding.line, 1);
 			const requirementIndex = optionalInteger(finding.requirementIndex, 0);
 			if (!submitted || (finding.line !== undefined && line === undefined) || (finding.requirementIndex !== undefined && requirementIndex === undefined)) return undefined;
-			const path = typeof finding.path === "string" ? normalizeReviewPath(finding.path) : undefined;
-			if (typeof finding.path === "string" && !path) return undefined;
+			const path = isPersistedString(finding.path) ? normalizeReviewPath(finding.path) : undefined;
+			if (finding.path !== undefined && !path) return undefined;
 			const criticalImpact = finding.criticalImpact === "security" || finding.criticalImpact === "data_loss" ? finding.criticalImpact : undefined;
 			const blocking = submitted === "blocker" || submitted === "major";
 			const requirementLinked = requirementIndex !== undefined && requirementIndex < requirementCount;
@@ -962,12 +988,16 @@ async function readReviewReport(run: DelegateRun, requirementCount: number, scop
 	} catch { return undefined; }
 }
 
-function reviewSeverity(value: unknown): MissionReviewSeverity | undefined {
+function reviewSeverity(value: string | null | undefined): MissionReviewSeverity | undefined {
 	return value === "blocker" || value === "major" || value === "minor" || value === "nit" ? value : undefined;
 }
 
-function optionalInteger(value: unknown, minimum: number): number | undefined {
-	return typeof value === "number" && Number.isInteger(value) && value >= minimum ? value : undefined;
+function optionalInteger(value: number | null | undefined, minimum: number): number | undefined {
+	return Number.isInteger(value) && Number(value) >= minimum ? Number(value) : undefined;
+}
+
+function isPersistedString(value: string | null | undefined): value is string {
+	return value !== undefined && value !== null && value.constructor === String;
 }
 
 function normalizeReviewPath(path: string): string | undefined {
