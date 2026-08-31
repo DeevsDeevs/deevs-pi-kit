@@ -3,6 +3,19 @@ import { createConnection } from "node:net";
 
 const MAX_RESPONSE_BYTES = 64 * 1024;
 
+interface RuntimeErrorEnvelope {
+	code?: string;
+	message?: string;
+}
+
+interface RuntimeResponseEnvelope {
+	v?: number;
+	id?: string;
+	ok?: boolean;
+	result?: unknown;
+	error?: RuntimeErrorEnvelope | null;
+}
+
 export class HostedRuntimeClientError extends Error {
 	readonly code: string;
 
@@ -22,19 +35,19 @@ export class HostedRuntimeClient {
 	}
 
 	// oxlint-disable-next-line anti-slop/no-unknown-returns -- RPC callers either decode the result immediately or serialize it unchanged at the tool boundary.
-	call(method: string, params: unknown): Promise<unknown> {
+	call<Params extends object>(method: string, params: Params): Promise<unknown> {
 		const id = `req_${randomUUID()}`;
 		const request = `${JSON.stringify({ v: 1, id, method, params })}\n`;
 		return new Promise((resolve, reject) => {
 			const socket = createConnection(this.socketPath);
 			let buffered = Buffer.alloc(0);
 			let settled = false;
-			const finish = (error?: Error, result?: unknown) => {
+			const finish = (error?: Error, response?: RuntimeResponseEnvelope) => {
 				if (settled) return;
 				settled = true;
 				clearTimeout(timer);
 				socket.destroy();
-				if (error) reject(error); else resolve(result);
+				if (error) reject(error); else resolve(response?.result);
 			};
 			const timer = setTimeout(() => finish(new HostedRuntimeClientError("unavailable", "Runtime request timed out.")), this.timeoutMs);
 			timer.unref?.();
@@ -49,12 +62,14 @@ export class HostedRuntimeClient {
 				const newline = buffered.indexOf(0x0a);
 				if (newline < 0) return;
 				try {
-					const response = strictObject(JSON.parse(buffered.subarray(0, newline).toString("utf8")), "runtime response");
-					if (response.v !== 1 || response.id !== id || typeof response.ok !== "boolean") throw new Error("Runtime response envelope does not match the request.");
-					if (response.ok) finish(undefined, response.result);
+					// SAFETY: The parsed transport envelope remains untrusted until every consumed field is validated below.
+					const response = JSON.parse(buffered.subarray(0, newline).toString("utf8")) as RuntimeResponseEnvelope | null;
+					if (!response || response.v !== 1 || response.id !== id || response.ok !== true && response.ok !== false) throw new Error("Runtime response envelope does not match the request.");
+					if (response.ok) finish(undefined, response);
 					else {
-						const error = strictObject(response.error, "runtime error");
-						finish(new HostedRuntimeClientError(text(error.code), text(error.message)));
+						const error = response.error;
+						if (!error || !nonEmptyString(error.code) || !nonEmptyString(error.message)) throw new Error("Runtime error fields must be non-empty strings.");
+						finish(new HostedRuntimeClientError(error.code, error.message));
 					}
 				} catch (error) {
 					finish(error instanceof HostedRuntimeClientError ? error : new HostedRuntimeClientError("invalid_response", error instanceof Error ? error.message : "Invalid runtime response."));
@@ -70,13 +85,10 @@ export class HostedRuntimeClient {
 	}
 }
 
-function strictObject(value: unknown, name: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${name} must be an object.`);
-	// SAFETY: The preceding runtime check excludes null, primitives, and arrays before key access.
-	return value as Record<string, unknown>;
-}
-
-function text(value: unknown): string {
-	if (typeof value !== "string" || value.length === 0) throw new Error("Runtime error fields must be non-empty strings.");
-	return value;
+function nonEmptyString(value: string | undefined): value is string {
+	try {
+		return value !== undefined && String.prototype.valueOf.call(value) === value && value.length > 0;
+	} catch {
+		return false;
+	}
 }
