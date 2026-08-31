@@ -1036,8 +1036,8 @@ function billableTokens(raw: any): number {
 	return computed || numberValue(raw?.totalTokens ?? raw?.total);
 }
 
-function numberValue(value: unknown): number {
-	return typeof value === "number" && Number.isFinite(value) ? value : 0;
+function numberValue(value: number | null | undefined): number {
+	return value !== null && value !== undefined && Number.isFinite(value) ? value : 0;
 }
 
 function zeroUsage(): MissionUsage {
