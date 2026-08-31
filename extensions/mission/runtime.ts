@@ -993,7 +993,7 @@ function reviewSeverity(value: string | null | undefined): MissionReviewSeverity
 }
 
 function optionalInteger(value: number | null | undefined, minimum: number): number | undefined {
-	return Number.isInteger(value) && Number(value) >= minimum ? Number(value) : undefined;
+	return Number.isSafeInteger(value) && Number(value) >= minimum ? Number(value) : undefined;
 }
 
 function isPersistedString(value: string | null | undefined): value is string {

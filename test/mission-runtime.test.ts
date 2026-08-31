@@ -799,6 +799,25 @@ describe("Mission runtime", () => {
 		}
 	});
 
+	it("rejects unsafe integer review metadata", async () => {
+		const test = await setup();
+		const artifactsDir = mkdtempSync(join(tmpdir(), "mission-unsafe-review-integer-"));
+		const candidateId = await test.runtime.completionCandidateId(test.ctx);
+		const run = { spec: { id: "review-unsafe-integer", artifactsDir }, runtime: { status: "completed", output: "" } } as unknown as DelegateRun;
+		const service = { list: () => ({ runs: [], groups: [] }), executor: { get: () => run, onChange: () => () => undefined } } as unknown as SubagentService;
+		setSubagentService(service);
+		try {
+			test.state.append(test.pi, test.state.reviewEvent("running", { runId: run.spec.id, candidateId, worktreeFingerprint: expectedFingerprint(), scopePaths: ["extensions/mission"] }));
+			writeFileSync(join(artifactsDir, "review-report.json"), JSON.stringify({ version: 1, overallExplanation: "invalid line", verdict: "changes_requested", findings: [{ severity: "minor", summary: "unsafe integer", path: "extensions/mission/runtime.ts", line: 1e100 }] }));
+			expect(await (test.runtime as unknown as { reconcileReview: () => Promise<boolean> }).reconcileReview()).toBe(true);
+			expect(test.state.read()).toMatchObject({ reviewStatus: "due", reviewOutcome: "failed", reviewReason: "independent reviewer did not submit a valid review_report artifact" });
+			expect(test.state.readReviewFailureCount()).toBe(1);
+		} finally {
+			rmSync(artifactsDir, { recursive: true, force: true });
+			clearSubagentService(service);
+		}
+	});
+
 	it.each([
 		{ severity: "minor", submitted: "changes_requested", expected: "clear", blocking: 0, backlog: 1 },
 		{ severity: "major", submitted: "clear", expected: "changes_requested", blocking: 1, backlog: 0 },
