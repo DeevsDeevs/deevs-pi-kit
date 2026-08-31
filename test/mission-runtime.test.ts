@@ -909,6 +909,33 @@ describe("Mission runtime", () => {
 		}
 	});
 
+	it("carries an accepted blocker across correction scopes that cannot re-evaluate its path", async () => {
+		const test = await setup();
+		const artifactsDir = mkdtempSync(join(tmpdir(), "mission-carried-blocker-"));
+		const candidateId = await test.runtime.completionCandidateId(test.ctx);
+		const run = { spec: { id: "review-carried-blocker", artifactsDir }, runtime: { status: "completed", output: "" } } as unknown as DelegateRun;
+		const service = { list: () => ({ runs: [], groups: [] }), executor: { get: () => run, onChange: () => () => undefined } } as unknown as SubagentService;
+		setSubagentService(service);
+		try {
+			test.state.append(test.pi, test.state.reviewEvent("awaiting_adjudication", { runId: "prior-package-review", suggestedVerdict: "changes_requested", candidateId: "prior-package-candidate", findings: [{ index: 0, severity: "major", summary: "Anti-slop is not enforced by check.", path: "package.json", requirementIndex: 0 }] }));
+			test.state.append(test.pi, test.state.reviewEvent("changes_requested", { runId: "prior-package-review", candidateId: "prior-package-candidate" }));
+			test.state.append(test.pi, test.state.reviewEvent("running", { runId: run.spec.id, candidateId, worktreeFingerprint: expectedFingerprint(), scopePaths: ["extensions/mission/runtime.ts"] }));
+			writeFileSync(join(artifactsDir, "review-report.json"), JSON.stringify({ version: 1, overallExplanation: "changed path is clear", verdict: "clear", findings: [] }));
+			expect(await (test.runtime as unknown as { reconcileReview: () => Promise<boolean> }).reconcileReview()).toBe(true);
+			expect(test.state.read()).toMatchObject({
+				reviewStatus: "awaiting_adjudication",
+				reviewSuggestedVerdict: "changes_requested",
+				reviewBlockingFindingCount: 1,
+				reviewBacklogFindingCount: 0,
+				reviewHighestSeverity: "major",
+				reviewFindings: [{ severity: "major", path: "package.json", requirementIndex: 0 }],
+			});
+		} finally {
+			rmSync(artifactsDir, { recursive: true, force: true });
+			clearSubagentService(service);
+		}
+	});
+
 	it("does not treat a present impact-only accepted set as unrestricted requirement scope", async () => {
 		const test = await setup();
 		const artifactsDir = mkdtempSync(join(tmpdir(), "mission-impact-only-major-"));
