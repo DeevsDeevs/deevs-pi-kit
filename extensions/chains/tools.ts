@@ -146,7 +146,10 @@ export function registerChainTools(pi: ExtensionAPI, service: ChainService): voi
 		promptGuidelines: ["Use default lookup mode for ideas/topics; use mode=text or mode=regex for exact matching."],
 		parameters: SearchSchema,
 		renderCall: (args, theme) => chainCall("search", args.query, theme),
-		renderResult: (result, options, theme) => chainResult(result.details, options.expanded, theme),
+		renderResult: (result, options, theme) => {
+			// SAFETY: chain_search details come only from the two typed execute branches below.
+			return chainResult(result.details as ChainResultDetails | undefined, options.expanded, theme);
+		},
 		async execute(_toolCallId, params: ChainSearchInput): Promise<AgentToolResult<ChainSearchResult | Awaited<ReturnType<ChainService["rankedSearch"]>>>> {
 			const mode = params.mode ?? "lookup";
 			if (mode === "lookup") {
@@ -172,9 +175,8 @@ interface ChainResultDetails {
 	branch?: string;
 }
 
-function chainResult(details: unknown, expanded: boolean, theme: Theme): Text {
-	// SAFETY: Details are emitted only by the registered Chain handlers above and are consumed solely for display.
-	const value = details as ChainResultDetails | undefined;
+function chainResult(details: ChainResultDetails | undefined, expanded: boolean, theme: Theme): Text {
+	const value = details;
 	const link = value?.link;
 	if (link) {
 		let text = `${theme.fg("success", "✓")} ${theme.fg("accent", `${link.chain ?? "chain"}@${link.branch ?? "main"}`)} ${theme.fg("muted", link.filename ?? "")}`;
@@ -190,7 +192,7 @@ function chainResult(details: unknown, expanded: boolean, theme: Theme): Text {
 	if (matches) return new Text(`${theme.fg("success", "✓")} ${matches.length} match(es)`, 0, 0);
 	const included = value?.includedLinks;
 	if (included) return new Text(`${theme.fg("success", "✓")} context packed from ${included.length} link(s)`, 0, 0);
-	if (typeof value?.chain === "string" && typeof value.branch === "string") return new Text(`${theme.fg("success", "✓")} ${theme.fg("accent", `${value.chain}@${value.branch}`)}`, 0, 0);
+	if (value?.chain && value.branch) return new Text(`${theme.fg("success", "✓")} ${theme.fg("accent", `${value.chain}@${value.branch}`)}`, 0, 0);
 	return new Text(theme.fg("dim", "Chain operation complete"), 0, 0);
 }
 
