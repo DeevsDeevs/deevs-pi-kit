@@ -1570,10 +1570,11 @@ export class HostedRuntimeIntegration {
 				continue;
 			}
 			malformed = true;
-			const targetKey = asRecord(record.data)?.targetKey;
-			const prior = typeof targetKey === "string" ? this.managedAgentControls.get(targetKey) : undefined;
+			let targetKey: string | undefined;
+			try { targetKey = text(asRecord(record.data)?.targetKey); } catch {}
+			const prior = targetKey ? this.managedAgentControls.get(targetKey) : undefined;
 			if (prior) this.managedAgentControls.set(prior.targetKey, { ...prior, launchToken: undefined, state: "needs_attention" });
-			else if (typeof targetKey !== "string") for (const [key, candidate] of this.managedAgentControls) this.managedAgentControls.set(key, { ...candidate, launchToken: undefined, state: "needs_attention" });
+			else if (!targetKey) for (const [key, candidate] of this.managedAgentControls) this.managedAgentControls.set(key, { ...candidate, launchToken: undefined, state: "needs_attention" });
 		}
 		if (malformed) ctx.ui.notify("Persisted managed collaborator control is invalid; affected reconnection authority requires attention.", "warning");
 	}
