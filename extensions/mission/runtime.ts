@@ -943,7 +943,12 @@ async function readReviewReport(run: DelegateRun, requirementCount: number, scop
 			const accepted = acceptedFindings === undefined || acceptedFindings.length === 0 || (requirementIndex !== undefined && acceptedRequirements.has(requirementIndex)) || criticalImpact !== undefined;
 			const withinScope = path !== undefined && scopePaths.some((scopePath) => scopeKind === "exact_paths" ? path === scopePath : scopePath === "." || path === scopePath || path.startsWith(`${scopePath}/`));
 			const severity = blocking && (!requirementLinked && !criticalImpact || !accepted || !withinScope) ? "minor" : submitted;
-			findings.push({ index, severity, summary: finding.summary.slice(0, 4_000), ...(path ? { path } : {}), ...(line !== undefined ? { line } : {}), ...(requirementIndex !== undefined ? { requirementIndex } : {}), ...(criticalImpact ? { criticalImpact } : {}) });
+			const parsed: MissionReviewFinding = { index, severity, summary: finding.summary.slice(0, 4_000) };
+			if (path) parsed.path = path;
+			if (line !== undefined) parsed.line = line;
+			if (requirementIndex !== undefined) parsed.requirementIndex = requirementIndex;
+			if (criticalImpact) parsed.criticalImpact = criticalImpact;
+			findings.push(parsed);
 		}
 		const severities = findings.map((finding) => finding.severity);
 		const blockingFindingCount = severities.filter((severity) => severity === "blocker" || severity === "major").length;
