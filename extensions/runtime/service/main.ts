@@ -20,10 +20,17 @@ try {
 		process.once("SIGTERM", () => void stop());
 	}
 } catch (error) {
-	const failure = error instanceof Error ? error : new Error(String(error));
-	const candidateCode = "code" in failure ? String(failure.code) : "";
+	let message = "Unknown runtime failure.";
+	let candidateCode = "";
+	try { message = String(error); } catch {}
+	try {
+		if (error instanceof Error) {
+			message = String(error.message);
+			if ("code" in error) candidateCode = String(error.code);
+		}
+	} catch {}
 	const code = /^[A-Za-z][A-Za-z0-9_]*$/.test(candidateCode) ? candidateCode : "internal";
-	process.stderr.write(`${JSON.stringify({ status: "error", code, message: failure.message })}\n`);
+	process.stderr.write(`${JSON.stringify({ status: "error", code, message })}\n`);
 	process.exitCode = 1;
 }
 
