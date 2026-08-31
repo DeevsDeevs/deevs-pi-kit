@@ -10,6 +10,7 @@ const MAX_KEYBINDINGS_BYTES = 64 * 1024;
 const THINKING_ACTION = "app.thinking.cycle";
 const AUTO_KEY = "shift+tab";
 const THINKING_KEY = "ctrl+shift+t";
+const LOCK_TOKEN_PATTERN = /^lock_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export interface CollaboratorAutoState {
 	version: 1;
@@ -161,7 +162,8 @@ function parseState(value: PersistedAutoState | null): CollaboratorAutoState {
 function lockOwner(path: string): { token: string; pid: number; identity?: string } | undefined {
 	try {
 		const value = readJson<PersistedLockOwner | null>(path, MAX_STATE_BYTES);
-		if (!value || value.constructor !== Object || !isString(value.token) || !isPositiveInteger(value.pid) || (value.identity !== undefined && !isString(value.identity))) return undefined;
+		const allowed = new Set(["token", "pid", "identity"]);
+		if (!value || value.constructor !== Object || Object.keys(value).some((key) => !allowed.has(key)) || !isString(value.token) || !LOCK_TOKEN_PATTERN.test(value.token) || !isPositiveInteger(value.pid) || (value.identity !== undefined && !isString(value.identity))) return undefined;
 		const owner = { token: value.token, pid: value.pid };
 		return value.identity === undefined ? owner : { ...owner, identity: value.identity };
 	} catch { return undefined; }
