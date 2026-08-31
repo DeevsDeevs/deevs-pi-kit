@@ -21,6 +21,25 @@ export interface CollaboratorAutoState {
 	generation: string;
 }
 
+interface PersistedAutoState {
+	version?: number | null;
+	enabled?: boolean | null;
+	maxConcurrentStarts?: number | null;
+	maxLiveCollaborators?: number | null;
+	profileCeiling?: string | null;
+	updatedAt?: number | null;
+	generation?: string | null;
+}
+
+interface PersistedLockOwner {
+	token?: string | null;
+	pid?: number | null;
+	identity?: string | null;
+}
+
+type PersistedKeybindingValue = string | string[] | null;
+type PersistedKeybindings = Record<string, PersistedKeybindingValue>;
+
 export class CollaboratorAutoStore {
 	readonly statePath: string;
 	readonly keybindingsPath: string;
@@ -37,7 +56,7 @@ export class CollaboratorAutoStore {
 		try {
 			return { state: parseState(readJson(this.statePath, MAX_STATE_BYTES)), valid: true };
 		} catch (error) {
-			return { state: manualState(), valid: false, error: message(error) };
+			return { state: manualState(), valid: false, error: error instanceof Error ? error.message : String(error) };
 		}
 	}
 
@@ -133,38 +152,37 @@ function manualState(): CollaboratorAutoState {
 	return { version: 1, enabled: false, maxConcurrentStarts: 4, maxLiveCollaborators: 12, profileCeiling: "workspace-write", updatedAt: 0, generation: "auto_manual_default" };
 }
 
-function parseState(value: unknown): CollaboratorAutoState {
-	const record = object(value);
+function parseState(value: PersistedAutoState | null): CollaboratorAutoState {
 	const allowed = new Set(["version", "enabled", "maxConcurrentStarts", "maxLiveCollaborators", "profileCeiling", "updatedAt", "generation"]);
-	if (!record || Object.keys(record).some((key) => !allowed.has(key)) || record.version !== 1 || typeof record.enabled !== "boolean" || record.maxConcurrentStarts !== 4 || record.maxLiveCollaborators !== 12 || record.profileCeiling !== "workspace-write" || typeof record.updatedAt !== "number" || !Number.isFinite(record.updatedAt) || typeof record.generation !== "string" || !/^auto_[A-Za-z0-9_-]+$/.test(record.generation)) throw new Error("Auto mode state is invalid.");
-	return { version: 1, enabled: record.enabled, maxConcurrentStarts: 4, maxLiveCollaborators: 12, profileCeiling: "workspace-write", updatedAt: record.updatedAt, generation: record.generation };
+	if (!value || value.constructor !== Object || Object.keys(value).some((key) => !allowed.has(key)) || value.version !== 1 || !isBoolean(value.enabled) || value.maxConcurrentStarts !== 4 || value.maxLiveCollaborators !== 12 || value.profileCeiling !== "workspace-write" || !isFiniteNumber(value.updatedAt) || !isString(value.generation) || !/^auto_[A-Za-z0-9_-]+$/.test(value.generation)) throw new Error("Auto mode state is invalid.");
+	return { version: 1, enabled: value.enabled, maxConcurrentStarts: 4, maxLiveCollaborators: 12, profileCeiling: "workspace-write", updatedAt: value.updatedAt, generation: value.generation };
 }
 
 function lockOwner(path: string): { token: string; pid: number; identity?: string } | undefined {
 	try {
-		const value = object(readJson(path, MAX_STATE_BYTES));
-		if (!value || typeof value.token !== "string" || typeof value.pid !== "number" || !Number.isInteger(value.pid) || value.pid <= 0 || (value.identity !== undefined && typeof value.identity !== "string")) return undefined;
+		const value = readJson<PersistedLockOwner | null>(path, MAX_STATE_BYTES);
+		if (!value || value.constructor !== Object || !isString(value.token) || !isPositiveInteger(value.pid) || (value.identity !== undefined && !isString(value.identity))) return undefined;
 		const owner = { token: value.token, pid: value.pid };
 		return value.identity === undefined ? owner : { ...owner, identity: value.identity };
 	} catch { return undefined; }
 }
 
-function readKeybindings(path: string): Record<string, unknown> {
+function readKeybindings(path: string): PersistedKeybindings {
 	if (!existsSync(path)) return {};
-	const value = object(readJson(path, MAX_KEYBINDINGS_BYTES));
-	if (!value) throw new Error("Pi keybindings must be a JSON object.");
+	const value = readJson<PersistedKeybindings | null>(path, MAX_KEYBINDINGS_BYTES);
+	if (!value || value.constructor !== Object) throw new Error("Pi keybindings must be a JSON object.");
 	return value;
 }
 
-// oxlint-disable-next-line anti-slop/no-unknown-returns -- Raw JSON is returned only to the schema parsers immediately above.
-function readJson(path: string, maxBytes: number): unknown {
+function readJson<Value>(path: string, maxBytes: number): Value {
 	if (lstatSync(path).isSymbolicLink()) throw new Error(`Refusing symbolic link: ${path}`);
 	const bytes = readFileSync(path);
 	if (bytes.length > maxBytes) throw new Error(`JSON exceeds ${maxBytes} bytes.`);
-	return JSON.parse(bytes.toString("utf8"));
+	// SAFETY: Callers request only persisted input contracts and validate them before constructing trusted domain values.
+	return JSON.parse(bytes.toString("utf8")) as Value;
 }
 
-function writeAtomic(root: string, path: string, value: unknown, maxBytes: number): void {
+function writeAtomic(root: string, path: string, value: CollaboratorAutoState | PersistedKeybindings, maxBytes: number): void {
 	mkdirSync(root, { recursive: true, mode: 0o700 });
 	if (existsSync(path) && lstatSync(path).isSymbolicLink()) throw new Error(`Refusing symbolic link: ${path}`);
 	const content = `${JSON.stringify(value, null, 2)}\n`;
@@ -186,12 +204,18 @@ function writeAtomic(root: string, path: string, value: unknown, maxBytes: numbe
 	}
 }
 
-function keys(value: unknown): string[] | undefined {
+function keys(value: PersistedKeybindingValue | undefined): string[] | undefined {
 	if (nonEmptyString(value)) return [value];
 	if (Array.isArray(value) && value.every(nonEmptyString)) return value;
 	return undefined;
 }
-function nonEmptyString(value: unknown): value is string { return typeof value === "string" && !!value.trim(); }
+function nonEmptyString(value: PersistedKeybindingValue | undefined): value is string {
+	return value !== undefined && value !== null && value.constructor === String && String.prototype.trim.call(value).length > 0;
+}
+function isBoolean(value: boolean | null | undefined): value is boolean { return value === true || value === false; }
+function isFiniteNumber(value: number | null | undefined): value is number { return Number.isFinite(value); }
+function isPositiveInteger(value: number | null | undefined): value is number { return Number.isInteger(value) && Number(value) > 0; }
+function isString(value: string | null | undefined): value is string { return value !== undefined && value !== null && value.constructor === String; }
 function hasKey(values: string[] | undefined, key: string): boolean { return !!values?.some((value) => value.trim().toLowerCase() === key); }
 function unique(values: string[]): string[] {
 	const seen = new Set<string>();
@@ -202,8 +226,3 @@ function unique(values: string[]): string[] {
 		return true;
 	});
 }
-function object(value: unknown): Record<string, unknown> | undefined {
-	// SAFETY: Non-null, non-array objects support the string-keyed property reads used by the schema parsers.
-	return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
-}
-function message(error: unknown): string { return error instanceof Error ? error.message : String(error); }
