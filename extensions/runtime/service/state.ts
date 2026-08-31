@@ -1584,7 +1584,7 @@ function assertTargetHasNoParticipant(state: HostedRuntimeState, targetKey: stri
 function hasActiveParticipantClaim(state: HostedRuntimeState, participantKey: string): boolean {
 	return Object.values(state.claims).some((claim) => claim.status === "active" && claim.eventIds.some((eventId) => {
 		const event = state.events[eventId];
-		return event?.type === "mailbox.message" && event.recipientParticipantKey === participantKey;
+		return event !== undefined && event.type !== "filesystem.created" && event.recipientParticipantKey === participantKey;
 	}));
 }
 

@@ -262,17 +262,39 @@ describe("hosted participant coordinator", () => {
 		expect(participants.takeover(successor, fableParticipant.participantKey, fableParticipant.generation)).toMatchObject({ holderTargetKey: successor.targetKey });
 	});
 
-	it("waits for an old holder claim to expire before takeover", async () => {
+	it.each(["message", "task", "task_result"] as const)("waits for an old holder %s claim to expire before takeover", async (kind) => {
 		const test = setup();
 		const { main, fable, mainParticipant, fableParticipant } = await acquirePair(test);
 		const successor = await register(test, "successor");
-		const event = test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "send_claimed", "Claim me.");
-		test.store.apply({ type: "inbox.claim", claim: { claimId: "claim_old", targetKey: fable.targetKey, registrationId: fable.registrationId, clientGeneration: fable.clientGeneration, eventIds: [event.eventId], createdAt: 1_000, leaseUntil: 1_100, status: "active" } });
-		test.registrations.unregister(fable.registrationId, fable.registrationKey);
-		expect(() => test.participants.takeover(successor, fableParticipant.participantKey, fableParticipant.generation)).toThrow(expect.objectContaining({ code: "busy" }));
+		const task = kind === "task_result" ? test.participants.sendTask(main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "task_for_result_claim", "Return a result.") : undefined;
+		const event = kind === "message"
+			? test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "send_claimed", "Claim me.")
+			: kind === "task"
+				? test.participants.sendTask(main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "task_claimed", "Claim this task.")
+				: test.participants.resultTask(fable, fableParticipant.participantKey, fableParticipant.generation, task!.eventId, "result_claimed", "completed", "Claim this result.", "committed");
+		const holder = kind === "task_result" ? main : fable;
+		const participant = kind === "task_result" ? mainParticipant : fableParticipant;
+		test.store.apply({ type: "inbox.claim", claim: { claimId: "claim_old", targetKey: holder.targetKey, registrationId: holder.registrationId, clientGeneration: holder.clientGeneration, eventIds: [event.eventId], createdAt: 1_000, leaseUntil: 1_100, status: "active" } });
+		test.registrations.unregister(holder.registrationId, holder.registrationKey);
+		expect(() => test.participants.takeover(successor, participant.participantKey, participant.generation)).toThrow(expect.objectContaining({ code: "busy" }));
 		test.setNow(1_101);
+		expect(test.participants.takeover(successor, participant.participantKey, participant.generation)).toMatchObject({ holderTargetKey: successor.targetKey });
+		expect(pendingHostedEvents(test.store.read(), successor.targetKey).map((candidate) => candidate.eventId)).toContain(event.eventId);
+	});
+
+	it("does not treat a target-scoped filesystem claim as participant takeover authority", async () => {
+		const test = setup();
+		const { fable, fableParticipant } = await acquirePair(test);
+		const successor = await register(test, "successor");
+		const monitors = new DirectoryMonitorManager(test.store, { automatic: false });
+		const monitor = monitors.create(fable.targetKey, test.projectRoot, 0);
+		writeFileSync(join(test.projectRoot, "created.txt"), "created\n");
+		monitors.reconcile(monitor.monitorId);
+		monitors.reconcile(monitor.monitorId);
+		const event = pendingHostedEvents(test.store.read(), fable.targetKey).find((candidate) => candidate.type === "filesystem.created")!;
+		test.store.apply({ type: "inbox.claim", claim: { claimId: "claim_filesystem", targetKey: fable.targetKey, registrationId: fable.registrationId, clientGeneration: fable.clientGeneration, eventIds: [event.eventId], createdAt: 1_000, leaseUntil: 2_000, status: "active" } });
+		test.registrations.unregister(fable.registrationId, fable.registrationKey);
 		expect(test.participants.takeover(successor, fableParticipant.participantKey, fableParticipant.generation)).toMatchObject({ holderTargetKey: successor.targetKey });
-		expect(pendingHostedEvents(test.store.read(), successor.targetKey).map((candidate) => candidate.eventId)).toEqual([event.eventId]);
 	});
 
 	it("reports revival and rejects sends to ended participants", async () => {
