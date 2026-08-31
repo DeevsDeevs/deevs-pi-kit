@@ -1746,8 +1746,7 @@ function sameAgentSession(left: ManagedAgentControl["agentSession"], right: Mana
 }
 
 function managedAgentName(protocol: string, participantId: string, bridgeId: string): string {
-	const prefix = `collab-${participantId}`.replace(/[^A-Za-z0-9_-]/g, "-").slice(0, 22);
-	return `${prefix}-${createHash("sha256").update(`${protocol}\0${bridgeId}`).digest("hex").slice(0, 24)}`;
+	return `collab-${createHash("sha256").update(`${protocol}\0${participantId}\0${bridgeId}`).digest("hex").slice(0, 25)}`;
 }
 
 export function markClaudeWorkspaceTrusted(cwd: string, configPath = join(homedir(), ".claude.json")): void {
