@@ -18,10 +18,9 @@ async function readProjectConfig<T extends object>(cwd: string, filename: string
 	const path = projectConfigPath(cwd, filename);
 	try {
 		await ensureSafeProjectConfigTarget(cwd, path, false);
-		// SAFETY: Converting JSON.parse's `any` to `unknown` prevents use before the shape check below.
-		const parsed = JSON.parse(await readFile(path, "utf8")) as unknown;
-		// SAFETY: This private reader exposes only an untrusted property bag to the caller-supplied normalizer; no field is consumed before normalization.
-		return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Partial<T> : {};
+		// SAFETY: The generic config shape remains untrusted until the caller-supplied normalizer validates every field.
+		const parsed = JSON.parse(await readFile(path, "utf8")) as Partial<T> | null;
+		return parsed && Object.getPrototypeOf(parsed) === Object.prototype ? parsed : {};
 	} catch {
 		return {};
 	}
@@ -63,6 +62,7 @@ async function ensureSafeProjectConfigTarget(cwd: string, path: string, rejectEx
 	}
 }
 
-function stripUndefined<T extends object>(value: T): Record<string, unknown> {
-	return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined));
+function stripUndefined<T extends object>(value: T): Partial<T> {
+	// SAFETY: The entries come only from T; filtering removes undefined values without changing keys or remaining values.
+	return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)) as Partial<T>;
 }
