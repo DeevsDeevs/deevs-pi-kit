@@ -22,6 +22,12 @@ export type HostedErrorCode =
 	| "storage_error"
 	| "internal";
 
+type JsonValue = string | number | boolean | null | JsonObject | JsonValue[];
+
+interface JsonObject {
+	[key: string]: JsonValue | undefined;
+}
+
 export interface HostedProtocolContext {
 	runtimeId: string;
 	epoch: string;
@@ -40,7 +46,7 @@ export type HostedResponse =
 	| { v: 1; id: string | null; ok: false; error: { code: HostedErrorCode; message: string } };
 
 export async function dispatchHostedLine(line: string, context: HostedProtocolContext): Promise<HostedResponse> {
-	let value: unknown;
+	let value: JsonValue;
 	try {
 		value = JSON.parse(line);
 	} catch {
@@ -50,8 +56,8 @@ export async function dispatchHostedLine(line: string, context: HostedProtocolCo
 	try {
 		const envelope = strictObject(value, "request");
 		const id = boundedText(envelope.id, "request id", 200);
-		if (typeof envelope.v !== "number" || !Number.isSafeInteger(envelope.v)) throw new Error("request version must be an integer.");
-		if (envelope.v !== HOSTED_PROTOCOL_VERSION) return failure(id, "unsupported_version", "Unsupported protocol envelope version.");
+		const version = envelopeVersion(envelope.v);
+		if (version !== HOSTED_PROTOCOL_VERSION) return failure(id, "unsupported_version", "Unsupported protocol envelope version.");
 		const request = strictObject(value, "request", ["v", "id", "method", "params"]);
 		const method = boundedText(request.method, "method", 100);
 		const params = request.params;
@@ -202,17 +208,17 @@ export async function dispatchHostedLine(line: string, context: HostedProtocolCo
 			if (!participants) return failure(id, "capability_unavailable", "Collaborator task methods are unavailable in this process.");
 			const parsed = taskParams(params, method);
 			const registration = registrations.authorize(parsed.registrationId, parsed.registrationKey);
-			if (method === "task.send") {
-				const event = participants.sendTask(registration, parsed.senderParticipantKey!, parsed.expectedSenderGeneration!, parsed.recipientParticipantKey!, parsed.sendId!, parsed.body!);
+			if (parsed.method === "task.send") {
+				const event = participants.sendTask(registration, parsed.senderParticipantKey, parsed.expectedSenderGeneration, parsed.recipientParticipantKey, parsed.sendId, parsed.body);
 				return success(id, { eventId: event.eventId, sequence: event.source.sequence });
 			}
-			if (method === "task.result") {
-				const existing = participants.recoverTaskResult(registration, parsed.senderParticipantKey!, parsed.expectedSenderGeneration!, parsed.eventId!, parsed.sendId!, parsed.status!, parsed.body!, parsed.sessionAdvance!);
-				const publish = (workspace?: Awaited<ReturnType<RuntimeWorkspaceCoordinator["taskEvidence"]>>) => participants.resultTask(registration, parsed.senderParticipantKey!, parsed.expectedSenderGeneration!, parsed.eventId!, parsed.sendId!, parsed.status!, parsed.body!, parsed.sessionAdvance!, workspace);
+			if (parsed.method === "task.result") {
+				const existing = participants.recoverTaskResult(registration, parsed.senderParticipantKey, parsed.expectedSenderGeneration, parsed.eventId, parsed.sendId, parsed.status, parsed.body, parsed.sessionAdvance);
+				const publish = (workspace?: Awaited<ReturnType<RuntimeWorkspaceCoordinator["taskEvidence"]>>) => participants.resultTask(registration, parsed.senderParticipantKey, parsed.expectedSenderGeneration, parsed.eventId, parsed.sendId, parsed.status, parsed.body, parsed.sessionAdvance, workspace);
 				const event = existing ?? (workspaces ? await workspaces.withTaskEvidence(registration.targetKey, publish) : publish());
 				return success(id, { eventId: event.eventId, sequence: event.source.sequence, replyId: event.payload.replyId, workspace: event.payload.workspace });
 			}
-			return success(id, participants.taskStatus(registration, parsed.senderParticipantKey!, parsed.expectedSenderGeneration!, parsed.eventId!));
+			return success(id, participants.taskStatus(registration, parsed.senderParticipantKey, parsed.expectedSenderGeneration, parsed.eventId));
 		}
 		if (method.startsWith("participant.") || method === "mailbox.send") {
 			if (!participants) return failure(id, "capability_unavailable", "Collaborator mailbox methods are unavailable in this process.");
@@ -235,15 +241,15 @@ export async function dispatchHostedLine(line: string, context: HostedProtocolCo
 			}
 			if (method === "participant.auto_capacity.recover") {
 				const input = strictObject(params, "participant.auto_capacity.recover params", ["registrationId", "registrationKey", "operationId", "confirmedAbsent"]);
-				if (typeof input.confirmedAbsent !== "boolean") throw new Error("Auto capacity absence confirmation must be boolean");
+				const confirmedAbsent = booleanValue(input.confirmedAbsent, "Auto capacity absence confirmation must be boolean");
 				const registration = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
-				return success(id, participants.recoverAutoCapacity(registration, boundedText(input.operationId, "Auto capacity operation ID", 200), input.confirmedAbsent));
+				return success(id, participants.recoverAutoCapacity(registration, boundedText(input.operationId, "Auto capacity operation ID", 200), confirmedAbsent));
 			}
 			if (method === "participant.acquire") {
 				const input = strictObject(params, "participant.acquire params", ["registrationId", "registrationKey", "protocol", "participantId", "revive"]);
-				if (input.revive !== undefined && typeof input.revive !== "boolean") throw new Error("participant revive must be a boolean");
+				const revive = input.revive === undefined ? false : booleanValue(input.revive, "participant revive must be a boolean");
 				const registration = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
-				return success(id, participants.acquire(registration, participantName(input.protocol, "protocol"), participantName(input.participantId, "participant ID"), input.revive === true));
+				return success(id, participants.acquire(registration, participantName(input.protocol, "protocol"), participantName(input.participantId, "participant ID"), revive));
 			}
 			if (method === "participant.list") {
 				const auth = authParams(params);
@@ -297,7 +303,7 @@ export function invalidFrame(message: string): HostedResponse {
 	return failure(null, "invalid_request", message);
 }
 
-function hello(id: string, value: unknown, context: HostedProtocolContext): HostedResponse {
+function hello(id: string, value: JsonValue | undefined, context: HostedProtocolContext): HostedResponse {
 	const params = strictObject(value, "hello params", ["minVersion", "maxVersion"]);
 	const minVersion = integer(params.minVersion, "minimum version");
 	const maxVersion = integer(params.maxVersion, "maximum version");
@@ -317,7 +323,7 @@ function hello(id: string, value: unknown, context: HostedProtocolContext): Host
 	return success(id, { version: 1, runtimeId: context.runtimeId, epoch: context.epoch, capabilities });
 }
 
-function registerParams(value: unknown): RegisterPiInput {
+function registerParams(value: JsonValue | undefined): RegisterPiInput {
 	const params = strictObject(value, "pi.register params", ["projectRoot", "piSessionId", "piSessionFile", "clientGeneration", "admittedClaims", "herdr"]);
 	const admitted = boundedArray(params.admittedClaims, "admittedClaims", 12).map((value, index) => {
 		const receipt = strictObject(value, `admittedClaims[${index}]`, ["claimId", "eventIds"]);
@@ -338,17 +344,17 @@ function registerParams(value: unknown): RegisterPiInput {
 	};
 }
 
-function workspaceRegisterParams(value: unknown): RegisterWorkspacePiInput & { launchToken: string } {
+function workspaceRegisterParams(value: JsonValue | undefined): RegisterWorkspacePiInput & { launchToken: string } {
 	const params = strictObject(value, "workspace.pi.register params", ["launchToken", "piSessionId", "piSessionFile", "clientGeneration", "admittedClaims", "herdr"]);
 	return { launchToken: boundedText(params.launchToken, "workspace launch token", 512), ...workspacePiRegistration(params) };
 }
 
-function workspaceReconnectParams(value: unknown): RegisterWorkspacePiInput & { workspaceId: string } {
+function workspaceReconnectParams(value: JsonValue | undefined): RegisterWorkspacePiInput & { workspaceId: string } {
 	const params = strictObject(value, "workspace.pi.reconnect params", ["workspaceId", "piSessionId", "piSessionFile", "clientGeneration", "admittedClaims", "herdr"]);
 	return { workspaceId: boundedText(params.workspaceId, "workspace ID", 200), ...workspacePiRegistration(params) };
 }
 
-function workspacePiRegistration(params: Record<string, unknown>): RegisterWorkspacePiInput {
+function workspacePiRegistration(params: JsonObject): RegisterWorkspacePiInput {
 	const host = strictObject(params.herdr, "workspace Pi Herdr identity", ["paneId", "terminalId", "agentName"]);
 	const herdr: RegisterWorkspacePiInput["herdr"] = { paneId: boundedText(host.paneId, "Herdr pane ID", 200), terminalId: boundedText(host.terminalId, "Herdr terminal ID", 200) };
 	if (host.agentName !== undefined) herdr.agentName = boundedText(host.agentName, "Herdr agent name", 200);
@@ -381,8 +387,6 @@ interface BridgeCancelInput extends WorkspaceAuthority {
 	launchId: string;
 }
 
-type WorkspaceMethodSchemas = Record<string, readonly string[]>;
-
 type WorkspaceAuthorizedParams =
 	| ({ method: "workspace.launch.create" } & AuthorizedParams<CreateWorkspaceInput>)
 	| ({ method: "workspace.bridge.create" } & AuthorizedParams<CreateBridgeWorkspaceInput>)
@@ -396,25 +400,8 @@ type WorkspaceAuthorizedParams =
 	| ({ method: "workspace.cleanup" } & AuthorizedParams<WorkspaceAuthority & { workspaceId: string; discardConfirmed: boolean }>)
 	| ({ method: "workspace.integration.cleanup" } & AuthorizedParams<WorkspaceAuthority & { integrationId: string; discardConfirmed: boolean }>);
 
-function workspaceAuthorizedParams(value: unknown, method: string): WorkspaceAuthorizedParams {
-	// oxlint-disable-next-line anti-slop/no-known-value-widening -- The method-indexed allowlist intentionally widens immutable field-name arrays.
-	const schemas: WorkspaceMethodSchemas = {
-		"workspace.launch.create": ["registrationId", "registrationKey", "requestId", "callerParticipantKey", "expectedCallerGeneration", "protocol", "participantId", "expectedParticipantGeneration", "piSessionId"],
-		"workspace.bridge.create": ["registrationId", "registrationKey", "requestId", "callerParticipantKey", "expectedCallerGeneration", "protocol", "participantId", "expectedParticipantGeneration", "bridgeId"],
-		"workspace.launch.bind": ["registrationId", "registrationKey", "callerParticipantKey", "expectedCallerGeneration", "workspaceId", "herdr"],
-		"workspace.launch.recover": ["registrationId", "registrationKey", "callerParticipantKey", "expectedCallerGeneration", "requestId"],
-		"workspace.inspect": ["registrationId", "registrationKey", "workspaceId"],
-		"workspace.integration.inspect": ["registrationId", "registrationKey", "integrationId"],
-		"workspace.retain": ["registrationId", "registrationKey", "callerParticipantKey", "expectedCallerGeneration", "workspaceId"],
-		"workspace.reconcile": ["registrationId", "registrationKey", "callerParticipantKey", "expectedCallerGeneration", "workspaceId"],
-		"workspace.checkpoint": ["registrationId", "registrationKey", "callerParticipantKey", "expectedCallerGeneration", "workspaceId", "taskStatus"],
-		"workspace.integration.prepare": ["registrationId", "registrationKey", "callerParticipantKey", "expectedCallerGeneration", "workspaceId"],
-		"workspace.integration.reconcile": ["registrationId", "registrationKey", "callerParticipantKey", "expectedCallerGeneration", "integrationId"],
-		"workspace.integration.finalize": ["registrationId", "registrationKey", "callerParticipantKey", "expectedCallerGeneration", "integrationId"],
-		"workspace.cleanup": ["registrationId", "registrationKey", "callerParticipantKey", "expectedCallerGeneration", "workspaceId", "discardConfirmed"],
-		"workspace.integration.cleanup": ["registrationId", "registrationKey", "callerParticipantKey", "expectedCallerGeneration", "integrationId", "discardConfirmed"],
-	};
-	const params = strictObject(value, `${method} params`, schemas[method]);
+function workspaceAuthorizedParams(value: JsonValue | undefined, method: string): WorkspaceAuthorizedParams {
+	const params = strictObject(value, `${method} params`, workspaceAllowedFields(method));
 	const registrationId = boundedText(params.registrationId, "registration ID", 200);
 	const registrationKey = boundedText(params.registrationKey, "registration key", 200);
 	if (method === "workspace.launch.create") {
@@ -453,7 +440,22 @@ function workspaceAuthorizedParams(value: unknown, method: string): WorkspaceAut
 	return { method, registrationId, registrationKey, input: { ...authority, workspaceId: boundedText(params.workspaceId, "workspace ID", 200), discardConfirmed: params.discardConfirmed } };
 }
 
-function bridgeLaunchParams(value: unknown): AuthorizedParams<CreateBridgeLaunchInput> {
+function workspaceAllowedFields(method: string) {
+	if (method === "workspace.launch.create") return ["registrationId", "registrationKey", "requestId", "callerParticipantKey", "expectedCallerGeneration", "protocol", "participantId", "expectedParticipantGeneration", "piSessionId"];
+	if (method === "workspace.bridge.create") return ["registrationId", "registrationKey", "requestId", "callerParticipantKey", "expectedCallerGeneration", "protocol", "participantId", "expectedParticipantGeneration", "bridgeId"];
+	if (method === "workspace.launch.bind") return ["registrationId", "registrationKey", "callerParticipantKey", "expectedCallerGeneration", "workspaceId", "herdr"];
+	if (method === "workspace.launch.recover") return ["registrationId", "registrationKey", "callerParticipantKey", "expectedCallerGeneration", "requestId"];
+	if (method === "workspace.inspect") return ["registrationId", "registrationKey", "workspaceId"];
+	if (method === "workspace.integration.inspect") return ["registrationId", "registrationKey", "integrationId"];
+	if (method === "workspace.retain" || method === "workspace.reconcile" || method === "workspace.integration.prepare") return ["registrationId", "registrationKey", "callerParticipantKey", "expectedCallerGeneration", "workspaceId"];
+	if (method === "workspace.checkpoint") return ["registrationId", "registrationKey", "callerParticipantKey", "expectedCallerGeneration", "workspaceId", "taskStatus"];
+	if (method === "workspace.integration.reconcile" || method === "workspace.integration.finalize") return ["registrationId", "registrationKey", "callerParticipantKey", "expectedCallerGeneration", "integrationId"];
+	if (method === "workspace.cleanup") return ["registrationId", "registrationKey", "callerParticipantKey", "expectedCallerGeneration", "workspaceId", "discardConfirmed"];
+	if (method === "workspace.integration.cleanup") return ["registrationId", "registrationKey", "callerParticipantKey", "expectedCallerGeneration", "integrationId", "discardConfirmed"];
+	throw new Error("unsupported workspace authority method");
+}
+
+function bridgeLaunchParams(value: JsonValue | undefined): AuthorizedParams<CreateBridgeLaunchInput> {
 	const params = strictObject(value, "bridge.launch.create params", ["registrationId", "registrationKey", "requestId", "launchId", "workspaceId", "callerParticipantKey", "expectedCallerGeneration", "protocol", "participantId", "expectedParticipantGeneration", "profile", "configurationHash", "driver", "herdr", "metadata"]);
 	if (params.profile !== "read-only" && params.profile !== "workspace-write") throw new Error("bridge profile must be read-only or workspace-write");
 	const herdr = strictObject(params.herdr, "bridge launch Herdr identity", ["paneId", "terminalId"]);
@@ -462,7 +464,7 @@ function bridgeLaunchParams(value: unknown): AuthorizedParams<CreateBridgeLaunch
 	if (metadataEntries.length > HOSTED_BRIDGE_MAX_METADATA_ENTRIES) throw new Error(`bridge metadata may contain at most ${HOSTED_BRIDGE_MAX_METADATA_ENTRIES} entries`);
 	const parsedMetadata = Object.fromEntries(metadataEntries.map(([key, item]) => {
 		if (key !== "adapter") throw new Error("bridge metadata key is not allowlisted");
-		if (typeof item !== "string" || Buffer.byteLength(item) > HOSTED_BRIDGE_MAX_METADATA_VALUE_BYTES) throw new Error("bridge metadata value exceeds its byte limit");
+		if (!isText(item) || Buffer.byteLength(item) > HOSTED_BRIDGE_MAX_METADATA_VALUE_BYTES) throw new Error("bridge metadata value exceeds its byte limit");
 		return [key, item];
 	}));
 	const input: CreateBridgeLaunchInput = {
@@ -483,45 +485,45 @@ function bridgeLaunchParams(value: unknown): AuthorizedParams<CreateBridgeLaunch
 	return { registrationId: boundedText(params.registrationId, "registration ID", 200), registrationKey: boundedText(params.registrationKey, "registration key", 200), input };
 }
 
-function bridgeRecoverParams(value: unknown): AuthorizedParams<BridgeRecoverInput> {
+function bridgeRecoverParams(value: JsonValue | undefined): AuthorizedParams<BridgeRecoverInput> {
 	const params = strictObject(value, "bridge.launch.recover params", ["registrationId", "registrationKey", "requestId", "callerParticipantKey", "expectedCallerGeneration"]);
 	return { registrationId: boundedText(params.registrationId, "registration ID", 200), registrationKey: boundedText(params.registrationKey, "registration key", 200), input: { requestId: boundedText(params.requestId, "request ID", 200), callerParticipantKey: boundedText(params.callerParticipantKey, "caller participant key", 200), expectedCallerGeneration: boundedText(params.expectedCallerGeneration, "expected caller generation", 200) } };
 }
 
-function bridgeCancelParams(value: unknown): AuthorizedParams<BridgeCancelInput> {
+function bridgeCancelParams(value: JsonValue | undefined): AuthorizedParams<BridgeCancelInput> {
 	const params = strictObject(value, "bridge.launch.cancel params", ["registrationId", "registrationKey", "launchId", "callerParticipantKey", "expectedCallerGeneration"]);
 	return { registrationId: boundedText(params.registrationId, "registration ID", 200), registrationKey: boundedText(params.registrationKey, "registration key", 200), input: { launchId: boundedText(params.launchId, "launch ID", 200), callerParticipantKey: boundedText(params.callerParticipantKey, "caller participant key", 200), expectedCallerGeneration: boundedText(params.expectedCallerGeneration, "expected caller generation", 200) } };
 }
 
-function bridgeRegisterParams(value: unknown): BridgeRegisterInput {
+function bridgeRegisterParams(value: JsonValue | undefined): BridgeRegisterInput {
 	const params = strictObject(value, "bridge.register params", ["launchToken", "reconnectToken", "clientGeneration", "admittedClaims", "herdr", "agentSession"]);
 	const input: BridgeRegisterInput = { launchToken: boundedText(params.launchToken, "bridge launch token", 512), reconnectToken: boundedText(params.reconnectToken, "bridge reconnect token", 200), clientGeneration: boundedText(params.clientGeneration, "client generation", 200), admittedClaims: admittedClaimParams(params.admittedClaims), herdr: bridgeRegistrationHerdr(params.herdr) };
 	if (params.agentSession !== undefined) input.agentSession = agentSession(params.agentSession);
 	return input;
 }
 
-function bridgeReconnectParams(value: unknown): BridgeReconnectInput {
+function bridgeReconnectParams(value: JsonValue | undefined): BridgeReconnectInput {
 	const params = strictObject(value, "bridge.reconnect params", ["targetKey", "reconnectToken", "clientGeneration", "admittedClaims", "herdr"]);
 	return { targetKey: boundedText(params.targetKey, "bridge target key", 200), reconnectToken: boundedText(params.reconnectToken, "bridge reconnect token", 200), clientGeneration: boundedText(params.clientGeneration, "client generation", 200), admittedClaims: admittedClaimParams(params.admittedClaims), herdr: bridgeRegistrationHerdr(params.herdr) };
 }
 
-function nativeDriver(value: unknown): "claude-code" | "codex" {
+function nativeDriver(value: JsonValue | undefined): "claude-code" | "codex" {
 	if (value !== "claude-code" && value !== "codex") throw new Error("native collaborator driver must be claude-code or codex");
 	return value;
 }
 
-function agentSession(value: unknown): HostedAgentSessionIdentity {
+function agentSession(value: JsonValue | undefined): HostedAgentSessionIdentity {
 	const session = strictObject(value, "interactive agent session", ["source", "agent", "kind", "value"]);
 	if (session.kind !== "id" && session.kind !== "path") throw new Error("interactive agent session kind is invalid");
 	return { source: boundedText(session.source, "agent session source", 200), agent: boundedText(session.agent, "agent session agent", 64), kind: session.kind, value: boundedText(session.value, "agent session value", 8 * 1024) };
 }
 
-function bridgeRegistrationHerdr(value: unknown): BridgeRegisterInput["herdr"] {
+function bridgeRegistrationHerdr(value: JsonValue | undefined): BridgeRegisterInput["herdr"] {
 	const herdr = strictObject(value, "bridge registration Herdr identity", ["paneId", "terminalId"]);
 	return { paneId: boundedText(herdr.paneId, "Herdr pane ID", 200), terminalId: boundedText(herdr.terminalId, "Herdr terminal ID", 200) };
 }
 
-function admittedClaimParams(value: unknown): Array<{ claimId: string; eventIds: string[] }> {
+function admittedClaimParams(value: JsonValue | undefined): Array<{ claimId: string; eventIds: string[] }> {
 	return boundedArray(value, "admittedClaims", 12).map((item, index) => {
 		const receipt = strictObject(item, `admittedClaims[${index}]`, ["claimId", "eventIds"]);
 		const eventIds = boundedArray(receipt.eventIds, `admittedClaims[${index}].eventIds`, HOSTED_MAX_DELIVERY_BATCH).map((eventId) => boundedText(eventId, "event ID", 200));
@@ -530,32 +532,53 @@ function admittedClaimParams(value: unknown): Array<{ claimId: string; eventIds:
 	});
 }
 
-interface TaskParams {
-	registrationId: string;
-	registrationKey: string;
-	senderParticipantKey?: string;
-	expectedSenderGeneration?: string;
-	recipientParticipantKey?: string;
-	sendId?: string;
-	eventId?: string;
-	status?: "completed" | "failed" | "cancelled";
-	body?: string;
-	sessionAdvance?: "none" | "committed";
+interface TaskAuthority extends RegistrationAuth {
+	senderParticipantKey: string;
+	expectedSenderGeneration: string;
 }
 
-function taskParams(value: unknown, method: string): TaskParams {
+interface TaskSendParams extends TaskAuthority {
+	method: "task.send";
+	recipientParticipantKey: string;
+	sendId: string;
+	body: string;
+}
+
+interface TaskResultParams extends TaskAuthority {
+	method: "task.result";
+	eventId: string;
+	sendId: string;
+	status: "completed" | "failed" | "cancelled";
+	body: string;
+	sessionAdvance: "none" | "committed";
+}
+
+interface TaskStatusParams extends TaskAuthority {
+	method: "task.status";
+	eventId: string;
+}
+
+type TaskParams = TaskSendParams | TaskResultParams | TaskStatusParams;
+
+function taskParams(value: JsonValue | undefined, method: string): TaskParams {
+	if (method !== "task.send" && method !== "task.result" && method !== "task.status") throw new Error("unsupported task method");
 	const allowed = method === "task.send" ? ["registrationId", "registrationKey", "senderParticipantKey", "expectedSenderGeneration", "recipientParticipantKey", "sendId", "body"] : method === "task.result" ? ["registrationId", "registrationKey", "senderParticipantKey", "expectedSenderGeneration", "eventId", "sendId", "status", "body", "sessionAdvance"] : ["registrationId", "registrationKey", "senderParticipantKey", "expectedSenderGeneration", "eventId"];
 	const params = strictObject(value, `${method} params`, allowed);
-	const common = { registrationId: boundedText(params.registrationId, "registration ID", 200), registrationKey: boundedText(params.registrationKey, "registration key", 200), senderParticipantKey: boundedText(params.senderParticipantKey, "task sender key", 200), expectedSenderGeneration: boundedText(params.expectedSenderGeneration, "task sender generation", 200) };
-	if (method === "task.send") return { ...common, recipientParticipantKey: boundedText(params.recipientParticipantKey, "task recipient key", 200), sendId: boundedText(params.sendId, "task send ID", 200), body: boundedText(params.body, "task body", HOSTED_MAILBOX_MAX_BODY_BYTES) };
+	const common: TaskAuthority = {
+		registrationId: boundedText(params.registrationId, "registration ID", 200),
+		registrationKey: boundedText(params.registrationKey, "registration key", 200),
+		senderParticipantKey: boundedText(params.senderParticipantKey, "task sender key", 200),
+		expectedSenderGeneration: boundedText(params.expectedSenderGeneration, "task sender generation", 200),
+	};
+	if (method === "task.send") return { method, ...common, recipientParticipantKey: boundedText(params.recipientParticipantKey, "task recipient key", 200), sendId: boundedText(params.sendId, "task send ID", 200), body: boundedText(params.body, "task body", HOSTED_MAILBOX_MAX_BODY_BYTES) };
 	const eventId = boundedText(params.eventId, "task event ID", 200);
-	if (method === "task.status") return { ...common, eventId };
+	if (method === "task.status") return { method, ...common, eventId };
 	if (params.status !== "completed" && params.status !== "failed" && params.status !== "cancelled") throw new Error("task result status is invalid");
 	if (params.sessionAdvance !== "none" && params.sessionAdvance !== "committed") throw new Error("task session advancement is invalid");
-	return { ...common, eventId, sendId: boundedText(params.sendId, "task result send ID", 200), status: params.status, body: boundedText(params.body, "task result body", HOSTED_MAILBOX_MAX_BODY_BYTES), sessionAdvance: params.sessionAdvance };
+	return { method: "task.result", ...common, eventId, sendId: boundedText(params.sendId, "task result send ID", 200), status: params.status, body: boundedText(params.body, "task result body", HOSTED_MAILBOX_MAX_BODY_BYTES), sessionAdvance: params.sessionAdvance };
 }
 
-function authParams(value: unknown): RegistrationAuth {
+function authParams(value: JsonValue | undefined): RegistrationAuth {
 	const params = strictObject(value, "registration params", ["registrationId", "registrationKey"]);
 	return {
 		registrationId: boundedText(params.registrationId, "registration ID", 200),
@@ -563,7 +586,7 @@ function authParams(value: unknown): RegistrationAuth {
 	};
 }
 
-function participantAuthParams(value: unknown, name: string): ParticipantAuth {
+function participantAuthParams(value: JsonValue | undefined, name: string): ParticipantAuth {
 	const params = strictObject(value, `${name} params`, ["registrationId", "registrationKey", "participantKey"]);
 	return {
 		registrationId: boundedText(params.registrationId, "registration ID", 200),
@@ -572,13 +595,13 @@ function participantAuthParams(value: unknown, name: string): ParticipantAuth {
 	};
 }
 
-function participantName(value: unknown, name: string): string {
+function participantName(value: JsonValue | undefined, name: string): string {
 	const result = boundedText(value, name, 64);
 	if (!/^[a-z][a-z0-9_-]{0,63}$/.test(result)) throw new Error(`${name} has invalid syntax.`);
 	return result;
 }
 
-function claimReceiptParams(value: unknown, name: string): ClaimReceiptParams {
+function claimReceiptParams(value: JsonValue | undefined, name: string): ClaimReceiptParams {
 	const params = strictObject(value, `${name} params`, ["registrationId", "registrationKey", "claimId", "eventIds"]);
 	const eventIds = boundedArray(params.eventIds, "eventIds", HOSTED_MAX_DELIVERY_BATCH).map((eventId) => boundedText(eventId, "event ID", 200));
 	if (eventIds.length === 0 || new Set(eventIds).size !== eventIds.length) throw new Error("Claim event IDs must be non-empty and unique.");
@@ -625,7 +648,7 @@ function claimResult(result: HostedClaimResult) {
 	};
 }
 
-function success(id: string, result: unknown): HostedResponse {
+function success<Result>(id: string, result: Result): HostedResponse {
 	return { v: 1, id, ok: true, result };
 }
 
@@ -633,9 +656,14 @@ function failure(id: string | null, code: HostedErrorCode, message: string): Hos
 	return { v: 1, id, ok: false, error: { code, message } };
 }
 
-function errorCode(error: unknown): HostedErrorCode {
-	if (error && typeof error === "object" && "code" in error && typeof error.code === "string" && isHostedErrorCode(error.code)) return error.code;
-	return error instanceof Error ? "invalid_request" : "internal";
+function errorCode(cause: unknown): HostedErrorCode {
+	if (cause instanceof Error) {
+		const descriptor = Object.getOwnPropertyDescriptor(cause, "code");
+		const code: JsonValue | undefined = descriptor?.value;
+		if (isText(code) && isHostedErrorCode(code)) return code;
+		return "invalid_request";
+	}
+	return "internal";
 }
 
 const HOSTED_METHODS = new Set(["pi.register", "pi.heartbeat", "pi.unregister", "bridge.launch.create", "bridge.launch.recover", "bridge.launch.cancel", "bridge.register", "bridge.reconnect", "bridge.heartbeat", "bridge.unregister", "workspace.launch.create", "workspace.bridge.create", "workspace.launch.bind", "workspace.launch.recover", "workspace.pi.register", "workspace.pi.reconnect", "workspace.inspect", "workspace.integration.inspect", "workspace.retain", "workspace.reconcile", "workspace.checkpoint", "workspace.integration.prepare", "workspace.integration.reconcile", "workspace.integration.finalize", "workspace.cleanup", "workspace.integration.cleanup", "monitor.create", "monitor.get", "monitor.delete", "wake.accept", "inbox.claim", "inbox.ack", "inbox.release", "inbox.submit_begin", "inbox.submit_settle", "inbox.status", "participant.auto_capacity.list", "participant.auto_capacity.reserve", "participant.auto_capacity.release", "participant.auto_capacity.recover", "participant.acquire", "participant.get", "participant.list", "participant.stand_down", "participant.stand_down_confirmed", "participant.stop_confirmed", "participant.release", "participant.takeover", "mailbox.send", "mailbox.status", "task.send", "task.result", "task.status"]);
@@ -648,32 +676,55 @@ function isHostedErrorCode(value: string): value is HostedErrorCode {
 	return ERROR_CODES.has(value);
 }
 
-function requestId(value: unknown): string | null {
-	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-	// SAFETY: The preceding runtime check excludes null, primitives, and arrays before reading an optional envelope key.
-	const id = (value as Record<string, unknown>).id;
-	return typeof id === "string" && id.length > 0 && Buffer.byteLength(id) <= 200 ? id : null;
+function requestId(value: JsonValue): string | null {
+	if (!isJsonObject(value)) return null;
+	const id = value.id;
+	return isText(id) && id.length > 0 && Buffer.byteLength(id) <= 200 ? id : null;
 }
 
-function strictObject(value: unknown, name: string, allowed?: readonly string[]): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${name} must be an object.`);
-	// SAFETY: The preceding runtime check excludes null, primitives, and arrays before schema validation and key access.
-	const record = value as Record<string, unknown>;
-	if (allowed) for (const key of Object.keys(record)) if (!allowed.includes(key)) throw new Error(`${name} has unknown field ${key}.`);
-	return record;
+function strictObject(value: JsonValue | undefined, name: string, allowed?: readonly string[]): JsonObject {
+	if (!isJsonObject(value)) throw new Error(`${name} must be an object.`);
+	if (allowed) for (const key of Object.keys(value)) if (!allowed.includes(key)) throw new Error(`${name} has unknown field ${key}.`);
+	return value;
 }
 
-function boundedArray(value: unknown, name: string, max: number): unknown[] {
+function boundedArray(value: JsonValue | undefined, name: string, max: number): JsonValue[] {
 	if (!Array.isArray(value) || value.length > max) throw new Error(`${name} must be an array of at most ${max} items.`);
 	return value;
 }
 
-function boundedText(value: unknown, name: string, maxBytes: number): string {
-	if (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value) > maxBytes) throw new Error(`${name} must be a non-empty string of at most ${maxBytes} bytes.`);
+function boundedText(value: JsonValue | undefined, name: string, maxBytes: number): string {
+	if (!isText(value) || value.length === 0 || Buffer.byteLength(value) > maxBytes) throw new Error(`${name} must be a non-empty string of at most ${maxBytes} bytes.`);
 	return value;
 }
 
-function integer(value: unknown, name: string): number {
-	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new Error(`${name} must be a non-negative integer.`);
+function integer(value: JsonValue | undefined, name: string): number {
+	if (!isNumber(value) || !Number.isSafeInteger(value) || value < 0) throw new Error(`${name} must be a non-negative integer.`);
 	return value;
+}
+
+function envelopeVersion(value: JsonValue | undefined): number {
+	if (!isNumber(value) || !Number.isSafeInteger(value)) throw new Error("request version must be an integer.");
+	return value;
+}
+
+function isJsonObject(value: JsonValue | undefined): value is JsonObject {
+	return value !== undefined && value !== null && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
+}
+
+function isText(value: JsonValue | undefined): value is string {
+	return value !== undefined && value !== null && value.constructor === String;
+}
+
+function isNumber(value: JsonValue | undefined): value is number {
+	return value !== undefined && value !== null && value.constructor === Number;
+}
+
+function booleanValue(value: JsonValue | undefined, message: string): boolean {
+	if (!isBoolean(value)) throw new Error(message);
+	return value;
+}
+
+function isBoolean(value: JsonValue | undefined): value is boolean {
+	return value !== undefined && value !== null && value.constructor === Boolean;
 }
