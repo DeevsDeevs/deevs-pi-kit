@@ -16,6 +16,8 @@ export interface RuntimeSource {
 	generation: string;
 }
 
+type RuntimeSourceIdentity = Pick<RuntimeSource, "kind" | "id">;
+
 export interface RuntimeUsage {
 	inputTokens: number;
 	outputTokens: number;
@@ -72,6 +74,51 @@ export type RuntimeEventOperation =
 	| { type: "ack"; eventId: string; claimant: string; at: number }
 	| { type: "release"; eventId: string; claimant: string; at: number }
 	| { type: "release_stale_claims"; at: number; staleAfterMs: number };
+
+interface PersistedRuntimeSource {
+	kind?: RuntimeSourceKind;
+	id?: string;
+	generation?: string;
+}
+
+interface PersistedRuntimeUsage {
+	inputTokens?: number;
+	outputTokens?: number;
+	cacheReadTokens?: number;
+	cacheWriteTokens?: number;
+	costUsd?: number;
+}
+
+interface PersistedRuntimeEvent {
+	version?: number;
+	id?: string;
+	dedupeKey?: string;
+	source?: PersistedRuntimeSource | null;
+	type?: RuntimeEventType;
+	status?: RuntimeTerminalStatus;
+	delivery?: RuntimeDeliveryPolicy;
+	createdAt?: number;
+	summary?: string;
+	artifactRef?: string;
+	usage?: PersistedRuntimeUsage | null;
+}
+
+interface PersistedRuntimeEventOperation {
+	type?: RuntimeEventOperation["type"];
+	source?: PersistedRuntimeSource | null;
+	generation?: string;
+	event?: PersistedRuntimeEvent | null;
+	eventId?: string;
+	claimant?: string;
+	at?: number;
+	staleAfterMs?: number;
+}
+
+interface PersistedRuntimeEventEntry {
+	type?: string;
+	customType?: string;
+	data?: PersistedRuntimeEventOperation | null;
+}
 
 export function emptyRuntimeEventState(): RuntimeEventState {
 	return { version: 1, generations: {}, events: {}, dedupe: {}, deliveries: {} };
@@ -147,10 +194,11 @@ export function reduceRuntimeEvent(state: RuntimeEventState, operation: RuntimeE
 export function replayRuntimeEventEntries(entries: readonly unknown[]): RuntimeEventState {
 	let state = emptyRuntimeEventState();
 	for (const entry of entries) {
-		const record = asRecord(entry);
-		if (record?.type !== "custom" || record.customType !== RUNTIME_EVENT_ENTRY) continue;
-		const operation = record.data;
-		if (!isRuntimeEventOperation(operation)) continue;
+		// SAFETY: Session entries are not trusted; the exact operation decoder below validates every consumed field before replay.
+		const record = entry as PersistedRuntimeEventEntry | null;
+		if (record?.type !== "custom" || record.customType !== RUNTIME_EVENT_ENTRY || !record.data) continue;
+		const operation = decodeRuntimeEventOperation(record.data);
+		if (!operation) continue;
 		state = reduceRuntimeEvent(state, operation);
 	}
 	return state;
@@ -201,56 +249,61 @@ export function consumeRuntimeEvent(pi: ExtensionAPI, eventId: string, claimant:
 	return runtimeEvents.read().deliveries[eventId]?.status === "acked";
 }
 
-function isRuntimeEventOperation(value: unknown): value is RuntimeEventOperation {
-	const record = asRecord(value);
-	if (!record || typeof record.type !== "string") return false;
-	if (record.type === "activate") {
-		const source = asRecord(record.source);
-		return isSourceIdentity(source) && typeof record.generation === "string";
+function decodeRuntimeEventOperation(record: PersistedRuntimeEventOperation): RuntimeEventOperation | undefined {
+	try {
+		if (record.type === "activate" && isSourceIdentity(record.source) && isString(record.generation)) {
+			return { type: "activate", source: { kind: record.source.kind, id: record.source.id }, generation: record.generation };
+		}
+		if (record.type === "emit" && isRuntimeEvent(record.event)) return { type: "emit", event: record.event };
+		if ((record.type === "claim" || record.type === "ack" || record.type === "release") && isString(record.eventId) && isString(record.claimant) && isFiniteNumber(record.at)) {
+			return { type: record.type, eventId: record.eventId, claimant: record.claimant, at: record.at };
+		}
+		if (record.type === "release_stale_claims" && isFiniteNumber(record.at) && isFiniteNumber(record.staleAfterMs)) {
+			return { type: "release_stale_claims", at: record.at, staleAfterMs: record.staleAfterMs };
+		}
+	} catch {
+		return undefined;
 	}
-	if (record.type === "emit") return isRuntimeEvent(record.event);
-	if (record.type === "claim" || record.type === "ack" || record.type === "release") {
-		return typeof record.eventId === "string" && typeof record.claimant === "string" && typeof record.at === "number";
-	}
-	if (record.type === "release_stale_claims") return typeof record.at === "number" && typeof record.staleAfterMs === "number";
-	return false;
+	return undefined;
 }
 
-function isRuntimeEvent(value: unknown): value is RuntimeEvent {
-	const event = asRecord(value);
-	const source = asRecord(event?.source);
-	return event?.version === 1
+function isRuntimeEvent(event: PersistedRuntimeEvent | null | undefined): event is RuntimeEvent {
+	if (!event || !event.source) return false;
+	return event.version === 1
 		&& nonEmptyString(event.id)
 		&& nonEmptyString(event.dedupeKey)
-		&& isSourceIdentity(source)
-		&& nonEmptyString(source.generation)
+		&& isSourceIdentity(event.source)
+		&& nonEmptyString(event.source.generation)
 		&& (event.type === "attention" || event.type === "terminal")
-		&& ["completed", "partial", "failed", "cancelled", "timeout", "limited", "blocked", "lost"].includes(String(event.status))
+		&& event.status !== undefined
+		&& ["completed", "partial", "failed", "cancelled", "timeout", "limited", "blocked", "lost"].includes(event.status)
 		&& (event.delivery === undefined || event.delivery === "notify" || event.delivery === "record_only")
-		&& typeof event.createdAt === "number" && Number.isFinite(event.createdAt)
-		&& typeof event.summary === "string"
+		&& isFiniteNumber(event.createdAt)
+		&& isString(event.summary)
+		&& (event.artifactRef === undefined || isString(event.artifactRef))
 		&& (event.usage === undefined || isRuntimeUsage(event.usage));
 }
 
-function isSourceIdentity(value: Record<string, unknown> | undefined): value is Record<string, unknown> & { kind: RuntimeSourceKind; id: string } {
+function isSourceIdentity(value: PersistedRuntimeSource | null | undefined): value is PersistedRuntimeSource & RuntimeSourceIdentity {
 	return !!value
-		&& typeof value.kind === "string"
 		&& RUNTIME_SOURCE_KINDS.some((kind) => kind === value.kind)
 		&& nonEmptyString(value.id);
 }
 
-function isRuntimeUsage(value: unknown): value is RuntimeUsage {
-	const usage = asRecord(value);
-	return !!usage && ["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "costUsd"].every((key) => typeof usage[key] === "number" && Number.isFinite(usage[key]) && Number(usage[key]) >= 0);
+function isRuntimeUsage(usage: PersistedRuntimeUsage | null): usage is RuntimeUsage {
+	return !!usage && [usage.inputTokens, usage.outputTokens, usage.cacheReadTokens, usage.cacheWriteTokens, usage.costUsd].every((amount) => Number.isFinite(amount) && Number(amount) >= 0);
 }
 
-function nonEmptyString(value: unknown): value is string {
-	return typeof value === "string" && value.trim().length > 0;
+function nonEmptyString(value: string | undefined): value is string {
+	return value !== undefined && value.trim().length > 0;
 }
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-	// SAFETY: The runtime checks exclude null, primitives, and arrays before key access.
-	return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+function isString(value: string | undefined): value is string {
+	return value !== undefined && String.prototype.valueOf.call(value) === value;
+}
+
+function isFiniteNumber(value: number | undefined): value is number {
+	return Number.isFinite(value);
 }
 
 function isCurrentEvent(state: RuntimeEventState, event: RuntimeEvent): boolean {
