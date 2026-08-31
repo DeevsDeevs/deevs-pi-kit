@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { HostedAutoCapacityReservation, HostedMailboxMessageEvent, HostedMailboxTaskEvent, HostedMailboxTaskResultEvent, HostedParticipant, HostedTarget, HostedTaskWorkspaceEvidence } from "../hosted-types.ts";
+import type { HostedAutoCapacityReservation, HostedMailboxMessageEvent, HostedMailboxTaskEvent, HostedMailboxTaskResultEvent, HostedParticipant, HostedStateOperation, HostedTarget, HostedTaskWorkspaceEvidence } from "../hosted-types.ts";
 import { RuntimeRegistrationManager, type HostedLiveRegistration } from "./registration.ts";
 import { deriveParticipantKey, HostedStateStore } from "./state.ts";
 
@@ -36,6 +36,25 @@ export interface HostedMessageStatus {
 	recipientTier: "managed" | "durable" | "unbound";
 	deliveryState: "pending" | "submitting" | "submitted" | "needs_attention" | "admitted";
 }
+
+export interface HostedPendingTaskStatus {
+	eventId: string;
+	recipientParticipantKey: string;
+	status: "pending";
+}
+
+export interface HostedSettledTaskStatus {
+	eventId: string;
+	recipientParticipantKey: string;
+	status: "completed" | "failed" | "cancelled";
+	resultEventId: string;
+	replyId: string;
+	body: string;
+	sessionAdvance: "none" | "committed";
+	workspace?: HostedTaskWorkspaceEvidence;
+}
+
+export type HostedTaskStatus = HostedPendingTaskStatus | HostedSettledTaskStatus;
 
 export interface HostedParticipantCoordinatorOptions {
 	now?: () => number;
@@ -120,10 +139,10 @@ export class HostedParticipantCoordinator {
 			projectRoot: target.projectRoot,
 			callerTargetKey: target.targetKey,
 			callerParticipantKey: deriveParticipantKey(target.projectRoot, protocol, callerParticipantId),
-			...(expectedCallerGeneration === undefined ? {} : { expectedCallerGeneration }),
 			participantKeys: participantIds.map((participantId) => deriveParticipantKey(target.projectRoot, protocol, participantId)),
 			createdAt: this.now(),
 		};
+		if (expectedCallerGeneration !== undefined) reservation.expectedCallerGeneration = expectedCallerGeneration;
 		this.store.apply({ type: "auto_capacity.ensure", reservation });
 		return this.store.read().autoCapacityReservations[operationId]!;
 	}
@@ -280,7 +299,9 @@ export class HostedParticipantCoordinator {
 		const target = this.requireTarget(registration.targetKey);
 		this.assertNotStopping(senderParticipantKey);
 		this.requireParticipant(senderParticipantKey, target.projectRoot);
-		this.store.apply({ type: "task.result", senderParticipantKey, expectedSenderGeneration, senderTargetKey: registration.targetKey, sendId, eventId: this.options.createEventId?.() ?? `evt_${randomUUID()}`, inReplyToEventId, status, body, sessionAdvance, ...(workspace ? { workspace } : {}), at: this.now() });
+		const operation: Extract<HostedStateOperation, { type: "task.result" }> = { type: "task.result", senderParticipantKey, expectedSenderGeneration, senderTargetKey: registration.targetKey, sendId, eventId: this.options.createEventId?.() ?? `evt_${randomUUID()}`, inReplyToEventId, status, body, sessionAdvance, at: this.now() };
+		if (workspace) operation.workspace = workspace;
+		this.store.apply(operation);
 		const event = Object.values(this.store.read().events).find((candidate): candidate is HostedMailboxTaskResultEvent => candidate.type === "mailbox.task_result" && candidate.payload.senderParticipantKey === senderParticipantKey && candidate.payload.sendId === sendId);
 		if (!event) throw new HostedParticipantError("conflict", "Task result did not produce a durable event.");
 		const recipient = this.store.read().participants[event.recipientParticipantKey];
@@ -288,14 +309,17 @@ export class HostedParticipantCoordinator {
 		return event;
 	}
 
-	taskStatus(registration: HostedLiveRegistration, senderParticipantKey: string, expectedSenderGeneration: string, eventId: string): { eventId: string; recipientParticipantKey: string; status: "pending" } | { eventId: string; recipientParticipantKey: string; status: "completed" | "failed" | "cancelled"; resultEventId: string; replyId: string; body: string; sessionAdvance: "none" | "committed"; workspace?: HostedTaskWorkspaceEvidence } {
+	taskStatus(registration: HostedLiveRegistration, senderParticipantKey: string, expectedSenderGeneration: string, eventId: string): HostedTaskStatus {
 		const target = this.requireTarget(registration.targetKey);
 		const sender = this.requireParticipant(senderParticipantKey, target.projectRoot);
 		if (sender.state !== "held" || sender.generation !== expectedSenderGeneration || sender.holderTargetKey !== registration.targetKey) throw new HostedParticipantError("conflict", "Task status caller identity or generation changed.");
 		const task = this.store.read().events[eventId];
 		if (!task || task.type !== "mailbox.task" || task.payload.senderParticipantKey !== senderParticipantKey) throw new HostedParticipantError("not_found", "Bounded task is absent for this sender.");
 		const result = Object.values(this.store.read().events).find((candidate): candidate is HostedMailboxTaskResultEvent => candidate.type === "mailbox.task_result" && candidate.payload.inReplyToEventId === task.eventId);
-		return result ? { eventId: task.eventId, recipientParticipantKey: task.recipientParticipantKey, status: result.payload.status, resultEventId: result.eventId, replyId: result.payload.replyId, body: result.payload.body, sessionAdvance: result.payload.sessionAdvance, ...(result.payload.workspace ? { workspace: result.payload.workspace } : {}) } : { eventId: task.eventId, recipientParticipantKey: task.recipientParticipantKey, status: "pending" };
+		if (!result) return { eventId: task.eventId, recipientParticipantKey: task.recipientParticipantKey, status: "pending" };
+		const status: HostedSettledTaskStatus = { eventId: task.eventId, recipientParticipantKey: task.recipientParticipantKey, status: result.payload.status, resultEventId: result.eventId, replyId: result.payload.replyId, body: result.payload.body, sessionAdvance: result.payload.sessionAdvance };
+		if (result.payload.workspace) status.workspace = result.payload.workspace;
+		return status;
 	}
 
 	private sendEnvelope(type: "mailbox.send", registration: HostedLiveRegistration, senderParticipantKey: string, expectedSenderGeneration: string, recipientParticipantKey: string, sendId: string, body: string): HostedMailboxMessageEvent;
@@ -322,7 +346,9 @@ export class HostedParticipantCoordinator {
 		this.assertNotStopping(participantKey);
 		const target = this.requireTarget(registration.targetKey);
 		this.requireParticipant(participantKey, target.projectRoot);
-		this.store.apply({ type, participantKey, targetKey: registration.targetKey, generation: this.createGeneration(), ...(type === "participant.stand_down" && expectedGeneration !== undefined ? { expectedGeneration } : {}), at: this.now() });
+		const operation: Extract<HostedStateOperation, { type: "participant.stand_down" | "participant.release" }> = { type, participantKey, targetKey: registration.targetKey, generation: this.createGeneration(), at: this.now() };
+		if (operation.type === "participant.stand_down" && expectedGeneration !== undefined) operation.expectedGeneration = expectedGeneration;
+		this.store.apply(operation);
 		this.wakes.request(registration.targetKey);
 		return this.status(this.requireParticipant(participantKey, target.projectRoot));
 	}
@@ -336,19 +362,27 @@ export class HostedParticipantCoordinator {
 			else if (event.delivery.status === "claimed") claimed++;
 		}
 		const holder = participant.holderTargetKey ? this.store.read().targets[participant.holderTargetKey] : undefined;
-		return {
+		const status: HostedParticipantStatus = {
 			participantKey: participant.participantKey,
 			projectRoot: participant.projectRoot,
 			protocol: participant.protocol,
 			participantId: participant.participantId,
 			state: participant.state,
 			generation: participant.generation,
-			...(participant.holderTargetKey ? { holderTargetKey: participant.holderTargetKey } : {}),
 			holderLive: participant.state === "held" && this.registrations.hasLiveTarget(participant.holderTargetKey!),
-			...(holder?.kind === "pi" ? { driver: "pi" as const, capabilityTier: "durable" as const } : holder?.kind === "agent" ? { driver: holder.driver, capabilityTier: holder.capabilityTier, profile: holder.profile } : {}),
-			...(includeQueue ? { queued: { pending, claimed } } : {}),
 			lastTransition: participant.transitions.at(-1)!,
 		};
+		if (participant.holderTargetKey) status.holderTargetKey = participant.holderTargetKey;
+		if (holder?.kind === "pi") {
+			status.driver = "pi";
+			status.capabilityTier = "durable";
+		} else if (holder?.kind === "agent") {
+			status.driver = holder.driver;
+			status.capabilityTier = holder.capabilityTier;
+			status.profile = holder.profile;
+		}
+		if (includeQueue) status.queued = { pending, claimed };
+		return status;
 	}
 
 	private requireTarget(targetKey: string) {
