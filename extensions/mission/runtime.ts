@@ -1016,19 +1016,21 @@ function reviewPaths(reviewCwd: string, workspace: MissionWorkspaceRoot[]): stri
 	});
 }
 
+function reviewGitPathspec(canonicalCwd: string, cwd: string, root: string, scopes: string[], ignoredPaths: string[]): string[] {
+	const exclusions = ignoredPaths.flatMap((ignored) => {
+		const path = relative(root, resolve(canonicalCwd, relative(resolve(cwd), resolve(ignored)))).replaceAll("\\", "/");
+		return path && path !== ".." && !path.startsWith("../") ? [`:(top,exclude,literal)${path}/`] : [];
+	});
+	const pathspecs = [...scopes.map((scope) => `:(literal)${scope}`), ...exclusions];
+	return pathspecs.length ? ["--", ...pathspecs] : [];
+}
+
 async function reviewedWorkspaceRevisions(pi: ExtensionAPI, cwd: string, reviewCwd: string, workspace: MissionWorkspaceRoot[], ignoredPaths: string[]): Promise<MissionReviewRevision[] | undefined> {
 	const canonicalCwd = await canonicalPath(cwd);
 	if (!canonicalCwd) return undefined;
 	const revisions: MissionReviewRevision[] = [];
 	for (const { root, scopes } of workspace) {
-		const literalScopes = scopes.map((scope) => `:(literal)${scope}`);
-		const exclusions = ignoredPaths.flatMap((ignored) => {
-			const canonicalIgnored = resolve(canonicalCwd, relative(resolve(cwd), resolve(ignored)));
-			const path = relative(root, canonicalIgnored).replaceAll("\\", "/");
-			return path && path !== ".." && !path.startsWith("../") ? [`:(top,exclude,literal)${path}/`] : [];
-		});
-		const gitPathspecs = [...literalScopes, ...exclusions];
-		const pathspec = gitPathspecs.length ? ["--", ...gitPathspecs] : [];
+		const pathspec = reviewGitPathspec(canonicalCwd, cwd, root, scopes, ignoredPaths);
 		const [status, head] = await Promise.all([
 			pi.exec("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=no", ...pathspec], { cwd: root }),
 			pi.exec("git", ["rev-parse", "--verify", "HEAD"], { cwd: root }),
@@ -1044,6 +1046,8 @@ async function reviewedWorkspaceRevisions(pi: ExtensionAPI, cwd: string, reviewC
 async function correctionReviewScope(pi: ExtensionAPI, cwd: string, reviewCwd: string, workspace: MissionWorkspaceRoot[], ignoredPaths: string[], acceptedRevisions: MissionReviewRevision[] | undefined): Promise<{ paths: string[]; revisions: MissionReviewRevision[] } | undefined> {
 	const current = await reviewedWorkspaceRevisions(pi, cwd, reviewCwd, workspace, ignoredPaths);
 	if (!current || (acceptedRevisions && (acceptedRevisions.length !== current.length || new Set(acceptedRevisions.map((revision) => revision.root)).size !== acceptedRevisions.length))) return undefined;
+	const canonicalCwd = await canonicalPath(cwd);
+	if (!canonicalCwd) return undefined;
 	const paths = new Set<string>();
 	const revisions: MissionReviewRevision[] = [];
 	for (const [index, { root, scopes }] of workspace.entries()) {
@@ -1061,16 +1065,7 @@ async function correctionReviewScope(pi: ExtensionAPI, cwd: string, reviewCwd: s
 			const ancestor = await pi.exec("git", ["merge-base", "--is-ancestor", baseCommit, head.head], { cwd: root });
 			if (ancestor.code !== 0) return undefined;
 		}
-		const literalScopes = scopes.map((scope) => `:(literal)${scope}`);
-		const canonicalCwd = await canonicalPath(cwd);
-		if (!canonicalCwd) return undefined;
-		const exclusions = ignoredPaths.flatMap((ignored) => {
-			const canonicalIgnored = resolve(canonicalCwd, relative(resolve(cwd), resolve(ignored)));
-			const path = relative(root, canonicalIgnored).replaceAll("\\", "/");
-			return path && path !== ".." && !path.startsWith("../") ? [`:(top,exclude,literal)${path}/`] : [];
-		});
-		const gitPathspecs = [...literalScopes, ...exclusions];
-		const pathspec = gitPathspecs.length ? ["--", ...gitPathspecs] : [];
+		const pathspec = reviewGitPathspec(canonicalCwd, cwd, root, scopes, ignoredPaths);
 		const changed = await pi.exec("git", ["diff", "--name-only", "--no-renames", "-z", baseCommit, head.head, ...pathspec], { cwd: root });
 		if (changed.code !== 0 || changed.stdout.length > MAX_FINGERPRINT_PATH_BYTES) return undefined;
 		const prefix = head.root === "." ? "" : head.root;
