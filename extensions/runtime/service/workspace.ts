@@ -255,7 +255,7 @@ export class RuntimeWorkspaceCoordinator {
 
 	async retainTarget(targetKey: string, holderGeneration: string): Promise<void> {
 		const workspace = Object.values(this.store.read().workspaces).find((candidate) => candidate.targetKey === targetKey && candidate.holderGeneration === holderGeneration);
-		if (!workspace || workspace.state !== "active") return;
+		if (!workspace || (workspace.state !== "active" && workspace.state !== "needs_attention")) return;
 		const next = { ...workspace, state: "retained" as const, updatedAt: this.tick(workspace.updatedAt) };
 		this.store.apply({ type: "workspace.replace", workspace: next, expectedState: workspace.state, expectedUpdatedAt: workspace.updatedAt });
 	}
