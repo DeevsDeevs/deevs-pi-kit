@@ -161,7 +161,12 @@ describe("hosted Runtime collaborator state", () => {
 	});
 
 	it("fails closed instead of accepting an unknown state version", () => {
-		expect(() => validateHostedRuntimeState({ ...emptyHostedRuntimeState(), version: 9 })).toThrow(HostedStateStorageError);
+		const unknownVersion = { ...emptyHostedRuntimeState(), version: 9 };
+		expect(() => validateHostedRuntimeState(unknownVersion)).toThrow(HostedStateStorageError);
+		const root = mkdtempSync(join(tmpdir(), "hosted-state-unknown-version-"));
+		writeFileSync(runtimeStatePaths(root).state, `${JSON.stringify(unknownVersion)}\n`);
+		expect(() => readHostedRuntimeState(root)).toThrow(HostedStateStorageError);
+		expect(JSON.parse(readFileSync(runtimeStatePaths(root).state, "utf8"))).toEqual(unknownVersion);
 	});
 
 	it("atomically reserves Auto capacity across held targets and concurrent acquisitions", () => {

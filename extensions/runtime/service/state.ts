@@ -61,6 +61,12 @@ const WORKSPACE_BRANCH = /^refs\/heads\/runtime\/collab\/[A-Za-z0-9._-]+$/;
 const INTEGRATION_BRANCH = /^refs\/heads\/runtime\/integrate\/[A-Za-z0-9._-]+$/;
 const INSTANCE_MAX_BYTES = 4 * 1024;
 
+type PersistedStateValue = null | boolean | number | string | PersistedStateValue[] | PersistedStateFields;
+
+interface PersistedStateFields {
+	[field: string]: PersistedStateValue | undefined;
+}
+
 export class HostedStateStorageError extends Error {
 	readonly code = "storage_error" as const;
 }
@@ -632,9 +638,7 @@ export function readHostedRuntimeState(root: string): HostedRuntimeState {
 	const path = runtimeStatePaths(root).state;
 	const value = readJson(path, HOSTED_STATE_MAX_BYTES);
 	if (value === undefined) return emptyHostedRuntimeState();
-	if (!value || typeof value !== "object" || Array.isArray(value)) return validateHostedRuntimeState(value);
-	// SAFETY: The preceding runtime check excludes null, primitives, and arrays before reading the version discriminator.
-	const version = (value as Record<string, unknown>).version;
+	const version = isPersistedStateFields(value) ? value.version : undefined;
 	if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7) return validateHostedRuntimeState(value);
 	const migrated = version === 1 ? migrateHostedRuntimeStateV1(value) : version === 2 ? migrateHostedRuntimeStateV2(value) : version === 3 ? migrateHostedRuntimeStateV3(value) : version === 4 ? migrateHostedRuntimeStateV4(value) : version === 5 ? migrateHostedRuntimeStateV5(value) : version === 6 ? migrateHostedRuntimeStateV6(value) : migrateHostedRuntimeStateV7(value);
 	writeAtomicJson(root, path, migrated, HOSTED_STATE_MAX_BYTES);
@@ -646,7 +650,7 @@ export function writeHostedRuntimeState(root: string, state: HostedRuntimeState)
 	writeAtomicJson(root, runtimeStatePaths(root).state, validateHostedRuntimeState(state), HOSTED_STATE_MAX_BYTES);
 }
 
-export function validateHostedRuntimeState(value: unknown): HostedRuntimeState {
+export function validateHostedRuntimeState<Source>(value: Source): HostedRuntimeState {
 	try {
 		const state = strictObject(value, "runtime state", ["version", "targets", "autoCapacityReservations", "bridgeLaunches", "workspaces", "integrations", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
 		if (state.version !== 8) throw new Error("unsupported runtime state version");
@@ -671,7 +675,7 @@ export function validateHostedRuntimeState(value: unknown): HostedRuntimeState {
 	}
 }
 
-function migrateHostedRuntimeStateV1(value: unknown): HostedRuntimeState {
+function migrateHostedRuntimeStateV1(value: PersistedStateValue): HostedRuntimeState {
 	try {
 		const state = strictObject(value, "runtime state v1", ["version", "targets", "monitors", "events", "dedupe", "claims", "wakes"]);
 		if (state.version !== 1) throw new Error("unsupported source runtime state version");
@@ -696,7 +700,7 @@ function migrateHostedRuntimeStateV1(value: unknown): HostedRuntimeState {
 	}
 }
 
-function migrateHostedRuntimeStateV2(value: unknown): HostedRuntimeState {
+function migrateHostedRuntimeStateV2(value: PersistedStateValue): HostedRuntimeState {
 	try {
 		const state = strictObject(value, "runtime state v2", ["version", "targets", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
 		if (state.version !== 2) throw new Error("unsupported source runtime state version");
@@ -721,7 +725,7 @@ function migrateHostedRuntimeStateV2(value: unknown): HostedRuntimeState {
 	}
 }
 
-function migrateHostedRuntimeStateV3(value: unknown): HostedRuntimeState {
+function migrateHostedRuntimeStateV3(value: PersistedStateValue): HostedRuntimeState {
 	try {
 		const state = strictObject(value, "runtime state v3", ["version", "targets", "bridgeLaunches", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
 		if (state.version !== 3) throw new Error("unsupported source runtime state version");
@@ -746,7 +750,7 @@ function migrateHostedRuntimeStateV3(value: unknown): HostedRuntimeState {
 	}
 }
 
-function migrateHostedRuntimeStateV4(value: unknown): HostedRuntimeState {
+function migrateHostedRuntimeStateV4(value: PersistedStateValue): HostedRuntimeState {
 	try {
 		const state = strictObject(value, "runtime state v4", ["version", "targets", "bridgeLaunches", "workspaces", "integrations", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
 		if (state.version !== 4) throw new Error("unsupported source runtime state version");
@@ -771,7 +775,7 @@ function migrateHostedRuntimeStateV4(value: unknown): HostedRuntimeState {
 	}
 }
 
-function migrateHostedRuntimeStateV5(value: unknown): HostedRuntimeState {
+function migrateHostedRuntimeStateV5(value: PersistedStateValue): HostedRuntimeState {
 	try {
 		const state = strictObject(value, "runtime state v5", ["version", "targets", "bridgeLaunches", "workspaces", "integrations", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
 		if (state.version !== 5) throw new Error("unsupported source runtime state version");
@@ -781,7 +785,7 @@ function migrateHostedRuntimeStateV5(value: unknown): HostedRuntimeState {
 	}
 }
 
-function migrateHostedRuntimeStateV6(value: unknown): HostedRuntimeState {
+function migrateHostedRuntimeStateV6(value: PersistedStateValue): HostedRuntimeState {
 	try {
 		const state = strictObject(value, "runtime state v6", ["version", "targets", "bridgeLaunches", "workspaces", "integrations", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
 		if (state.version !== 6) throw new Error("unsupported source runtime state version");
@@ -791,7 +795,7 @@ function migrateHostedRuntimeStateV6(value: unknown): HostedRuntimeState {
 	}
 }
 
-function migrateHostedRuntimeStateV7(value: unknown): HostedRuntimeState {
+function migrateHostedRuntimeStateV7(value: PersistedStateValue): HostedRuntimeState {
 	try {
 		const state = strictObject(value, "runtime state v7", ["version", "targets", "autoCapacityReservations", "bridgeLaunches", "workspaces", "integrations", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
 		if (state.version !== 7) throw new Error("unsupported source runtime state version");
@@ -888,8 +892,7 @@ function prepareRoot(root: string): void {
 	}
 }
 
-// oxlint-disable-next-line anti-slop/no-unknown-returns -- State readers immediately pass this bounded raw JSON to validateState or validateInstance.
-function readJson(path: string, maxBytes: number): unknown | undefined {
+function readJson(path: string, maxBytes: number): PersistedStateValue | undefined {
 	let fd: number | undefined;
 	try {
 		fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -905,7 +908,7 @@ function readJson(path: string, maxBytes: number): unknown | undefined {
 	}
 }
 
-function writeAtomicJson(root: string, path: string, value: unknown, maxBytes: number): void {
+function writeAtomicJson(root: string, path: string, value: HostedRuntimeState | HostedRuntimeInstance, maxBytes: number): void {
 	const content = `${JSON.stringify(value, null, 2)}\n`;
 	if (Buffer.byteLength(content) > maxBytes) throw new HostedStateStorageError(`Runtime state exceeds ${maxBytes} bytes.`);
 	const temporary = join(root, `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`);
@@ -927,7 +930,7 @@ function writeAtomicJson(root: string, path: string, value: unknown, maxBytes: n
 	}
 }
 
-function validateInstance(value: unknown): HostedRuntimeInstance {
+function validateInstance(value: PersistedStateValue): HostedRuntimeInstance {
 	try {
 		const instance = strictObject(value, "runtime instance", ["version", "runtimeId"]);
 		if (instance.version !== 1) throw new Error("unsupported runtime instance version");
@@ -937,7 +940,7 @@ function validateInstance(value: unknown): HostedRuntimeInstance {
 	}
 }
 
-function validateTarget(value: unknown, key: string, legacyBridge = false): HostedTarget {
+function validateTarget(value: PersistedStateValue | undefined, key: string, legacyBridge = false): HostedTarget {
 	const candidate = strictObject(value, "target");
 	if (candidate.kind === "pi") {
 		const target = strictObject(value, "Pi target", ["kind", "targetKey", "projectRoot", "piSessionId", "piSessionFile", "workspaceId", "workspaceRoot", "createdAt"]);
@@ -965,12 +968,12 @@ function validateTarget(value: unknown, key: string, legacyBridge = false): Host
 	throw new Error("invalid target kind");
 }
 
-function validateLegacyPiTarget(value: unknown, key: string): HostedTarget {
+function validateLegacyPiTarget(value: PersistedStateValue | undefined, key: string): HostedTarget {
 	const target = strictObject(value, "legacy Pi target", ["targetKey", "projectRoot", "piSessionId", "piSessionFile", "createdAt"]);
 	return validateTarget({ kind: "pi", ...target }, key);
 }
 
-function validateBridgeLaunch(value: unknown, key: string, legacyBridge = false): HostedBridgeLaunch {
+function validateBridgeLaunch(value: PersistedStateValue | undefined, key: string, legacyBridge = false): HostedBridgeLaunch {
 	const launch = strictObject(value, "bridge launch", ["version", "launchId", "requestId", "launchDigest", "reconnectDigest", "callerParticipantKey", "callerGeneration", "callerTargetKey", "participantKey", "protocol", "participantId", "expectedParticipantGeneration", "holderGeneration", "targetKey", "projectRoot", "profile", "configurationHash", "driver", "herdr", "workspaceId", "workspaceRoot", "metadata", "createdAt", "expiresAt", "status", "consumedAt", "clientGeneration"]);
 	const status = enumValue(launch.status, ["pending", "consumed", "cancelled", "expired"], "invalid bridge launch status");
 	if (launch.version !== 1 || (launch.profile !== "read-only" && launch.profile !== "workspace-write") || (launch.workspaceId === undefined) !== (launch.workspaceRoot === undefined) || (legacyBridge ? launch.profile !== "read-only" || launch.workspaceId !== undefined : (launch.profile === "workspace-write") !== (launch.workspaceId !== undefined))) throw new Error("invalid bridge launch version, status, profile, or workspace authority");
@@ -1010,14 +1013,14 @@ function validateBridgeLaunch(value: unknown, key: string, legacyBridge = false)
 	return result;
 }
 
-function validateWorkspace(value: unknown, key: string): HostedWorkspace { return validateWorkspaceRecord(value, key, false); }
-function validateWorkspaceV4(value: unknown, key: string): HostedWorkspace { return validateWorkspaceRecord(value, key, true); }
-function validateWorkspaceRecord(value: unknown, key: string, legacyPi: boolean): HostedWorkspace {
+function validateWorkspace(value: PersistedStateValue | undefined, key: string): HostedWorkspace { return validateWorkspaceRecord(value, key, false); }
+function validateWorkspaceV4(value: PersistedStateValue | undefined, key: string): HostedWorkspace { return validateWorkspaceRecord(value, key, true); }
+function validateWorkspaceRecord(value: PersistedStateValue | undefined, key: string, legacyPi: boolean): HostedWorkspace {
 	const item = strictObject(value, "workspace", ["version", "workspaceId", "requestId", "projectRoot", "gitCommonDir", "worktreePath", "branchRef", "participantKey", "protocol", "participantId", "expectedParticipantGeneration", "holderGeneration", "targetKey", "ownerKind", "piSessionId", "bridgeId", "profile", "launchDigest", "callerParticipantKey", "callerGeneration", "callerTargetKey", "baseCommit", "headCommit", "herdr", "state", "taskStatus", "commits", "changedFiles", "additions", "deletions", "integratedHead", "createdAt", "expiresAt", "updatedAt"]);
 	const ownerKind = legacyPi ? "pi" : item.ownerKind;
 	const state = enumValue(item.state, ["provisioning", "ready", "bound", "active", "ready_handoff", "partial", "retained", "needs_attention", "integrated", "cleaned"], "invalid workspace state");
 	if (item.version !== 1 || item.profile !== "workspace-write" || (ownerKind !== "pi" && ownerKind !== "bridge")) throw new Error("invalid workspace version, owner, profile, or state");
-	if (ownerKind === "pi" ? typeof item.piSessionId !== "string" || typeof item.launchDigest !== "string" || item.bridgeId !== undefined : typeof item.bridgeId !== "string" || item.piSessionId !== undefined || item.launchDigest !== undefined) throw new Error("workspace owner authority is inconsistent");
+	if (ownerKind === "pi" ? !isPersistedString(item.piSessionId) || !isPersistedString(item.launchDigest) || item.bridgeId !== undefined : !isPersistedString(item.bridgeId) || item.piSessionId !== undefined || item.launchDigest !== undefined) throw new Error("workspace owner authority is inconsistent");
 	const taskStatus = item.taskStatus === undefined ? undefined : enumValue(item.taskStatus, ["completed", "failed", "cancelled"], "invalid workspace task status");
 	const protocol = participantName(item.protocol, "workspace protocol");
 	const participantId = participantName(item.participantId, "workspace participant ID");
@@ -1062,7 +1065,7 @@ function validateWorkspaceRecord(value: unknown, key: string, legacyPi: boolean)
 	return result;
 }
 
-function validateIntegration(value: unknown, key: string): HostedIntegration {
+function validateIntegration(value: PersistedStateValue | undefined, key: string): HostedIntegration {
 	const item = strictObject(value, "integration", ["version", "integrationId", "workspaceId", "projectRoot", "gitCommonDir", "worktreePath", "branchRef", "mainBranchRef", "mainHead", "sourceHead", "sourceCommits", "state", "preparedHead", "conflictPaths", "createdAt", "updatedAt", "finalizedAt"]);
 	const state = enumValue(item.state, ["preparing", "prepared", "conflicted", "needs_attention", "finalized", "cleaned"], "invalid integration state");
 	if (item.version !== 1) throw new Error("invalid integration version or state");
@@ -1093,28 +1096,28 @@ function validateIntegration(value: unknown, key: string): HostedIntegration {
 	return result;
 }
 
-function validateBridgeHerdr(value: unknown): HostedBridgeLaunch["herdr"] {
+function validateBridgeHerdr(value: PersistedStateValue | undefined): HostedBridgeLaunch["herdr"] {
 	const herdr = strictObject(value, "bridge Herdr identity", ["paneId", "terminalId", "tabId", "workspaceId"]);
 	return { paneId: text(herdr.paneId, "Herdr pane ID", MAX_ID_BYTES), terminalId: text(herdr.terminalId, "Herdr terminal ID", MAX_ID_BYTES), tabId: text(herdr.tabId, "Herdr tab ID", MAX_ID_BYTES), workspaceId: text(herdr.workspaceId, "Herdr workspace ID", MAX_ID_BYTES) };
 }
 
-function nativeDriver(value: unknown): "claude-code" | "codex" {
+function nativeDriver(value: PersistedStateValue | undefined): "claude-code" | "codex" {
 	if (value !== "claude-code" && value !== "codex") throw new Error("interactive bridge driver is invalid");
 	return value;
 }
 
-function managedTier(value: unknown): "managed" {
+function managedTier(value: PersistedStateValue | undefined): "managed" {
 	if (value !== "managed") throw new Error("interactive bridge capability tier is invalid");
 	return value;
 }
 
-function validateAgentSession(value: unknown): HostedAgentSessionIdentity {
+function validateAgentSession(value: PersistedStateValue | undefined): HostedAgentSessionIdentity {
 	const session = strictObject(value, "interactive agent session", ["source", "agent", "kind", "value"]);
 	if (session.kind !== "id" && session.kind !== "path") throw new Error("interactive agent session kind is invalid");
 	return { source: text(session.source, "agent session source", MAX_ID_BYTES), agent: text(session.agent, "agent session kind", 64), kind: session.kind, value: text(session.value, "agent session value", MAX_PATH_BYTES) };
 }
 
-function migrateBridgeMetadata(value: unknown): Record<string, string> {
+function migrateBridgeMetadata(value: PersistedStateValue | undefined): Record<string, string> {
 	const metadata = strictObject(value, "legacy bridge metadata");
 	if (Object.keys(metadata).length > HOSTED_BRIDGE_MAX_METADATA_ENTRIES) throw new Error("bridge metadata exceeds its entry limit");
 	const parsed = Object.fromEntries(Object.entries(metadata).map(([key, item]) => {
@@ -1124,7 +1127,7 @@ function migrateBridgeMetadata(value: unknown): Record<string, string> {
 	return parsed.adapter ? { adapter: parsed.adapter } : parsed.format ? { adapter: parsed.format } : {};
 }
 
-function validateBridgeMetadata(value: unknown): Record<string, string> {
+function validateBridgeMetadata(value: PersistedStateValue | undefined): Record<string, string> {
 	const metadata = strictObject(value, "bridge metadata");
 	if (Object.keys(metadata).length > HOSTED_BRIDGE_MAX_METADATA_ENTRIES) throw new Error("bridge metadata exceeds its entry limit");
 	return Object.fromEntries(Object.entries(metadata).map(([key, item]) => {
@@ -1133,7 +1136,7 @@ function validateBridgeMetadata(value: unknown): Record<string, string> {
 	}));
 }
 
-function validateMonitor(value: unknown, key: string): HostedMonitor {
+function validateMonitor(value: PersistedStateValue | undefined, key: string): HostedMonitor {
 	const monitor = strictObject(value, "monitor", ["monitorId", "targetKey", "generation", "directory", "settleMs", "status", "sequence", "entries", "createdAt", "updatedAt"]);
 	const status = monitor.status;
 	if (status !== "watching" && status !== "degraded") throw new Error("invalid monitor status");
@@ -1153,7 +1156,7 @@ function validateMonitor(value: unknown, key: string): HostedMonitor {
 	return result;
 }
 
-function validateObservation(value: unknown, key: string): HostedFileObservation {
+function validateObservation(value: PersistedStateValue | undefined, key: string): HostedFileObservation {
 	const entry = strictObject(value, "file observation", ["relativePath", "size", "mtimeMs", "stableSince", "present", "emitted"]);
 	const result: HostedFileObservation = {
 		relativePath: text(entry.relativePath, "relative path", MAX_PATH_BYTES),
@@ -1167,7 +1170,7 @@ function validateObservation(value: unknown, key: string): HostedFileObservation
 	return result;
 }
 
-function validateParticipant(value: unknown, key: string): HostedParticipant {
+function validateParticipant(value: PersistedStateValue | undefined, key: string): HostedParticipant {
 	const participant = strictObject(value, "participant", ["participantKey", "projectRoot", "protocol", "participantId", "state", "generation", "holderTargetKey", "outSeq", "transitions", "createdAt", "updatedAt"]);
 	if (participant.state !== "held" && participant.state !== "vacant" && participant.state !== "ended") throw new Error("invalid participant state");
 	const protocol = participantName(participant.protocol, "participant protocol");
@@ -1207,7 +1210,7 @@ function validateParticipant(value: unknown, key: string): HostedParticipant {
 	return result;
 }
 
-function validateParticipantTransition(value: unknown): HostedParticipantTransition {
+function validateParticipantTransition(value: PersistedStateValue | undefined): HostedParticipantTransition {
 	const transition = strictObject(value, "participant transition", ["cause", "generation", "holderTargetKey", "previousGeneration", "previousHolderTargetKey", "at"]);
 	if (transition.cause !== "acquire" && transition.cause !== "reacquire" && transition.cause !== "stand_down" && transition.cause !== "release" && transition.cause !== "takeover" && transition.cause !== "revive") throw new Error("invalid participant transition cause");
 	const result: HostedParticipantTransition = {
@@ -1221,7 +1224,7 @@ function validateParticipantTransition(value: unknown): HostedParticipantTransit
 	return result;
 }
 
-function validateEvent(value: unknown, key: string): HostedEvent {
+function validateEvent(value: PersistedStateValue | undefined, key: string): HostedEvent {
 	const candidate = strictObject(value, "hosted event");
 	if (candidate.type === "filesystem.created") return validateFilesystemEvent(value, key);
 	if (candidate.type === "mailbox.message" || candidate.type === "mailbox.task") return validateMailboxEvent(value, key);
@@ -1229,7 +1232,7 @@ function validateEvent(value: unknown, key: string): HostedEvent {
 	throw new Error("invalid hosted event type");
 }
 
-function validateFilesystemEvent(value: unknown, key: string): HostedFilesystemCreatedEvent {
+function validateFilesystemEvent(value: PersistedStateValue | undefined, key: string): HostedFilesystemCreatedEvent {
 	const event = strictObject(value, "hosted filesystem event", ["version", "eventId", "dedupeKey", "source", "targetKey", "type", "createdAt", "summary", "payload", "delivery"]);
 	if (event.version !== 1 || event.type !== "filesystem.created") throw new Error("invalid hosted filesystem event version or type");
 	const source = strictObject(event.source, "event source", ["kind", "id", "generation", "sequence"]);
@@ -1263,7 +1266,7 @@ function validateFilesystemEvent(value: unknown, key: string): HostedFilesystemC
 	return result;
 }
 
-function validateMailboxEvent(value: unknown, key: string): HostedMailboxMessageEvent | HostedMailboxTaskEvent {
+function validateMailboxEvent(value: PersistedStateValue | undefined, key: string): HostedMailboxMessageEvent | HostedMailboxTaskEvent {
 	const event = strictObject(value, "hosted mailbox event", ["version", "eventId", "dedupeKey", "source", "recipientParticipantKey", "type", "createdAt", "summary", "payload", "delivery"]);
 	if (event.version !== 1 || (event.type !== "mailbox.message" && event.type !== "mailbox.task")) throw new Error("invalid hosted mailbox event version or type");
 	const source = strictObject(event.source, "mailbox source", ["kind", "id", "generation", "sequence"]);
@@ -1301,7 +1304,7 @@ function validateMailboxEvent(value: unknown, key: string): HostedMailboxMessage
 	return result;
 }
 
-function validateTaskResultEvent(value: unknown, key: string): HostedMailboxTaskResultEvent {
+function validateTaskResultEvent(value: PersistedStateValue | undefined, key: string): HostedMailboxTaskResultEvent {
 	const event = strictObject(value, "hosted task result event", ["version", "eventId", "dedupeKey", "source", "recipientParticipantKey", "type", "createdAt", "summary", "payload", "delivery"]);
 	if (event.version !== 1 || event.type !== "mailbox.task_result") throw new Error("invalid hosted task result version or type");
 	const source = strictObject(event.source, "task result source", ["kind", "id", "generation", "sequence"]);
@@ -1321,17 +1324,17 @@ function validateTaskResultEvent(value: unknown, key: string): HostedMailboxTask
 	return result;
 }
 
-function validateTaskWorkspaceEvidence(value: unknown): HostedTaskWorkspaceEvidence {
+function validateTaskWorkspaceEvidence(value: PersistedStateValue | undefined): HostedTaskWorkspaceEvidence {
 	const item = strictObject(value, "task workspace evidence", ["workspaceId", "baseCommit", "headCommit", "branchRef", "state", "dirty", "artifactRef", "capturedAt"]);
 	const state = enumValue(item.state, ["provisioning", "ready", "bound", "active", "ready_handoff", "partial", "retained", "needs_attention", "integrated", "cleaned"], "task workspace evidence state is invalid");
-	if (typeof item.dirty !== "boolean") throw new Error("task workspace evidence state is invalid");
+	if (item.dirty !== true && item.dirty !== false) throw new Error("task workspace evidence state is invalid");
 	const branchRef = text(item.branchRef, "task workspace branch", MAX_PATH_BYTES);
 	const result: HostedTaskWorkspaceEvidence = { workspaceId: text(item.workspaceId, "task workspace ID", MAX_ID_BYTES), baseCommit: gitOid(item.baseCommit, "task workspace base"), headCommit: gitOid(item.headCommit, "task workspace head"), branchRef, state, dirty: item.dirty, artifactRef: text(item.artifactRef, "task workspace artifact", MAX_PATH_BYTES), capturedAt: nonNegativeNumber(item.capturedAt, "task workspace capture time") };
 	if (result.artifactRef !== branchRef) throw new Error("task workspace artifact does not match its branch");
 	return result;
 }
 
-function validateDelivery(value: unknown): HostedEventDelivery {
+function validateDelivery(value: PersistedStateValue | undefined): HostedEventDelivery {
 	const candidate = strictObject(value, "event delivery");
 	if (candidate.status === "pending") {
 		const delivery = strictObject(value, "pending delivery", ["status", "latestClaimId"]);
@@ -1358,7 +1361,7 @@ function validateDelivery(value: unknown): HostedEventDelivery {
 	throw new Error("invalid delivery status");
 }
 
-function validateAutoCapacityReservation(value: unknown, key: string): HostedAutoCapacityReservation {
+function validateAutoCapacityReservation(value: PersistedStateValue | undefined, key: string): HostedAutoCapacityReservation {
 	const item = strictObject(value, "Auto capacity reservation", ["version", "operationId", "projectRoot", "callerTargetKey", "callerParticipantKey", "expectedCallerGeneration", "participantKeys", "createdAt"]);
 	const participantKeys = stringArray(item.participantKeys, "Auto capacity participant keys", HOSTED_AUTO_MAX_COLLABORATORS).map((participantKey) => text(participantKey, "Auto capacity participant key", MAX_ID_BYTES));
 	const result: HostedAutoCapacityReservation = {
@@ -1375,7 +1378,7 @@ function validateAutoCapacityReservation(value: unknown, key: string): HostedAut
 	return result;
 }
 
-function validateClaim(value: unknown, key: string): HostedClaim {
+function validateClaim(value: PersistedStateValue | undefined, key: string): HostedClaim {
 	const claim = strictObject(value, "claim", ["claimId", "targetKey", "registrationId", "clientGeneration", "eventIds", "createdAt", "leaseUntil", "status", "settledAt"]);
 	if (claim.status !== "active" && claim.status !== "released" && claim.status !== "acked") throw new Error("invalid claim status");
 	const eventIds = stringArray(claim.eventIds, "claim event ids", HOSTED_MAX_DELIVERY_BATCH);
@@ -1396,7 +1399,7 @@ function validateClaim(value: unknown, key: string): HostedClaim {
 	return result;
 }
 
-function validateWake(value: unknown, key: string): HostedWake {
+function validateWake(value: PersistedStateValue | undefined, key: string): HostedWake {
 	const wake = strictObject(value, "wake", ["wakeId", "targetKey", "registrationId", "createdAt"]);
 	const result: HostedWake = {
 		wakeId: text(wake.wakeId, "wake id", MAX_ID_BYTES),
@@ -1489,74 +1492,85 @@ function validateReferences(state: HostedRuntimeState): void {
 	for (const wake of Object.values(state.wakes)) if (!state.targets[wake.targetKey]) throw new Error("wake target is missing");
 }
 
-function mapValues<T>(value: unknown, name: string, validate: (item: unknown, key: string) => T, max = MAX_STATE_RECORDS): Record<string, T> {
+function mapValues<T>(value: PersistedStateValue | undefined, name: string, validate: (item: PersistedStateValue | undefined, key: string) => T, max = MAX_STATE_RECORDS): Record<string, T> {
 	const record = strictObject(value, name);
 	const entries = Object.entries(record);
 	if (entries.length > max) throw new Error(`${name} exceeds ${max} entries`);
 	return Object.fromEntries(entries.map(([key, item]) => [key, validate(item, key)]));
 }
 
-function mapStrings(value: unknown, name: string): Record<string, string> {
+function mapStrings(value: PersistedStateValue | undefined, name: string): Record<string, string> {
 	const record = strictObject(value, name);
 	if (Object.keys(record).length > MAX_STATE_RECORDS) throw new Error(`${name} exceeds ${MAX_STATE_RECORDS} entries`);
 	return Object.fromEntries(Object.entries(record).map(([key, item]) => [text(key, `${name} key`, MAX_PATH_BYTES), text(item, `${name} value`, MAX_ID_BYTES)]));
 }
 
-function strictObject(value: unknown, name: string, allowed?: readonly string[]): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${name} must be an object`);
-	// SAFETY: The preceding runtime check excludes null, primitives, and arrays before schema validation and key access.
-	const record = value as Record<string, unknown>;
+function strictObject<Source>(value: Source, name: string, allowed?: readonly string[]): PersistedStateFields {
+	if (value === null || value === undefined || Array.isArray(value) || Object(value) !== value) throw new Error(`${name} must be an object`);
+	const record: PersistedStateFields = Object.fromEntries(Object.entries(Object(value)));
 	if (allowed) for (const key of Object.keys(record)) if (!allowed.includes(key)) throw new Error(`${name} has unknown field ${key}`);
 	return record;
 }
 
-function enumValue<const Value extends string>(value: unknown, allowed: readonly Value[], message: string): Value {
-	if (typeof value !== "string" || !allowed.some((candidate) => candidate === value)) throw new Error(message);
-	// SAFETY: Runtime equality against the complete literal allowlist proves membership in its inferred union.
-	return value as Value;
+function enumValue<const Value extends string>(value: PersistedStateValue | undefined, allowed: readonly Value[], message: string): Value {
+	const parsed = allowed.find((candidate) => candidate === value);
+	if (parsed === undefined) throw new Error(message);
+	return parsed;
 }
 
-function stringArray(value: unknown, name: string, max: number): string[] {
+function stringArray(value: PersistedStateValue | undefined, name: string, max: number): string[] {
 	if (!Array.isArray(value) || value.length > max) throw new Error(`${name} must contain at most ${max} values`);
 	return value.map((item) => text(item, name, MAX_ID_BYTES));
 }
 
-function text(value: unknown, name: string, maxBytes: number): string {
+function text(value: PersistedStateValue | undefined, name: string, maxBytes: number): string {
 	const result = stringValue(value, name, maxBytes);
 	if (!result.trim()) throw new Error(`${name} must not be empty`);
 	return result;
 }
 
-function stringValue(value: unknown, name: string, maxBytes: number): string {
-	if (typeof value !== "string" || Buffer.byteLength(value) > maxBytes) throw new Error(`${name} must be a string of at most ${maxBytes} bytes`);
+function stringValue(value: PersistedStateValue | undefined, name: string, maxBytes: number): string {
+	if (!isPersistedString(value) || Buffer.byteLength(value) > maxBytes) throw new Error(`${name} must be a string of at most ${maxBytes} bytes`);
 	return value;
 }
 
-function gitOid(value: unknown, name: string): string {
+function gitOid(value: PersistedStateValue | undefined, name: string): string {
 	const result = text(value, name, 64);
 	if (!GIT_OID.test(result)) throw new Error(`${name} must be a Git object ID`);
 	return result;
 }
 
-function hash(value: unknown, name: string): string {
+function hash(value: PersistedStateValue | undefined, name: string): string {
 	const result = text(value, name, 64);
 	if (!HASH.test(result)) throw new Error(`${name} must be a lowercase SHA-256 digest`);
 	return result;
 }
 
-function integer(value: unknown, name: string): number {
-	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new Error(`${name} must be a non-negative integer`);
+function integer(value: PersistedStateValue | undefined, name: string): number {
+	if (!isPersistedNumber(value) || !Number.isSafeInteger(value) || value < 0) throw new Error(`${name} must be a non-negative integer`);
 	return value;
 }
 
-function nonNegativeNumber(value: unknown, name: string): number {
-	if (typeof value !== "number" || !Number.isFinite(value) || value < 0) throw new Error(`${name} must be a non-negative number`);
+function nonNegativeNumber(value: PersistedStateValue | undefined, name: string): number {
+	if (!isPersistedNumber(value) || !Number.isFinite(value) || value < 0) throw new Error(`${name} must be a non-negative number`);
 	return value;
 }
 
-function boolean(value: unknown, name: string): boolean {
-	if (typeof value !== "boolean") throw new Error(`${name} must be a boolean`);
+function boolean(value: PersistedStateValue | undefined, name: string): boolean {
+	if (value !== true && value !== false) throw new Error(`${name} must be a boolean`);
 	return value;
+}
+
+function isPersistedStateFields(value: PersistedStateValue): value is PersistedStateFields {
+	return value !== null && !Array.isArray(value) && Object(value) === value;
+}
+
+function isPersistedString(value: PersistedStateValue | undefined): value is string {
+	return value === String(value);
+}
+
+function isPersistedNumber(value: PersistedStateValue | undefined): value is number {
+	return value === Number(value);
 }
 
 function replaceParticipant(state: HostedRuntimeState, participant: HostedParticipant): HostedRuntimeState {
@@ -1638,7 +1652,7 @@ function taskResultFingerprint(recipientParticipantKey: string, operation: Extra
 }
 
 function sameTaskWorkspaceEvidence(evidence: HostedTaskWorkspaceEvidence, workspace: HostedWorkspace): boolean {
-	return evidence.workspaceId === workspace.workspaceId && evidence.baseCommit === workspace.baseCommit && evidence.headCommit === workspace.headCommit && evidence.branchRef === workspace.branchRef && evidence.state === workspace.state && evidence.artifactRef === workspace.branchRef && typeof evidence.dirty === "boolean" && Number.isFinite(evidence.capturedAt) && evidence.capturedAt >= 0;
+	return evidence.workspaceId === workspace.workspaceId && evidence.baseCommit === workspace.baseCommit && evidence.headCommit === workspace.headCommit && evidence.branchRef === workspace.branchRef && evidence.state === workspace.state && evidence.artifactRef === workspace.branchRef && (evidence.dirty === true || evidence.dirty === false) && Number.isFinite(evidence.capturedAt) && evidence.capturedAt >= 0;
 }
 
 function assertParticipantName(value: string, name: string): void {
@@ -1653,7 +1667,7 @@ function assertStateTime(value: number, name: string): void {
 	if (!Number.isFinite(value) || value < 0) throw new HostedStateConflictError("conflict", `${name} is invalid.`);
 }
 
-function participantName(value: unknown, name: string): string {
+function participantName(value: PersistedStateValue | undefined, name: string): string {
 	const result = text(value, name, 64);
 	if (!/^[a-z][a-z0-9_-]{0,63}$/.test(result)) throw new Error(`${name} has invalid syntax`);
 	return result;
@@ -1750,6 +1764,6 @@ function storageError(message: string, cause: unknown): HostedStateStorageError 
 	return new HostedStateStorageError(`${message}: ${cause instanceof Error ? cause.message : String(cause)}`);
 }
 
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-	return error instanceof Error && "code" in error;
+function isNodeError(cause: unknown): cause is NodeJS.ErrnoException {
+	return cause instanceof Error && "code" in cause;
 }
