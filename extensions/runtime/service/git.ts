@@ -470,11 +470,11 @@ export class RuntimeGit {
 			const child = execFile("git", gitArgs(args), { cwd, env: gitEnvironment(extraEnv), encoding: "buffer", maxBuffer, timeout: 30_000 }, (error, stdout, stderr) => {
 				const detail = Buffer.from(stderr).toString("utf8").trim().slice(0, 2_000);
 				const errorCode = error?.code;
-				if (error && typeof errorCode !== "number") {
+				if (error && !Number.isInteger(errorCode)) {
 					reject(new RuntimeGitError(`Git ${args[0] ?? "command"} could not execute${detail ? `: ${detail}` : "."}`));
 					return;
 				}
-				const code = typeof errorCode === "number" ? errorCode : 0;
+				const code = error ? Number(errorCode) : 0;
 				if (!allowed.includes(code)) {
 					reject(new RuntimeGitError(`Git ${args[0] ?? "command"} failed${detail ? `: ${detail}` : "."}`));
 					return;
