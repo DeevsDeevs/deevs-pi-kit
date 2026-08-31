@@ -25,6 +25,16 @@ export interface HostedClaimResult {
 	events: HostedEvent[];
 }
 
+export interface HostedInboxStatus {
+	pending: number;
+	claimed: number;
+	submitting: number;
+	submitted: number;
+	needsAttention: number;
+	acknowledged: number;
+	wakeId?: string;
+}
+
 export class HostedWakeCoordinator {
 	private readonly store: HostedStateStore;
 	private readonly options: HostedWakeOptions;
@@ -116,7 +126,7 @@ export class HostedWakeCoordinator {
 		this.request(registration.targetKey);
 	}
 
-	status(registration: HostedLiveRegistration) {
+	status(registration: HostedLiveRegistration): HostedInboxStatus {
 		this.releaseExpired();
 		let pending = 0;
 		let claimed = 0;
@@ -135,7 +145,9 @@ export class HostedWakeCoordinator {
 			else acknowledged++;
 		}
 		const wakeId = this.store.read().wakes[registration.targetKey]?.wakeId;
-		return { pending, claimed, submitting, submitted, needsAttention, acknowledged, ...(wakeId ? { wakeId } : {}) };
+		const result: HostedInboxStatus = { pending, claimed, submitting, submitted, needsAttention, acknowledged };
+		if (wakeId) result.wakeId = wakeId;
+		return result;
 	}
 
 	close(): void {
