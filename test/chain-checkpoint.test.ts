@@ -31,6 +31,17 @@ describe("Chain checkpoint state", () => {
 		expect(replayed).toMatchObject({ chain: "kit", branch: "main", status: "due", dueReasons: ["review adjudicated"] });
 	});
 
+	it("satisfies only the exact saved or waived Chain target", () => {
+		const service = new ChainCheckpointService({ appendEntry() {} } as unknown as ExtensionAPI);
+		service.saved("other", "main");
+		expect(service.isSatisfied("kit", "main")).toBe(false);
+		service.activate("kit", "main");
+		expect(service.isSatisfied("kit", "main")).toBe(false);
+		service.waive("approved");
+		expect(service.isSatisfied("kit", "main")).toBe(true);
+		expect(service.isSatisfied("kit", "release")).toBe(false);
+	});
+
 	it("marks a new repository commit without treating ordinary edits as milestones", async () => {
 		const branch: Array<Record<string, unknown>> = [];
 		const statuses: Array<string | undefined> = [];

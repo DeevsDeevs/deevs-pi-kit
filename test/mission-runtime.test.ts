@@ -16,6 +16,7 @@ import type { SubagentService } from "../extensions/subagents/service.ts";
 import type { DelegateRun } from "../extensions/subagents/runtime-types.ts";
 import { MAX_MISSION_REVIEW_ADJUDICATIONS } from "../extensions/mission/types.ts";
 import type { MissionCurrent } from "../extensions/mission/types.ts";
+import { ChainCheckpointService, chainCheckpoints } from "../extensions/chains/checkpoint.ts";
 
 const SYNTHETIC_FINGERPRINT_PATH = ".mission-test-fingerprint";
 
@@ -49,7 +50,10 @@ function createGitRepo(parent: string, name: string): string {
 }
 
 const ownedRoots: string[] = [];
-afterEach(() => { for (const root of ownedRoots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => {
+	chainCheckpoints.current = undefined;
+	for (const root of ownedRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 
 async function setup(options: { pending?: boolean; fingerprint?: () => string; head?: () => string; cwd?: string; exec?: (command: string, args: string[], options: { cwd?: string }) => Promise<{ code: number; stdout: string; stderr: string }> } = {}) {
 	const branch: Array<Record<string, unknown>> = [];
@@ -162,6 +166,18 @@ describe("Mission runtime", () => {
 		const test = await setup();
 		expect(await test.runtime.validateCompletion({ userRequested: true }, test.ctx)).toEqual([]);
 		expect(await test.runtime.validateCompletion({ userRequested: true }, test.ctx, true)).toEqual([]);
+	});
+
+	it("does not satisfy Mission completion with another Chain's checkpoint", async () => {
+		const test = await setup();
+		const checkpoints = new ChainCheckpointService(test.pi);
+		chainCheckpoints.current = checkpoints;
+		checkpoints.saved("other", "main");
+		const wrongChain = await test.runtime.validateCompletion({ audit: [{ requirementIndex: 0, evidence: "validated" }] }, test.ctx);
+		expect(wrongChain).toContain("The Mission Chain checkpoint kit@main is not saved or explicitly waived.");
+		checkpoints.saved("kit", "main");
+		const missionChain = await test.runtime.validateCompletion({ audit: [{ requirementIndex: 0, evidence: "validated" }] }, test.ctx);
+		expect(missionChain).not.toContain("The Mission Chain checkpoint kit@main is not saved or explicitly waived.");
 	});
 
 	it("blocks continuation and user-requested closure on groups and launch reservations", async () => {
@@ -639,7 +655,7 @@ describe("Mission runtime", () => {
 			const internal = test.runtime as unknown as { startReview: (ctx: ExtensionContext, mission: MissionCurrent) => Promise<void> };
 			await internal.startReview(test.ctx, test.state.read()!);
 			await vi.waitFor(() => expect(test.state.read()?.reviewStatus).toBe("awaiting_adjudication"), { timeout: 500 });
-			expect(test.state.read()?.reviewRunId).toBe("fast-review");
+			expect(test.state.read()).toMatchObject({ reviewRunId: "fast-review", reviewScopePaths: ["."] });
 		} finally {
 			rmSync(artifactsDir, { recursive: true, force: true });
 			clearSubagentService(service);
@@ -715,11 +731,32 @@ describe("Mission runtime", () => {
 		} as unknown as SubagentService;
 		setSubagentService(service);
 		try {
-			test.state.append(test.pi, test.state.reviewEvent("running", { runId: run.spec.id, candidateId, worktreeFingerprint: expectedFingerprint() }));
-			writeFileSync(join(artifactsDir, "review-report.json"), JSON.stringify({ version: 1, overallExplanation: "reviewed", verdict: submitted, findings: [{ severity, summary: "typed finding", ...(severity === "major" ? { requirementIndex: 0 } : {}) }] }));
+			test.state.append(test.pi, test.state.reviewEvent("running", { runId: run.spec.id, candidateId, worktreeFingerprint: expectedFingerprint(), scopePaths: ["extensions/mission"] }));
+			writeFileSync(join(artifactsDir, "review-report.json"), JSON.stringify({ version: 1, overallExplanation: "reviewed", verdict: submitted, findings: [{ severity, summary: "typed finding", path: "extensions/mission/runtime.ts", ...(severity === "major" ? { requirementIndex: 0 } : {}) }] }));
 			const internal = test.runtime as unknown as { reconcileReview: () => Promise<boolean> };
 			expect(await internal.reconcileReview()).toBe(true);
 			expect(test.state.read()).toMatchObject({ reviewStatus: "awaiting_adjudication", reviewSuggestedVerdict: expected, reviewBlockingFindingCount: blocking, reviewBacklogFindingCount: backlog, reviewHighestSeverity: severity });
+		} finally {
+			rmSync(artifactsDir, { recursive: true, force: true });
+			clearSubagentService(service);
+		}
+	});
+
+	it.each([
+		{ label: "missing a path", finding: { severity: "major", summary: "missing path", requirementIndex: 0 } },
+		{ label: "outside owned prefixes", finding: { severity: "major", summary: "outside path", path: "extensions/runtime/service/git.ts", requirementIndex: 0 } },
+	])("downgrades an initial major $label", async ({ finding }) => {
+		const test = await setup();
+		const artifactsDir = mkdtempSync(join(tmpdir(), "mission-initial-scope-major-"));
+		const candidateId = await test.runtime.completionCandidateId(test.ctx);
+		const run = { spec: { id: "review-initial-scope-major", artifactsDir }, runtime: { status: "completed", output: "" } } as unknown as DelegateRun;
+		const service = { list: () => ({ runs: [], groups: [] }), executor: { get: () => run, onChange: () => () => undefined } } as unknown as SubagentService;
+		setSubagentService(service);
+		try {
+			test.state.append(test.pi, test.state.reviewEvent("running", { runId: run.spec.id, candidateId, worktreeFingerprint: expectedFingerprint(), scopePaths: ["extensions/mission"] }));
+			writeFileSync(join(artifactsDir, "review-report.json"), JSON.stringify({ version: 1, overallExplanation: "outside initial scope", verdict: "changes_requested", findings: [finding] }));
+			expect(await (test.runtime as unknown as { reconcileReview: () => Promise<boolean> }).reconcileReview()).toBe(true);
+			expect(test.state.read()).toMatchObject({ reviewStatus: "awaiting_adjudication", reviewSuggestedVerdict: "clear", reviewBlockingFindingCount: 0, reviewBacklogFindingCount: 1, reviewHighestSeverity: "minor" });
 		} finally {
 			rmSync(artifactsDir, { recursive: true, force: true });
 			clearSubagentService(service);
