@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -89,6 +89,7 @@ describe("DelegateExecutor", () => {
 		expect(run.runtime.usage).toMatchObject({ inputTokens: 10, outputTokens: 5, cacheReadTokens: 2, cacheWriteTokens: 1, costUsd: 0.01 });
 		expect(existsSync(run.spec.resultPath)).toBe(true);
 		expect(existsSync(run.spec.transcriptPath)).toBe(true);
+		expect(statSync(run.spec.resultPath, { bigint: true }).mtimeNs).toBeLessThanOrEqual(statSync(run.spec.runtimePath, { bigint: true }).mtimeNs);
 	});
 
 	it("does not overwrite a fast worker terminal state while establishing process identity", async () => {
