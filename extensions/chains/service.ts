@@ -319,7 +319,7 @@ export class ChainService {
 	private async ensureChainDir(chain: string, create: true): Promise<string>;
 	private async ensureChainDir(chain: string, create: false): Promise<string | null>;
 	private async ensureChainDir(chain: string, create: boolean): Promise<string | null> {
-		const root = await this.ensureRootDir(create as true);
+		const root = create ? await this.ensureRootDir(true) : await this.ensureRootDir(false);
 		if (!root) return null;
 		const dir = this.chainDir(chain);
 		if (create) await mkdir(dir, { recursive: true });

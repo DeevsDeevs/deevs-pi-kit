@@ -283,6 +283,10 @@ function validateMission(value: Record<string, unknown>, cwd: string, slug: stri
 		if (value.reviewAdjudicationHistoryComplete !== true) throw new Error("Invalid Mission review adjudication history completeness marker.");
 		mission.reviewAdjudicationHistoryComplete = true;
 	}
+	if (value.reviewLegacyRelaunchAuthorized !== undefined) {
+		if (value.reviewLegacyRelaunchAuthorized !== true || reviewStatus === "clear" || reviewStatus === "skipped" || reviewStatus === "not_required") throw new Error("Invalid Mission legacy review relaunch authorization.");
+		mission.reviewLegacyRelaunchAuthorized = true;
+	}
 	return mission;
 }
 

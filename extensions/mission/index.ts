@@ -10,6 +10,7 @@ interface MissionSurfaceState { active: boolean }
 interface GlobalWithMissionSurface { [SURFACE_KEY]?: MissionSurfaceState }
 
 export default function missionExtension(pi: ExtensionAPI): void {
+	// SAFETY: This package exclusively owns the symbol-keyed hot-reload slot and writes the same interface below.
 	const globalState = globalThis as GlobalWithMissionSurface;
 	if (globalState[SURFACE_KEY]?.active) return;
 	const surfaceState: MissionSurfaceState = { active: true };

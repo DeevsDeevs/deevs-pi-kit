@@ -51,7 +51,10 @@ export class MissionRuntime {
 		const mission = this.state.read();
 		if (mission?.reviewStatus === "clear" && (!mission.reviewCandidateId || !mission.reviewAdjudicatedCandidateId || mission.reviewAdjudicatedVerdict !== "clear")) {
 			if (mission.completionLatchCandidateId) this.state.append(this.pi, this.state.completionLatchClearedEvent());
-			this.state.append(this.pi, this.state.reviewEvent("due", { reason: "Legacy clear review lacks typed candidate metadata and must be reviewed again." }));
+			const legacyRelaunchAuthorized = mission.reviewAdjudicationHistoryComplete !== true
+				&& !mission.reviewAdjudicatedCandidateId
+				&& (mission.reviewAdjudications?.length ?? 0) === 0;
+			this.state.append(this.pi, this.state.reviewEvent("due", { reason: "Legacy clear review lacks typed candidate metadata and must be reviewed again.", legacyRelaunchAuthorized: legacyRelaunchAuthorized ? true : undefined }));
 		}
 		this.updateStatus();
 	}
@@ -610,7 +613,7 @@ export class MissionRuntime {
 			this.updateStatus();
 			return;
 		}
-		if (current.reviewAdjudicationHistoryComplete !== true) {
+		if (current.reviewAdjudicationHistoryComplete !== true && current.reviewLegacyRelaunchAuthorized !== true) {
 			this.state.append(this.pi, this.state.statusEvent("blocked", "review adjudication history completeness is unknown", "A new reviewer was not launched because legacy state cannot prove that this candidate was never reviewed."));
 			this.updateStatus();
 			return;

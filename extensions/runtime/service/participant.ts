@@ -244,7 +244,7 @@ export class HostedParticipantCoordinator {
 	}
 
 	send(registration: HostedLiveRegistration, senderParticipantKey: string, expectedSenderGeneration: string, recipientParticipantKey: string, sendId: string, body: string): HostedMailboxMessageEvent {
-		return this.sendEnvelope("mailbox.send", registration, senderParticipantKey, expectedSenderGeneration, recipientParticipantKey, sendId, body) as HostedMailboxMessageEvent;
+		return this.sendEnvelope("mailbox.send", registration, senderParticipantKey, expectedSenderGeneration, recipientParticipantKey, sendId, body);
 	}
 
 	messageStatus(registration: HostedLiveRegistration, senderParticipantKey: string, expectedSenderGeneration: string, eventId: string): HostedMessageStatus {
@@ -261,7 +261,7 @@ export class HostedParticipantCoordinator {
 	}
 
 	sendTask(registration: HostedLiveRegistration, senderParticipantKey: string, expectedSenderGeneration: string, recipientParticipantKey: string, sendId: string, body: string): HostedMailboxTaskEvent {
-		return this.sendEnvelope("task.send", registration, senderParticipantKey, expectedSenderGeneration, recipientParticipantKey, sendId, body) as HostedMailboxTaskEvent;
+		return this.sendEnvelope("task.send", registration, senderParticipantKey, expectedSenderGeneration, recipientParticipantKey, sendId, body);
 	}
 
 	recoverTaskResult(registration: HostedLiveRegistration, senderParticipantKey: string, expectedSenderGeneration: string, inReplyToEventId: string, sendId: string, status: "completed" | "failed" | "cancelled", body: string, sessionAdvance: "none" | "committed"): HostedMailboxTaskResultEvent | undefined {
@@ -298,6 +298,8 @@ export class HostedParticipantCoordinator {
 		return result ? { eventId: task.eventId, recipientParticipantKey: task.recipientParticipantKey, status: result.payload.status, resultEventId: result.eventId, replyId: result.payload.replyId, body: result.payload.body, sessionAdvance: result.payload.sessionAdvance, ...(result.payload.workspace ? { workspace: result.payload.workspace } : {}) } : { eventId: task.eventId, recipientParticipantKey: task.recipientParticipantKey, status: "pending" };
 	}
 
+	private sendEnvelope(type: "mailbox.send", registration: HostedLiveRegistration, senderParticipantKey: string, expectedSenderGeneration: string, recipientParticipantKey: string, sendId: string, body: string): HostedMailboxMessageEvent;
+	private sendEnvelope(type: "task.send", registration: HostedLiveRegistration, senderParticipantKey: string, expectedSenderGeneration: string, recipientParticipantKey: string, sendId: string, body: string): HostedMailboxTaskEvent;
 	private sendEnvelope(type: "mailbox.send" | "task.send", registration: HostedLiveRegistration, senderParticipantKey: string, expectedSenderGeneration: string, recipientParticipantKey: string, sendId: string, body: string): HostedMailboxMessageEvent | HostedMailboxTaskEvent {
 		const target = this.requireTarget(registration.targetKey);
 		this.assertNotStopping(senderParticipantKey);
