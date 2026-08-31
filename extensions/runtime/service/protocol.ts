@@ -74,20 +74,20 @@ export async function dispatchHostedLine(line: string, context: HostedProtocolCo
 			if (!workspaces) return failure(id, "capability_unavailable", "Runtime workspace authority is unavailable in this process.");
 			const parsed = workspaceAuthorizedParams(params, method);
 			const caller = registrations.authorize(parsed.registrationId, parsed.registrationKey);
-			if (method === "workspace.launch.create") return success(id, await workspaces.create(caller, parsed.input as CreateWorkspaceInput));
-			if (method === "workspace.bridge.create") return success(id, await workspaces.createBridge(caller, parsed.input as CreateBridgeWorkspaceInput));
-			if (method === "workspace.launch.bind") return success(id, await workspaces.bind(caller, parsed.input as WorkspaceAuthority & { workspaceId: string; herdr: { paneId: string; terminalId: string } }));
-			if (method === "workspace.launch.recover") return success(id, { workspace: await workspaces.recoverLaunch(caller, parsed.input as WorkspaceAuthority & { requestId: string }) });
-			if (method === "workspace.inspect") return success(id, { workspace: workspaces.inspect(caller, (parsed.input as { workspaceId: string }).workspaceId) });
-			if (method === "workspace.integration.inspect") return success(id, { integration: workspaces.inspectIntegration(caller, (parsed.input as { integrationId: string }).integrationId) });
-			if (method === "workspace.retain") return success(id, { workspace: workspaces.retain(caller, parsed.input as WorkspaceAuthority & { workspaceId: string }) });
-			if (method === "workspace.reconcile") return success(id, { workspace: await workspaces.reconcile(caller, parsed.input as WorkspaceAuthority & { workspaceId: string }) });
-			if (method === "workspace.checkpoint") return success(id, { workspace: await workspaces.checkpoint(caller, parsed.input as WorkspaceAuthority & { workspaceId: string; taskStatus?: "completed" | "failed" | "cancelled" }) });
-			if (method === "workspace.integration.prepare") return success(id, { integration: await workspaces.prepareIntegration(caller, parsed.input as WorkspaceAuthority & { workspaceId: string }) });
-			if (method === "workspace.integration.reconcile") return success(id, { integration: await workspaces.reconcileIntegration(caller, parsed.input as WorkspaceAuthority & { integrationId: string }) });
-			if (method === "workspace.integration.finalize") return success(id, { integration: await workspaces.finalizeIntegration(caller, parsed.input as WorkspaceAuthority & { integrationId: string }) });
-			if (method === "workspace.cleanup") return success(id, { workspace: await workspaces.cleanupWorkspace(caller, parsed.input as WorkspaceAuthority & { workspaceId: string; discardConfirmed: boolean }) });
-			if (method === "workspace.integration.cleanup") return success(id, { integration: await workspaces.cleanupIntegration(caller, parsed.input as WorkspaceAuthority & { integrationId: string; discardConfirmed: boolean }) });
+			if (parsed.method === "workspace.launch.create") return success(id, await workspaces.create(caller, parsed.input));
+			if (parsed.method === "workspace.bridge.create") return success(id, await workspaces.createBridge(caller, parsed.input));
+			if (parsed.method === "workspace.launch.bind") return success(id, await workspaces.bind(caller, parsed.input));
+			if (parsed.method === "workspace.launch.recover") return success(id, { workspace: await workspaces.recoverLaunch(caller, parsed.input) });
+			if (parsed.method === "workspace.inspect") return success(id, { workspace: workspaces.inspect(caller, parsed.input.workspaceId) });
+			if (parsed.method === "workspace.integration.inspect") return success(id, { integration: workspaces.inspectIntegration(caller, parsed.input.integrationId) });
+			if (parsed.method === "workspace.retain") return success(id, { workspace: workspaces.retain(caller, parsed.input) });
+			if (parsed.method === "workspace.reconcile") return success(id, { workspace: await workspaces.reconcile(caller, parsed.input) });
+			if (parsed.method === "workspace.checkpoint") return success(id, { workspace: await workspaces.checkpoint(caller, parsed.input) });
+			if (parsed.method === "workspace.integration.prepare") return success(id, { integration: await workspaces.prepareIntegration(caller, parsed.input) });
+			if (parsed.method === "workspace.integration.reconcile") return success(id, { integration: await workspaces.reconcileIntegration(caller, parsed.input) });
+			if (parsed.method === "workspace.integration.finalize") return success(id, { integration: await workspaces.finalizeIntegration(caller, parsed.input) });
+			if (parsed.method === "workspace.cleanup") return success(id, { workspace: await workspaces.cleanupWorkspace(caller, parsed.input) });
+			if (parsed.method === "workspace.integration.cleanup") return success(id, { integration: await workspaces.cleanupIntegration(caller, parsed.input) });
 		}
 		if (method === "bridge.register" || method === "bridge.reconnect") {
 			if (!bridges) return failure(id, "capability_unavailable", "Runtime bridge registration is unavailable in this process.");
@@ -387,7 +387,20 @@ interface BridgeCancelInput extends WorkspaceAuthority {
 
 type WorkspaceMethodSchemas = Record<string, readonly string[]>;
 
-function workspaceAuthorizedParams(value: unknown, method: string): AuthorizedParams<unknown> {
+type WorkspaceAuthorizedParams =
+	| ({ method: "workspace.launch.create" } & AuthorizedParams<CreateWorkspaceInput>)
+	| ({ method: "workspace.bridge.create" } & AuthorizedParams<CreateBridgeWorkspaceInput>)
+	| ({ method: "workspace.launch.bind" } & AuthorizedParams<WorkspaceAuthority & { workspaceId: string; herdr: { paneId: string; terminalId: string } }>)
+	| ({ method: "workspace.launch.recover" } & AuthorizedParams<WorkspaceAuthority & { requestId: string }>)
+	| ({ method: "workspace.inspect" } & AuthorizedParams<{ workspaceId: string }>)
+	| ({ method: "workspace.integration.inspect" } & AuthorizedParams<{ integrationId: string }>)
+	| ({ method: "workspace.retain" | "workspace.reconcile" | "workspace.integration.prepare" } & AuthorizedParams<WorkspaceAuthority & { workspaceId: string }>)
+	| ({ method: "workspace.checkpoint" } & AuthorizedParams<WorkspaceAuthority & { workspaceId: string; taskStatus?: "completed" | "failed" | "cancelled" }>)
+	| ({ method: "workspace.integration.reconcile" | "workspace.integration.finalize" } & AuthorizedParams<WorkspaceAuthority & { integrationId: string }>)
+	| ({ method: "workspace.cleanup" } & AuthorizedParams<WorkspaceAuthority & { workspaceId: string; discardConfirmed: boolean }>)
+	| ({ method: "workspace.integration.cleanup" } & AuthorizedParams<WorkspaceAuthority & { integrationId: string; discardConfirmed: boolean }>);
+
+function workspaceAuthorizedParams(value: unknown, method: string): WorkspaceAuthorizedParams {
 	// oxlint-disable-next-line anti-slop/no-known-value-widening -- The method-indexed allowlist intentionally widens immutable field-name arrays.
 	const schemas: WorkspaceMethodSchemas = {
 		"workspace.launch.create": ["registrationId", "registrationKey", "requestId", "callerParticipantKey", "expectedCallerGeneration", "protocol", "participantId", "expectedParticipantGeneration", "piSessionId"],
@@ -410,33 +423,34 @@ function workspaceAuthorizedParams(value: unknown, method: string): AuthorizedPa
 	const registrationKey = boundedText(params.registrationKey, "registration key", 200);
 	if (method === "workspace.launch.create") {
 		const input: CreateWorkspaceInput = { requestId: boundedText(params.requestId, "request ID", 200), callerParticipantKey: boundedText(params.callerParticipantKey, "caller participant key", 200), expectedCallerGeneration: boundedText(params.expectedCallerGeneration, "expected caller generation", 200), protocol: participantName(params.protocol, "protocol"), participantId: participantName(params.participantId, "participant ID"), ...(params.expectedParticipantGeneration === undefined ? {} : { expectedParticipantGeneration: boundedText(params.expectedParticipantGeneration, "expected participant generation", 200) }), piSessionId: boundedText(params.piSessionId, "Pi session ID", 200) };
-		return { registrationId, registrationKey, input };
+		return { method, registrationId, registrationKey, input };
 	}
 	if (method === "workspace.bridge.create") {
 		const input: CreateBridgeWorkspaceInput = { requestId: boundedText(params.requestId, "request ID", 200), callerParticipantKey: boundedText(params.callerParticipantKey, "caller participant key", 200), expectedCallerGeneration: boundedText(params.expectedCallerGeneration, "expected caller generation", 200), protocol: participantName(params.protocol, "protocol"), participantId: participantName(params.participantId, "participant ID"), ...(params.expectedParticipantGeneration === undefined ? {} : { expectedParticipantGeneration: boundedText(params.expectedParticipantGeneration, "expected participant generation", 200) }), bridgeId: boundedText(params.bridgeId, "bridge ID", 200) };
-		return { registrationId, registrationKey, input };
+		return { method, registrationId, registrationKey, input };
 	}
-	if (method === "workspace.inspect") return { registrationId, registrationKey, input: { workspaceId: boundedText(params.workspaceId, "workspace ID", 200) } };
-	if (method === "workspace.integration.inspect") return { registrationId, registrationKey, input: { integrationId: boundedText(params.integrationId, "integration ID", 200) } };
+	if (method === "workspace.inspect") return { method, registrationId, registrationKey, input: { workspaceId: boundedText(params.workspaceId, "workspace ID", 200) } };
+	if (method === "workspace.integration.inspect") return { method, registrationId, registrationKey, input: { integrationId: boundedText(params.integrationId, "integration ID", 200) } };
 	const authority: WorkspaceAuthority = { callerParticipantKey: boundedText(params.callerParticipantKey, "caller participant key", 200), expectedCallerGeneration: boundedText(params.expectedCallerGeneration, "expected caller generation", 200) };
-	if (method === "workspace.launch.recover") return { registrationId, registrationKey, input: { ...authority, requestId: boundedText(params.requestId, "request ID", 200) } };
+	if (method === "workspace.launch.recover") return { method, registrationId, registrationKey, input: { ...authority, requestId: boundedText(params.requestId, "request ID", 200) } };
 	if (method === "workspace.launch.bind") {
 		const herdr = strictObject(params.herdr, "workspace launch Herdr identity", ["paneId", "terminalId"]);
-		return { registrationId, registrationKey, input: { ...authority, workspaceId: boundedText(params.workspaceId, "workspace ID", 200), herdr: { paneId: boundedText(herdr.paneId, "Herdr pane ID", 200), terminalId: boundedText(herdr.terminalId, "Herdr terminal ID", 200) } } };
+		return { method, registrationId, registrationKey, input: { ...authority, workspaceId: boundedText(params.workspaceId, "workspace ID", 200), herdr: { paneId: boundedText(herdr.paneId, "Herdr pane ID", 200), terminalId: boundedText(herdr.terminalId, "Herdr terminal ID", 200) } } };
 	}
-	if (method === "workspace.retain" || method === "workspace.reconcile") return { registrationId, registrationKey, input: { ...authority, workspaceId: boundedText(params.workspaceId, "workspace ID", 200) } };
+	if (method === "workspace.retain" || method === "workspace.reconcile") return { method, registrationId, registrationKey, input: { ...authority, workspaceId: boundedText(params.workspaceId, "workspace ID", 200) } };
 	if (method === "workspace.checkpoint") {
 		if (params.taskStatus !== undefined && params.taskStatus !== "completed" && params.taskStatus !== "failed" && params.taskStatus !== "cancelled") throw new Error("invalid workspace task status");
-		return { registrationId, registrationKey, input: { ...authority, workspaceId: boundedText(params.workspaceId, "workspace ID", 200), ...(params.taskStatus === undefined ? {} : { taskStatus: params.taskStatus }) } };
+		return { method, registrationId, registrationKey, input: { ...authority, workspaceId: boundedText(params.workspaceId, "workspace ID", 200), ...(params.taskStatus === undefined ? {} : { taskStatus: params.taskStatus }) } };
 	}
-	if (method === "workspace.integration.prepare") return { registrationId, registrationKey, input: { ...authority, workspaceId: boundedText(params.workspaceId, "workspace ID", 200) } };
-	if (method === "workspace.integration.reconcile" || method === "workspace.integration.finalize") return { registrationId, registrationKey, input: { ...authority, integrationId: boundedText(params.integrationId, "integration ID", 200) } };
+	if (method === "workspace.integration.prepare") return { method, registrationId, registrationKey, input: { ...authority, workspaceId: boundedText(params.workspaceId, "workspace ID", 200) } };
+	if (method === "workspace.integration.reconcile" || method === "workspace.integration.finalize") return { method, registrationId, registrationKey, input: { ...authority, integrationId: boundedText(params.integrationId, "integration ID", 200) } };
 	if (method === "workspace.integration.cleanup") {
 		if (params.discardConfirmed !== true && params.discardConfirmed !== false) throw new Error("integration discard confirmation must be boolean");
-		return { registrationId, registrationKey, input: { ...authority, integrationId: boundedText(params.integrationId, "integration ID", 200), discardConfirmed: params.discardConfirmed } };
+		return { method, registrationId, registrationKey, input: { ...authority, integrationId: boundedText(params.integrationId, "integration ID", 200), discardConfirmed: params.discardConfirmed } };
 	}
+	if (method !== "workspace.cleanup") throw new Error("unsupported workspace authority method");
 	if (params.discardConfirmed !== true && params.discardConfirmed !== false) throw new Error("workspace discard confirmation must be boolean");
-	return { registrationId, registrationKey, input: { ...authority, workspaceId: boundedText(params.workspaceId, "workspace ID", 200), discardConfirmed: params.discardConfirmed } };
+	return { method, registrationId, registrationKey, input: { ...authority, workspaceId: boundedText(params.workspaceId, "workspace ID", 200), discardConfirmed: params.discardConfirmed } };
 }
 
 function bridgeLaunchParams(value: unknown): AuthorizedParams<CreateBridgeLaunchInput> {
@@ -618,24 +632,30 @@ function failure(id: string | null, code: HostedErrorCode, message: string): Hos
 }
 
 function errorCode(error: unknown): HostedErrorCode {
-	if (error && typeof error === "object" && "code" in error && typeof error.code === "string" && ERROR_CODES.has(error.code as HostedErrorCode)) return error.code as HostedErrorCode;
+	if (error && typeof error === "object" && "code" in error && typeof error.code === "string" && isHostedErrorCode(error.code)) return error.code;
 	return error instanceof Error ? "invalid_request" : "internal";
 }
 
 const HOSTED_METHODS = new Set(["pi.register", "pi.heartbeat", "pi.unregister", "bridge.launch.create", "bridge.launch.recover", "bridge.launch.cancel", "bridge.register", "bridge.reconnect", "bridge.heartbeat", "bridge.unregister", "workspace.launch.create", "workspace.bridge.create", "workspace.launch.bind", "workspace.launch.recover", "workspace.pi.register", "workspace.pi.reconnect", "workspace.inspect", "workspace.integration.inspect", "workspace.retain", "workspace.reconcile", "workspace.checkpoint", "workspace.integration.prepare", "workspace.integration.reconcile", "workspace.integration.finalize", "workspace.cleanup", "workspace.integration.cleanup", "monitor.create", "monitor.get", "monitor.delete", "wake.accept", "inbox.claim", "inbox.ack", "inbox.release", "inbox.submit_begin", "inbox.submit_settle", "inbox.status", "participant.auto_capacity.list", "participant.auto_capacity.reserve", "participant.auto_capacity.release", "participant.auto_capacity.recover", "participant.acquire", "participant.get", "participant.list", "participant.stand_down", "participant.stand_down_confirmed", "participant.stop_confirmed", "participant.release", "participant.takeover", "mailbox.send", "mailbox.status", "task.send", "task.result", "task.status"]);
 
-const ERROR_CODES = new Set<HostedErrorCode>([
+const ERROR_CODES: ReadonlySet<string> = new Set([
 	"invalid_request", "unsupported_version", "capability_unavailable", "not_found", "conflict", "registration_stale", "identity_mismatch", "claim_conflict", "host_unavailable", "busy", "storage_error", "internal",
 ]);
 
+function isHostedErrorCode(value: string): value is HostedErrorCode {
+	return ERROR_CODES.has(value);
+}
+
 function requestId(value: unknown): string | null {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+	// SAFETY: The preceding runtime check excludes null, primitives, and arrays before reading an optional envelope key.
 	const id = (value as Record<string, unknown>).id;
 	return typeof id === "string" && id.length > 0 && Buffer.byteLength(id) <= 200 ? id : null;
 }
 
 function strictObject(value: unknown, name: string, allowed?: readonly string[]): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${name} must be an object.`);
+	// SAFETY: The preceding runtime check excludes null, primitives, and arrays before schema validation and key access.
 	const record = value as Record<string, unknown>;
 	if (allowed) for (const key of Object.keys(record)) if (!allowed.includes(key)) throw new Error(`${name} has unknown field ${key}.`);
 	return record;

@@ -893,11 +893,12 @@ function suspendedMissionContext(mission: MissionCurrent, progress: ReturnType<M
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
+	// SAFETY: The runtime checks exclude null, primitives, and arrays before key access.
 	return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
 function latestMissionWakeIsStale(ctx: ExtensionContext, mission: MissionCurrent): boolean {
-	const branch = ctx.sessionManager.getBranch() as readonly unknown[];
+	const branch = ctx.sessionManager.getBranch();
 	const entry = asRecord(branch.at(-1));
 	if (entry?.type !== "custom_message" || entry.customType !== "mission") return false;
 	const details = asRecord(entry.details);
@@ -923,23 +924,26 @@ function isCorrectionReview(mission: MissionCurrent): boolean {
 
 async function readReviewReport(run: DelegateRun, requirementCount: number, scopePaths: string[], acceptedFindings: MissionReviewFinding[] | undefined, scopeKind: ReviewScopeKind): Promise<DerivedReviewReport | undefined> {
 	try {
-		const report = JSON.parse(await readFile(join(run.spec.artifactsDir, "review-report.json"), "utf8")) as { version?: unknown; verdict?: unknown; overallExplanation?: unknown; findings?: unknown };
-		if (report.version !== 1 || (report.verdict !== "clear" && report.verdict !== "changes_requested") || typeof report.overallExplanation !== "string" || !Array.isArray(report.findings) || report.findings.length > 1_000) return undefined;
+		const report = asRecord(JSON.parse(await readFile(join(run.spec.artifactsDir, "review-report.json"), "utf8")));
+		if (!report || report.version !== 1 || (report.verdict !== "clear" && report.verdict !== "changes_requested") || typeof report.overallExplanation !== "string" || !Array.isArray(report.findings) || report.findings.length > 1_000) return undefined;
 		const acceptedRequirements = new Set((acceptedFindings ?? []).flatMap((finding) => finding.requirementIndex === undefined ? [] : [finding.requirementIndex]));
 		const findings: MissionReviewFinding[] = [];
-		for (const [index, finding] of report.findings.entries()) {
-			if (!finding || typeof finding !== "object" || Array.isArray(finding) || !("severity" in finding) || !REVIEW_SEVERITIES.includes(finding.severity as MissionReviewSeverity) || !("summary" in finding) || typeof finding.summary !== "string" || ("path" in finding && typeof finding.path !== "string") || ("line" in finding && (!Number.isInteger(finding.line) || (finding.line as number) < 1)) || ("requirementIndex" in finding && (!Number.isInteger(finding.requirementIndex) || (finding.requirementIndex as number) < 0)) || ("criticalImpact" in finding && finding.criticalImpact !== "security" && finding.criticalImpact !== "data_loss")) return undefined;
-			const submitted = finding.severity as MissionReviewSeverity;
+		for (const [index, rawFinding] of report.findings.entries()) {
+			const finding = asRecord(rawFinding);
+			if (!finding || typeof finding.summary !== "string" || (finding.path !== undefined && typeof finding.path !== "string") || (finding.criticalImpact !== undefined && finding.criticalImpact !== "security" && finding.criticalImpact !== "data_loss")) return undefined;
+			const submitted = reviewSeverity(finding.severity);
+			const line = optionalInteger(finding.line, 1);
+			const requirementIndex = optionalInteger(finding.requirementIndex, 0);
+			if (!submitted || (finding.line !== undefined && line === undefined) || (finding.requirementIndex !== undefined && requirementIndex === undefined)) return undefined;
 			const path = typeof finding.path === "string" ? normalizeReviewPath(finding.path) : undefined;
 			if (typeof finding.path === "string" && !path) return undefined;
-			const requirementIndex = Number.isInteger(finding.requirementIndex) ? finding.requirementIndex as number : undefined;
 			const criticalImpact = finding.criticalImpact === "security" || finding.criticalImpact === "data_loss" ? finding.criticalImpact : undefined;
 			const blocking = submitted === "blocker" || submitted === "major";
 			const requirementLinked = requirementIndex !== undefined && requirementIndex < requirementCount;
 			const accepted = acceptedFindings === undefined || acceptedFindings.length === 0 || (requirementIndex !== undefined && acceptedRequirements.has(requirementIndex)) || criticalImpact !== undefined;
 			const withinScope = path !== undefined && scopePaths.some((scopePath) => scopeKind === "exact_paths" ? path === scopePath : scopePath === "." || path === scopePath || path.startsWith(`${scopePath}/`));
 			const severity = blocking && (!requirementLinked && !criticalImpact || !accepted || !withinScope) ? "minor" : submitted;
-			findings.push({ index, severity, summary: finding.summary.slice(0, 4_000), ...(path ? { path } : {}), ...(Number.isInteger(finding.line) ? { line: finding.line as number } : {}), ...(requirementIndex !== undefined ? { requirementIndex } : {}), ...(criticalImpact ? { criticalImpact } : {}) });
+			findings.push({ index, severity, summary: finding.summary.slice(0, 4_000), ...(path ? { path } : {}), ...(line !== undefined ? { line } : {}), ...(requirementIndex !== undefined ? { requirementIndex } : {}), ...(criticalImpact ? { criticalImpact } : {}) });
 		}
 		const severities = findings.map((finding) => finding.severity);
 		const blockingFindingCount = severities.filter((severity) => severity === "blocker" || severity === "major").length;
@@ -951,6 +955,14 @@ async function readReviewReport(run: DelegateRun, requirementCount: number, scop
 			findings,
 		};
 	} catch { return undefined; }
+}
+
+function reviewSeverity(value: unknown): MissionReviewSeverity | undefined {
+	return value === "blocker" || value === "major" || value === "minor" || value === "nit" ? value : undefined;
+}
+
+function optionalInteger(value: unknown, minimum: number): number | undefined {
+	return typeof value === "number" && Number.isInteger(value) && value >= minimum ? value : undefined;
 }
 
 function normalizeReviewPath(path: string): string | undefined {

@@ -296,7 +296,7 @@ export class HostedRuntimeIntegration {
 	async sessionShutdown(): Promise<void> {
 		this.active = false;
 		this.workspaceRegistrationActive = false;
-		const ui = this.ctx?.ui as { setStatus?: (key: string, value: string | undefined) => void } | undefined;
+		const ui = this.ctx?.ui;
 		ui?.setStatus?.("runtime-auto", undefined);
 		this.ctx = undefined;
 		this.stopHeartbeat();
@@ -329,8 +329,8 @@ export class HostedRuntimeIntegration {
 		const configuredProfile = this.collaboratorLaunch?.profile;
 		if (!configuredProfile) return;
 		const profile = configuredProfile === "workspace-write" && (!this.collaboratorWorkspace || !this.workspaceRegistrationActive) ? "read-only" : configuredProfile;
-		const allowed = profile === "read-only" ? READ_ONLY_COLLABORATOR_TOOLS : WORKSPACE_WRITE_COLLABORATOR_TOOLS;
-		if (!(allowed as readonly string[]).includes(toolName)) return { block: true, reason: `Collaborator profile ${profile} does not permit ${toolName}.` };
+		const allowed: readonly string[] = profile === "read-only" ? READ_ONLY_COLLABORATOR_TOOLS : WORKSPACE_WRITE_COLLABORATOR_TOOLS;
+		if (!allowed.includes(toolName)) return { block: true, reason: `Collaborator profile ${profile} does not permit ${toolName}.` };
 		if (FILE_TOOLS.has(toolName) && !collaboratorPathAllowed(cwd, input?.path, toolName === "write")) return { block: true, reason: `Collaborator profile ${profile} confines ${toolName} to the project workspace.` };
 		return;
 	}
@@ -817,7 +817,8 @@ export class HostedRuntimeIntegration {
 			if (!await ctx.ui.confirm(unintegrated ? "Discard collaborator workspace?" : "Clean integrated workspace?", detail, { signal })) return { declined: true };
 			return this.client.call("workspace.cleanup", { ...authority, workspaceId: input.workspaceId, discardConfirmed: unintegrated });
 		}
-		const integrationId = (input as { integrationId: string }).integrationId;
+		if (input.action !== "cleanup_integration") throw new HostedRuntimeClientError("invalid_request", "Unsupported workspace action.");
+		const integrationId = input.integrationId;
 		const inspected = strictObject(await this.client.call("workspace.integration.inspect", { ...auth(registration), integrationId }), "Integration inspection");
 		const integration = strictObject(inspected.integration, "Integration");
 		const unfinalized = integration.state !== "finalized";
@@ -1238,7 +1239,7 @@ export class HostedRuntimeIntegration {
 				const launch = strictObject(response.launch, "Recovered bridge launch");
 				const status = launch.status;
 				if (status !== "pending" && status !== "consumed" && status !== "cancelled" && status !== "expired") throw new HostedRuntimeClientError("invalid_response", "Recovered bridge launch status is invalid.");
-				const recovered: RecoveredBridgeLaunch = { launchId: text(launch.launchId), requestId: text(launch.requestId), callerParticipantKey: text(launch.callerParticipantKey), callerGeneration: text(launch.callerGeneration), participantKey: text(launch.participantKey), protocol: text(launch.protocol), participantId: text(launch.participantId), holderGeneration: text(launch.holderGeneration), targetKey: text(launch.targetKey), status: status as RecoveredBridgeLaunch["status"] };
+				const recovered: RecoveredBridgeLaunch = { launchId: text(launch.launchId), requestId: text(launch.requestId), callerParticipantKey: text(launch.callerParticipantKey), callerGeneration: text(launch.callerGeneration), participantKey: text(launch.participantKey), protocol: text(launch.protocol), participantId: text(launch.participantId), holderGeneration: text(launch.holderGeneration), targetKey: text(launch.targetKey), status };
 				if (recovered.requestId !== requestId || recovered.launchId !== expected.bridgeId || recovered.protocol !== expected.protocol || recovered.participantId !== expected.participantId || recovered.callerParticipantKey !== caller.participantKey || recovered.callerGeneration !== caller.generation) throw new HostedRuntimeClientError("identity_mismatch", "Recovered bridge launch authority does not match the failed start.");
 				return recovered;
 			} catch (error) {
@@ -1491,7 +1492,7 @@ export class HostedRuntimeIntegration {
 	private restoreCollaboratorWorkspace(ctx: ExtensionContext): void {
 		this.collaboratorWorkspace = undefined;
 		this.workspaceRegistrationActive = false;
-		for (const entry of ctx.sessionManager.getBranch() as readonly unknown[]) {
+		for (const entry of sessionBranch(ctx)) {
 			const record = asRecord(entry);
 			if (record?.type !== "custom" || record.customType !== HOSTED_COLLABORATOR_WORKSPACE_ENTRY) continue;
 			const data = asRecord(record.data);
@@ -1507,7 +1508,7 @@ export class HostedRuntimeIntegration {
 
 	private restoreManagedCollaborator(ctx: ExtensionContext): void {
 		this.managedCollaborator = parseCollaboratorBootstrap(process.env[COLLABORATOR_ENV]) !== undefined;
-		for (const entry of ctx.sessionManager.getBranch() as readonly unknown[]) {
+		for (const entry of sessionBranch(ctx)) {
 			const record = asRecord(entry);
 			if (record?.type === "custom" && record.customType === HOSTED_MANAGED_COLLABORATOR_ENTRY && asRecord(record.data)?.version === 1 && asRecord(record.data)?.managed === true) this.managedCollaborator = true;
 		}
@@ -1516,7 +1517,7 @@ export class HostedRuntimeIntegration {
 	private restoreAdmissions(ctx: ExtensionContext): void {
 		this.admittedClaims.clear();
 		this.pendingAcks.clear();
-		for (const entry of ctx.sessionManager.getBranch() as readonly unknown[]) {
+		for (const entry of sessionBranch(ctx)) {
 			const record = asRecord(entry);
 			if (record?.type !== "custom_message" || record.customType !== HOSTED_RUNTIME_MESSAGE) continue;
 			const receipt = parseReceipt(record.details);
@@ -1526,7 +1527,7 @@ export class HostedRuntimeIntegration {
 
 	private restoreParticipantIdentity(ctx: ExtensionContext): void {
 		this.participantIdentity = undefined;
-		for (const entry of ctx.sessionManager.getBranch() as readonly unknown[]) {
+		for (const entry of sessionBranch(ctx)) {
 			const record = asRecord(entry);
 			if (record?.type !== "custom" || record.customType !== HOSTED_PARTICIPANT_ENTRY) continue;
 			const identity = parseParticipantIdentity(record.data);
@@ -1540,7 +1541,7 @@ export class HostedRuntimeIntegration {
 	private restoreCollaboratorLaunch(ctx: ExtensionContext): void {
 		this.collaboratorLaunch = undefined;
 		let warned = false;
-		for (const entry of ctx.sessionManager.getBranch() as readonly unknown[]) {
+		for (const entry of sessionBranch(ctx)) {
 			const record = asRecord(entry);
 			if (record?.type !== "custom" || record.customType !== HOSTED_COLLABORATOR_PROFILE_ENTRY) continue;
 			const launch = parseCollaboratorLaunchState(record.data);
@@ -1555,7 +1556,7 @@ export class HostedRuntimeIntegration {
 	private restoreManagedAgentControls(ctx: ExtensionContext): void {
 		this.managedAgentControls.clear();
 		this.managedAgentRegistrations.clear();
-		for (const entry of ctx.sessionManager.getBranch() as readonly unknown[]) {
+		for (const entry of sessionBranch(ctx)) {
 			const record = asRecord(entry);
 			if (record?.type !== "custom" || record.customType !== HOSTED_MANAGED_AGENT_CONTROL_ENTRY) continue;
 			const control = parseManagedAgentControl(record.data);
@@ -1660,7 +1661,7 @@ export class HostedRuntimeIntegration {
 	}
 
 	private updateAutoStatus(ctx: ExtensionContext, state = this.autoStore.read().state): void {
-		const ui = (ctx as ExtensionContext & { ui?: { setStatus?: (key: string, value: string | undefined) => void; theme?: { fg?: (color: string, text: string) => string } } }).ui;
+		const ui = ctx.ui;
 		const label = this.managedCollaborator ? undefined : state.enabled ? "AUTO" : "MANUAL";
 		ui?.setStatus?.("runtime-auto", label ? (ui.theme?.fg?.(state.enabled ? "warning" : "dim", label) ?? label) : undefined);
 	}
@@ -1836,7 +1837,12 @@ function hostedContent(events: HostedClaimMessage["events"]): string {
 	return lines.join("\n");
 }
 
+function sessionBranch(ctx: ExtensionContext): readonly unknown[] {
+	return ctx.sessionManager.getBranch();
+}
+
 function asRecord(value: unknown): Record<string, unknown> | undefined {
+	// SAFETY: The runtime checks exclude null, primitives, and arrays before key access.
 	return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
@@ -2067,6 +2073,7 @@ function errorCode(error: unknown): string {
 
 function strictObject(value: unknown, name: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new HostedRuntimeClientError("invalid_response", `${name} must be an object.`);
+	// SAFETY: The preceding runtime check excludes null, primitives, and arrays before response-field access.
 	return value as Record<string, unknown>;
 }
 

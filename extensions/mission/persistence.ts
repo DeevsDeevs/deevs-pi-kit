@@ -3,12 +3,14 @@ import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openS
 import { join } from "node:path";
 import { missionDir, missionRoot } from "./artifacts.ts";
 import { MAX_MISSION_REVIEW_ADJUDICATIONS } from "./types.ts";
-import type { MissionCurrent, MissionOwner, MissionProgressRecord, MissionSnapshot, MissionUsage } from "./types.ts";
+import type { MissionCurrent, MissionOwner, MissionProgressRecord, MissionReviewCriticalImpact, MissionReviewSeverity, MissionReviewStatus, MissionSnapshot, MissionStatus, MissionUsage } from "./types.ts";
 
 const SNAPSHOT_VERSION = 1;
 // Lock holds are synchronous sub-second operations, so a lock older than this — or one whose owner pid is gone — is a crashed holder, not live contention.
-const STATUSES = new Set(["active", "paused", "blocked", "terminal_error", "budget_limited", "usage_limited", "complete", "ended", "cleared"]);
-const REVIEW_STATUSES = new Set(["not_required", "due", "starting", "running", "awaiting_adjudication", "changes_requested", "clear", "skipped"]);
+const STATUSES: ReadonlySet<MissionStatus> = new Set(["active", "paused", "blocked", "terminal_error", "budget_limited", "usage_limited", "complete", "ended", "cleared"]);
+const REVIEW_STATUSES: ReadonlySet<MissionReviewStatus> = new Set(["not_required", "due", "starting", "running", "awaiting_adjudication", "changes_requested", "clear", "skipped"]);
+const REVIEW_SEVERITIES: ReadonlySet<MissionReviewSeverity> = new Set(["blocker", "major", "minor", "nit"]);
+const REVIEW_CRITICAL_IMPACTS: ReadonlySet<MissionReviewCriticalImpact> = new Set(["security", "data_loss"]);
 
 export function readMissionSnapshot(cwd: string, slug: string): MissionSnapshot | undefined {
 	if (!validSlug(slug)) throw new Error(`Invalid Mission slug: ${slug}`);
@@ -128,7 +130,7 @@ function acquireLock(lock: string, busyMessage: string): void {
 function reclaimIfStale(lock: string): boolean {
 	let stale: boolean;
 	try {
-		const owner = JSON.parse(readFileSync(join(lock, "owner.json"), "utf8")) as { pid?: unknown; startedAt?: unknown };
+		const owner = object(JSON.parse(readFileSync(join(lock, "owner.json"), "utf8")), "Mission lock owner");
 		stale = !isPidAlive(owner.pid);
 	} catch {
 		// Owner metadata is published atomically with the lock directory; unknown/corrupt ownership fails closed.
@@ -186,7 +188,8 @@ function readJsonFile(file: string, name: string): unknown {
 
 function validateSnapshot(value: unknown, cwd: string, expectedSlug: string): MissionSnapshot {
 	const record = object(value, "Mission snapshot");
-	if (record.version !== SNAPSHOT_VERSION || !Number.isSafeInteger(record.revision) || (record.revision as number) < 0) throw new Error("Unsupported Mission snapshot version or revision.");
+	const revision = record.revision;
+	if (record.version !== SNAPSHOT_VERSION || typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 0) throw new Error("Unsupported Mission snapshot version or revision.");
 	const ownerValue = object(record.owner, "Mission owner");
 	const owner: MissionOwner = { sessionId: text(ownerValue.sessionId, "owner session id", 200), sessionFile: text(ownerValue.sessionFile, "owner session file", 2_000) };
 	const rawMission = object(record.mission, "Mission");
@@ -198,7 +201,7 @@ function validateSnapshot(value: unknown, cwd: string, expectedSlug: string): Mi
 	if (!Number.isInteger(continuationProgressIndex) || continuationProgressIndex < 0 || continuationProgressIndex > progress.length) throw new Error("Invalid Mission continuation progress index.");
 	return {
 		version: 1,
-		revision: record.revision as number,
+		revision,
 		owner,
 		mission,
 		progress,
@@ -211,16 +214,14 @@ function validateSnapshot(value: unknown, cwd: string, expectedSlug: string): Mi
 }
 
 function validateMission(value: Record<string, unknown>, cwd: string, slug: string): MissionCurrent {
-	const status = text(value.status, "Mission status", 40);
-	if (!STATUSES.has(status)) throw new Error(`Invalid Mission status: ${status}`);
-	const reviewStatus = value.reviewStatus === undefined ? undefined : text(value.reviewStatus, "Mission review status", 40);
-	if (reviewStatus && !REVIEW_STATUSES.has(reviewStatus)) throw new Error(`Invalid Mission review status: ${reviewStatus}`);
+	const status = enumValue(value.status, STATUSES, "Mission status");
+	const reviewStatus = value.reviewStatus === undefined ? undefined : enumValue(value.reviewStatus, REVIEW_STATUSES, "Mission review status");
 	const mission: MissionCurrent = {
 		missionId: text(value.missionId, "Mission id", 200),
 		objective: text(value.objective, "Mission objective", 20_000),
 		title: text(value.title, "Mission title", 80),
 		requirements: stringArray(value.requirements, "Mission requirements", 12, 240),
-		status: status as MissionCurrent["status"],
+		status,
 		createdAt: number(value.createdAt, "Mission createdAt"),
 		updatedAt: number(value.updatedAt, "Mission updatedAt"),
 		slug,
@@ -273,7 +274,7 @@ function validateMission(value: Record<string, unknown>, cwd: string, slug: stri
 		return { requirementIndex: boundedInteger(audit.requirementIndex, "requirement index", 0, 11), evidence: text(audit.evidence, "requirement evidence", 2_000) };
 	});
 	if (value.lastContinuationAt !== undefined) mission.lastContinuationAt = number(value.lastContinuationAt, "lastContinuationAt");
-	if (reviewStatus) mission.reviewStatus = reviewStatus as MissionCurrent["reviewStatus"];
+	if (reviewStatus) mission.reviewStatus = reviewStatus;
 	if (value.reviewFailure !== undefined) mission.reviewFailure = value.reviewFailure === true;
 	if (value.initialBaselinePending !== undefined) {
 		if (typeof value.initialBaselinePending !== "boolean") throw new Error("Invalid Mission initial baseline pending marker.");
@@ -304,20 +305,18 @@ function reviewRevisions(value: unknown, label: string) {
 function reviewFindings(value: unknown, label: string) {
 	return array(value, label, 1_000).map((item) => {
 		const finding = object(item, "Mission review finding");
-		const severity = text(finding.severity, "Mission review finding severity", 20);
-		if (!["blocker", "major", "minor", "nit"].includes(severity)) throw new Error("Invalid Mission review finding severity.");
-		const criticalImpact = finding.criticalImpact === undefined ? undefined : text(finding.criticalImpact, "Mission review critical impact", 20);
-		if (criticalImpact !== undefined && criticalImpact !== "security" && criticalImpact !== "data_loss") throw new Error("Invalid Mission review critical impact.");
+		const severity = enumValue(finding.severity, REVIEW_SEVERITIES, "Mission review finding severity");
+		const criticalImpact = finding.criticalImpact === undefined ? undefined : enumValue(finding.criticalImpact, REVIEW_CRITICAL_IMPACTS, "Mission review critical impact");
 		const path = finding.path === undefined ? undefined : text(finding.path, "Mission review finding path", 2_000);
 		if (path !== undefined && !reviewPath(path)) throw new Error("Invalid Mission review finding path.");
 		return {
 			index: boundedInteger(finding.index, "Mission review finding index", 0, 999),
-			severity: severity as "blocker" | "major" | "minor" | "nit",
+			severity,
 			summary: text(finding.summary, "Mission review finding summary", 4_000),
 			...(path ? { path } : {}),
 			...(finding.line === undefined ? {} : { line: boundedInteger(finding.line, "Mission review finding line", 1, Number.MAX_SAFE_INTEGER) }),
 			...(finding.requirementIndex === undefined ? {} : { requirementIndex: boundedInteger(finding.requirementIndex, "Mission review finding requirement", 0, 11) }),
-			...(criticalImpact ? { criticalImpact: criticalImpact as "security" | "data_loss" } : {}),
+			...(criticalImpact ? { criticalImpact } : {}),
 		};
 	});
 }
@@ -372,7 +371,14 @@ function validSlug(value: string): boolean {
 
 function object(value: unknown, name: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${name} must be an object.`);
+	// SAFETY: The preceding runtime check excludes null, primitives, and arrays before schema parsing.
 	return value as Record<string, unknown>;
+}
+
+function enumValue<const Value extends string>(value: unknown, allowed: ReadonlySet<Value>, name: string): Value {
+	if (typeof value !== "string" || ![...allowed].some((candidate) => candidate === value)) throw new Error(`Invalid ${name}: ${String(value)}`);
+	// SAFETY: Membership in the complete typed allowlist proves the returned literal union.
+	return value as Value;
 }
 
 function array(value: unknown, name: string, max: number): unknown[] {
