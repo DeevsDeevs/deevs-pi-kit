@@ -17,7 +17,7 @@
     "smoke:runtime-release": "node --experimental-strip-types scripts/smoke-runtime-release.mjs",
     "smoke:collaborator-release": "node --experimental-strip-types scripts/smoke-collaborator-release.mjs",
     "smoke:collaborator-auto-release": "PI_KIT_SMOKE_AUTO=1 node --experimental-strip-types scripts/smoke-collaborator-release.mjs",
-    "smoke:native-release": "vitest run test/native-collaborator-release.test.ts",
+    "smoke:native-release": "vitest run test/hosted-runtime-bridge.test.ts test/hosted-runtime-participant.test.ts test/hosted-runtime-collaborator-integration.test.ts test/runtime-workspace.test.ts",
     "smoke:native-live": "node --experimental-strip-types scripts/smoke-native-live.mjs",
     "check": "npm run typecheck && npm test && npm run smoke:modes && npm run audit && npm pack --dry-run"
   },

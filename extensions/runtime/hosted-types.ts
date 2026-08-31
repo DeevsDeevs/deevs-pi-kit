@@ -30,9 +30,10 @@ export interface HostedPiTarget extends HostedTargetBase {
 }
 
 export type HostedCollaboratorProfile = "read-only" | "workspace-write";
+export type HostedNativeCollaboratorDriver = "claude-code" | "codex";
+export interface HostedAgentSessionIdentity { source: string; agent: string; kind: "id" | "path"; value: string; }
 
-export interface HostedBridgeTarget extends HostedTargetBase {
-	kind: "bridge";
+interface HostedExternalTargetBase extends HostedTargetBase {
 	bridgeId: string;
 	participantKey: string;
 	holderGeneration: string;
@@ -46,7 +47,15 @@ export interface HostedBridgeTarget extends HostedTargetBase {
 	metadata: Record<string, string>;
 }
 
-export type HostedTarget = HostedPiTarget | HostedBridgeTarget;
+export interface HostedBridgeTarget extends HostedExternalTargetBase { kind: "bridge"; }
+export interface HostedAgentTarget extends HostedExternalTargetBase {
+	kind: "agent";
+	driver: HostedNativeCollaboratorDriver;
+	agentSession: HostedAgentSessionIdentity;
+	capabilityTier: "managed";
+}
+export type HostedExternalTarget = HostedBridgeTarget | HostedAgentTarget;
+export type HostedTarget = HostedPiTarget | HostedExternalTarget;
 
 export interface HostedBridgeLaunch {
 	version: 1;
@@ -66,6 +75,7 @@ export interface HostedBridgeLaunch {
 	projectRoot: string;
 	profile: HostedCollaboratorProfile;
 	configurationHash: string;
+	driver?: HostedNativeCollaboratorDriver;
 	herdr: { paneId: string; terminalId: string; tabId: string; workspaceId: string };
 	workspaceId?: string;
 	workspaceRoot?: string;
@@ -177,6 +187,9 @@ export interface HostedMailboxTaskResultPayload extends HostedMailboxMessagePayl
 export type HostedEventDelivery =
 	| { status: "pending"; latestClaimId?: string }
 	| { status: "claimed"; claimId: string }
+	| { status: "submitting"; claimId: string; attemptId: string; startedAt: number }
+	| { status: "submitted"; claimId: string; attemptId: string; submittedAt: number }
+	| { status: "needs_attention"; claimId: string; attemptId: string; recordedAt: number }
 	| { status: "acked"; claimId: string; ackedAt: number };
 
 interface HostedEventBase {
@@ -311,7 +324,7 @@ export interface HostedAutoCapacityReservation {
 }
 
 export interface HostedRuntimeState {
-	version: 7;
+	version: 8;
 	targets: Record<string, HostedTarget>;
 	autoCapacityReservations: Record<string, HostedAutoCapacityReservation>;
 	bridgeLaunches: Record<string, HostedBridgeLaunch>;
@@ -330,7 +343,7 @@ export type HostedStateOperation =
 	| { type: "auto_capacity.ensure"; reservation: HostedAutoCapacityReservation }
 	| { type: "auto_capacity.release"; operationId: string; callerTargetKey: string }
 	| { type: "bridge.launch.ensure"; launch: HostedBridgeLaunch }
-	| { type: "bridge.launch.consume"; launchId: string; launchDigest: string; clientGeneration: string; target: HostedBridgeTarget; at: number }
+	| { type: "bridge.launch.consume"; launchId: string; launchDigest: string; clientGeneration: string; target: HostedExternalTarget; at: number }
 	| { type: "bridge.launch.cancel"; launchId: string; callerTargetKey: string; callerParticipantKey: string; callerGeneration: string; at: number }
 	| { type: "bridge.launch.expire"; launchId: string; at: number }
 	| { type: "workspace.ensure"; workspace: HostedWorkspace }
@@ -350,6 +363,8 @@ export type HostedStateOperation =
 	| { type: "task.result"; senderParticipantKey: string; expectedSenderGeneration: string; senderTargetKey: string; sendId: string; eventId: string; inReplyToEventId: string; status: "completed" | "failed" | "cancelled"; body: string; sessionAdvance: "none" | "committed"; workspace?: HostedTaskWorkspaceEvidence; at: number }
 	| { type: "inbox.claim"; claim: HostedClaim }
 	| { type: "inbox.ack"; targetKey: string; claimId: string; eventIds: string[]; at: number }
+	| { type: "inbox.submit_begin"; targetKey: string; claimId: string; eventIds: string[]; attemptId: string; at: number }
+	| { type: "inbox.submit_settle"; targetKey: string; claimId: string; eventIds: string[]; attemptId: string; outcome: "submitted" | "pending" | "needs_attention"; at: number }
 	| { type: "inbox.reconcile"; targetKey: string; claimId: string; eventIds: string[]; at: number }
 	| { type: "inbox.reconcile_many"; targetKey: string; receipts: Array<{ claimId: string; eventIds: string[] }>; at: number }
 	| { type: "inbox.release"; targetKey: string; claimId: string; eventIds: string[]; at: number }

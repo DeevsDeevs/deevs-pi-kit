@@ -1,84 +1,73 @@
-import { execFileSync, fork } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { bridgeProcessEnvironment } from "../extensions/runtime/bridge-runner/adapters.ts";
-import { readWorkerState, writeWorkerSpec } from "../extensions/runtime/bridge-runner/journal.ts";
-import { isProcessGroupQuiescent, quiesceProcessGroup } from "../extensions/shared/process-group.ts";
 
-const WORKER = fileURLToPath(new URL("../extensions/runtime/bridge-runner/worker.ts", import.meta.url));
-const root = mkdtempSync(join(tmpdir(), "pi-kit-native-live-"));
-chmodSync(root, 0o700);
-const project = join(root, "project");
-mkdirSync(project, { mode: 0o700 });
-execFileSync("git", ["init", "-q", "-b", "main"], { cwd: project, timeout: 10_000 });
+if (process.env.HERDR_ENV !== "1") throw new Error("Interactive native live smoke must run inside Herdr.");
 
-try {
-	const versions = {
-		claude: execFileSync("claude", ["--version"], { encoding: "utf8", timeout: 10_000 }).trim(),
-		codex: execFileSync("codex", ["--version"], { encoding: "utf8", timeout: 10_000 }).trim(),
-	};
-	const results = [];
-	for (const driver of ["claude-code", "codex"]) {
-		const label = driver === "claude-code" ? "CLAUDE" : "CODEX";
-		const marker = join(project, `${driver}-live.txt`);
-		const initialSessionId = driver === "claude-code" ? randomUUID() : undefined;
-		const readOnly = await runTurn({ driver, profile: "read-only", project, root, sessionId: initialSessionId, body: `Attempt to create ${marker} containing forbidden. Do not use another path. Whether the sandbox prevents it or not, finish by responding with ${label}_READ_ONLY_OK.` });
-		if (existsSync(marker)) throw new Error(`${driver} read-only live gate modified the workspace.`);
-		if (!readOnly.body.includes(`${label}_READ_ONLY_OK`) || !readOnly.sessionId) throw new Error(`${driver} read-only live response was incompatible.`);
-		const writable = await runTurn({ driver, profile: "workspace-write", project, root, sessionId: readOnly.sessionId, resumeSession: true, body: `Create ${marker} with the exact text ${label.toLowerCase()} workspace write followed by one newline. Then respond with ${label}_WORKSPACE_WRITE_OK.` });
-		if (readFileSync(marker, "utf8") !== `${label.toLowerCase()} workspace write\n`) throw new Error(`${driver} workspace-write live gate did not create the exact file.`);
-		if (!writable.body.includes(`${label}_WORKSPACE_WRITE_OK`)) throw new Error(`${driver} resumed live response was incompatible.`);
-		results.push({ driver, sessionId: writable.sessionId ?? readOnly.sessionId, readOnly: "enforced", workspaceWrite: "enforced", resume: "passed" });
-	}
-	console.log(JSON.stringify({ versions, results }, null, 2));
-} finally {
-	rmSync(root, { recursive: true, force: true });
+const project = process.cwd();
+const initialPane = currentPane();
+const versions = {
+	claude: run("claude", ["--version"]).trim(),
+	codex: run("codex", ["--version"]).trim(),
+};
+const results = [];
+
+for (const driver of ["claude-code", "codex"]) {
+	for (const profile of ["read-only", "workspace-write"]) results.push(runAgentGate(driver, profile));
 }
+if (currentPane() !== initialPane) throw new Error("Interactive native smoke changed the focused pane.");
+console.log(JSON.stringify({ versions, focus: "unchanged", results }, null, 2));
 
-async function runTurn({ driver, profile, project, root, sessionId, resumeSession = false, body }) {
-	const turnId = `turn_${randomUUID()}`;
-	const eventId = `event_${randomUUID()}`;
-	const attemptRoot = join(root, "turns", turnId, "attempt-1");
-	mkdirSync(attemptRoot, { recursive: true, mode: 0o700 });
-	const statePath = join(attemptRoot, "worker.v1.json");
-	const specPath = join(attemptRoot, "spec.v1.json");
-	writeWorkerSpec(specPath, { version: 1, turnId, eventId, attempt: 1, driver, cwd: project, body, profile, ...(sessionId ? { sessionId } : {}), ...(resumeSession ? { resumeSession: true } : {}), statePath, wallMs: 180_000 });
-	const worker = fork(WORKER, [specPath], { execArgv: ["--experimental-strip-types"], cwd: project, detached: true, env: bridgeProcessEnvironment(), stdio: ["ignore", "ignore", "ignore", "ipc"] });
-	let workerPid;
+function runAgentGate(driver, profile) {
+	const kind = driver === "claude-code" ? "claude" : "codex";
+	const label = `${kind}-${profile}`;
+	const marker = join(project, `${label}.txt`);
+	const created = json(run("herdr", ["tab", "create", "--cwd", project, "--label", `native-smoke:${label}`, "--no-focus"]));
+	const paneId = created.result.root_pane.pane_id;
+	const tabId = created.result.tab.tab_id;
 	try {
-		workerPid = await waitReady(worker, 10_000);
-		const closed = waitClose(worker, 200_000);
-		await new Promise((resolve, reject) => worker.send({ type: "bridge_worker_start" }, (error) => error ? reject(error) : resolve()));
-		await closed;
-		const state = readWorkerState(statePath);
-		if (!state?.terminal || state.status !== "terminal" || state.terminal.status !== "completed") throw new Error(`${driver} ${profile} live worker failed: ${state?.terminal?.body ?? state?.error ?? "missing state"}`);
-		if (!await isProcessGroupQuiescent(state.workerPid)) throw new Error(`${driver} ${profile} worker group remained active.`);
-		return state.terminal;
+		const agentName = `smoke-${kind}-${profile === "read-only" ? "ro" : "rw"}`;
+		const started = json(run("herdr", ["agent", "start", agentName, "--kind", kind, "--pane", paneId, "--timeout", "120000", "--", ...agentArgs(driver, profile, project)]));
+		const agent = started.result.agent;
+		const agentSession = managedAgentIdentity(agent);
+		if (agent.pane_id !== paneId || agent.tab_id !== tabId || agent.agent !== kind || agent.name !== agentName || agentSession.source !== `herdr:${kind}` || agentSession.agent !== kind || agentSession.value !== agentName) throw new Error(`${label} returned the wrong interactive agent identity.`);
+		const prompt = profile === "read-only"
+			? `Attempt to create ${marker} containing forbidden. Do not use another path. Finish the turn even when tools deny the write.`
+			: `Create ${marker} with the exact text ${label} followed by one newline, then finish.`;
+		run("herdr", ["agent", "prompt", paneId, prompt, "--wait", "--until", "idle", "--until", "done", "--timeout", "180000"]);
+		if (profile === "read-only" && existsSync(marker)) throw new Error(`${label} modified the workspace.`);
+		if (profile === "workspace-write" && readFileSync(marker, "utf8") !== `${label}\n`) throw new Error(`${label} did not create the exact file.`);
+		const live = json(run("herdr", ["agent", "get", paneId])).result.agent;
+		if (JSON.stringify(managedAgentIdentity(live)) !== JSON.stringify(agentSession)) throw new Error(`${label} changed agent session identity.`);
+		return { driver, profile, interactiveSession: "passed", runtimePromptTransport: "passed", profileEnforcement: "passed", agentSession };
 	} finally {
-		if (workerPid) await quiesceProcessGroup(workerPid, { graceMs: 1_000, killWaitMs: 2_000 });
+		rmSync(marker, { force: true });
+		run("herdr", ["tab", "close", tabId]);
+		try { run("herdr", ["agent", "get", paneId]); throw new Error(`${label} remained live after exact tab close.`); } catch (error) {
+			if (error instanceof Error && error.message.includes("remained live")) throw error;
+		}
 	}
 }
 
-function waitReady(worker, timeoutMs) {
-	return new Promise((resolve, reject) => {
-		const timer = setTimeout(() => finish(new Error("Native live worker readiness timed out.")), timeoutMs);
-		const finish = (error, pid) => { clearTimeout(timer); worker.removeListener("message", onMessage); worker.removeListener("error", onError); worker.removeListener("exit", onExit); error ? reject(error) : resolve(pid); };
-		const onMessage = (message) => message?.type === "bridge_worker_ready" && finish(undefined, message.workerPid);
-		const onError = (error) => finish(error);
-		const onExit = (code) => finish(new Error(`Native live worker exited before ready (${code ?? "?"}).`));
-		worker.on("message", onMessage);
-		worker.once("error", onError);
-		worker.once("exit", onExit);
-	});
+function managedAgentIdentity(agent) {
+	return agent.agent_session ?? { source: `herdr:${agent.agent}`, agent: agent.agent, kind: "id", value: agent.name };
 }
 
-function waitClose(worker, timeoutMs) {
-	return new Promise((resolve, reject) => {
-		const timer = setTimeout(() => reject(new Error("Native live worker timed out.")), timeoutMs);
-		worker.once("close", () => { clearTimeout(timer); resolve(); });
-		worker.once("error", (error) => { clearTimeout(timer); reject(error); });
-	});
+function agentArgs(driver, profile, cwd) {
+	if (driver === "claude-code") return ["--safe-mode", "--permission-mode", profile === "read-only" ? "dontAsk" : "acceptEdits", "--tools", profile === "read-only" ? "Read,Glob,Grep" : "Read,Glob,Grep,Edit,Write"];
+	return ["--ask-for-approval", "never", "--sandbox", profile, "--disable", "hooks", "--config", `projects={ ${JSON.stringify(cwd)} = { trust_level = "trusted" } }`];
+}
+
+function currentPane() {
+	return json(run("herdr", ["pane", "current", "--current"])).result.pane.pane_id;
+}
+
+function run(command, args, cwd) {
+	return execFileSync(command, args, { cwd, encoding: "utf8", timeout: 210_000, maxBuffer: 4 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+}
+
+function json(value) {
+	const parsed = JSON.parse(value);
+	if (!parsed || typeof parsed !== "object" || !parsed.result) throw new Error("Herdr returned malformed JSON.");
+	return parsed;
 }

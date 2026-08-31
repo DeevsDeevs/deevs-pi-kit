@@ -105,6 +105,42 @@ describe("hosted participant coordinator", () => {
 		expect(() => test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "send_1", "Changed.")).toThrow(expect.objectContaining({ code: "conflict" }));
 	});
 
+	it("submits managed mail once and rejects typed tasks without connected capability", async () => {
+		const test = setup();
+		const { main, fable, mainParticipant, fableParticipant } = await acquirePair(test);
+		const vacant = test.participants.standDown(fable, fableParticipant.participantKey);
+		const managedTarget: HostedTarget = {
+			kind: "agent", targetKey: "target_managed", projectRoot: test.projectRoot, bridgeId: "launch_managed", driver: "codex", capabilityTier: "managed", agentSession: { source: "herdr:codex", agent: "codex", kind: "id", value: "session_managed" }, participantKey: fableParticipant.participantKey, holderGeneration: "lease_4", profile: "read-only", configurationHash: "a".repeat(64), clientGeneration: "agent_client", reconnectDigest: "b".repeat(64), herdr: { paneId: "w1:p9", terminalId: "terminal_managed", tabId: "w1:t9", workspaceId: "w1" }, metadata: { adapter: "herdr-agent-v1" }, createdAt: 1_000,
+		};
+		test.store.apply({ type: "bridge.launch.ensure", launch: { version: 1, launchId: "launch_managed", requestId: "request_managed", launchDigest: "c".repeat(64), reconnectDigest: "b".repeat(64), callerParticipantKey: mainParticipant.participantKey, callerGeneration: mainParticipant.generation, callerTargetKey: main.targetKey, participantKey: fableParticipant.participantKey, protocol: "review", participantId: "fable", expectedParticipantGeneration: vacant.generation, holderGeneration: "lease_4", targetKey: managedTarget.targetKey, projectRoot: test.projectRoot, profile: "read-only", configurationHash: "a".repeat(64), driver: "codex", herdr: managedTarget.herdr, metadata: { adapter: "herdr-agent-v1" }, createdAt: 1_000, expiresAt: 31_000, status: "pending" } });
+		test.store.apply({ type: "bridge.launch.consume", launchId: "launch_managed", launchDigest: "c".repeat(64), clientGeneration: "agent_client", target: managedTarget, at: 1_001 });
+		const managedRegistration: HostedLiveRegistration = { targetKey: managedTarget.targetKey, registrationId: "reg_managed", registrationKey: "key_managed", clientGeneration: "agent_client", leaseUntil: 31_000, host: { paneId: "w1:p9", terminalId: "terminal_managed", cwd: test.projectRoot, agentSession: managedTarget.agentSession!, status: "idle", stateChangeSeq: 1 } };
+		const managed = test.participants.get(main, fableParticipant.participantKey);
+		expect(test.participants.list(main).find((participant) => participant.participantId === "fable")).toMatchObject({ driver: "codex", capabilityTier: "managed", profile: "read-only" });
+		expect(() => test.participants.sendTask(main, mainParticipant.participantKey, mainParticipant.generation, managed.participantKey, "task_managed", "Do work.")).toThrow(expect.objectContaining({ code: "capability_unavailable" }));
+		const message = test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, managed.participantKey, "send_managed", "Please inspect.");
+		let managedClaim = 0;
+		const wakes = new HostedWakeCoordinator(test.store, { now: () => 1_001, createClaimId: () => `claim_managed_${++managedClaim}` });
+		const claim = wakes.claim(managedRegistration, 1);
+		expect(claim.events.map((event) => event.eventId)).toEqual([message.eventId]);
+		wakes.submitBegin(managedRegistration, claim.claim.claimId, claim.claim.eventIds, "attempt_1");
+		expect(test.store.read().events[message.eventId]?.delivery.status).toBe("submitting");
+		wakes.submitSettle(managedRegistration, claim.claim.claimId, claim.claim.eventIds, "attempt_1", "submitted");
+		expect(test.store.read().events[message.eventId]?.delivery.status).toBe("submitted");
+		expect(test.participants.messageStatus(main, mainParticipant.participantKey, mainParticipant.generation, message.eventId)).toMatchObject({ recipientTier: "managed", deliveryState: "submitted" });
+		const ambiguous = test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, managed.participantKey, "send_ambiguous", "Ambiguous.");
+		const second = wakes.claim(managedRegistration, 1);
+		wakes.submitBegin(managedRegistration, second.claim.claimId, second.claim.eventIds, "attempt_2");
+		wakes.submitSettle(managedRegistration, second.claim.claimId, second.claim.eventIds, "attempt_2", "needs_attention");
+		expect(test.store.read().events[ambiguous.eventId]?.delivery.status).toBe("needs_attention");
+		expect(test.participants.messageStatus(main, mainParticipant.participantKey, mainParticipant.generation, ambiguous.eventId)).toMatchObject({ deliveryState: "needs_attention" });
+		const rejected = test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, managed.participantKey, "send_rejected", "Retry safely.");
+		const third = wakes.claim(managedRegistration, 1);
+		wakes.submitBegin(managedRegistration, third.claim.claimId, third.claim.eventIds, "attempt_3");
+		wakes.submitSettle(managedRegistration, third.claim.claimId, third.claim.eventIds, "attempt_3", "pending");
+		expect(pendingHostedEvents(test.store.read(), managedTarget.targetKey).map((event) => event.eventId)).toEqual([rejected.eventId]);
+	});
+
 	it("settles bounded tasks once with deterministic typed results", async () => {
 		const test = setup();
 		const { main, fable, mainParticipant, fableParticipant } = await acquirePair(test);

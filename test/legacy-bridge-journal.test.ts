@@ -2,8 +2,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, sym
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { BridgeJournalStore, readRunnerConfig, writeRunnerConfig } from "../extensions/runtime/bridge-runner/journal.ts";
-import type { BridgeJournal, BridgeRunnerConfig } from "../extensions/runtime/bridge-runner/types.ts";
+import { BridgeJournalStore, readRunnerConfig, writeRunnerConfig } from "../extensions/runtime/legacy-bridge/journal.ts";
+import type { BridgeJournal, BridgeRunnerConfig } from "../extensions/runtime/legacy-bridge/types.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -11,7 +11,7 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 function root(): string { const value = mkdtempSync(join(tmpdir(), "pi-kit-bridge-journal-")); roots.push(value); return value; }
 function initial(): BridgeJournal { return { version: 1, bridgeId: "bridge_1", driver: "fake", protocol: "review", participantId: "fake", nextSequence: 1, admissions: [], turns: [], status: "starting", updatedAt: 1 }; }
 
-describe("bridge runner journal", () => {
+describe("legacy bridge journal", () => {
 	it("persists owner-private atomic state and restores exact admission before ACK", () => {
 		const directory = root();
 		const store = new BridgeJournalStore(directory, initial());

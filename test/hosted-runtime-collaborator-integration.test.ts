@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { loadBuiltinAgents } from "../extensions/subagents/agents.ts";
 import { HostedRuntimeClientError } from "../extensions/runtime/client.ts";
 import { CollaboratorAutoStore } from "../extensions/runtime/auto-mode.ts";
-import { HOSTED_AUTO_LIFECYCLE_ENTRY, HOSTED_BRIDGE_REQUEST_ENTRY, HOSTED_COLLABORATOR_PROFILE_ENTRY, HOSTED_COLLABORATOR_WORKSPACE_ENTRY, HOSTED_MANAGED_COLLABORATOR_ENTRY, HOSTED_PARTICIPANT_ENTRY, HOSTED_WORKSPACE_REQUEST_ENTRY, HostedRuntimeIntegration } from "../extensions/runtime/hosted-integration.ts";
+import { HOSTED_AUTO_LIFECYCLE_ENTRY, HOSTED_BRIDGE_REQUEST_ENTRY, HOSTED_COLLABORATOR_PROFILE_ENTRY, HOSTED_COLLABORATOR_WORKSPACE_ENTRY, HOSTED_MANAGED_COLLABORATOR_ENTRY, HOSTED_PARTICIPANT_ENTRY, HOSTED_WORKSPACE_REQUEST_ENTRY, HostedRuntimeIntegration, markClaudeWorkspaceTrusted } from "../extensions/runtime/hosted-integration.ts";
 import { deriveTargetKey } from "../extensions/runtime/service/registration.ts";
 
 const roots: string[] = [];
@@ -84,7 +84,7 @@ async function setup(respond: (request: Request) => unknown, branch: unknown[] =
 		},
 		sessionManager: { getSessionFile: () => sessionFile, getSessionId: () => "session_1", getBranch: () => branch },
 	};
-	const integration = new HostedRuntimeIntegration(pi as never, runtimeRoot);
+	const integration = new HostedRuntimeIntegration(pi as never, runtimeRoot, () => {});
 	return { root, runtimeRoot, projectRoot, requests, entries, notifications, statuses, execCalls, pi, ctx, integration, setExec(handler: typeof execHandler) { execHandler = handler; } };
 }
 
@@ -121,6 +121,16 @@ function sessionHeader(sessionFile: string): { id: string } {
 }
 
 describe("hosted collaborator Pi integration", () => {
+	it("atomically records exact Claude workspace trust without dropping existing project state", () => {
+		const root = mkdtempSync(join(tmpdir(), "claude-trust-"));
+		roots.push(root);
+		const configPath = join(root, ".claude.json");
+		writeFileSync(configPath, JSON.stringify({ theme: "dark", projects: { "/existing": { hasTrustDialogAccepted: true, note: "keep" }, "/workspace": { note: "keep-this-too" } } }));
+		markClaudeWorkspaceTrusted("/workspace", configPath);
+		expect(JSON.parse(readFileSync(configPath, "utf8"))).toEqual({ theme: "dark", projects: { "/existing": { hasTrustDialogAccepted: true, note: "keep" }, "/workspace": { note: "keep-this-too", hasTrustDialogAccepted: true } } });
+		markClaudeWorkspaceTrusted("/workspace", configPath);
+	});
+
 	it("starts Runtime once in a dedicated no-focus services workspace across concurrent callers", async () => {
 		const test = await setup((request) => request.method === "participant.list" ? { participants: [] } : baseResponse(request));
 		await test.integration.sessionStart(test.ctx as never);
@@ -263,8 +273,8 @@ describe("hosted collaborator Pi integration", () => {
 			{ participantId: "fable", body: "Second." },
 			{ participantId: "fable", body: "Fail." },
 		], "tool_call_1", test.ctx as never)).toEqual([
-			{ eventId: "event_4", sequence: 4, recipient: "review/fable", status: "sent" },
-			{ eventId: "event_5", sequence: 5, recipient: "review/fable", status: "sent" },
+			{ eventId: "event_4", sequence: 4, recipient: "review/fable", status: "sent", recipientTier: "unbound", deliveryState: "pending" },
+			{ eventId: "event_5", sequence: 5, recipient: "review/fable", status: "sent", recipientTier: "unbound", deliveryState: "pending" },
 			{ recipient: "review/fable", status: "failed", error: "send failed" },
 		]);
 		const sends = test.requests.filter((request) => request.method === "mailbox.send");
@@ -462,14 +472,18 @@ describe("hosted collaborator Pi integration", () => {
 		await test.integration.sessionShutdown();
 	});
 
-	it("launches native drivers through owner-private bridge configs after one confirmation", async () => {
+	it("launches native drivers as interactive Herdr agents after one confirmation", async () => {
 		const holders = new Map<string, string>();
+		let lastTargetKey = "";
 		const test = await setup((request) => {
 			if (request.method === "participant.list") return { participants: [mainParticipant, ...[...holders].map(([participantId, targetKey]) => ({ ...fableParticipant, participantId, participantKey: `participant_${participantId}`, holderTargetKey: targetKey }))] };
 			if (request.method === "bridge.launch.create") {
 				const launchId = String(request.params.launchId);
-				return { launchId, targetKey: `target_${launchId}`, holderGeneration: `lease_${launchId}`, expiresAt: Date.now() + 30_000, launchToken: `bridge_launch_${launchId}.${"x".repeat(43)}`, reconnectToken: "y".repeat(43), herdr: { paneId: "w1:p9", terminalId: "term_native", tabId: "w1:t9", workspaceId: "w1" } };
+				lastTargetKey = `target_${launchId}`;
+				holders.set(String(request.params.participantId), lastTargetKey);
+				return { launchId, targetKey: lastTargetKey, holderGeneration: `lease_${launchId}`, expiresAt: Date.now() + 30_000, launchToken: `bridge_launch_${launchId}.${"x".repeat(43)}`, reconnectToken: "y".repeat(43), herdr: { paneId: "w1:p9", terminalId: "term_native", tabId: "w1:t9", workspaceId: "w1" } };
 			}
+			if (request.method === "bridge.register") return { ...registration, targetKey: lastTargetKey };
 			return baseResponse(request);
 		});
 		let confirmations = 0;
@@ -477,9 +491,9 @@ describe("hosted collaborator Pi integration", () => {
 		test.setExec(async (_command, args) => {
 			if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
 			if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9", terminal_id: "term_native" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
-			if (args[0] === "pane" && args[1] === "run") {
-				const request = test.requests.filter((item) => item.method === "bridge.launch.create").at(-1)!;
-				holders.set(String(request.params.participantId), `target_${request.params.launchId}`);
+			if (args[0] === "agent" && args[1] === "start") {
+				const kind = args[args.indexOf("--kind") + 1]!;
+				return { code: 0, stdout: JSON.stringify({ result: { agent: { agent: kind, name: args[2], agent_status: "idle", focused: false, pane_id: "w1:p9", terminal_id: "term_native" } } }), stderr: "", killed: false };
 			}
 			return { code: 0, stdout: "{}", stderr: "", killed: false };
 		});
@@ -492,11 +506,51 @@ describe("hosted collaborator Pi integration", () => {
 		const tabs = test.execCalls.filter((call) => call.args[0] === "tab" && call.args[1] === "create");
 		expect(tabs).toHaveLength(2);
 		expect(tabs.every((call) => call.args.includes("--no-focus"))).toBe(true);
-		const runs = test.execCalls.filter((call) => call.args[0] === "pane" && call.args[1] === "run");
-		expect(runs.every((call) => call.args[3]?.includes("bridge-runner/main.ts") && !call.args[3]?.includes("exec pi"))).toBe(true);
-		const configs = readdirSync(join(test.runtimeRoot, "bridges")).map((bridgeId) => JSON.parse(readFileSync(join(test.runtimeRoot, "bridges", bridgeId, "config.v1.json"), "utf8")));
-		expect(configs.map((config) => config.driver).sort()).toEqual(["claude-code", "codex"]);
-		expect(configs.every((config) => config.profile === "read-only" && typeof config.configurationHash === "string" && config.launchToken)).toBe(true);
+		const starts = test.execCalls.filter((call) => call.args[0] === "agent" && call.args[1] === "start");
+		expect(starts.map((call) => call.args[call.args.indexOf("--kind") + 1])).toEqual(["claude", "codex"]);
+		expect(starts.every((call) => call.args.includes("--pane") && call.args.includes("w1:p9") && !call.args.join(" ").includes("bridge-runner"))).toBe(true);
+		expect(test.requests.filter((request) => request.method === "bridge.register").every((request) => (request.params.agentSession as { source: string }).source.startsWith("herdr:"))).toBe(true);
+		await test.integration.sessionShutdown();
+	});
+
+	it("submits managed mail through Herdr only while the exact agent is idle and unfocused", async () => {
+		let launched = false;
+		let focused = true;
+		const managedRegistration = { ...registration, targetKey: "target_native", registrationId: "reg_native", registrationKey: "key_native" };
+		const test = await setup((request) => {
+			if (request.method === "participant.list") return { participants: [mainParticipant, ...(launched ? [{ ...fableParticipant, driver: "codex", capabilityTier: "managed", profile: "read-only", holderTargetKey: "target_native" }] : [])] };
+			if (request.method === "participant.get") return mainParticipant;
+			if (request.method === "bridge.launch.create") return { launchId: request.params.launchId, targetKey: "target_native", holderGeneration: "lease_fable", expiresAt: Date.now() + 30_000, launchToken: `bridge_launch_${request.params.launchId}.${"x".repeat(43)}`, reconnectToken: "y".repeat(43), herdr: { paneId: "w1:p9", terminalId: "term_native", tabId: "w1:t9", workspaceId: "w1" } };
+			if (request.method === "bridge.register") { launched = true; return managedRegistration; }
+			if (request.method === "bridge.heartbeat") return { ...managedRegistration, inboxReady: true };
+			if (request.method === "inbox.claim") return { claimId: "claim_native", status: "active", eventIds: ["event_native"], events: [{ eventId: "event_native", type: "mailbox.message", summary: "message from main to fable", payload: { body: "Please review.", sendId: "send_native", senderParticipantKey: "participant_main", recipientParticipantKey: "participant_fable" } }] };
+			if (request.method === "inbox.submit_begin" || request.method === "inbox.submit_settle") return { settled: true };
+			return baseResponse(request);
+		});
+		test.setExec(async (_command, args) => {
+			if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
+			if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9", terminal_id: "term_native" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
+			if (args[0] === "agent" && args[1] === "start") return { code: 0, stdout: JSON.stringify({ result: { agent: { agent: "codex", name: args[2], agent_status: "idle", focused: false, pane_id: "w1:p9", terminal_id: "term_native" } } }), stderr: "", killed: false };
+			if (args[0] === "agent" && args[1] === "get") {
+				const start = test.execCalls.find((call) => call.args[0] === "agent" && call.args[1] === "start")!;
+				return { code: 0, stdout: JSON.stringify({ result: { agent: { agent: "codex", name: start.args[2], agent_status: "idle", focused, pane_id: "w1:p9", terminal_id: "term_native" } } }), stderr: "", killed: false };
+			}
+			if (args[0] === "agent" && args[1] === "prompt") return { code: 0, stdout: JSON.stringify({ result: { type: "agent_prompt" } }), stderr: "", killed: false };
+			return { code: 0, stdout: "{}", stderr: "", killed: false };
+		});
+		await test.integration.sessionStart(test.ctx as never);
+		(test.integration as unknown as { stopHeartbeat(): void }).stopHeartbeat();
+		await test.integration.startCollaborator({ participantId: "fable", protocol: "review", callerParticipantId: "main", driver: "codex" }, test.ctx as never);
+		await (test.integration as unknown as { heartbeat(): Promise<void> }).heartbeat();
+		expect(test.requests.some((request) => request.method === "inbox.claim")).toBe(false);
+		focused = false;
+		await (test.integration as unknown as { heartbeat(): Promise<void> }).heartbeat();
+		const prompt = test.execCalls.find((call) => call.args[0] === "agent" && call.args[1] === "prompt")!;
+		expect(prompt.args.slice(0, 3)).toEqual(["agent", "prompt", "w1:p9"]);
+		expect(prompt.args).not.toContain("--wait");
+		expect(prompt.args[3]).toContain("Please review.");
+		expect(test.requests.find((request) => request.method === "inbox.submit_begin")?.params).toMatchObject({ claimId: "claim_native", eventIds: ["event_native"] });
+		expect(test.requests.find((request) => request.method === "inbox.submit_settle")?.params).toMatchObject({ outcome: "submitted" });
 		await test.integration.sessionShutdown();
 	});
 
@@ -507,12 +561,13 @@ describe("hosted collaborator Pi integration", () => {
 			if (request.method === "participant.list") return { participants: [mainParticipant, ...(launched ? [{ ...vacant, state: "held", generation: "lease_native", holderTargetKey: "target_native", holderLive: true, lastTransition: { cause: "acquire" } }] : [vacant])] };
 			if (request.method === "participant.stop_confirmed") return { participant: vacant, outcome: "stopped" };
 			if (request.method === "bridge.launch.create") return { launchId: request.params.launchId, targetKey: "target_native", holderGeneration: "lease_native", expiresAt: Date.now() + 30_000, launchToken: `bridge_launch_${request.params.launchId}.${"x".repeat(43)}`, reconnectToken: "y".repeat(43), herdr: { paneId: "w1:p9", terminalId: "term_native", tabId: "w1:t9", workspaceId: "w1" } };
+			if (request.method === "bridge.register") { launched = true; return { ...registration, targetKey: "target_native" }; }
 			return baseResponse(request);
 		});
 		test.setExec(async (_command, args) => {
 			if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
 			if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9", terminal_id: "term_native" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
-			if (args[0] === "pane" && args[1] === "run") launched = true;
+			if (args[0] === "agent" && args[1] === "start") return { code: 0, stdout: JSON.stringify({ result: { agent: { agent: "codex", name: args[2], agent_status: "idle", focused: false, pane_id: "w1:p9", terminal_id: "term_native" } } }), stderr: "", killed: false };
 			return { code: 0, stdout: "{}", stderr: "", killed: false };
 		});
 		await test.integration.sessionStart(test.ctx as never);
@@ -561,7 +616,7 @@ describe("hosted collaborator Pi integration", () => {
 		expect(createAttempts).toBe(2);
 		expect(recoveryAttempts).toBe(2);
 		expect(test.execCalls).toContainEqual({ command: "herdr", args: ["tab", "close", "w1:t9"] });
-		expect(test.entries.filter((entry) => entry.customType === HOSTED_BRIDGE_REQUEST_ENTRY).map((entry) => (entry.data as { status: string }).status)).toEqual(["pending", "recovered"]);
+		expect(test.entries.filter((entry) => entry.customType === HOSTED_BRIDGE_REQUEST_ENTRY).map((entry) => (entry.data as { status: string }).status)).toEqual(["intent", "pending", "recovered"]);
 		await test.integration.sessionShutdown();
 	});
 
@@ -1039,13 +1094,13 @@ describe("hosted collaborator Pi integration", () => {
 			test.setExec(async (_command, args) => {
 				if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
 				if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9", terminal_id: "term_9" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
-				if (args[0] === "pane" && args[1] === "run") return { code: 1, stdout: "", stderr: "dispatch uncertain", killed: false };
+				if (args[0] === "agent" && args[1] === "start") return { code: 1, stdout: "", stderr: "dispatch uncertain", killed: false };
 				if (args[0] === "tab" && args[1] === "close") return { code: 1, stdout: "", stderr: "close uncertain", killed: false };
 				if (args[0] === "tab" && args[1] === "get") return { code: 1, stdout: JSON.stringify({ error: { code: hostCode, message: "typed" } }), stderr: "", killed: false };
 				return { code: 0, stdout: "{}", stderr: "", killed: false };
 			});
 			await test.integration.sessionStart(test.ctx as never);
-			await expect(test.integration.startCollaborator({ participantId: "native", driver: "codex" }, test.ctx as never)).rejects.toThrow(releases ? "dispatch native collaborator startup" : "could not be terminated");
+			await expect(test.integration.startCollaborator({ participantId: "native", driver: "codex" }, test.ctx as never)).rejects.toThrow(releases ? "could not start the interactive codex collaborator" : "could not be terminated");
 			expect(existsSync(join(test.runtimeRoot, "auto-start.lock"))).toBe(!releases);
 			expect(test.requests.filter((request) => request.method === "participant.auto_capacity.release")).toHaveLength(releases ? 1 : 0);
 			await test.integration.sessionShutdown();
@@ -1072,11 +1127,11 @@ describe("hosted collaborator Pi integration", () => {
 			test.setExec(async (_command, args) => {
 				if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
 				if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9", terminal_id: "term_9" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
-				if (args[0] === "pane" && args[1] === "run") return { code: 1, stdout: "", stderr: "dispatch response lost", killed: false };
+				if (args[0] === "agent" && args[1] === "start") return { code: 1, stdout: "", stderr: "dispatch response lost", killed: false };
 				return { code: 0, stdout: "{}", stderr: "", killed: false };
 			});
 			await test.integration.sessionStart(test.ctx as never);
-			await expect(test.integration.startCollaborator({ participantId: "native", driver: "codex" }, test.ctx as never)).rejects.toThrow(stopFails ? "exact worker quiescence" : "dispatch native collaborator startup");
+			await expect(test.integration.startCollaborator({ participantId: "native", driver: "codex" }, test.ctx as never)).rejects.toThrow(stopFails ? "exact target quiescence" : "could not start the interactive codex collaborator");
 			expect(test.requests.find((request) => request.method === "participant.stop_confirmed")?.params).toMatchObject({ participantKey: "participant_native", expectedGeneration: "lease_native", confirmed: true });
 			expect(test.execCalls.some((call) => call.args[0] === "tab" && call.args[1] === "close")).toBe(false);
 			expect(timeline).toEqual(stopFails ? ["reserve", "authorize", "recover_consumed", "stop_quiesced"] : ["reserve", "authorize", "recover_consumed", "stop_quiesced", "release"]);

@@ -122,7 +122,7 @@ describe("authoritative Runtime bridge launch", () => {
 		(v3.targets[launch.targetKey] as { metadata: Record<string, string> }).metadata = { format: "legacy-v1" };
 		v3.bridgeLaunches[launch.launchId]!.metadata = { format: "legacy-v1" };
 		writeFileSync(runtimeStatePaths(migrationRoot).state, JSON.stringify({ ...v3, version: 3 }));
-		expect(readHostedRuntimeState(migrationRoot)).toMatchObject({ version: 7, autoCapacityReservations: {}, workspaces: {}, integrations: {}, targets: { [launch.targetKey]: { kind: "bridge", bridgeId: launch.launchId, metadata: { adapter: "legacy-v1" } } }, bridgeLaunches: { [launch.launchId]: { status: "consumed", metadata: { adapter: "legacy-v1" } } } });
+		expect(readHostedRuntimeState(migrationRoot)).toMatchObject({ version: 8, autoCapacityReservations: {}, workspaces: {}, integrations: {}, targets: { [launch.targetKey]: { kind: "bridge", bridgeId: launch.launchId, metadata: { adapter: "legacy-v1" } } }, bridgeLaunches: { [launch.launchId]: { status: "consumed", metadata: { adapter: "legacy-v1" } } } });
 		expect(test.registrations.isLiveTarget(launch.targetKey)).toBe(true);
 		await expect(test.bridges.register({ launchToken: launch.launchToken, reconnectToken: launch.reconnectToken, clientGeneration: "client_bridge", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" } })).rejects.toMatchObject({ code: "conflict" });
 
@@ -139,6 +139,20 @@ describe("authoritative Runtime bridge launch", () => {
 		expect(stopped).toMatchObject({ outcome: "stopped", participant: { state: "vacant" } });
 		expect(stoppedTargets).toMatchObject([{ kind: "bridge", targetKey: launch.targetKey }]);
 		await expect(restartedBridges.reconnect({ targetKey: launch.targetKey, reconnectToken: launch.reconnectToken, clientGeneration: "client_bridge", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" } })).rejects.toMatchObject({ code: "conflict" });
+	});
+
+	it("binds an interactive native launch only to its exact Herdr agent session", async () => {
+		const test = setup();
+		const main = await registerPi(test, "main");
+		const caller = test.participants.acquire(main, "review", "main").participant;
+		const launch = await test.bridges.create(main, { requestId: "interactive_1", callerParticipantKey: caller.participantKey, expectedCallerGeneration: caller.generation, protocol: "review", participantId: "native", profile: "read-only", configurationHash: "d".repeat(64), driver: "codex", herdr: { paneId: "w1:p9", terminalId: "term_bridge" }, metadata: { adapter: "herdr-agent-v1" } });
+		const session = { source: "herdr:codex", agent: "codex", kind: "id" as const, value: "codex-session" };
+		test.host.agents.set("w1:p9", { paneId: "w1:p9", tabId: "w1:t9", workspaceId: "w1", terminalId: "term_bridge", cwd: test.projectRoot, agentSession: session, status: "idle", focused: false, stateChangeSeq: 2 });
+		await expect(test.bridges.register({ launchToken: launch.launchToken, reconnectToken: launch.reconnectToken, clientGeneration: "agent_client", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" } })).rejects.toMatchObject({ code: "invalid_request" });
+		await expect(test.bridges.register({ launchToken: launch.launchToken, reconnectToken: launch.reconnectToken, clientGeneration: "agent_client", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" }, agentSession: { ...session, value: "wrong-session" } })).rejects.toMatchObject({ code: "identity_mismatch" });
+		const registered = await test.bridges.register({ launchToken: launch.launchToken, reconnectToken: launch.reconnectToken, clientGeneration: "agent_client", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" }, agentSession: session });
+		expect(registered).toMatchObject({ driver: "codex", capabilityTier: "managed", agentSession: session });
+		expect(test.store.read().targets[launch.targetKey]).toMatchObject({ kind: "agent", driver: "codex", capabilityTier: "managed", agentSession: session });
 	});
 
 	it("recovers an uncertain launch response without regenerating authority", async () => {
@@ -172,7 +186,7 @@ describe("authoritative Runtime bridge launch", () => {
 		await expect(reconnecting).rejects.toMatchObject({ code: "registration_stale" });
 	});
 
-	it("exposes strict additive bridge RPC without weakening Pi registration", async () => {
+	it("exposes strict additive external-target RPC without weakening Pi registration", async () => {
 		const test = setup();
 		const main = await registerPi(test, "main");
 		const mainParticipant = test.participants.acquire(main, "review", "main").participant;
@@ -180,7 +194,7 @@ describe("authoritative Runtime bridge launch", () => {
 		const wakes = new HostedWakeCoordinator(test.store);
 		const context: HostedProtocolContext = { runtimeId: "rt_test", epoch: "epoch_test", agentWake: "none", registrations: test.registrations, monitors, wakes, participants: test.participants, bridges: test.bridges };
 		const call = (method: string, params: unknown) => dispatchHostedLine(JSON.stringify({ v: 1, id: method, method, params }), context);
-		expect(await call("hello", { minVersion: 1, maxVersion: 1 })).toMatchObject({ ok: true, result: { capabilities: { bridge: { launch: "single_use", reconnect: true } } } });
+		expect(await call("hello", { minVersion: 1, maxVersion: 1 })).toMatchObject({ ok: true, result: { capabilities: { interactiveAgent: { launch: "single_use", reconnect: true }, legacyBridge: { stopOnly: true } } } });
 		const auth = { registrationId: main.registrationId, registrationKey: main.registrationKey };
 		const createParams = { ...auth, requestId: "rpc_1", callerParticipantKey: mainParticipant.participantKey, expectedCallerGeneration: mainParticipant.generation, protocol: "review", participantId: "fable", profile: "read-only", configurationHash: "c".repeat(64), herdr: { paneId: "w1:p9", terminalId: "term_bridge" } };
 		expect(await call("bridge.launch.create", { ...createParams, metadata: { secret: "no" } })).toMatchObject({ ok: false, error: { code: "invalid_request" } });

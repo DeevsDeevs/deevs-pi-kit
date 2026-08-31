@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { BoundedJsonlDecoder, parseClosedJson } from "../extensions/runtime/bridge-runner/jsonl.ts";
+import { BoundedJsonlDecoder, parseClosedJson } from "../extensions/runtime/legacy-bridge/jsonl.ts";
 
-describe("bounded bridge JSONL", () => {
+describe("legacy bounded bridge JSONL", () => {
 	it("decodes split UTF-8 frames and requires terminal newlines", () => {
 		const lines: string[] = [];
 		const decoder = new BoundedJsonlDecoder((line) => lines.push(line), 100, 200);
