@@ -228,13 +228,13 @@ function bridgeMetadata(value: Record<string, string>): Record<string, string> {
 	const entries = Object.entries(value).sort(([left], [right]) => left.localeCompare(right));
 	if (entries.length > HOSTED_BRIDGE_MAX_METADATA_ENTRIES) throw new HostedBridgeError("invalid_request", `Bridge metadata may contain at most ${HOSTED_BRIDGE_MAX_METADATA_ENTRIES} entries.`);
 	return Object.fromEntries(entries.map(([key, item]) => {
-		if (!NAME.test(key) || !ALLOWED_METADATA.has(key) || typeof item !== "string" || Buffer.byteLength(item) > HOSTED_BRIDGE_MAX_METADATA_VALUE_BYTES) throw new HostedBridgeError("invalid_request", "Bridge metadata is not allowlisted or exceeds its byte limit.");
+		if (!NAME.test(key) || !ALLOWED_METADATA.has(key) || Buffer.byteLength(item) > HOSTED_BRIDGE_MAX_METADATA_VALUE_BYTES) throw new HostedBridgeError("invalid_request", "Bridge metadata is not allowlisted or exceeds its byte limit.");
 		return [key, item];
 	}));
 }
 
 function validateAgentSession(value: HostedAgentSessionIdentity): HostedAgentSessionIdentity {
-	if (!value || typeof value.source !== "string" || typeof value.agent !== "string" || (value.kind !== "id" && value.kind !== "path") || typeof value.value !== "string" || !value.source || !value.agent || !value.value || Buffer.byteLength(value.source) > 200 || Buffer.byteLength(value.agent) > 64 || Buffer.byteLength(value.value) > 8 * 1024) throw new HostedBridgeError("invalid_request", "Interactive Herdr agent session identity is invalid.");
+	if ((value.kind !== "id" && value.kind !== "path") || !value.source || !value.agent || !value.value || Buffer.byteLength(value.source) > 200 || Buffer.byteLength(value.agent) > 64 || Buffer.byteLength(value.value) > 8 * 1024) throw new HostedBridgeError("invalid_request", "Interactive Herdr agent session identity is invalid.");
 	return value;
 }
 
@@ -244,7 +244,7 @@ function participantName(value: string, name: string): string {
 }
 
 function bounded(value: string, name: string, maxBytes: number): string {
-	if (typeof value !== "string" || !value.trim() || Buffer.byteLength(value) > maxBytes) throw new HostedBridgeError("invalid_request", `${name} must be a non-empty string of at most ${maxBytes} bytes.`);
+	if (!value.trim() || Buffer.byteLength(value) > maxBytes) throw new HostedBridgeError("invalid_request", `${name} must be a non-empty string of at most ${maxBytes} bytes.`);
 	return value;
 }
 
