@@ -35,7 +35,7 @@ export function dashboardFrame(title: string, body: string[], theme: Theme, widt
 	return framePanelLines(title, fixed, theme, Math.max(1, width));
 }
 
-export function pageWindow<T>(values: T[], selected: number, size: number): { values: T[]; start: number; selected: number } {
+export function pageWindow<T>(values: T[], selected: number, size: number) {
 	if (!values.length) return { values: [], start: 0, selected: 0 };
 	const safeSelected = Math.max(0, Math.min(selected, values.length - 1));
 	const start = Math.max(0, Math.min(safeSelected - Math.floor(size / 2), values.length - size));
