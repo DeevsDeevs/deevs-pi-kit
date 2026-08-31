@@ -18,7 +18,9 @@ async function readProjectConfig<T extends object>(cwd: string, filename: string
 	const path = projectConfigPath(cwd, filename);
 	try {
 		await ensureSafeProjectConfigTarget(cwd, path, false);
+		// SAFETY: Converting JSON.parse's `any` to `unknown` prevents use before the shape check below.
 		const parsed = JSON.parse(await readFile(path, "utf8")) as unknown;
+		// SAFETY: This private reader exposes only an untrusted property bag to the caller-supplied normalizer; no field is consumed before normalization.
 		return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Partial<T> : {};
 	} catch {
 		return {};
@@ -26,7 +28,7 @@ async function readProjectConfig<T extends object>(cwd: string, filename: string
 }
 
 export async function loadProjectConfig<T extends object>(cwd: string, filename: string, defaults: T, normalize: ConfigNormalizer<T>, override: Partial<T> = {}): Promise<T> {
-	return normalize({ ...structuredClone(defaults), ...await readProjectConfig<T>(cwd, filename), ...override } as Partial<T>);
+	return normalize({ ...structuredClone(defaults), ...await readProjectConfig<T>(cwd, filename), ...override });
 }
 
 export async function saveProjectConfig<T extends object>(cwd: string, filename: string, config: T): Promise<string> {
@@ -50,14 +52,14 @@ async function ensureSafeProjectConfigTarget(cwd: string, path: string, rejectEx
 		const rel = relative(cwdReal, piReal);
 		if (rel.startsWith("..") || isAbsolute(rel)) throw new Error(`Project config directory escapes cwd: ${piDir}`);
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
 	}
 	if (!rejectExistingTargetSymlink) return;
 	try {
 		const targetStat = await lstat(path);
 		if (targetStat.isSymbolicLink()) throw new Error(`Refusing to overwrite symlinked project config file: ${path}`);
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
 	}
 }
 

@@ -447,8 +447,10 @@ function chainDueCode(value: unknown): ChainDueCode | undefined {
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
+	// SAFETY: The runtime checks exclude null, primitives, and arrays before key access.
 	return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
+// SAFETY: This package exclusively owns the named hot-reload registry and initializes its exact shape below.
 const globalRegistry = globalThis as typeof globalThis & { __deevsPiKitChainCheckpoints?: { current?: ChainCheckpointService } };
 export const chainCheckpoints = globalRegistry.__deevsPiKitChainCheckpoints ??= {};

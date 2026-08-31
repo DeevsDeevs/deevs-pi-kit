@@ -182,8 +182,8 @@ function claimIdForWake(wakeId: string): string {
 
 function claimEvents(events: Record<string, HostedEvent>, claim: HostedClaim): HostedEvent[] {
 	const result = claim.eventIds.map((eventId) => events[eventId]);
-	if (result.some((event) => !event)) throw new HostedInboxError("claim_conflict", "Claim event is missing from durable state.");
-	return result as HostedEvent[];
+	if (!result.every((event): event is HostedEvent => event !== undefined)) throw new HostedInboxError("claim_conflict", "Claim event is missing from durable state.");
+	return result;
 }
 
 function sameIds(left: readonly string[], right: readonly string[]): boolean {

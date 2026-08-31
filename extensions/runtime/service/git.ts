@@ -246,7 +246,7 @@ export class RuntimeGit {
 	private async finishRemovedWorktree(repository: RuntimeRepository, worktree: RuntimeWorktreeIdentity): Promise<boolean> {
 		if ((await this.worktreeRecords(repository.root)).some((entry) => entry.path === worktree.path || entry.branchRef === worktree.branchRef || entry.detached && entry.headCommit === worktree.headCommit)) return false;
 		try { await lstat(worktree.path); return false; }
-		catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new RuntimeGitError("Unable to verify removed worktree path."); }
+		catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw new RuntimeGitError("Unable to verify removed worktree path."); }
 		const ref = await this.runCodes(repository.root, ["show-ref", "--verify", "--quiet", worktree.branchRef], [0, 1]);
 		if (ref.code === 1) return true;
 		const head = commitish((await this.text(repository.root, ["rev-parse", "--verify", "--end-of-options", worktree.branchRef])).trim(), "worktree ref head");

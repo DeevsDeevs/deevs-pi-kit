@@ -15,6 +15,7 @@ interface GlobalWithChainsSurface {
 }
 
 export default function chainsExtension(pi: ExtensionAPI): void {
+	// SAFETY: This package exclusively owns the symbol-keyed hot-reload slot and writes the same interface below.
 	const globalState = globalThis as GlobalWithChainsSurface;
 	const existing = globalState[SURFACE_KEY];
 	if (existing?.active) return;

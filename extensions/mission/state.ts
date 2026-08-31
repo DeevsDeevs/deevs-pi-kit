@@ -439,7 +439,7 @@ export class MissionState {
 		};
 	}
 
-	reviewEvent(status: MissionReviewStatus, input: { runId?: string; admissionId?: string; reason?: string; skippedReason?: string; suggestedVerdict?: MissionReviewVerdict | "unknown"; failure?: boolean; outcome?: MissionReviewOutcome; notBeforeAt?: number; worktreeFingerprint?: string; candidateId?: string; highestSeverity?: MissionReviewSeverity; blockingFindingCount?: number; backlogFindingCount?: number; findings?: MissionReviewFinding[]; scopePaths?: string[]; scopeRevisions?: MissionReviewRevision[]; replayAdjudication?: boolean } = {}): MissionEvent {
+	reviewEvent(status: MissionReviewStatus, input: { runId?: string; admissionId?: string; reason?: string; skippedReason?: string; suggestedVerdict?: MissionReviewVerdict | "unknown"; failure?: boolean; outcome?: MissionReviewOutcome; notBeforeAt?: number; worktreeFingerprint?: string; candidateId?: string; highestSeverity?: MissionReviewSeverity; blockingFindingCount?: number; backlogFindingCount?: number; findings?: MissionReviewFinding[]; scopePaths?: string[]; scopeRevisions?: MissionReviewRevision[]; replayAdjudication?: boolean; legacyRelaunchAuthorized?: true } = {}): MissionEvent {
 		const mission = this.requireActive();
 		const adjudicated = status === "clear" || status === "changes_requested";
 		const correctionCount = input.replayAdjudication ? mission.reviewCorrectionCount : status === "changes_requested" ? (mission.reviewCorrectionCount ?? 0) + 1 : status === "clear" ? 0 : undefined;
@@ -457,7 +457,7 @@ export class MissionState {
 			previousAdjudications = [...previousAdjudications.filter((item) => item.candidateId !== mission.reviewAdjudicatedCandidateId), { candidateId: mission.reviewAdjudicatedCandidateId, verdict: mission.reviewAdjudicatedVerdict }];
 		}
 		const candidateKnown = candidateId ? previousAdjudications.some((item) => item.candidateId === candidateId) : false;
-		if (adjudicated && candidateId && mission.reviewAdjudicationHistoryComplete !== true && !candidateKnown) {
+		if (adjudicated && candidateId && mission.reviewAdjudicationHistoryComplete !== true && mission.reviewLegacyRelaunchAuthorized !== true && !candidateKnown) {
 			throw new Error("Mission review adjudication history is incomplete; refusing to adjudicate an unknown candidate.");
 		}
 		if (adjudicated && candidateId && previousAdjudications.length >= MAX_MISSION_REVIEW_ADJUDICATIONS && !candidateKnown) {
@@ -488,6 +488,7 @@ export class MissionState {
 			reviewAdjudicatedCandidateId: adjudicated ? candidateId : undefined,
 			reviewAdjudicatedVerdict: adjudicated ? status : undefined,
 			reviewAdjudications: adjudications,
+			reviewLegacyRelaunchAuthorized: input.legacyRelaunchAuthorized,
 			reviewHighestSeverity: input.highestSeverity,
 			reviewBlockingFindingCount: input.blockingFindingCount,
 			reviewBacklogFindingCount: input.backlogFindingCount,
@@ -649,6 +650,7 @@ export class MissionState {
 				reviewAdjudicatedVerdict: event.reviewAdjudicatedVerdict,
 				reviewAdjudications: event.reviewAdjudications?.map((item) => ({ ...item })),
 				reviewAdjudicationHistoryComplete: event.reviewAdjudicationHistoryComplete,
+				reviewLegacyRelaunchAuthorized: event.reviewLegacyRelaunchAuthorized,
 				reviewHighestSeverity: event.reviewHighestSeverity,
 				reviewBlockingFindingCount: event.reviewBlockingFindingCount ?? 0,
 				reviewBacklogFindingCount: event.reviewBacklogFindingCount ?? 0,
@@ -707,6 +709,7 @@ export class MissionState {
 				}
 				this.current.reviewAdjudicatedCandidateId = undefined;
 				this.current.reviewAdjudicatedVerdict = undefined;
+				this.current.reviewLegacyRelaunchAuthorized = undefined;
 				this.current.reviewFindings = undefined;
 				this.current.reviewAcceptedFindings = undefined;
 				this.current.reviewScopePaths = undefined;
@@ -754,6 +757,8 @@ export class MissionState {
 			for (const adjudication of additions) this.current.reviewAdjudications = [...(this.current.reviewAdjudications ?? []).filter((item) => item.candidateId !== adjudication.candidateId), { ...adjudication }];
 		}
 		if (event.reviewAdjudicationHistoryComplete !== undefined) this.current.reviewAdjudicationHistoryComplete = event.reviewAdjudicationHistoryComplete;
+		if (event.kind === "review_changed" && (event.reviewStatus === "clear" || event.reviewOutcome === "superseded")) this.current.reviewLegacyRelaunchAuthorized = undefined;
+		else if (event.reviewLegacyRelaunchAuthorized !== undefined) this.current.reviewLegacyRelaunchAuthorized = event.reviewLegacyRelaunchAuthorized;
 		if (event.kind === "review_changed" && event.reviewStatus === "awaiting_adjudication") this.current.reviewHighestSeverity = event.reviewHighestSeverity;
 		else if (event.reviewHighestSeverity !== undefined) this.current.reviewHighestSeverity = event.reviewHighestSeverity;
 		if (event.reviewBlockingFindingCount !== undefined) this.current.reviewBlockingFindingCount = event.reviewBlockingFindingCount;

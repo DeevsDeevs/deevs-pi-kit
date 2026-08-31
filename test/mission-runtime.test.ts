@@ -423,12 +423,75 @@ describe("Mission runtime", () => {
 		} finally { clearSubagentService(getSubagentService()); }
 	});
 
-	it("migrates legacy clear review state back to due instead of deadlocking completion", async () => {
+	it("relaunches a legacy clear review with no typed adjudication history and clears the bounded authorization on convergence", async () => {
 		const test = await setup();
 		test.state.append(test.pi, test.state.reviewEvent("clear", { worktreeFingerprint: expectedFingerprint() }));
+		const mission = test.state.read()!;
+		const snapshotFile = join(test.ctx.cwd, ".missions", ".state", `${mission.slug}.json`);
+		const snapshot = JSON.parse(readFileSync(snapshotFile, "utf8"));
+		delete snapshot.mission.reviewAdjudicationHistoryComplete;
+		writeFileSync(snapshotFile, JSON.stringify(snapshot));
+		const created = test.branch.find((entry) => entry.customType === MISSION_CUSTOM_TYPE && (entry.data as { kind?: string }).kind === "created")!;
+		delete (created.data as { reviewAdjudicationHistoryComplete?: true }).reviewAdjudicationHistoryComplete;
 		test.runtime.restore(test.ctx);
-		expect(test.state.read()).toMatchObject({ reviewStatus: "due" });
+		test.state.loadFromSession(test.ctx);
+		expect(test.state.read()).toMatchObject({ reviewStatus: "due", reviewLegacyRelaunchAuthorized: true });
 		expect(test.state.read()?.reviewReason).toContain("Legacy clear review");
+
+		const run = { spec: { id: "legacy-review" }, runtime: { status: "running" } } as DelegateRun;
+		let starts = 0;
+		const service = {
+			list: () => ({ runs: [], groups: [] }),
+			start: async () => { starts++; return run; },
+			executor: { get: () => run, onChange: () => () => undefined },
+		} as unknown as SubagentService;
+		setSubagentService(service);
+		try {
+			const internal = test.runtime as unknown as { startReview: (ctx: ExtensionContext, mission: MissionCurrent) => Promise<void> };
+			await internal.startReview(test.ctx, test.state.read()!);
+			expect(starts).toBe(1);
+			expect(test.state.read()).toMatchObject({ reviewStatus: "running", reviewLegacyRelaunchAuthorized: true });
+			const candidateId = test.state.read()?.reviewCandidateId;
+			expect(candidateId).toBeTruthy();
+			test.state.append(test.pi, test.state.reviewEvent("clear", { candidateId, worktreeFingerprint: expectedFingerprint() }));
+			test.state.loadFromSession(test.ctx);
+			expect(test.state.read()).toMatchObject({ reviewStatus: "clear", reviewAdjudicatedCandidateId: candidateId });
+			expect(test.state.read()?.reviewLegacyRelaunchAuthorized).toBeUndefined();
+			expect(test.state.read()?.reviewAdjudicationHistoryComplete).toBeUndefined();
+		} finally {
+			clearSubagentService(service);
+		}
+	});
+
+	it("does not authorize legacy clear relaunch when typed adjudication entries already exist", async () => {
+		const test = await setup();
+		test.state.append(test.pi, test.state.reviewEvent("clear", { worktreeFingerprint: expectedFingerprint() }));
+		const mission = test.state.read()!;
+		const snapshotFile = join(test.ctx.cwd, ".missions", ".state", `${mission.slug}.json`);
+		const snapshot = JSON.parse(readFileSync(snapshotFile, "utf8"));
+		delete snapshot.mission.reviewAdjudicationHistoryComplete;
+		snapshot.mission.reviewAdjudications = [{ candidateId: "legacy-known", verdict: "clear" }];
+		writeFileSync(snapshotFile, JSON.stringify(snapshot));
+		const created = test.branch.find((entry) => entry.customType === MISSION_CUSTOM_TYPE && (entry.data as { kind?: string }).kind === "created")!;
+		delete (created.data as { reviewAdjudicationHistoryComplete?: true }).reviewAdjudicationHistoryComplete;
+		test.runtime.restore(test.ctx);
+		expect(test.state.read()?.reviewLegacyRelaunchAuthorized).toBeUndefined();
+
+		let starts = 0;
+		const service = {
+			list: () => ({ runs: [], groups: [] }),
+			start: async () => { starts++; throw new Error("must not start"); },
+			executor: { onChange: () => () => undefined },
+		} as unknown as SubagentService;
+		setSubagentService(service);
+		try {
+			const internal = test.runtime as unknown as { startReview: (ctx: ExtensionContext, mission: MissionCurrent) => Promise<void> };
+			await internal.startReview(test.ctx, test.state.read()!);
+			expect(starts).toBe(0);
+			expect(test.state.read()).toMatchObject({ status: "blocked", reviewStatus: "due", lastReason: "review adjudication history completeness is unknown" });
+		} finally {
+			clearSubagentService(service);
+		}
 	});
 
 	it("suppresses duplicate reviewer generations for an unchanged adjudicated candidate", async () => {

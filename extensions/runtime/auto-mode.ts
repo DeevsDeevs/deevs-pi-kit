@@ -92,7 +92,7 @@ export class CollaboratorAutoStore {
 			descriptor = undefined;
 			try { linkSync(temporary, this.lockPath); }
 			catch (error) {
-				if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("Another Auto collaborator start is already in progress; stale locks fail closed and require explicit operator removal.");
+				if (error instanceof Error && "code" in error && error.code === "EEXIST") throw new Error("Another Auto collaborator start is already in progress; stale locks fail closed and require explicit operator removal.");
 				throw error;
 			}
 		} finally {
@@ -114,7 +114,7 @@ export class CollaboratorAutoStore {
 			let live = true;
 			try { process.kill(owner.pid, 0); }
 			catch (error) {
-				if ((error as NodeJS.ErrnoException).code === "ESRCH") live = false;
+				if (error instanceof Error && "code" in error && error.code === "ESRCH") live = false;
 				else throw error;
 			}
 			if (live) throw new Error(`Auto start lock owner PID ${owner.pid} is still live; refusing recovery.`);

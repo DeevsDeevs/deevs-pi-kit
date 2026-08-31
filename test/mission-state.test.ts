@@ -62,6 +62,18 @@ describe("Mission state", () => {
 		expect(mission).toMatchObject({ objectiveVersion: 1, reviewStatus: "clear", reviewAdjudicatedCandidateId: "candidate-stable", completionLatchCandidateId: "candidate-stable" });
 	});
 
+	it("revokes bounded legacy relaunch authority when the candidate is superseded", async () => {
+		const test = setup();
+		const created = await test.state.create({ objective: "Legacy relaunch", chain: "kit" }, test.ctx);
+		delete created.reviewAdjudicationHistoryComplete;
+		test.state.append(test.pi, created);
+		test.state.append(test.pi, test.state.reviewEvent("due", { legacyRelaunchAuthorized: true }));
+		expect(test.state.read()?.reviewLegacyRelaunchAuthorized).toBe(true);
+		test.state.append(test.pi, test.state.reviewEvent("due", { outcome: "superseded", candidateId: "changed-candidate" }));
+		expect(test.state.read()?.reviewLegacyRelaunchAuthorized).toBeUndefined();
+		expect(() => test.state.reviewEvent("clear", { candidateId: "changed-candidate" })).toThrow("adjudication history is incomplete");
+	});
+
 	it("merges singular legacy adjudications with truncated event arrays without claiming completeness", async () => {
 		const test = setup();
 		const created = await test.state.create({ objective: "Legacy history", chain: "kit" }, test.ctx);

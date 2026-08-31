@@ -72,6 +72,7 @@ export class HostedRuntimeClient {
 
 function strictObject(value: unknown, name: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${name} must be an object.`);
+	// SAFETY: The preceding runtime check excludes null, primitives, and arrays before key access.
 	return value as Record<string, unknown>;
 }
 
