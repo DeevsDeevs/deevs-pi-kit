@@ -30,6 +30,13 @@ export interface HostedParticipantStatus {
 	lastTransition: HostedParticipant["transitions"][number];
 }
 
+export interface HostedMessageStatus {
+	eventId: string;
+	recipientParticipantKey: string;
+	recipientTier: "managed" | "durable" | "unbound";
+	deliveryState: "pending" | "submitting" | "submitted" | "needs_attention" | "admitted";
+}
+
 export interface HostedParticipantCoordinatorOptions {
 	now?: () => number;
 	createGeneration?: () => string;
@@ -66,7 +73,7 @@ export class HostedParticipantCoordinator {
 		this.seenTargets.add(targetKey);
 	}
 
-	acquire(registration: HostedLiveRegistration, protocol: string, participantId: string, allowRevive = false): { participant: HostedParticipantStatus; revived: boolean; transitioned: boolean } {
+	acquire(registration: HostedLiveRegistration, protocol: string, participantId: string, allowRevive = false) {
 		this.seenTargets.add(registration.targetKey);
 		this.assertTargetNotStopping(registration.targetKey);
 		const target = this.requireTarget(registration.targetKey);
@@ -131,7 +138,7 @@ export class HostedParticipantCoordinator {
 		this.store.apply({ type: "auto_capacity.release", operationId, callerTargetKey: registration.targetKey });
 	}
 
-	recoverAutoCapacity(registration: HostedLiveRegistration, operationId: string, confirmedAbsent: boolean): { released: boolean; confirmedAbsent: boolean } {
+	recoverAutoCapacity(registration: HostedLiveRegistration, operationId: string, confirmedAbsent: boolean) {
 		this.requireTarget(registration.targetKey);
 		const reservation = this.store.read().autoCapacityReservations[operationId];
 		if (!reservation) return { released: false, confirmedAbsent: false };
@@ -240,7 +247,7 @@ export class HostedParticipantCoordinator {
 		return this.sendEnvelope("mailbox.send", registration, senderParticipantKey, expectedSenderGeneration, recipientParticipantKey, sendId, body) as HostedMailboxMessageEvent;
 	}
 
-	messageStatus(registration: HostedLiveRegistration, senderParticipantKey: string, expectedSenderGeneration: string, eventId: string): { eventId: string; recipientParticipantKey: string; recipientTier: "managed" | "durable" | "unbound"; deliveryState: "pending" | "submitting" | "submitted" | "needs_attention" | "admitted" } {
+	messageStatus(registration: HostedLiveRegistration, senderParticipantKey: string, expectedSenderGeneration: string, eventId: string): HostedMessageStatus {
 		const target = this.requireTarget(registration.targetKey);
 		const sender = this.requireParticipant(senderParticipantKey, target.projectRoot);
 		if (sender.state !== "held" || sender.generation !== expectedSenderGeneration || sender.holderTargetKey !== registration.targetKey) throw new HostedParticipantError("conflict", "Message status caller identity or generation changed.");

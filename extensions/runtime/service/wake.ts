@@ -116,7 +116,7 @@ export class HostedWakeCoordinator {
 		this.request(registration.targetKey);
 	}
 
-	status(registration: HostedLiveRegistration): { pending: number; claimed: number; submitting: number; submitted: number; needsAttention: number; acknowledged: number; wakeId?: string } {
+	status(registration: HostedLiveRegistration) {
 		this.releaseExpired();
 		let pending = 0;
 		let claimed = 0;

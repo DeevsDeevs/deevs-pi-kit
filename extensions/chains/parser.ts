@@ -48,7 +48,7 @@ export function stripFrontmatter(content: string): string {
 	return content.replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, "");
 }
 
-export function parseCreatedAt(filename: string, metadata?: ChainLinkMetadata): { iso: string | null; ageDays: number | null; stale: boolean } {
+export function parseCreatedAt(filename: string, metadata?: ChainLinkMetadata) {
 	const fromMetadata = metadata?.created ? new Date(metadata.created) : null;
 	const date = fromMetadata && !Number.isNaN(fromMetadata.getTime()) ? fromMetadata : dateFromFilename(filename);
 	if (!date) return { iso: null, ageDays: null, stale: false };
@@ -66,7 +66,7 @@ export function slugify(value: string): string {
 	return truncateGraphemes(slug, 80, 228) || "chain-link";
 }
 
-export function truncateText(value: string, maxBytes: number): { text: string; truncated: boolean } {
+export function truncateText(value: string, maxBytes: number) {
 	const bytes = Buffer.byteLength(value, "utf8");
 	if (bytes <= maxBytes) return { text: value, truncated: false };
 	const suffix = `\n\n[chain content truncated to ${maxBytes} bytes]`;

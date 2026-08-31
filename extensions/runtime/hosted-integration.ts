@@ -515,7 +515,7 @@ export class HostedRuntimeIntegration {
 				return participant;
 			});
 			const actionable = action === "stand_down" ? targets.filter((participant) => participant.state === "held") : targets;
-			const results = new Array<CollaboratorManageResult>(targets.length);
+			const results = Array<CollaboratorManageResult>(targets.length);
 			if (action === "stand_down") targets.forEach((participant, index) => {
 				if (participant.state === "vacant") results[index] = { participant: `${protocol}/${participant.participantId}`, status: "already_vacant" };
 			});
@@ -590,6 +590,7 @@ export class HostedRuntimeIntegration {
 				if (!control.retainLock && control.capacity.registration && control.capacity.operationId) await this.client.call("participant.auto_capacity.release", { ...auth(control.capacity.registration), operationId: control.capacity.operationId });
 			} catch (error) {
 				control.retainLock = true;
+				// oxlint-disable-next-line no-unsafe-finally -- Release ambiguity must replace the prior outcome so recovery remains fail-closed.
 				throw new HostedCollaboratorStartError("unavailable", `Runtime Auto capacity ${control.capacity.operationId} could not be released; its launch lock and reservation were preserved. Recover with /runtime auto recover ${control.capacity.operationId}: ${error instanceof Error ? error.message : String(error)}`, true);
 			} finally {
 				if (!control.retainLock) releaseStartLock?.();
@@ -645,7 +646,7 @@ export class HostedRuntimeIntegration {
 				await this.client.call("participant.auto_capacity.reserve", { ...auth(registration), operationId, protocol: identity.protocol, callerParticipantId: identity.participantId, expectedCallerGeneration: caller.generation, participantIds: normalized.map((candidate) => candidate.participantId) });
 				this.recordAutoLifecycle(auto, "start", "authorized", registration, participantNames, operationId);
 			}
-			const results = new Array<CollaboratorManageResult>(normalized.length);
+			const results = Array<CollaboratorManageResult>(normalized.length);
 			let next = 0;
 			const worker = async (): Promise<void> => {
 				while (next < normalized.length) {
@@ -1132,16 +1133,17 @@ export class HostedRuntimeIntegration {
 				const recovered = bridgeRequestSubmitted ? await this.recoverBridgeRequest(registration, expectedCaller, bridgeRequestId, { bridgeId, protocol, participantId }) : undefined;
 				if (bridgeRequestSubmitted && !recovered) {
 					childMayBeLive = true;
+					// oxlint-disable-next-line no-unsafe-finally -- Unrecovered launch authority must replace the original result and preserve recovery evidence.
 					throw new HostedCollaboratorStartError("unavailable", "Failed native launch authority could not be recovered; capacity evidence was preserved.", true);
 				}
 				if (recovered?.status === "consumed") {
 					await this.stopRecoveredBridge(registration, recovered);
 					if (workspace) await this.client.call("workspace.retain", { ...authority, workspaceId: workspace.workspaceId });
-					preserved = true;
 				} else {
 					if (tabId || paneId) {
 						const resource = tabId ? ["tab", "close", tabId] : ["pane", "close", paneId!];
 						const closed = await this.pi.exec("herdr", resource, { timeout: 5_000 });
+						// oxlint-disable-next-line no-unsafe-finally -- Cleanup failure must replace the original launch result instead of claiming quiescence.
 						if (closed.code !== 0) throw new HostedRuntimeClientError("host_unavailable", "Herdr could not clean up failed native collaborator resources.");
 					}
 					if (workspace) await this.client.call("workspace.cleanup", { ...authority, workspaceId: workspace.workspaceId, discardConfirmed: true });
@@ -1738,15 +1740,19 @@ export function markClaudeWorkspaceTrusted(cwd: string, configPath = join(homedi
 		if (original !== undefined) try {
 			const parsed = JSON.parse(original);
 			if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid root");
+			// SAFETY: The preceding guard proves the parsed JSON root is a non-array object.
 			config = parsed as Record<string, unknown>;
 		} catch {
 			throw new HostedRuntimeClientError("host_unavailable", "Claude workspace trust store is malformed.");
 		}
 		const projects = config.projects === undefined ? {} : config.projects;
 		if (!projects || typeof projects !== "object" || Array.isArray(projects)) throw new HostedRuntimeClientError("host_unavailable", "Claude workspace trust projects are malformed.");
+		// SAFETY: The preceding guard proves the projects value is a non-array object.
 		const existing = (projects as Record<string, unknown>)[cwd];
 		if (existing !== undefined && (!existing || typeof existing !== "object" || Array.isArray(existing))) throw new HostedRuntimeClientError("host_unavailable", "Claude workspace trust entry is malformed.");
+		// SAFETY: The guard above proves a present entry is a non-array object; projects was validated before lookup.
 		if ((existing as Record<string, unknown> | undefined)?.hasTrustDialogAccepted === true) return;
+		// SAFETY: Both projects and a present existing entry passed the non-array object guards above.
 		const next = { ...config, projects: { ...(projects as Record<string, unknown>), [cwd]: { ...(existing as Record<string, unknown> | undefined), hasTrustDialogAccepted: true } } };
 		const temporary = join(dirname(configPath), `.${basename(configPath)}.${process.pid}.${randomUUID()}.tmp`);
 		try {

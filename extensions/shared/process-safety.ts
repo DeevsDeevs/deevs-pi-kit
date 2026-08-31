@@ -292,7 +292,7 @@ function closingParen(source: string, open: number): number | undefined {
 	return undefined;
 }
 
-function shellTokens(source: string): { tokens: ShellToken[]; unbalanced: boolean } {
+function shellTokens(source: string) {
 	const tokens: ShellToken[] = [];
 	let word = "";
 	let quote: "'" | "\"" | undefined;

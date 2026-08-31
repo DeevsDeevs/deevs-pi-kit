@@ -192,7 +192,7 @@ function bridgeTarget(launch: HostedBridgeLaunch, clientGeneration: string, crea
 	return { kind: "agent", ...shared, driver: launch.driver, agentSession: validateAgentSession(agentSession), capabilityTier: "managed" };
 }
 
-function bridgeCredentials(targetKey: string, reconnectToken: string): { registrationId: string; registrationKey: string } {
+function bridgeCredentials(targetKey: string, reconnectToken: string) {
 	const token = secret(reconnectToken);
 	return {
 		registrationId: `reg_bridge_${createHash("sha256").update("id\0").update(targetKey).update("\0").update(token).digest("hex").slice(0, 40)}`,
@@ -204,7 +204,7 @@ function result(registration: HostedLiveRegistration, target: HostedExternalTarg
 	return { registration, participantKey: target.participantKey, holderGeneration: target.holderGeneration, profile: target.profile, configurationHash: target.configurationHash, ...(target.kind === "agent" ? { driver: target.driver, capabilityTier: target.capabilityTier, agentSession: target.agentSession } : {}), metadata: target.metadata, projectRoot: target.projectRoot, cwd: target.workspaceRoot ?? target.projectRoot, ...(target.workspaceId ? { workspaceId: target.workspaceId } : {}) };
 }
 
-function parseLaunchToken(value: string): { launchId: string } {
+function parseLaunchToken(value: string) {
 	const match = TOKEN.exec(value);
 	if (!match) throw new HostedBridgeError("invalid_request", "Bridge launch token has invalid syntax.");
 	return { launchId: match[1]! };

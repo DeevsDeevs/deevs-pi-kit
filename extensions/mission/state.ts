@@ -13,7 +13,7 @@ const DEFAULT_CHAIN_BRANCH = "main";
 const MAX_REQUIREMENTS = 12;
 const MAX_PATHS = 100;
 export const DEFAULT_REVIEW_CORRECTION_LIMIT = 3;
-const STATUS_TRANSITIONS: Record<MissionStatus, readonly MissionStatus[]> = {
+const STATUS_TRANSITIONS = {
 	active: ["paused", "blocked", "terminal_error", "budget_limited", "usage_limited", "complete", "ended", "cleared"],
 	paused: ["active", "ended", "cleared"],
 	blocked: ["active", "ended", "cleared"],
@@ -23,7 +23,7 @@ const STATUS_TRANSITIONS: Record<MissionStatus, readonly MissionStatus[]> = {
 	complete: ["cleared"],
 	ended: ["active", "cleared"],
 	cleared: [],
-};
+} satisfies Record<MissionStatus, readonly MissionStatus[]>;
 
 export class MissionState {
 	private current: MissionCurrent | undefined;
@@ -403,7 +403,8 @@ export class MissionState {
 
 	statusEvent(status: MissionStatus, reason?: string, summary?: string): MissionEvent {
 		const mission = this.requireCurrent();
-		if (!STATUS_TRANSITIONS[mission.status].includes(status)) throw new Error(`Mission cannot transition from ${mission.status} to ${status}.`);
+		const allowed: readonly MissionStatus[] = STATUS_TRANSITIONS[mission.status];
+		if (!allowed.includes(status)) throw new Error(`Mission cannot transition from ${mission.status} to ${status}.`);
 		return { kind: status === "complete" ? "completed" : "status_changed", missionId: mission.missionId, generation: mission.generation, at: Date.now(), status, reason, summary };
 	}
 

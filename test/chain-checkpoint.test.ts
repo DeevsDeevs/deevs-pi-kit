@@ -31,6 +31,13 @@ describe("Chain checkpoint state", () => {
 		expect(replayed).toMatchObject({ chain: "kit", branch: "main", status: "due", dueReasons: ["review adjudicated"] });
 	});
 
+	it("rejects malformed persisted operations instead of casting them into state", () => {
+		const replayed = replayChainCheckpoint([
+			{ type: "custom", customType: CHAIN_CHECKPOINT_ENTRY, data: { type: "saved", chain: "kit", branch: "main", link: { unsafe: true }, at: 1 } },
+		]);
+		expect(replayed).toEqual(emptyChainCheckpoint());
+	});
+
 	it("satisfies only the exact saved or waived Chain target", () => {
 		const service = new ChainCheckpointService({ appendEntry() {} } as unknown as ExtensionAPI);
 		service.saved("other", "main");

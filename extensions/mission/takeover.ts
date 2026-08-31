@@ -30,7 +30,7 @@ export async function discoverMissionTakeoverCandidates(ctx: ExtensionContext): 
 			if (sourceSession?.id === snapshot.owner.sessionId) {
 				const manager = SessionManager.open(sourceSession.path);
 				const state = new MissionState();
-				state.loadFromSession({ cwd: ctx.cwd, sessionManager: manager } as unknown as ExtensionContext);
+				state.loadFromSession({ ...ctx, sessionManager: manager });
 				// Do not force usageComplete: a full replay of a readable source is complete only if the snapshot it restored was itself complete. Forcing true would let carried incompleteness (from an earlier takeover of an unreadable source) silently pass the bounded-budget gate.
 				if (state.readAny()?.missionId === snapshot.mission.missionId) current = state.exportSnapshot(snapshot.owner);
 			}

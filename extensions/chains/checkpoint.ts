@@ -429,14 +429,20 @@ async function gitFingerprint(pi: ExtensionAPI, cwd: string): Promise<string | u
 function parseOperation(value: unknown): ChainCheckpointOperation | undefined {
 	const operation = asRecord(value);
 	if (!operation || typeof operation.type !== "string" || typeof operation.at !== "number") return undefined;
-	if (operation.type === "activate" && typeof operation.chain === "string" && typeof operation.branch === "string") return operation as unknown as ChainCheckpointOperation;
-	if (operation.type === "due" && typeof operation.reason === "string") {
-		const codes: ChainDueCode[] = ["context_pressure", "material_change", "mission_milestone", "mission_control", "branch_created", "other"];
-		return { type: "due", reason: operation.reason, code: typeof operation.code === "string" && codes.includes(operation.code as ChainDueCode) ? operation.code as ChainDueCode : "other", at: operation.at };
+	if (operation.type === "activate" && typeof operation.chain === "string" && typeof operation.branch === "string") return { type: "activate", chain: operation.chain, branch: operation.branch, at: operation.at };
+	if (operation.type === "due" && typeof operation.reason === "string") return { type: "due", reason: operation.reason, code: chainDueCode(operation.code) ?? "other", at: operation.at };
+	if (operation.type === "saved" && typeof operation.chain === "string" && typeof operation.branch === "string" && (operation.link === undefined || typeof operation.link === "string")) {
+		const saved: ChainCheckpointOperation = { type: "saved", chain: operation.chain, branch: operation.branch, at: operation.at };
+		if (operation.link !== undefined) saved.link = operation.link;
+		return saved;
 	}
-	if (operation.type === "saved" && typeof operation.chain === "string" && typeof operation.branch === "string") return operation as unknown as ChainCheckpointOperation;
-	if (operation.type === "waived" && typeof operation.reason === "string") return operation as unknown as ChainCheckpointOperation;
-	if (operation.type === "context_reset") return operation as unknown as ChainCheckpointOperation;
+	if (operation.type === "waived" && typeof operation.reason === "string") return { type: "waived", reason: operation.reason, at: operation.at };
+	if (operation.type === "context_reset") return { type: "context_reset", at: operation.at };
+	return undefined;
+}
+
+function chainDueCode(value: unknown): ChainDueCode | undefined {
+	if (value === "context_pressure" || value === "material_change" || value === "mission_milestone" || value === "mission_control" || value === "branch_created" || value === "other") return value;
 	return undefined;
 }
 
