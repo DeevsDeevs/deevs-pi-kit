@@ -488,16 +488,17 @@ function parsePaneIdentity(value: unknown): HostedPaneIdentity {
 	try {
 		const pane = strictObject(value, "Herdr pane");
 		if (!Number.isSafeInteger(pane.revision) || Number(pane.revision) < 0) throw new Error("invalid pane revision");
-		return {
+		const result: HostedPaneIdentity = {
 			paneId: text(pane.pane_id),
 			tabId: text(pane.tab_id),
 			workspaceId: text(pane.workspace_id),
 			terminalId: text(pane.terminal_id),
 			cwd: text(pane.cwd),
-			...(typeof pane.agent === "string" ? { agent: pane.agent } : {}),
 			paneCount: 0,
 			revision: Number(pane.revision),
 		};
+		if (typeof pane.agent === "string") result.agent = pane.agent;
+		return result;
 	} catch {
 		throw new RegistrationError("host_unavailable", "Herdr returned malformed pane identity.");
 	}
@@ -517,18 +518,19 @@ function parseLiveAgent(value: unknown): HostedLiveAgent {
 		if (!Number.isSafeInteger(agent.state_change_seq) || Number(agent.state_change_seq) < 0) throw new Error("invalid state sequence");
 		const status = agent.agent_status;
 		if (status !== "idle" && status !== "working" && status !== "blocked" && status !== "done" && status !== "unknown") throw new Error("invalid agent status");
-		return {
+		const result: HostedLiveAgent = {
 			paneId: text(agent.pane_id),
-			...(typeof agent.tab_id === "string" ? { tabId: agent.tab_id } : {}),
-			...(typeof agent.workspace_id === "string" ? { workspaceId: agent.workspace_id } : {}),
 			terminalId: text(agent.terminal_id),
 			cwd: text(agent.cwd),
-			...(typeof agent.name === "string" ? { name: agent.name } : {}),
 			agentSession: { source: text(session.source), agent: text(session.agent), kind: session.kind, value: text(session.value) },
 			status,
-			...(typeof agent.focused === "boolean" ? { focused: agent.focused } : {}),
 			stateChangeSeq: Number(agent.state_change_seq),
 		};
+		if (typeof agent.tab_id === "string") result.tabId = agent.tab_id;
+		if (typeof agent.workspace_id === "string") result.workspaceId = agent.workspace_id;
+		if (typeof agent.name === "string") result.name = agent.name;
+		if (typeof agent.focused === "boolean") result.focused = agent.focused;
+		return result;
 	} catch (error) {
 		if (error instanceof RegistrationError) throw error;
 		throw new RegistrationError("host_unavailable", "Herdr returned malformed agent identity.");
