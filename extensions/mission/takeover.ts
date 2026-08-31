@@ -45,6 +45,7 @@ export async function discoverMissionTakeoverCandidates(ctx: ExtensionContext): 
 		try {
 			const manager = SessionManager.open(info.path);
 			const state = new MissionState();
+			// SAFETY: This widens SDK session entries only for the legacy reader; the surrounding catch rejects malformed candidate state.
 			state.loadLegacyBranch(manager.getBranch() as Array<any>, ctx.cwd);
 			const mission = state.read();
 			if (!mission || canonicalMissionIds.has(mission.missionId)) continue;

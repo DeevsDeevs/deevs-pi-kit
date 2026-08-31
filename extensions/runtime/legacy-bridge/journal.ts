@@ -40,7 +40,7 @@ export class BridgeJournalStore {
 		const turnsRoot = join(this.root, "turns");
 		let info;
 		try { info = lstatSync(turnsRoot); }
-		catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw new BridgeJournalError(`Cannot inspect bridge turn directory: ${turnsRoot}`); }
+		catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return; throw new BridgeJournalError(`Cannot inspect bridge turn directory: ${turnsRoot}`); }
 		if (info.isSymbolicLink() || !info.isDirectory()) throw new BridgeJournalError(`Bridge turn path is not an owned directory: ${turnsRoot}`);
 		const canonicalRoot = realpathSync(this.root);
 		const canonicalTurns = realpathSync(turnsRoot);
@@ -67,13 +67,15 @@ export function readWorkerState(path: string): BridgeWorkerState | undefined { c
 
 function validateJournal(value: unknown): BridgeJournal {
 	const state = object(value, "bridge journal", ["version", "bridgeId", "driver", "targetKey", "participantKey", "holderGeneration", "protocol", "participantId", "driverSessionId", "nextSequence", "admissions", "turns", "status", "updatedAt"]);
-	if (state.version !== 1 || !["fake", "claude-code", "codex"].includes(String(state.driver)) || !["starting", "running", "needs_attention", "stopped"].includes(String(state.status))) throw new BridgeJournalError("Bridge journal version, driver, or status is invalid.");
+	const driver = enumValue(state.driver, ["fake", "claude-code", "codex"], "Bridge journal driver is invalid.");
+	const status = enumValue(state.status, ["starting", "running", "needs_attention", "stopped"], "Bridge journal status is invalid.");
+	if (state.version !== 1) throw new BridgeJournalError("Bridge journal version, driver, or status is invalid.");
 	const admissions = array(state.admissions, "admissions", BRIDGE_RUNNER_MAX_TURNS).map(validateAdmission);
 	const turns = array(state.turns, "turns", BRIDGE_RUNNER_MAX_TURNS).map(validateTurn);
 	const result: BridgeJournal = {
 		version: 1,
 		bridgeId: text(state.bridgeId, "bridge ID", MAX_ID_BYTES),
-		driver: state.driver as BridgeJournal["driver"],
+		driver,
 		...(state.targetKey === undefined ? {} : { targetKey: text(state.targetKey, "target key", MAX_ID_BYTES) }),
 		...(state.participantKey === undefined ? {} : { participantKey: text(state.participantKey, "participant key", MAX_ID_BYTES) }),
 		...(state.holderGeneration === undefined ? {} : { holderGeneration: text(state.holderGeneration, "holder generation", MAX_ID_BYTES) }),
@@ -83,7 +85,7 @@ function validateJournal(value: unknown): BridgeJournal {
 		nextSequence: integer(state.nextSequence, "next sequence"),
 		admissions,
 		turns,
-		status: state.status as BridgeJournal["status"],
+		status,
 		updatedAt: time(state.updatedAt, "updated time"),
 	};
 	const admitted = new Map(admissions.map((item) => [item.claimId, new Set(item.eventIds)]));
@@ -102,12 +104,13 @@ function validateAdmission(value: unknown): BridgeAdmission {
 
 function validateTurn(value: unknown): BridgeTurn {
 	const item = object(value, "bridge turn", ["turnId", "sequence", "eventId", "claimId", "senderParticipantKey", "body", "task", "state", "attempt", "replySendId", "replyBody", "reply", "worker", "terminal", "createdAt", "updatedAt"]);
-	if (!['pending', 'starting', 'running', 'terminal', 'reply_pending', 'reply_sent', 'needs_attention'].includes(String(item.state)) || !["unsent", "uncertain", "sent"].includes(String(item.reply))) throw new BridgeJournalError("Bridge turn execution or reply state is invalid.");
+	const state = enumValue(item.state, ["pending", "starting", "running", "terminal", "reply_pending", "reply_sent", "needs_attention"], "Bridge turn execution state is invalid.");
+	const reply = enumValue(item.reply, ["unsent", "uncertain", "sent"], "Bridge turn reply state is invalid.");
 	const worker = item.worker === undefined ? undefined : object(item.worker, "turn worker", ["attempt", "statePath", "workerPid", "workerIdentity", "cancelRequested", "quiescedAt"]);
 	const terminal = item.terminal === undefined ? undefined : object(item.terminal, "turn terminal", ["status", "body", "sessionAdvance", "sessionId"]);
 	if (worker?.cancelRequested !== undefined && typeof worker.cancelRequested !== "boolean") throw new BridgeJournalError("Bridge worker cancel request must be boolean.");
-	if (terminal && !["completed", "failed", "cancelled"].includes(String(terminal.status))) throw new BridgeJournalError("Bridge terminal status is invalid.");
-	if (terminal && !["none", "committed", "uncertain"].includes(String(terminal.sessionAdvance))) throw new BridgeJournalError("Bridge session advance state is invalid.");
+	const terminalStatus = terminal ? enumValue(terminal.status, ["completed", "failed", "cancelled"], "Bridge terminal status is invalid.") : undefined;
+	const sessionAdvance = terminal ? enumValue(terminal.sessionAdvance, ["none", "committed", "uncertain"], "Bridge session advance state is invalid.") : undefined;
 	const result: BridgeTurn = {
 		turnId: text(item.turnId, "turn ID", MAX_ID_BYTES),
 		sequence: integer(item.sequence, "turn sequence"),
@@ -116,13 +119,13 @@ function validateTurn(value: unknown): BridgeTurn {
 		senderParticipantKey: text(item.senderParticipantKey, "sender participant key", MAX_ID_BYTES),
 		body: string(item.body, "turn body", BRIDGE_RUNNER_MAX_BODY_BYTES),
 		...(item.task === true ? { task: true as const } : item.task === undefined ? {} : invalid("Bridge turn task marker is invalid.")),
-		state: item.state as BridgeTurn["state"],
+		state,
 		attempt: integer(item.attempt, "attempt"),
 		replySendId: text(item.replySendId, "reply send ID", MAX_ID_BYTES),
 		...(item.replyBody === undefined ? {} : { replyBody: string(item.replyBody, "reply body", BRIDGE_RUNNER_MAX_BODY_BYTES) }),
-		reply: item.reply as BridgeTurn["reply"],
+		reply,
 		...(worker ? { worker: { attempt: integer(worker.attempt, "worker attempt"), statePath: text(worker.statePath, "worker state path", MAX_PATH_BYTES), ...(worker.workerPid === undefined ? {} : { workerPid: positiveInteger(worker.workerPid, "worker PID") }), ...(worker.workerIdentity === undefined ? {} : { workerIdentity: text(worker.workerIdentity, "worker identity", MAX_PATH_BYTES) }), ...(worker.cancelRequested === undefined ? {} : { cancelRequested: worker.cancelRequested }), ...(worker.quiescedAt === undefined ? {} : { quiescedAt: time(worker.quiescedAt, "worker quiescence time") }) } } : {}),
-		...(terminal ? { terminal: { status: terminal.status as BridgeTurn["terminal"] extends infer _ ? "completed" | "failed" | "cancelled" : never, body: string(terminal.body, "terminal body", BRIDGE_RUNNER_MAX_BODY_BYTES), sessionAdvance: terminal.sessionAdvance as "none" | "committed" | "uncertain", ...(terminal.sessionId === undefined ? {} : { sessionId: text(terminal.sessionId, "terminal session ID", MAX_ID_BYTES) }) } } : {}),
+		...(terminal && terminalStatus && sessionAdvance ? { terminal: { status: terminalStatus, body: string(terminal.body, "terminal body", BRIDGE_RUNNER_MAX_BODY_BYTES), sessionAdvance, ...(terminal.sessionId === undefined ? {} : { sessionId: text(terminal.sessionId, "terminal session ID", MAX_ID_BYTES) }) } } : {}),
 		createdAt: time(item.createdAt, "turn creation time"),
 		updatedAt: time(item.updatedAt, "turn updated time"),
 	};
@@ -134,9 +137,10 @@ function validateTurn(value: unknown): BridgeTurn {
 
 function validateWorkerState(value: unknown): BridgeWorkerState {
 	const item = object(value, "bridge worker state", ["version", "turnId", "eventId", "attempt", "status", "workerPid", "workerIdentity", "childPid", "childIdentity", "stdoutBytes", "stderrBytes", "frames", "terminal", "error", "startedAt", "updatedAt", "endedAt"]);
-	if (item.version !== 1 || !["starting", "running", "terminal", "needs_attention"].includes(String(item.status))) throw new BridgeJournalError("Bridge worker version or status is invalid.");
+	const status = enumValue(item.status, ["starting", "running", "terminal", "needs_attention"], "Bridge worker status is invalid.");
+	if (item.version !== 1) throw new BridgeJournalError("Bridge worker version or status is invalid.");
 	const terminal = item.terminal === undefined ? undefined : validateTurn({ turnId: "validation", sequence: 0, eventId: "validation", claimId: "validation", senderParticipantKey: "validation", body: "", state: "terminal", attempt: 0, replySendId: "validation", reply: "unsent", terminal: item.terminal, createdAt: 0, updatedAt: 0 }).terminal;
-	const result: BridgeWorkerState = { version: 1, turnId: text(item.turnId, "worker turn ID", MAX_ID_BYTES), eventId: text(item.eventId, "worker event ID", MAX_ID_BYTES), attempt: integer(item.attempt, "worker attempt"), status: item.status as BridgeWorkerState["status"], workerPid: positiveInteger(item.workerPid, "worker PID"), workerIdentity: text(item.workerIdentity, "worker identity", MAX_PATH_BYTES), ...(item.childPid === undefined ? {} : { childPid: positiveInteger(item.childPid, "child PID") }), ...(item.childIdentity === undefined ? {} : { childIdentity: text(item.childIdentity, "child identity", MAX_PATH_BYTES) }), stdoutBytes: integer(item.stdoutBytes, "stdout bytes"), stderrBytes: integer(item.stderrBytes, "stderr bytes"), frames: integer(item.frames, "frame count"), ...(terminal ? { terminal } : {}), ...(item.error === undefined ? {} : { error: string(item.error, "worker error", BRIDGE_RUNNER_MAX_BODY_BYTES) }), startedAt: time(item.startedAt, "worker start time"), updatedAt: time(item.updatedAt, "worker update time"), ...(item.endedAt === undefined ? {} : { endedAt: time(item.endedAt, "worker end time") }) };
+	const result: BridgeWorkerState = { version: 1, turnId: text(item.turnId, "worker turn ID", MAX_ID_BYTES), eventId: text(item.eventId, "worker event ID", MAX_ID_BYTES), attempt: integer(item.attempt, "worker attempt"), status, workerPid: positiveInteger(item.workerPid, "worker PID"), workerIdentity: text(item.workerIdentity, "worker identity", MAX_PATH_BYTES), ...(item.childPid === undefined ? {} : { childPid: positiveInteger(item.childPid, "child PID") }), ...(item.childIdentity === undefined ? {} : { childIdentity: text(item.childIdentity, "child identity", MAX_PATH_BYTES) }), stdoutBytes: integer(item.stdoutBytes, "stdout bytes"), stderrBytes: integer(item.stderrBytes, "stderr bytes"), frames: integer(item.frames, "frame count"), ...(terminal ? { terminal } : {}), ...(item.error === undefined ? {} : { error: string(item.error, "worker error", BRIDGE_RUNNER_MAX_BODY_BYTES) }), startedAt: time(item.startedAt, "worker start time"), updatedAt: time(item.updatedAt, "worker update time"), ...(item.endedAt === undefined ? {} : { endedAt: time(item.endedAt, "worker end time") }) };
 	if (result.stdoutBytes > BRIDGE_RUNNER_MAX_STDOUT_BYTES || result.stderrBytes > BRIDGE_RUNNER_MAX_STDERR_BYTES || result.frames > BRIDGE_RUNNER_MAX_FRAMES || result.updatedAt < result.startedAt || (result.endedAt !== undefined && result.endedAt < result.startedAt) || (result.status === "terminal" && !result.terminal)) throw new BridgeJournalError("Bridge worker counters, time, or terminal state is inconsistent.");
 	return result;
 }
@@ -149,10 +153,11 @@ function prepareDirectory(path: string): void {
 }
 
 // oxlint-disable-next-line anti-slop/no-unknown-returns -- Journal readers pass this raw JSON directly to the versioned state decoders above.
-function readJson(path: string, max: number): unknown | undefined { let fd: number | undefined; try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW); const info = fstatSync(fd); if (!info.isFile() || info.size > max || (info.mode & 0o077) !== 0) throw new Error(); return JSON.parse(readFileSync(fd, "utf8")); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw new BridgeJournalError(`Cannot read bridge state: ${path}`); } finally { if (fd !== undefined) closeSync(fd); } }
+function readJson(path: string, max: number): unknown | undefined { let fd: number | undefined; try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW); const info = fstatSync(fd); if (!info.isFile() || info.size > max || (info.mode & 0o077) !== 0) throw new Error(); return JSON.parse(readFileSync(fd, "utf8")); } catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined; throw new BridgeJournalError(`Cannot read bridge state: ${path}`); } finally { if (fd !== undefined) closeSync(fd); } }
 function writeAtomic(path: string, value: unknown, max: number): void { prepareDirectory(dirname(path)); const content = `${JSON.stringify(value, null, 2)}\n`; if (Buffer.byteLength(content) > max) throw new BridgeJournalError(`Bridge state exceeds ${max} bytes.`); if (lstatExistsSymlink(path)) throw new BridgeJournalError(`Refusing bridge state symlink: ${path}`); const temporary = join(dirname(path), `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`); let fd: number | undefined; try { fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); writeFileSync(fd, content); fsyncSync(fd); closeSync(fd); fd = undefined; renameSync(temporary, path); chmodSync(path, 0o600); const directory = openSync(dirname(path), constants.O_RDONLY | constants.O_NOFOLLOW); try { fsyncSync(directory); } finally { closeSync(directory); } } catch { if (fd !== undefined) closeSync(fd); try { unlinkSync(temporary); } catch {} throw new BridgeJournalError(`Cannot persist bridge state: ${path}`); } }
 function lstatExistsSymlink(path: string): boolean { try { return lstatSync(path).isSymbolicLink(); } catch { return false; } }
-function object(value: unknown, name: string, allowed: readonly string[]): Record<string, unknown> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new BridgeJournalError(`${name} must be an object.`); const item = value as Record<string, unknown>; for (const key of Object.keys(item)) if (!allowed.includes(key)) throw new BridgeJournalError(`${name} has unknown field ${key}.`); return item; }
+function object(value: unknown, name: string, allowed: readonly string[]): Record<string, unknown> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new BridgeJournalError(`${name} must be an object.`); /* SAFETY: Runtime checks exclude null, primitives, and arrays before schema validation. */ const item = value as Record<string, unknown>; for (const key of Object.keys(item)) if (!allowed.includes(key)) throw new BridgeJournalError(`${name} has unknown field ${key}.`); return item; }
+function enumValue<const Value extends string>(value: unknown, allowed: readonly Value[], message: string): Value { if (typeof value !== "string" || !allowed.some((candidate) => candidate === value)) throw new BridgeJournalError(message); /* SAFETY: Equality against the complete literal allowlist proves union membership. */ return value as Value; }
 function array(value: unknown, name: string, max: number): unknown[] { if (!Array.isArray(value) || value.length > max) throw new BridgeJournalError(`${name} exceeds ${max} entries.`); return value; }
 function text(value: unknown, name: string, max: number): string { const result = string(value, name, max); if (!result.trim()) throw new BridgeJournalError(`${name} is empty.`); return result; }
 function string(value: unknown, name: string, max: number): string { if (typeof value !== "string" || Buffer.byteLength(value) > max) throw new BridgeJournalError(`${name} exceeds ${max} bytes.`); return value; }

@@ -180,6 +180,7 @@ export class RuntimeEventJournal {
 	}
 }
 
+// SAFETY: This package exclusively owns the named hot-reload registry and initializes its exact shape below.
 const globalRegistry = globalThis as typeof globalThis & { __deevsPiKitRuntimeEventState?: RuntimeEventStateHolder };
 const runtimeEventState = globalRegistry.__deevsPiKitRuntimeEventState ??= { state: emptyRuntimeEventState() };
 export const runtimeEvents = new RuntimeEventJournal(runtimeEventState);
@@ -233,7 +234,8 @@ function isRuntimeEvent(value: unknown): value is RuntimeEvent {
 
 function isSourceIdentity(value: Record<string, unknown> | undefined): value is Record<string, unknown> & { kind: RuntimeSourceKind; id: string } {
 	return !!value
-		&& (RUNTIME_SOURCE_KINDS as readonly string[]).includes(String(value.kind))
+		&& typeof value.kind === "string"
+		&& RUNTIME_SOURCE_KINDS.some((kind) => kind === value.kind)
 		&& nonEmptyString(value.id);
 }
 
@@ -247,6 +249,7 @@ function nonEmptyString(value: unknown): value is string {
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
+	// SAFETY: The runtime checks exclude null, primitives, and arrays before key access.
 	return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 

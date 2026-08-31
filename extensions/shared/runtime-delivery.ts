@@ -122,7 +122,7 @@ export class RuntimeDeliveryCoordinator {
 	acknowledgeDelivered(ctx: ExtensionContext): void {
 		if (!this.pi) return;
 		const delivered = new Map<string, string>();
-		for (const entry of ctx.sessionManager.getBranch() as readonly unknown[]) {
+		for (const entry of ctx.sessionManager.getBranch()) {
 			const record = asRecord(entry);
 			if (record?.type !== "custom_message" || record.customType !== RUNTIME_DELIVERY_MESSAGE) continue;
 			const details = asRecord(record.details);
@@ -155,5 +155,6 @@ function deliveryContent(events: RuntimeEvent[]): string {
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
+	// SAFETY: The runtime checks exclude null, primitives, and arrays before key access.
 	return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }

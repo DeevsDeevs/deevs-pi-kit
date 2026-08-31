@@ -484,9 +484,9 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 		if (!claim || claim.targetKey !== operation.targetKey || !sameIds(claim.eventIds, operation.eventIds)) return state;
 		if (claim.status === "acked") return state;
 		const claimEvents = claim.eventIds.map((eventId) => state.events[eventId]);
-		if (claimEvents.some((event) => !event || !eventClaimTargetMatches(state, event, claim.targetKey) || !deliveryBelongsToClaim(event.delivery, claim.claimId))) return state;
+		if (!claimEvents.every((event): event is HostedEvent => event !== undefined && eventClaimTargetMatches(state, event, claim.targetKey) && deliveryBelongsToClaim(event.delivery, claim.claimId))) return state;
 		const events = { ...state.events };
-		for (const event of claimEvents as HostedEvent[]) {
+		for (const event of claimEvents) {
 			if (event.delivery.status !== "acked") events[event.eventId] = { ...event, delivery: { status: "acked", claimId: claim.claimId, ackedAt: operation.at } };
 		}
 		return pruneAcknowledged({
@@ -501,9 +501,9 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 		const target = state.targets[operation.targetKey];
 		if (!claim || claim.status !== "active" || claim.targetKey !== operation.targetKey || !sameIds(claim.eventIds, operation.eventIds) || target?.kind !== "agent" || target.capabilityTier !== "managed") throw new HostedStateConflictError("claim_conflict", "Managed submission claim or target is invalid.");
 		const claimedEvents = claim.eventIds.map((eventId) => state.events[eventId]);
-		if (claimedEvents.some((event) => !event || event.delivery.status !== "claimed" || event.delivery.claimId !== claim.claimId)) throw new HostedStateConflictError("claim_conflict", "Managed submission events are not held by the exact claim.");
+		if (!claimedEvents.every((event): event is HostedEvent => event !== undefined && event.delivery.status === "claimed" && event.delivery.claimId === claim.claimId)) throw new HostedStateConflictError("claim_conflict", "Managed submission events are not held by the exact claim.");
 		const events = { ...state.events };
-		for (const event of claimedEvents as HostedEvent[]) events[event.eventId] = { ...event, delivery: { status: "submitting", claimId: claim.claimId, attemptId: operation.attemptId, startedAt: operation.at } };
+		for (const event of claimedEvents) events[event.eventId] = { ...event, delivery: { status: "submitting", claimId: claim.claimId, attemptId: operation.attemptId, startedAt: operation.at } };
 		return { ...state, events };
 	}
 
@@ -511,9 +511,9 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 		const claim = state.claims[operation.claimId];
 		if (!claim || claim.status !== "active" || claim.targetKey !== operation.targetKey || !sameIds(claim.eventIds, operation.eventIds)) throw new HostedStateConflictError("claim_conflict", "Managed submission settlement claim is invalid.");
 		const submittingEvents = claim.eventIds.map((eventId) => state.events[eventId]);
-		if (submittingEvents.some((event) => !event || event.delivery.status !== "submitting" || event.delivery.claimId !== claim.claimId || event.delivery.attemptId !== operation.attemptId)) throw new HostedStateConflictError("claim_conflict", "Managed submission settlement does not match its exact attempt.");
+		if (!submittingEvents.every((event): event is HostedEvent => event !== undefined && event.delivery.status === "submitting" && event.delivery.claimId === claim.claimId && event.delivery.attemptId === operation.attemptId)) throw new HostedStateConflictError("claim_conflict", "Managed submission settlement does not match its exact attempt.");
 		const events = { ...state.events };
-		for (const event of submittingEvents as HostedEvent[]) {
+		for (const event of submittingEvents) {
 			const delivery: HostedEventDelivery = operation.outcome === "submitted" ? { status: "submitted", claimId: claim.claimId, attemptId: operation.attemptId, submittedAt: operation.at } : operation.outcome === "needs_attention" ? { status: "needs_attention", claimId: claim.claimId, attemptId: operation.attemptId, recordedAt: operation.at } : { status: "pending", latestClaimId: claim.claimId };
 			events[event.eventId] = { ...event, delivery };
 		}
@@ -531,8 +531,8 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 		const claim = state.claims[operation.claimId];
 		if (!claim || claim.targetKey !== operation.targetKey || !sameIds(claim.eventIds, operation.eventIds) || claim.status === "acked") return state;
 		const admittedEvents = claim.eventIds.map((eventId) => state.events[eventId]);
-		if (admittedEvents.some((event) => !event || !eventClaimTargetMatches(state, event, claim.targetKey))) return state;
-		if (admittedEvents.some((event) => event?.delivery.status === "acked" && event.delivery.claimId !== claim.claimId)) return state;
+		if (!admittedEvents.every((event): event is HostedEvent => event !== undefined && eventClaimTargetMatches(state, event, claim.targetKey))) return state;
+		if (admittedEvents.some((event) => event.delivery.status === "acked" && event.delivery.claimId !== claim.claimId)) return state;
 		let next = state;
 		const competingClaims = new Set(admittedEvents.flatMap((event) => event?.delivery.status === "claimed" && event.delivery.claimId !== claim.claimId ? [event.delivery.claimId] : []));
 		for (const competingClaimId of competingClaims) {
@@ -540,7 +540,7 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 			if (competing?.status === "active") next = releaseClaim(next, competing.targetKey, competing.claimId, competing.eventIds, operation.at);
 		}
 		const events = { ...next.events };
-		for (const event of admittedEvents as HostedEvent[]) events[event.eventId] = { ...event, delivery: { status: "acked", claimId: claim.claimId, ackedAt: operation.at } };
+		for (const event of admittedEvents) events[event.eventId] = { ...event, delivery: { status: "acked", claimId: claim.claimId, ackedAt: operation.at } };
 		return pruneAcknowledged({
 			...next,
 			claims: { ...next.claims, [claim.claimId]: { ...claim, status: "acked", settledAt: operation.at } },
@@ -631,6 +631,7 @@ export function readHostedRuntimeState(root: string): HostedRuntimeState {
 	const value = readJson(path, HOSTED_STATE_MAX_BYTES);
 	if (value === undefined) return emptyHostedRuntimeState();
 	if (!value || typeof value !== "object" || Array.isArray(value)) return validateHostedRuntimeState(value);
+	// SAFETY: The preceding runtime check excludes null, primitives, and arrays before reading the version discriminator.
 	const version = (value as Record<string, unknown>).version;
 	if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7) return validateHostedRuntimeState(value);
 	const migrated = version === 1 ? migrateHostedRuntimeStateV1(value) : version === 2 ? migrateHostedRuntimeStateV2(value) : version === 3 ? migrateHostedRuntimeStateV3(value) : version === 4 ? migrateHostedRuntimeStateV4(value) : version === 5 ? migrateHostedRuntimeStateV5(value) : version === 6 ? migrateHostedRuntimeStateV6(value) : migrateHostedRuntimeStateV7(value);
@@ -808,9 +809,9 @@ function claimEvents(state: HostedRuntimeState, claim: HostedClaim): HostedRunti
 	if (Object.values(state.claims).some((candidate) => candidate.status === "active" && candidate.targetKey === claim.targetKey)) throw new HostedStateConflictError("claim_conflict", "Target already has an active delivery claim.");
 	if (new Set(claim.eventIds).size !== claim.eventIds.length || claim.leaseUntil <= claim.createdAt) return state;
 	const claimedEvents = claim.eventIds.map((eventId) => state.events[eventId]);
-	if (claimedEvents.some((event) => !event || !hostedEventRoutesToTarget(state, event, claim.targetKey) || event.delivery.status !== "pending")) return state;
+	if (!claimedEvents.every((event): event is HostedEvent => event !== undefined && hostedEventRoutesToTarget(state, event, claim.targetKey) && event.delivery.status === "pending")) return state;
 	const events = { ...state.events };
-	for (const event of claimedEvents as HostedEvent[]) events[event.eventId] = { ...event, delivery: { status: "claimed", claimId: claim.claimId } };
+	for (const event of claimedEvents) events[event.eventId] = { ...event, delivery: { status: "claimed", claimId: claim.claimId } };
 	return { ...state, claims: { ...state.claims, [claim.claimId]: claim }, events };
 }
 
@@ -964,7 +965,8 @@ function validateLegacyPiTarget(value: unknown, key: string): HostedTarget {
 
 function validateBridgeLaunch(value: unknown, key: string, legacyBridge = false): HostedBridgeLaunch {
 	const launch = strictObject(value, "bridge launch", ["version", "launchId", "requestId", "launchDigest", "reconnectDigest", "callerParticipantKey", "callerGeneration", "callerTargetKey", "participantKey", "protocol", "participantId", "expectedParticipantGeneration", "holderGeneration", "targetKey", "projectRoot", "profile", "configurationHash", "driver", "herdr", "workspaceId", "workspaceRoot", "metadata", "createdAt", "expiresAt", "status", "consumedAt", "clientGeneration"]);
-	if (launch.version !== 1 || !["pending", "consumed", "cancelled", "expired"].includes(String(launch.status)) || (launch.profile !== "read-only" && launch.profile !== "workspace-write") || (launch.workspaceId === undefined) !== (launch.workspaceRoot === undefined) || (legacyBridge ? launch.profile !== "read-only" || launch.workspaceId !== undefined : (launch.profile === "workspace-write") !== (launch.workspaceId !== undefined))) throw new Error("invalid bridge launch version, status, profile, or workspace authority");
+	const status = enumValue(launch.status, ["pending", "consumed", "cancelled", "expired"], "invalid bridge launch status");
+	if (launch.version !== 1 || (launch.profile !== "read-only" && launch.profile !== "workspace-write") || (launch.workspaceId === undefined) !== (launch.workspaceRoot === undefined) || (legacyBridge ? launch.profile !== "read-only" || launch.workspaceId !== undefined : (launch.profile === "workspace-write") !== (launch.workspaceId !== undefined))) throw new Error("invalid bridge launch version, status, profile, or workspace authority");
 	const result: HostedBridgeLaunch = {
 		version: 1,
 		launchId: text(launch.launchId, "bridge launch ID", MAX_ID_BYTES),
@@ -989,7 +991,7 @@ function validateBridgeLaunch(value: unknown, key: string, legacyBridge = false)
 		metadata: legacyBridge ? migrateBridgeMetadata(launch.metadata) : validateBridgeMetadata(launch.metadata),
 		createdAt: nonNegativeNumber(launch.createdAt, "bridge launch creation time"),
 		expiresAt: nonNegativeNumber(launch.expiresAt, "bridge launch expiry"),
-		status: launch.status as HostedBridgeLaunch["status"],
+		status,
 		...(launch.consumedAt === undefined ? {} : { consumedAt: nonNegativeNumber(launch.consumedAt, "bridge consumption time") }),
 		...(launch.clientGeneration === undefined ? {} : { clientGeneration: text(launch.clientGeneration, "bridge client generation", MAX_ID_BYTES) }),
 	};
@@ -1003,9 +1005,10 @@ function validateWorkspaceV4(value: unknown, key: string): HostedWorkspace { ret
 function validateWorkspaceRecord(value: unknown, key: string, legacyPi: boolean): HostedWorkspace {
 	const item = strictObject(value, "workspace", ["version", "workspaceId", "requestId", "projectRoot", "gitCommonDir", "worktreePath", "branchRef", "participantKey", "protocol", "participantId", "expectedParticipantGeneration", "holderGeneration", "targetKey", "ownerKind", "piSessionId", "bridgeId", "profile", "launchDigest", "callerParticipantKey", "callerGeneration", "callerTargetKey", "baseCommit", "headCommit", "herdr", "state", "taskStatus", "commits", "changedFiles", "additions", "deletions", "integratedHead", "createdAt", "expiresAt", "updatedAt"]);
 	const ownerKind = legacyPi ? "pi" : item.ownerKind;
-	if (item.version !== 1 || item.profile !== "workspace-write" || (ownerKind !== "pi" && ownerKind !== "bridge") || !["provisioning", "ready", "bound", "active", "ready_handoff", "partial", "retained", "needs_attention", "integrated", "cleaned"].includes(String(item.state))) throw new Error("invalid workspace version, owner, profile, or state");
+	const state = enumValue(item.state, ["provisioning", "ready", "bound", "active", "ready_handoff", "partial", "retained", "needs_attention", "integrated", "cleaned"], "invalid workspace state");
+	if (item.version !== 1 || item.profile !== "workspace-write" || (ownerKind !== "pi" && ownerKind !== "bridge")) throw new Error("invalid workspace version, owner, profile, or state");
 	if (ownerKind === "pi" ? typeof item.piSessionId !== "string" || typeof item.launchDigest !== "string" || item.bridgeId !== undefined : typeof item.bridgeId !== "string" || item.piSessionId !== undefined || item.launchDigest !== undefined) throw new Error("workspace owner authority is inconsistent");
-	if (item.taskStatus !== undefined && item.taskStatus !== "completed" && item.taskStatus !== "failed" && item.taskStatus !== "cancelled") throw new Error("invalid workspace task status");
+	const taskStatus = item.taskStatus === undefined ? undefined : enumValue(item.taskStatus, ["completed", "failed", "cancelled"], "invalid workspace task status");
 	const protocol = participantName(item.protocol, "workspace protocol");
 	const participantId = participantName(item.participantId, "workspace participant ID");
 	const projectRoot = text(item.projectRoot, "workspace project root", MAX_PATH_BYTES);
@@ -1031,8 +1034,8 @@ function validateWorkspaceRecord(value: unknown, key: string, legacyPi: boolean)
 		baseCommit: gitOid(item.baseCommit, "workspace base commit"),
 		headCommit: gitOid(item.headCommit, "workspace head commit"),
 		...(item.herdr === undefined ? {} : { herdr: validateBridgeHerdr(item.herdr) }),
-		state: item.state as HostedWorkspace["state"],
-		...(item.taskStatus === undefined ? {} : { taskStatus: item.taskStatus as HostedWorkspace["taskStatus"] }),
+		state,
+		...(taskStatus === undefined ? {} : { taskStatus }),
 		...(commits ? { commits } : {}),
 		...(item.changedFiles === undefined ? {} : { changedFiles: integer(item.changedFiles, "workspace changed files") }),
 		...(item.additions === undefined ? {} : { additions: integer(item.additions, "workspace additions") }),
@@ -1051,7 +1054,8 @@ function validateWorkspaceRecord(value: unknown, key: string, legacyPi: boolean)
 
 function validateIntegration(value: unknown, key: string): HostedIntegration {
 	const item = strictObject(value, "integration", ["version", "integrationId", "workspaceId", "projectRoot", "gitCommonDir", "worktreePath", "branchRef", "mainBranchRef", "mainHead", "sourceHead", "sourceCommits", "state", "preparedHead", "conflictPaths", "createdAt", "updatedAt", "finalizedAt"]);
-	if (item.version !== 1 || !["preparing", "prepared", "conflicted", "needs_attention", "finalized", "cleaned"].includes(String(item.state))) throw new Error("invalid integration version or state");
+	const state = enumValue(item.state, ["preparing", "prepared", "conflicted", "needs_attention", "finalized", "cleaned"], "invalid integration state");
+	if (item.version !== 1) throw new Error("invalid integration version or state");
 	const sourceCommits = stringArray(item.sourceCommits, "integration source commits", 1_000).map((value) => gitOid(value, "integration source commit"));
 	if (sourceCommits.length < 1) throw new Error("integration requires source commits");
 	const result: HostedIntegration = {
@@ -1066,7 +1070,7 @@ function validateIntegration(value: unknown, key: string): HostedIntegration {
 		mainHead: gitOid(item.mainHead, "integration main head"),
 		sourceHead: gitOid(item.sourceHead, "integration source head"),
 		sourceCommits,
-		state: item.state as HostedIntegration["state"],
+		state,
 		...(item.preparedHead === undefined ? {} : { preparedHead: gitOid(item.preparedHead, "prepared integration head") }),
 		...(item.conflictPaths === undefined ? {} : { conflictPaths: stringArray(item.conflictPaths, "integration conflict paths", 10_000) }),
 		createdAt: nonNegativeNumber(item.createdAt, "integration creation time"),
@@ -1292,12 +1296,11 @@ function validateTaskResultEvent(value: unknown, key: string): HostedMailboxTask
 	const source = strictObject(event.source, "task result source", ["kind", "id", "generation", "sequence"]);
 	if (source.kind !== "participant") throw new Error("invalid task result source kind");
 	const payload = strictObject(event.payload, "task result payload", ["sendId", "replyId", "senderParticipantKey", "recipientParticipantKey", "body", "fingerprint", "inReplyToEventId", "status", "sessionAdvance", "workspace"]);
-	if (payload.status !== "completed" && payload.status !== "failed" && payload.status !== "cancelled" || payload.sessionAdvance !== "none" && payload.sessionAdvance !== "committed") throw new Error("invalid task result status or session advancement");
+	const status = enumValue(payload.status, ["completed", "failed", "cancelled"], "invalid task result status");
+	const sessionAdvance = enumValue(payload.sessionAdvance, ["none", "committed"], "invalid task result session advancement");
 	const body = text(payload.body, "task result body", HOSTED_MAILBOX_MAX_BODY_BYTES);
 	const recipientParticipantKey = text(event.recipientParticipantKey, "task result recipient key", MAX_ID_BYTES);
 	const workspace = payload.workspace === undefined ? undefined : validateTaskWorkspaceEvidence(payload.workspace);
-	const status = payload.status as "completed" | "failed" | "cancelled";
-	const sessionAdvance = payload.sessionAdvance as "none" | "committed";
 	const operation: Extract<HostedStateOperation, { type: "task.result" }> = { type: "task.result",  senderParticipantKey: text(payload.senderParticipantKey, "task result sender key", MAX_ID_BYTES), expectedSenderGeneration: text(source.generation, "task result source generation", MAX_ID_BYTES), senderTargetKey: "validation", sendId: text(payload.sendId, "task result send ID", MAX_ID_BYTES), eventId: text(event.eventId, "task result event ID", MAX_ID_BYTES), inReplyToEventId: text(payload.inReplyToEventId, "task result reply event ID", MAX_ID_BYTES), status, body, sessionAdvance, ...(workspace ? { workspace } : {}), at: nonNegativeNumber(event.createdAt, "task result creation time") };
 	const result: HostedMailboxTaskResultEvent = { version: 1, eventId: operation.eventId, dedupeKey: text(event.dedupeKey, "task result dedupe key", MAX_PATH_BYTES), source: { kind: "participant", id: operation.senderParticipantKey, generation: operation.expectedSenderGeneration, sequence: integer(source.sequence, "task result source sequence") }, recipientParticipantKey, type: "mailbox.task_result", createdAt: operation.at, summary: stringValue(event.summary, "task result summary", MAX_SUMMARY_BYTES), payload: { sendId: operation.sendId, replyId: text(payload.replyId, "task result reply ID", MAX_ID_BYTES), senderParticipantKey: operation.senderParticipantKey, recipientParticipantKey: text(payload.recipientParticipantKey, "task result payload recipient", MAX_ID_BYTES), body, fingerprint: text(payload.fingerprint, "task result fingerprint", MAX_ID_BYTES), inReplyToEventId: operation.inReplyToEventId, status: operation.status, sessionAdvance: operation.sessionAdvance, ...(workspace ? { workspace } : {}) }, delivery: validateDelivery(event.delivery) };
 	if (result.eventId !== key || result.source.id !== result.payload.senderParticipantKey || result.recipientParticipantKey !== result.payload.recipientParticipantKey || result.payload.replyId !== result.payload.sendId || result.dedupeKey !== mailboxDedupeKey(result.source.id, result.payload.sendId) || result.payload.fingerprint !== taskResultFingerprint(recipientParticipantKey, operation)) throw new Error("task result identity, dedupe, or fingerprint is invalid");
@@ -1306,9 +1309,10 @@ function validateTaskResultEvent(value: unknown, key: string): HostedMailboxTask
 
 function validateTaskWorkspaceEvidence(value: unknown): HostedTaskWorkspaceEvidence {
 	const item = strictObject(value, "task workspace evidence", ["workspaceId", "baseCommit", "headCommit", "branchRef", "state", "dirty", "artifactRef", "capturedAt"]);
-	if (!["provisioning", "ready", "bound", "active", "ready_handoff", "partial", "retained", "needs_attention", "integrated", "cleaned"].includes(String(item.state)) || typeof item.dirty !== "boolean") throw new Error("task workspace evidence state is invalid");
+	const state = enumValue(item.state, ["provisioning", "ready", "bound", "active", "ready_handoff", "partial", "retained", "needs_attention", "integrated", "cleaned"], "task workspace evidence state is invalid");
+	if (typeof item.dirty !== "boolean") throw new Error("task workspace evidence state is invalid");
 	const branchRef = text(item.branchRef, "task workspace branch", MAX_PATH_BYTES);
-	const result: HostedTaskWorkspaceEvidence = { workspaceId: text(item.workspaceId, "task workspace ID", MAX_ID_BYTES), baseCommit: gitOid(item.baseCommit, "task workspace base"), headCommit: gitOid(item.headCommit, "task workspace head"), branchRef, state: item.state as HostedTaskWorkspaceEvidence["state"], dirty: item.dirty, artifactRef: text(item.artifactRef, "task workspace artifact", MAX_PATH_BYTES), capturedAt: nonNegativeNumber(item.capturedAt, "task workspace capture time") };
+	const result: HostedTaskWorkspaceEvidence = { workspaceId: text(item.workspaceId, "task workspace ID", MAX_ID_BYTES), baseCommit: gitOid(item.baseCommit, "task workspace base"), headCommit: gitOid(item.headCommit, "task workspace head"), branchRef, state, dirty: item.dirty, artifactRef: text(item.artifactRef, "task workspace artifact", MAX_PATH_BYTES), capturedAt: nonNegativeNumber(item.capturedAt, "task workspace capture time") };
 	if (result.artifactRef !== branchRef) throw new Error("task workspace artifact does not match its branch");
 	return result;
 }
@@ -1486,9 +1490,16 @@ function mapStrings(value: unknown, name: string): Record<string, string> {
 
 function strictObject(value: unknown, name: string, allowed?: readonly string[]): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${name} must be an object`);
+	// SAFETY: The preceding runtime check excludes null, primitives, and arrays before schema validation and key access.
 	const record = value as Record<string, unknown>;
 	if (allowed) for (const key of Object.keys(record)) if (!allowed.includes(key)) throw new Error(`${name} has unknown field ${key}`);
 	return record;
+}
+
+function enumValue<const Value extends string>(value: unknown, allowed: readonly Value[], message: string): Value {
+	if (typeof value !== "string" || !allowed.some((candidate) => candidate === value)) throw new Error(message);
+	// SAFETY: Runtime equality against the complete literal allowlist proves membership in its inferred union.
+	return value as Value;
 }
 
 function stringArray(value: unknown, name: string, max: number): string[] {

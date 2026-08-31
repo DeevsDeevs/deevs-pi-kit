@@ -79,7 +79,7 @@ export class MissionState {
 	}
 
 	loadFromSession(ctx: ExtensionContext): void {
-		const branch = ctx.sessionManager.getBranch() as Array<any>;
+		const branch = ctx.sessionManager.getBranch();
 		const owner = currentMissionOwner(ctx);
 		this.cwd = ctx.cwd;
 		this.owner = owner;
@@ -156,7 +156,7 @@ export class MissionState {
 		if (this.readAny()) throw new Error(`This session already controls Mission ${this.current!.missionId}.`);
 		const source = candidate.snapshot;
 		const cwd = ctx.cwd;
-		const branch = ctx.sessionManager.getBranch() as Array<any>;
+		const branch = ctx.sessionManager.getBranch();
 		const currentAggregate = aggregateUsage(branch);
 		let taken!: MissionSnapshot;
 		const transfer = () => withMissionLock(cwd, source.mission.slug, () => {
@@ -229,6 +229,7 @@ export class MissionState {
 		this.clearLoadedState();
 		for (const entry of branch) {
 			if (entry.type === "custom" && entry.customType === MISSION_CUSTOM_TYPE) {
+				// SAFETY: Only this extension writes the matching custom entry; malformed legacy branches remain bounded to takeover migration and are rejected by snapshot validation.
 				const rawEvent = entry.data as MissionEvent | undefined;
 				if (!rawEvent?.missionId || rawEvent.kind === "taken_over") continue;
 				const event = rawEvent.kind === "created" && rawEvent.baselineMainTokens === undefined
@@ -236,13 +237,13 @@ export class MissionState {
 					: rawEvent;
 				this.applyEvent(event);
 				if (event.reviewOutcome === "failed") this.reviewFailureCount++;
-				const status = (this.current as MissionCurrent | undefined)?.status;
+				const status = this.current?.status;
 				if (["complete", "ended", "cleared", "budget_limited"].includes(status ?? "")) terminalUsage = { ...rolling };
 				continue;
 			}
 			addUsageFromEntry(rolling, entry, seenSubagents);
 		}
-		const current = this.current as MissionCurrent | undefined;
+		const current = this.current;
 		if (current) current.artifactDir = missionDir(cwd, current.slug);
 		const terminal = current && ["complete", "ended", "cleared", "budget_limited"].includes(current.status);
 		this.usage = current ? usageFromAggregate(terminal ? terminalUsage ?? rolling : rolling, current) : zeroUsage();
@@ -311,7 +312,7 @@ export class MissionState {
 			const now = Date.now();
 			const missionId = `m_${now.toString(36)}_${randomUUID().slice(0, 6)}`;
 			const slug = `${baseSlug}-${missionId.slice(-6)}`;
-			const baseline = aggregateUsage(ctx.sessionManager.getBranch() as Array<any>);
+			const baseline = aggregateUsage(ctx.sessionManager.getBranch());
 			return {
 				kind: "created",
 				missionId,
@@ -817,6 +818,7 @@ function takeoverStatus(snapshot: MissionSnapshot): MissionStatus {
 function latestMissionAnchor(branch: Array<any>): { kind: "created" | "taken_over"; missionId: string; slug: string } | undefined {
 	for (let index = branch.length - 1; index >= 0; index--) {
 		const entry = branch[index];
+		// SAFETY: The matching custom type is exclusively emitted by this extension; only anchor identity fields are read here.
 		const event = entry?.type === "custom" && entry.customType === MISSION_CUSTOM_TYPE ? entry.data as MissionEvent | undefined : undefined;
 		if ((event?.kind === "created" || event?.kind === "taken_over") && event.missionId && event.slug) return { kind: event.kind, missionId: event.missionId, slug: event.slug };
 	}

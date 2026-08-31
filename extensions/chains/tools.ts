@@ -163,22 +163,32 @@ function chainCall(action: string, target: string, theme: Theme): Text {
 	return new Text(theme.fg("toolTitle", theme.bold(`chain ${action} `)) + theme.fg("muted", target), 0, 0);
 }
 
+interface ChainResultDetails {
+	link?: { chain?: string; branch?: string; filename?: string; title?: string };
+	chains?: Array<{ chain: string; count: number }>;
+	matches?: unknown[];
+	includedLinks?: unknown[];
+	chain?: string;
+	branch?: string;
+}
+
 function chainResult(details: unknown, expanded: boolean, theme: Theme): Text {
-	const value = details as Record<string, unknown> | undefined;
-	const link = value?.link as { chain?: string; branch?: string; filename?: string; title?: string } | undefined;
+	// SAFETY: Details are emitted only by the registered Chain handlers above and are consumed solely for display.
+	const value = details as ChainResultDetails | undefined;
+	const link = value?.link;
 	if (link) {
 		let text = `${theme.fg("success", "✓")} ${theme.fg("accent", `${link.chain ?? "chain"}@${link.branch ?? "main"}`)} ${theme.fg("muted", link.filename ?? "")}`;
 		if (expanded && link.title) text += `\n${link.title}`;
 		return new Text(text, 0, 0);
 	}
-	const chains = value?.chains as Array<{ chain: string; count: number }> | undefined;
+	const chains = value?.chains;
 	if (chains) {
 		const visible = expanded ? chains : chains.slice(0, 5);
 		return new Text(visible.length ? visible.map((chain) => `${theme.fg("accent", chain.chain)} ${theme.fg("muted", `${chain.count} link(s)`)}`).join("\n") : theme.fg("dim", "No chains"), 0, 0);
 	}
-	const matches = value?.matches as unknown[] | undefined;
+	const matches = value?.matches;
 	if (matches) return new Text(`${theme.fg("success", "✓")} ${matches.length} match(es)`, 0, 0);
-	const included = value?.includedLinks as unknown[] | undefined;
+	const included = value?.includedLinks;
 	if (included) return new Text(`${theme.fg("success", "✓")} context packed from ${included.length} link(s)`, 0, 0);
 	if (typeof value?.chain === "string" && typeof value.branch === "string") return new Text(`${theme.fg("success", "✓")} ${theme.fg("accent", `${value.chain}@${value.branch}`)}`, 0, 0);
 	return new Text(theme.fg("dim", "Chain operation complete"), 0, 0);

@@ -81,8 +81,8 @@ export class ChainsDashboard implements Component {
 
 	private rows(): ChainRow[] {
 		return this.chains.flatMap((chain) => [
-			{ kind: "chain", chain } as ChainRow,
-			...(this.expandedChain === chain.chain ? (chain.branches ?? []).map((branch) => ({ kind: "branch", chain, branch }) as ChainRow) : []),
+			{ kind: "chain", chain } satisfies ChainRow,
+			...(this.expandedChain === chain.chain ? (chain.branches ?? []).map((branch) => ({ kind: "branch", chain, branch } satisfies ChainRow)) : []),
 		]);
 	}
 
