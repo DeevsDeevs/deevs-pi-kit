@@ -32,7 +32,7 @@ export class CollaboratorAutoStore {
 		this.keybindingsPath = join(dirname(runtimeRoot), "keybindings.json");
 	}
 
-	read(): { state: CollaboratorAutoState; valid: boolean; error?: string } {
+	read() {
 		if (!existsSync(this.statePath)) return { state: manualState(), valid: true };
 		try {
 			return { state: parseState(readJson(this.statePath, MAX_STATE_BYTES)), valid: true };
@@ -61,7 +61,7 @@ export class CollaboratorAutoStore {
 		} catch { return false; }
 	}
 
-	configureShortcut(): { path: string; changed: boolean } {
+	configureShortcut() {
 		const config = readKeybindings(this.keybindingsPath);
 		for (const [action, value] of Object.entries(config)) {
 			if (action === THINKING_ACTION) continue;

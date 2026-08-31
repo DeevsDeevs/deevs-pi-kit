@@ -24,7 +24,7 @@ try {
 	process.exitCode = 1;
 }
 
-function parseArgs(args: string[]): { root: string; help: boolean } {
+function parseArgs(args: string[]) {
 	let root = join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "runtime");
 	let help = false;
 	for (let index = 0; index < args.length; index++) {
