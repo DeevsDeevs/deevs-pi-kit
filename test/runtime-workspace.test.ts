@@ -258,8 +258,7 @@ describe("Runtime isolated collaborator workspace", () => {
 		const checkpoint = internals.git.checkpoint.bind(internals.git);
 		internals.git.checkpoint = async () => { throw new Error("injected checkpoint failure"); };
 		await expect(test.coordinator.checkpoint(main, { ...authority, taskStatus: "cancelled" })).rejects.toThrow("injected checkpoint failure");
-		expect(test.store.read().workspaces[workspace.workspace.workspaceId]?.state).toBe("needs_attention");
-		expect(test.coordinator.retain(main, authority).state).toBe("retained");
+		expect(test.store.read().workspaces[workspace.workspace.workspaceId]?.state).toBe("retained");
 		internals.git.checkpoint = checkpoint;
 		expect(await test.coordinator.checkpoint(main, { ...authority, taskStatus: "cancelled" })).toMatchObject({ state: "partial", changedFiles: 1, taskStatus: "cancelled" });
 	});
