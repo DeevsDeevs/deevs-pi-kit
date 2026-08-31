@@ -1527,13 +1527,17 @@ export class HostedRuntimeIntegration {
 
 	private restoreParticipantIdentity(ctx: ExtensionContext): void {
 		this.participantIdentity = undefined;
+		let persisted = false;
 		for (const entry of sessionBranch(ctx)) {
 			const record = asRecord(entry);
 			if (record?.type !== "custom" || record.customType !== HOSTED_PARTICIPANT_ENTRY) continue;
-			const identity = parseParticipantIdentity(record.data);
-			if (identity) this.participantIdentity = identity;
+			persisted = true;
+			this.participantIdentity = parseParticipantIdentity(record.data);
 		}
-		if (this.participantIdentity) return;
+		if (persisted) {
+			if (!this.participantIdentity) ctx.ui.notify("Persisted collaborator identity is invalid; stale authority and environment bootstrap were ignored.", "warning");
+			return;
+		}
 		const bootstrap = parseCollaboratorBootstrap(process.env[COLLABORATOR_ENV]);
 		if (bootstrap) this.participantIdentity = { version: 1, ...bootstrap, disposition: "held" };
 	}
@@ -1556,12 +1560,22 @@ export class HostedRuntimeIntegration {
 	private restoreManagedAgentControls(ctx: ExtensionContext): void {
 		this.managedAgentControls.clear();
 		this.managedAgentRegistrations.clear();
+		let malformed = false;
 		for (const entry of sessionBranch(ctx)) {
 			const record = asRecord(entry);
 			if (record?.type !== "custom" || record.customType !== HOSTED_MANAGED_AGENT_CONTROL_ENTRY) continue;
 			const control = parseManagedAgentControl(record.data);
-			if (control) this.managedAgentControls.set(control.targetKey, control);
+			if (control) {
+				this.managedAgentControls.set(control.targetKey, control);
+				continue;
+			}
+			malformed = true;
+			const targetKey = asRecord(record.data)?.targetKey;
+			const prior = typeof targetKey === "string" ? this.managedAgentControls.get(targetKey) : undefined;
+			if (prior) this.managedAgentControls.set(prior.targetKey, { ...prior, launchToken: undefined, state: "needs_attention" });
+			else if (typeof targetKey !== "string") for (const [key, candidate] of this.managedAgentControls) this.managedAgentControls.set(key, { ...candidate, launchToken: undefined, state: "needs_attention" });
 		}
+		if (malformed) ctx.ui.notify("Persisted managed collaborator control is invalid; affected reconnection authority requires attention.", "warning");
 	}
 
 	private persistManagedAgentControl(control: ManagedAgentControl): void {

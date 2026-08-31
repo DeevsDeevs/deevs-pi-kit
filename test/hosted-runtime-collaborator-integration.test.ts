@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { loadBuiltinAgents } from "../extensions/subagents/agents.ts";
 import { HostedRuntimeClientError } from "../extensions/runtime/client.ts";
 import { CollaboratorAutoStore } from "../extensions/runtime/auto-mode.ts";
-import { HOSTED_AUTO_LIFECYCLE_ENTRY, HOSTED_BRIDGE_REQUEST_ENTRY, HOSTED_COLLABORATOR_PROFILE_ENTRY, HOSTED_COLLABORATOR_WORKSPACE_ENTRY, HOSTED_MANAGED_COLLABORATOR_ENTRY, HOSTED_PARTICIPANT_ENTRY, HOSTED_WORKSPACE_REQUEST_ENTRY, HostedRuntimeIntegration, markClaudeWorkspaceTrusted } from "../extensions/runtime/hosted-integration.ts";
+import { HOSTED_AUTO_LIFECYCLE_ENTRY, HOSTED_BRIDGE_REQUEST_ENTRY, HOSTED_COLLABORATOR_PROFILE_ENTRY, HOSTED_COLLABORATOR_WORKSPACE_ENTRY, HOSTED_MANAGED_AGENT_CONTROL_ENTRY, HOSTED_MANAGED_COLLABORATOR_ENTRY, HOSTED_PARTICIPANT_ENTRY, HOSTED_WORKSPACE_REQUEST_ENTRY, HostedRuntimeIntegration, markClaudeWorkspaceTrusted } from "../extensions/runtime/hosted-integration.ts";
 import { deriveTargetKey } from "../extensions/runtime/service/registration.ts";
 
 const roots: string[] = [];
@@ -222,6 +222,60 @@ describe("hosted collaborator Pi integration", () => {
 		await test.integration.sessionStart(test.ctx as never);
 		expect(test.requests.some((request) => request.method === "participant.acquire" && request.params.protocol === "review" && request.params.participantId === "main")).toBe(true);
 		expect(test.entries).toContainEqual({ customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } });
+		await test.integration.sessionShutdown();
+	});
+
+	it("rejects a stale held identity when the newest persisted identity entry is malformed", async () => {
+		process.env.PI_RUNTIME_COLLABORATE = "review:bootstrap";
+		const valid = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
+		const malformed = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { ...valid.data, protocol: 42 } };
+		const test = await setup(baseResponse, [valid, malformed]);
+		await test.integration.sessionStart(test.ctx as never);
+		expect(test.requests.some((request) => request.method === "participant.get" || request.method === "participant.acquire")).toBe(false);
+		expect(test.notifications.some((notice) => notice.message.includes("stale authority") && notice.message.includes("bootstrap"))).toBe(true);
+		await test.integration.sessionShutdown();
+	});
+
+	it("lets a newer valid participant identity supersede malformed persisted history", async () => {
+		process.env.PI_RUNTIME_COLLABORATE = "review:bootstrap";
+		const valid = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
+		const malformed = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { ...valid.data, protocol: 42 } };
+		const test = await setup((request) => {
+			if (request.method === "participant.get") return mainParticipant;
+			if (request.method === "participant.acquire") return { participant: mainParticipant, revived: false, transitioned: false };
+			return baseResponse(request);
+		}, [malformed, valid]);
+		await test.integration.sessionStart(test.ctx as never);
+		expect(test.requests.some((request) => request.method === "participant.get")).toBe(true);
+		expect(test.requests.find((request) => request.method === "participant.acquire")?.params).toMatchObject({ protocol: "review", participantId: "main" });
+		expect(test.notifications.some((notice) => notice.message.includes("stale authority"))).toBe(false);
+		await test.integration.sessionShutdown();
+	});
+
+	it("holds an older managed agent control at needs-attention when its newest entry is malformed", async () => {
+		const control = { version: 1, bridgeId: "bridge_agent", targetKey: "target_agent", driver: "codex", clientGeneration: "client_agent", reconnectToken: "reconnect_agent", paneId: "w1:p9", terminalId: "terminal_agent", agentSession: { source: "herdr:codex", agent: "codex", kind: "id", value: "agent_session" }, state: "active" };
+		const valid = { type: "custom", customType: HOSTED_MANAGED_AGENT_CONTROL_ENTRY, data: control };
+		const malformed = { type: "custom", customType: HOSTED_MANAGED_AGENT_CONTROL_ENTRY, data: { ...control, reconnectToken: 42 } };
+		const test = await setup(baseResponse, [valid, malformed]);
+		await test.integration.sessionStart(test.ctx as never);
+		const internal = test.integration as unknown as { managedAgentControls: Map<string, { state: string }>; heartbeatManagedAgents: () => Promise<void> };
+		expect(internal.managedAgentControls.get("target_agent")).toMatchObject({ state: "needs_attention" });
+		await internal.heartbeatManagedAgents();
+		expect(test.requests.some((request) => request.method === "bridge.reconnect" || request.method === "bridge.register")).toBe(false);
+		expect(test.notifications.some((notice) => notice.message.includes("reconnection authority requires attention"))).toBe(true);
+		await test.integration.sessionShutdown();
+	});
+
+	it("lets a newer valid managed agent control supersede malformed persisted history", async () => {
+		const control = { version: 1, bridgeId: "bridge_agent", targetKey: "target_agent", driver: "codex", clientGeneration: "client_agent", reconnectToken: "reconnect_agent", paneId: "w1:p9", terminalId: "terminal_agent", agentSession: { source: "herdr:codex", agent: "codex", kind: "id", value: "agent_session" }, state: "active" };
+		const valid = { type: "custom", customType: HOSTED_MANAGED_AGENT_CONTROL_ENTRY, data: control };
+		const malformed = { type: "custom", customType: HOSTED_MANAGED_AGENT_CONTROL_ENTRY, data: { ...control, reconnectToken: 42 } };
+		const test = await setup((request) => request.method === "bridge.reconnect" ? { ...registration, targetKey: "target_agent", registrationId: "reg_agent", registrationKey: "key_agent" } : baseResponse(request), [malformed, valid]);
+		await test.integration.sessionStart(test.ctx as never);
+		const internal = test.integration as unknown as { managedAgentControls: Map<string, { state: string }>; heartbeatManagedAgents: () => Promise<void> };
+		expect(internal.managedAgentControls.get("target_agent")).toMatchObject({ state: "active" });
+		await internal.heartbeatManagedAgents();
+		expect(test.requests.some((request) => request.method === "bridge.reconnect")).toBe(true);
 		await test.integration.sessionShutdown();
 	});
 
