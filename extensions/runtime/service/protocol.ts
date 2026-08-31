@@ -1,4 +1,4 @@
-import { HOSTED_BRIDGE_MAX_METADATA_ENTRIES, HOSTED_BRIDGE_MAX_METADATA_VALUE_BYTES, HOSTED_MAILBOX_MAX_BODY_BYTES, HOSTED_MAX_DELIVERY_BATCH, HOSTED_MONITOR_MAX_ENTRIES, HOSTED_PROTOCOL_VERSION, type HostedMonitor } from "../hosted-types.ts";
+import { HOSTED_BRIDGE_MAX_METADATA_ENTRIES, HOSTED_BRIDGE_MAX_METADATA_VALUE_BYTES, HOSTED_MAILBOX_MAX_BODY_BYTES, HOSTED_MAX_DELIVERY_BATCH, HOSTED_MONITOR_MAX_ENTRIES, HOSTED_PROTOCOL_VERSION, type HostedAgentSessionIdentity, type HostedMonitor } from "../hosted-types.ts";
 import { RuntimeBridgeCoordinator, type BridgeReconnectInput, type BridgeRegisterInput, type CreateBridgeLaunchInput } from "./bridge.ts";
 import { DirectoryMonitorManager } from "./monitor.ts";
 import { HostedParticipantCoordinator } from "./participant.ts";
@@ -359,8 +359,37 @@ function workspacePiRegistration(params: Record<string, unknown>): RegisterWorks
 	return { piSessionId: boundedText(params.piSessionId, "Pi session ID", 200), piSessionFile: boundedText(params.piSessionFile, "Pi session file", 8 * 1024), clientGeneration: boundedText(params.clientGeneration, "client generation", 200), admittedClaims: admittedClaimParams(params.admittedClaims), herdr: { paneId: boundedText(herdr.paneId, "Herdr pane ID", 200), terminalId: boundedText(herdr.terminalId, "Herdr terminal ID", 200), ...(herdr.agentName === undefined ? {} : { agentName: boundedText(herdr.agentName, "Herdr agent name", 200) }) } };
 }
 
-function workspaceAuthorizedParams(value: unknown, method: string): { registrationId: string; registrationKey: string; input: unknown } {
-	const schemas: Record<string, readonly string[]> = {
+interface RegistrationAuth {
+	registrationId: string;
+	registrationKey: string;
+}
+
+interface ParticipantAuth extends RegistrationAuth {
+	participantKey: string;
+}
+
+interface ClaimReceiptParams extends RegistrationAuth {
+	claimId: string;
+	eventIds: string[];
+}
+
+interface AuthorizedParams<T> extends RegistrationAuth {
+	input: T;
+}
+
+interface BridgeRecoverInput extends WorkspaceAuthority {
+	requestId: string;
+}
+
+interface BridgeCancelInput extends WorkspaceAuthority {
+	launchId: string;
+}
+
+type WorkspaceMethodSchemas = Record<string, readonly string[]>;
+
+function workspaceAuthorizedParams(value: unknown, method: string): AuthorizedParams<unknown> {
+	// oxlint-disable-next-line anti-slop/no-known-value-widening -- The method-indexed allowlist intentionally widens immutable field-name arrays.
+	const schemas: WorkspaceMethodSchemas = {
 		"workspace.launch.create": ["registrationId", "registrationKey", "requestId", "callerParticipantKey", "expectedCallerGeneration", "protocol", "participantId", "expectedParticipantGeneration", "piSessionId"],
 		"workspace.bridge.create": ["registrationId", "registrationKey", "requestId", "callerParticipantKey", "expectedCallerGeneration", "protocol", "participantId", "expectedParticipantGeneration", "bridgeId"],
 		"workspace.launch.bind": ["registrationId", "registrationKey", "callerParticipantKey", "expectedCallerGeneration", "workspaceId", "herdr"],
@@ -410,7 +439,7 @@ function workspaceAuthorizedParams(value: unknown, method: string): { registrati
 	return { registrationId, registrationKey, input: { ...authority, workspaceId: boundedText(params.workspaceId, "workspace ID", 200), discardConfirmed: params.discardConfirmed } };
 }
 
-function bridgeLaunchParams(value: unknown): { registrationId: string; registrationKey: string; input: CreateBridgeLaunchInput } {
+function bridgeLaunchParams(value: unknown): AuthorizedParams<CreateBridgeLaunchInput> {
 	const params = strictObject(value, "bridge.launch.create params", ["registrationId", "registrationKey", "requestId", "launchId", "workspaceId", "callerParticipantKey", "expectedCallerGeneration", "protocol", "participantId", "expectedParticipantGeneration", "profile", "configurationHash", "driver", "herdr", "metadata"]);
 	if (params.profile !== "read-only" && params.profile !== "workspace-write") throw new Error("bridge profile must be read-only or workspace-write");
 	const herdr = strictObject(params.herdr, "bridge launch Herdr identity", ["paneId", "terminalId"]);
@@ -443,12 +472,12 @@ function bridgeLaunchParams(value: unknown): { registrationId: string; registrat
 	};
 }
 
-function bridgeRecoverParams(value: unknown): { registrationId: string; registrationKey: string; input: { requestId: string; callerParticipantKey: string; expectedCallerGeneration: string } } {
+function bridgeRecoverParams(value: unknown): AuthorizedParams<BridgeRecoverInput> {
 	const params = strictObject(value, "bridge.launch.recover params", ["registrationId", "registrationKey", "requestId", "callerParticipantKey", "expectedCallerGeneration"]);
 	return { registrationId: boundedText(params.registrationId, "registration ID", 200), registrationKey: boundedText(params.registrationKey, "registration key", 200), input: { requestId: boundedText(params.requestId, "request ID", 200), callerParticipantKey: boundedText(params.callerParticipantKey, "caller participant key", 200), expectedCallerGeneration: boundedText(params.expectedCallerGeneration, "expected caller generation", 200) } };
 }
 
-function bridgeCancelParams(value: unknown): { registrationId: string; registrationKey: string; input: { launchId: string; callerParticipantKey: string; expectedCallerGeneration: string } } {
+function bridgeCancelParams(value: unknown): AuthorizedParams<BridgeCancelInput> {
 	const params = strictObject(value, "bridge.launch.cancel params", ["registrationId", "registrationKey", "launchId", "callerParticipantKey", "expectedCallerGeneration"]);
 	return { registrationId: boundedText(params.registrationId, "registration ID", 200), registrationKey: boundedText(params.registrationKey, "registration key", 200), input: { launchId: boundedText(params.launchId, "launch ID", 200), callerParticipantKey: boundedText(params.callerParticipantKey, "caller participant key", 200), expectedCallerGeneration: boundedText(params.expectedCallerGeneration, "expected caller generation", 200) } };
 }
@@ -468,13 +497,13 @@ function nativeDriver(value: unknown): "claude-code" | "codex" {
 	return value;
 }
 
-function agentSession(value: unknown): { source: string; agent: string; kind: "id" | "path"; value: string } {
+function agentSession(value: unknown): HostedAgentSessionIdentity {
 	const session = strictObject(value, "interactive agent session", ["source", "agent", "kind", "value"]);
 	if (session.kind !== "id" && session.kind !== "path") throw new Error("interactive agent session kind is invalid");
 	return { source: boundedText(session.source, "agent session source", 200), agent: boundedText(session.agent, "agent session agent", 64), kind: session.kind, value: boundedText(session.value, "agent session value", 8 * 1024) };
 }
 
-function bridgeRegistrationHerdr(value: unknown): { paneId: string; terminalId: string } {
+function bridgeRegistrationHerdr(value: unknown): BridgeRegisterInput["herdr"] {
 	const herdr = strictObject(value, "bridge registration Herdr identity", ["paneId", "terminalId"]);
 	return { paneId: boundedText(herdr.paneId, "Herdr pane ID", 200), terminalId: boundedText(herdr.terminalId, "Herdr terminal ID", 200) };
 }
@@ -513,7 +542,7 @@ function taskParams(value: unknown, method: string): TaskParams {
 	return { ...common, eventId, sendId: boundedText(params.sendId, "task result send ID", 200), status: params.status, body: boundedText(params.body, "task result body", HOSTED_MAILBOX_MAX_BODY_BYTES), sessionAdvance: params.sessionAdvance };
 }
 
-function authParams(value: unknown): { registrationId: string; registrationKey: string } {
+function authParams(value: unknown): RegistrationAuth {
 	const params = strictObject(value, "registration params", ["registrationId", "registrationKey"]);
 	return {
 		registrationId: boundedText(params.registrationId, "registration ID", 200),
@@ -521,7 +550,7 @@ function authParams(value: unknown): { registrationId: string; registrationKey: 
 	};
 }
 
-function participantAuthParams(value: unknown, name: string): { registrationId: string; registrationKey: string; participantKey: string } {
+function participantAuthParams(value: unknown, name: string): ParticipantAuth {
 	const params = strictObject(value, `${name} params`, ["registrationId", "registrationKey", "participantKey"]);
 	return {
 		registrationId: boundedText(params.registrationId, "registration ID", 200),
@@ -536,7 +565,7 @@ function participantName(value: unknown, name: string): string {
 	return result;
 }
 
-function claimReceiptParams(value: unknown, name: string): { registrationId: string; registrationKey: string; claimId: string; eventIds: string[] } {
+function claimReceiptParams(value: unknown, name: string): ClaimReceiptParams {
 	const params = strictObject(value, `${name} params`, ["registrationId", "registrationKey", "claimId", "eventIds"]);
 	const eventIds = boundedArray(params.eventIds, "eventIds", HOSTED_MAX_DELIVERY_BATCH).map((eventId) => boundedText(eventId, "event ID", 200));
 	if (eventIds.length === 0 || new Set(eventIds).size !== eventIds.length) throw new Error("Claim event IDs must be non-empty and unique.");
@@ -548,7 +577,7 @@ function claimReceiptParams(value: unknown, name: string): { registrationId: str
 	};
 }
 
-function registrationResult(registration: Awaited<ReturnType<RuntimeRegistrationManager["register"]>>): Record<string, unknown> {
+function registrationResult(registration: Awaited<ReturnType<RuntimeRegistrationManager["register"]>>) {
 	return {
 		targetKey: registration.targetKey,
 		registrationId: registration.registrationId,
@@ -559,19 +588,19 @@ function registrationResult(registration: Awaited<ReturnType<RuntimeRegistration
 	};
 }
 
-function workspaceRegistrationResult(result: Awaited<ReturnType<RuntimeWorkspaceCoordinator["register"]>>): Record<string, unknown> {
+function workspaceRegistrationResult(result: Awaited<ReturnType<RuntimeWorkspaceCoordinator["register"]>>) {
 	return { ...registrationResult(result.registration), workspaceId: result.workspace.workspaceId, projectRoot: result.workspace.projectRoot, workspaceRoot: result.workspace.worktreePath, participantKey: result.participantKey, holderGeneration: result.holderGeneration, participantGeneration: result.participantGeneration, participantState: result.participantState, protocol: result.protocol, participantId: result.participantId };
 }
 
-function bridgeRegistrationResult(result: Awaited<ReturnType<RuntimeBridgeCoordinator["register"]>>): Record<string, unknown> {
+function bridgeRegistrationResult(result: Awaited<ReturnType<RuntimeBridgeCoordinator["register"]>>) {
 	return { ...registrationResult(result.registration), participantKey: result.participantKey, holderGeneration: result.holderGeneration, profile: result.profile, configurationHash: result.configurationHash, ...(result.driver ? { driver: result.driver, capabilityTier: result.capabilityTier, agentSession: result.agentSession } : {}), projectRoot: result.projectRoot, cwd: result.cwd, ...(result.workspaceId ? { workspaceId: result.workspaceId } : {}), metadata: result.metadata };
 }
 
-function monitorResult(monitor: HostedMonitor): Record<string, unknown> {
+function monitorResult(monitor: HostedMonitor) {
 	return { monitorId: monitor.monitorId, generation: monitor.generation, directory: monitor.directory, status: monitor.status, settleMs: monitor.settleMs };
 }
 
-function claimResult(result: HostedClaimResult): Record<string, unknown> {
+function claimResult(result: HostedClaimResult) {
 	return {
 		claimId: result.claim.claimId,
 		leaseUntil: result.claim.leaseUntil,

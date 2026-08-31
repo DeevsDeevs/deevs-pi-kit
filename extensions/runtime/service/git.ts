@@ -466,9 +466,14 @@ export class RuntimeGit {
 	private runCodes(cwd: string, args: string[], allowed: number[], stdin?: string | Buffer, extraEnv?: NodeJS.ProcessEnv, maxBuffer = MAX_GIT_BUFFER): Promise<{ code: number; stdout: Buffer; stderr: Buffer }> {
 		return new Promise((resolvePromise, reject) => {
 			const child = execFile("git", gitArgs(args), { cwd, env: gitEnvironment(extraEnv), encoding: "buffer", maxBuffer, timeout: 30_000 }, (error, stdout, stderr) => {
-				const code = typeof error?.code === "number" ? error.code : error ? 1 : 0;
+				const detail = Buffer.from(stderr).toString("utf8").trim().slice(0, 2_000);
+				const errorCode = error?.code;
+				if (error && typeof errorCode !== "number") {
+					reject(new RuntimeGitError(`Git ${args[0] ?? "command"} could not execute${detail ? `: ${detail}` : "."}`));
+					return;
+				}
+				const code = typeof errorCode === "number" ? errorCode : 0;
 				if (!allowed.includes(code)) {
-					const detail = Buffer.from(stderr).toString("utf8").trim().slice(0, 2_000);
 					reject(new RuntimeGitError(`Git ${args[0] ?? "command"} failed${detail ? `: ${detail}` : "."}`));
 					return;
 				}

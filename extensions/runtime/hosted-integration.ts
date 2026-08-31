@@ -72,6 +72,11 @@ interface HostedClaimMessage extends HostedReceipt {
 	events: HostedClaimEvent[];
 }
 
+interface BeforeAgentStartResult {
+	message?: { customType: string; content: string; display: boolean; details: Record<string, unknown> };
+	systemPrompt?: string;
+}
+
 interface ClientParticipantStatus {
 	participantKey: string;
 	protocol: string;
@@ -168,6 +173,26 @@ interface ManagedAgentControl {
 	terminalId: string;
 	agentSession: { source: string; agent: string; kind: "id" | "path"; value: string };
 	state: "pending" | "active" | "needs_attention" | "stopped";
+}
+
+interface ManagedAgentStatus {
+	paneId: string;
+	terminalId: string;
+	status: "idle" | "working" | "blocked" | "done" | "unknown";
+	focused: boolean;
+	agentSession: ManagedAgentControl["agentSession"];
+}
+
+interface WorkspaceRegistrationStatus {
+	workspaceId: string;
+	projectRoot: string;
+	workspaceRoot: string;
+	participantKey: string;
+	holderGeneration: string;
+	participantGeneration: string;
+	participantState: "held" | "vacant";
+	protocol: string;
+	participantId: string;
 }
 
 interface CollaboratorMessageResult {
@@ -283,10 +308,10 @@ export class HostedRuntimeIntegration {
 		} catch {}
 	}
 
-	async beforeAgentStart(systemPrompt: string, ctx: ExtensionContext): Promise<{ message?: { customType: string; content: string; display: boolean; details: Record<string, unknown> }; systemPrompt?: string } | undefined> {
+	async beforeAgentStart(systemPrompt: string, ctx: ExtensionContext): Promise<BeforeAgentStartResult | undefined> {
 		this.ctx = ctx;
 		if (!this.active) return;
-		const result: { message?: { customType: string; content: string; display: boolean; details: Record<string, unknown> }; systemPrompt?: string } = {};
+		const result: BeforeAgentStartResult = {};
 		if (this.collaboratorLaunch?.persona) result.systemPrompt = `${systemPrompt}\n\n# Collaborator persona: ${this.collaboratorLaunch.persona.name}\n\n${this.collaboratorLaunch.persona.prompt}`;
 		let registration: LiveClientRegistration;
 		try { registration = await this.requireRegistration(ctx); } catch { return result.systemPrompt ? result : undefined; }
@@ -759,6 +784,7 @@ export class HostedRuntimeIntegration {
 		}
 	}
 
+	// oxlint-disable-next-line anti-slop/no-unknown-returns -- Exact Runtime inspection/mutation results are serialized unchanged at the tool boundary.
 	async manageWorkspace(input: CollaboratorWorkspaceInput, ctx: ExtensionContext, signal?: AbortSignal): Promise<unknown> {
 		throwIfAborted(signal);
 		const identity = this.requireParticipantIdentity();
@@ -829,6 +855,7 @@ export class HostedRuntimeIntegration {
 		return results;
 	}
 
+	// oxlint-disable-next-line anti-slop/no-unknown-returns -- The authenticated Runtime status envelope is serialized unchanged at the tool boundary.
 	async collaboratorMessageStatus(eventIds: string[], ctx: ExtensionContext): Promise<unknown> {
 		if (eventIds.length < 1 || eventIds.length > 12 || new Set(eventIds).size !== eventIds.length) throw new HostedRuntimeClientError("invalid_request", "Message status requires 1 to 12 unique event IDs.");
 		const identity = this.requireParticipantIdentity();
@@ -837,6 +864,7 @@ export class HostedRuntimeIntegration {
 		return this.client.call("mailbox.status", { ...auth(registration), senderParticipantKey: identity.participantKey, expectedSenderGeneration: identity.generation, eventIds });
 	}
 
+	// oxlint-disable-next-line anti-slop/no-unknown-returns -- The authenticated Runtime task envelope is serialized unchanged at the tool boundary.
 	async manageCollaboratorTask(input: CollaboratorTaskInput, toolCallId: string, ctx: ExtensionContext, signal?: AbortSignal): Promise<unknown> {
 		const identity = this.requireParticipantIdentity();
 		if (identity.disposition !== "held" || !identity.participantKey || !identity.generation) throw new HostedRuntimeClientError("conflict", "Current collaborator identity is not authoritatively held.");
@@ -1396,7 +1424,7 @@ export class HostedRuntimeIntegration {
 				if (control.state === "needs_attention" || control.state === "stopped") continue;
 				try {
 					let registration = this.managedAgentRegistrations.get(targetKey);
-					let heartbeat: { registration: LiveClientRegistration; inboxReady: boolean };
+					let heartbeat: ReturnType<typeof parseHeartbeat>;
 					if (!registration) {
 						const admittedClaims: never[] = [];
 						const result = control.state === "pending" && control.launchToken
@@ -1591,7 +1619,7 @@ export class HostedRuntimeIntegration {
 		try { await this.client.call("inbox.release", { ...auth(registration), claimId: claim.claimId, eventIds: claim.eventIds }); } catch {}
 	}
 
-	private claimMessage(claim: HostedClaimMessage, wakeId?: string): { customType: string; content: string; display: boolean; details: Record<string, unknown> } {
+	private claimMessage(claim: HostedClaimMessage, wakeId?: string) {
 		return {
 			customType: HOSTED_RUNTIME_MESSAGE,
 			content: hostedContent(claim.events),
@@ -1711,7 +1739,7 @@ function parseStartedAgent(value: string, paneId: string, terminalId: string, ki
 	return agent.agentSession;
 }
 
-function parseManagedAgent(value: string): { paneId: string; terminalId: string; status: "idle" | "working" | "blocked" | "done" | "unknown"; focused: boolean; agentSession: ManagedAgentControl["agentSession"] } {
+function parseManagedAgent(value: string): ManagedAgentStatus {
 	let response: Record<string, unknown>;
 	try { response = strictObject(JSON.parse(value), "Herdr response"); } catch { throw new HostedRuntimeClientError("invalid_response", "Herdr returned malformed agent JSON."); }
 	const result = strictObject(response.result, "Herdr result");
@@ -1824,23 +1852,23 @@ function parseRegistration(value: unknown): LiveClientRegistration {
 	};
 }
 
-function parseWorkspaceRegistration(value: unknown): { workspaceId: string; projectRoot: string; workspaceRoot: string; participantKey: string; holderGeneration: string; participantGeneration: string; participantState: "held" | "vacant"; protocol: string; participantId: string } {
+function parseWorkspaceRegistration(value: unknown): WorkspaceRegistrationStatus {
 	const result = strictObject(value, "Runtime workspace registration");
 	if (result.participantState !== "held" && result.participantState !== "vacant") throw new HostedRuntimeClientError("invalid_response", "Runtime workspace participant state is invalid.");
 	return { workspaceId: text(result.workspaceId), projectRoot: text(result.projectRoot), workspaceRoot: text(result.workspaceRoot), participantKey: text(result.participantKey), holderGeneration: text(result.holderGeneration), participantGeneration: text(result.participantGeneration), participantState: result.participantState, protocol: collaboratorName(text(result.protocol), "protocol"), participantId: collaboratorName(text(result.participantId), "participant ID") };
 }
 
-function parseHeartbeat(value: unknown): { registration: LiveClientRegistration; inboxReady: boolean } {
+function parseHeartbeat(value: unknown) {
 	const result = strictObject(value, "Runtime heartbeat");
 	if (result.inboxReady !== undefined && typeof result.inboxReady !== "boolean") throw new HostedRuntimeClientError("invalid_response", "Runtime heartbeat inbox readiness is invalid.");
 	return { registration: parseRegistration(result), inboxReady: result.inboxReady === true };
 }
 
-function auth(registration: LiveClientRegistration): { registrationId: string; registrationKey: string } {
+function auth(registration: LiveClientRegistration) {
 	return { registrationId: registration.registrationId, registrationKey: registration.registrationKey };
 }
 
-function parseAcquireResult(value: unknown): { participant: ClientParticipantStatus; revived: boolean; transitioned: boolean } {
+function parseAcquireResult(value: unknown) {
 	const result = strictObject(value, "Participant acquire result");
 	if (typeof result.revived !== "boolean") throw new HostedRuntimeClientError("invalid_response", "Participant revival flag is invalid.");
 	if (typeof result.transitioned !== "boolean") throw new HostedRuntimeClientError("invalid_response", "Participant transition flag is invalid.");

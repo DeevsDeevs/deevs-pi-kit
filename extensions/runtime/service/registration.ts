@@ -539,6 +539,7 @@ function canonicalPath(path: string): string | undefined {
 	try { return realpathSync(path); } catch { return undefined; }
 }
 
+// oxlint-disable-next-line anti-slop/no-unknown-returns -- Each Herdr query result is decoded by listAgents before identity decisions.
 function runHerdr(args: string[]): Promise<unknown> {
 	return new Promise((resolve, reject) => {
 		execFile("herdr", args, { timeout: 2_000, maxBuffer: 1024 * 1024, encoding: "utf8" }, (error, stdout) => {

@@ -297,4 +297,10 @@ describe("Runtime Git workspace adapter", () => {
 		writeFileSync(join(writer.path, "keep.ignored"), "retained\n");
 		await expect(runtime.removeWorktree(repo, writer)).rejects.toThrow("retained or unsettled data");
 	});
+
+	it("rejects Git infrastructure failures even when exit status 1 is allowed", async () => {
+		const fixture = repository();
+		const runtime = new RuntimeGit() as unknown as { runCodes(cwd: string, args: string[], allowed: number[], stdin?: string | Buffer, env?: NodeJS.ProcessEnv): Promise<unknown> };
+		await expect(runtime.runCodes(fixture.project, ["status"], [0, 1], undefined, { PATH: join(fixture.root, "missing") })).rejects.toThrow("could not execute");
+	});
 });

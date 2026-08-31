@@ -885,6 +885,7 @@ function prepareRoot(root: string): void {
 	}
 }
 
+// oxlint-disable-next-line anti-slop/no-unknown-returns -- State readers immediately pass this bounded raw JSON to validateState or validateInstance.
 function readJson(path: string, maxBytes: number): unknown | undefined {
 	let fd: number | undefined;
 	try {
