@@ -119,7 +119,7 @@ async function listenWithStaleRecovery(server: Server, socketPath: string, probe
 			await listenOnce(server, socketPath);
 			return;
 		} catch (error) {
-			if (!isNodeError(error) || error.code !== "EADDRINUSE") throw error;
+			if (!(error instanceof Error) || !("code" in error) || error.code !== "EADDRINUSE") throw error;
 			if (await probeSocket(socketPath, probeTimeoutMs)) throw new RuntimeAlreadyRunningError(`Runtime is already listening at ${socketPath}.`);
 			// ponytail: a fully saturated local socket backlog could look stale; add an OS lock only if this same-uid self-DoS appears in practice.
 			const stale = `${socketPath}.stale.${process.pid}.${randomUUID()}`;
@@ -127,7 +127,7 @@ async function listenWithStaleRecovery(server: Server, socketPath: string, probe
 				renameSync(socketPath, stale);
 				try { unlinkSync(stale); } catch {}
 			} catch (renameError) {
-				if (!isNodeError(renameError) || renameError.code !== "ENOENT") throw renameError;
+				if (!(renameError instanceof Error) || !("code" in renameError) || renameError.code !== "ENOENT") throw renameError;
 			}
 		}
 	}
@@ -248,8 +248,4 @@ function sameSocket(path: string, identity: { dev: number; ino: number }): boole
 	} catch {
 		return false;
 	}
-}
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-	return error instanceof Error && "code" in error;
 }

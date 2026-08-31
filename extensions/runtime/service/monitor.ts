@@ -22,7 +22,7 @@ export interface DirectoryMonitorOptions {
 	watchDebounceMs?: number;
 	createId?: (prefix: "mon" | "gen") => string;
 	onEvents?: (targetKey: string) => void;
-	onError?: (error: unknown) => void;
+	onError?: (error: Error) => void;
 }
 
 export class DirectoryMonitorManager {
@@ -155,7 +155,7 @@ export class DirectoryMonitorManager {
 	}
 
 	private reconcileSafely(monitorId: string): void {
-		try { this.reconcile(monitorId); } catch (error) { this.options.onError?.(error); }
+		try { this.reconcile(monitorId); } catch (error) { this.options.onError?.(error instanceof Error ? error : new Error(String(error))); }
 	}
 
 	private ensureWatcher(monitor: HostedMonitor): void {
@@ -171,7 +171,7 @@ export class DirectoryMonitorManager {
 			});
 			this.watchers.set(monitor.monitorId, watcher);
 		} catch (error) {
-			this.options.onError?.(error);
+			this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
 		}
 	}
 
@@ -226,7 +226,7 @@ function scanRegularFiles(directory: string): Map<string, { size: number; mtimeM
 			const info = lstatSync(join(directory, entry.name));
 			if (!info.isSymbolicLink() && info.isFile()) files.set(entry.name, { size: info.size, mtimeMs: info.mtimeMs });
 		} catch (error) {
-			if (!isNodeError(error) || error.code !== "ENOENT") throw error;
+			if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
 		}
 	}
 	return files;
@@ -283,8 +283,4 @@ function nextSettleDelay(monitor: HostedMonitor, now: number): number | undefine
 function inside(root: string, candidate: string): boolean {
 	const child = relative(root, candidate);
 	return child === "" || (!child.startsWith("..") && !isAbsolute(child));
-}
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-	return error instanceof Error && "code" in error;
 }
