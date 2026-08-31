@@ -15,8 +15,18 @@ let killTimer: NodeJS.Timeout | undefined;
 const stderr = createBoundedByteTail(spec.limits.maxStderrBytes);
 
 function persist(patch: Partial<DelegateRunRuntime> = {}): void {
-	runtime = { ...runtime, ...patch, lastActivityAt: Date.now() };
-	writeRunRuntime(spec, runtime);
+	if (isTerminal(runtime.status)) return;
+	const next = { ...runtime, ...patch, lastActivityAt: Date.now() };
+	writeRunRuntime(spec, next);
+	runtime = next;
+}
+
+function settle(patch: Partial<DelegateRunRuntime>, result: string): void {
+	if (isTerminal(runtime.status)) return;
+	const terminal = { ...runtime, ...patch, lastActivityAt: Date.now() };
+	writePrivateText(spec.resultPath, result);
+	writeRunRuntime(spec, terminal);
+	runtime = terminal;
 }
 
 function requestStop(status: DelegateRunStatus, error: string, reason?: DelegateLimitReason): void {
@@ -141,8 +151,10 @@ async function main(): Promise<void> {
 	const status = runtime.settled && requested?.status === "limited" ? "completed" : requested?.status ?? (code === 0 && runtime.settled ? "completed" : "failed");
 	const error = requested?.error ?? (["failed", "partial", "needs_attention"].includes(status) ? stderrText || `Child exited with code ${code ?? "?"}.` : undefined);
 	const sessionFile = findLatestSessionFile(spec.sessionDir);
-	persist({ status, endedAt: Date.now(), exitCode: code, exitSignal: signal, currentTool: undefined, error, limitReason: requested?.reason, sessionFile });
-	writePrivateText(spec.resultPath, runtime.output || error || `${status}\n`);
+	settle(
+		{ status, endedAt: Date.now(), exitCode: code, exitSignal: signal, currentTool: undefined, error, limitReason: requested?.reason, sessionFile },
+		runtime.output || error || `${status}\n`,
+	);
 }
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
@@ -150,8 +162,8 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 }
 
 main().catch((error) => {
-	persist({ status: "failed", endedAt: Date.now(), error: error instanceof Error ? error.message : String(error) });
-	writePrivateText(spec.resultPath, runtime.error || "Delegate worker failed.");
+	const message = error instanceof Error ? error.message : String(error);
+	settle({ status: "failed", endedAt: Date.now(), error: message }, runtime.output || message || "Delegate worker failed.");
 	process.exitCode = 1;
 });
 
