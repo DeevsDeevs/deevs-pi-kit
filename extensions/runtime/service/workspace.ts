@@ -44,6 +44,12 @@ export interface WorkspaceCoordinatorOptions {
 	git?: RuntimeGit;
 }
 
+interface WorkspaceCreateResult {
+	workspace: HostedWorkspace;
+	launchToken?: string;
+	recoveryRequired?: true;
+}
+
 export class RuntimeWorkspaceCoordinator {
 	private readonly root: string;
 	private readonly store: HostedStateStore;
@@ -72,7 +78,7 @@ export class RuntimeWorkspaceCoordinator {
 		return this.createOwned(caller, input, { kind: "bridge", id: bridgeId });
 	}
 
-	private async createOwned(caller: HostedLiveRegistration, input: Omit<CreateWorkspaceInput, "piSessionId">, owner: { kind: "pi" | "bridge"; id: string }): Promise<{ workspace: HostedWorkspace; launchToken?: string; recoveryRequired?: true }> {
+	private async createOwned(caller: HostedLiveRegistration, input: Omit<CreateWorkspaceInput, "piSessionId">, owner: { kind: "pi" | "bridge"; id: string }): Promise<WorkspaceCreateResult> {
 		const target = this.requirePiCaller(caller, input);
 		const requestId = bounded(input.requestId, "request ID", 200);
 		const callerParticipantKey = bounded(input.callerParticipantKey, "caller participant key", 200);
@@ -95,8 +101,9 @@ export class RuntimeWorkspaceCoordinator {
 		const worktreePath = join(realpathSync(workspacesRoot), workspaceId);
 		const now = this.now();
 		const common = {
-			version: 1 as const, workspaceId, requestId, projectRoot: repository.root, gitCommonDir: repository.commonDir, worktreePath, branchRef: `refs/heads/runtime/collab/${workspaceId}`, participantKey: deriveParticipantKey(repository.root, protocol, participantId), protocol, participantId, ...(expectedParticipantGeneration === undefined ? {} : { expectedParticipantGeneration }), holderGeneration, targetKey: owner.kind === "pi" ? deriveTargetKey(repository.root, owner.id) : deriveBridgeTargetKey(repository.root, owner.id), profile: "workspace-write" as const, callerParticipantKey, callerGeneration, callerTargetKey: caller.targetKey, baseCommit: repository.headCommit, headCommit: repository.headCommit, state: "provisioning" as const, createdAt: now, expiresAt: now + (this.options.launchLeaseMs ?? 5 * 60_000), updatedAt: now,
+			version: 1 as const, workspaceId, requestId, projectRoot: repository.root, gitCommonDir: repository.commonDir, worktreePath, branchRef: `refs/heads/runtime/collab/${workspaceId}`, participantKey: deriveParticipantKey(repository.root, protocol, participantId), protocol, participantId, holderGeneration, targetKey: owner.kind === "pi" ? deriveTargetKey(repository.root, owner.id) : deriveBridgeTargetKey(repository.root, owner.id), profile: "workspace-write" as const, callerParticipantKey, callerGeneration, callerTargetKey: caller.targetKey, baseCommit: repository.headCommit, headCommit: repository.headCommit, state: "provisioning" as const, createdAt: now, expiresAt: now + (this.options.launchLeaseMs ?? 5 * 60_000), updatedAt: now,
 		};
+		if (expectedParticipantGeneration !== undefined) Object.assign(common, { expectedParticipantGeneration });
 		const workspace: HostedWorkspace = owner.kind === "pi" ? { ...common, ownerKind: "pi", piSessionId: owner.id, launchDigest: sha256(launchToken!) } : { ...common, ownerKind: "bridge", bridgeId: owner.id };
 		this.store.apply({ type: "workspace.ensure", workspace });
 		return this.withRepository(repository.commonDir, async () => {
@@ -104,7 +111,9 @@ export class RuntimeWorkspaceCoordinator {
 				await this.git.createWorktree(repository, workspace.worktreePath, workspace.branchRef, workspace.baseCommit);
 				const ready = { ...workspace, state: "ready" as const, updatedAt: this.tick(workspace.updatedAt) };
 				this.store.apply({ type: "workspace.replace", workspace: ready, expectedState: "provisioning", expectedUpdatedAt: workspace.updatedAt });
-				return { workspace: ready, ...(launchToken ? { launchToken } : {}) };
+				const result: WorkspaceCreateResult = { workspace: ready };
+				if (launchToken) result.launchToken = launchToken;
+				return result;
 			} catch (error) {
 				this.attention(workspace, "provisioning");
 				throw workspaceError(error);
@@ -435,7 +444,8 @@ export class RuntimeWorkspaceCoordinator {
 			try {
 				const handoff = await this.git.checkpoint(repository, worktree(current), current.baseCommit, `Runtime checkpoint ${current.workspaceId}`);
 				const state = taskStatus === "failed" || taskStatus === "cancelled" ? "partial" as const : "ready_handoff" as const;
-				const next: HostedWorkspace = { ...current, ...handoff, state, ...(taskStatus ? { taskStatus } : {}), updatedAt: this.tick(current.updatedAt) };
+				const next: HostedWorkspace = { ...current, ...handoff, state, updatedAt: this.tick(current.updatedAt) };
+				if (taskStatus) next.taskStatus = taskStatus;
 				this.store.apply({ type: "workspace.replace", workspace: next, expectedState: current.state, expectedUpdatedAt: current.updatedAt });
 				return next;
 			} catch (error) {

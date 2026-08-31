@@ -390,7 +390,9 @@ export class RuntimeGit {
 			if (!value) {
 				if (Object.keys(current).length > 0) {
 					if (!current.path || !current.headCommit || (!current.branchRef && !current.detached)) throw new RuntimeGitError("Git returned an incomplete worktree registration.");
-					result.push({ path: current.path, headCommit: current.headCommit, ...(current.branchRef ? { branchRef: current.branchRef } : {}), detached: current.detached === true });
+					const worktree: RuntimeWorktreeRecord = { path: current.path, headCommit: current.headCommit, detached: current.detached === true };
+					if (current.branchRef) worktree.branchRef = current.branchRef;
+					result.push(worktree);
 				}
 				current = {};
 				continue;
