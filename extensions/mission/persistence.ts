@@ -3,7 +3,7 @@ import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openS
 import { join } from "node:path";
 import { missionDir, missionRoot } from "./artifacts.ts";
 import { MAX_MISSION_REVIEW_ADJUDICATIONS } from "./types.ts";
-import type { MissionCurrent, MissionOwner, MissionProgressRecord, MissionReviewCriticalImpact, MissionReviewSeverity, MissionReviewStatus, MissionSnapshot, MissionStatus, MissionUsage } from "./types.ts";
+import type { MissionCurrent, MissionOwner, MissionProgressRecord, MissionReviewCriticalImpact, MissionReviewFinding, MissionReviewSeverity, MissionReviewStatus, MissionSnapshot, MissionStatus, MissionUsage, MissionValidationRecord } from "./types.ts";
 
 const SNAPSHOT_VERSION = 1;
 // Lock holds are synchronous sub-second operations, so a lock older than this — or one whose owner pid is gone — is a crashed holder, not live contention.
@@ -321,15 +321,16 @@ function reviewFindings(value: unknown, label: string) {
 		const criticalImpact = finding.criticalImpact === undefined ? undefined : enumValue(finding.criticalImpact, REVIEW_CRITICAL_IMPACTS, "Mission review critical impact");
 		const path = finding.path === undefined ? undefined : text(finding.path, "Mission review finding path", 2_000);
 		if (path !== undefined && !reviewPath(path)) throw new Error("Invalid Mission review finding path.");
-		return {
+		const result: MissionReviewFinding = {
 			index: boundedInteger(finding.index, "Mission review finding index", 0, 999),
 			severity,
 			summary: text(finding.summary, "Mission review finding summary", 4_000),
-			...(path ? { path } : {}),
-			...(finding.line === undefined ? {} : { line: boundedInteger(finding.line, "Mission review finding line", 1, Number.MAX_SAFE_INTEGER) }),
-			...(finding.requirementIndex === undefined ? {} : { requirementIndex: boundedInteger(finding.requirementIndex, "Mission review finding requirement", 0, 11) }),
-			...(criticalImpact ? { criticalImpact } : {}),
 		};
+		if (path !== undefined) result.path = path;
+		if (finding.line !== undefined) result.line = boundedInteger(finding.line, "Mission review finding line", 1, Number.MAX_SAFE_INTEGER);
+		if (finding.requirementIndex !== undefined) result.requirementIndex = boundedInteger(finding.requirementIndex, "Mission review finding requirement", 0, 11);
+		if (criticalImpact !== undefined) result.criticalImpact = criticalImpact;
+		return result;
 	});
 }
 
@@ -339,26 +340,29 @@ function reviewPath(path: string): boolean {
 
 function validateProgress(value: unknown): MissionProgressRecord {
 	const record = object(value, "Mission progress record", PROGRESS_FIELDS);
-	return {
+	const validation = array(record.validation, "progress validation", 20).map((item) => {
+		const value = object(item, "validation record", VALIDATION_FIELDS);
+		const result: MissionValidationRecord = {
+			command: text(value.command, "validation command", 500),
+			exitCode: boundedInteger(value.exitCode, "validation exit code", -1_000_000, 1_000_000),
+			objectiveVersion: boundedInteger(value.objectiveVersion, "validation objective version", 1, 1_000_000),
+		};
+		if (value.summary !== undefined) result.summary = text(value.summary, "validation summary", 500);
+		if (value.artifact !== undefined) result.artifact = text(value.artifact, "validation artifact", 500);
+		return result;
+	});
+	const progress: MissionProgressRecord = {
 		missionId: text(record.missionId, "progress Mission id", 200),
 		at: number(record.at, "progress timestamp"),
 		summary: text(record.summary, "progress summary", 1_200),
 		evidence: stringArray(record.evidence, "progress evidence", 20, 500),
 		remaining: stringArray(record.remaining, "progress remaining", 20, 500),
-		validation: array(record.validation, "progress validation", 20).map((item) => {
-			const validation = object(item, "validation record", VALIDATION_FIELDS);
-			return {
-				command: text(validation.command, "validation command", 500),
-				exitCode: boundedInteger(validation.exitCode, "validation exit code", -1_000_000, 1_000_000),
-				objectiveVersion: boundedInteger(validation.objectiveVersion, "validation objective version", 1, 1_000_000),
-				...(validation.summary === undefined ? {} : { summary: text(validation.summary, "validation summary", 500) }),
-				...(validation.artifact === undefined ? {} : { artifact: text(validation.artifact, "validation artifact", 500) }),
-			};
-		}),
+		validation,
 		checkpoint: record.checkpoint === true,
 		blocked: record.blocked === true,
-		...(record.blockerId === undefined ? {} : { blockerId: text(record.blockerId, "blocker id", 160) }),
 	};
+	if (record.blockerId !== undefined) progress.blockerId = text(record.blockerId, "blocker id", 160);
+	return progress;
 }
 
 function validateUsage(value: unknown): MissionUsage {
