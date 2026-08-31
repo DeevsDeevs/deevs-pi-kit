@@ -73,7 +73,7 @@ export class ChainService {
 				}
 				return { link: await this.linkInfo(chain, filename) };
 			} catch (error) {
-				if (isAlreadyExists(error)) continue;
+				if (error instanceof Error && hasErrorCode(error, "EEXIST")) continue;
 				throw error;
 			}
 		}
@@ -118,7 +118,7 @@ export class ChainService {
 		try {
 			entries = await readdir(root, { withFileTypes: true });
 		} catch (error) {
-			if (isNotFound(error)) return [];
+			if (error instanceof Error && hasErrorCode(error, "ENOENT")) return [];
 			throw error;
 		}
 		const chains = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
@@ -269,7 +269,7 @@ export class ChainService {
 		try {
 			entries = await readdir(dir, { withFileTypes: true });
 		} catch (error) {
-			if (isNotFound(error)) return [];
+			if (error instanceof Error && hasErrorCode(error, "ENOENT")) return [];
 			throw error;
 		}
 		const filenames = entries.filter((entry) => entry.isFile() && entry.name.endsWith(".md")).map((entry) => entry.name).sort().reverse();
@@ -285,7 +285,7 @@ export class ChainService {
 		try {
 			return await this.linkInfo(chain, filename);
 		} catch (error) {
-			if (isNotFound(error)) return null;
+			if (error instanceof Error && hasErrorCode(error, "ENOENT")) return null;
 			throw error;
 		}
 	}
@@ -311,7 +311,7 @@ export class ChainService {
 			if (rootReal !== cwdReal && !rootReal.startsWith(`${cwdReal}/`)) throw new Error("Refusing to use .chains outside the project directory.");
 			return root;
 		} catch (error) {
-			if (!create && isNotFound(error)) return null;
+			if (!create && error instanceof Error && hasErrorCode(error, "ENOENT")) return null;
 			throw error;
 		}
 	}
@@ -332,7 +332,7 @@ export class ChainService {
 			if (dirReal !== rootReal && !dirReal.startsWith(`${rootReal}/`)) throw new Error("Refusing to use chain directory outside .chains.");
 			return dir;
 		} catch (error) {
-			if (!create && isNotFound(error)) return null;
+			if (!create && error instanceof Error && hasErrorCode(error, "ENOENT")) return null;
 			throw error;
 		}
 	}
@@ -438,12 +438,8 @@ function timestamp(date = new Date()): string {
 	return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}${pad(date.getMilliseconds(), 3)}`;
 }
 
-function isNotFound(error: unknown): boolean {
-	return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
-}
-
-function isAlreadyExists(error: unknown): boolean {
-	return typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST";
+function hasErrorCode(error: Error, code: string): boolean {
+	return "code" in error && error.code === code;
 }
 
 function clamp(value: number, min: number, max: number): number {
