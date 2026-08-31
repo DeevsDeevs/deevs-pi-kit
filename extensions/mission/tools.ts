@@ -105,6 +105,14 @@ interface MissionToolHooks extends MissionCompletionHooks {
 const USER_END_SUMMARY = "Mission ended at explicit user request. Use /mission resume to continue if needed.";
 const completionEffectsInFlight = new Map<string, Promise<void>>();
 
+interface MissionResultDetails {
+	mission?: ReturnType<MissionState["readAny"]>;
+	usage?: ReturnType<MissionState["readUsage"]>;
+	blockers?: string[];
+	results?: MissionSearchResult[];
+	alreadyComplete?: boolean;
+}
+
 export async function resumeMission(pi: ExtensionAPI, state: MissionState, reason: string): Promise<MissionCurrent> {
 	const explanation = reason.trim();
 	if (!explanation) throw new Error("Resuming a Mission requires a reason.");
@@ -173,9 +181,9 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 		description: "Get active Mission state, usage, chain, and artifacts.",
 		promptSnippet: "Read active Mission.",
 		parameters: GetSchema,
-		renderCall: (_args: unknown, theme: Theme) => missionCall("get", "", theme),
-		renderResult: (result: { details?: unknown }, options: { expanded: boolean }, theme: Theme) => missionResult(result.details, options.expanded, theme),
-		async execute(_toolCallId: string, _params: unknown, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
+		renderCall: (_args, theme: Theme) => missionCall("get", "", theme),
+		renderResult: (result: { details?: MissionResultDetails }, options: { expanded: boolean }, theme: Theme) => missionResult(result.details, options.expanded, theme),
+		async execute(_toolCallId: string, _params, _signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
 			setContext(ctx);
 			state.loadFromSession(ctx);
 			const mission = state.readAny();
@@ -200,8 +208,8 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 		],
 		parameters: TakeoverSchema,
 		renderCall: (args: MissionTakeoverInput, theme: Theme) => missionCall("takeover", args.missionId, theme),
-		renderResult: (result: { details?: unknown }, options: { expanded: boolean }, theme: Theme) => missionResult(result.details, options.expanded, theme),
-		async execute(_toolCallId: string, params: MissionTakeoverInput, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
+		renderResult: (result: { details?: MissionResultDetails }, options: { expanded: boolean }, theme: Theme) => missionResult(result.details, options.expanded, theme),
+		async execute(_toolCallId: string, params: MissionTakeoverInput, _signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
 			setContext(ctx);
 			const mission = await takeoverMission(pi, state, ctx, params, hooks);
 			const outcome = mission.status === "active" ? "taken over and resumed" : `taken over in ${mission.status} state`;
@@ -221,8 +229,8 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 		],
 		parameters: ResumeSchema,
 		renderCall: (args: { reason: string }, theme: Theme) => missionCall("resume", args.reason, theme),
-		renderResult: (result: { details?: unknown }, options: { expanded: boolean }, theme: Theme) => missionResult(result.details, options.expanded, theme),
-		async execute(_toolCallId: string, params: { reason: string }, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
+		renderResult: (result: { details?: MissionResultDetails }, options: { expanded: boolean }, theme: Theme) => missionResult(result.details, options.expanded, theme),
+		async execute(_toolCallId: string, params: { reason: string }, _signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
 			setContext(ctx);
 			state.loadFromSession(ctx);
 			const current = state.readAny();
@@ -258,8 +266,8 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 		],
 		parameters: CreateSchema,
 		renderCall: (args: MissionCreateInput, theme: Theme) => missionCall("create", args.title ?? args.objective, theme),
-		renderResult: (result: { details?: unknown }, options: { expanded: boolean }, theme: Theme) => missionResult(result.details, options.expanded, theme),
-		async execute(_toolCallId: string, params: MissionCreateInput, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
+		renderResult: (result: { details?: MissionResultDetails }, options: { expanded: boolean }, theme: Theme) => missionResult(result.details, options.expanded, theme),
+		async execute(_toolCallId: string, params: MissionCreateInput, _signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
 			setContext(ctx);
 			state.loadFromSession(ctx);
 			if (!state.readAny()) {
@@ -292,8 +300,8 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 		],
 		parameters: ProgressSchema,
 		renderCall: (args: MissionProgressInput, theme: Theme) => missionCall("progress", args.summary, theme),
-		renderResult: (result: { details?: unknown }, options: { expanded: boolean }, theme: Theme) => missionResult(result.details, options.expanded, theme),
-		async execute(_toolCallId: string, params: MissionProgressInput, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
+		renderResult: (result: { details?: MissionResultDetails }, options: { expanded: boolean }, theme: Theme) => missionResult(result.details, options.expanded, theme),
+		async execute(_toolCallId: string, params: MissionProgressInput, _signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
 			setContext(ctx);
 			state.loadFromSession(ctx);
 			const currentMission = state.read();
@@ -339,8 +347,8 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 		promptSnippet: "Update an active Mission specification when the user changes scope.",
 		parameters: UpdateSchema,
 		renderCall: (args: MissionUpdateInput, theme: Theme) => missionCall("update", args.reason, theme),
-		renderResult: (result: { details?: unknown }, options: { expanded: boolean }, theme: Theme) => missionResult(result.details, options.expanded, theme),
-		async execute(_toolCallId: string, params: MissionUpdateInput, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
+		renderResult: (result: { details?: MissionResultDetails }, options: { expanded: boolean }, theme: Theme) => missionResult(result.details, options.expanded, theme),
+		async execute(_toolCallId: string, params: MissionUpdateInput, _signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
 			setContext(ctx);
 			state.loadFromSession(ctx);
 			state.objectiveUpdateEvent(params); // validate before prompting
@@ -362,8 +370,8 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 		],
 		parameters: SearchSchema,
 		renderCall: (args: MissionSearchInput, theme: Theme) => missionCall("search", args.query, theme),
-		renderResult: (result: { details?: unknown }, options: { expanded: boolean }, theme: Theme) => missionResult(result.details, options.expanded, theme),
-		async execute(_toolCallId: string, params: MissionSearchInput, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
+		renderResult: (result: { details?: MissionResultDetails }, options: { expanded: boolean }, theme: Theme) => missionResult(result.details, options.expanded, theme),
+		async execute(_toolCallId: string, params: MissionSearchInput, _signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
 			setContext(ctx);
 			const results = await searchMissions(ctx.cwd, params);
 			return { content: [{ type: "text" as const, text: formatMissionSearchResults(results) }], details: { results } };
@@ -382,8 +390,8 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 		],
 		parameters: CompleteSchema,
 		renderCall: (args: MissionCompleteInput, theme: Theme) => missionCall(args.userRequested ? "end" : "complete", args.summary ?? "", theme),
-		renderResult: (result: { details?: unknown }, options: { expanded: boolean }, theme: Theme) => missionResult(result.details, options.expanded, theme, Array.isArray(result.details && typeof result.details === "object" && "blockers" in result.details ? result.details.blockers : undefined)),
-		async execute(_toolCallId: string, params: MissionCompleteInput, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
+		renderResult: (result: { details?: MissionResultDetails }, options: { expanded: boolean }, theme: Theme) => missionResult(result.details, options.expanded, theme, Boolean(result.details?.blockers?.length)),
+		async execute(_toolCallId: string, params: MissionCompleteInput, _signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
 			if (params.userRequested && params.authorizeCompletion) throw new Error("Mission end and completion authorization are mutually exclusive.");
 			if (params.userRequested && !ctx.hasUI) throw new Error("Headless Mission end requires the trusted /mission end command.");
 			if (params.userRequested && !await ctx.ui.confirm("End Mission?", "End this Mission without claiming its remaining requirements are complete?")) throw new Error("Mission end was not authorized by the user.");
@@ -483,9 +491,8 @@ function missionCall(action: string, target: string, theme: Theme): Text {
 	return new Text(theme.fg("toolTitle", theme.bold(`mission ${action} `)) + theme.fg("muted", target.replace(/\s+/g, " ").slice(0, 90)), 0, 0);
 }
 
-function missionResult(details: unknown, expanded: boolean, theme: Theme, isError = false): Text {
-	// SAFETY: Tool details are produced only by the Mission handlers above; this renderer never uses them as control-plane authority.
-	const value = details as { mission?: ReturnType<MissionState["readAny"]>; usage?: ReturnType<MissionState["readUsage"]>; blockers?: string[]; results?: unknown[]; alreadyComplete?: boolean } | undefined;
+function missionResult(details: MissionResultDetails | undefined, expanded: boolean, theme: Theme, isError = false): Text {
+	const value = details;
 	if (value?.blockers?.length) return new Text(`${theme.fg("error", "completion blocked")} · ${value.blockers.length} blocker(s)${expanded ? `\n${value.blockers.map((blocker) => `- ${blocker}`).join("\n")}` : ""}`, 0, 0);
 	if (value?.mission) {
 		const mission = value.mission;
