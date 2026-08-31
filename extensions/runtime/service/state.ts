@@ -472,7 +472,9 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 		if (prior) throw new HostedStateConflictError("conflict", "Bounded task already has a result with another reply identity.");
 		if (state.events[operation.eventId]) throw new HostedStateConflictError("conflict", "Task result event ID already exists.");
 		const sequence = (sender.outSeq[recipient.participantKey] ?? 0) + 1;
-		const event: HostedMailboxTaskResultEvent = { version: 1, eventId: operation.eventId, dedupeKey, source: { kind: "participant", id: sender.participantKey, generation: sender.generation, sequence }, recipientParticipantKey: recipient.participantKey, type: "mailbox.task_result", createdAt: operation.at, summary: `${operation.status} task result from ${sender.participantId} to ${recipient.participantId}`, payload: { sendId: operation.sendId, replyId: operation.sendId, senderParticipantKey: sender.participantKey, recipientParticipantKey: recipient.participantKey, body: operation.body, fingerprint, inReplyToEventId: task.eventId, status: operation.status, sessionAdvance: operation.sessionAdvance, ...(operation.workspace ? { workspace: operation.workspace } : {}) }, delivery: { status: "pending" } };
+		const payload: HostedMailboxTaskResultEvent["payload"] = { sendId: operation.sendId, replyId: operation.sendId, senderParticipantKey: sender.participantKey, recipientParticipantKey: recipient.participantKey, body: operation.body, fingerprint, inReplyToEventId: task.eventId, status: operation.status, sessionAdvance: operation.sessionAdvance };
+		if (operation.workspace) payload.workspace = operation.workspace;
+		const event: HostedMailboxTaskResultEvent = { version: 1, eventId: operation.eventId, dedupeKey, source: { kind: "participant", id: sender.participantKey, generation: sender.generation, sequence }, recipientParticipantKey: recipient.participantKey, type: "mailbox.task_result", createdAt: operation.at, summary: `${operation.status} task result from ${sender.participantId} to ${recipient.participantId}`, payload, delivery: { status: "pending" } };
 		const nextSender = { ...sender, outSeq: { ...sender.outSeq, [recipient.participantKey]: sequence }, updatedAt: operation.at };
 		return { ...state, participants: { ...state.participants, [sender.participantKey]: nextSender }, events: { ...state.events, [event.eventId]: event }, dedupe: { ...state.dedupe, [dedupeKey]: event.eventId } };
 	}
@@ -940,7 +942,11 @@ function validateTarget(value: unknown, key: string, legacyBridge = false): Host
 	if (candidate.kind === "pi") {
 		const target = strictObject(value, "Pi target", ["kind", "targetKey", "projectRoot", "piSessionId", "piSessionFile", "workspaceId", "workspaceRoot", "createdAt"]);
 		if ((target.workspaceId === undefined) !== (target.workspaceRoot === undefined)) throw new Error("Pi target workspace identity is incomplete");
-		const result: HostedTarget = { kind: "pi", targetKey: text(target.targetKey, "target key", MAX_ID_BYTES), projectRoot: text(target.projectRoot, "project root", MAX_PATH_BYTES), piSessionId: text(target.piSessionId, "Pi session id", MAX_ID_BYTES), piSessionFile: text(target.piSessionFile, "Pi session file", MAX_PATH_BYTES), ...(target.workspaceId === undefined ? {} : { workspaceId: text(target.workspaceId, "workspace ID", MAX_ID_BYTES), workspaceRoot: text(target.workspaceRoot, "workspace root", MAX_PATH_BYTES) }), createdAt: nonNegativeNumber(target.createdAt, "target creation time") };
+		const result: HostedTarget = { kind: "pi", targetKey: text(target.targetKey, "target key", MAX_ID_BYTES), projectRoot: text(target.projectRoot, "project root", MAX_PATH_BYTES), piSessionId: text(target.piSessionId, "Pi session id", MAX_ID_BYTES), piSessionFile: text(target.piSessionFile, "Pi session file", MAX_PATH_BYTES), createdAt: nonNegativeNumber(target.createdAt, "target creation time") };
+		if (target.workspaceId !== undefined) {
+			result.workspaceId = text(target.workspaceId, "workspace ID", MAX_ID_BYTES);
+			result.workspaceRoot = text(target.workspaceRoot, "workspace root", MAX_PATH_BYTES);
+		}
 		if (result.targetKey !== key) throw new Error("target key does not match map key");
 		return result;
 	}
@@ -949,8 +955,9 @@ function validateTarget(value: unknown, key: string, legacyBridge = false): Host
 		const interactive = candidate.kind === "agent";
 		if ((target.profile !== "read-only" && target.profile !== "workspace-write") || (target.workspaceId === undefined) !== (target.workspaceRoot === undefined) || (legacyBridge ? target.profile !== "read-only" || target.workspaceId !== undefined : (target.profile === "workspace-write") !== (target.workspaceId !== undefined)) || (interactive ? target.driver === undefined || target.agentSession === undefined || target.capabilityTier === undefined : target.driver !== undefined || target.agentSession !== undefined || target.capabilityTier !== undefined)) throw new Error("invalid external target profile, workspace, or interactive-agent authority");
 		const shared = {
-			targetKey: text(target.targetKey, "target key", MAX_ID_BYTES), projectRoot: text(target.projectRoot, "project root", MAX_PATH_BYTES), bridgeId: text(target.bridgeId, "launch ID", MAX_ID_BYTES), participantKey: text(target.participantKey, "participant key", MAX_ID_BYTES), holderGeneration: text(target.holderGeneration, "holder generation", MAX_ID_BYTES), profile: target.profile === "read-only" ? "read-only" as const : "workspace-write" as const, configurationHash: hash(target.configurationHash, "configuration hash"), clientGeneration: text(target.clientGeneration, "client generation", MAX_ID_BYTES), reconnectDigest: hash(target.reconnectDigest, "reconnect digest"), herdr: validateBridgeHerdr(target.herdr), ...(target.workspaceId === undefined ? {} : { workspaceId: text(target.workspaceId, "workspace ID", MAX_ID_BYTES), workspaceRoot: text(target.workspaceRoot, "workspace root", MAX_PATH_BYTES) }), metadata: legacyBridge ? migrateBridgeMetadata(target.metadata) : validateBridgeMetadata(target.metadata), createdAt: nonNegativeNumber(target.createdAt, "target creation time"),
+			targetKey: text(target.targetKey, "target key", MAX_ID_BYTES), projectRoot: text(target.projectRoot, "project root", MAX_PATH_BYTES), bridgeId: text(target.bridgeId, "launch ID", MAX_ID_BYTES), participantKey: text(target.participantKey, "participant key", MAX_ID_BYTES), holderGeneration: text(target.holderGeneration, "holder generation", MAX_ID_BYTES), profile: target.profile === "read-only" ? "read-only" as const : "workspace-write" as const, configurationHash: hash(target.configurationHash, "configuration hash"), clientGeneration: text(target.clientGeneration, "client generation", MAX_ID_BYTES), reconnectDigest: hash(target.reconnectDigest, "reconnect digest"), herdr: validateBridgeHerdr(target.herdr), metadata: legacyBridge ? migrateBridgeMetadata(target.metadata) : validateBridgeMetadata(target.metadata), createdAt: nonNegativeNumber(target.createdAt, "target creation time"),
 		};
+		if (target.workspaceId !== undefined) Object.assign(shared, { workspaceId: text(target.workspaceId, "workspace ID", MAX_ID_BYTES), workspaceRoot: text(target.workspaceRoot, "workspace root", MAX_PATH_BYTES) });
 		const result: HostedExternalTarget = interactive ? { kind: "agent", ...shared, driver: nativeDriver(target.driver), agentSession: validateAgentSession(target.agentSession), capabilityTier: managedTier(target.capabilityTier) } : { kind: "bridge", ...shared };
 		if (result.targetKey !== key) throw new Error("target key does not match map key");
 		return result;
@@ -979,22 +986,25 @@ function validateBridgeLaunch(value: unknown, key: string, legacyBridge = false)
 		participantKey: text(launch.participantKey, "bridge participant key", MAX_ID_BYTES),
 		protocol: participantName(launch.protocol, "bridge protocol"),
 		participantId: participantName(launch.participantId, "bridge participant ID"),
-		...(launch.expectedParticipantGeneration === undefined ? {} : { expectedParticipantGeneration: text(launch.expectedParticipantGeneration, "expected bridge participant generation", MAX_ID_BYTES) }),
 		holderGeneration: text(launch.holderGeneration, "bridge holder generation", MAX_ID_BYTES),
 		targetKey: text(launch.targetKey, "bridge target key", MAX_ID_BYTES),
 		projectRoot: text(launch.projectRoot, "bridge project root", MAX_PATH_BYTES),
 		profile: launch.profile,
 		configurationHash: hash(launch.configurationHash, "bridge configuration hash"),
-		...(launch.driver === undefined ? {} : { driver: nativeDriver(launch.driver) }),
 		herdr: validateBridgeHerdr(launch.herdr),
-		...(launch.workspaceId === undefined ? {} : { workspaceId: text(launch.workspaceId, "bridge workspace ID", MAX_ID_BYTES), workspaceRoot: text(launch.workspaceRoot, "bridge workspace root", MAX_PATH_BYTES) }),
 		metadata: legacyBridge ? migrateBridgeMetadata(launch.metadata) : validateBridgeMetadata(launch.metadata),
 		createdAt: nonNegativeNumber(launch.createdAt, "bridge launch creation time"),
 		expiresAt: nonNegativeNumber(launch.expiresAt, "bridge launch expiry"),
 		status,
-		...(launch.consumedAt === undefined ? {} : { consumedAt: nonNegativeNumber(launch.consumedAt, "bridge consumption time") }),
-		...(launch.clientGeneration === undefined ? {} : { clientGeneration: text(launch.clientGeneration, "bridge client generation", MAX_ID_BYTES) }),
 	};
+	if (launch.expectedParticipantGeneration !== undefined) result.expectedParticipantGeneration = text(launch.expectedParticipantGeneration, "expected bridge participant generation", MAX_ID_BYTES);
+	if (launch.driver !== undefined) result.driver = nativeDriver(launch.driver);
+	if (launch.workspaceId !== undefined) {
+		result.workspaceId = text(launch.workspaceId, "bridge workspace ID", MAX_ID_BYTES);
+		result.workspaceRoot = text(launch.workspaceRoot, "bridge workspace root", MAX_PATH_BYTES);
+	}
+	if (launch.consumedAt !== undefined) result.consumedAt = nonNegativeNumber(launch.consumedAt, "bridge consumption time");
+	if (launch.clientGeneration !== undefined) result.clientGeneration = text(launch.clientGeneration, "bridge client generation", MAX_ID_BYTES);
 	if (result.launchId !== key || result.expiresAt <= result.createdAt || result.participantKey !== deriveParticipantKey(result.projectRoot, result.protocol, result.participantId)) throw new Error("bridge launch identity or time is invalid");
 	if (result.status === "consumed" ? result.consumedAt === undefined || result.clientGeneration === undefined : result.consumedAt !== undefined || result.clientGeneration !== undefined) throw new Error("bridge launch settlement is inconsistent");
 	return result;
@@ -1024,7 +1034,6 @@ function validateWorkspaceRecord(value: unknown, key: string, legacyPi: boolean)
 		participantKey: text(item.participantKey, "workspace participant key", MAX_ID_BYTES),
 		protocol,
 		participantId,
-		...(item.expectedParticipantGeneration === undefined ? {} : { expectedParticipantGeneration: text(item.expectedParticipantGeneration, "expected participant generation", MAX_ID_BYTES) }),
 		holderGeneration: text(item.holderGeneration, "workspace holder generation", MAX_ID_BYTES),
 		targetKey: text(item.targetKey, "workspace target key", MAX_ID_BYTES),
 		profile: "workspace-write" as const,
@@ -1033,18 +1042,19 @@ function validateWorkspaceRecord(value: unknown, key: string, legacyPi: boolean)
 		callerTargetKey: text(item.callerTargetKey, "workspace caller target key", MAX_ID_BYTES),
 		baseCommit: gitOid(item.baseCommit, "workspace base commit"),
 		headCommit: gitOid(item.headCommit, "workspace head commit"),
-		...(item.herdr === undefined ? {} : { herdr: validateBridgeHerdr(item.herdr) }),
 		state,
-		...(taskStatus === undefined ? {} : { taskStatus }),
-		...(commits ? { commits } : {}),
-		...(item.changedFiles === undefined ? {} : { changedFiles: integer(item.changedFiles, "workspace changed files") }),
-		...(item.additions === undefined ? {} : { additions: integer(item.additions, "workspace additions") }),
-		...(item.deletions === undefined ? {} : { deletions: integer(item.deletions, "workspace deletions") }),
-		...(item.integratedHead === undefined ? {} : { integratedHead: gitOid(item.integratedHead, "workspace integrated head") }),
 		createdAt: nonNegativeNumber(item.createdAt, "workspace creation time"),
 		expiresAt: nonNegativeNumber(item.expiresAt, "workspace launch expiry"),
 		updatedAt: nonNegativeNumber(item.updatedAt, "workspace update time"),
 	};
+	if (item.expectedParticipantGeneration !== undefined) Object.assign(common, { expectedParticipantGeneration: text(item.expectedParticipantGeneration, "expected participant generation", MAX_ID_BYTES) });
+	if (item.herdr !== undefined) Object.assign(common, { herdr: validateBridgeHerdr(item.herdr) });
+	if (taskStatus !== undefined) Object.assign(common, { taskStatus });
+	if (commits) Object.assign(common, { commits });
+	if (item.changedFiles !== undefined) Object.assign(common, { changedFiles: integer(item.changedFiles, "workspace changed files") });
+	if (item.additions !== undefined) Object.assign(common, { additions: integer(item.additions, "workspace additions") });
+	if (item.deletions !== undefined) Object.assign(common, { deletions: integer(item.deletions, "workspace deletions") });
+	if (item.integratedHead !== undefined) Object.assign(common, { integratedHead: gitOid(item.integratedHead, "workspace integrated head") });
 	const result: HostedWorkspace = ownerKind === "pi" ? { ...common, ownerKind: "pi", piSessionId: text(item.piSessionId, "workspace Pi session ID", MAX_ID_BYTES), launchDigest: hash(item.launchDigest, "workspace launch digest") } : { ...common, ownerKind: "bridge", bridgeId: text(item.bridgeId, "workspace bridge ID", MAX_ID_BYTES) };
 	if (result.workspaceId !== key || result.participantKey !== deriveParticipantKey(projectRoot, protocol, participantId) || !WORKSPACE_BRANCH.test(result.branchRef) || result.expiresAt <= result.createdAt || result.updatedAt < result.createdAt) throw new Error("workspace identity, branch, or time is invalid");
 	if (["bound", "active", "ready_handoff", "partial", "retained", "integrated"].includes(result.state) && !result.herdr || ["provisioning", "ready"].includes(result.state) && result.herdr) throw new Error("workspace Herdr binding is inconsistent");
@@ -1071,12 +1081,12 @@ function validateIntegration(value: unknown, key: string): HostedIntegration {
 		sourceHead: gitOid(item.sourceHead, "integration source head"),
 		sourceCommits,
 		state,
-		...(item.preparedHead === undefined ? {} : { preparedHead: gitOid(item.preparedHead, "prepared integration head") }),
-		...(item.conflictPaths === undefined ? {} : { conflictPaths: stringArray(item.conflictPaths, "integration conflict paths", 10_000) }),
 		createdAt: nonNegativeNumber(item.createdAt, "integration creation time"),
 		updatedAt: nonNegativeNumber(item.updatedAt, "integration update time"),
-		...(item.finalizedAt === undefined ? {} : { finalizedAt: nonNegativeNumber(item.finalizedAt, "integration finalized time") }),
 	};
+	if (item.preparedHead !== undefined) result.preparedHead = gitOid(item.preparedHead, "prepared integration head");
+	if (item.conflictPaths !== undefined) result.conflictPaths = stringArray(item.conflictPaths, "integration conflict paths", 10_000);
+	if (item.finalizedAt !== undefined) result.finalizedAt = nonNegativeNumber(item.finalizedAt, "integration finalized time");
 	const requiresPreparedHead = result.state === "prepared" || result.state === "conflicted" || result.state === "finalized" || result.state === "cleaned";
 	const finalizedTimeInvalid = result.state === "finalized" ? !result.finalizedAt : result.state !== "cleaned" && result.finalizedAt !== undefined;
 	if (result.integrationId !== key || !INTEGRATION_BRANCH.test(result.branchRef) || result.updatedAt < result.createdAt || requiresPreparedHead !== Boolean(result.preparedHead) || finalizedTimeInvalid) throw new Error("integration identity, branch, state, or time is inconsistent");
@@ -1175,12 +1185,12 @@ function validateParticipant(value: unknown, key: string): HostedParticipant {
 		participantId,
 		state: participant.state,
 		generation: text(participant.generation, "participant generation", MAX_ID_BYTES),
-		...(participant.holderTargetKey === undefined ? {} : { holderTargetKey: text(participant.holderTargetKey, "participant holder target key", MAX_ID_BYTES) }),
 		outSeq,
 		transitions,
 		createdAt: nonNegativeNumber(participant.createdAt, "participant creation time"),
 		updatedAt: nonNegativeNumber(participant.updatedAt, "participant update time"),
 	};
+	if (participant.holderTargetKey !== undefined) result.holderTargetKey = text(participant.holderTargetKey, "participant holder target key", MAX_ID_BYTES);
 	if (result.participantKey !== key || result.participantKey !== deriveParticipantKey(projectRoot, protocol, participantId)) throw new Error("participant key does not match its identity");
 	const latest = result.transitions.at(-1)!;
 	if ((result.state === "held") !== Boolean(result.holderTargetKey) || latest.generation !== result.generation || result.updatedAt < latest.at || latest.at < result.createdAt) throw new Error("participant state, holder, generation, or time is inconsistent");
@@ -1200,14 +1210,15 @@ function validateParticipant(value: unknown, key: string): HostedParticipant {
 function validateParticipantTransition(value: unknown): HostedParticipantTransition {
 	const transition = strictObject(value, "participant transition", ["cause", "generation", "holderTargetKey", "previousGeneration", "previousHolderTargetKey", "at"]);
 	if (transition.cause !== "acquire" && transition.cause !== "reacquire" && transition.cause !== "stand_down" && transition.cause !== "release" && transition.cause !== "takeover" && transition.cause !== "revive") throw new Error("invalid participant transition cause");
-	return {
+	const result: HostedParticipantTransition = {
 		cause: transition.cause,
 		generation: text(transition.generation, "transition generation", MAX_ID_BYTES),
-		...(transition.holderTargetKey === undefined ? {} : { holderTargetKey: text(transition.holderTargetKey, "transition holder target key", MAX_ID_BYTES) }),
-		...(transition.previousGeneration === undefined ? {} : { previousGeneration: text(transition.previousGeneration, "previous transition generation", MAX_ID_BYTES) }),
-		...(transition.previousHolderTargetKey === undefined ? {} : { previousHolderTargetKey: text(transition.previousHolderTargetKey, "previous holder target key", MAX_ID_BYTES) }),
 		at: nonNegativeNumber(transition.at, "participant transition time"),
 	};
+	if (transition.holderTargetKey !== undefined) result.holderTargetKey = text(transition.holderTargetKey, "transition holder target key", MAX_ID_BYTES);
+	if (transition.previousGeneration !== undefined) result.previousGeneration = text(transition.previousGeneration, "previous transition generation", MAX_ID_BYTES);
+	if (transition.previousHolderTargetKey !== undefined) result.previousHolderTargetKey = text(transition.previousHolderTargetKey, "previous holder target key", MAX_ID_BYTES);
+	return result;
 }
 
 function validateEvent(value: unknown, key: string): HostedEvent {
@@ -1301,8 +1312,11 @@ function validateTaskResultEvent(value: unknown, key: string): HostedMailboxTask
 	const body = text(payload.body, "task result body", HOSTED_MAILBOX_MAX_BODY_BYTES);
 	const recipientParticipantKey = text(event.recipientParticipantKey, "task result recipient key", MAX_ID_BYTES);
 	const workspace = payload.workspace === undefined ? undefined : validateTaskWorkspaceEvidence(payload.workspace);
-	const operation: Extract<HostedStateOperation, { type: "task.result" }> = { type: "task.result",  senderParticipantKey: text(payload.senderParticipantKey, "task result sender key", MAX_ID_BYTES), expectedSenderGeneration: text(source.generation, "task result source generation", MAX_ID_BYTES), senderTargetKey: "validation", sendId: text(payload.sendId, "task result send ID", MAX_ID_BYTES), eventId: text(event.eventId, "task result event ID", MAX_ID_BYTES), inReplyToEventId: text(payload.inReplyToEventId, "task result reply event ID", MAX_ID_BYTES), status, body, sessionAdvance, ...(workspace ? { workspace } : {}), at: nonNegativeNumber(event.createdAt, "task result creation time") };
-	const result: HostedMailboxTaskResultEvent = { version: 1, eventId: operation.eventId, dedupeKey: text(event.dedupeKey, "task result dedupe key", MAX_PATH_BYTES), source: { kind: "participant", id: operation.senderParticipantKey, generation: operation.expectedSenderGeneration, sequence: integer(source.sequence, "task result source sequence") }, recipientParticipantKey, type: "mailbox.task_result", createdAt: operation.at, summary: stringValue(event.summary, "task result summary", MAX_SUMMARY_BYTES), payload: { sendId: operation.sendId, replyId: text(payload.replyId, "task result reply ID", MAX_ID_BYTES), senderParticipantKey: operation.senderParticipantKey, recipientParticipantKey: text(payload.recipientParticipantKey, "task result payload recipient", MAX_ID_BYTES), body, fingerprint: text(payload.fingerprint, "task result fingerprint", MAX_ID_BYTES), inReplyToEventId: operation.inReplyToEventId, status: operation.status, sessionAdvance: operation.sessionAdvance, ...(workspace ? { workspace } : {}) }, delivery: validateDelivery(event.delivery) };
+	const operation: Extract<HostedStateOperation, { type: "task.result" }> = { type: "task.result", senderParticipantKey: text(payload.senderParticipantKey, "task result sender key", MAX_ID_BYTES), expectedSenderGeneration: text(source.generation, "task result source generation", MAX_ID_BYTES), senderTargetKey: "validation", sendId: text(payload.sendId, "task result send ID", MAX_ID_BYTES), eventId: text(event.eventId, "task result event ID", MAX_ID_BYTES), inReplyToEventId: text(payload.inReplyToEventId, "task result reply event ID", MAX_ID_BYTES), status, body, sessionAdvance, at: nonNegativeNumber(event.createdAt, "task result creation time") };
+	if (workspace) operation.workspace = workspace;
+	const parsedPayload: HostedMailboxTaskResultEvent["payload"] = { sendId: operation.sendId, replyId: text(payload.replyId, "task result reply ID", MAX_ID_BYTES), senderParticipantKey: operation.senderParticipantKey, recipientParticipantKey: text(payload.recipientParticipantKey, "task result payload recipient", MAX_ID_BYTES), body, fingerprint: text(payload.fingerprint, "task result fingerprint", MAX_ID_BYTES), inReplyToEventId: operation.inReplyToEventId, status: operation.status, sessionAdvance: operation.sessionAdvance };
+	if (workspace) parsedPayload.workspace = workspace;
+	const result: HostedMailboxTaskResultEvent = { version: 1, eventId: operation.eventId, dedupeKey: text(event.dedupeKey, "task result dedupe key", MAX_PATH_BYTES), source: { kind: "participant", id: operation.senderParticipantKey, generation: operation.expectedSenderGeneration, sequence: integer(source.sequence, "task result source sequence") }, recipientParticipantKey, type: "mailbox.task_result", createdAt: operation.at, summary: stringValue(event.summary, "task result summary", MAX_SUMMARY_BYTES), payload: parsedPayload, delivery: validateDelivery(event.delivery) };
 	if (result.eventId !== key || result.source.id !== result.payload.senderParticipantKey || result.recipientParticipantKey !== result.payload.recipientParticipantKey || result.payload.replyId !== result.payload.sendId || result.dedupeKey !== mailboxDedupeKey(result.source.id, result.payload.sendId) || result.payload.fingerprint !== taskResultFingerprint(recipientParticipantKey, operation)) throw new Error("task result identity, dedupe, or fingerprint is invalid");
 	return result;
 }
@@ -1353,10 +1367,10 @@ function validateAutoCapacityReservation(value: unknown, key: string): HostedAut
 		projectRoot: text(item.projectRoot, "Auto capacity project root", MAX_PATH_BYTES),
 		callerTargetKey: text(item.callerTargetKey, "Auto capacity caller target key", MAX_ID_BYTES),
 		callerParticipantKey: text(item.callerParticipantKey, "Auto capacity caller participant key", MAX_ID_BYTES),
-		...(item.expectedCallerGeneration === undefined ? {} : { expectedCallerGeneration: text(item.expectedCallerGeneration, "Auto capacity caller generation", MAX_ID_BYTES) }),
 		participantKeys,
 		createdAt: nonNegativeNumber(item.createdAt, "Auto capacity reservation time"),
 	};
+	if (item.expectedCallerGeneration !== undefined) result.expectedCallerGeneration = text(item.expectedCallerGeneration, "Auto capacity caller generation", MAX_ID_BYTES);
 	if (item.version !== 1 || result.operationId !== key || participantKeys.length < 1 || new Set(participantKeys).size !== participantKeys.length || participantKeys.includes(result.callerParticipantKey)) throw new Error("invalid Auto capacity reservation");
 	return result;
 }
@@ -1375,8 +1389,8 @@ function validateClaim(value: unknown, key: string): HostedClaim {
 		createdAt: nonNegativeNumber(claim.createdAt, "claim creation time"),
 		leaseUntil: nonNegativeNumber(claim.leaseUntil, "claim lease"),
 		status: claim.status,
-		...(claim.settledAt === undefined ? {} : { settledAt: nonNegativeNumber(claim.settledAt, "claim settled time") }),
 	};
+	if (claim.settledAt !== undefined) result.settledAt = nonNegativeNumber(claim.settledAt, "claim settled time");
 	if (result.claimId !== key || result.leaseUntil <= result.createdAt) throw new Error("invalid claim identity or lease");
 	if (result.status === "active" ? result.settledAt !== undefined : result.settledAt === undefined) throw new Error("invalid claim settlement");
 	return result;
@@ -1555,15 +1569,16 @@ function transitionParticipant(
 	state: HostedParticipant["state"],
 	holderTargetKey?: string,
 ): HostedParticipant {
-	return {
+	const result: HostedParticipant = {
 		...participant,
 		state,
 		generation: transition.generation,
-		...(holderTargetKey ? { holderTargetKey } : {}),
-		...(!holderTargetKey && participant.holderTargetKey ? { holderTargetKey: undefined } : {}),
 		transitions: [...participant.transitions, transition].slice(-HOSTED_PARTICIPANT_TRANSITION_LIMIT),
 		updatedAt: transition.at,
 	};
+	if (holderTargetKey) result.holderTargetKey = holderTargetKey;
+	else if (participant.holderTargetKey) result.holderTargetKey = undefined;
+	return result;
 }
 
 function latestHolderTargetKey(participant: HostedParticipant): string | undefined {
