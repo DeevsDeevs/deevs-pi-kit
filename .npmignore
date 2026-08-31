@@ -5,7 +5,9 @@ node_modules/
 .missions/
 test/
 scripts/
+tools/
 AGENTS.md
+oxlint.config.ts
 tsconfig.json
 *.log
 *.tgz
