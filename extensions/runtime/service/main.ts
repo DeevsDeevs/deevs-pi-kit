@@ -20,7 +20,10 @@ try {
 		process.once("SIGTERM", () => void stop());
 	}
 } catch (error) {
-	process.stderr.write(`${JSON.stringify({ status: "error", code: errorCode(error), message: error instanceof Error ? error.message : String(error) })}\n`);
+	const failure = error instanceof Error ? error : new Error(String(error));
+	const candidateCode = "code" in failure ? String(failure.code) : "";
+	const code = /^[A-Za-z][A-Za-z0-9_]*$/.test(candidateCode) ? candidateCode : "internal";
+	process.stderr.write(`${JSON.stringify({ status: "error", code, message: failure.message })}\n`);
 	process.exitCode = 1;
 }
 
@@ -44,7 +47,3 @@ function parseArgs(args: string[]) {
 	return { root, help };
 }
 
-function errorCode(error: unknown): string {
-	if (error && typeof error === "object" && "code" in error && typeof error.code === "string") return error.code;
-	return "internal";
-}
