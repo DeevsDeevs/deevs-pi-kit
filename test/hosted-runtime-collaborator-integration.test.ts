@@ -752,7 +752,7 @@ describe("hosted collaborator Pi integration", () => {
 			if (request.method === "participant.auto_capacity.recover") return { released: true, confirmedAbsent: true };
 			return baseResponse(request);
 		});
-		writeFileSync(join(test.runtimeRoot, "auto-start.lock"), `${JSON.stringify({ token: "stale", pid: process.pid })}\n`);
+		writeFileSync(join(test.runtimeRoot, "auto-start.lock"), `${JSON.stringify({ token: "lock_00000000-0000-4000-8000-000000000005", pid: process.pid })}\n`);
 		let confirmation = "";
 		test.ctx.ui.confirm = async (...args: unknown[]) => { confirmation = String(args[1]); return true; };
 		await test.integration.sessionStart(test.ctx as never);
