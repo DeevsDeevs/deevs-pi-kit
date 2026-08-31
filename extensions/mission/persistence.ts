@@ -11,6 +11,18 @@ const STATUSES: ReadonlySet<MissionStatus> = new Set(["active", "paused", "block
 const REVIEW_STATUSES: ReadonlySet<MissionReviewStatus> = new Set(["not_required", "due", "starting", "running", "awaiting_adjudication", "changes_requested", "clear", "skipped"]);
 const REVIEW_SEVERITIES: ReadonlySet<MissionReviewSeverity> = new Set(["blocker", "major", "minor", "nit"]);
 const REVIEW_CRITICAL_IMPACTS: ReadonlySet<MissionReviewCriticalImpact> = new Set(["security", "data_loss"]);
+const SNAPSHOT_FIELDS = ["version", "revision", "owner", "mission", "progress", "continuationProgressIndex", "carriedUsage", "usage", "reviewFailureCount", "usageComplete"] satisfies readonly (keyof MissionSnapshot)[];
+const OWNER_FIELDS = ["sessionId", "sessionFile"] satisfies readonly (keyof MissionOwner)[];
+const MISSION_FIELDS = [
+	"missionId", "objective", "title", "requirements", "status", "createdAt", "updatedAt", "slug", "chain", "chainBranch", "artifactDir", "paths", "tokenBudget", "costBudgetUsd", "baselineMainTokens", "baselineSubagentTokens", "baselineMainCostUsd", "baselineSubagentCostUsd", "lastReason", "lastSummary", "lastContinuationAt", "generation", "objectiveVersion", "turnBudget", "wallDeadlineAt", "reviewStatus", "initialBaselinePending", "reviewUpdatedAt", "reviewRunId", "reviewAdmissionId", "reviewReason", "reviewSkippedReason", "reviewSuggestedVerdict", "reviewFailure", "reviewOutcome", "reviewNotBeforeAt", "reviewSupersessionCount", "reviewWorktreeFingerprint", "admittedWorktreeFingerprint", "reviewCandidateId", "reviewCandidateObjectiveVersion", "reviewAdjudicatedCandidateId", "reviewAdjudicatedVerdict", "reviewAdjudications", "reviewAdjudicationHistoryComplete", "reviewLegacyRelaunchAuthorized", "reviewHighestSeverity", "reviewBlockingFindingCount", "reviewBacklogFindingCount", "reviewFindings", "reviewAcceptedFindings", "reviewScopePaths", "reviewScopeRevisions", "reviewAcceptedRevisions", "reviewCorrectionCount", "reviewCorrectionLimit", "completionLatchCandidateId", "completionLatchReviewStatus", "completionId", "completionEffectsStatus", "completionAudit", "blockerFingerprint", "blockerCount", "turnCount",
+] satisfies readonly (keyof MissionCurrent)[];
+const PROGRESS_FIELDS = ["missionId", "at", "summary", "evidence", "remaining", "validation", "checkpoint", "blocked", "blockerId"] satisfies readonly (keyof MissionProgressRecord)[];
+const VALIDATION_FIELDS = ["command", "exitCode", "objectiveVersion", "summary", "artifact"] as const;
+const USAGE_FIELDS = ["mainTokens", "subagentTokens", "totalTokens", "mainCostUsd", "subagentCostUsd", "totalCostUsd"] satisfies readonly (keyof MissionUsage)[];
+const ADJUDICATION_FIELDS = ["candidateId", "verdict"] as const;
+const FINDING_FIELDS = ["index", "severity", "summary", "path", "line", "requirementIndex", "criticalImpact"] as const;
+const REVISION_FIELDS = ["root", "base", "head"] as const;
+const COMPLETION_AUDIT_FIELDS = ["requirementIndex", "evidence"] as const;
 
 export function readMissionSnapshot(cwd: string, slug: string): MissionSnapshot | undefined {
 	if (!validSlug(slug)) throw new Error(`Invalid Mission slug: ${slug}`);
@@ -187,12 +199,12 @@ function readJsonFile(file: string, name: string): unknown {
 }
 
 function validateSnapshot(value: unknown, cwd: string, expectedSlug: string): MissionSnapshot {
-	const record = object(value, "Mission snapshot");
+	const record = object(value, "Mission snapshot", SNAPSHOT_FIELDS);
 	const revision = record.revision;
 	if (record.version !== SNAPSHOT_VERSION || typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 0) throw new Error("Unsupported Mission snapshot version or revision.");
-	const ownerValue = object(record.owner, "Mission owner");
+	const ownerValue = object(record.owner, "Mission owner", OWNER_FIELDS);
 	const owner: MissionOwner = { sessionId: text(ownerValue.sessionId, "owner session id", 200), sessionFile: text(ownerValue.sessionFile, "owner session file", 2_000) };
-	const rawMission = object(record.mission, "Mission");
+	const rawMission = object(record.mission, "Mission", MISSION_FIELDS);
 	const slug = text(rawMission.slug, "Mission slug", 120);
 	if (slug !== expectedSlug || !validSlug(slug)) throw new Error("Mission snapshot slug does not match its directory.");
 	const mission = validateMission(rawMission, cwd, slug);
@@ -248,7 +260,7 @@ function validateMission(value: Record<string, unknown>, cwd: string, slug: stri
 	if (mission.reviewOutcome !== undefined && mission.reviewOutcome !== "superseded" && mission.reviewOutcome !== "failed") throw new Error("Invalid Mission review outcome.");
 	if (mission.reviewAdjudicatedVerdict !== undefined && mission.reviewAdjudicatedVerdict !== "clear" && mission.reviewAdjudicatedVerdict !== "changes_requested") throw new Error("Invalid Mission adjudicated review verdict.");
 	if (value.reviewAdjudications !== undefined) mission.reviewAdjudications = array(value.reviewAdjudications, "Mission review adjudications", MAX_MISSION_REVIEW_ADJUDICATIONS).map((item) => {
-		const adjudication = object(item, "Mission review adjudication");
+		const adjudication = object(item, "Mission review adjudication", ADJUDICATION_FIELDS);
 		const verdict = text(adjudication.verdict, "Mission review adjudication verdict", 40);
 		if (verdict !== "clear" && verdict !== "changes_requested") throw new Error("Invalid Mission review adjudication verdict.");
 		return { candidateId: text(adjudication.candidateId, "Mission review adjudication candidate", 200), verdict };
@@ -270,7 +282,7 @@ function validateMission(value: Record<string, unknown>, cwd: string, slug: stri
 	if (mission.completionLatchReviewStatus !== undefined && !["not_required", "clear", "skipped"].includes(mission.completionLatchReviewStatus)) throw new Error("Invalid Mission completion latch review status.");
 	if (mission.completionEffectsStatus !== undefined && mission.completionEffectsStatus !== "pending" && mission.completionEffectsStatus !== "done") throw new Error("Invalid Mission completion effects status.");
 	if (value.completionAudit !== undefined) mission.completionAudit = array(value.completionAudit, "Mission completion audit", 12).map((item) => {
-		const audit = object(item, "Mission completion audit item");
+		const audit = object(item, "Mission completion audit item", COMPLETION_AUDIT_FIELDS);
 		return { requirementIndex: boundedInteger(audit.requirementIndex, "requirement index", 0, 11), evidence: text(audit.evidence, "requirement evidence", 2_000) };
 	});
 	if (value.lastContinuationAt !== undefined) mission.lastContinuationAt = number(value.lastContinuationAt, "lastContinuationAt");
@@ -293,7 +305,7 @@ function validateMission(value: Record<string, unknown>, cwd: string, slug: stri
 
 function reviewRevisions(value: unknown, label: string) {
 	return array(value, label, 100).map((item) => {
-		const revision = object(item, "Mission review revision");
+		const revision = object(item, "Mission review revision", REVISION_FIELDS);
 		const root = text(revision.root, "Mission review revision root", 2_000);
 		const base = text(revision.base, "Mission review revision base", 64);
 		const head = text(revision.head, "Mission review revision head", 64);
@@ -304,7 +316,7 @@ function reviewRevisions(value: unknown, label: string) {
 
 function reviewFindings(value: unknown, label: string) {
 	return array(value, label, 1_000).map((item) => {
-		const finding = object(item, "Mission review finding");
+		const finding = object(item, "Mission review finding", FINDING_FIELDS);
 		const severity = enumValue(finding.severity, REVIEW_SEVERITIES, "Mission review finding severity");
 		const criticalImpact = finding.criticalImpact === undefined ? undefined : enumValue(finding.criticalImpact, REVIEW_CRITICAL_IMPACTS, "Mission review critical impact");
 		const path = finding.path === undefined ? undefined : text(finding.path, "Mission review finding path", 2_000);
@@ -326,7 +338,7 @@ function reviewPath(path: string): boolean {
 }
 
 function validateProgress(value: unknown): MissionProgressRecord {
-	const record = object(value, "Mission progress record");
+	const record = object(value, "Mission progress record", PROGRESS_FIELDS);
 	return {
 		missionId: text(record.missionId, "progress Mission id", 200),
 		at: number(record.at, "progress timestamp"),
@@ -334,7 +346,7 @@ function validateProgress(value: unknown): MissionProgressRecord {
 		evidence: stringArray(record.evidence, "progress evidence", 20, 500),
 		remaining: stringArray(record.remaining, "progress remaining", 20, 500),
 		validation: array(record.validation, "progress validation", 20).map((item) => {
-			const validation = object(item, "validation record");
+			const validation = object(item, "validation record", VALIDATION_FIELDS);
 			return {
 				command: text(validation.command, "validation command", 500),
 				exitCode: boundedInteger(validation.exitCode, "validation exit code", -1_000_000, 1_000_000),
@@ -350,7 +362,7 @@ function validateProgress(value: unknown): MissionProgressRecord {
 }
 
 function validateUsage(value: unknown): MissionUsage {
-	const record = object(value, "Mission usage");
+	const record = object(value, "Mission usage", USAGE_FIELDS);
 	const mainTokens = nonnegative(record.mainTokens, "main tokens");
 	const subagentTokens = nonnegative(record.subagentTokens, "Subagent tokens");
 	const mainCostUsd = nonnegative(record.mainCostUsd, "main cost");
@@ -369,10 +381,12 @@ function validSlug(value: string): boolean {
 	return !!value && value !== "." && value !== ".." && !/[\\/]/.test(value);
 }
 
-function object(value: unknown, name: string): Record<string, unknown> {
+function object(value: unknown, name: string, allowedFields?: readonly string[]): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${name} must be an object.`);
 	// SAFETY: The preceding runtime check excludes null, primitives, and arrays before schema parsing.
-	return value as Record<string, unknown>;
+	const record = value as Record<string, unknown>;
+	if (allowedFields) for (const key of Object.keys(record)) if (!allowedFields.includes(key)) throw new Error(`${name} has unknown field: ${key}`);
+	return record;
 }
 
 function enumValue<const Value extends string>(value: unknown, allowed: ReadonlySet<Value>, name: string): Value {
