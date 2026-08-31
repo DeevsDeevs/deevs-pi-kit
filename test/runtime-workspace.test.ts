@@ -247,12 +247,14 @@ describe("Runtime isolated collaborator workspace", () => {
 		expect(await test.coordinator.taskEvidence(native.registration.targetKey)).toMatchObject({ dirty: false, capturedAt: expect.any(Number) });
 		expect(test.participants.recoverTaskResult(native.registration, native.participantKey, native.holderGeneration, task.eventId, "reply_native", "completed", "Done.", "committed")?.payload.workspace).toEqual(evidence);
 		expect(test.participants.taskStatus(main, mainParticipant.participantKey, mainParticipant.generation, task.eventId)).toMatchObject({ status: "completed", workspace: { workspaceId: workspace.workspace.workspaceId, dirty: true } });
+		const authority = { workspaceId: workspace.workspace.workspaceId, callerParticipantKey: mainParticipant.participantKey, expectedCallerGeneration: mainParticipant.generation };
+		const activeWorkspace = test.store.read().workspaces[workspace.workspace.workspaceId]!;
+		test.store.apply({ type: "workspace.replace", workspace: { ...activeWorkspace, state: "needs_attention", updatedAt: activeWorkspace.updatedAt + 1 }, expectedState: "active", expectedUpdatedAt: activeWorkspace.updatedAt });
+		expect(() => test.coordinator.retain(main, authority)).toThrow("exact target stop");
 		const stopping = new HostedParticipantCoordinator(test.store, test.registrations, { request() {} }, { createGeneration: () => "lease_stopped", stopTarget: async () => "closed", onStopped: (target, generation) => test.coordinator.retainTarget(target.targetKey, generation) });
 		await stopping.stopConfirmed(main, native.participantKey, native.holderGeneration);
 		expect(test.store.read().workspaces[workspace.workspace.workspaceId]?.state).toBe("retained");
 		expect(readFileSync(join(test.project, "app.txt"), "utf8")).toBe("base\n");
-
-		const authority = { workspaceId: workspace.workspace.workspaceId, callerParticipantKey: mainParticipant.participantKey, expectedCallerGeneration: mainParticipant.generation };
 		writeFileSync(join(workspace.workspace.worktreePath, "recovered.txt"), "recover me\n");
 		const internals = test.coordinator as unknown as { git: { checkpoint: (...args: unknown[]) => Promise<unknown> } };
 		const checkpoint = internals.git.checkpoint.bind(internals.git);
