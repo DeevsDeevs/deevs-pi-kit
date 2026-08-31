@@ -76,18 +76,18 @@ function validateJournal(value: unknown): BridgeJournal {
 		version: 1,
 		bridgeId: text(state.bridgeId, "bridge ID", MAX_ID_BYTES),
 		driver,
-		...(state.targetKey === undefined ? {} : { targetKey: text(state.targetKey, "target key", MAX_ID_BYTES) }),
-		...(state.participantKey === undefined ? {} : { participantKey: text(state.participantKey, "participant key", MAX_ID_BYTES) }),
-		...(state.holderGeneration === undefined ? {} : { holderGeneration: text(state.holderGeneration, "holder generation", MAX_ID_BYTES) }),
-		...(state.protocol === undefined ? {} : { protocol: text(state.protocol, "protocol", 64) }),
-		...(state.participantId === undefined ? {} : { participantId: text(state.participantId, "participant ID", 64) }),
-		...(state.driverSessionId === undefined ? {} : { driverSessionId: text(state.driverSessionId, "driver session ID", MAX_ID_BYTES) }),
 		nextSequence: integer(state.nextSequence, "next sequence"),
 		admissions,
 		turns,
 		status,
 		updatedAt: time(state.updatedAt, "updated time"),
 	};
+	if (state.targetKey !== undefined) result.targetKey = text(state.targetKey, "target key", MAX_ID_BYTES);
+	if (state.participantKey !== undefined) result.participantKey = text(state.participantKey, "participant key", MAX_ID_BYTES);
+	if (state.holderGeneration !== undefined) result.holderGeneration = text(state.holderGeneration, "holder generation", MAX_ID_BYTES);
+	if (state.protocol !== undefined) result.protocol = text(state.protocol, "protocol", 64);
+	if (state.participantId !== undefined) result.participantId = text(state.participantId, "participant ID", 64);
+	if (state.driverSessionId !== undefined) result.driverSessionId = text(state.driverSessionId, "driver session ID", MAX_ID_BYTES);
 	const admitted = new Map(admissions.map((item) => [item.claimId, new Set(item.eventIds)]));
 	if (result.nextSequence < 1 || new Set(admissions.map((item) => item.claimId)).size !== admissions.length || new Set(turns.map((item) => item.eventId)).size !== turns.length || new Set(turns.map((item) => item.sequence)).size !== turns.length || turns.some((turn) => turn.sequence < 1 || turn.sequence >= result.nextSequence || !admitted.get(turn.claimId)?.has(turn.eventId))) throw new BridgeJournalError("Bridge journal admission or turn identity is inconsistent.");
 	if (turns.some((turn) => (turn.terminal !== undefined || ["terminal", "reply_pending", "reply_sent"].includes(turn.state)) && !turn.worker)) result.status = "needs_attention";
@@ -111,6 +111,7 @@ function validateTurn(value: unknown): BridgeTurn {
 	if (worker?.cancelRequested !== undefined && typeof worker.cancelRequested !== "boolean") throw new BridgeJournalError("Bridge worker cancel request must be boolean.");
 	const terminalStatus = terminal ? enumValue(terminal.status, ["completed", "failed", "cancelled"], "Bridge terminal status is invalid.") : undefined;
 	const sessionAdvance = terminal ? enumValue(terminal.sessionAdvance, ["none", "committed", "uncertain"], "Bridge session advance state is invalid.") : undefined;
+	if (item.task !== undefined && item.task !== true) invalid("Bridge turn task marker is invalid.");
 	const result: BridgeTurn = {
 		turnId: text(item.turnId, "turn ID", MAX_ID_BYTES),
 		sequence: integer(item.sequence, "turn sequence"),
@@ -118,17 +119,28 @@ function validateTurn(value: unknown): BridgeTurn {
 		claimId: text(item.claimId, "claim ID", MAX_ID_BYTES),
 		senderParticipantKey: text(item.senderParticipantKey, "sender participant key", MAX_ID_BYTES),
 		body: string(item.body, "turn body", BRIDGE_RUNNER_MAX_BODY_BYTES),
-		...(item.task === true ? { task: true as const } : item.task === undefined ? {} : invalid("Bridge turn task marker is invalid.")),
 		state,
 		attempt: integer(item.attempt, "attempt"),
 		replySendId: text(item.replySendId, "reply send ID", MAX_ID_BYTES),
-		...(item.replyBody === undefined ? {} : { replyBody: string(item.replyBody, "reply body", BRIDGE_RUNNER_MAX_BODY_BYTES) }),
 		reply,
-		...(worker ? { worker: { attempt: integer(worker.attempt, "worker attempt"), statePath: text(worker.statePath, "worker state path", MAX_PATH_BYTES), ...(worker.workerPid === undefined ? {} : { workerPid: positiveInteger(worker.workerPid, "worker PID") }), ...(worker.workerIdentity === undefined ? {} : { workerIdentity: text(worker.workerIdentity, "worker identity", MAX_PATH_BYTES) }), ...(worker.cancelRequested === undefined ? {} : { cancelRequested: worker.cancelRequested }), ...(worker.quiescedAt === undefined ? {} : { quiescedAt: time(worker.quiescedAt, "worker quiescence time") }) } } : {}),
-		...(terminal && terminalStatus && sessionAdvance ? { terminal: { status: terminalStatus, body: string(terminal.body, "terminal body", BRIDGE_RUNNER_MAX_BODY_BYTES), sessionAdvance, ...(terminal.sessionId === undefined ? {} : { sessionId: text(terminal.sessionId, "terminal session ID", MAX_ID_BYTES) }) } } : {}),
 		createdAt: time(item.createdAt, "turn creation time"),
 		updatedAt: time(item.updatedAt, "turn updated time"),
 	};
+	if (item.task === true) result.task = true;
+	if (item.replyBody !== undefined) result.replyBody = string(item.replyBody, "reply body", BRIDGE_RUNNER_MAX_BODY_BYTES);
+	if (worker) {
+		const parsed: NonNullable<BridgeTurn["worker"]> = { attempt: integer(worker.attempt, "worker attempt"), statePath: text(worker.statePath, "worker state path", MAX_PATH_BYTES) };
+		if (worker.workerPid !== undefined) parsed.workerPid = positiveInteger(worker.workerPid, "worker PID");
+		if (worker.workerIdentity !== undefined) parsed.workerIdentity = text(worker.workerIdentity, "worker identity", MAX_PATH_BYTES);
+		if (worker.cancelRequested !== undefined) parsed.cancelRequested = worker.cancelRequested;
+		if (worker.quiescedAt !== undefined) parsed.quiescedAt = time(worker.quiescedAt, "worker quiescence time");
+		result.worker = parsed;
+	}
+	if (terminal && terminalStatus && sessionAdvance) {
+		const parsed: NonNullable<BridgeTurn["terminal"]> = { status: terminalStatus, body: string(terminal.body, "terminal body", BRIDGE_RUNNER_MAX_BODY_BYTES), sessionAdvance };
+		if (terminal.sessionId !== undefined) parsed.sessionId = text(terminal.sessionId, "terminal session ID", MAX_ID_BYTES);
+		result.terminal = parsed;
+	}
 	const terminalRequired = ["terminal", "reply_pending", "reply_sent"].includes(result.state);
 	const terminalAllowed = terminalRequired || result.state === "needs_attention";
 	if (result.updatedAt < result.createdAt || (result.state === "reply_sent") !== (result.reply === "sent") || (terminalRequired && !result.terminal) || (!terminalAllowed && result.terminal !== undefined) || result.worker?.quiescedAt !== undefined && (!result.worker.workerPid || !result.worker.workerIdentity)) throw new BridgeJournalError("Bridge turn terminal, reply, worker quiescence, or time is inconsistent.");
@@ -140,7 +152,25 @@ function validateWorkerState(value: unknown): BridgeWorkerState {
 	const status = enumValue(item.status, ["starting", "running", "terminal", "needs_attention"], "Bridge worker status is invalid.");
 	if (item.version !== 1) throw new BridgeJournalError("Bridge worker version or status is invalid.");
 	const terminal = item.terminal === undefined ? undefined : validateTurn({ turnId: "validation", sequence: 0, eventId: "validation", claimId: "validation", senderParticipantKey: "validation", body: "", state: "terminal", attempt: 0, replySendId: "validation", reply: "unsent", terminal: item.terminal, createdAt: 0, updatedAt: 0 }).terminal;
-	const result: BridgeWorkerState = { version: 1, turnId: text(item.turnId, "worker turn ID", MAX_ID_BYTES), eventId: text(item.eventId, "worker event ID", MAX_ID_BYTES), attempt: integer(item.attempt, "worker attempt"), status, workerPid: positiveInteger(item.workerPid, "worker PID"), workerIdentity: text(item.workerIdentity, "worker identity", MAX_PATH_BYTES), ...(item.childPid === undefined ? {} : { childPid: positiveInteger(item.childPid, "child PID") }), ...(item.childIdentity === undefined ? {} : { childIdentity: text(item.childIdentity, "child identity", MAX_PATH_BYTES) }), stdoutBytes: integer(item.stdoutBytes, "stdout bytes"), stderrBytes: integer(item.stderrBytes, "stderr bytes"), frames: integer(item.frames, "frame count"), ...(terminal ? { terminal } : {}), ...(item.error === undefined ? {} : { error: string(item.error, "worker error", BRIDGE_RUNNER_MAX_BODY_BYTES) }), startedAt: time(item.startedAt, "worker start time"), updatedAt: time(item.updatedAt, "worker update time"), ...(item.endedAt === undefined ? {} : { endedAt: time(item.endedAt, "worker end time") }) };
+	const result: BridgeWorkerState = {
+		version: 1,
+		turnId: text(item.turnId, "worker turn ID", MAX_ID_BYTES),
+		eventId: text(item.eventId, "worker event ID", MAX_ID_BYTES),
+		attempt: integer(item.attempt, "worker attempt"),
+		status,
+		workerPid: positiveInteger(item.workerPid, "worker PID"),
+		workerIdentity: text(item.workerIdentity, "worker identity", MAX_PATH_BYTES),
+		stdoutBytes: integer(item.stdoutBytes, "stdout bytes"),
+		stderrBytes: integer(item.stderrBytes, "stderr bytes"),
+		frames: integer(item.frames, "frame count"),
+		startedAt: time(item.startedAt, "worker start time"),
+		updatedAt: time(item.updatedAt, "worker update time"),
+	};
+	if (item.childPid !== undefined) result.childPid = positiveInteger(item.childPid, "child PID");
+	if (item.childIdentity !== undefined) result.childIdentity = text(item.childIdentity, "child identity", MAX_PATH_BYTES);
+	if (terminal) result.terminal = terminal;
+	if (item.error !== undefined) result.error = string(item.error, "worker error", BRIDGE_RUNNER_MAX_BODY_BYTES);
+	if (item.endedAt !== undefined) result.endedAt = time(item.endedAt, "worker end time");
 	if (result.stdoutBytes > BRIDGE_RUNNER_MAX_STDOUT_BYTES || result.stderrBytes > BRIDGE_RUNNER_MAX_STDERR_BYTES || result.frames > BRIDGE_RUNNER_MAX_FRAMES || result.updatedAt < result.startedAt || (result.endedAt !== undefined && result.endedAt < result.startedAt) || (result.status === "terminal" && !result.terminal)) throw new BridgeJournalError("Bridge worker counters, time, or terminal state is inconsistent.");
 	return result;
 }
