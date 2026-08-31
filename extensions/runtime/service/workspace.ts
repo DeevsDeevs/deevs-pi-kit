@@ -245,7 +245,7 @@ export class RuntimeWorkspaceCoordinator {
 	retain(caller: HostedLiveRegistration, input: WorkspaceAuthority & { workspaceId: string }): HostedWorkspace {
 		const workspace = this.workspace(input.workspaceId);
 		this.assertCaller(caller, workspace.projectRoot, input);
-		if (!["ready", "bound", "ready_handoff", "partial", "retained", "needs_attention"].includes(workspace.state)) throw new HostedWorkspaceError("conflict", "Active workspaces may be retained only after exact target stop.");
+		if (!["ready", "bound", "ready_handoff", "partial", "retained"].includes(workspace.state)) throw new HostedWorkspaceError("conflict", "Active workspaces may be retained only after exact target stop.");
 		this.assertWorkspaceStopped(workspace);
 		if (workspace.state === "retained") return workspace;
 		const retained = { ...workspace, state: "retained" as const, updatedAt: this.tick(workspace.updatedAt) };
@@ -450,7 +450,6 @@ export class RuntimeWorkspaceCoordinator {
 				this.store.apply({ type: "workspace.replace", workspace: next, expectedState: current.state, expectedUpdatedAt: current.updatedAt });
 				return next;
 			} catch (error) {
-				this.attention(current, current.state);
 				throw workspaceError(error);
 			}
 		});
