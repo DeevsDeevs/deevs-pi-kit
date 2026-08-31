@@ -304,21 +304,17 @@ function hello(id: string, value: unknown, context: HostedProtocolContext): Host
 	if (minVersion > HOSTED_PROTOCOL_VERSION || maxVersion < HOSTED_PROTOCOL_VERSION || minVersion > maxVersion) {
 		return failure(id, "unsupported_version", "Requested version range does not include protocol v1.");
 	}
-	return success(id, {
-		version: 1,
-		runtimeId: context.runtimeId,
-		epoch: context.epoch,
-		capabilities: {
-			agentWake: context.agentWake,
-			...(context.degradedReason ? { degradedReason: context.degradedReason } : {}),
-			maxDeliveryBatch: HOSTED_MAX_DELIVERY_BATCH,
-			targets: { pi: { tier: "durable" }, "claude-code": { tier: "managed" }, codex: { tier: "managed" } },
-			monitor: { maxEntries: HOSTED_MONITOR_MAX_ENTRIES },
-			...(context.participants ? { mailbox: { maxBodyBytes: HOSTED_MAILBOX_MAX_BODY_BYTES }, task: { typedResults: true, maxBodyBytes: HOSTED_MAILBOX_MAX_BODY_BYTES } } : {}),
-			...(context.bridges ? { interactiveAgent: { launch: "single_use", reconnect: true, managedDelivery: ["pending", "submitting", "submitted", "needs_attention"] }, legacyBridge: { stopOnly: true } } : {}),
-			...(context.workspaces ? { workspace: { isolatedWrite: true, stagedIntegration: true } } : {}),
-		},
-	});
+	const capabilities = {
+		agentWake: context.agentWake,
+		maxDeliveryBatch: HOSTED_MAX_DELIVERY_BATCH,
+		targets: { pi: { tier: "durable" }, "claude-code": { tier: "managed" }, codex: { tier: "managed" } },
+		monitor: { maxEntries: HOSTED_MONITOR_MAX_ENTRIES },
+	};
+	if (context.degradedReason) Object.assign(capabilities, { degradedReason: context.degradedReason });
+	if (context.participants) Object.assign(capabilities, { mailbox: { maxBodyBytes: HOSTED_MAILBOX_MAX_BODY_BYTES }, task: { typedResults: true, maxBodyBytes: HOSTED_MAILBOX_MAX_BODY_BYTES } });
+	if (context.bridges) Object.assign(capabilities, { interactiveAgent: { launch: "single_use", reconnect: true, managedDelivery: ["pending", "submitting", "submitted", "needs_attention"] }, legacyBridge: { stopOnly: true } });
+	if (context.workspaces) Object.assign(capabilities, { workspace: { isolatedWrite: true, stagedIntegration: true } });
+	return success(id, { version: 1, runtimeId: context.runtimeId, epoch: context.epoch, capabilities });
 }
 
 function registerParams(value: unknown): RegisterPiInput {
@@ -330,17 +326,15 @@ function registerParams(value: unknown): RegisterPiInput {
 		return { claimId: boundedText(receipt.claimId, "claim ID", 200), eventIds };
 	});
 	const host = strictObject(params.herdr, "pi.register herdr", ["paneId", "terminalId", "agentName"]);
+	const herdr: RegisterPiInput["herdr"] = { paneId: boundedText(host.paneId, "Herdr pane ID", 200), terminalId: boundedText(host.terminalId, "Herdr terminal ID", 200) };
+	if (host.agentName !== undefined) herdr.agentName = boundedText(host.agentName, "Herdr agent name", 200);
 	return {
 		projectRoot: boundedText(params.projectRoot, "project root", 8 * 1024),
 		piSessionId: boundedText(params.piSessionId, "Pi session ID", 200),
 		piSessionFile: boundedText(params.piSessionFile, "Pi session file", 8 * 1024),
 		clientGeneration: boundedText(params.clientGeneration, "client generation", 200),
 		admittedClaims: admitted,
-		herdr: {
-			paneId: boundedText(host.paneId, "Herdr pane ID", 200),
-			terminalId: boundedText(host.terminalId, "Herdr terminal ID", 200),
-			...(host.agentName === undefined ? {} : { agentName: boundedText(host.agentName, "Herdr agent name", 200) }),
-		},
+		herdr,
 	};
 }
 
@@ -355,8 +349,10 @@ function workspaceReconnectParams(value: unknown): RegisterWorkspacePiInput & { 
 }
 
 function workspacePiRegistration(params: Record<string, unknown>): RegisterWorkspacePiInput {
-	const herdr = strictObject(params.herdr, "workspace Pi Herdr identity", ["paneId", "terminalId", "agentName"]);
-	return { piSessionId: boundedText(params.piSessionId, "Pi session ID", 200), piSessionFile: boundedText(params.piSessionFile, "Pi session file", 8 * 1024), clientGeneration: boundedText(params.clientGeneration, "client generation", 200), admittedClaims: admittedClaimParams(params.admittedClaims), herdr: { paneId: boundedText(herdr.paneId, "Herdr pane ID", 200), terminalId: boundedText(herdr.terminalId, "Herdr terminal ID", 200), ...(herdr.agentName === undefined ? {} : { agentName: boundedText(herdr.agentName, "Herdr agent name", 200) }) } };
+	const host = strictObject(params.herdr, "workspace Pi Herdr identity", ["paneId", "terminalId", "agentName"]);
+	const herdr: RegisterWorkspacePiInput["herdr"] = { paneId: boundedText(host.paneId, "Herdr pane ID", 200), terminalId: boundedText(host.terminalId, "Herdr terminal ID", 200) };
+	if (host.agentName !== undefined) herdr.agentName = boundedText(host.agentName, "Herdr agent name", 200);
+	return { piSessionId: boundedText(params.piSessionId, "Pi session ID", 200), piSessionFile: boundedText(params.piSessionFile, "Pi session file", 8 * 1024), clientGeneration: boundedText(params.clientGeneration, "client generation", 200), admittedClaims: admittedClaimParams(params.admittedClaims), herdr };
 }
 
 interface RegistrationAuth {
@@ -422,11 +418,13 @@ function workspaceAuthorizedParams(value: unknown, method: string): WorkspaceAut
 	const registrationId = boundedText(params.registrationId, "registration ID", 200);
 	const registrationKey = boundedText(params.registrationKey, "registration key", 200);
 	if (method === "workspace.launch.create") {
-		const input: CreateWorkspaceInput = { requestId: boundedText(params.requestId, "request ID", 200), callerParticipantKey: boundedText(params.callerParticipantKey, "caller participant key", 200), expectedCallerGeneration: boundedText(params.expectedCallerGeneration, "expected caller generation", 200), protocol: participantName(params.protocol, "protocol"), participantId: participantName(params.participantId, "participant ID"), ...(params.expectedParticipantGeneration === undefined ? {} : { expectedParticipantGeneration: boundedText(params.expectedParticipantGeneration, "expected participant generation", 200) }), piSessionId: boundedText(params.piSessionId, "Pi session ID", 200) };
+		const input: CreateWorkspaceInput = { requestId: boundedText(params.requestId, "request ID", 200), callerParticipantKey: boundedText(params.callerParticipantKey, "caller participant key", 200), expectedCallerGeneration: boundedText(params.expectedCallerGeneration, "expected caller generation", 200), protocol: participantName(params.protocol, "protocol"), participantId: participantName(params.participantId, "participant ID"), piSessionId: boundedText(params.piSessionId, "Pi session ID", 200) };
+		if (params.expectedParticipantGeneration !== undefined) input.expectedParticipantGeneration = boundedText(params.expectedParticipantGeneration, "expected participant generation", 200);
 		return { method, registrationId, registrationKey, input };
 	}
 	if (method === "workspace.bridge.create") {
-		const input: CreateBridgeWorkspaceInput = { requestId: boundedText(params.requestId, "request ID", 200), callerParticipantKey: boundedText(params.callerParticipantKey, "caller participant key", 200), expectedCallerGeneration: boundedText(params.expectedCallerGeneration, "expected caller generation", 200), protocol: participantName(params.protocol, "protocol"), participantId: participantName(params.participantId, "participant ID"), ...(params.expectedParticipantGeneration === undefined ? {} : { expectedParticipantGeneration: boundedText(params.expectedParticipantGeneration, "expected participant generation", 200) }), bridgeId: boundedText(params.bridgeId, "bridge ID", 200) };
+		const input: CreateBridgeWorkspaceInput = { requestId: boundedText(params.requestId, "request ID", 200), callerParticipantKey: boundedText(params.callerParticipantKey, "caller participant key", 200), expectedCallerGeneration: boundedText(params.expectedCallerGeneration, "expected caller generation", 200), protocol: participantName(params.protocol, "protocol"), participantId: participantName(params.participantId, "participant ID"), bridgeId: boundedText(params.bridgeId, "bridge ID", 200) };
+		if (params.expectedParticipantGeneration !== undefined) input.expectedParticipantGeneration = boundedText(params.expectedParticipantGeneration, "expected participant generation", 200);
 		return { method, registrationId, registrationKey, input };
 	}
 	if (method === "workspace.inspect") return { method, registrationId, registrationKey, input: { workspaceId: boundedText(params.workspaceId, "workspace ID", 200) } };
@@ -440,7 +438,9 @@ function workspaceAuthorizedParams(value: unknown, method: string): WorkspaceAut
 	if (method === "workspace.retain" || method === "workspace.reconcile") return { method, registrationId, registrationKey, input: { ...authority, workspaceId: boundedText(params.workspaceId, "workspace ID", 200) } };
 	if (method === "workspace.checkpoint") {
 		if (params.taskStatus !== undefined && params.taskStatus !== "completed" && params.taskStatus !== "failed" && params.taskStatus !== "cancelled") throw new Error("invalid workspace task status");
-		return { method, registrationId, registrationKey, input: { ...authority, workspaceId: boundedText(params.workspaceId, "workspace ID", 200), ...(params.taskStatus === undefined ? {} : { taskStatus: params.taskStatus }) } };
+		const input: Extract<WorkspaceAuthorizedParams, { method: "workspace.checkpoint" }>["input"] = { ...authority, workspaceId: boundedText(params.workspaceId, "workspace ID", 200) };
+		if (params.taskStatus !== undefined) input.taskStatus = params.taskStatus;
+		return { method, registrationId, registrationKey, input };
 	}
 	if (method === "workspace.integration.prepare") return { method, registrationId, registrationKey, input: { ...authority, workspaceId: boundedText(params.workspaceId, "workspace ID", 200) } };
 	if (method === "workspace.integration.reconcile" || method === "workspace.integration.finalize") return { method, registrationId, registrationKey, input: { ...authority, integrationId: boundedText(params.integrationId, "integration ID", 200) } };
@@ -465,25 +465,22 @@ function bridgeLaunchParams(value: unknown): AuthorizedParams<CreateBridgeLaunch
 		if (typeof item !== "string" || Buffer.byteLength(item) > HOSTED_BRIDGE_MAX_METADATA_VALUE_BYTES) throw new Error("bridge metadata value exceeds its byte limit");
 		return [key, item];
 	}));
-	return {
-		registrationId: boundedText(params.registrationId, "registration ID", 200),
-		registrationKey: boundedText(params.registrationKey, "registration key", 200),
-		input: {
-			requestId: boundedText(params.requestId, "request ID", 200),
-			...(params.launchId === undefined ? {} : { launchId: boundedText(params.launchId, "launch ID", 200) }),
-			...(params.workspaceId === undefined ? {} : { workspaceId: boundedText(params.workspaceId, "workspace ID", 200) }),
-			callerParticipantKey: boundedText(params.callerParticipantKey, "caller participant key", 200),
-			expectedCallerGeneration: boundedText(params.expectedCallerGeneration, "expected caller generation", 200),
-			protocol: participantName(params.protocol, "protocol"),
-			participantId: participantName(params.participantId, "participant ID"),
-			...(params.expectedParticipantGeneration === undefined ? {} : { expectedParticipantGeneration: boundedText(params.expectedParticipantGeneration, "expected participant generation", 200) }),
-			profile: params.profile,
-			configurationHash: boundedText(params.configurationHash, "configuration hash", 64),
-			...(params.driver === undefined ? {} : { driver: nativeDriver(params.driver) }),
-			herdr: { paneId: boundedText(herdr.paneId, "Herdr pane ID", 200), terminalId: boundedText(herdr.terminalId, "Herdr terminal ID", 200) },
-			metadata: parsedMetadata,
-		},
+	const input: CreateBridgeLaunchInput = {
+		requestId: boundedText(params.requestId, "request ID", 200),
+		callerParticipantKey: boundedText(params.callerParticipantKey, "caller participant key", 200),
+		expectedCallerGeneration: boundedText(params.expectedCallerGeneration, "expected caller generation", 200),
+		protocol: participantName(params.protocol, "protocol"),
+		participantId: participantName(params.participantId, "participant ID"),
+		profile: params.profile,
+		configurationHash: boundedText(params.configurationHash, "configuration hash", 64),
+		herdr: { paneId: boundedText(herdr.paneId, "Herdr pane ID", 200), terminalId: boundedText(herdr.terminalId, "Herdr terminal ID", 200) },
+		metadata: parsedMetadata,
 	};
+	if (params.launchId !== undefined) input.launchId = boundedText(params.launchId, "launch ID", 200);
+	if (params.workspaceId !== undefined) input.workspaceId = boundedText(params.workspaceId, "workspace ID", 200);
+	if (params.expectedParticipantGeneration !== undefined) input.expectedParticipantGeneration = boundedText(params.expectedParticipantGeneration, "expected participant generation", 200);
+	if (params.driver !== undefined) input.driver = nativeDriver(params.driver);
+	return { registrationId: boundedText(params.registrationId, "registration ID", 200), registrationKey: boundedText(params.registrationKey, "registration key", 200), input };
 }
 
 function bridgeRecoverParams(value: unknown): AuthorizedParams<BridgeRecoverInput> {
@@ -498,7 +495,9 @@ function bridgeCancelParams(value: unknown): AuthorizedParams<BridgeCancelInput>
 
 function bridgeRegisterParams(value: unknown): BridgeRegisterInput {
 	const params = strictObject(value, "bridge.register params", ["launchToken", "reconnectToken", "clientGeneration", "admittedClaims", "herdr", "agentSession"]);
-	return { launchToken: boundedText(params.launchToken, "bridge launch token", 512), reconnectToken: boundedText(params.reconnectToken, "bridge reconnect token", 200), clientGeneration: boundedText(params.clientGeneration, "client generation", 200), admittedClaims: admittedClaimParams(params.admittedClaims), herdr: bridgeRegistrationHerdr(params.herdr), ...(params.agentSession === undefined ? {} : { agentSession: agentSession(params.agentSession) }) };
+	const input: BridgeRegisterInput = { launchToken: boundedText(params.launchToken, "bridge launch token", 512), reconnectToken: boundedText(params.reconnectToken, "bridge reconnect token", 200), clientGeneration: boundedText(params.clientGeneration, "client generation", 200), admittedClaims: admittedClaimParams(params.admittedClaims), herdr: bridgeRegistrationHerdr(params.herdr) };
+	if (params.agentSession !== undefined) input.agentSession = agentSession(params.agentSession);
+	return input;
 }
 
 function bridgeReconnectParams(value: unknown): BridgeReconnectInput {
@@ -607,7 +606,10 @@ function workspaceRegistrationResult(result: Awaited<ReturnType<RuntimeWorkspace
 }
 
 function bridgeRegistrationResult(result: Awaited<ReturnType<RuntimeBridgeCoordinator["register"]>>) {
-	return { ...registrationResult(result.registration), participantKey: result.participantKey, holderGeneration: result.holderGeneration, profile: result.profile, configurationHash: result.configurationHash, ...(result.driver ? { driver: result.driver, capabilityTier: result.capabilityTier, agentSession: result.agentSession } : {}), projectRoot: result.projectRoot, cwd: result.cwd, ...(result.workspaceId ? { workspaceId: result.workspaceId } : {}), metadata: result.metadata };
+	const value = { ...registrationResult(result.registration), participantKey: result.participantKey, holderGeneration: result.holderGeneration, profile: result.profile, configurationHash: result.configurationHash, projectRoot: result.projectRoot, cwd: result.cwd, metadata: result.metadata };
+	if (result.driver) Object.assign(value, { driver: result.driver, capabilityTier: result.capabilityTier, agentSession: result.agentSession });
+	if (result.workspaceId) Object.assign(value, { workspaceId: result.workspaceId });
+	return value;
 }
 
 function monitorResult(monitor: HostedMonitor) {
