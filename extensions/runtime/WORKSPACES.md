@@ -11,7 +11,7 @@ Each durable workspace records:
 - logical canonical project root and Git common directory;
 - exact base/head commits and private `refs/heads/runtime/collab/<workspace-id>` ref;
 - exact Runtime-root worktree path;
-- participant key, reserved holder generation, exact Pi-session or bridge owner, and profile;
+- participant key, reserved holder generation, exact Pi-session or interactive Herdr-agent owner, and profile;
 - Pi single-use launch-token digest when applicable, exact Herdr binding, typed state, and handoff statistics.
 
 The logical project root continues to derive participant identity. The workspace path is only the writer's cwd. Read-only collaborators keep the project read view and do not create worktrees.
@@ -24,7 +24,7 @@ The controller durably records the exact create request ID before calling Runtim
 
 For Pi, the child receives one random workspace token through process environment; Pi captures and deletes it before tools can inherit it, while only its digest is durable. Pi registration and reconnect verify the durable repository common directory, exact worktree registry/ref/path/head, session header/file, Herdr identity/cwd, workspace record, caller/prior participant generations, and launch digest under Runtime's repository lease.
 
-For native Claude Code/Codex, the workspace is owned from creation by the final bridge ID and target key. Bridge launch must repeat that exact workspace, caller, participant, holder generation, and Herdr identity. Registration holds the repository lease while it verifies the durable common directory, clean bound worktree registry/ref/path/head, and reported generic bridge/cwd, then atomically creates the final bridge target, activates the workspace, acquires the participant, and consumes bridge launch authority before acknowledgement. Reconnect holds the same lease while revalidating the exact active Git identity and holder/workspace generation after host awaits.
+For Claude Code/Codex, the workspace is owned from creation by the final interactive target ID and key. Launch authority repeats that exact workspace, caller, participant, holder generation, and Herdr identity. After `herdr agent start` reports readiness, registration holds the repository lease while it verifies the durable common directory, clean bound worktree registry/ref/path/head, exact native agent session/cwd, and requested configuration hash. Runtime then atomically creates the managed target, activates the workspace, acquires the participant, and consumes launch authority. Reconnect holds the same lease while revalidating the exact agent session, active Git identity, and holder/workspace generation.
 
 ## Workspace states
 
@@ -39,7 +39,7 @@ For native Claude Code/Codex, the workspace is owned from creation by the final 
 - `integrated`: exact staged result was finalized into main.
 - `cleaned`: exact worktree/ref were removed and the tombstone remains.
 
-Stop and cleanup are separate. Stand-down preserves the process and workspace. Public retention cannot move an active workspace; only the exact target-stop callback may transition `active` to `retained`, and checkpoint rechecks that its participant is no longer held. Exact native stop first fences the bridge controller, then uses its authority-matched durable worker identity to prove the detached native process group quiescent before vacating the participant and changing an active workspace to retained. Missing/mismatched identity or failed quiescence leaves lifecycle/workspace settlement blocked for attention; an absent Herdr tab alone is insufficient. Ambiguous Auto launch cleanup retains any workspace that a child may have modified; Auto never discards it.
+Stop and cleanup are separate. Stand-down preserves the interactive process and workspace. Public retention cannot move an active workspace; only the exact target-stop callback may transition `active` to `retained`, and checkpoint rechecks that its participant is no longer held. Exact native stop fences the target, reverifies the authoritative Herdr agent session/pane/terminal/tab/cwd, closes only its single-pane tab, and proves exact absence before vacating the participant and retaining the workspace. Missing or mismatched identity leaves lifecycle/workspace settlement blocked for attention; an absent tab without matching durable target evidence is insufficient. Ambiguous Auto launch cleanup retains any workspace that a child may have modified; Auto never discards it.
 
 ## Safe Git boundary
 

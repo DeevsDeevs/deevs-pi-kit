@@ -1,50 +1,91 @@
-# Hosted Runtime protocol v1
+# Hosted Runtime protocol
 
-Runtime provides a durable local inbox for events that must survive Pi and Runtime restarts. Release 1 watches newly created files in one directory and wakes one exact Pi session through Herdr. The Pi Collaborator extension adds durable participant identity and directed mailboxes on the same wake/admission foundation.
+> **Normative target contract.** This document defines the interactive Herdr-agent redesign that the Runtime implementation must converge on. Until that migration is complete, released state may still contain legacy headless bridge targets. Legacy behavior is described only in [Migration](#migration-from-headless-native-bridges); it is not the intended collaborator UX.
 
-It does not replace Herdr, bounded Jobs, Subagents, Workflows, Missions, or session Cron. Herdr owns live panes and prompt delivery; Runtime adds durable routing, claims, acknowledgement, and recovery.
+Runtime provides durable local routing and lifecycle authority for work that must survive Pi and Runtime restarts. Herdr owns live agent panes, terminals, process supervision, and interactive prompt submission. Runtime adds durable participant identity, mailbox state, explicit capabilities, isolated writable workspaces, and recovery.
 
-## Guarantees
+A **collaborator is a real interactive Herdr-managed coding agent**. Pi, Claude Code, and Codex collaborators remain visible and usable in their Herdr tabs. A service process or per-message print-mode CLI is not itself a collaborator.
 
-- Events and Monitor cursors are persisted before wake attempts.
-- A wake targets a verified Pi session, terminal, pane, and project—not focus, PID, or cwd alone.
-- Delivery is at least once until Pi admits the message, then never redelivered.
-- Busy or offline Pi sessions retain pending events without interruption or fallback.
-- Routing and authorization use validated IDs, generations, keys, statuses, and receipts. Prose is display-only.
-- Runtime restart preserves monitors, events, claims, receipts, and wake state but invalidates live registrations.
+Runtime does not replace bounded Jobs, Subagents, Workflows, Missions, or session Cron.
 
-## Original Release 1 baseline
+## Execution primitives
 
-The first release included:
+| Primitive | Lifetime | User-visible interaction | Settlement | Authority |
+|---|---|---|---|---|
+| Job | One bounded command | No persistent tab | Exit/timeout | Parent Pi |
+| Subagent | One bounded delegated run | Artifact/result | Terminal result | Parent Pi/Subagent service |
+| Collaborator | Persistent named peer | Real Herdr agent tab | Explicit stand-down/stop | Runtime participant lease |
+| Mission | Long-running objective | Parent Pi | Completion latch | Mission state machine |
 
-- one Runtime service per Pi agent directory;
-- one direct-child, created-regular-file Monitor per target;
-- exact Pi/Herdr registration and heartbeat;
-- durable queue, claim, acknowledgement, release, and lease recovery;
-- exact Herdr wake for `idle` or `done` Pi agents;
-- authoritative directory scans with `fs.watch` as a latency hint;
-- exclusive Pi collaborator identities and durable directed mailboxes.
+Subagents remain the structured bounded-review/task data plane. Collaborators retain identity and conversation across turns and may receive work from either the user in their tab or another Runtime participant.
 
-The current release additionally ships native Claude Code/Codex collaborators, Runtime-owned bridge runners, isolated writable workspaces, and optional typed task outcomes. Still deferred:
+## Capability tiers
 
-- recursive/content/modification/deletion monitoring;
-- collaborator groups, broadcasts, and attachments;
-- durable schedules and automatic takeover;
-- native service installers and Windows transport.
+Runtime never pretends that every agent kind has identical delivery guarantees. Each target advertises structural capabilities:
 
-## Operation
+1. **managed**
+   - Runtime can launch, verify, prompt, inspect, stand down, and stop the exact Herdr agent.
+   - The user can interact directly in the agent's tab.
+   - Runtime can durably queue a message until Herdr accepts prompt submission.
+   - Herdr prompt acceptance is not a semantic reply and not proof that the provider durably committed the turn.
+2. **connected**
+   - Includes `managed`.
+   - The agent has a structured Runtime reply path that does not scrape terminal output.
+   - Replies carry exact participant identity and deterministic message IDs.
+3. **durable**
+   - Includes `connected`.
+   - The agent provides exact admission receipts, replay/no-redelivery evidence, and recoverable structured turn settlement.
 
-Runtime reuses a healthy socket. On `/runtime start` or the first Runtime-dependent operation, a missing Runtime starts in the initial tab of a dedicated, no-focus `pi-kit-services` Herdr workspace rooted at the Runtime state directory. Pi may automatically register on session start when the Runtime socket already exists.
+Current intended tiers:
 
-Pi commands:
+| Driver | Target | Tier | Direct tab interaction | Automatic structured reply |
+|---|---|---:|---:|---:|
+| Pi | Herdr Pi agent with in-process Runtime extension | durable | yes | yes |
+| Claude Code | Herdr Claude agent | managed | yes | no |
+| Codex | Herdr Codex agent | managed | yes | no |
 
-```text
-/runtime status
-/runtime start
-/runtime register
-/runtime monitor <directory>
-/runtime monitor-delete
-```
+Claude/Codex do **not** require MCP, hooks, or a provider plugin for managed capability. A future connected/durable adapter is additive and must not replace their interactive Herdr process. Until such an adapter exists, replies remain in the Claude/Codex tab and typed bounded tasks are unavailable for those targets.
+
+Capability checks are typed. Runtime must return `capability_unavailable` rather than silently falling back to pane scraping, regex extraction, direct terminal input, or a hidden print-mode process.
+
+## Core guarantees
+
+- Monitor events, mailbox messages, participant state, and workspace ownership are persisted before delivery or host mutation.
+- A live target is bound to exact project, Herdr workspace/tab/pane/terminal, agent kind, and stable agent-session identity.
+- Routing and authorization consume validated IDs, generations, keys, capabilities, statuses, receipts, and confirmation booleans. Prose is display-only.
+- Busy, blocked, offline, or unverifiable agents retain pending Runtime events.
+- Runtime and collaborator lifecycle operations never focus a pane, tab, or workspace.
+- Runtime never scrapes a pane or parses model prose to derive acknowledgement, task status, verdict, permission, or lifecycle authority.
+- Direct human interaction in a collaborator tab is first-class but is not a Runtime control-plane operation.
+- Runtime restart preserves durable monitors, messages, participants, launch intents, and workspaces while invalidating live registration leases.
+- Stop preserves unintegrated work. Integration and destructive cleanup remain separate trusted operations.
+
+## Explicit non-guarantees
+
+For a `managed` Claude/Codex target:
+
+- successful `herdr agent prompt` proves only that Herdr atomically submitted the prompt and observed the required agent lifecycle transition;
+- Runtime does not claim provider exactly-once execution, durable model admission, semantic completion, or automatic reply capture;
+- a provider/terminal crash after Herdr submission may lose the turn;
+- an ambiguous Herdr submission may have duplicated the prompt before Runtime can classify it;
+- typed task settlement and automatic Claude/Codex-to-Pi mailbox replies are rejected until a connected adapter supplies structural evidence.
+
+These limits are surfaced in target capabilities and delivery results. They are never hidden behind a successful-looking free-form message.
+
+## Runtime topology
+
+Runtime reuses one healthy Unix socket per Pi agent directory. On `/runtime start` or the first Runtime-dependent operation, a missing daemon starts in the initial tab of a dedicated, no-focus `pi-kit-services` Herdr workspace rooted at the Runtime state directory.
+
+Collaborators are different:
+
+- each collaborator occupies a real Herdr agent tab in the requesting project workspace;
+- Claude launches with `herdr agent start --kind claude`;
+- Codex launches with `herdr agent start --kind codex`;
+- Pi launches with `herdr agent start --kind pi`;
+- the tab contains the actual interactive provider UI, never a Runtime bridge command;
+- Runtime communicates through Herdr's structured agent API, not `pane run`, `pane send-*`, direct PTY bytes, or focus mutation.
+
+The Runtime daemon may contain small driver adapters for startup arguments, identity verification, and capability declaration. Those adapters are control code inside the service/controller; they do not own a visible collaborator tab and do not spawn one provider CLI per mailbox event.
 
 Default files:
 
@@ -55,11 +96,11 @@ $PI_CODING_AGENT_DIR/runtime/
   runtime.sock
 ```
 
-The directory is mode `0700` and the Unix socket is mode `0600`. Current Node Unix sockets do not expose peer credentials, so v1 security is limited to owner-only filesystem permissions plus registration keys. Runtime never logs registration keys.
+The directory is mode `0700`; state and socket are mode `0600`.
 
-## Transport
+## Wire transport
 
-Requests and responses are newline-delimited JSON over the Unix socket. Request lines are limited to 64 KiB. Invalid framing or JSON closes the connection after an error response.
+Runtime requests and responses are newline-delimited JSON over the Unix socket. Request lines are limited to 64 KiB. Invalid framing or JSON closes the connection after an error response.
 
 ```json
 {"v":1,"id":"req_...","method":"hello","params":{}}
@@ -67,7 +108,7 @@ Requests and responses are newline-delimited JSON over the Unix socket. Request 
 {"v":1,"id":"req_...","ok":false,"error":{"code":"not_found","message":"diagnostic"}}
 ```
 
-`hello` accepts a version range spanning v1 and returns:
+The wire version may remain v1 while methods are added compatibly. `runtimeId` persists; `epoch` changes on every service start. `hello` advertises target and delivery capabilities rather than a single misleading parity flag.
 
 ```json
 {
@@ -75,192 +116,253 @@ Requests and responses are newline-delimited JSON over the Unix socket. Request 
   "runtimeId": "rt_...",
   "epoch": "epoch_...",
   "capabilities": {
-    "agentWake": "none",
     "maxDeliveryBatch": 12,
-    "monitor": {"maxEntries": 10000}
+    "targets": {
+      "pi": {"tier":"durable"},
+      "claude-code": {"tier":"managed"},
+      "codex": {"tier":"managed"}
+    },
+    "workspace": {"isolatedWrite":true,"stagedIntegration":true}
   }
 }
 ```
 
-`runtimeId` persists; `epoch` changes on every service start. `agentWake` is `none`: Pi claims pending inbox work through its in-process heartbeat and Runtime never prompts a Herdr pane.
-
-Error codes:
+Error codes include:
 
 ```text
 invalid_request          unsupported_version     capability_unavailable
 not_found                conflict                registration_stale
 identity_mismatch        claim_conflict          host_unavailable
-busy                     storage_error           internal
+busy                     storage_error           needs_attention
+internal
 ```
 
-### Methods
+## Runtime methods
 
-| Method | Purpose |
+Public method names remain additive. Exact implementation naming may be introduced during migration, but responsibilities are fixed:
+
+| Responsibility | Methods |
 |---|---|
-| `hello` | Negotiate v1 and capabilities |
-| `pi.register` | Verify and bind a live Pi generation |
-| `pi.heartbeat` | Renew and reverify registration |
-| `pi.unregister` | Drop registration best-effort |
-| `monitor.create` | Create the target's Monitor and baseline |
-| `monitor.get` | Read Monitor status |
-| `monitor.delete` | Remove Monitor without discarding events |
-| `wake.accept` | Accept a wake and atomically claim its first batch |
-| `inbox.claim` | Claim manually when wake transport is unavailable |
-| `inbox.ack` | Acknowledge exact admission receipts |
-| `inbox.release` | Return an exact claim to pending |
-| `inbox.status` | Read target queue counts |
-| `participant.auto_capacity.list` | List the current target's exact retained Auto reservations |
-| `participant.auto_capacity.reserve` | Atomically reserve one Auto operation's exact participant set |
-| `participant.auto_capacity.release` | Release the exact caller target's normally settled Auto reservation |
-| `participant.auto_capacity.recover` | Trusted-confirmed recovery of one exact retained reservation |
-| `participant.acquire` | Acquire or revive one project/protocol participant |
-| `participant.get` | Read one participant and queue status |
-| `participant.list` | List participants in the registered project |
-| `participant.stand_down` | Holder vacates its identity while retaining queued mail |
-| `participant.stand_down_confirmed` | Trusted-confirmed same-project caller vacates one exact generation while retaining queued mail |
-| `participant.stop_confirmed` | Trusted-confirmed same-project caller closes the exact managed Herdr tab and vacates its generation |
-| `participant.release` | End an identity and reject new mail |
-| `participant.takeover` | Explicitly rebind an offline holder generation |
-| `mailbox.send` | Append one idempotent directed message |
-| `task.send` | Append one explicit bounded task with deterministic request identity |
-| `task.result` | Publish or recover the exact schema-validated task result and Runtime-derived workspace evidence |
-| `task.status` | Read pending or settled structural status as the exact task sender |
+| Service | `hello` |
+| Pi registration | `pi.register`, `pi.heartbeat`, `pi.unregister` |
+| Monitor | `monitor.create`, `monitor.get`, `monitor.delete` |
+| Inbox | `inbox.claim`, `inbox.ack`, `inbox.release`, `inbox.submit_begin`, `inbox.submit_settle`, `inbox.status` |
+| Participants | `participant.acquire`, `participant.get`, `participant.list`, `participant.stand_down`, `participant.stop_confirmed`, `participant.release`, `participant.takeover` |
+| Auto capacity | `participant.auto_capacity.list`, `.reserve`, `.release`, `.recover` |
+| Mail | `mailbox.send`, `mailbox.status` |
+| Tasks | `task.send`, `task.result`, `task.status` for connected/durable targets only |
+| Interactive agent launch | reserve, bind, recover, and inspect an exact Herdr-managed agent target |
+| Workspaces | create, reconcile, checkpoint, prepare/finalize integration, cleanup |
 
-All methods except `hello` and `pi.register` require the exact current registration ID and key. Mutations are idempotent on their typed durable keys. Auto capacity reservation additionally binds the exact caller target, held caller generation when present, operation ID, and 1–12 unique participant keys; retries preserve the server's original creation time, changed authority conflicts, and only that caller target can release it. While any reservation is active, every participant acquisition is checked in the same Runtime state mutation against the union of held and reserved non-caller identities. `participant.acquire` reports whether that call transitioned ownership; automatic rollback supplies the acquired generation to `participant.stand_down`, which fails if ownership changed. `participant.stand_down_confirmed` additionally requires a schema-validated confirmation boolean and exact expected generation; it can only move a same-project participant from held to vacant. `participant.stop_confirmed` uses the existing target/session identity to close only a plugin-managed single-pane Herdr tab, preserves mail, refuses self-stop, and is retry-safe when the tab is already absent. Bridge stop fences the controller first, then proves the exact durable worker group quiescent before vacating the participant.
+All methods except `hello` and initial registration require exact current authority. Mutations are idempotent on typed durable keys. Changed retries conflict.
 
-Hosted event types are separate from process-local `RuntimeEvent` types in `extensions/shared/runtime-events.ts`.
+## Target identity
 
-## Identity and registration
+### Pi target
 
-A stable target survives process restarts:
+A stable Pi target is derived from canonical project root and Pi session ID. Registration verifies the session file header, Herdr pane/terminal/session identity, canonical cwd, and exclusive live ownership. Pi receives an epoch-scoped registration key and renews it through heartbeat.
+
+Pi remains `durable`: the in-process extension claims pending work, writes a hidden custom message into Pi session history, and acknowledges exact admission at `message_start`. Registration reconciles historical receipts after crashes.
+
+### Interactive Herdr-agent target
+
+A Claude/Codex target stores:
+
+- closed driver key: `claude-code | codex`;
+- canonical logical project root;
+- requested profile and optional model/persona configuration hash;
+- exact Herdr workspace, tab, pane, and terminal IDs;
+- exact Herdr agent kind: `claude | codex`;
+- stable managed-agent identity: Herdr session source/kind/value when exposed, otherwise Herdr agent kind plus the Runtime-generated opaque Herdr agent name;
+- participant key and holder generation;
+- optional Runtime workspace ID;
+- capability tier;
+- target generation and lifecycle state.
+
+Display labels and terminal titles are never authoritative.
+
+A target is live only while `herdr agent get` resolves the exact pane to the same terminal, agent kind, stable managed-agent identity, canonical cwd, and target generation. Herdr 0.8 does not expose a separate `agent_session` field for every managed driver, so Runtime generates an unguessable bounded agent name and persists `{source: herdr:<kind>, agent: <kind>, kind: id, value: <name>}` as the managed identity in that case. Unknown or mismatched identity fails closed. Pane movement is accepted only when the terminal and managed identity remain exact and Runtime atomically updates the locator.
+
+## Interactive collaborator launch
+
+A trusted launch is ordered:
+
+1. Resolve participant, driver, model, persona, and profile independently.
+2. Reserve Auto capacity when applicable.
+3. Persist an exact launch intent before creating Git or Herdr resources.
+4. Provision a Runtime-owned worktree first for `workspace-write`.
+5. Create one empty no-focus Herdr tab at the exact intended cwd.
+6. Call `herdr agent start <name> --kind claude|codex|pi --pane <id>` with driver-owned startup arguments after `--`.
+7. Require Herdr to report readiness and either an agent-session identity or the exact generated agent name within the bounded startup deadline.
+8. Reverify tab/pane/terminal/cwd/agent/managed identity.
+9. Atomically bind the target, workspace, and participant holder generation.
+10. Release launch capacity only after durable bind or exact absence/quiescence is proven.
+
+The participant ID provides the stable Runtime identity. The Herdr agent name is a bounded opaque launch locator, not the participant lease key; when Herdr omits `agent_session`, that exact name is also the authenticated managed-session value.
+
+Response-loss recovery inspects only the exact persisted Herdr resource and launch intent. It either binds the matching live agent, closes the exact unbound resource, or retains `needs_attention`; it never selects an agent by label or starts a second agent speculatively.
+
+Persona instructions are supplied through the driver's immutable startup configuration where supported. After the trusted Runtime confirmation, Claude's owner-private trust store is atomically updated for the exact authorized launch cwd because Claude exposes no interactive trust-bypass flag; unrelated project state is preserved and concurrent changes fail closed. Codex receives an exact trusted-project override for that cwd and starts with hooks disabled. Thus neither an interactive trust prompt nor an unreviewed project hook blocks or weakens launch. If startup configuration cannot enforce the requested persona or model, launch fails rather than sending an ordinary chat message and pretending it is system authority.
+
+## Profiles and workspaces
+
+`read-only` is the default. `workspace-write` requires typed launch authority and uses one Runtime-owned isolated Git worktree. No collaborator writer receives the main checkout as cwd.
+
+Driver startup policy:
+
+- Claude read-only: non-bypass permission mode with only native read/search tools enabled.
+- Claude workspace-write: exact isolated worktree cwd and explicit edit/write tools; unrestricted host shell remains disabled unless an independently enforceable sandbox exists.
+- Codex read-only: approval disabled for invisible prompts and read-only sandbox.
+- Codex workspace-write: approval disabled and workspace-write sandbox rooted at the isolated worktree.
+
+The profile is Runtime launch authority, not an OS security boundary against the trusted human operating the interactive agent. A user may deliberately alter an agent's interactive settings; Runtime must not silently continue claiming the original profile after a detectable restart or identity/configuration change. Model prose cannot change profile.
+
+Workspace ownership, checkpointing, staged integration, and cleanup follow [`WORKSPACES.md`](WORKSPACES.md). Stop retains work; finalization requires clean unchanged main and separate trusted confirmation.
+
+## Managed mailbox delivery
+
+Mailbox events remain durable and identity-addressed. A participant is `(canonicalProjectRoot, protocol, participantId)` in `held`, `vacant`, or `ended` state. Sender authority always binds the exact participant key and generation.
+
+For a Pi recipient, existing durable claim/admission/ack semantics remain unchanged.
+
+For a managed Claude/Codex recipient:
 
 ```text
-targetKey = sha256(canonicalProjectRoot + NUL + piSessionId)
+pending -> submitting -> submitted
+                     \-> pending          (proved not submitted)
+                     \-> needs_attention  (ambiguous submission)
 ```
 
-Registration supplies the canonical project root, Pi session ID/file, a client generation, historical admission receipts, and Herdr pane/terminal locators. Runtime then verifies:
+Rules:
 
-1. the Pi session file header contains the supplied session ID;
-2. Herdr resolves the pane to the supplied terminal;
-3. Herdr reports the same Pi session ID or canonical session path;
-4. Herdr's canonical cwd equals the project root;
-5. no other live terminal owns the target.
+- Runtime stores the event before attempting Herdr delivery.
+- Delivery occurs only to the exact verified target.
+- Automatic delivery does not run while the target is `working`, `blocked`, unknown, or focused; user interaction has priority.
+- Runtime calls only `herdr agent prompt` with the complete bounded message and waits for Herdr's typed prompt result.
+- Runtime never calls `pane.send_text`, `pane.send_keys`, or screen-parses a response.
+- Herdr rejection or `agent_prompt_stalled` returns the event to pending when non-submission is proven.
+- Connection loss or an unclassifiable result after submission begins becomes `needs_attention`; Runtime does not guess whether replay is safe.
+- Successful Herdr submission records `submitted`, not Pi-style `acked` and not semantic completion.
+- A submitted event is retained for audit and explicit operator retry; Runtime does not automatically replay it.
+- The agent's response remains visible in its tab. Runtime does not synthesize a sender-authenticated reply from terminal text.
 
-A successful registration receives a random 256-bit key and a 30-second lease. Registrations live only in memory and are scoped to the Runtime epoch. Heartbeats renew the lease and rerun the complete host predicate. A moved pane is accepted only when the same terminal and Pi identity still verify. Another live terminal receives `conflict`; v1 has no takeover.
+The `collaborator_send` result therefore exposes recipient tier and delivery state. A caller that requires automatic structural completion must use a connected/durable collaborator or a bounded Subagent instead.
 
-Before registration becomes wakeable, Runtime reconciles exact claim/event receipts already present in Pi's hosted custom-message history. This closes the crash window where Pi persisted admission before Runtime persisted acknowledgement.
+Direct user prompts typed in the Claude/Codex tab bypass Runtime mail by design. They do not impersonate another participant and cannot authorize Runtime lifecycle, integration, discard, review verdicts, or Mission completion.
 
-## Monitor and events
+## Connected and durable adapters
 
-`monitor.create` accepts a canonical directory inside the registered project and a settle interval.
+A future adapter may upgrade an interactive target without replacing it. It must attach to the same Herdr agent/session and provide a structured agent-owned channel for:
 
-- The root and entries must not be symlinks.
-- Only direct-child regular files are observed.
-- Existing files form a non-emitting baseline.
-- A new path emits after size and mtime remain stable for the settle interval.
-- A path emits once per Monitor generation.
-- Events contain bounded path metadata, not file contents.
-- Missing directories degrade and retry without losing the cursor.
-- Crossing the entry cap fails without advancing the cursor.
+- exact mailbox admission receipts;
+- deterministic outbound participant messages;
+- typed task settlement;
+- session advancement and replay evidence.
 
-`fs.watch` only requests an early scan. Startup, watch hints, and the five-second fallback all use the same authoritative reconciliation. Cursor and event updates commit in one atomic state mutation before wake.
+MCP, provider hooks, plugins, app-server protocols, or future Herdr structured turn events are candidate mechanisms, not protocol requirements. One is adopted only after proving identity, durability, restart, and no-redelivery behavior for a real driver.
 
-Each event has a stable ID, typed Monitor source/generation/sequence, stable target, bounded filesystem metadata, and one delivery state:
+The adapter must never:
+
+- launch a second hidden provider session;
+- replace the visible interactive agent with `claude -p`, `codex exec`, or another print-mode worker;
+- scrape the pane or infer result status from prose;
+- receive lifecycle, integration, or permission authority from an agent message.
+
+## Typed tasks
+
+`collaborator_task` is additive to free-form mail. It is available only when the recipient advertises `connected` or `durable` task capability.
+
+A task result contains schema-validated `completed | failed | cancelled`, exact request/reply IDs, bounded body, session advancement evidence, and optional Runtime-derived workspace evidence. The responder cannot forge workspace identity. Task status never authorizes lifecycle, profile escalation, checkpoint, integration, discard, review verdict, or Mission completion.
+
+Sending a typed task to a managed-only Claude/Codex target returns `capability_unavailable`. The caller may instead prompt it as free-form interactive work or use a bounded Subagent.
+
+## Stop, stand-down, and recovery
+
+- Stand-down vacates participant availability while preserving the exact interactive agent and workspace for later controlled replacement or recovery.
+- Stop targets only the exact Runtime-managed Herdr agent/tab generation.
+- Runtime requests Herdr closure and waits for exact agent/tab absence and process-tree settlement before vacating the participant.
+- Missing or mismatched identities, ambiguous closure, or surviving owned processes become `needs_attention`.
+- Stop never deletes a workspace or unintegrated changes.
+- Release, revival, takeover, integration, and destructive cleanup remain separate trusted operations.
+
+No model prose can request or confirm these transitions.
+
+## Monitor and Pi admission
+
+A Monitor observes newly created direct-child regular files beneath one canonical non-symlink directory. Existing files form a non-emitting baseline. `fs.watch` is only a latency hint; startup, hints, and fallback reconciliation use the same authoritative scan. Cursor and event state commit atomically before notification.
+
+Monitor events follow:
 
 ```text
 pending -> claimed -> acked
                   \-> pending  (release or lease expiry)
 ```
 
-Claims contain at most 12 events in Runtime creation order, with source identity/generation/sequence used only for deterministic ties. Normal acknowledgement or release requires the same registration generation and exact claim/event receipt. Historical registration reconciliation is the only generation-exempt path.
+Pi receives pending work through its in-process heartbeat. Runtime does not prompt or focus a Pi pane. The Pi extension claims a bounded batch, writes one hidden model-visible custom message, and acknowledges at `message_start`. Historical session receipts close the post-admission/pre-ack crash window.
 
-Acknowledgement means the hosted message entered Pi session history; it does not mean the model completed resulting work.
+Monitor scope remains direct-child creation only; recursive/content/modification/deletion monitoring is deferred.
 
-## Wake and admission
+## Auto mode
 
-Pending events remain queued while the target is offline, unverified, or unable to accept a new model-visible turn. Runtime never prompts or focuses a Herdr pane for inbox delivery.
+Global collaborator mode is typed, persistent state and defaults/fails closed to MANUAL. `Shift+Tab` and `/runtime auto on|off|toggle` are trusted UI operations after explicit shortcut setup.
 
-Every two-second registration heartbeat reverifies the exact Herdr terminal, Pi session, cwd, and freshness, and returns a typed `inboxReady` flag whenever the target has pending events. The Pi client checks that it is idle with no pending messages, atomically claims the first batch, and enqueues one hidden `deevs.hosted-runtime.v1` custom message in-process with `pi.sendMessage`. If Pi is busy, the event remains pending for a later heartbeat. The next submitted user turn remains the durable fallback.
+AUTO may start, stand down, stop, or later restart collaborators within:
 
-- Synchronous enqueue failure releases the claim.
-- `message_start` acknowledges admission.
-- A pre-admission crash returns the claim to pending after lease expiry.
-- A post-admission/pre-ack crash is reconciled from Pi history during registration.
-- Legacy persisted wake IDs remain acceptable during upgrade, but Runtime creates no new prompt wakes.
+- four concurrent starts;
+- twelve held-or-reserved collaborators;
+- `workspace-write` maximum profile.
 
-## Collaborator mailbox
+AUTO never authorizes release, revival, takeover, main-tree integration, destructive discard, or permission escalation from collaborator prose. Capacity is durably reserved before Git or Herdr resources are created. Ambiguous launches retain reservations and recovery evidence.
 
-A participant is addressed by `(canonicalProjectRoot, protocol, participantId)` and has one durable state: `held`, `vacant`, or `ended`. One Pi target may hold one identity. Stand-down explicitly consents to succession; release ends the identity; takeover requires an offline holder, the exact observed generation, restart grace, and Pi-side user confirmation. Ownership never changes on a timer.
+## Persistence and security boundary
 
-Mailbox messages are addressed to participants rather than historical Pi sessions. The user-facing `collaborator_send` tool accepts 1–12 ordered messages whose recipients are either participant IDs (`main`) or equivalent same-protocol references (`demo/main`); cross-protocol references fail closed. Every send asserts the exact sender participant key and generation, so concurrent identity rotation fails rather than sending as a successor. Runtime resolves the current recipient holder only when claiming, so pending messages follow an explicit succession. Each sender-recipient stream has a durable sequence. `(senderParticipantKey, sendId)` plus a recipient/body fingerprint makes retries idempotent and changed retries conflict.
+Runtime state uses strict schema validation and atomic temporary-write/fsync/rename/directory-fsync replacement. Corruption fails closed.
 
-Bodies are capped at 16 KiB and become model-visible input in the recipient Pi session. They are authored by an identity-verified participant in the same trusted project, but remain untrusted prose: bodies never authorize routing, ownership, takeover, acknowledgement, or verdicts.
+The Unix socket and state rely on owner-only filesystem permissions. Current Node Unix sockets do not expose peer credentials, so Runtime is not an isolation boundary against a hostile same-UID process. Random registration/launch credentials protect against accidental and cross-wired children, not memory inspection by the same user.
 
-### Optional bounded task results
+Herdr is an external trusted host capability, not an npm production dependency. Runtime validates Herdr protocol responses and exact identities; it never trusts labels or focused UI state as authority.
 
-Free-form `mailbox.message` remains the default. `collaborator_task` is additive and uses explicit `send | result | status` actions only when an automated consumer needs structural settlement. A task is a durable `mailbox.task` event; its exact event ID is the reply identity input. Exactly one `mailbox.task_result` may settle it with schema-validated `completed | failed | cancelled`, a bounded body, deterministic `replyId`, and `sessionAdvance: none | committed`. Status collection is authorized only for the exact held task sender and returns `pending` or the stored typed result; it never parses the body.
+## Migration from headless native bridges
 
-Runtime deduplicates task requests by sender/send ID and results by responder/reply ID plus the original task event. Response loss retries the exact IDs; changed retries conflict. A second reply identity cannot settle an already-settled task. Native bridges derive result status/session advancement from their validated terminal frame and durably publish it through the existing reply state. Pi peers explicitly call `collaborator_task action=result`; because that occurs in an admitted model turn, Pi results record committed session advancement.
+The released v7 implementation may contain `kind: "bridge"` targets whose visible tab runs `bridge-runner/main.ts` and whose controller spawns `claude -p` or `codex exec` once per message. Those targets are legacy.
 
-A workspace-bound responder receives Runtime-derived evidence captured at result publication: workspace ID, base/head commits, private branch artifact reference, durable workspace state, capture timestamp, and a bounded Git dirty check. The responder cannot forge this evidence. It is inspection/handoff context only: task status/body/workspace evidence never authorizes lifecycle, permission escalation, checkpoint, integration, discard, Mission completion, or review verdict. Uncertain native session advancement remains `needs_attention` and publishes no normal task result.
+Migration requirements:
 
-Herdr remains the live process layer. The Runtime daemon occupies the initial `pi-kit-runtime` tab of its dedicated services workspace; collaborator tabs stay in the requesting project workspace. `/runtime collaborator-start <protocol> <participant-id> [model]` materializes a child Pi session, creates a no-focus tab, starts Pi with the optional validated model pattern, and waits for the child to acquire its environment-bootstrapped identity. Runtime never changes pane or tab focus. The identity disposition is mirrored in Pi session history for safe reload/resume. Models use read-only `collaborator_list`, confirmed `collaborator_manage`, and data-plane `collaborator_send`. Manage actions are schema-validated `start`, `stand_down`, or `stop` over 1–12 exact participants under one trusted confirmation. Start candidates independently select a closed driver key, validated driver-owned model selector, trusted built-in persona, and execution profile. Driver omission defaults to Pi; `claude-code` and `codex` run bounded native CLI turns through Runtime's private bridge runner. Persona starts default to `read-only`; required incompatible tooling is rejected before confirmation, while runner-only terminal tools such as the bounded subagent `review_report` sink are optional in free-form collaborator mode. Pi reviewer personas may use `safe_diff`, whose argv-only Git execution resolves exact commits at the canonical project root, treats paths literally, disables hooks/pagers/external diff/text conversion, lazy object fetching, replacement refs, and inherited Git control variables, and bounds output. Native persona launches requiring `safe_diff` are rejected before confirmation because the Claude Code and Codex adapters do not expose that bounded tool. The resolved driver, model selector, persona prompt/hash, and profile are stored as versioned child launch metadata; the persona is injected into every model turn. Both `read-only` and `workspace-write` use explicit tool allowlists plus project-confined file paths, re-enforced after resume; `workspace-write` adds file edit/write tools but not shell or lifecycle control. Chain checkpoint metadata remains allowed under `read-only` because it is session recovery state, not production code. Starts launch only new or vacant identities with concurrency at most four; single start may acquire or reacquire the caller, while multi-start requires an already-held caller. Stand-down leaves the exact process dormant; a later confirmed start first closes that exact stood-down target, then launches the replacement under the still-vacant generation, preventing orphan targets. Stop closes only exact managed Herdr tabs. Release, revival, and takeover remain user commands.
+1. Do not mutate a live legacy target in place.
+2. Stand down or stop the exact legacy generation with existing worker-group quiescence rules.
+3. Retain any workspace and pending/attention journal evidence.
+4. Create a new interactive Herdr-agent target generation through the launch sequence above.
+5. Preserve participant mail ordering and workspace handoff references without reusing bridge credentials.
+6. Remove legacy controller tabs only after exact stop settles.
+7. Delete production `claude -p`/`codex exec` collaborator launch paths after migration gates pass.
 
-### Generic bridge launch authority
+The old durable runner may remain only if a separately named bounded execution primitive still needs it. It must not be called a collaborator, hold a collaborator participant lease, or occupy a collaborator tab.
 
-Runtime state v7 retains strict discriminated Pi/bridge targets, bridge-owned isolated workspaces, typed task/result events, and exact Auto capacity reservations. Existing v1/v2 targets migrate to `kind: "pi"`, v3 bridge state migrates with legacy display metadata normalized, v4 Pi workspaces migrate to explicit Pi ownership, and released v5/v6 state migrates directly with an empty reservation map without changing keys, sessions, participants, mailbox events, claims, or wakes; `pi.register` retains its canonical session-file and authoritative Herdr Pi checks.
+## Deferred
 
-The additive bridge RPC is an internal control-plane seam, not a public driver SDK. An authenticated held Pi caller may reserve one new/vacant participant generation against an exact empty Herdr pane, project, profile, canonical configuration hash, and bounded opaque metadata. Runtime returns a 30-second random launch token once and stores only its SHA-256 digest. A separate random reconnect credential is also returned once and stored only as a digest. Pending reservations block competing participant acquisition.
+- Connected/durable Claude and Codex reply adapters.
+- Recursive/content/modification/deletion monitoring.
+- Collaborator groups, broadcasts, and attachments.
+- Durable schedules and automatic takeover.
+- Native service installers and Windows transport.
+- Public driver/plugin SDK.
+- Full host-access collaborator profile.
 
-A bridge must first report the generic Herdr session identity `(source=pi-kit-bridge, agent=bridge, kind=id, value=launchId)`. The native reporter frames this in Herdr's syntax-only agent label `bridge:<launchId>` because custom labels do not retain arbitrary session IDs; Runtime accepts only the closed bridge-ID grammar and reconstructs that exact internal tuple. Registration re-verifies the exact pane, terminal, single tab/workspace binding, cwd, caller generation, participant prior generation, and capability digest before one atomic state mutation creates the bridge target, acquires its preallocated holder generation, and consumes the launch token. The launch token cannot register again. The separate reconnect credential deterministically rebuilds the same in-memory registration after Runtime restart only while the exact bridge target still holds that participant generation. Generic bridge metadata is capped and allowlisted to the non-authoritative adapter label; driver/model/persona/profile and credentials remain in their authoritative owner-private runner configuration instead of leaking into generic target state. Lost launch responses recover the exact caller/request/participant authority; a consumed launch is stopped through generation-fenced `participant.stop_confirmed`, never by merely closing its controller tab. Heartbeat and stop dispatch by target kind; bridge stop re-verifies the exact reported bridge and single-pane tab, closes that controller, then reads the authority-matched runner journal and quiesces any witnessed worker group before it may settle. An absent tab is not sufficient on retry. A settled or active turn without a worker receipt, missing/mismatched identity, or an unquiesced group fails closed without vacating the participant. Plaintext launch/reconnect secrets are absent from durable state, bridge metadata, and registration results.
+## Release gates
 
-This authority protects against accidental/cross-wired same-UID project children that do not possess the random credential; it is not an OS sandbox against a hostile same-UID process that can inspect another process's memory. Native Claude Code/Codex launchers use this seam without exposing a public driver SDK.
+The redesign is releasable only when isolated and live gates prove:
 
-### Durable common bridge runner
-
-The internal bridge runner is a persistent Herdr-hosted controller with a private, frozen registry for the test-only `fake` adapter plus production `claude-code` and `codex` adapters. The registry remains private until another driver proves a stable public contract.
-
-Runtime claim acknowledgement means **durable runner admission**, not native completion. The controller atomically writes and fsyncs the exact claim/event payload, sender, order, deterministic reply ID, and `ack: uncertain` before `inbox.ack`. Reconnect supplies those exact receipts through bridge registration; successful reconciliation marks them confirmed. Event IDs and turn sequences deduplicate redelivery. At most one turn executes, and the next turn does not start until the previous deterministic reply is durably confirmed sent.
-
-Each turn uses a fresh detached Node worker process group. The worker persists and reports its own PID/start identity, then waits for the controller to durably record and explicitly authorize that exact worker before spawning one non-detached native child into the recorded group. Readiness failure quiesces the exact group or enters `needs_attention`; controller/worker terminal hangup also requests cancellation as defense in depth. Worker/native environments are explicit allowlists and contain no Runtime socket credentials, launch/reconnect token, registration key, Herdr authorization, or controller environment. Adapters only produce argv/stdin/env and validate typed provider frames; common code owns fatal UTF-8/JSONL framing, closed frame schemas, line/total/stderr/frame/body/wall caps, terminal uniqueness, process identity, cancellation, and persistence. Claude Code uses `dontAsk` with only native read/glob/grep tools in read-only mode and `acceptEdits` with explicit edit/write additions in an isolated writer workspace; Codex receives `--ask-for-approval never` with `--sandbox read-only` or `workspace-write`. Neither uses dangerous bypass flags.
-
-A zero exit without exactly one validated terminal frame is failure. If the exact worker leader disappears between poll observations, the controller waits once and re-reads the durable worker receipt so a just-persisted terminal is not falsely converted to attention; a receipt mismatch quiesces only the independently trusted turn worker identity and fails closed. Worker terminal state is only a candidate result: before importing it, advancing the session cursor, publishing a reply, or starting another turn, the controller proves the exact worker group quiescent and durably marks that proof in the turn journal. Terminal result and session cursor are then committed in one durable journal write before outbox send. Restart rechecks every legacy or crash-window terminal/reply turn without a quiescence marker. Reply send ID/body are durable before `mailbox.send`; uncertain publication retries the exact ID/body and relies on Runtime's sender/send-ID fingerprint dedupe.
-
-Native computation is honestly **at least once**. A crash after execution may have begun but before terminal persistence records `sessionAdvance: uncertain`. The runner resumes an exact live worker or proves its durable terminal candidate's group quiescent; if the worker leader is lost while its exact recorded native child remains, Runtime quiesces that owned group before import or attention. Cancel intent is durable before signaling. Without an exact worker/child identity witness, or when the witnessed group cannot be proven quiescent, the turn and controller atomically enter typed `needs_attention`; Runtime never guesses a PID/PGID, replays, replies, ACKs a later claim, or claims exactly-once effects.
-
-Runner journal/config/worker records are owner-private, size-capped, strict-schema atomic snapshots (temporary write, file fsync, rename, directory fsync). After Runtime durably confirms replies, the runner retains the newest 64 settled turns and atomically compacts older confirmed admissions, then removes only their exact UUID-named turn directories beneath the canonical runner root; restart scavenges artifacts left by a crash between those steps without following symlinks. Active turns, uncertain admissions/publications, and attention turns are never compacted, sequence/session cursors remain monotonic, and Runtime remains the authoritative delivery/result dedupe record. Corruption, unknown fields, symlinks, overflow, unterminated/invalid/deep JSON, duplicate terminal frames, and output-limit violations fail closed. The reconnect credential is confined to the controller config; journal, worker spec/state, and native environment never contain it.
-
-### Isolated writable workspaces
-
-Every Pi or native `workspace-write` start provisions a Runtime-owned linked Git worktree and private branch before child launch. Logical participant/project identity remains the canonical main repository while the child Pi session and Herdr cwd are the exact isolated worktree. A single-use digest-only workspace launch token binds the trusted caller generation, intended participant prior/preallocated generation, Pi session, exact empty single-pane Herdr target, and worktree identity; the child deletes the plaintext token from process environment after capture. Registration atomically activates the workspace target and participant generation before acknowledgement. Legacy managed workspace-write sessions without authoritative workspace metadata fail closed to read-only tools.
-
-Participant stop retains the workspace; it never deletes changes. Checkpoint creates bounded hook/signing/filter-safe Runtime commits and typed handoff evidence. Integration preparation cherry-picks the whole linear range in a separate Runtime worktree and preserves conflicts without touching main. Finalization remains separately confirmed and requires exact clean main/prepared identities plus an unchanged main head. Cleanup/discard is a distinct exact-ID operation; unintegrated or conflicted discard is always confirmed. Message/task prose has no workspace authority. See [`WORKSPACES.md`](WORKSPACES.md) for the normative state, Git, handoff, integration, concurrency, and cleanup contract.
-
-### Collaborator Auto mode
-
-Global collaborator mode is typed, persistent Runtime-root state and defaults/fails closed to MANUAL. `/runtime auto setup` is an explicit trusted operation that preserves unrelated Pi keybindings, moves thinking-level cycling from `Shift+Tab` to `Ctrl+Shift+T`, binds the extension Auto toggle after reload, and refuses malformed, symlinked, or conflicting configuration. `Shift+Tab` and `/runtime auto on|off|toggle` are trusted mode operations; no model tool or mailbox message can enable Auto. The main Pi footer always displays the effective `MANUAL` or `AUTO` mode; managed child collaborators do not inherit or display global authority.
-
-In MANUAL, lifecycle tools retain user-intent and confirmation behavior. In AUTO, an authenticated main Pi tool call may start, stand down, stop, or later restart through another start without repeated confirmation. All starts are serialized across Pi sessions by an atomically published Runtime-root lock; stale or malformed locks fail closed for explicit operator recovery. Auto preflight counts every held non-caller participant regardless of current registration liveness. Before launching any host or workspace resources, Runtime atomically persists the operation's exact participant reservation and rejects a held-plus-reserved union above twelve; participant acquisition re-enforces that ceiling while the reservation is active. Each batch still runs at concurrency four. Settled launches release the reservation only after successful children are durably held or failed children are proven absent. An ambiguous unconsumed Auto launch is closed by exact Herdr identity; a consumed native launch must instead complete Runtime's exact participant stop and worker-group quiescence before capacity is released. If exact closure, stop, quiescence, or reservation release fails, the reservation, lock, and recovery artifacts remain preserved and later starts fail closed. `/runtime auto recover [operation-id]` is the supported trusted recovery path: the operator confirms every reserved child is durably held or its exact preserved Herdr resource cannot still settle, Runtime releases only that caller target's exact reservation, and the client removes only a dead-owner or same-process stale lock. Auto lifecycle authorization and settlement are appended to the controlling Pi session with exact mode generation, target, participant identities, action, and typed outcomes. Malformed Auto state disables authority and warns; toggle operations reject it, while an explicit trusted `auto on` or `auto off` replaces the corrupt state.
-
-Auto resolves and persists an effective profile for every start: omission defaults to `read-only`, and the ceiling is `workspace-write`. It does not authorize release, revival, takeover, main-tree integration, or destructive workspace discard. Message prose remains untrusted: the main model may consider it as context while Auto is enabled, but Runtime authorization derives only from valid persisted Auto state plus the authenticated main Pi tool call.
-
-## Persistence and retention
-
-Runtime stores one bounded, schema-validated state document. Mutations write a temporary file, fsync it, atomically rename it, then fsync the parent directory. Corruption fails closed; Runtime never resets to an empty inbox.
-
-Pending and claimed events, claim receipts, wakes, and Monitor cursors are never age-pruned. Acknowledged events and complete settled claims are retained for seven days and pruned atomically with later acknowledgements.
-
-Whole-state replacement is intentional for Release 1. A journal or database is deferred until measured state size or write throughput requires it.
-
-## Release gate
-
-Run from a source checkout with Herdr and its Pi integration installed:
-
-```bash
-npm run smoke:runtime-release
-npm run smoke:collaborator-release
-npm run smoke:collaborator-auto-release
-npm run smoke:native-release
-```
-
-These isolated gates use unique Herdr servers/sessions/sockets, Pi agent directories, Runtime state, projects, and Pi sessions. The Runtime gate proves offline Monitor queuing, restarts, exact wake/admission, historical reconciliation, foreign-session rejection, and no redelivery. The two-Pi Collaborator gates launch their child through production `collaborator_manage` in Manual and Auto modes, verify v3 session materialization and identity binding, prove Auto's omitted profile persists and enforces read-only, and prove bidirectional mail, identity conflict, stand-down queuing and reacquisition, release/revival, claimed-mail takeover after lease expiry, historical mailbox reconciliation, and no redelivery across a full heartbeat interval. They also create a production Mission in the real parent Pi, deliver and acknowledge the collaborator reply while that Mission is active, restore its canonical state after the parent closes, record/adjudicate through registered Mission tools, admit and recover exactly one typed reviewer across parent reloads, and commit exactly one completion/effect across replay. The deterministic native gate executes Claude/Codex shims through the production bridge controller/worker and Runtime socket, proves driver-owned read-only/workspace-write argv, then checkpoints, stages, finalizes, and cleans a real isolated Git worktree while keeping main untouched before finalization. All gates clean isolated resources and never connect to the user's active Herdr server.
+1. Claude and Codex launch through `herdr agent start` into real interactive tabs.
+2. The user can type directly and receive responses in both tabs.
+3. Runtime can submit a prompt through `herdr agent prompt` without focus mutation.
+4. Busy/blocked/focused/unknown targets retain pending events.
+5. Successful managed delivery records `submitted`, never durable admission or semantic completion.
+6. Ambiguous prompt results fail closed without automatic duplicate replay.
+7. Managed targets reject typed tasks and automatic-reply claims with `capability_unavailable`.
+8. Exact model/persona/profile/cwd/session identity is verified after start and restart.
+9. Read-only and isolated workspace-write launches apply the intended driver startup policy.
+10. Stop proves exact Herdr target/process settlement and retains workspace state.
+11. Pi durable collaborator behavior and Monitor admission remain unchanged.
+12. No collaborator tab contains a bridge-runner command or hidden per-message provider process.
+13. Legacy state migration retains mail, participant generations, attention evidence, and workspaces.
+14. Manual and Auto capacity, authority, and zero-focus gates still pass.

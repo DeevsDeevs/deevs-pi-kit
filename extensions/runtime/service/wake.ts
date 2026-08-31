@@ -71,10 +71,11 @@ export class HostedWakeCoordinator {
 		return { claim: this.store.read().claims[claimId]!, events };
 	}
 
-	claim(registration: HostedLiveRegistration): HostedClaimResult {
+	claim(registration: HostedLiveRegistration, maxEvents = HOSTED_MAX_DELIVERY_BATCH): HostedClaimResult {
 		this.releaseExpired();
+		if (!Number.isSafeInteger(maxEvents) || maxEvents < 1 || maxEvents > HOSTED_MAX_DELIVERY_BATCH) throw new HostedInboxError("claim_conflict", "Claim batch limit is invalid.");
 		if (this.hasActiveClaim(registration.targetKey)) throw new HostedInboxError("busy", "Target already has an active delivery claim.");
-		const events = pendingHostedEvents(this.store.read(), registration.targetKey).slice(0, HOSTED_MAX_DELIVERY_BATCH);
+		const events = pendingHostedEvents(this.store.read(), registration.targetKey).slice(0, maxEvents);
 		if (events.length === 0) throw new HostedInboxError("not_found", "Inbox has no pending events.");
 		const now = this.now();
 		const claim: HostedClaim = {
@@ -104,20 +105,37 @@ export class HostedWakeCoordinator {
 		this.request(registration.targetKey);
 	}
 
-	status(registration: HostedLiveRegistration): { pending: number; claimed: number; acknowledged: number; wakeId?: string } {
+	submitBegin(registration: HostedLiveRegistration, claimId: string, eventIds: string[], attemptId: string): void {
+		const claim = this.requireClaim(registration, claimId, eventIds);
+		this.store.apply({ type: "inbox.submit_begin", targetKey: registration.targetKey, claimId: claim.claimId, eventIds: claim.eventIds, attemptId, at: this.now() });
+	}
+
+	submitSettle(registration: HostedLiveRegistration, claimId: string, eventIds: string[], attemptId: string, outcome: "submitted" | "pending" | "needs_attention"): void {
+		const claim = this.requireClaim(registration, claimId, eventIds);
+		this.store.apply({ type: "inbox.submit_settle", targetKey: registration.targetKey, claimId: claim.claimId, eventIds: claim.eventIds, attemptId, outcome, at: this.now() });
+		this.request(registration.targetKey);
+	}
+
+	status(registration: HostedLiveRegistration): { pending: number; claimed: number; submitting: number; submitted: number; needsAttention: number; acknowledged: number; wakeId?: string } {
 		this.releaseExpired();
 		let pending = 0;
 		let claimed = 0;
+		let submitting = 0;
+		let submitted = 0;
+		let needsAttention = 0;
 		let acknowledged = 0;
 		const state = this.store.read();
 		for (const event of Object.values(state.events)) {
 			if (!hostedEventRoutesToTarget(state, event, registration.targetKey)) continue;
 			if (event.delivery.status === "pending") pending++;
 			else if (event.delivery.status === "claimed") claimed++;
+			else if (event.delivery.status === "submitting") submitting++;
+			else if (event.delivery.status === "submitted") submitted++;
+			else if (event.delivery.status === "needs_attention") needsAttention++;
 			else acknowledged++;
 		}
 		const wakeId = this.store.read().wakes[registration.targetKey]?.wakeId;
-		return { pending, claimed, acknowledged, ...(wakeId ? { wakeId } : {}) };
+		return { pending, claimed, submitting, submitted, needsAttention, acknowledged, ...(wakeId ? { wakeId } : {}) };
 	}
 
 	close(): void {

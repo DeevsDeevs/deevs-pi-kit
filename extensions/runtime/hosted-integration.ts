@@ -1,6 +1,6 @@
 import { CURRENT_SESSION_VERSION, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -9,8 +9,6 @@ import type { AgentDefinition } from "../subagents/catalog-types.ts";
 import { HostedRuntimeClient, HostedRuntimeClientError } from "./client.ts";
 import { AUTO_MAX_LIVE_COLLABORATORS, CollaboratorAutoStore, type CollaboratorAutoState } from "./auto-mode.ts";
 import { HOSTED_MAX_DELIVERY_BATCH } from "./hosted-types.ts";
-import { writeRunnerConfig } from "./bridge-runner/journal.ts";
-import type { BridgeRunnerConfig } from "./bridge-runner/types.ts";
 
 // ponytail: two-second host verification is fine for small teams; add Runtime subscriptions if concurrent Pi count makes it measurable.
 const HEARTBEAT_MS = 2_000;
@@ -22,14 +20,13 @@ export const HOSTED_MANAGED_COLLABORATOR_ENTRY = "deevs.hosted-runtime.managed-c
 export const HOSTED_COLLABORATOR_WORKSPACE_ENTRY = "deevs.hosted-runtime.collaborator-workspace.v1";
 export const HOSTED_WORKSPACE_REQUEST_ENTRY = "deevs.hosted-runtime.workspace-request.v1";
 export const HOSTED_BRIDGE_REQUEST_ENTRY = "deevs.hosted-runtime.bridge-request.v1";
+export const HOSTED_MANAGED_AGENT_CONTROL_ENTRY = "deevs.hosted-runtime.managed-agent-control.v1";
 const COLLABORATOR_ENV = "PI_RUNTIME_COLLABORATE";
 const COLLABORATOR_WORKSPACE_ENV = "PI_RUNTIME_WORKSPACE_LAUNCH";
 const COLLABORATOR_METADATA_TOOLS = ["collaborator_list", "collaborator_send", "collaborator_task", "chain_save", "chain_load", "chain_context"] as const;
 const READ_ONLY_COLLABORATOR_TOOLS = ["read", "grep", "find", "ls", "safe_diff", ...COLLABORATOR_METADATA_TOOLS] as const;
 const WORKSPACE_WRITE_COLLABORATOR_TOOLS = [...READ_ONLY_COLLABORATOR_TOOLS, "edit", "write"] as const;
 const COLLABORATOR_PERSONAS = loadBuiltinAgents();
-const BRIDGE_MAIN = fileURLToPath(new URL("./bridge-runner/main.ts", import.meta.url));
-const BRIDGE_TURN_WALL_MS = 30 * 60_000;
 
 interface LiveClientRegistration {
 	targetKey: string;
@@ -77,6 +74,9 @@ interface ClientParticipantStatus {
 	generation: string;
 	holderTargetKey?: string;
 	holderLive: boolean;
+	driver?: CollaboratorDriver;
+	capabilityTier?: "managed" | "durable";
+	profile?: CollaboratorProfile;
 	queued?: { pending: number; claimed: number };
 	lastTransition: { cause: string };
 }
@@ -150,11 +150,27 @@ type CollaboratorTaskInput =
 	| { action: "result"; eventId: string; status: "completed" | "failed" | "cancelled"; body: string }
 	| { action: "status"; eventIds: string[] };
 
+interface ManagedAgentControl {
+	version: 1;
+	bridgeId: string;
+	targetKey: string;
+	driver: Exclude<CollaboratorDriver, "pi">;
+	clientGeneration: string;
+	reconnectToken: string;
+	launchToken?: string;
+	paneId: string;
+	terminalId: string;
+	agentSession: { source: string; agent: string; kind: "id" | "path"; value: string };
+	state: "pending" | "active" | "needs_attention" | "stopped";
+}
+
 interface CollaboratorMessageResult {
 	recipient: string;
 	status: "sent" | "failed" | "cancelled";
 	eventId?: string;
 	sequence?: number;
+	recipientTier?: "managed" | "durable" | "unbound";
+	deliveryState?: "pending" | "submitting" | "submitted" | "needs_attention";
 	error?: string;
 }
 
@@ -181,6 +197,9 @@ export class HostedRuntimeIntegration {
 	private readonly handledWakeIds = new Set<string>();
 	private readonly admittedClaims = new Map<string, string[]>();
 	private readonly pendingAcks = new Set<string>();
+	private readonly managedAgentControls = new Map<string, ManagedAgentControl>();
+	private readonly managedAgentRegistrations = new Map<string, LiveClientRegistration>();
+	private managedAgentHeartbeatActive = false;
 	private participantIdentity?: ParticipantIdentity;
 	private collaboratorLaunch?: CollaboratorLaunchState;
 	private collaboratorWorkspace?: CollaboratorWorkspaceState;
@@ -189,13 +208,15 @@ export class HostedRuntimeIntegration {
 	private managedCollaborator = false;
 	private collaboratorManageActive = false;
 	private readonly autoStore: CollaboratorAutoStore;
+	private readonly trustClaudeWorkspace: (cwd: string) => void;
 	private autoStateError?: string;
 
-	constructor(pi: ExtensionAPI, root = defaultRuntimeRoot()) {
+	constructor(pi: ExtensionAPI, root = defaultRuntimeRoot(), trustClaudeWorkspace: (cwd: string) => void = markClaudeWorkspaceTrusted) {
 		this.pi = pi;
 		this.root = root;
 		this.client = new HostedRuntimeClient(join(root, "runtime.sock"));
 		this.autoStore = new CollaboratorAutoStore(root);
+		this.trustClaudeWorkspace = trustClaudeWorkspace;
 	}
 
 	autoShortcutConfigured(): boolean { return this.autoStore.shortcutConfigured(); }
@@ -224,6 +245,7 @@ export class HostedRuntimeIntegration {
 		this.restoreAdmissions(ctx);
 		this.restoreParticipantIdentity(ctx);
 		this.restoreCollaboratorLaunch(ctx);
+		this.restoreManagedAgentControls(ctx);
 		this.startHeartbeat();
 		if (!existsSync(this.client.socketPath)) return;
 		try { await this.register(ctx); } catch {}
@@ -237,6 +259,7 @@ export class HostedRuntimeIntegration {
 		this.restoreAdmissions(ctx);
 		this.restoreParticipantIdentity(ctx);
 		this.restoreCollaboratorLaunch(ctx);
+		this.restoreManagedAgentControls(ctx);
 	}
 
 	async sessionShutdown(): Promise<void> {
@@ -378,7 +401,7 @@ export class HostedRuntimeIntegration {
 			if (action === "participants") {
 				const registration = await this.requireRegistration(ctx);
 				const participants = await this.listParticipants(registration);
-				ctx.ui.notify(participants.length ? participants.map((participant) => `${participant.protocol}/${participant.participantId}: ${participant.state}${participant.holderLive ? " (live)" : ""}`).join("\n") : "No Runtime collaborators.", "info");
+				ctx.ui.notify(participants.length ? participants.map((participant) => `${participant.protocol}/${participant.participantId}: ${participant.state}${participant.holderLive ? " (live)" : ""}${participant.driver ? `; ${participant.driver}/${participant.capabilityTier}` : ""}`).join("\n") : "No Runtime collaborators.", "info");
 				return;
 			}
 			if (action === "stand-down" || action === "leave") {
@@ -519,6 +542,11 @@ export class HostedRuntimeIntegration {
 							const outcome = response.outcome;
 							if (outcome !== "stopped" && outcome !== "already_stopped" && outcome !== "unmanaged") throw new HostedRuntimeClientError("invalid_response", "Runtime returned an invalid collaborator stop outcome.");
 							if (this.participantIdentity?.participantKey === changed.participantKey && changed.state === "vacant") this.persistParticipant({ ...this.participantIdentity, generation: changed.generation, disposition: "vacant" });
+							const control = participant.holderTargetKey ? this.managedAgentControls.get(participant.holderTargetKey) : undefined;
+							if (control && outcome !== "unmanaged") {
+								this.managedAgentRegistrations.delete(control.targetKey);
+								this.persistManagedAgentControl({ ...control, launchToken: undefined, state: "stopped" });
+							}
 							results[index] = { participant: `${protocol}/${participant.participantId}`, status: outcome };
 						}
 					} catch (error) {
@@ -811,12 +839,20 @@ export class HostedRuntimeIntegration {
 			try {
 				const sendId = `send_${createHash("sha256").update(`${toolCallId}:${index}`).digest("hex").slice(0, 32)}`;
 				const result = strictObject(await this.client.call("mailbox.send", { ...auth(registration), senderParticipantKey: identity.participantKey, expectedSenderGeneration: identity.generation, recipientParticipantKey: message.recipient.participantKey, sendId, body: message.body }), "Collaborator send result");
-				results.push({ recipient, status: "sent", eventId: text(result.eventId), sequence: integer(result.sequence) });
+				results.push({ recipient, status: "sent", eventId: text(result.eventId), sequence: integer(result.sequence), recipientTier: message.recipient.capabilityTier ?? "unbound", deliveryState: "pending" });
 			} catch (error) {
 				results.push({ recipient, status: signal?.aborted ? "cancelled" : "failed", error: error instanceof Error ? error.message : String(error) });
 			}
 		}
 		return results;
+	}
+
+	async collaboratorMessageStatus(eventIds: string[], ctx: ExtensionContext): Promise<unknown> {
+		if (eventIds.length < 1 || eventIds.length > 12 || new Set(eventIds).size !== eventIds.length) throw new HostedRuntimeClientError("invalid_request", "Message status requires 1 to 12 unique event IDs.");
+		const identity = this.requireParticipantIdentity();
+		if (identity.disposition !== "held" || !identity.participantKey || !identity.generation) throw new HostedRuntimeClientError("conflict", "Current collaborator identity is not authoritatively held.");
+		const registration = await this.requireRegistration(ctx);
+		return this.client.call("mailbox.status", { ...auth(registration), senderParticipantKey: identity.participantKey, expectedSenderGeneration: identity.generation, eventIds });
 	}
 
 	async manageCollaboratorTask(input: CollaboratorTaskInput, toolCallId: string, ctx: ExtensionContext, signal?: AbortSignal): Promise<unknown> {
@@ -991,8 +1027,6 @@ export class HostedRuntimeIntegration {
 		const registration = await this.requireRegistration(ctx);
 		const projectRoot = realpathSync(ctx.cwd);
 		const bridgeId = `launch_${randomUUID()}`;
-		const bridgeRoot = join(this.root, "bridges", bridgeId);
-		const configPath = join(bridgeRoot, "config.v1.json");
 		const configurationHash = collaboratorConfigurationHash(candidate);
 		const authority = { ...auth(registration), callerParticipantKey: expectedCaller.participantKey, expectedCallerGeneration: expectedCaller.generation };
 		let workspace: { workspaceId: string; projectRoot: string; workspaceRoot: string; targetKey: string } | undefined;
@@ -1000,8 +1034,10 @@ export class HostedRuntimeIntegration {
 		let paneId: string | undefined;
 		let tabCreated = false;
 		let childMayBeLive = false;
-		let bridgeRequestId: string | undefined;
+		const bridgeRequestId = `bridge_request_${randomUUID()}`;
+		let bridgeRequestSubmitted = false;
 		let preserved = false;
+		this.pi.appendEntry(HOSTED_BRIDGE_REQUEST_ENTRY, { version: 2, requestId: bridgeRequestId, bridgeId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, driver: candidate.driver, profile: candidate.profile, configurationHash, status: "intent" });
 		try {
 			if (candidate.profile === "workspace-write") {
 				const requestId = `workspace_request_${randomUUID()}`;
@@ -1044,11 +1080,11 @@ export class HostedRuntimeIntegration {
 				await this.waitForHerdrPaneCwd(paneId, terminalId, launchCwd, signal);
 				await this.client.call("workspace.launch.bind", { ...authority, workspaceId: workspace.workspaceId, herdr: { paneId, terminalId } });
 			}
-			bridgeRequestId = `bridge_request_${randomUUID()}`;
-			this.pi.appendEntry(HOSTED_BRIDGE_REQUEST_ENTRY, { version: 1, requestId: bridgeRequestId, bridgeId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, workspaceId: workspace?.workspaceId, status: "pending" });
-			const launchParams = { ...authority, requestId: bridgeRequestId, launchId: bridgeId, ...(workspace ? { workspaceId: workspace.workspaceId } : {}), protocol, participantId, ...(existing ? { expectedParticipantGeneration: existing.generation } : {}), profile: candidate.profile, configurationHash, herdr: { paneId, terminalId }, metadata: { adapter: "native-v1" } };
+			this.pi.appendEntry(HOSTED_BRIDGE_REQUEST_ENTRY, { version: 2, requestId: bridgeRequestId, bridgeId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, driver: candidate.driver, profile: candidate.profile, configurationHash, workspaceId: workspace?.workspaceId, paneId, terminalId, status: "pending" });
+			const launchParams = { ...authority, requestId: bridgeRequestId, launchId: bridgeId, ...(workspace ? { workspaceId: workspace.workspaceId } : {}), protocol, participantId, ...(existing ? { expectedParticipantGeneration: existing.generation } : {}), profile: candidate.profile, configurationHash, driver: candidate.driver, herdr: { paneId, terminalId }, metadata: { adapter: "herdr-agent-v1" } };
 			let launch: Record<string, unknown> | undefined;
 			let launchError: unknown;
+			bridgeRequestSubmitted = true;
 			try { launch = strictObject(await this.client.call("bridge.launch.create", launchParams), "Bridge launch result"); }
 			catch (error) {
 				launchError = error;
@@ -1056,7 +1092,7 @@ export class HostedRuntimeIntegration {
 			}
 			if (!launch) {
 				const recovered = await this.recoverBridgeRequest(registration, expectedCaller, bridgeRequestId, { bridgeId, protocol, participantId });
-				this.pi.appendEntry(HOSTED_BRIDGE_REQUEST_ENTRY, { version: 1, requestId: bridgeRequestId, bridgeId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, workspaceId: workspace?.workspaceId, status: recovered ? "recovered" : "needs_attention" });
+				this.pi.appendEntry(HOSTED_BRIDGE_REQUEST_ENTRY, { version: 2, requestId: bridgeRequestId, bridgeId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, driver: candidate.driver, workspaceId: workspace?.workspaceId, status: recovered ? "recovered" : "needs_attention" });
 				if (!recovered) throw new HostedCollaboratorStartError("unavailable", "Bridge launch response and recovery are uncertain; capacity and durable evidence were preserved.", true);
 				if (recovered.status === "consumed") childMayBeLive = true;
 				throw launchError ?? new HostedRuntimeClientError("conflict", "Bridge launch response was uncertain and has been safely recovered; retry start.");
@@ -1064,26 +1100,28 @@ export class HostedRuntimeIntegration {
 			const launchToken = text(launch.launchToken);
 			const reconnectToken = text(launch.reconnectToken);
 			const targetKey = text(launch.targetKey);
-			const config: BridgeRunnerConfig = { version: 1, bridgeId, driver: candidate.driver, root: bridgeRoot, runtimeSocket: join(this.root, "runtime.sock"), projectRoot, cwd: launchCwd, clientGeneration: `bridge_client_${randomUUID()}`, protocol, participantId, profile: candidate.profile, configurationHash, ...(candidate.model ? { model: candidate.model } : {}), ...(candidate.persona ? { persona: candidate.persona } : {}), launchToken, reconnectToken, targetKey, wallMs: BRIDGE_TURN_WALL_MS };
-			writeRunnerConfig(configPath, config);
-			const runnerLog = join(bridgeRoot, "runner.log");
-			writeFileSync(runnerLog, "", { flag: "wx", mode: 0o600 });
-			this.pi.appendEntry(HOSTED_BRIDGE_REQUEST_ENTRY, { version: 1, requestId: bridgeRequestId, bridgeId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, workspaceId: workspace?.workspaceId, targetKey, status: "authorized" });
+			this.pi.appendEntry(HOSTED_BRIDGE_REQUEST_ENTRY, { version: 2, requestId: bridgeRequestId, bridgeId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, driver: candidate.driver, workspaceId: workspace?.workspaceId, targetKey, status: "authorized" });
 			throwIfAborted(signal);
 			childMayBeLive = true;
-			const command = `exec node --experimental-strip-types ${shellQuote(BRIDGE_MAIN)} ${shellQuote(configPath)} >>${shellQuote(runnerLog)} 2>&1`;
-			const started = await this.pi.exec("herdr", ["pane", "run", paneId, command], { timeout: 5_000 });
-			if (started.code !== 0) throw new HostedRuntimeClientError("host_unavailable", `Herdr could not dispatch native collaborator startup in ${paneId}; its tab and bridge state were preserved.`);
-			for (let attempt = 0; attempt < 150; attempt++) {
-				throwIfAborted(signal);
-				const participant = (await this.listParticipants(registration)).find((item) => item.protocol === protocol && item.participantId === participantId);
-				if (participant?.state === "held" && participant.holderLive && participant.holderTargetKey === targetKey && participant.generation !== existing?.generation) {
-					ctx.ui.notify(`Native ${candidate.driver} collaborator ${protocol}/${participantId} started in ${paneId}.`, "info");
-					return paneId;
-				}
-				await delay(100);
-			}
-			throw new HostedRuntimeClientError("unavailable", `Native collaborator started in ${paneId}, but its identity handshake did not settle; its tab and bridge state were preserved.`);
+			const kind = candidate.driver === "claude-code" ? "claude" : "codex";
+			if (candidate.driver === "claude-code") this.trustClaudeWorkspace(launchCwd);
+			const nativeArgs = interactiveAgentArgs(candidate, launchCwd);
+			const agentName = managedAgentName(protocol, participantId, bridgeId);
+			const started = await this.pi.exec("herdr", ["agent", "start", agentName, "--kind", kind, "--pane", paneId, "--timeout", "30000", ...(nativeArgs.length ? ["--", ...nativeArgs] : [])], { timeout: 35_000 });
+			if (started.code !== 0) throw new HostedRuntimeClientError("host_unavailable", `Herdr could not start the interactive ${kind} collaborator in ${paneId}; its tab and launch authority were preserved.`);
+			const agentSession = parseStartedAgent(started.stdout, paneId, terminalId, kind, agentName);
+			const clientGeneration = `agent_client_${randomUUID()}`;
+			const control: ManagedAgentControl = { version: 1, bridgeId, targetKey, driver: candidate.driver, clientGeneration, reconnectToken, launchToken, paneId, terminalId, agentSession, state: "pending" };
+			this.persistManagedAgentControl(control);
+			const bridgeRegistration = parseRegistration(await this.client.call("bridge.register", { launchToken, reconnectToken, clientGeneration, admittedClaims: [], herdr: { paneId, terminalId }, agentSession }));
+			const activeControl: ManagedAgentControl = { ...control, launchToken: undefined, state: "active" };
+			this.managedAgentControls.set(targetKey, activeControl);
+			this.managedAgentRegistrations.set(targetKey, bridgeRegistration);
+			this.persistManagedAgentControl(activeControl);
+			const participant = (await this.listParticipants(registration)).find((item) => item.protocol === protocol && item.participantId === participantId);
+			if (!participant || participant.state !== "held" || participant.holderTargetKey !== targetKey || participant.generation === existing?.generation) throw new HostedRuntimeClientError("unavailable", `Interactive collaborator started in ${paneId}, but its Runtime identity did not settle; its tab was preserved for recovery.`);
+			ctx.ui.notify(`Interactive ${kind} collaborator ${protocol}/${participantId} started in ${paneId}.`, "info");
+			return paneId;
 		} catch (error) {
 			if (error instanceof HostedCollaboratorStartError && error.childMayBeLive) childMayBeLive = true;
 			if (tabCreated && !tabId && !paneId) {
@@ -1091,8 +1129,8 @@ export class HostedRuntimeIntegration {
 				throw new HostedCollaboratorStartError("invalid_response", "Herdr created native collaborator resources without returning exact identities; recovery artifacts were preserved.", true);
 			}
 			if (childMayBeLive && terminateAmbiguous && (tabId || paneId)) {
-				const recovered = bridgeRequestId ? await this.recoverBridgeRequest(registration, expectedCaller, bridgeRequestId, { bridgeId, protocol, participantId }) : undefined;
-				if (bridgeRequestId && !recovered) throw new HostedCollaboratorStartError("unavailable", "Native collaborator launch authority recovery remains uncertain; capacity evidence was preserved.", true);
+				const recovered = bridgeRequestSubmitted ? await this.recoverBridgeRequest(registration, expectedCaller, bridgeRequestId, { bridgeId, protocol, participantId }) : undefined;
+				if (bridgeRequestSubmitted && !recovered) throw new HostedCollaboratorStartError("unavailable", "Native collaborator launch authority recovery remains uncertain; capacity evidence was preserved.", true);
 				if (recovered?.status === "consumed") await this.stopRecoveredBridge(registration, recovered);
 				else {
 					const resource = tabId ? ["tab", "close", tabId] : ["pane", "close", paneId!];
@@ -1110,8 +1148,8 @@ export class HostedRuntimeIntegration {
 			throw error;
 		} finally {
 			if (!childMayBeLive && !preserved) {
-				const recovered = bridgeRequestId ? await this.recoverBridgeRequest(registration, expectedCaller, bridgeRequestId, { bridgeId, protocol, participantId }) : undefined;
-				if (bridgeRequestId && !recovered) {
+				const recovered = bridgeRequestSubmitted ? await this.recoverBridgeRequest(registration, expectedCaller, bridgeRequestId, { bridgeId, protocol, participantId }) : undefined;
+				if (bridgeRequestSubmitted && !recovered) {
 					childMayBeLive = true;
 					throw new HostedCollaboratorStartError("unavailable", "Failed native launch authority could not be recovered; capacity evidence was preserved.", true);
 				}
@@ -1125,7 +1163,6 @@ export class HostedRuntimeIntegration {
 						const closed = await this.pi.exec("herdr", resource, { timeout: 5_000 });
 						if (closed.code !== 0) throw new HostedRuntimeClientError("host_unavailable", "Herdr could not clean up failed native collaborator resources.");
 					}
-					rmSync(bridgeRoot, { recursive: true, force: true });
 					if (workspace) await this.client.call("workspace.cleanup", { ...authority, workspaceId: workspace.workspaceId, discardConfirmed: true });
 				}
 			}
@@ -1203,7 +1240,7 @@ export class HostedRuntimeIntegration {
 
 	private async stopRecoveredBridge(registration: LiveClientRegistration, launch: RecoveredBridgeLaunch): Promise<void> {
 		try { await this.client.call("participant.stop_confirmed", { ...auth(registration), participantKey: launch.participantKey, expectedGeneration: launch.holderGeneration, confirmed: true }); }
-		catch (error) { throw new HostedCollaboratorStartError(errorCode(error), `Consumed native launch ${launch.launchId} could not be stopped with exact worker quiescence; its capacity evidence was preserved: ${error instanceof Error ? error.message : String(error)}`, true); }
+		catch (error) { throw new HostedCollaboratorStartError(errorCode(error), `Consumed native launch ${launch.launchId} could not be stopped with exact target quiescence; its capacity evidence was preserved: ${error instanceof Error ? error.message : String(error)}`, true); }
 	}
 
 	private async cleanupFailedCollaborator(tabId: string | undefined, paneId: string | undefined, sessionFile: string, workspace?: { workspaceId: string }, registration?: LiveClientRegistration, caller?: ClientParticipantStatus, mode: "discard" | "retain" = "discard"): Promise<void> {
@@ -1363,6 +1400,58 @@ export class HostedRuntimeIntegration {
 		} catch {
 			this.registration = undefined;
 			this.workspaceRegistrationActive = false;
+		} finally {
+			await this.heartbeatManagedAgents();
+		}
+	}
+
+	private async heartbeatManagedAgents(): Promise<void> {
+		if (this.managedAgentHeartbeatActive || !this.active) return;
+		this.managedAgentHeartbeatActive = true;
+		try {
+			for (const [targetKey, control] of this.managedAgentControls) {
+				if (control.state === "needs_attention" || control.state === "stopped") continue;
+				try {
+					let registration = this.managedAgentRegistrations.get(targetKey);
+					let heartbeat: { registration: LiveClientRegistration; inboxReady: boolean };
+					if (!registration) {
+						const admittedClaims: never[] = [];
+						const result = control.state === "pending" && control.launchToken
+							? await this.client.call("bridge.register", { launchToken: control.launchToken, reconnectToken: control.reconnectToken, clientGeneration: control.clientGeneration, admittedClaims, herdr: { paneId: control.paneId, terminalId: control.terminalId }, agentSession: control.agentSession })
+							: await this.client.call("bridge.reconnect", { targetKey, reconnectToken: control.reconnectToken, clientGeneration: control.clientGeneration, admittedClaims, herdr: { paneId: control.paneId, terminalId: control.terminalId } });
+						registration = parseRegistration(result);
+						heartbeat = { registration, inboxReady: asRecord(result)?.inboxReady === true };
+						if (control.state === "pending") this.persistManagedAgentControl({ ...control, launchToken: undefined, state: "active" });
+					} else heartbeat = parseHeartbeat(await this.client.call("bridge.heartbeat", auth(registration)));
+					this.managedAgentRegistrations.set(targetKey, heartbeat.registration);
+					if (heartbeat.inboxReady) await this.submitManagedAgentInbox(control, heartbeat.registration);
+				} catch (error) {
+					this.managedAgentRegistrations.delete(targetKey);
+					if (error instanceof HostedRuntimeClientError && ["not_found", "conflict", "identity_mismatch"].includes(error.code)) this.persistManagedAgentControl({ ...control, launchToken: undefined, state: "needs_attention" });
+				}
+			}
+		} finally { this.managedAgentHeartbeatActive = false; }
+	}
+
+	private async submitManagedAgentInbox(control: ManagedAgentControl, registration: LiveClientRegistration): Promise<void> {
+		const inspected = await this.pi.exec("herdr", ["agent", "get", control.paneId], { timeout: 2_000 });
+		if (inspected.code !== 0) return;
+		const agent = parseManagedAgent(inspected.stdout);
+		if (!sameAgentSession(agent.agentSession, control.agentSession) || agent.paneId !== control.paneId || agent.terminalId !== control.terminalId) {
+			this.persistManagedAgentControl({ ...control, state: "needs_attention" });
+			return;
+		}
+		if (agent.focused || (agent.status !== "idle" && agent.status !== "done")) return;
+		const claim = parseClaim(await this.client.call("inbox.claim", { ...auth(registration), maxEvents: 1 }));
+		if (claim.status === "acked") return;
+		const attemptId = `submit_${randomUUID()}`;
+		await this.client.call("inbox.submit_begin", { ...auth(registration), claimId: claim.claimId, eventIds: claim.eventIds, attemptId });
+		let outcome: "submitted" | "pending" | "needs_attention" = "needs_attention";
+		try {
+			const submitted = await this.pi.exec("herdr", ["agent", "prompt", control.paneId, managedAgentContent(claim.events)], { timeout: 5_000 });
+			outcome = submitted.code === 0 ? "submitted" : herdrPromptProvedNotSubmitted(submitted.stdout, submitted.stderr) ? "pending" : "needs_attention";
+		} finally {
+			await this.client.call("inbox.submit_settle", { ...auth(registration), claimId: claim.claimId, eventIds: claim.eventIds, attemptId, outcome });
 		}
 	}
 
@@ -1450,6 +1539,22 @@ export class HostedRuntimeIntegration {
 				ctx.ui.notify("Collaborator launch metadata is invalid; enforced read-only recovery mode using Pi.", "warning");
 			}
 		}
+	}
+
+	private restoreManagedAgentControls(ctx: ExtensionContext): void {
+		this.managedAgentControls.clear();
+		this.managedAgentRegistrations.clear();
+		for (const entry of ctx.sessionManager.getBranch() as readonly unknown[]) {
+			const record = asRecord(entry);
+			if (record?.type !== "custom" || record.customType !== HOSTED_MANAGED_AGENT_CONTROL_ENTRY) continue;
+			const control = parseManagedAgentControl(record.data);
+			if (control) this.managedAgentControls.set(control.targetKey, control);
+		}
+	}
+
+	private persistManagedAgentControl(control: ManagedAgentControl): void {
+		this.managedAgentControls.set(control.targetKey, control);
+		this.pi.appendEntry(HOSTED_MANAGED_AGENT_CONTROL_ENTRY, control);
 	}
 
 	private async restoreHeldParticipant(registration: LiveClientRegistration, ctx: ExtensionContext): Promise<void> {
@@ -1610,6 +1715,101 @@ function parseReceipt(value: unknown): HostedReceipt | undefined {
 	return { claimId: details.claimId, eventIds };
 }
 
+function parseManagedAgentControl(value: unknown): ManagedAgentControl | undefined {
+	const record = asRecord(value);
+	const session = asRecord(record?.agentSession);
+	if (record?.version !== 1 || (record.driver !== "claude-code" && record.driver !== "codex") || (record.state !== "pending" && record.state !== "active" && record.state !== "needs_attention" && record.state !== "stopped") || typeof record.bridgeId !== "string" || typeof record.targetKey !== "string" || typeof record.clientGeneration !== "string" || typeof record.reconnectToken !== "string" || typeof record.paneId !== "string" || typeof record.terminalId !== "string" || !session || typeof session.source !== "string" || typeof session.agent !== "string" || (session.kind !== "id" && session.kind !== "path") || typeof session.value !== "string") return undefined;
+	return { version: 1, bridgeId: record.bridgeId, targetKey: record.targetKey, driver: record.driver, clientGeneration: record.clientGeneration, reconnectToken: record.reconnectToken, ...(typeof record.launchToken === "string" ? { launchToken: record.launchToken } : {}), paneId: record.paneId, terminalId: record.terminalId, agentSession: { source: session.source, agent: session.agent, kind: session.kind, value: session.value }, state: record.state };
+}
+
+function parseStartedAgent(value: string, paneId: string, terminalId: string, kind: "claude" | "codex", agentName: string): ManagedAgentControl["agentSession"] {
+	const agent = parseManagedAgent(value);
+	if (agent.paneId !== paneId || agent.terminalId !== terminalId || agent.agentSession.source !== `herdr:${kind}` || agent.agentSession.agent !== kind || agent.agentSession.value !== agentName) throw new HostedRuntimeClientError("identity_mismatch", "Herdr started agent identity does not match the authorized collaborator target.");
+	return agent.agentSession;
+}
+
+function parseManagedAgent(value: string): { paneId: string; terminalId: string; status: "idle" | "working" | "blocked" | "done" | "unknown"; focused: boolean; agentSession: ManagedAgentControl["agentSession"] } {
+	let response: Record<string, unknown>;
+	try { response = strictObject(JSON.parse(value), "Herdr response"); } catch { throw new HostedRuntimeClientError("invalid_response", "Herdr returned malformed agent JSON."); }
+	const result = strictObject(response.result, "Herdr result");
+	const agent = strictObject(result.agent, "Herdr agent");
+	const agentKind = text(agent.agent);
+	const session = agent.agent_session === undefined ? { source: `herdr:${agentKind}`, agent: agentKind, kind: "id" as const, value: text(agent.name) } : strictObject(agent.agent_session, "Herdr agent session");
+	if (session.kind !== "id" && session.kind !== "path") throw new HostedRuntimeClientError("invalid_response", "Herdr agent session kind is invalid.");
+	if (agent.agent_status !== "idle" && agent.agent_status !== "working" && agent.agent_status !== "blocked" && agent.agent_status !== "done" && agent.agent_status !== "unknown") throw new HostedRuntimeClientError("invalid_response", "Herdr agent status is invalid.");
+	if (typeof agent.focused !== "boolean") throw new HostedRuntimeClientError("invalid_response", "Herdr agent focus state is unavailable.");
+	return { paneId: text(agent.pane_id), terminalId: text(agent.terminal_id), status: agent.agent_status, focused: agent.focused, agentSession: { source: text(session.source), agent: text(session.agent), kind: session.kind, value: text(session.value) } };
+}
+
+function sameAgentSession(left: ManagedAgentControl["agentSession"], right: ManagedAgentControl["agentSession"]): boolean {
+	return left.source === right.source && left.agent === right.agent && left.kind === right.kind && left.value === right.value;
+}
+
+function managedAgentName(protocol: string, participantId: string, bridgeId: string): string {
+	const prefix = `collab-${participantId}`.replace(/[^A-Za-z0-9_-]/g, "-").slice(0, 22);
+	return `${prefix}-${createHash("sha256").update(`${protocol}\0${bridgeId}`).digest("hex").slice(0, 24)}`;
+}
+
+export function markClaudeWorkspaceTrusted(cwd: string, configPath = join(homedir(), ".claude.json")): void {
+	mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
+	for (let attempt = 0; attempt < 3; attempt++) {
+		const original = existsSync(configPath) ? readClaudeTrustStore(configPath) : undefined;
+		let config: Record<string, unknown> = {};
+		if (original !== undefined) try {
+			const parsed = JSON.parse(original);
+			if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid root");
+			config = parsed as Record<string, unknown>;
+		} catch {
+			throw new HostedRuntimeClientError("host_unavailable", "Claude workspace trust store is malformed.");
+		}
+		const projects = config.projects === undefined ? {} : config.projects;
+		if (!projects || typeof projects !== "object" || Array.isArray(projects)) throw new HostedRuntimeClientError("host_unavailable", "Claude workspace trust projects are malformed.");
+		const existing = (projects as Record<string, unknown>)[cwd];
+		if (existing !== undefined && (!existing || typeof existing !== "object" || Array.isArray(existing))) throw new HostedRuntimeClientError("host_unavailable", "Claude workspace trust entry is malformed.");
+		if ((existing as Record<string, unknown> | undefined)?.hasTrustDialogAccepted === true) return;
+		const next = { ...config, projects: { ...(projects as Record<string, unknown>), [cwd]: { ...(existing as Record<string, unknown> | undefined), hasTrustDialogAccepted: true } } };
+		const temporary = join(dirname(configPath), `.${basename(configPath)}.${process.pid}.${randomUUID()}.tmp`);
+		try {
+			writeFileSync(temporary, `${JSON.stringify(next, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+			const current = existsSync(configPath) ? readClaudeTrustStore(configPath) : undefined;
+			if (current !== original) continue;
+			renameSync(temporary, configPath);
+			return;
+		} finally {
+			if (existsSync(temporary)) rmSync(temporary, { force: true });
+		}
+	}
+	throw new HostedRuntimeClientError("conflict", "Claude workspace trust store changed concurrently; retry launch.");
+}
+
+function readClaudeTrustStore(configPath: string): string {
+	const metadata = lstatSync(configPath);
+	if (!metadata.isFile() || metadata.size > 8 * 1024 * 1024) throw new HostedRuntimeClientError("host_unavailable", "Claude workspace trust store is unavailable.");
+	return readFileSync(configPath, "utf8");
+}
+
+function interactiveAgentArgs(candidate: ResolvedCollaboratorCandidate, launchCwd: string): string[] {
+	if (!candidate.profile || candidate.driver === "pi") return [];
+	if (candidate.driver === "claude-code") {
+		const tools = candidate.profile === "read-only" ? "Read,Glob,Grep" : "Read,Glob,Grep,Edit,Write";
+		return ["--safe-mode", "--permission-mode", candidate.profile === "read-only" ? "dontAsk" : "acceptEdits", "--tools", tools, ...(candidate.model ? ["--model", candidate.model] : []), ...(candidate.persona ? ["--append-system-prompt", candidate.persona.prompt] : [])];
+	}
+	const trustedProject = `projects={ ${JSON.stringify(launchCwd)} = { trust_level = "trusted" } }`;
+	return ["--ask-for-approval", "never", "--sandbox", candidate.profile, "--disable", "hooks", "--config", trustedProject, ...(candidate.model ? ["--model", candidate.model] : []), ...(candidate.persona ? ["--config", `developer_instructions=${JSON.stringify(candidate.persona.prompt)}`] : [])];
+}
+
+function managedAgentContent(events: HostedClaimMessage["events"]): string {
+	return hostedContent(events).replace("Runtime admitted durable external events:", "Runtime submitted collaborator events:");
+}
+
+function herdrPromptProvedNotSubmitted(stdout: string, stderr: string): boolean {
+	for (const value of [stdout, stderr]) try {
+		const error = asRecord(asRecord(JSON.parse(value))?.error);
+		if (error?.code === "agent_not_found" || error?.code === "agent_not_ready" || error?.code === "invalid_argument") return true;
+	} catch {}
+	return false;
+}
+
 function hostedContent(events: HostedClaimMessage["events"]): string {
 	const lines = ["Runtime admitted durable external events:"];
 	for (const event of events) {
@@ -1673,6 +1873,9 @@ function parseParticipant(value: unknown): ClientParticipantStatus {
 		generation: text(participant.generation),
 		...(participant.holderTargetKey === undefined ? {} : { holderTargetKey: text(participant.holderTargetKey) }),
 		holderLive: booleanValue(participant.holderLive),
+		...(participant.driver === "pi" || participant.driver === "claude-code" || participant.driver === "codex" ? { driver: participant.driver } : {}),
+		...(participant.capabilityTier === "managed" || participant.capabilityTier === "durable" ? { capabilityTier: participant.capabilityTier } : {}),
+		...(participant.profile === "read-only" || participant.profile === "workspace-write" ? { profile: participant.profile } : {}),
 		...(queued ? { queued: { pending: integer(queued.pending), claimed: integer(queued.claimed) } } : {}),
 		lastTransition: { cause: text(strictObject(participant.lastTransition, "Participant transition").cause) },
 	};

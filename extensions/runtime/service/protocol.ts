@@ -161,8 +161,11 @@ export async function dispatchHostedLine(line: string, context: HostedProtocolCo
 			return success(id, claimResult(wakes.accept(registration, boundedText(input.wakeId, "wake ID", 200))));
 		}
 		if (method === "inbox.claim") {
-			const auth = authParams(params);
-			return success(id, claimResult(wakes.claim(registrations.authorize(auth.registrationId, auth.registrationKey))));
+			const input = strictObject(params, "inbox.claim params", ["registrationId", "registrationKey", "maxEvents"]);
+			const registration = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
+			const maxEvents = input.maxEvents === undefined ? HOSTED_MAX_DELIVERY_BATCH : integer(input.maxEvents, "claim batch limit");
+			if (maxEvents < 1 || maxEvents > HOSTED_MAX_DELIVERY_BATCH) throw new Error(`claim batch limit must be between 1 and ${HOSTED_MAX_DELIVERY_BATCH}`);
+			return success(id, claimResult(wakes.claim(registration, maxEvents)));
 		}
 		if (method === "inbox.ack" || method === "inbox.release") {
 			const input = claimReceiptParams(params, method);
@@ -171,9 +174,29 @@ export async function dispatchHostedLine(line: string, context: HostedProtocolCo
 			else wakes.release(registration, input.claimId, input.eventIds);
 			return success(id, { settled: true });
 		}
+		if (method === "inbox.submit_begin" || method === "inbox.submit_settle") {
+			const input = strictObject(params, `${method} params`, ["registrationId", "registrationKey", "claimId", "eventIds", "attemptId", "outcome"]);
+			const registration = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
+			const eventIds = boundedArray(input.eventIds, "event IDs", HOSTED_MAX_DELIVERY_BATCH).map((eventId) => boundedText(eventId, "event ID", 200));
+			const attemptId = boundedText(input.attemptId, "submission attempt ID", 200);
+			if (method === "inbox.submit_begin") wakes.submitBegin(registration, boundedText(input.claimId, "claim ID", 200), eventIds, attemptId);
+			else {
+				if (input.outcome !== "submitted" && input.outcome !== "pending" && input.outcome !== "needs_attention") throw new Error("managed submission outcome is invalid");
+				wakes.submitSettle(registration, boundedText(input.claimId, "claim ID", 200), eventIds, attemptId, input.outcome);
+			}
+			return success(id, { settled: true });
+		}
 		if (method === "inbox.status") {
 			const auth = authParams(params);
 			return success(id, wakes.status(registrations.authorize(auth.registrationId, auth.registrationKey)));
+		}
+		if (method === "mailbox.status") {
+			if (!participants) return failure(id, "capability_unavailable", "Collaborator mailbox methods are unavailable in this process.");
+			const input = strictObject(params, "mailbox.status params", ["registrationId", "registrationKey", "senderParticipantKey", "expectedSenderGeneration", "eventIds"]);
+			const registration = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
+			const eventIds = boundedArray(input.eventIds, "event IDs", 12).map((eventId) => boundedText(eventId, "event ID", 200));
+			if (eventIds.length < 1 || new Set(eventIds).size !== eventIds.length) throw new Error("message status event IDs must contain 1 to 12 unique items");
+			return success(id, { messages: eventIds.map((eventId) => participants.messageStatus(registration, boundedText(input.senderParticipantKey, "sender participant key", 200), boundedText(input.expectedSenderGeneration, "sender generation", 200), eventId)) });
 		}
 		if (method === "task.send" || method === "task.result" || method === "task.status") {
 			if (!participants) return failure(id, "capability_unavailable", "Collaborator task methods are unavailable in this process.");
@@ -289,9 +312,10 @@ function hello(id: string, value: unknown, context: HostedProtocolContext): Host
 			agentWake: context.agentWake,
 			...(context.degradedReason ? { degradedReason: context.degradedReason } : {}),
 			maxDeliveryBatch: HOSTED_MAX_DELIVERY_BATCH,
+			targets: { pi: { tier: "durable" }, "claude-code": { tier: "managed" }, codex: { tier: "managed" } },
 			monitor: { maxEntries: HOSTED_MONITOR_MAX_ENTRIES },
 			...(context.participants ? { mailbox: { maxBodyBytes: HOSTED_MAILBOX_MAX_BODY_BYTES }, task: { typedResults: true, maxBodyBytes: HOSTED_MAILBOX_MAX_BODY_BYTES } } : {}),
-			...(context.bridges ? { bridge: { launch: "single_use", reconnect: true } } : {}),
+			...(context.bridges ? { interactiveAgent: { launch: "single_use", reconnect: true, managedDelivery: ["pending", "submitting", "submitted", "needs_attention"] }, legacyBridge: { stopOnly: true } } : {}),
 			...(context.workspaces ? { workspace: { isolatedWrite: true, stagedIntegration: true } } : {}),
 		},
 	});
@@ -387,7 +411,7 @@ function workspaceAuthorizedParams(value: unknown, method: string): { registrati
 }
 
 function bridgeLaunchParams(value: unknown): { registrationId: string; registrationKey: string; input: CreateBridgeLaunchInput } {
-	const params = strictObject(value, "bridge.launch.create params", ["registrationId", "registrationKey", "requestId", "launchId", "workspaceId", "callerParticipantKey", "expectedCallerGeneration", "protocol", "participantId", "expectedParticipantGeneration", "profile", "configurationHash", "herdr", "metadata"]);
+	const params = strictObject(value, "bridge.launch.create params", ["registrationId", "registrationKey", "requestId", "launchId", "workspaceId", "callerParticipantKey", "expectedCallerGeneration", "protocol", "participantId", "expectedParticipantGeneration", "profile", "configurationHash", "driver", "herdr", "metadata"]);
 	if (params.profile !== "read-only" && params.profile !== "workspace-write") throw new Error("bridge profile must be read-only or workspace-write");
 	const herdr = strictObject(params.herdr, "bridge launch Herdr identity", ["paneId", "terminalId"]);
 	const metadata = strictObject(params.metadata ?? {}, "bridge metadata");
@@ -412,6 +436,7 @@ function bridgeLaunchParams(value: unknown): { registrationId: string; registrat
 			...(params.expectedParticipantGeneration === undefined ? {} : { expectedParticipantGeneration: boundedText(params.expectedParticipantGeneration, "expected participant generation", 200) }),
 			profile: params.profile,
 			configurationHash: boundedText(params.configurationHash, "configuration hash", 64),
+			...(params.driver === undefined ? {} : { driver: nativeDriver(params.driver) }),
 			herdr: { paneId: boundedText(herdr.paneId, "Herdr pane ID", 200), terminalId: boundedText(herdr.terminalId, "Herdr terminal ID", 200) },
 			metadata: parsedMetadata,
 		},
@@ -429,13 +454,24 @@ function bridgeCancelParams(value: unknown): { registrationId: string; registrat
 }
 
 function bridgeRegisterParams(value: unknown): BridgeRegisterInput {
-	const params = strictObject(value, "bridge.register params", ["launchToken", "reconnectToken", "clientGeneration", "admittedClaims", "herdr"]);
-	return { launchToken: boundedText(params.launchToken, "bridge launch token", 512), reconnectToken: boundedText(params.reconnectToken, "bridge reconnect token", 200), clientGeneration: boundedText(params.clientGeneration, "client generation", 200), admittedClaims: admittedClaimParams(params.admittedClaims), herdr: bridgeRegistrationHerdr(params.herdr) };
+	const params = strictObject(value, "bridge.register params", ["launchToken", "reconnectToken", "clientGeneration", "admittedClaims", "herdr", "agentSession"]);
+	return { launchToken: boundedText(params.launchToken, "bridge launch token", 512), reconnectToken: boundedText(params.reconnectToken, "bridge reconnect token", 200), clientGeneration: boundedText(params.clientGeneration, "client generation", 200), admittedClaims: admittedClaimParams(params.admittedClaims), herdr: bridgeRegistrationHerdr(params.herdr), ...(params.agentSession === undefined ? {} : { agentSession: agentSession(params.agentSession) }) };
 }
 
 function bridgeReconnectParams(value: unknown): BridgeReconnectInput {
 	const params = strictObject(value, "bridge.reconnect params", ["targetKey", "reconnectToken", "clientGeneration", "admittedClaims", "herdr"]);
 	return { targetKey: boundedText(params.targetKey, "bridge target key", 200), reconnectToken: boundedText(params.reconnectToken, "bridge reconnect token", 200), clientGeneration: boundedText(params.clientGeneration, "client generation", 200), admittedClaims: admittedClaimParams(params.admittedClaims), herdr: bridgeRegistrationHerdr(params.herdr) };
+}
+
+function nativeDriver(value: unknown): "claude-code" | "codex" {
+	if (value !== "claude-code" && value !== "codex") throw new Error("native collaborator driver must be claude-code or codex");
+	return value;
+}
+
+function agentSession(value: unknown): { source: string; agent: string; kind: "id" | "path"; value: string } {
+	const session = strictObject(value, "interactive agent session", ["source", "agent", "kind", "value"]);
+	if (session.kind !== "id" && session.kind !== "path") throw new Error("interactive agent session kind is invalid");
+	return { source: boundedText(session.source, "agent session source", 200), agent: boundedText(session.agent, "agent session agent", 64), kind: session.kind, value: boundedText(session.value, "agent session value", 8 * 1024) };
 }
 
 function bridgeRegistrationHerdr(value: unknown): { paneId: string; terminalId: string } {
@@ -528,7 +564,7 @@ function workspaceRegistrationResult(result: Awaited<ReturnType<RuntimeWorkspace
 }
 
 function bridgeRegistrationResult(result: Awaited<ReturnType<RuntimeBridgeCoordinator["register"]>>): Record<string, unknown> {
-	return { ...registrationResult(result.registration), participantKey: result.participantKey, holderGeneration: result.holderGeneration, profile: result.profile, configurationHash: result.configurationHash, projectRoot: result.projectRoot, cwd: result.cwd, ...(result.workspaceId ? { workspaceId: result.workspaceId } : {}), metadata: result.metadata };
+	return { ...registrationResult(result.registration), participantKey: result.participantKey, holderGeneration: result.holderGeneration, profile: result.profile, configurationHash: result.configurationHash, ...(result.driver ? { driver: result.driver, capabilityTier: result.capabilityTier, agentSession: result.agentSession } : {}), projectRoot: result.projectRoot, cwd: result.cwd, ...(result.workspaceId ? { workspaceId: result.workspaceId } : {}), metadata: result.metadata };
 }
 
 function monitorResult(monitor: HostedMonitor): Record<string, unknown> {
@@ -557,7 +593,7 @@ function errorCode(error: unknown): HostedErrorCode {
 	return error instanceof Error ? "invalid_request" : "internal";
 }
 
-const HOSTED_METHODS = new Set(["pi.register", "pi.heartbeat", "pi.unregister", "bridge.launch.create", "bridge.launch.recover", "bridge.launch.cancel", "bridge.register", "bridge.reconnect", "bridge.heartbeat", "bridge.unregister", "workspace.launch.create", "workspace.bridge.create", "workspace.launch.bind", "workspace.launch.recover", "workspace.pi.register", "workspace.pi.reconnect", "workspace.inspect", "workspace.integration.inspect", "workspace.retain", "workspace.reconcile", "workspace.checkpoint", "workspace.integration.prepare", "workspace.integration.reconcile", "workspace.integration.finalize", "workspace.cleanup", "workspace.integration.cleanup", "monitor.create", "monitor.get", "monitor.delete", "wake.accept", "inbox.claim", "inbox.ack", "inbox.release", "inbox.status", "participant.auto_capacity.list", "participant.auto_capacity.reserve", "participant.auto_capacity.release", "participant.auto_capacity.recover", "participant.acquire", "participant.get", "participant.list", "participant.stand_down", "participant.stand_down_confirmed", "participant.stop_confirmed", "participant.release", "participant.takeover", "mailbox.send", "task.send", "task.result", "task.status"]);
+const HOSTED_METHODS = new Set(["pi.register", "pi.heartbeat", "pi.unregister", "bridge.launch.create", "bridge.launch.recover", "bridge.launch.cancel", "bridge.register", "bridge.reconnect", "bridge.heartbeat", "bridge.unregister", "workspace.launch.create", "workspace.bridge.create", "workspace.launch.bind", "workspace.launch.recover", "workspace.pi.register", "workspace.pi.reconnect", "workspace.inspect", "workspace.integration.inspect", "workspace.retain", "workspace.reconcile", "workspace.checkpoint", "workspace.integration.prepare", "workspace.integration.reconcile", "workspace.integration.finalize", "workspace.cleanup", "workspace.integration.cleanup", "monitor.create", "monitor.get", "monitor.delete", "wake.accept", "inbox.claim", "inbox.ack", "inbox.release", "inbox.submit_begin", "inbox.submit_settle", "inbox.status", "participant.auto_capacity.list", "participant.auto_capacity.reserve", "participant.auto_capacity.release", "participant.auto_capacity.recover", "participant.acquire", "participant.get", "participant.list", "participant.stand_down", "participant.stand_down_confirmed", "participant.stop_confirmed", "participant.release", "participant.takeover", "mailbox.send", "mailbox.status", "task.send", "task.result", "task.status"]);
 
 const ERROR_CODES = new Set<HostedErrorCode>([
 	"invalid_request", "unsupported_version", "capability_unavailable", "not_found", "conflict", "registration_stale", "identity_mismatch", "claim_conflict", "host_unavailable", "busy", "storage_error", "internal",
