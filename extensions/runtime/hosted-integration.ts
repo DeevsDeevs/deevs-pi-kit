@@ -42,6 +42,12 @@ interface HostedReceipt {
 	eventIds: string[];
 }
 
+interface CollaboratorStartControl {
+	auto?: CollaboratorAutoState;
+	capacity: { registration?: LiveClientRegistration; operationId?: string };
+	retainLock: boolean;
+}
+
 interface RecoveredBridgeLaunch {
 	launchId: string;
 	requestId: string;
@@ -567,58 +573,43 @@ export class HostedRuntimeIntegration {
 		}
 	}
 
-	private async startCommandCollaborator(ctx: ExtensionContext, protocol: string, participantId: string, candidate: ResolvedCollaboratorCandidate): Promise<void> {
+	private async withCollaboratorStart<T>(ctx: ExtensionContext, useAuto: boolean, operation: (control: CollaboratorStartControl) => Promise<T>): Promise<T> {
 		if (this.collaboratorManageActive) throw new HostedRuntimeClientError("busy", "Another collaborator lifecycle operation is already in progress.");
 		this.collaboratorManageActive = true;
+		const control: CollaboratorStartControl = { capacity: {}, retainLock: false };
 		let releaseStartLock: (() => void) | undefined;
-		let retainStartLock = false;
 		try {
+			control.auto = useAuto ? this.activeAutoState(ctx) : undefined;
 			releaseStartLock = await this.autoStore.acquireStartLock();
-			await this.launchCollaborator(ctx, protocol, participantId, true, undefined, undefined, candidate);
+			return await operation(control);
 		} catch (error) {
-			retainStartLock = error instanceof HostedCollaboratorStartError && error.childMayBeLive;
-			throw error;
-		} finally {
-			if (!retainStartLock) releaseStartLock?.();
-			this.collaboratorManageActive = false;
-		}
-	}
-
-	async startCollaborator(input: { participantId: string; protocol?: string; callerParticipantId?: string; driver?: CollaboratorDriver; model?: string; persona?: string; profile?: CollaboratorProfile }, ctx: ExtensionContext, signal?: AbortSignal): Promise<{ started: boolean; participant: string; paneId?: string }> {
-		if (this.collaboratorManageActive) throw new HostedRuntimeClientError("busy", "Another collaborator lifecycle operation is already in progress.");
-		this.collaboratorManageActive = true;
-		const auto = this.activeAutoState(ctx);
-		let releaseStartLock: (() => void) | undefined;
-		let retainStartLock = false;
-		const capacity: { registration?: LiveClientRegistration; operationId?: string } = {};
-		try {
-			releaseStartLock = await this.autoStore.acquireStartLock();
-			return await this.startCollaboratorConfirmed(input, ctx, signal, auto, capacity);
-		} catch (error) {
-			retainStartLock = error instanceof HostedCollaboratorStartError && error.childMayBeLive;
+			control.retainLock ||= error instanceof HostedCollaboratorStartError && error.childMayBeLive;
 			throw error;
 		} finally {
 			try {
-				if (!retainStartLock && capacity.registration && capacity.operationId) await this.client.call("participant.auto_capacity.release", { ...auth(capacity.registration), operationId: capacity.operationId });
+				if (!control.retainLock && control.capacity.registration && control.capacity.operationId) await this.client.call("participant.auto_capacity.release", { ...auth(control.capacity.registration), operationId: control.capacity.operationId });
 			} catch (error) {
-				retainStartLock = true;
-				throw new HostedCollaboratorStartError("unavailable", `Runtime Auto capacity ${capacity.operationId} could not be released; its launch lock and reservation were preserved. Recover with /runtime auto recover ${capacity.operationId}: ${error instanceof Error ? error.message : String(error)}`, true);
+				control.retainLock = true;
+				throw new HostedCollaboratorStartError("unavailable", `Runtime Auto capacity ${control.capacity.operationId} could not be released; its launch lock and reservation were preserved. Recover with /runtime auto recover ${control.capacity.operationId}: ${error instanceof Error ? error.message : String(error)}`, true);
 			} finally {
-				if (!retainStartLock) releaseStartLock?.();
+				if (!control.retainLock) releaseStartLock?.();
 				this.collaboratorManageActive = false;
 			}
 		}
 	}
 
+	private async startCommandCollaborator(ctx: ExtensionContext, protocol: string, participantId: string, candidate: ResolvedCollaboratorCandidate): Promise<void> {
+		await this.withCollaboratorStart(ctx, false, async () => this.launchCollaborator(ctx, protocol, participantId, true, undefined, undefined, candidate));
+	}
+
+	async startCollaborator(input: { participantId: string; protocol?: string; callerParticipantId?: string; driver?: CollaboratorDriver; model?: string; persona?: string; profile?: CollaboratorProfile }, ctx: ExtensionContext, signal?: AbortSignal): Promise<{ started: boolean; participant: string; paneId?: string }> {
+		return this.withCollaboratorStart(ctx, true, async (control) => this.startCollaboratorConfirmed(input, ctx, signal, control.auto, control.capacity));
+	}
+
 	async startCollaborators(candidates: CollaboratorCandidate[], ctx: ExtensionContext, signal?: AbortSignal): Promise<CollaboratorManageResult[]> {
-		if (this.collaboratorManageActive) throw new HostedRuntimeClientError("busy", "Another collaborator lifecycle operation is already in progress.");
-		this.collaboratorManageActive = true;
-		const auto = this.activeAutoState(ctx);
-		let releaseStartLock: (() => void) | undefined;
-		let retainStartLock = false;
-		const capacity: { registration?: LiveClientRegistration; operationId?: string } = {};
-		try {
-			releaseStartLock = await this.autoStore.acquireStartLock();
+		return this.withCollaboratorStart(ctx, true, async (control) => {
+			const auto = control.auto;
+			const capacity = control.capacity;
 			throwIfAborted(signal);
 			if (candidates.length < 1 || candidates.length > 12) throw new HostedRuntimeClientError("invalid_request", "Batch collaborator start requires 1 to 12 candidates.");
 			if (!ctx.hasUI && !auto) throw new HostedRuntimeClientError("host_unavailable", "Collaborator start confirmation requires an interactive Pi session or enabled Runtime Auto mode.");
@@ -665,7 +656,7 @@ export class HostedRuntimeIntegration {
 						const paneId = await this.launchCollaborator(ctx, identity.protocol, candidate.participantId, false, signal, caller, candidate, !!auto);
 						results[index] = { participant: `${identity.protocol}/${candidate.participantId}`, status: "started", paneId };
 					} catch (error) {
-						if (error instanceof HostedCollaboratorStartError && error.childMayBeLive) retainStartLock = true;
+						if (error instanceof HostedCollaboratorStartError && error.childMayBeLive) control.retainLock = true;
 						results[index] = { participant: `${identity.protocol}/${candidate.participantId}`, status: signal?.aborted ? "cancelled" : "failed", error: error instanceof Error ? error.message : String(error) };
 					}
 				}
@@ -678,17 +669,7 @@ export class HostedRuntimeIntegration {
 			});
 			if (auto) this.recordAutoLifecycle(auto, "start", "settled", registration, participantNames, operationId, results);
 			return results;
-		} finally {
-			try {
-				if (!retainStartLock && capacity.registration && capacity.operationId) await this.client.call("participant.auto_capacity.release", { ...auth(capacity.registration), operationId: capacity.operationId });
-			} catch (error) {
-				retainStartLock = true;
-				throw new HostedCollaboratorStartError("unavailable", `Runtime Auto capacity ${capacity.operationId} could not be released; its launch lock and reservation were preserved. Recover with /runtime auto recover ${capacity.operationId}: ${error instanceof Error ? error.message : String(error)}`, true);
-			} finally {
-				if (!retainStartLock) releaseStartLock?.();
-				this.collaboratorManageActive = false;
-			}
-		}
+		});
 	}
 
 	private async startCollaboratorConfirmed(input: { participantId: string; protocol?: string; callerParticipantId?: string; driver?: CollaboratorDriver; model?: string; persona?: string; profile?: CollaboratorProfile }, ctx: ExtensionContext, signal: AbortSignal | undefined, auto: CollaboratorAutoState | undefined, capacity: { registration?: LiveClientRegistration; operationId?: string }): Promise<{ started: boolean; participant: string; paneId?: string }> {
