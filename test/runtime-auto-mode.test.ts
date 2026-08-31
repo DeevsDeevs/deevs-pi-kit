@@ -21,6 +21,16 @@ describe("collaborator Auto mode", () => {
 		expect(store.read()).toMatchObject({ valid: true, state: { enabled: false } });
 	});
 
+	it("rejects persisted values that do not match the exact state and keybinding contracts", () => {
+		const { store } = setup();
+		store.set(false);
+		writeFileSync(store.statePath, `${JSON.stringify({ version: 1, enabled: "true", maxConcurrentStarts: 4, maxLiveCollaborators: 12, profileCeiling: "workspace-write", updatedAt: 1, generation: "auto_bad" })}\n`);
+		expect(store.read()).toMatchObject({ valid: false, state: { enabled: false } });
+		writeFileSync(store.keybindingsPath, `${JSON.stringify({ "app.model.select": 42 })}\n`);
+		expect(store.shortcutConfigured()).toBe(false);
+		expect(() => store.configureShortcut()).toThrow("Invalid keybinding value");
+	});
+
 	it("moves thinking to Ctrl+Shift+T and leaves unrelated keybindings intact", () => {
 		const { store } = setup();
 		writeFileSync(store.keybindingsPath, `${JSON.stringify({ "app.model.select": "ctrl+l", "app.thinking.cycle": ["shift+tab", "f8"] })}\n`);
@@ -70,6 +80,8 @@ describe("collaborator Auto mode", () => {
 		writeFileSync(lockPath, `${JSON.stringify({ token: "same-process-settled", pid: process.pid })}\n`);
 		expect(store.recoverStartLock()).toBe(true);
 		expect(store.recoverStartLock()).toBe(false);
+		writeFileSync(lockPath, `${JSON.stringify({ token: "invalid-identity", pid: process.pid, identity: null })}\n`);
+		expect(() => store.recoverStartLock()).toThrow("malformed");
 		writeFileSync(lockPath, "{broken");
 		expect(() => store.recoverStartLock()).toThrow("malformed");
 		rmSync(lockPath);
