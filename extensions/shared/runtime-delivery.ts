@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, MessageStartEvent } from "@earendil-works/pi-coding-agent";
 import {
 	pendingRuntimeEvents,
 	runtimeEvents,
@@ -8,6 +8,18 @@ import {
 export const RUNTIME_DELIVERY_MESSAGE = "deevs.runtime-delivery.v1";
 const STALE_CLAIM_MS = 30_000;
 const MAX_EVENTS_PER_DELIVERY = 12;
+
+interface PersistedDeliveryDetails {
+	claimant?: string;
+	eventIds?: string[];
+}
+
+interface PersistedDeliveryMessage {
+	type?: string;
+	role?: string;
+	customType?: string;
+	details?: PersistedDeliveryDetails | null;
+}
 
 export class RuntimeDeliveryCoordinator {
 	private pi?: ExtensionAPI;
@@ -104,15 +116,14 @@ export class RuntimeDeliveryCoordinator {
 		this.retryTimer.unref?.();
 	}
 
-	acknowledgeMessage(message: unknown): void {
-		if (!this.pi) return;
-		const record = asRecord(message);
-		if (record?.role !== "custom" || record.customType !== RUNTIME_DELIVERY_MESSAGE) return;
-		const details = asRecord(record.details);
-		const claimant = typeof details?.claimant === "string" ? details.claimant : undefined;
-		if (!claimant || !Array.isArray(details?.eventIds)) return;
-		for (const eventId of details.eventIds) if (typeof eventId === "string") {
-			runtimeEvents.record(this.pi, { type: "ack", eventId, claimant, at: Date.now() });
+	acknowledgeMessage(message: MessageStartEvent["message"]): void {
+		if (!this.pi || message.role !== "custom" || message.customType !== RUNTIME_DELIVERY_MESSAGE) return;
+		// SAFETY: Pi exposes custom-message details as unknown; the exact delivery fields are validated before use.
+		const details = message.details as PersistedDeliveryDetails | null;
+		if (!details || !isString(details.claimant) || !Array.isArray(details.eventIds)) return;
+		for (const eventId of details.eventIds) if (isString(eventId)) {
+			runtimeEvents.record(this.pi, { type: "ack", eventId, claimant: details.claimant, at: Date.now() });
+			if (runtimeEvents.read().deliveries[eventId]?.status !== "acked") continue;
 			const timer = this.confirmationTimers.get(eventId);
 			if (timer) clearTimeout(timer);
 			this.confirmationTimers.delete(eventId);
@@ -123,15 +134,15 @@ export class RuntimeDeliveryCoordinator {
 		if (!this.pi) return;
 		const delivered = new Map<string, string>();
 		for (const entry of ctx.sessionManager.getBranch()) {
-			const record = asRecord(entry);
-			if (record?.type !== "custom_message" || record.customType !== RUNTIME_DELIVERY_MESSAGE) continue;
-			const details = asRecord(record.details);
-			const claimant = typeof details?.claimant === "string" ? details.claimant : undefined;
-			if (!claimant || !Array.isArray(details?.eventIds)) continue;
-			for (const id of details.eventIds) if (typeof id === "string") delivered.set(id, claimant);
+			// SAFETY: Session entries remain untrusted until the exact delivery fields below are validated.
+			const record = entry as PersistedDeliveryMessage | null;
+			const details = record?.details;
+			if (record?.type !== "custom_message" || record.customType !== RUNTIME_DELIVERY_MESSAGE || !details || !isString(details.claimant) || !Array.isArray(details.eventIds)) continue;
+			for (const id of details.eventIds) if (isString(id)) delivered.set(id, details.claimant);
 		}
 		for (const [eventId, claimant] of delivered) {
 			runtimeEvents.record(this.pi, { type: "ack", eventId, claimant, at: Date.now() });
+			if (runtimeEvents.read().deliveries[eventId]?.status !== "acked") continue;
 			const timer = this.confirmationTimers.get(eventId);
 			if (timer) clearTimeout(timer);
 			this.confirmationTimers.delete(eventId);
@@ -154,7 +165,10 @@ function deliveryContent(events: RuntimeEvent[]): string {
 	].join("\n");
 }
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-	// SAFETY: The runtime checks exclude null, primitives, and arrays before key access.
-	return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+function isString(value: string | undefined): value is string {
+	try {
+		return value !== undefined && String.prototype.valueOf.call(value) === value;
+	} catch {
+		return false;
+	}
 }

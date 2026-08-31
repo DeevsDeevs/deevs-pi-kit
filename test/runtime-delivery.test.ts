@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { RuntimeDeliveryCoordinator } from "../extensions/shared/runtime-delivery.ts";
+import { RUNTIME_DELIVERY_MESSAGE, RuntimeDeliveryCoordinator } from "../extensions/shared/runtime-delivery.ts";
 import { consumeRuntimeEvent, pendingRuntimeEvents, runtimeEvents, type RuntimeEvent } from "../extensions/shared/runtime-events.ts";
 
 function setup(pending = false, failSend = false, dropSend = false) {
@@ -89,6 +89,23 @@ describe("runtime terminal delivery", () => {
 		await new Promise((resolve) => setTimeout(resolve, 35));
 		expect(test.messages.length).toBeGreaterThanOrEqual(2);
 		expect(runtimeEvents.read().deliveries["terminal-1"]?.status).toBe("claimed");
+		test.coordinator.clearContext();
+	});
+
+	it("keeps the delivery watchdog after a mismatched acknowledgement", async () => {
+		const test = setup(false, false, true);
+		runtimeEvents.record(test.pi, { type: "emit", event: terminalEvent() });
+		await test.coordinator.maybeDeliver();
+		test.coordinator.acknowledgeMessage({
+			role: "custom",
+			customType: RUNTIME_DELIVERY_MESSAGE,
+			content: "",
+			display: false,
+			details: { eventIds: ["terminal-1"], claimant: "other-session" },
+			timestamp: Date.now(),
+		});
+		await new Promise((resolve) => setTimeout(resolve, 35));
+		expect(test.messages.length).toBeGreaterThanOrEqual(2);
 		test.coordinator.clearContext();
 	});
 
