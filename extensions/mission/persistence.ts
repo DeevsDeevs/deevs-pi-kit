@@ -3,14 +3,23 @@ import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openS
 import { join } from "node:path";
 import { missionDir, missionRoot } from "./artifacts.ts";
 import { MAX_MISSION_REVIEW_ADJUDICATIONS } from "./types.ts";
-import type { MissionCurrent, MissionOwner, MissionProgressRecord, MissionReviewCriticalImpact, MissionReviewFinding, MissionReviewSeverity, MissionReviewStatus, MissionSnapshot, MissionStatus, MissionUsage, MissionValidationRecord } from "./types.ts";
+import type { MissionCurrent, MissionOwner, MissionProgressRecord, MissionReviewCriticalImpact, MissionReviewFinding, MissionReviewRevision, MissionReviewSeverity, MissionReviewStatus, MissionSnapshot, MissionStatus, MissionUsage, MissionValidationRecord } from "./types.ts";
+
+interface PersistedObject {
+	[field: string]: PersistedValue;
+}
+
+type PersistedValue = string | number | boolean | null | PersistedObject | PersistedValue[];
+type PersistedInput = PersistedValue | undefined;
+type PersistedObjectInput = PersistedInput | MissionSnapshot;
+type PersistedFields<Fields extends readonly string[]> = PersistedObject & Partial<Record<Fields[number], PersistedValue>>;
 
 const SNAPSHOT_VERSION = 1;
 // Lock holds are synchronous sub-second operations, so a lock older than this — or one whose owner pid is gone — is a crashed holder, not live contention.
-const STATUSES: ReadonlySet<MissionStatus> = new Set(["active", "paused", "blocked", "terminal_error", "budget_limited", "usage_limited", "complete", "ended", "cleared"]);
-const REVIEW_STATUSES: ReadonlySet<MissionReviewStatus> = new Set(["not_required", "due", "starting", "running", "awaiting_adjudication", "changes_requested", "clear", "skipped"]);
-const REVIEW_SEVERITIES: ReadonlySet<MissionReviewSeverity> = new Set(["blocker", "major", "minor", "nit"]);
-const REVIEW_CRITICAL_IMPACTS: ReadonlySet<MissionReviewCriticalImpact> = new Set(["security", "data_loss"]);
+const STATUSES = new Set<MissionStatus>(["active", "paused", "blocked", "terminal_error", "budget_limited", "usage_limited", "complete", "ended", "cleared"]);
+const REVIEW_STATUSES = new Set<MissionReviewStatus>(["not_required", "due", "starting", "running", "awaiting_adjudication", "changes_requested", "clear", "skipped"]);
+const REVIEW_SEVERITIES = new Set<MissionReviewSeverity>(["blocker", "major", "minor", "nit"]);
+const REVIEW_CRITICAL_IMPACTS = new Set<MissionReviewCriticalImpact>(["security", "data_loss"]);
 const SNAPSHOT_FIELDS = ["version", "revision", "owner", "mission", "progress", "continuationProgressIndex", "carriedUsage", "usage", "reviewFailureCount", "usageComplete"] satisfies readonly (keyof MissionSnapshot)[];
 const OWNER_FIELDS = ["sessionId", "sessionFile"] satisfies readonly (keyof MissionOwner)[];
 const MISSION_FIELDS = [
@@ -23,6 +32,7 @@ const ADJUDICATION_FIELDS = ["candidateId", "verdict"] as const;
 const FINDING_FIELDS = ["index", "severity", "summary", "path", "line", "requirementIndex", "criticalImpact"] as const;
 const REVISION_FIELDS = ["root", "base", "head"] as const;
 const COMPLETION_AUDIT_FIELDS = ["requirementIndex", "evidence"] as const;
+const LOCK_OWNER_FIELDS = ["pid", "startedAt"] as const;
 
 export function readMissionSnapshot(cwd: string, slug: string): MissionSnapshot | undefined {
 	if (!validSlug(slug)) throw new Error(`Invalid Mission slug: ${slug}`);
@@ -142,8 +152,10 @@ function acquireLock(lock: string, busyMessage: string): void {
 function reclaimIfStale(lock: string): boolean {
 	let stale: boolean;
 	try {
-		const owner = object(JSON.parse(readFileSync(join(lock, "owner.json"), "utf8")), "Mission lock owner");
-		stale = !isPidAlive(owner.pid);
+		const owner = object(parsePersistedJson(readFileSync(join(lock, "owner.json"), "utf8")), "Mission lock owner", LOCK_OWNER_FIELDS);
+		const pid = boundedInteger(owner.pid, "Mission lock owner pid", 1, Number.MAX_SAFE_INTEGER);
+		if (owner.startedAt !== undefined) boundedInteger(owner.startedAt, "Mission lock owner start time", 0, Number.MAX_SAFE_INTEGER);
+		stale = !isPidAlive(pid);
 	} catch {
 		// Owner metadata is published atomically with the lock directory; unknown/corrupt ownership fails closed.
 		try { statSync(lock); return false; } catch { return true; }
@@ -155,12 +167,11 @@ function reclaimIfStale(lock: string): boolean {
 	return true;
 }
 
-function isPidAlive(pid: unknown): boolean {
-	if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return false;
+function isPidAlive(pid: number): boolean {
 	try { process.kill(pid, 0); return true; } catch (error) { return isNodeError(error) && error.code === "EPERM"; }
 }
 
-function writeAtomicJson(file: string, value: unknown): void {
+function writeAtomicJson(file: string, value: MissionSnapshot): void {
 	const temp = `${file}.${process.pid}.${randomUUID()}.tmp`;
 	let fd: number | undefined;
 	try {
@@ -182,14 +193,13 @@ function fsyncDirectory(directory: string): void {
 	try { fsyncSync(fd); } finally { closeSync(fd); }
 }
 
-// oxlint-disable-next-line anti-slop/no-unknown-returns -- Snapshot and owner callers immediately pass this raw JSON to their versioned decoders.
-function readJsonFile(file: string, name: string): unknown {
+function readJsonFile(file: string, name: string): PersistedInput {
 	if (!pathExists(file)) return undefined;
 	let fd: number | undefined;
 	try {
 		fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
 		if (!fstatSync(fd).isFile()) throw new Error(`${name} path is not a real file: ${file}`);
-		return JSON.parse(readFileSync(fd, "utf8"));
+		return parsePersistedJson(readFileSync(fd, "utf8"));
 	} catch (error) {
 		if (error instanceof SyntaxError) throw new Error(`${name} is malformed: ${file}`);
 		throw error;
@@ -198,10 +208,14 @@ function readJsonFile(file: string, name: string): unknown {
 	}
 }
 
-function validateSnapshot(value: unknown, cwd: string, expectedSlug: string): MissionSnapshot {
+function parsePersistedJson(source: string): PersistedValue {
+	return JSON.parse(source);
+}
+
+function validateSnapshot(value: PersistedObjectInput, cwd: string, expectedSlug: string): MissionSnapshot {
 	const record = object(value, "Mission snapshot", SNAPSHOT_FIELDS);
 	const revision = record.revision;
-	if (record.version !== SNAPSHOT_VERSION || typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 0) throw new Error("Unsupported Mission snapshot version or revision.");
+	if (record.version !== SNAPSHOT_VERSION || !isFiniteNumber(revision) || !Number.isSafeInteger(revision) || revision < 0) throw new Error("Unsupported Mission snapshot version or revision.");
 	const ownerValue = object(record.owner, "Mission owner", OWNER_FIELDS);
 	const owner: MissionOwner = { sessionId: text(ownerValue.sessionId, "owner session id", 200), sessionFile: text(ownerValue.sessionFile, "owner session file", 2_000) };
 	const rawMission = object(record.mission, "Mission", MISSION_FIELDS);
@@ -225,7 +239,7 @@ function validateSnapshot(value: unknown, cwd: string, expectedSlug: string): Mi
 	};
 }
 
-function validateMission(value: Record<string, unknown>, cwd: string, slug: string): MissionCurrent {
+function validateMission(value: PersistedFields<typeof MISSION_FIELDS>, cwd: string, slug: string): MissionCurrent {
 	const status = enumValue(value.status, STATUSES, "Mission status");
 	const reviewStatus = value.reviewStatus === undefined ? undefined : enumValue(value.reviewStatus, REVIEW_STATUSES, "Mission review status");
 	const mission: MissionCurrent = {
@@ -246,19 +260,65 @@ function validateMission(value: Record<string, unknown>, cwd: string, slug: stri
 		baselineMainCostUsd: nonnegative(value.baselineMainCostUsd, "baseline main cost"),
 		baselineSubagentCostUsd: nonnegative(value.baselineSubagentCostUsd, "baseline Subagent cost"),
 	};
+	if (value.tokenBudget !== undefined) mission.tokenBudget = boundedInteger(value.tokenBudget, "tokenBudget", 0, Number.MAX_SAFE_INTEGER);
 	if (value.costBudgetUsd !== undefined) mission.costBudgetUsd = nonnegative(value.costBudgetUsd, "costBudgetUsd");
-	// SAFETY: These fixed key allowlists contain only writable Mission fields, and every assigned value is parsed first.
-	// oxlint-disable-next-line anti-slop/no-known-value-widening, anti-slop/no-unsafe-dictionary-type -- A typed dynamic assignment preserves the allowlist without duplicating every field.
-	const mutableMission = mission as MissionCurrent & Record<string, unknown>;
-	for (const key of ["tokenBudget", "turnBudget", "wallDeadlineAt", "objectiveVersion", "blockerCount", "turnCount", "reviewCandidateObjectiveVersion", "reviewUpdatedAt", "reviewNotBeforeAt", "reviewSupersessionCount", "reviewBlockingFindingCount", "reviewBacklogFindingCount", "reviewCorrectionCount", "reviewCorrectionLimit"] as const) {
-		if (value[key] !== undefined) mutableMission[key] = boundedInteger(value[key], key, 0, Number.MAX_SAFE_INTEGER);
+	if (value.turnBudget !== undefined) mission.turnBudget = boundedInteger(value.turnBudget, "turnBudget", 0, Number.MAX_SAFE_INTEGER);
+	if (value.wallDeadlineAt !== undefined) mission.wallDeadlineAt = boundedInteger(value.wallDeadlineAt, "wallDeadlineAt", 0, Number.MAX_SAFE_INTEGER);
+	if (value.objectiveVersion !== undefined) mission.objectiveVersion = boundedInteger(value.objectiveVersion, "objectiveVersion", 0, Number.MAX_SAFE_INTEGER);
+	if (value.blockerCount !== undefined) mission.blockerCount = boundedInteger(value.blockerCount, "blockerCount", 0, Number.MAX_SAFE_INTEGER);
+	if (value.turnCount !== undefined) mission.turnCount = boundedInteger(value.turnCount, "turnCount", 0, Number.MAX_SAFE_INTEGER);
+	if (value.reviewCandidateObjectiveVersion !== undefined) mission.reviewCandidateObjectiveVersion = boundedInteger(value.reviewCandidateObjectiveVersion, "reviewCandidateObjectiveVersion", 0, Number.MAX_SAFE_INTEGER);
+	if (value.reviewUpdatedAt !== undefined) mission.reviewUpdatedAt = boundedInteger(value.reviewUpdatedAt, "reviewUpdatedAt", 0, Number.MAX_SAFE_INTEGER);
+	if (value.reviewNotBeforeAt !== undefined) mission.reviewNotBeforeAt = boundedInteger(value.reviewNotBeforeAt, "reviewNotBeforeAt", 0, Number.MAX_SAFE_INTEGER);
+	if (value.reviewSupersessionCount !== undefined) mission.reviewSupersessionCount = boundedInteger(value.reviewSupersessionCount, "reviewSupersessionCount", 0, Number.MAX_SAFE_INTEGER);
+	if (value.reviewBlockingFindingCount !== undefined) mission.reviewBlockingFindingCount = boundedInteger(value.reviewBlockingFindingCount, "reviewBlockingFindingCount", 0, Number.MAX_SAFE_INTEGER);
+	if (value.reviewBacklogFindingCount !== undefined) mission.reviewBacklogFindingCount = boundedInteger(value.reviewBacklogFindingCount, "reviewBacklogFindingCount", 0, Number.MAX_SAFE_INTEGER);
+	if (value.reviewCorrectionCount !== undefined) mission.reviewCorrectionCount = boundedInteger(value.reviewCorrectionCount, "reviewCorrectionCount", 0, Number.MAX_SAFE_INTEGER);
+	if (value.reviewCorrectionLimit !== undefined) mission.reviewCorrectionLimit = boundedInteger(value.reviewCorrectionLimit, "reviewCorrectionLimit", 0, Number.MAX_SAFE_INTEGER);
+	if (value.lastReason !== undefined) mission.lastReason = text(value.lastReason, "lastReason", 20_000);
+	if (value.lastSummary !== undefined) mission.lastSummary = text(value.lastSummary, "lastSummary", 20_000);
+	if (value.generation !== undefined) mission.generation = text(value.generation, "generation", 20_000);
+	if (value.reviewRunId !== undefined) mission.reviewRunId = text(value.reviewRunId, "reviewRunId", 20_000);
+	if (value.reviewAdmissionId !== undefined) mission.reviewAdmissionId = text(value.reviewAdmissionId, "reviewAdmissionId", 20_000);
+	if (value.reviewReason !== undefined) mission.reviewReason = text(value.reviewReason, "reviewReason", 20_000);
+	if (value.reviewSkippedReason !== undefined) mission.reviewSkippedReason = text(value.reviewSkippedReason, "reviewSkippedReason", 20_000);
+	if (value.reviewSuggestedVerdict !== undefined) {
+		const verdict = text(value.reviewSuggestedVerdict, "reviewSuggestedVerdict", 20_000);
+		if (verdict !== "clear" && verdict !== "changes_requested" && verdict !== "unknown") throw new Error("Invalid Mission suggested review verdict.");
+		mission.reviewSuggestedVerdict = verdict;
 	}
-	for (const key of ["lastReason", "lastSummary", "generation", "reviewRunId", "reviewAdmissionId", "reviewReason", "reviewSkippedReason", "reviewSuggestedVerdict", "reviewOutcome", "reviewWorktreeFingerprint", "admittedWorktreeFingerprint", "reviewCandidateId", "reviewAdjudicatedCandidateId", "reviewAdjudicatedVerdict", "reviewHighestSeverity", "completionLatchCandidateId", "completionLatchReviewStatus", "completionId", "completionEffectsStatus", "blockerFingerprint"] as const) {
-		if (value[key] !== undefined) Object.assign(mutableMission, { [key]: text(value[key], key, 20_000) });
+	if (value.reviewOutcome !== undefined) {
+		const outcome = text(value.reviewOutcome, "reviewOutcome", 20_000);
+		if (outcome !== "superseded" && outcome !== "failed") throw new Error("Invalid Mission review outcome.");
+		mission.reviewOutcome = outcome;
 	}
-	if (mission.reviewSuggestedVerdict !== undefined && !["clear", "changes_requested", "unknown"].includes(mission.reviewSuggestedVerdict)) throw new Error("Invalid Mission suggested review verdict.");
-	if (mission.reviewOutcome !== undefined && mission.reviewOutcome !== "superseded" && mission.reviewOutcome !== "failed") throw new Error("Invalid Mission review outcome.");
-	if (mission.reviewAdjudicatedVerdict !== undefined && mission.reviewAdjudicatedVerdict !== "clear" && mission.reviewAdjudicatedVerdict !== "changes_requested") throw new Error("Invalid Mission adjudicated review verdict.");
+	if (value.reviewWorktreeFingerprint !== undefined) mission.reviewWorktreeFingerprint = text(value.reviewWorktreeFingerprint, "reviewWorktreeFingerprint", 20_000);
+	if (value.admittedWorktreeFingerprint !== undefined) mission.admittedWorktreeFingerprint = text(value.admittedWorktreeFingerprint, "admittedWorktreeFingerprint", 20_000);
+	if (value.reviewCandidateId !== undefined) mission.reviewCandidateId = text(value.reviewCandidateId, "reviewCandidateId", 20_000);
+	if (value.reviewAdjudicatedCandidateId !== undefined) mission.reviewAdjudicatedCandidateId = text(value.reviewAdjudicatedCandidateId, "reviewAdjudicatedCandidateId", 20_000);
+	if (value.reviewAdjudicatedVerdict !== undefined) {
+		const verdict = text(value.reviewAdjudicatedVerdict, "reviewAdjudicatedVerdict", 20_000);
+		if (verdict !== "clear" && verdict !== "changes_requested") throw new Error("Invalid Mission adjudicated review verdict.");
+		mission.reviewAdjudicatedVerdict = verdict;
+	}
+	if (value.reviewHighestSeverity !== undefined) {
+		const severity = text(value.reviewHighestSeverity, "reviewHighestSeverity", 20_000);
+		if (severity !== "blocker" && severity !== "major" && severity !== "minor" && severity !== "nit") throw new Error("Invalid Mission review severity.");
+		mission.reviewHighestSeverity = severity;
+	}
+	if (value.completionLatchCandidateId !== undefined) mission.completionLatchCandidateId = text(value.completionLatchCandidateId, "completionLatchCandidateId", 20_000);
+	if (value.completionLatchReviewStatus !== undefined) {
+		const latchStatus = text(value.completionLatchReviewStatus, "completionLatchReviewStatus", 20_000);
+		if (latchStatus !== "not_required" && latchStatus !== "clear" && latchStatus !== "skipped") throw new Error("Invalid Mission completion latch review status.");
+		mission.completionLatchReviewStatus = latchStatus;
+	}
+	if (value.completionId !== undefined) mission.completionId = text(value.completionId, "completionId", 20_000);
+	if (value.completionEffectsStatus !== undefined) {
+		const effectsStatus = text(value.completionEffectsStatus, "completionEffectsStatus", 20_000);
+		if (effectsStatus !== "pending" && effectsStatus !== "done") throw new Error("Invalid Mission completion effects status.");
+		mission.completionEffectsStatus = effectsStatus;
+	}
+	if (value.blockerFingerprint !== undefined) mission.blockerFingerprint = text(value.blockerFingerprint, "blockerFingerprint", 20_000);
 	if (value.reviewAdjudications !== undefined) mission.reviewAdjudications = array(value.reviewAdjudications, "Mission review adjudications", MAX_MISSION_REVIEW_ADJUDICATIONS).map((item) => {
 		const adjudication = object(item, "Mission review adjudication", ADJUDICATION_FIELDS);
 		const verdict = text(adjudication.verdict, "Mission review adjudication verdict", 40);
@@ -270,7 +330,6 @@ function validateMission(value: Record<string, unknown>, cwd: string, slug: stri
 		if (!candidateKnown && (mission.reviewAdjudications?.length ?? 0) >= MAX_MISSION_REVIEW_ADJUDICATIONS) throw new Error("Mission review adjudication history cannot include the latest adjudicated candidate without exceeding capacity.");
 		mission.reviewAdjudications = [...(mission.reviewAdjudications ?? []).filter((item) => item.candidateId !== mission.reviewAdjudicatedCandidateId), { candidateId: mission.reviewAdjudicatedCandidateId, verdict: mission.reviewAdjudicatedVerdict }];
 	}
-	if (mission.reviewHighestSeverity !== undefined && !["blocker", "major", "minor", "nit"].includes(mission.reviewHighestSeverity)) throw new Error("Invalid Mission review severity.");
 	if (value.reviewFindings !== undefined) mission.reviewFindings = reviewFindings(value.reviewFindings, "Mission review findings");
 	if (value.reviewAcceptedFindings !== undefined) mission.reviewAcceptedFindings = reviewFindings(value.reviewAcceptedFindings, "Mission accepted review findings");
 	if (value.reviewScopePaths !== undefined) {
@@ -279,8 +338,6 @@ function validateMission(value: Record<string, unknown>, cwd: string, slug: stri
 	}
 	if (value.reviewScopeRevisions !== undefined) mission.reviewScopeRevisions = reviewRevisions(value.reviewScopeRevisions, "Mission review scope revisions");
 	if (value.reviewAcceptedRevisions !== undefined) mission.reviewAcceptedRevisions = reviewRevisions(value.reviewAcceptedRevisions, "Mission accepted review revisions");
-	if (mission.completionLatchReviewStatus !== undefined && !["not_required", "clear", "skipped"].includes(mission.completionLatchReviewStatus)) throw new Error("Invalid Mission completion latch review status.");
-	if (mission.completionEffectsStatus !== undefined && mission.completionEffectsStatus !== "pending" && mission.completionEffectsStatus !== "done") throw new Error("Invalid Mission completion effects status.");
 	if (value.completionAudit !== undefined) mission.completionAudit = array(value.completionAudit, "Mission completion audit", 12).map((item) => {
 		const audit = object(item, "Mission completion audit item", COMPLETION_AUDIT_FIELDS);
 		return { requirementIndex: boundedInteger(audit.requirementIndex, "requirement index", 0, 11), evidence: text(audit.evidence, "requirement evidence", 2_000) };
@@ -289,7 +346,7 @@ function validateMission(value: Record<string, unknown>, cwd: string, slug: stri
 	if (reviewStatus) mission.reviewStatus = reviewStatus;
 	if (value.reviewFailure !== undefined) mission.reviewFailure = value.reviewFailure === true;
 	if (value.initialBaselinePending !== undefined) {
-		if (typeof value.initialBaselinePending !== "boolean") throw new Error("Invalid Mission initial baseline pending marker.");
+		if (!isBoolean(value.initialBaselinePending)) throw new Error("Invalid Mission initial baseline pending marker.");
 		mission.initialBaselinePending = value.initialBaselinePending;
 	}
 	if (value.reviewAdjudicationHistoryComplete !== undefined) {
@@ -303,7 +360,7 @@ function validateMission(value: Record<string, unknown>, cwd: string, slug: stri
 	return mission;
 }
 
-function reviewRevisions(value: unknown, label: string) {
+function reviewRevisions(value: PersistedInput, label: string): MissionReviewRevision[] {
 	return array(value, label, 100).map((item) => {
 		const revision = object(item, "Mission review revision", REVISION_FIELDS);
 		const root = text(revision.root, "Mission review revision root", 2_000);
@@ -314,7 +371,7 @@ function reviewRevisions(value: unknown, label: string) {
 	});
 }
 
-function reviewFindings(value: unknown, label: string) {
+function reviewFindings(value: PersistedInput, label: string): MissionReviewFinding[] {
 	return array(value, label, 1_000).map((item) => {
 		const finding = object(item, "Mission review finding", FINDING_FIELDS);
 		const severity = enumValue(finding.severity, REVIEW_SEVERITIES, "Mission review finding severity");
@@ -338,7 +395,7 @@ function reviewPath(path: string): boolean {
 	return path === "." || !path.startsWith("/") && !path.includes("\\") && !path.split("/").includes("..");
 }
 
-function validateProgress(value: unknown): MissionProgressRecord {
+function validateProgress(value: PersistedValue): MissionProgressRecord {
 	const record = object(value, "Mission progress record", PROGRESS_FIELDS);
 	const validation = array(record.validation, "progress validation", 20).map((item) => {
 		const value = object(item, "validation record", VALIDATION_FIELDS);
@@ -365,7 +422,7 @@ function validateProgress(value: unknown): MissionProgressRecord {
 	return progress;
 }
 
-function validateUsage(value: unknown): MissionUsage {
+function validateUsage(value: PersistedInput): MissionUsage {
 	const record = object(value, "Mission usage", USAGE_FIELDS);
 	const mainTokens = nonnegative(record.mainTokens, "main tokens");
 	const subagentTokens = nonnegative(record.subagentTokens, "Subagent tokens");
@@ -385,46 +442,46 @@ function validSlug(value: string): boolean {
 	return !!value && value !== "." && value !== ".." && !/[\\/]/.test(value);
 }
 
-function object(value: unknown, name: string, allowedFields?: readonly string[]): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${name} must be an object.`);
-	// SAFETY: The preceding runtime check excludes null, primitives, and arrays before schema parsing.
-	const record = value as Record<string, unknown>;
-	if (allowedFields) for (const key of Object.keys(record)) if (!allowedFields.includes(key)) throw new Error(`${name} has unknown field: ${key}`);
-	return record;
-}
-
-function enumValue<const Value extends string>(value: unknown, allowed: ReadonlySet<Value>, name: string): Value {
-	if (typeof value !== "string" || ![...allowed].some((candidate) => candidate === value)) throw new Error(`Invalid ${name}: ${String(value)}`);
-	// SAFETY: Membership in the complete typed allowlist proves the returned literal union.
-	return value as Value;
-}
-
-function array(value: unknown, name: string, max: number): unknown[] {
-	if (!Array.isArray(value) || value.length > max) throw new Error(`${name} must be an array of at most ${max} items.`);
+function object<const Fields extends readonly string[]>(value: PersistedObjectInput, name: string, allowedFields: Fields): PersistedFields<Fields> {
+	if (!isPersistedObject(value)) throw new Error(`${name} must be an object.`);
+	if (!hasOnlyFields(value, allowedFields)) {
+		const unknownField = Object.keys(value).find((key) => !includesField(allowedFields, key));
+		throw new Error(`${name} has unknown field: ${unknownField}`);
+	}
 	return value;
 }
 
-function stringArray(value: unknown, name: string, maxItems: number, maxLength: number): string[] {
+function enumValue<const Value extends string>(value: PersistedInput, allowed: ReadonlySet<Value>, name: string): Value {
+	if (isString(value)) for (const candidate of allowed) if (candidate === value) return candidate;
+	throw new Error(`Invalid ${name}: ${String(value)}`);
+}
+
+function array(value: PersistedInput, name: string, max: number): PersistedValue[] {
+	if (!isPersistedArray(value) || value.length > max) throw new Error(`${name} must be an array of at most ${max} items.`);
+	return value;
+}
+
+function stringArray(value: PersistedInput, name: string, maxItems: number, maxLength: number): string[] {
 	return array(value, name, maxItems).map((item) => text(item, name, maxLength));
 }
 
-function text(value: unknown, name: string, max: number): string {
-	if (typeof value !== "string" || !value || value.length > max) throw new Error(`${name} must be a non-empty string of at most ${max} characters.`);
+function text(value: PersistedInput, name: string, max: number): string {
+	if (!isString(value) || !value || value.length > max) throw new Error(`${name} must be a non-empty string of at most ${max} characters.`);
 	return value;
 }
 
-function number(value: unknown, name: string): number {
-	if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`${name} must be finite.`);
+function number(value: PersistedInput, name: string): number {
+	if (!isFiniteNumber(value)) throw new Error(`${name} must be finite.`);
 	return value;
 }
 
-function nonnegative(value: unknown, name: string): number {
+function nonnegative(value: PersistedInput, name: string): number {
 	const result = number(value, name);
 	if (result < 0) throw new Error(`${name} must be nonnegative.`);
 	return result;
 }
 
-function boundedInteger(value: unknown, name: string, min: number, max: number): number {
+function boundedInteger(value: PersistedInput, name: string, min: number, max: number): number {
 	const result = number(value, name);
 	if (!Number.isInteger(result) || result < min || result > max) throw new Error(`${name} must be an integer from ${min} to ${max}.`);
 	return result;
@@ -434,6 +491,34 @@ function pathExists(path: string): boolean {
 	try { lstatSync(path); return true; } catch { return false; }
 }
 
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-	return error instanceof Error && "code" in error;
+function isPersistedObject(value: PersistedObjectInput): value is PersistedObject {
+	return value !== undefined && value !== null && !Array.isArray(value) && Object.prototype.toString.call(value) === "[object Object]";
+}
+
+function hasOnlyFields<const Fields extends readonly string[]>(value: PersistedObject, allowedFields: Fields): value is PersistedFields<Fields> {
+	return Object.keys(value).every((key) => includesField(allowedFields, key));
+}
+
+function includesField(allowedFields: readonly string[], key: string): boolean {
+	return allowedFields.includes(key);
+}
+
+function isPersistedArray(value: PersistedInput): value is PersistedValue[] {
+	return Array.isArray(value);
+}
+
+function isString(value: PersistedInput): value is string {
+	return Object.prototype.toString.call(value) === "[object String]" && value === String(value);
+}
+
+function isFiniteNumber(value: PersistedInput): value is number {
+	return Object.prototype.toString.call(value) === "[object Number]" && value === Number(value) && Number.isFinite(Number(value));
+}
+
+function isBoolean(value: PersistedInput): value is boolean {
+	return value === true || value === false;
+}
+
+function isNodeError(cause: unknown): cause is NodeJS.ErrnoException {
+	return cause instanceof Error && "code" in cause;
 }
