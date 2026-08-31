@@ -113,8 +113,14 @@ export class RuntimeBridgeCoordinator {
 		const targetKey = workspace?.targetKey ?? deriveBridgeTargetKey(projectRoot, launchId);
 		const now = this.now();
 		const launch: HostedBridgeLaunch = {
-			version: 1, launchId, requestId, launchDigest: sha256(launchToken), reconnectDigest: sha256(reconnectSecret), callerParticipantKey, callerGeneration, callerTargetKey: caller.targetKey, participantKey: deriveParticipantKey(projectRoot, protocol, participantId), protocol, participantId, ...(expectedParticipantGeneration ? { expectedParticipantGeneration } : {}), holderGeneration, targetKey, projectRoot, profile: input.profile, configurationHash, ...(input.driver ? { driver: input.driver } : {}), herdr: { paneId: pane.paneId, terminalId: pane.terminalId, tabId: pane.tabId, workspaceId: pane.workspaceId }, ...(workspace ? { workspaceId: workspace.workspaceId, workspaceRoot: workspace.worktreePath } : {}), metadata, createdAt: now, expiresAt: now + (this.options.leaseMs ?? DEFAULT_LAUNCH_LEASE_MS), status: "pending",
+			version: 1, launchId, requestId, launchDigest: sha256(launchToken), reconnectDigest: sha256(reconnectSecret), callerParticipantKey, callerGeneration, callerTargetKey: caller.targetKey, participantKey: deriveParticipantKey(projectRoot, protocol, participantId), protocol, participantId, holderGeneration, targetKey, projectRoot, profile: input.profile, configurationHash, herdr: { paneId: pane.paneId, terminalId: pane.terminalId, tabId: pane.tabId, workspaceId: pane.workspaceId }, metadata, createdAt: now, expiresAt: now + (this.options.leaseMs ?? DEFAULT_LAUNCH_LEASE_MS), status: "pending",
 		};
+		if (expectedParticipantGeneration) launch.expectedParticipantGeneration = expectedParticipantGeneration;
+		if (input.driver) launch.driver = input.driver;
+		if (workspace) {
+			launch.workspaceId = workspace.workspaceId;
+			launch.workspaceRoot = workspace.worktreePath;
+		}
 		this.store.apply({ type: "bridge.launch.ensure", launch });
 		return { launchId, targetKey, holderGeneration, expiresAt: launch.expiresAt, launchToken, reconnectToken: reconnectSecret, herdr: launch.herdr };
 	}
@@ -186,7 +192,8 @@ export interface BridgeRegistrationResult {
 }
 
 function bridgeTarget(launch: HostedBridgeLaunch, clientGeneration: string, createdAt: number, agentSession?: HostedAgentSessionIdentity): HostedExternalTarget {
-	const shared = { targetKey: launch.targetKey, projectRoot: launch.projectRoot, bridgeId: launch.launchId, participantKey: launch.participantKey, holderGeneration: launch.holderGeneration, profile: launch.profile, configurationHash: launch.configurationHash, clientGeneration: bounded(clientGeneration, "client generation", 200), reconnectDigest: launch.reconnectDigest, herdr: launch.herdr, ...(launch.workspaceId ? { workspaceId: launch.workspaceId, workspaceRoot: launch.workspaceRoot! } : {}), metadata: launch.metadata, createdAt };
+	const shared = { targetKey: launch.targetKey, projectRoot: launch.projectRoot, bridgeId: launch.launchId, participantKey: launch.participantKey, holderGeneration: launch.holderGeneration, profile: launch.profile, configurationHash: launch.configurationHash, clientGeneration: bounded(clientGeneration, "client generation", 200), reconnectDigest: launch.reconnectDigest, herdr: launch.herdr, metadata: launch.metadata, createdAt };
+	if (launch.workspaceId) Object.assign(shared, { workspaceId: launch.workspaceId, workspaceRoot: launch.workspaceRoot! });
 	if (!launch.driver) return { kind: "bridge", ...shared };
 	if (!agentSession) throw new HostedBridgeError("invalid_request", "Interactive Herdr agent registration requires its stable session identity.");
 	return { kind: "agent", ...shared, driver: launch.driver, agentSession: validateAgentSession(agentSession), capabilityTier: "managed" };
@@ -201,7 +208,14 @@ function bridgeCredentials(targetKey: string, reconnectToken: string) {
 }
 
 function result(registration: HostedLiveRegistration, target: HostedExternalTarget): BridgeRegistrationResult {
-	return { registration, participantKey: target.participantKey, holderGeneration: target.holderGeneration, profile: target.profile, configurationHash: target.configurationHash, ...(target.kind === "agent" ? { driver: target.driver, capabilityTier: target.capabilityTier, agentSession: target.agentSession } : {}), metadata: target.metadata, projectRoot: target.projectRoot, cwd: target.workspaceRoot ?? target.projectRoot, ...(target.workspaceId ? { workspaceId: target.workspaceId } : {}) };
+	const value: BridgeRegistrationResult = { registration, participantKey: target.participantKey, holderGeneration: target.holderGeneration, profile: target.profile, configurationHash: target.configurationHash, metadata: target.metadata, projectRoot: target.projectRoot, cwd: target.workspaceRoot ?? target.projectRoot };
+	if (target.kind === "agent") {
+		value.driver = target.driver;
+		value.capabilityTier = target.capabilityTier;
+		value.agentSession = target.agentSession;
+	}
+	if (target.workspaceId) value.workspaceId = target.workspaceId;
+	return value;
 }
 
 function parseLaunchToken(value: string) {
