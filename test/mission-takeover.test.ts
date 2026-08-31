@@ -4,10 +4,10 @@ import * as path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionManager, type ExtensionAPI, type ExtensionContext, type SessionInfo } from "@earendil-works/pi-coding-agent";
 import { MissionState, MISSION_CUSTOM_TYPE } from "../extensions/mission/state.ts";
-import { readMissionSnapshot, withMissionLock } from "../extensions/mission/persistence.ts";
+import { readMissionSnapshot, withMissionLock, writeMissionSnapshot } from "../extensions/mission/persistence.ts";
 import { discoverMissionTakeoverCandidates } from "../extensions/mission/takeover.ts";
 import { registerMissionTools } from "../extensions/mission/tools.ts";
-import type { MissionTakeoverCandidate } from "../extensions/mission/types.ts";
+import type { MissionSnapshot, MissionTakeoverCandidate } from "../extensions/mission/types.ts";
 
 const cleanup: string[] = [];
 afterEach(() => {
@@ -205,6 +205,45 @@ describe("Mission takeover", () => {
 		const reloaded = new MissionState();
 		reloaded.loadFromSession(source.ctx);
 		expect(() => reloaded.append(source.pi, reloaded.progressEvent({ summary: "cannot advance" }))).toThrow("revision space is exhausted");
+	});
+
+	it("rejects unknown snapshot fields at every persisted object boundary", async () => {
+		const cwd = mkdtempSync(path.join(tmpdir(), "mission-exact-snapshot-"));
+		cleanup.push(cwd);
+		const source = await sourceMission(cwd);
+		const snapshot = structuredClone(source.candidate.snapshot);
+		const slug = snapshot.mission.slug;
+		const snapshotFile = path.join(cwd, ".missions", ".state", `${slug}.json`);
+		snapshot.mission.reviewStatus = "due";
+		snapshot.mission.reviewLegacyRelaunchAuthorized = true;
+		snapshot.mission.reviewAdjudications = [{ candidateId: "candidate", verdict: "changes_requested" }];
+		snapshot.mission.reviewFindings = [{ index: 0, severity: "major", summary: "Finding", path: "extensions/mission/persistence.ts", line: 1, requirementIndex: 0 }];
+		snapshot.mission.reviewScopeRevisions = [{ root: ".", base: "a".repeat(40), head: "b".repeat(40) }];
+		snapshot.mission.completionAudit = [{ requirementIndex: 0, evidence: "Evidence" }];
+		snapshot.progress[0]!.validation = [{ command: "check", exitCode: 0, objectiveVersion: 1, summary: "Passed", artifact: "result.txt" }];
+		writeMissionSnapshot(cwd, snapshot);
+		expect(readMissionSnapshot(cwd, slug)).toMatchObject({ mission: { artifactDir: snapshot.mission.artifactDir, reviewLegacyRelaunchAuthorized: true }, usage: { totalTokens: snapshot.usage.mainTokens + snapshot.usage.subagentTokens, totalCostUsd: snapshot.usage.mainCostUsd + snapshot.usage.subagentCostUsd } });
+
+		const record = (value: unknown) => value as Record<string, unknown>;
+		const cases: Array<[string, (value: MissionSnapshot) => void]> = [
+			["snapshot", (value) => { record(value).extra_snapshot = true; }],
+			["owner", (value) => { record(value.owner).extra_owner = true; }],
+			["mission", (value) => { record(value.mission).extra_mission = true; }],
+			["progress", (value) => { record(value.progress[0]).extra_progress = true; }],
+			["validation", (value) => { record(value.progress[0]!.validation[0]).extra_validation = true; }],
+			["usage", (value) => { record(value.usage).extra_usage = true; }],
+			["adjudication", (value) => { record(value.mission.reviewAdjudications![0]).extra_adjudication = true; }],
+			["finding", (value) => { record(value.mission.reviewFindings![0]).extra_finding = true; }],
+			["revision", (value) => { record(value.mission.reviewScopeRevisions![0]).extra_revision = true; }],
+			["completion audit", (value) => { record(value.mission.completionAudit![0]).extra_audit = true; }],
+		];
+		for (const [label, mutate] of cases) {
+			const invalid = structuredClone(snapshot);
+			mutate(invalid);
+			expect(() => writeMissionSnapshot(cwd, invalid), label).toThrow("unknown field");
+			writeFileSync(snapshotFile, JSON.stringify(invalid));
+			expect(() => readMissionSnapshot(cwd, slug), label).toThrow("unknown field");
+		}
 	});
 
 	it("serializes different-slug creation and rejects symlinked state on read", async () => {
