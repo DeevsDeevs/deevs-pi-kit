@@ -1202,7 +1202,11 @@ export class HostedRuntimeIntegration {
 			{ type: "session", version: CURRENT_SESSION_VERSION, id: sessionId, timestamp, cwd: sessionCwd },
 			{ type: "custom", customType: HOSTED_MANAGED_COLLABORATOR_ENTRY, data: { version: 1, managed: true }, id: managedEntryId, parentId: null, timestamp },
 		];
-		if (workspace) entries.push({ type: "custom", customType: HOSTED_COLLABORATOR_WORKSPACE_ENTRY, data: { version: 1, workspaceId: workspace.workspaceId, projectRoot, workspaceRoot: sessionCwd }, id: randomUUID(), parentId: managedEntryId, timestamp });
+		let profileParentId = managedEntryId;
+		if (workspace) {
+			profileParentId = randomUUID();
+			entries.push({ type: "custom", customType: HOSTED_COLLABORATOR_WORKSPACE_ENTRY, data: { version: 1, workspaceId: workspace.workspaceId, projectRoot, workspaceRoot: sessionCwd }, id: profileParentId, parentId: managedEntryId, timestamp });
+		}
 		const profile: CollaboratorLaunchState = { version: 2, driver: candidate.driver };
 		if (candidate.model) profile.model = candidate.model;
 		if (candidate.profile) profile.profile = candidate.profile;
@@ -1212,7 +1216,7 @@ export class HostedRuntimeIntegration {
 			customType: HOSTED_COLLABORATOR_PROFILE_ENTRY,
 			data: profile,
 			id: randomUUID(),
-			parentId: managedEntryId,
+			parentId: profileParentId,
 			timestamp,
 		});
 		writeFileSync(sessionFile, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`, { flag: "wx", mode: 0o600 });

@@ -490,8 +490,12 @@ describe("hosted collaborator Pi integration", () => {
 		expect(tabCreate.args[tabCreate.args.indexOf("--cwd") + 1]).toBe(workspaceRoot);
 		expect(tabCreate.args).toContain(`PI_RUNTIME_WORKSPACE_LAUNCH=workspace_launch_workspace_fable.${"x".repeat(43)}`);
 		const launched = test.execCalls.find((call) => call.args[0] === "pane" && call.args[1] === "run")!;
-		const workspaceEntry = readFileSync(paneRunSessionFile(launched.args), "utf8").trim().split("\n").map((line) => JSON.parse(line)).find((entry) => entry.customType === HOSTED_COLLABORATOR_WORKSPACE_ENTRY);
+		const sessionEntries = readFileSync(paneRunSessionFile(launched.args), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+		const workspaceEntry = sessionEntries.find((entry) => entry.customType === HOSTED_COLLABORATOR_WORKSPACE_ENTRY);
+		const profileEntry = sessionEntries.find((entry) => entry.customType === HOSTED_COLLABORATOR_PROFILE_ENTRY);
 		expect(workspaceEntry?.data).toEqual({ version: 1, workspaceId: "workspace_fable", projectRoot, workspaceRoot });
+		expect(workspaceEntry?.parentId).toBe(sessionEntries[1]?.id);
+		expect(profileEntry?.parentId).toBe(workspaceEntry?.id);
 		expect(await test.integration.manageCollaborators({ action: "stop", protocol: "review", participants: [{ participantId: "fable" }] }, test.ctx as never)).toEqual([{ participant: "review/fable", status: "stopped" }]);
 		expect(confirmations).toBe(0);
 		expect(test.entries.filter((entry) => entry.customType === HOSTED_AUTO_LIFECYCLE_ENTRY).map((entry) => (entry.data as { phase: string }).phase)).toEqual(["authorized", "settled", "authorized", "settled"]);
