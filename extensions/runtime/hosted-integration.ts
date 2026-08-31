@@ -1,4 +1,15 @@
-import { CURRENT_SESSION_VERSION, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+	CURRENT_SESSION_VERSION,
+	type CustomEntry,
+	type CustomToolCallEvent,
+	type ExtensionAPI,
+	type ExtensionCommandContext,
+	type ExtensionContext,
+	type MessageStartEvent,
+	type SessionEntry,
+	type SessionHeader,
+	type ToolCallEvent,
+} from "@earendil-works/pi-coding-agent";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -8,7 +19,7 @@ import { findAgent, loadBuiltinAgents } from "../subagents/agents.ts";
 import type { AgentDefinition } from "../subagents/catalog-types.ts";
 import { HostedRuntimeClient, HostedRuntimeClientError } from "./client.ts";
 import { AUTO_MAX_LIVE_COLLABORATORS, CollaboratorAutoStore, type CollaboratorAutoState } from "./auto-mode.ts";
-import { HOSTED_MAX_DELIVERY_BATCH } from "./hosted-types.ts";
+import { HOSTED_MAX_DELIVERY_BATCH, type HostedTaskWorkspaceEvidence } from "./hosted-types.ts";
 
 // ponytail: two-second host verification is fine for small teams; add Runtime subscriptions if concurrent Pi count makes it measurable.
 const HEARTBEAT_MS = 2_000;
@@ -42,6 +53,33 @@ interface HostedReceipt {
 	eventIds: string[];
 }
 
+interface HostedReceiptDetails extends HostedReceipt {
+	version: 1;
+}
+
+interface HostedClaimDetails extends HostedReceiptDetails {
+	wakeId?: string;
+	mailbox: Array<{ eventId: string; sendId: string; senderParticipantKey: string; recipientParticipantKey: string }>;
+	tasks: Array<{ eventId: string; sendId: string; senderParticipantKey: string; recipientParticipantKey: string }>;
+	taskResults: Array<{ eventId: string; inReplyToEventId: string; replyId: string; status: "completed" | "failed" | "cancelled"; sessionAdvance: "none" | "committed"; workspace?: HostedTaskWorkspaceEvidence }>;
+}
+
+interface HostedClaimCustomMessage {
+	customType: string;
+	content: string;
+	display: boolean;
+	details: HostedClaimDetails;
+}
+
+interface SerializedObject {
+	[key: string]: SerializedValue | undefined;
+}
+
+type SerializedValue = string | number | boolean | null | SerializedObject | SerializedValue[];
+
+type RuntimeResponse = Awaited<ReturnType<HostedRuntimeClient["call"]>>;
+type RestoredSessionData = CustomEntry["data"];
+
 interface CollaboratorStartControl {
 	auto?: CollaboratorAutoState;
 	capacity: { registration?: LiveClientRegistration; operationId?: string };
@@ -65,7 +103,7 @@ type HostedClaimEvent =
 	| { eventId: string; type: "filesystem.created"; summary: string; path: string }
 	| { eventId: string; type: "mailbox.message"; summary: string; body: string; sendId: string; senderParticipantKey: string; recipientParticipantKey: string }
 	| { eventId: string; type: "mailbox.task"; summary: string; body: string; sendId: string; senderParticipantKey: string; recipientParticipantKey: string }
-	| { eventId: string; type: "mailbox.task_result"; summary: string; body: string; sendId: string; replyId: string; inReplyToEventId: string; status: "completed" | "failed" | "cancelled"; sessionAdvance: "none" | "committed"; senderParticipantKey: string; recipientParticipantKey: string; workspace?: Record<string, unknown> };
+	| { eventId: string; type: "mailbox.task_result"; summary: string; body: string; sendId: string; replyId: string; inReplyToEventId: string; status: "completed" | "failed" | "cancelled"; sessionAdvance: "none" | "committed"; senderParticipantKey: string; recipientParticipantKey: string; workspace?: HostedTaskWorkspaceEvidence };
 
 interface HostedClaimMessage extends HostedReceipt {
 	status: "active" | "acked";
@@ -73,7 +111,7 @@ interface HostedClaimMessage extends HostedReceipt {
 }
 
 interface BeforeAgentStartResult {
-	message?: { customType: string; content: string; display: boolean; details: Record<string, unknown> };
+	message?: HostedClaimCustomMessage;
 	systemPrompt?: string;
 }
 
@@ -116,6 +154,11 @@ interface CollaboratorWorkspaceState {
 	workspaceId: string;
 	projectRoot: string;
 	workspaceRoot: string;
+}
+
+interface ManagedCollaboratorState {
+	version: 1;
+	managed: true;
 }
 
 interface CollaboratorLaunchState {
@@ -325,13 +368,14 @@ export class HostedRuntimeIntegration {
 		return result;
 	}
 
-	guardCollaboratorTool(toolName: string, input: Record<string, unknown> | undefined, cwd: string): { block: true; reason: string } | undefined {
+	guardCollaboratorTool(toolName: string, input: ToolCallEvent["input"] | undefined, cwd: string): { block: true; reason: string } | undefined {
 		const configuredProfile = this.collaboratorLaunch?.profile;
 		if (!configuredProfile) return;
 		const profile = configuredProfile === "workspace-write" && (!this.collaboratorWorkspace || !this.workspaceRegistrationActive) ? "read-only" : configuredProfile;
 		const allowed: readonly string[] = profile === "read-only" ? READ_ONLY_COLLABORATOR_TOOLS : WORKSPACE_WRITE_COLLABORATOR_TOOLS;
 		if (!allowed.includes(toolName)) return { block: true, reason: `Collaborator profile ${profile} does not permit ${toolName}.` };
-		if (FILE_TOOLS.has(toolName) && !collaboratorPathAllowed(cwd, input?.path, toolName === "write")) return { block: true, reason: `Collaborator profile ${profile} confines ${toolName} to the project workspace.` };
+		const path = input && "path" in input ? input.path : undefined;
+		if (FILE_TOOLS.has(toolName) && !collaboratorPathAllowed(cwd, path, toolName === "write")) return { block: true, reason: `Collaborator profile ${profile} confines ${toolName} to the project workspace.` };
 		return;
 	}
 
@@ -366,7 +410,7 @@ export class HostedRuntimeIntegration {
 		}
 	}
 
-	acknowledgeMessage(message: unknown): void {
+	acknowledgeMessage(message: MessageStartEvent["message"]): void {
 		const record = asRecord(message);
 		if (record?.role !== "custom" || record.customType !== HOSTED_RUNTIME_MESSAGE) return;
 		const receipt = parseReceipt(record.details);
@@ -786,34 +830,33 @@ export class HostedRuntimeIntegration {
 		}
 	}
 
-	// oxlint-disable-next-line anti-slop/no-unknown-returns -- Exact Runtime inspection/mutation results are serialized unchanged at the tool boundary.
-	async manageWorkspace(input: CollaboratorWorkspaceInput, ctx: ExtensionContext, signal?: AbortSignal): Promise<unknown> {
+	async manageWorkspace(input: CollaboratorWorkspaceInput, ctx: ExtensionContext, signal?: AbortSignal): Promise<SerializedValue> {
 		throwIfAborted(signal);
 		const identity = this.requireParticipantIdentity();
 		if (identity.disposition !== "held" || !identity.participantKey || !identity.generation) throw new HostedRuntimeClientError("conflict", "Current collaborator identity is not authoritatively held.");
 		const registration = await this.requireRegistration(ctx);
 		const authority = { ...auth(registration), callerParticipantKey: identity.participantKey, expectedCallerGeneration: identity.generation };
-		if (input.action === "recover_launch") return this.client.call("workspace.launch.recover", { ...authority, requestId: input.requestId });
-		if (input.action === "inspect") return this.client.call("workspace.inspect", { ...auth(registration), workspaceId: input.workspaceId });
-		if (input.action === "inspect_integration") return this.client.call("workspace.integration.inspect", { ...auth(registration), integrationId: input.integrationId });
-		if (input.action === "reconcile_integration") return this.client.call("workspace.integration.reconcile", { ...authority, integrationId: input.integrationId });
-		if (input.action === "retain") return this.client.call("workspace.retain", { ...authority, workspaceId: input.workspaceId });
-		if (input.action === "reconcile") return this.client.call("workspace.reconcile", { ...authority, workspaceId: input.workspaceId });
+		if (input.action === "recover_launch") return parseSerializedResponse(await this.client.call("workspace.launch.recover", { ...authority, requestId: input.requestId }), "Workspace launch recovery");
+		if (input.action === "inspect") return parseSerializedResponse(await this.client.call("workspace.inspect", { ...auth(registration), workspaceId: input.workspaceId }), "Workspace inspection");
+		if (input.action === "inspect_integration") return parseSerializedResponse(await this.client.call("workspace.integration.inspect", { ...auth(registration), integrationId: input.integrationId }), "Integration inspection");
+		if (input.action === "reconcile_integration") return parseSerializedResponse(await this.client.call("workspace.integration.reconcile", { ...authority, integrationId: input.integrationId }), "Integration reconciliation");
+		if (input.action === "retain") return parseSerializedResponse(await this.client.call("workspace.retain", { ...authority, workspaceId: input.workspaceId }), "Workspace retention");
+		if (input.action === "reconcile") return parseSerializedResponse(await this.client.call("workspace.reconcile", { ...authority, workspaceId: input.workspaceId }), "Workspace reconciliation");
 		if (input.action === "checkpoint") {
 			const params = { ...authority, workspaceId: input.workspaceId };
 			if (input.taskStatus) Object.assign(params, { taskStatus: input.taskStatus });
-			return this.client.call("workspace.checkpoint", params);
+			return parseSerializedResponse(await this.client.call("workspace.checkpoint", params), "Workspace checkpoint");
 		}
 		if (!ctx.hasUI) throw new HostedRuntimeClientError("host_unavailable", "Workspace integration and cleanup require an interactive trusted Pi session.");
 		if (input.action === "prepare_integration") {
 			if (!await ctx.ui.confirm("Prepare collaborator integration?", `Create an isolated integration worktree for exact workspace ${input.workspaceId}? Main remains untouched.`, { signal })) return { declined: true };
-			return this.client.call("workspace.integration.prepare", { ...authority, workspaceId: input.workspaceId });
+			return parseSerializedResponse(await this.client.call("workspace.integration.prepare", { ...authority, workspaceId: input.workspaceId }), "Integration preparation");
 		}
 		if (input.action === "finalize_integration") {
 			const inspected = strictObject(await this.client.call("workspace.integration.inspect", { ...auth(registration), integrationId: input.integrationId }), "Integration inspection");
 			const integration = strictObject(inspected.integration, "Integration");
 			if (!await ctx.ui.confirm("Finalize collaborator integration?", `Fast-forward the clean main worktree from exact head ${text(integration.mainHead)} to prepared head ${text(integration.preparedHead)} for integration ${input.integrationId}?`, { signal })) return { declined: true };
-			return this.client.call("workspace.integration.finalize", { ...authority, integrationId: input.integrationId });
+			return parseSerializedResponse(await this.client.call("workspace.integration.finalize", { ...authority, integrationId: input.integrationId }), "Integration finalization");
 		}
 		if (input.action === "cleanup_workspace") {
 			const inspected = strictObject(await this.client.call("workspace.inspect", { ...auth(registration), workspaceId: input.workspaceId }), "Workspace inspection");
@@ -821,7 +864,7 @@ export class HostedRuntimeIntegration {
 			const unintegrated = workspace.state !== "integrated";
 			const detail = unintegrated ? `Discard checkpointed or dirty unintegrated workspace ${input.workspaceId}? This cannot be undone.` : `Remove exact integrated workspace ${input.workspaceId}?`;
 			if (!await ctx.ui.confirm(unintegrated ? "Discard collaborator workspace?" : "Clean integrated workspace?", detail, { signal })) return { declined: true };
-			return this.client.call("workspace.cleanup", { ...authority, workspaceId: input.workspaceId, discardConfirmed: unintegrated });
+			return parseSerializedResponse(await this.client.call("workspace.cleanup", { ...authority, workspaceId: input.workspaceId, discardConfirmed: unintegrated }), "Workspace cleanup");
 		}
 		if (input.action !== "cleanup_integration") throw new HostedRuntimeClientError("invalid_request", "Unsupported workspace action.");
 		const integrationId = input.integrationId;
@@ -829,7 +872,7 @@ export class HostedRuntimeIntegration {
 		const integration = strictObject(inspected.integration, "Integration");
 		const unfinalized = integration.state !== "finalized";
 		if (!await ctx.ui.confirm(unfinalized ? "Discard unfinalized integration workspace?" : "Clean finalized integration workspace?", `Remove exact integration ${integrationId} at prepared head ${text(integration.preparedHead)}${unfinalized ? " without changing main" : ""}?`, { signal })) return { declined: true };
-		return this.client.call("workspace.integration.cleanup", { ...authority, integrationId, discardConfirmed: unfinalized });
+		return parseSerializedResponse(await this.client.call("workspace.integration.cleanup", { ...authority, integrationId, discardConfirmed: unfinalized }), "Integration cleanup");
 	}
 
 	async sendCollaboratorMessages(messages: Array<{ participantId: string; body: string }>, toolCallId: string, ctx: ExtensionContext, signal?: AbortSignal): Promise<CollaboratorMessageResult[]> {
@@ -862,29 +905,27 @@ export class HostedRuntimeIntegration {
 		return results;
 	}
 
-	// oxlint-disable-next-line anti-slop/no-unknown-returns -- The authenticated Runtime status envelope is serialized unchanged at the tool boundary.
-	async collaboratorMessageStatus(eventIds: string[], ctx: ExtensionContext): Promise<unknown> {
+	async collaboratorMessageStatus(eventIds: string[], ctx: ExtensionContext): Promise<SerializedValue> {
 		if (eventIds.length < 1 || eventIds.length > 12 || new Set(eventIds).size !== eventIds.length) throw new HostedRuntimeClientError("invalid_request", "Message status requires 1 to 12 unique event IDs.");
 		const identity = this.requireParticipantIdentity();
 		if (identity.disposition !== "held" || !identity.participantKey || !identity.generation) throw new HostedRuntimeClientError("conflict", "Current collaborator identity is not authoritatively held.");
 		const registration = await this.requireRegistration(ctx);
-		return this.client.call("mailbox.status", { ...auth(registration), senderParticipantKey: identity.participantKey, expectedSenderGeneration: identity.generation, eventIds });
+		return parseSerializedResponse(await this.client.call("mailbox.status", { ...auth(registration), senderParticipantKey: identity.participantKey, expectedSenderGeneration: identity.generation, eventIds }), "Mailbox status");
 	}
 
-	// oxlint-disable-next-line anti-slop/no-unknown-returns -- The authenticated Runtime task envelope is serialized unchanged at the tool boundary.
-	async manageCollaboratorTask(input: CollaboratorTaskInput, toolCallId: string, ctx: ExtensionContext, signal?: AbortSignal): Promise<unknown> {
+	async manageCollaboratorTask(input: CollaboratorTaskInput, toolCallId: string, ctx: ExtensionContext, signal?: AbortSignal): Promise<SerializedValue> {
 		const identity = this.requireParticipantIdentity();
 		if (identity.disposition !== "held" || !identity.participantKey || !identity.generation) throw new HostedRuntimeClientError("conflict", "Current collaborator identity is not authoritatively held.");
 		const registration = await this.requireRegistration(ctx);
 		const authority = { ...auth(registration), senderParticipantKey: identity.participantKey, expectedSenderGeneration: identity.generation };
 		if (input.action === "result") {
 			const sendId = `task_result_${createHash("sha256").update(identity.participantKey).update("\0").update(input.eventId).digest("hex").slice(0, 40)}`;
-			return this.client.call("task.result", { ...authority, eventId: input.eventId, sendId, status: input.status, body: input.body, sessionAdvance: "committed" });
+			return parseSerializedResponse(await this.client.call("task.result", { ...authority, eventId: input.eventId, sendId, status: input.status, body: input.body, sessionAdvance: "committed" }), "Task result");
 		}
 		if (input.action === "status") {
 			if (input.eventIds.length < 1 || input.eventIds.length > 12 || new Set(input.eventIds).size !== input.eventIds.length) throw new HostedRuntimeClientError("invalid_request", "Task status requires 1 to 12 unique event IDs.");
 			const results = [];
-			for (const eventId of input.eventIds) results.push(await this.client.call("task.status", { ...authority, eventId }));
+			for (const eventId of input.eventIds) results.push(parseSerializedResponse(await this.client.call("task.status", { ...authority, eventId }), "Task status"));
 			return { results };
 		}
 		if (input.tasks.length < 1 || input.tasks.length > 12) throw new HostedRuntimeClientError("invalid_request", "Task send requires 1 to 12 tasks.");
@@ -941,7 +982,7 @@ export class HostedRuntimeIntegration {
 			this.pi.appendEntry(HOSTED_WORKSPACE_REQUEST_ENTRY, { version: 1, requestId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, status: "pending" });
 			const createParams = { ...auth(registration), requestId, callerParticipantKey: expectedCaller.participantKey, expectedCallerGeneration: expectedCaller.generation, protocol, participantId, piSessionId: sessionId };
 			if (existing) Object.assign(createParams, { expectedParticipantGeneration: existing.generation });
-			let provisioned: Record<string, unknown> | undefined;
+			let provisioned: SerializedObject | undefined;
 			let createError: unknown;
 			try { provisioned = strictObject(await this.client.call("workspace.launch.create", createParams), "Workspace provision result"); }
 			catch (error) {
@@ -952,7 +993,7 @@ export class HostedRuntimeIntegration {
 					catch { if (attempt < 309) await delay(100); }
 				}
 			}
-			if (!provisioned || provisioned.recoveryRequired === true || typeof provisioned.launchToken !== "string") {
+			if (!provisioned || provisioned.recoveryRequired === true || !isStringValue(provisioned.launchToken)) {
 				const recovered = await this.recoverWorkspaceRequest(registration, expectedCaller, requestId);
 				this.pi.appendEntry(HOSTED_WORKSPACE_REQUEST_ENTRY, { version: 1, requestId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, status: recovered ? "recovered" : "needs_attention" });
 				throw createError ?? new HostedRuntimeClientError("conflict", "Workspace launch retry requires explicit recovery.");
@@ -988,7 +1029,7 @@ export class HostedRuntimeIntegration {
 			try { tabId = text(strictObject(result.tab, "Herdr tab").tab_id); } catch {}
 			if (!paneId || !tabId) throw new HostedRuntimeClientError("invalid_response", "Herdr did not return the created collaborator tab and root pane IDs.");
 			if (workspace) {
-				let terminalId = typeof rootPane.terminal_id === "string" ? rootPane.terminal_id : undefined;
+				let terminalId = optionalText(rootPane.terminal_id);
 				if (!terminalId) {
 					const pane = await this.pi.exec("herdr", ["pane", "get", paneId], { timeout: 2_000 });
 					if (pane.code === 0) terminalId = text(strictObject(strictObject(strictObject(JSON.parse(pane.stdout), "Herdr response").result, "Herdr result").pane, "Herdr pane").terminal_id);
@@ -1062,7 +1103,7 @@ export class HostedRuntimeIntegration {
 				this.pi.appendEntry(HOSTED_WORKSPACE_REQUEST_ENTRY, { version: 1, requestId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, bridgeId, status: "pending" });
 				const params = { ...authority, requestId, protocol, participantId, bridgeId };
 				if (existing) Object.assign(params, { expectedParticipantGeneration: existing.generation });
-				let created: Record<string, unknown> | undefined;
+				let created: SerializedObject | undefined;
 				let createError: unknown;
 				try { created = strictObject(await this.client.call("workspace.bridge.create", params), "Bridge workspace result"); }
 				catch (error) {
@@ -1089,7 +1130,7 @@ export class HostedRuntimeIntegration {
 			const rootPane = strictObject(result.root_pane, "Herdr root pane");
 			paneId = text(rootPane.pane_id);
 			tabId = text(strictObject(result.tab, "Herdr tab").tab_id);
-			let terminalId = typeof rootPane.terminal_id === "string" ? rootPane.terminal_id : undefined;
+			let terminalId = optionalText(rootPane.terminal_id);
 			if (!terminalId) {
 				const pane = await this.pi.exec("herdr", ["pane", "get", paneId], { timeout: 2_000 });
 				if (pane.code === 0) terminalId = text(strictObject(strictObject(strictObject(JSON.parse(pane.stdout), "Herdr response").result, "Herdr result").pane, "Herdr pane").terminal_id);
@@ -1103,7 +1144,7 @@ export class HostedRuntimeIntegration {
 			const launchParams = { ...authority, requestId: bridgeRequestId, launchId: bridgeId, protocol, participantId, profile: candidate.profile, configurationHash, driver: candidate.driver, herdr: { paneId, terminalId }, metadata: { adapter: "herdr-agent-v1" } };
 			if (workspace) Object.assign(launchParams, { workspaceId: workspace.workspaceId });
 			if (existing) Object.assign(launchParams, { expectedParticipantGeneration: existing.generation });
-			let launch: Record<string, unknown> | undefined;
+			let launch: SerializedObject | undefined;
 			let launchError: unknown;
 			bridgeRequestSubmitted = true;
 			try { launch = strictObject(await this.client.call("bridge.launch.create", launchParams), "Bridge launch result"); }
@@ -1198,7 +1239,7 @@ export class HostedRuntimeIntegration {
 		mkdirSync(directory, { recursive: true, mode: 0o700 });
 		const sessionFile = join(directory, `${timestamp.replace(/[:.]/g, "-")}_${sessionId}.jsonl`);
 		const managedEntryId = randomUUID();
-		const entries: unknown[] = [
+		const entries: Array<SessionHeader | CustomEntry<ManagedCollaboratorState | CollaboratorWorkspaceState | CollaboratorLaunchState>> = [
 			{ type: "session", version: CURRENT_SESSION_VERSION, id: sessionId, timestamp, cwd: sessionCwd },
 			{ type: "custom", customType: HOSTED_MANAGED_COLLABORATOR_ENTRY, data: { version: 1, managed: true }, id: managedEntryId, parentId: null, timestamp },
 		];
@@ -1365,7 +1406,7 @@ export class HostedRuntimeIntegration {
 		const admittedClaims = [...this.admittedClaims].slice(-HOSTED_MAX_DELIVERY_BATCH).map(([claimId, eventIds]) => ({ claimId, eventIds }));
 		const workspace = this.collaboratorWorkspace;
 		const workspaceRegistration = workspace ? { workspaceId: workspace.workspaceId, piSessionId: sessionId, piSessionFile: realpathSync(sessionFile), clientGeneration: this.clientGeneration, admittedClaims, herdr: { paneId: host.paneId, terminalId: host.terminalId } } : undefined;
-		let result: unknown;
+		let result: RuntimeResponse;
 		if (this.workspaceLaunchToken && workspaceRegistration) {
 			try { result = await this.client.call("workspace.pi.register", { ...workspaceRegistration, launchToken: this.workspaceLaunchToken }); }
 			catch (error) {
@@ -1511,10 +1552,9 @@ export class HostedRuntimeIntegration {
 		this.collaboratorWorkspace = undefined;
 		this.workspaceRegistrationActive = false;
 		for (const entry of sessionBranch(ctx)) {
-			const record = asRecord(entry);
-			if (record?.type !== "custom" || record.customType !== HOSTED_COLLABORATOR_WORKSPACE_ENTRY) continue;
-			const data = asRecord(record.data);
-			if (data?.version !== 1 || typeof data.workspaceId !== "string" || typeof data.projectRoot !== "string" || typeof data.workspaceRoot !== "string") continue;
+			if (entry.type !== "custom" || entry.customType !== HOSTED_COLLABORATOR_WORKSPACE_ENTRY) continue;
+			const data = parseCollaboratorWorkspaceState(entry.data);
+			if (!data) continue;
 			try {
 				const workspaceRoot = realpathSync(data.workspaceRoot);
 				const projectRoot = realpathSync(data.projectRoot);
@@ -1527,8 +1567,7 @@ export class HostedRuntimeIntegration {
 	private restoreManagedCollaborator(ctx: ExtensionContext): void {
 		this.managedCollaborator = parseCollaboratorBootstrap(process.env[COLLABORATOR_ENV]) !== undefined;
 		for (const entry of sessionBranch(ctx)) {
-			const record = asRecord(entry);
-			if (record?.type === "custom" && record.customType === HOSTED_MANAGED_COLLABORATOR_ENTRY && asRecord(record.data)?.version === 1 && asRecord(record.data)?.managed === true) this.managedCollaborator = true;
+			if (entry.type === "custom" && entry.customType === HOSTED_MANAGED_COLLABORATOR_ENTRY && asRecord(entry.data)?.version === 1 && asRecord(entry.data)?.managed === true) this.managedCollaborator = true;
 		}
 	}
 
@@ -1536,9 +1575,8 @@ export class HostedRuntimeIntegration {
 		this.admittedClaims.clear();
 		this.pendingAcks.clear();
 		for (const entry of sessionBranch(ctx)) {
-			const record = asRecord(entry);
-			if (record?.type !== "custom_message" || record.customType !== HOSTED_RUNTIME_MESSAGE) continue;
-			const receipt = parseReceipt(record.details);
+			if (entry.type !== "custom_message" || entry.customType !== HOSTED_RUNTIME_MESSAGE) continue;
+			const receipt = parseReceipt(entry.details);
 			if (receipt) this.rememberAdmission(receipt, false);
 		}
 	}
@@ -1547,10 +1585,9 @@ export class HostedRuntimeIntegration {
 		this.participantIdentity = undefined;
 		let persisted = false;
 		for (const entry of sessionBranch(ctx)) {
-			const record = asRecord(entry);
-			if (record?.type !== "custom" || record.customType !== HOSTED_PARTICIPANT_ENTRY) continue;
+			if (entry.type !== "custom" || entry.customType !== HOSTED_PARTICIPANT_ENTRY) continue;
 			persisted = true;
-			this.participantIdentity = parseParticipantIdentity(record.data);
+			this.participantIdentity = parseParticipantIdentity(entry.data);
 		}
 		if (persisted) {
 			if (!this.participantIdentity) ctx.ui.notify("Persisted collaborator identity is invalid; stale authority and environment bootstrap were ignored.", "warning");
@@ -1564,9 +1601,8 @@ export class HostedRuntimeIntegration {
 		this.collaboratorLaunch = undefined;
 		let warned = false;
 		for (const entry of sessionBranch(ctx)) {
-			const record = asRecord(entry);
-			if (record?.type !== "custom" || record.customType !== HOSTED_COLLABORATOR_PROFILE_ENTRY) continue;
-			const launch = parseCollaboratorLaunchState(record.data);
+			if (entry.type !== "custom" || entry.customType !== HOSTED_COLLABORATOR_PROFILE_ENTRY) continue;
+			const launch = parseCollaboratorLaunchState(entry.data);
 			this.collaboratorLaunch = launch ?? { version: 2, driver: "pi", profile: "read-only" };
 			if (!launch && !warned) {
 				warned = true;
@@ -1580,16 +1616,15 @@ export class HostedRuntimeIntegration {
 		this.managedAgentRegistrations.clear();
 		let malformed = false;
 		for (const entry of sessionBranch(ctx)) {
-			const record = asRecord(entry);
-			if (record?.type !== "custom" || record.customType !== HOSTED_MANAGED_AGENT_CONTROL_ENTRY) continue;
-			const control = parseManagedAgentControl(record.data);
+			if (entry.type !== "custom" || entry.customType !== HOSTED_MANAGED_AGENT_CONTROL_ENTRY) continue;
+			const control = parseManagedAgentControl(entry.data);
 			if (control) {
 				this.managedAgentControls.set(control.targetKey, control);
 				continue;
 			}
 			malformed = true;
 			let targetKey: string | undefined;
-			try { targetKey = text(asRecord(record.data)?.targetKey); } catch {}
+			try { targetKey = text(asRecord(entry.data)?.targetKey); } catch {}
 			const prior = targetKey ? this.managedAgentControls.get(targetKey) : undefined;
 			if (prior) this.managedAgentControls.set(prior.targetKey, { ...prior, launchToken: undefined, state: "needs_attention" });
 			else if (!targetKey) for (const [key, candidate] of this.managedAgentControls) this.managedAgentControls.set(key, { ...candidate, launchToken: undefined, state: "needs_attention" });
@@ -1653,8 +1688,8 @@ export class HostedRuntimeIntegration {
 		try { await this.client.call("inbox.release", { ...auth(registration), claimId: claim.claimId, eventIds: claim.eventIds }); } catch {}
 	}
 
-	private claimMessage(claim: HostedClaimMessage, wakeId?: string) {
-		const details = {
+	private claimMessage(claim: HostedClaimMessage, wakeId?: string): HostedClaimCustomMessage {
+		const details: HostedClaimDetails = {
 			version: 1,
 			claimId: claim.claimId,
 			eventIds: claim.eventIds,
@@ -1722,7 +1757,7 @@ function parseWakeArgs(args: string): { registrationId: string; wakeId: string }
 	return remainder ? undefined : { registrationId, wakeId };
 }
 
-function parseClaim(value: unknown): HostedClaimMessage {
+function parseClaim(value: RuntimeResponse): HostedClaimMessage {
 	const result = strictObject(value, "Runtime wake claim");
 	if (result.status !== "active" && result.status !== "acked") throw new HostedRuntimeClientError("invalid_response", "Runtime claim has an invalid status.");
 	if (!Array.isArray(result.events) || result.events.length < 1 || result.events.length > HOSTED_MAX_DELIVERY_BATCH) throw new HostedRuntimeClientError("invalid_response", "Runtime claim events are invalid.");
@@ -1742,7 +1777,7 @@ function parseClaim(value: unknown): HostedClaimMessage {
 		if (event.type === "mailbox.task_result") {
 			if (payload.status !== "completed" && payload.status !== "failed" && payload.status !== "cancelled" || payload.sessionAdvance !== "none" && payload.sessionAdvance !== "committed") throw new HostedRuntimeClientError("invalid_response", "Runtime task result status is invalid.");
 			const result: Extract<HostedClaimEvent, { type: "mailbox.task_result" }> = { eventId: text(event.eventId), type: "mailbox.task_result", summary: text(event.summary), body: text(payload.body), sendId: text(payload.sendId), replyId: text(payload.replyId), inReplyToEventId: text(payload.inReplyToEventId), status: payload.status, sessionAdvance: payload.sessionAdvance, senderParticipantKey: text(payload.senderParticipantKey), recipientParticipantKey: text(payload.recipientParticipantKey) };
-			if (payload.workspace !== undefined) result.workspace = strictObject(payload.workspace, "Task workspace evidence");
+			if (payload.workspace !== undefined) result.workspace = parseTaskWorkspaceEvidence(payload.workspace);
 			return result;
 		}
 		throw new HostedRuntimeClientError("invalid_response", "Runtime event type is unsupported.");
@@ -1752,20 +1787,20 @@ function parseClaim(value: unknown): HostedClaimMessage {
 	return { claimId: text(result.claimId), status: result.status, eventIds, events };
 }
 
-function parseReceipt(value: unknown): HostedReceipt | undefined {
+function parseReceipt(value: RestoredSessionData): HostedReceipt | undefined {
 	const details = asRecord(value);
-	if (details?.version !== 1 || typeof details.claimId !== "string" || !Array.isArray(details.eventIds) || details.eventIds.length < 1 || details.eventIds.length > HOSTED_MAX_DELIVERY_BATCH) return undefined;
-	const eventIds = details.eventIds.filter((eventId): eventId is string => typeof eventId === "string" && eventId.length > 0);
+	if (details?.version !== 1 || !isStringValue(details.claimId) || !Array.isArray(details.eventIds) || details.eventIds.length < 1 || details.eventIds.length > HOSTED_MAX_DELIVERY_BATCH) return undefined;
+	const eventIds = details.eventIds.filter((eventId): eventId is string => isStringValue(eventId) && eventId.length > 0);
 	if (eventIds.length !== details.eventIds.length || new Set(eventIds).size !== eventIds.length) return undefined;
 	return { claimId: details.claimId, eventIds };
 }
 
-function parseManagedAgentControl(value: unknown): ManagedAgentControl | undefined {
+function parseManagedAgentControl(value: RestoredSessionData): ManagedAgentControl | undefined {
 	const record = asRecord(value);
 	const session = asRecord(record?.agentSession);
-	if (record?.version !== 1 || (record.driver !== "claude-code" && record.driver !== "codex") || (record.state !== "pending" && record.state !== "active" && record.state !== "needs_attention" && record.state !== "stopped") || typeof record.bridgeId !== "string" || typeof record.targetKey !== "string" || typeof record.clientGeneration !== "string" || typeof record.reconnectToken !== "string" || typeof record.paneId !== "string" || typeof record.terminalId !== "string" || !session || typeof session.source !== "string" || typeof session.agent !== "string" || (session.kind !== "id" && session.kind !== "path") || typeof session.value !== "string") return undefined;
+	if (record?.version !== 1 || (record.driver !== "claude-code" && record.driver !== "codex") || (record.state !== "pending" && record.state !== "active" && record.state !== "needs_attention" && record.state !== "stopped") || !isStringValue(record.bridgeId) || !isStringValue(record.targetKey) || !isStringValue(record.clientGeneration) || !isStringValue(record.reconnectToken) || !isStringValue(record.paneId) || !isStringValue(record.terminalId) || !session || !isStringValue(session.source) || !isStringValue(session.agent) || (session.kind !== "id" && session.kind !== "path") || !isStringValue(session.value)) return undefined;
 	const control: ManagedAgentControl = { version: 1, bridgeId: record.bridgeId, targetKey: record.targetKey, driver: record.driver, clientGeneration: record.clientGeneration, reconnectToken: record.reconnectToken, paneId: record.paneId, terminalId: record.terminalId, agentSession: { source: session.source, agent: session.agent, kind: session.kind, value: session.value }, state: record.state };
-	if (typeof record.launchToken === "string") control.launchToken = record.launchToken;
+	if (isStringValue(record.launchToken)) control.launchToken = record.launchToken;
 	return control;
 }
 
@@ -1776,7 +1811,7 @@ function parseStartedAgent(value: string, paneId: string, terminalId: string, ki
 }
 
 function parseManagedAgent(value: string): ManagedAgentStatus {
-	let response: Record<string, unknown>;
+	let response: SerializedObject;
 	try { response = strictObject(JSON.parse(value), "Herdr response"); } catch { throw new HostedRuntimeClientError("invalid_response", "Herdr returned malformed agent JSON."); }
 	const result = strictObject(response.result, "Herdr result");
 	const agent = strictObject(result.agent, "Herdr agent");
@@ -1784,8 +1819,7 @@ function parseManagedAgent(value: string): ManagedAgentStatus {
 	const session = agent.agent_session === undefined ? { source: `herdr:${agentKind}`, agent: agentKind, kind: "id" as const, value: text(agent.name) } : strictObject(agent.agent_session, "Herdr agent session");
 	if (session.kind !== "id" && session.kind !== "path") throw new HostedRuntimeClientError("invalid_response", "Herdr agent session kind is invalid.");
 	if (agent.agent_status !== "idle" && agent.agent_status !== "working" && agent.agent_status !== "blocked" && agent.agent_status !== "done" && agent.agent_status !== "unknown") throw new HostedRuntimeClientError("invalid_response", "Herdr agent status is invalid.");
-	if (typeof agent.focused !== "boolean") throw new HostedRuntimeClientError("invalid_response", "Herdr agent focus state is unavailable.");
-	return { paneId: text(agent.pane_id), terminalId: text(agent.terminal_id), status: agent.agent_status, focused: agent.focused, agentSession: { source: text(session.source), agent: text(session.agent), kind: session.kind, value: text(session.value) } };
+	return { paneId: text(agent.pane_id), terminalId: text(agent.terminal_id), status: agent.agent_status, focused: booleanValue(agent.focused), agentSession: { source: text(session.source), agent: text(session.agent), kind: session.kind, value: text(session.value) } };
 }
 
 function sameAgentSession(left: ManagedAgentControl["agentSession"], right: ManagedAgentControl["agentSession"]): boolean {
@@ -1800,24 +1834,16 @@ export function markClaudeWorkspaceTrusted(cwd: string, configPath = join(homedi
 	mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
 	for (let attempt = 0; attempt < 3; attempt++) {
 		const original = existsSync(configPath) ? readClaudeTrustStore(configPath) : undefined;
-		let config: Record<string, unknown> = {};
+		let config: SerializedObject = {};
 		if (original !== undefined) try {
-			const parsed = JSON.parse(original);
-			if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid root");
-			// SAFETY: The preceding guard proves the parsed JSON root is a non-array object.
-			config = parsed as Record<string, unknown>;
+			config = strictObject(JSON.parse(original), "Claude workspace trust store");
 		} catch {
 			throw new HostedRuntimeClientError("host_unavailable", "Claude workspace trust store is malformed.");
 		}
-		const projects = config.projects === undefined ? {} : config.projects;
-		if (!projects || typeof projects !== "object" || Array.isArray(projects)) throw new HostedRuntimeClientError("host_unavailable", "Claude workspace trust projects are malformed.");
-		// SAFETY: The preceding guard proves the projects value is a non-array object.
-		const existing = (projects as Record<string, unknown>)[cwd];
-		if (existing !== undefined && (!existing || typeof existing !== "object" || Array.isArray(existing))) throw new HostedRuntimeClientError("host_unavailable", "Claude workspace trust entry is malformed.");
-		// SAFETY: The guard above proves a present entry is a non-array object; projects was validated before lookup.
-		if ((existing as Record<string, unknown> | undefined)?.hasTrustDialogAccepted === true) return;
-		// SAFETY: Both projects and a present existing entry passed the non-array object guards above.
-		const next = { ...config, projects: { ...(projects as Record<string, unknown>), [cwd]: { ...(existing as Record<string, unknown> | undefined), hasTrustDialogAccepted: true } } };
+		const projects = config.projects === undefined ? {} : strictObject(config.projects, "Claude workspace trust projects");
+		const existing = projects[cwd] === undefined ? undefined : strictObject(projects[cwd], "Claude workspace trust entry");
+		if (existing?.hasTrustDialogAccepted === true) return;
+		const next = { ...config, projects: { ...projects, [cwd]: { ...existing, hasTrustDialogAccepted: true } } };
 		const temporary = join(dirname(configPath), `.${basename(configPath)}.${process.pid}.${randomUUID()}.tmp`);
 		try {
 			writeFileSync(temporary, `${JSON.stringify(next, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
@@ -1872,16 +1898,15 @@ function hostedContent(events: HostedClaimMessage["events"]): string {
 	return lines.join("\n");
 }
 
-function sessionBranch(ctx: ExtensionContext): readonly unknown[] {
+function sessionBranch(ctx: ExtensionContext): readonly SessionEntry[] {
 	return ctx.sessionManager.getBranch();
 }
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-	// SAFETY: The runtime checks exclude null, primitives, and arrays before key access.
-	return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+function asRecord(value: RestoredSessionData | MessageStartEvent["message"] | SerializedValue): SerializedObject | undefined {
+	return isSerializedObject(value) ? value : undefined;
 }
 
-function parseRegistration(value: unknown): LiveClientRegistration {
+function parseRegistration(value: RuntimeResponse): LiveClientRegistration {
 	const result = strictObject(value, "Runtime registration");
 	return {
 		targetKey: text(result.targetKey),
@@ -1893,15 +1918,15 @@ function parseRegistration(value: unknown): LiveClientRegistration {
 	};
 }
 
-function parseWorkspaceRegistration(value: unknown): WorkspaceRegistrationStatus {
+function parseWorkspaceRegistration(value: RuntimeResponse): WorkspaceRegistrationStatus {
 	const result = strictObject(value, "Runtime workspace registration");
 	if (result.participantState !== "held" && result.participantState !== "vacant") throw new HostedRuntimeClientError("invalid_response", "Runtime workspace participant state is invalid.");
 	return { workspaceId: text(result.workspaceId), projectRoot: text(result.projectRoot), workspaceRoot: text(result.workspaceRoot), participantKey: text(result.participantKey), holderGeneration: text(result.holderGeneration), participantGeneration: text(result.participantGeneration), participantState: result.participantState, protocol: collaboratorName(text(result.protocol), "protocol"), participantId: collaboratorName(text(result.participantId), "participant ID") };
 }
 
-function parseHeartbeat(value: unknown) {
+function parseHeartbeat(value: RuntimeResponse) {
 	const result = strictObject(value, "Runtime heartbeat");
-	if (result.inboxReady !== undefined && typeof result.inboxReady !== "boolean") throw new HostedRuntimeClientError("invalid_response", "Runtime heartbeat inbox readiness is invalid.");
+	if (result.inboxReady !== undefined && !isBooleanValue(result.inboxReady)) throw new HostedRuntimeClientError("invalid_response", "Runtime heartbeat inbox readiness is invalid.");
 	return { registration: parseRegistration(result), inboxReady: result.inboxReady === true };
 }
 
@@ -1909,14 +1934,12 @@ function auth(registration: LiveClientRegistration) {
 	return { registrationId: registration.registrationId, registrationKey: registration.registrationKey };
 }
 
-function parseAcquireResult(value: unknown) {
+function parseAcquireResult(value: RuntimeResponse) {
 	const result = strictObject(value, "Participant acquire result");
-	if (typeof result.revived !== "boolean") throw new HostedRuntimeClientError("invalid_response", "Participant revival flag is invalid.");
-	if (typeof result.transitioned !== "boolean") throw new HostedRuntimeClientError("invalid_response", "Participant transition flag is invalid.");
-	return { participant: parseParticipant(result.participant), revived: result.revived, transitioned: result.transitioned };
+	return { participant: parseParticipant(result.participant), revived: booleanValue(result.revived), transitioned: booleanValue(result.transitioned) };
 }
 
-function parseParticipant(value: unknown): ClientParticipantStatus {
+function parseParticipant(value: RuntimeResponse): ClientParticipantStatus {
 	const participant = strictObject(value, "Runtime participant");
 	if (participant.state !== "held" && participant.state !== "vacant" && participant.state !== "ended") throw new HostedRuntimeClientError("invalid_response", "Participant state is invalid.");
 	const queued = asRecord(participant.queued);
@@ -1937,17 +1960,17 @@ function parseParticipant(value: unknown): ClientParticipantStatus {
 	return result;
 }
 
-function parseParticipantIdentity(value: unknown): ParticipantIdentity | undefined {
+function parseParticipantIdentity(value: RestoredSessionData): ParticipantIdentity | undefined {
 	const record = asRecord(value);
 	if (record?.version !== 1 || (record.disposition !== "held" && record.disposition !== "vacant" && record.disposition !== "ended")) return undefined;
-	if (typeof record.protocol !== "string" || typeof record.participantId !== "string") return undefined;
+	if (!isStringValue(record.protocol) || !isStringValue(record.participantId)) return undefined;
 	const identity: ParticipantIdentity = { version: 1, protocol: record.protocol, participantId: record.participantId, disposition: record.disposition };
-	if (typeof record.participantKey === "string") identity.participantKey = record.participantKey;
-	if (typeof record.generation === "string") identity.generation = record.generation;
+	if (isStringValue(record.participantKey)) identity.participantKey = record.participantKey;
+	if (isStringValue(record.generation)) identity.generation = record.generation;
 	return identity;
 }
 
-function parseCollaboratorLaunchState(value: unknown): CollaboratorLaunchState | undefined {
+function parseCollaboratorLaunchState(value: RestoredSessionData): CollaboratorLaunchState | undefined {
 	const record = asRecord(value);
 	if (!record || Object.keys(record).some((key) => !["version", "driver", "model", "profile", "persona"].includes(key))) return undefined;
 	const legacy = record.version === 1;
@@ -1955,20 +1978,42 @@ function parseCollaboratorLaunchState(value: unknown): CollaboratorLaunchState |
 	if (legacy && (record.driver !== undefined || record.model !== undefined)) return undefined;
 	const driver = legacy ? "pi" : record.driver;
 	if (driver !== "pi") return undefined;
-	if (record.model !== undefined && (typeof record.model !== "string" || !COLLABORATOR_MODEL.test(record.model))) return undefined;
+	if (record.model !== undefined && (!isStringValue(record.model) || !COLLABORATOR_MODEL.test(record.model))) return undefined;
 	if (legacy ? record.profile !== "read-only" && record.profile !== "workspace-write" : record.profile !== undefined && record.profile !== "read-only" && record.profile !== "workspace-write") return undefined;
 	let persona: CollaboratorPersona | undefined;
 	if (record.persona !== undefined) {
 		const candidate = asRecord(record.persona);
-		if (!candidate || typeof candidate.name !== "string" || typeof candidate.prompt !== "string" || typeof candidate.promptHash !== "string") return undefined;
+		if (!candidate || !isStringValue(candidate.name) || !isStringValue(candidate.prompt) || !isStringValue(candidate.promptHash)) return undefined;
 		if (createHash("sha256").update(candidate.prompt).digest("hex") !== candidate.promptHash || record.profile === undefined) return undefined;
 		persona = { name: candidate.name, prompt: candidate.prompt, promptHash: candidate.promptHash };
 	}
 	const state: CollaboratorLaunchState = { version: 2, driver };
-	if (typeof record.model === "string") state.model = record.model;
+	if (isStringValue(record.model)) state.model = record.model;
 	if (record.profile === "read-only" || record.profile === "workspace-write") state.profile = record.profile;
 	if (persona) state.persona = persona;
 	return state;
+}
+
+function parseCollaboratorWorkspaceState(value: RestoredSessionData): CollaboratorWorkspaceState | undefined {
+	const record = asRecord(value);
+	if (record?.version !== 1 || !isStringValue(record.workspaceId) || !isStringValue(record.projectRoot) || !isStringValue(record.workspaceRoot)) return undefined;
+	return { version: 1, workspaceId: record.workspaceId, projectRoot: record.projectRoot, workspaceRoot: record.workspaceRoot };
+}
+
+function parseTaskWorkspaceEvidence(value: SerializedValue): HostedTaskWorkspaceEvidence {
+	const workspace = strictObject(value, "Task workspace evidence");
+	const state = workspace.state;
+	if (state !== "provisioning" && state !== "ready" && state !== "bound" && state !== "active" && state !== "ready_handoff" && state !== "partial" && state !== "retained" && state !== "needs_attention" && state !== "integrated" && state !== "cleaned") throw new HostedRuntimeClientError("invalid_response", "Task workspace evidence state is invalid.");
+	return {
+		workspaceId: text(workspace.workspaceId),
+		baseCommit: text(workspace.baseCommit),
+		headCommit: text(workspace.headCommit),
+		branchRef: text(workspace.branchRef),
+		state,
+		dirty: booleanValue(workspace.dirty),
+		artifactRef: text(workspace.artifactRef),
+		capturedAt: integer(workspace.capturedAt),
+	};
 }
 
 const COLLABORATOR_NAME = /^[a-z][a-z0-9_-]{0,63}$/;
@@ -2027,8 +2072,8 @@ function assertAutoCapacity(participants: ClientParticipantStatus[], requested: 
 	if (held + requested > AUTO_MAX_LIVE_COLLABORATORS) throw new HostedRuntimeClientError("conflict", `Runtime Auto mode permits at most ${AUTO_MAX_LIVE_COLLABORATORS} held or reserved collaborators; ${held} are already held and ${requested} were requested.`);
 }
 
-function collaboratorPathAllowed(cwd: string, value: unknown, allowMissing: boolean): boolean {
-	if (value !== undefined && typeof value !== "string") return false;
+function collaboratorPathAllowed(cwd: string, value: CustomToolCallEvent["input"]["path"], allowMissing: boolean): boolean {
+	if (value !== undefined && !isStringValue(value)) return false;
 	try {
 		const root = realpathSync(cwd);
 		const requested = resolve(root, value ?? ".");
@@ -2090,12 +2135,12 @@ function parseCollaboratorBootstrap(value: string | undefined): { protocol: stri
 	return result;
 }
 
-function monitorSummary(value: unknown): string {
+function monitorSummary(value: RuntimeResponse): string {
 	const monitor = strictObject(value, "Runtime Monitor");
 	return `${text(monitor.monitorId)} (${text(monitor.status)})`;
 }
 
-function monitorIdFromStatus(value: unknown): string | undefined {
+function monitorIdFromStatus(value: RuntimeResponse): string | undefined {
 	const status = strictObject(value, "Runtime Monitor status");
 	if (status.monitor === null) return undefined;
 	return text(strictObject(status.monitor, "Runtime Monitor").monitorId);
@@ -2105,29 +2150,71 @@ function throwIfAborted(signal?: AbortSignal): void {
 	if (signal?.aborted) throw new HostedRuntimeClientError("cancelled", "Collaborator start was cancelled.");
 }
 
-function errorCode(error: unknown): string {
-	return error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : "internal";
+function errorCode(cause: unknown): string {
+	if (cause instanceof HostedRuntimeClientError) return cause.code;
+	return cause instanceof Error && "code" in cause && isStringValue(cause.code) ? cause.code : "internal";
 }
 
-function strictObject(value: unknown, name: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new HostedRuntimeClientError("invalid_response", `${name} must be an object.`);
-	// SAFETY: The preceding runtime check excludes null, primitives, and arrays before response-field access.
-	return value as Record<string, unknown>;
-}
-
-function text(value: unknown): string {
-	if (typeof value !== "string" || value.length === 0) throw new HostedRuntimeClientError("invalid_response", "Expected non-empty text.");
+function strictObject(value: RuntimeResponse, name: string): SerializedObject {
+	if (!isSerializedObject(value)) throw new HostedRuntimeClientError("invalid_response", `${name} must be an object.`);
 	return value;
 }
 
-function integer(value: unknown): number {
-	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new HostedRuntimeClientError("invalid_response", "Expected a non-negative integer.");
+function parseSerializedResponse(value: RuntimeResponse, name: string): SerializedValue {
+	if (value === null || isStringValue(value) || isBooleanValue(value)) return value;
+	if (isNumberValue(value)) {
+		if (!Number.isFinite(value)) throw new HostedRuntimeClientError("invalid_response", `${name} contains a non-finite number.`);
+		return value;
+	}
+	if (Array.isArray(value)) return value.map((item) => parseSerializedResponse(item, name));
+	const source = strictObject(value, name);
+	const result: SerializedObject = {};
+	for (const [key, item] of Object.entries(source)) {
+		if (item === undefined) throw new HostedRuntimeClientError("invalid_response", `${name} contains an unserializable field.`);
+		result[key] = parseSerializedResponse(item, name);
+	}
+	return result;
+}
+
+function text(value: SerializedValue | undefined): string {
+	if (!isStringValue(value) || value.length === 0) throw new HostedRuntimeClientError("invalid_response", "Expected non-empty text.");
 	return value;
 }
 
-function booleanValue(value: unknown): boolean {
-	if (typeof value !== "boolean") throw new HostedRuntimeClientError("invalid_response", "Expected a boolean.");
+function optionalText(value: SerializedValue | undefined): string | undefined {
+	return isStringValue(value) ? value : undefined;
+}
+
+function integer(value: SerializedValue | undefined): number {
+	if (!isNumberValue(value) || !Number.isSafeInteger(value) || value < 0) throw new HostedRuntimeClientError("invalid_response", "Expected a non-negative integer.");
 	return value;
+}
+
+function booleanValue(value: SerializedValue | undefined): boolean {
+	if (!isBooleanValue(value)) throw new HostedRuntimeClientError("invalid_response", "Expected a boolean.");
+	return value;
+}
+
+function isSerializedObject(value: RuntimeResponse): value is SerializedObject {
+	if (value === null || Array.isArray(value)) return false;
+	try {
+		const prototype = Object.getPrototypeOf(value);
+		return prototype === Object.prototype || prototype === null;
+	} catch {
+		return false;
+	}
+}
+
+function isStringValue(value: RuntimeResponse): value is string {
+	try { return String.prototype.valueOf.call(value) === value; } catch { return false; }
+}
+
+function isNumberValue(value: RuntimeResponse): value is number {
+	try { return Number.prototype.valueOf.call(value) === value; } catch { return false; }
+}
+
+function isBooleanValue(value: RuntimeResponse): value is boolean {
+	try { return Boolean.prototype.valueOf.call(value) === value; } catch { return false; }
 }
 
 function herdrNotFound(stdout: string, expectedCode: "tab_not_found" | "pane_not_found"): boolean {
@@ -2138,8 +2225,8 @@ function shellQuote(value: string): string {
 	return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-	return error instanceof Error && "code" in error;
+function isNodeError(cause: unknown): cause is NodeJS.ErrnoException {
+	return cause instanceof Error && "code" in cause;
 }
 
 function delay(ms: number): Promise<void> {
