@@ -105,6 +105,7 @@ interface MissionToolHooks extends MissionCompletionHooks {
 const USER_END_SUMMARY = "Mission ended at explicit user request. Use /mission resume to continue if needed.";
 const completionEffectsInFlight = new Map<string, Promise<void>>();
 
+/** Display-only projection shared by missionResult; execute results may carry additional typed fields. */
 interface MissionResultDetails {
 	mission?: ReturnType<MissionState["readAny"]>;
 	usage?: ReturnType<MissionState["readUsage"]>;
