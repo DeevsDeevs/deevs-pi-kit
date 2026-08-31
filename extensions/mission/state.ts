@@ -422,7 +422,7 @@ export class MissionState {
 		const paths = input.paths !== undefined ? normalizePaths(input.paths) : mission.paths;
 		const identityChanged = objective !== mission.objective.trim().replace(/\s+/g, " ") || !sameOrderedStrings(requirements, mission.requirements) || !sameStringSet(paths, mission.paths);
 		if (!input.reason.trim()) throw new Error("Mission objective updates require a reason.");
-		return {
+		const event: MissionEvent = {
 			kind: "objective_updated",
 			missionId: mission.missionId,
 			generation: mission.generation,
@@ -431,13 +431,17 @@ export class MissionState {
 			requirements,
 			objectiveVersion: identityChanged ? (mission.objectiveVersion ?? 1) + 1 : mission.objectiveVersion ?? 1,
 			reason: input.reason.trim(),
-			...(input.paths !== undefined ? { paths } : {}),
-			...(input.tokenBudget !== undefined ? { tokenBudget: input.tokenBudget === null || input.tokenBudget === 0 ? null : positiveNumber(input.tokenBudget, "tokenBudget") } : {}),
-			...(input.costBudgetUsd !== undefined ? { costBudgetUsd: input.costBudgetUsd === null || input.costBudgetUsd === 0 ? null : positiveNumber(input.costBudgetUsd, "costBudgetUsd") } : {}),
-			...(input.turnBudget !== undefined ? { turnBudget: input.turnBudget === null || input.turnBudget === 0 ? null : positiveInteger(input.turnBudget, "turnBudget") } : {}),
-			...(input.wallDeadlineMs !== undefined ? { wallDeadlineAt: input.wallDeadlineMs === null || input.wallDeadlineMs === 0 ? null : Date.now() + positiveNumber(input.wallDeadlineMs, "wallDeadlineMs")! } : {}),
-			...(identityChanged ? { reviewStatus: "due" as const, reviewReason: "Mission objective changed" } : {}),
 		};
+		if (input.paths !== undefined) event.paths = paths;
+		if (input.tokenBudget !== undefined) event.tokenBudget = input.tokenBudget === null || input.tokenBudget === 0 ? null : positiveNumber(input.tokenBudget, "tokenBudget");
+		if (input.costBudgetUsd !== undefined) event.costBudgetUsd = input.costBudgetUsd === null || input.costBudgetUsd === 0 ? null : positiveNumber(input.costBudgetUsd, "costBudgetUsd");
+		if (input.turnBudget !== undefined) event.turnBudget = input.turnBudget === null || input.turnBudget === 0 ? null : positiveInteger(input.turnBudget, "turnBudget");
+		if (input.wallDeadlineMs !== undefined) event.wallDeadlineAt = input.wallDeadlineMs === null || input.wallDeadlineMs === 0 ? null : Date.now() + positiveNumber(input.wallDeadlineMs, "wallDeadlineMs")!;
+		if (identityChanged) {
+			event.reviewStatus = "due";
+			event.reviewReason = "Mission objective changed";
+		}
+		return event;
 	}
 
 	reviewEvent(status: MissionReviewStatus, input: { runId?: string; admissionId?: string; reason?: string; skippedReason?: string; suggestedVerdict?: MissionReviewVerdict | "unknown"; failure?: boolean; outcome?: MissionReviewOutcome; notBeforeAt?: number; worktreeFingerprint?: string; candidateId?: string; highestSeverity?: MissionReviewSeverity; blockingFindingCount?: number; backlogFindingCount?: number; findings?: MissionReviewFinding[]; scopePaths?: string[]; scopeRevisions?: MissionReviewRevision[]; replayAdjudication?: boolean; legacyRelaunchAuthorized?: true } = {}): MissionEvent {
@@ -913,7 +917,10 @@ function normalizeValidation(values: Array<MissionValidationInput | MissionValid
 		const summary = value.summary?.trim().replace(/\s+/g, " ").slice(0, 500);
 		const artifact = value.artifact?.trim().slice(0, 500);
 		const version = "objectiveVersion" in value && Number.isInteger(value.objectiveVersion) ? value.objectiveVersion : objectiveVersion;
-		return [{ command, exitCode: value.exitCode, objectiveVersion: version, ...(summary ? { summary } : {}), ...(artifact ? { artifact } : {}) }];
+		const validation: MissionValidationRecord = { command, exitCode: value.exitCode, objectiveVersion: version };
+		if (summary) validation.summary = summary;
+		if (artifact) validation.artifact = artifact;
+		return [validation];
 	});
 }
 
