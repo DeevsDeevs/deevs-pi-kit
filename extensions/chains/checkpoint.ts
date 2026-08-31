@@ -27,6 +27,8 @@ export interface ChainCheckpointState {
 	dueCodes: ChainDueCode[];
 	updatedAt: number;
 	lastSavedAt?: number;
+	satisfiedChain?: string;
+	satisfiedBranch?: string;
 	waiverReason?: string;
 	contextPressureHandled: boolean;
 	contextPressureAt?: number;
@@ -65,9 +67,11 @@ export function reduceChainCheckpoint(state: ChainCheckpointState, operation: Ch
 			waiverReason: undefined,
 			updatedAt: operation.at,
 			lastSavedAt: operation.at,
+			satisfiedChain: operation.chain,
+			satisfiedBranch: operation.branch,
 		};
 	}
-	if (operation.type === "waived") return { ...state, status: "saved", dueReasons: [], dueCodes: [], waiverReason: operation.reason, updatedAt: operation.at };
+	if (operation.type === "waived") return { ...state, status: "saved", dueReasons: [], dueCodes: [], satisfiedChain: state.chain, satisfiedBranch: state.branch, waiverReason: operation.reason, updatedAt: operation.at };
 	return { ...state, contextPressureHandled: false, contextPressureAt: undefined, updatedAt: operation.at };
 }
 
@@ -98,6 +102,10 @@ export class ChainCheckpointService {
 
 	read(): ChainCheckpointState {
 		return this.state;
+	}
+
+	isSatisfied(chain: string, branch = "main"): boolean {
+		return this.state.status === "saved" && this.state.satisfiedChain === chain && this.state.satisfiedBranch === branch;
 	}
 
 	restore(ctx: ExtensionContext, remind = false): void {
