@@ -233,11 +233,14 @@ function validateMission(value: Record<string, unknown>, cwd: string, slug: stri
 		baselineSubagentCostUsd: nonnegative(value.baselineSubagentCostUsd, "baseline Subagent cost"),
 	};
 	if (value.costBudgetUsd !== undefined) mission.costBudgetUsd = nonnegative(value.costBudgetUsd, "costBudgetUsd");
+	// SAFETY: These fixed key allowlists contain only writable Mission fields, and every assigned value is parsed first.
+	// oxlint-disable-next-line anti-slop/no-known-value-widening, anti-slop/no-unsafe-dictionary-type -- A typed dynamic assignment preserves the allowlist without duplicating every field.
+	const mutableMission = mission as MissionCurrent & Record<string, unknown>;
 	for (const key of ["tokenBudget", "turnBudget", "wallDeadlineAt", "objectiveVersion", "blockerCount", "turnCount", "reviewCandidateObjectiveVersion", "reviewUpdatedAt", "reviewNotBeforeAt", "reviewSupersessionCount", "reviewBlockingFindingCount", "reviewBacklogFindingCount", "reviewCorrectionCount", "reviewCorrectionLimit"] as const) {
-		if (value[key] !== undefined) (mission as unknown as Record<string, unknown>)[key] = boundedInteger(value[key], key, 0, Number.MAX_SAFE_INTEGER);
+		if (value[key] !== undefined) mutableMission[key] = boundedInteger(value[key], key, 0, Number.MAX_SAFE_INTEGER);
 	}
 	for (const key of ["lastReason", "lastSummary", "generation", "reviewRunId", "reviewAdmissionId", "reviewReason", "reviewSkippedReason", "reviewSuggestedVerdict", "reviewOutcome", "reviewWorktreeFingerprint", "admittedWorktreeFingerprint", "reviewCandidateId", "reviewAdjudicatedCandidateId", "reviewAdjudicatedVerdict", "reviewHighestSeverity", "completionLatchCandidateId", "completionLatchReviewStatus", "completionId", "completionEffectsStatus", "blockerFingerprint"] as const) {
-		if (value[key] !== undefined) (mission as unknown as Record<string, unknown>)[key] = text(value[key], key, 20_000);
+		if (value[key] !== undefined) Object.assign(mutableMission, { [key]: text(value[key], key, 20_000) });
 	}
 	if (mission.reviewSuggestedVerdict !== undefined && !["clear", "changes_requested", "unknown"].includes(mission.reviewSuggestedVerdict)) throw new Error("Invalid Mission suggested review verdict.");
 	if (mission.reviewOutcome !== undefined && mission.reviewOutcome !== "superseded" && mission.reviewOutcome !== "failed") throw new Error("Invalid Mission review outcome.");

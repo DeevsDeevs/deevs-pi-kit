@@ -10,7 +10,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "lint:anti-slop": "oxlint extensions/runtime extensions/mission extensions/shared",
+    "lint:anti-slop": "oxlint extensions/runtime extensions/mission extensions/chains extensions/shared",
     "test": "vitest run",
     "test:watch": "vitest",
     "audit": "node scripts/audit.mjs",

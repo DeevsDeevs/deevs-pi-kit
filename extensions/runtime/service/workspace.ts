@@ -520,7 +520,7 @@ function workspaceTarget(workspace: HostedWorkspace & { ownerKind: "pi" }, piSes
 
 function worktree(workspace: HostedWorkspace): RuntimeWorktreeIdentity { return { path: workspace.worktreePath, branchRef: workspace.branchRef, headCommit: workspace.headCommit }; }
 function sameOrdered(left: readonly string[], right: readonly string[]): boolean { return left.length === right.length && left.every((value, index) => value === right[index]); }
-function parseToken(value: string): { workspaceId: string } { const match = TOKEN.exec(value); if (!match) throw new HostedWorkspaceError("invalid_request", "Workspace launch token has invalid syntax."); return { workspaceId: match[1]! }; }
+function parseToken(value: string) { const match = TOKEN.exec(value); if (!match) throw new HostedWorkspaceError("invalid_request", "Workspace launch token has invalid syntax."); return { workspaceId: match[1]! }; }
 function participantName(value: string, name: string): string { if (!NAME.test(value)) throw new HostedWorkspaceError("invalid_request", `${name} has invalid syntax.`); return value; }
 function bounded(value: string, name: string, max: number): string { if (typeof value !== "string" || !value.trim() || Buffer.byteLength(value) > max) throw new HostedWorkspaceError("invalid_request", `${name} is invalid.`); return value; }
 function secret(value: string): string { if (!SECRET.test(value)) throw new HostedWorkspaceError("invalid_request", "Workspace launch secret has invalid syntax."); return value; }

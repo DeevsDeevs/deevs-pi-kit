@@ -761,6 +761,12 @@ export class MissionRuntime {
 			this.failReview(latest!, run.runtime.error || "independent review failed");
 			return true;
 		}
+		if (!mission.reviewScopePaths?.length) {
+			this.state.append(this.pi, this.state.reviewEvent("due", { reason: "independent review scope evidence is missing; relaunch required" }));
+			if (this.ctx) this.scheduleRecovery(this.ctx);
+			this.updateStatus();
+			return true;
+		}
 		const report = await readReviewReport(run, mission.requirements.length, mission.reviewScopePaths, mission.reviewAcceptedFindings, isCorrectionReview(mission) ? "exact_paths" : "owned_prefixes");
 		const finalFingerprint = this.ctx ? await worktreeFingerprint(this.pi, this.ctx.cwd, mission) : undefined;
 		latest = this.state.read();
@@ -802,7 +808,7 @@ export class MissionRuntime {
 		return getJobManager()?.list().filter((job) => ["starting", "running", "stopping"].includes(job.runtime.status)) ?? [];
 	}
 
-	private activeSubagentWork(excludeId?: string): { runs: DelegateRun[]; groupIds: string[]; launchReservations: number } {
+	private activeSubagentWork(excludeId?: string) {
 		const service = getSubagentService();
 		const listed = service.list();
 		return {
@@ -912,7 +918,7 @@ function isCorrectionReview(mission: MissionCurrent): boolean {
 	return (mission.reviewCorrectionCount ?? 0) > 0 || (mission.reviewAdjudications?.length ?? 0) > 0;
 }
 
-async function readReviewReport(run: DelegateRun, requirementCount: number, scopePaths: string[] | undefined, acceptedFindings: MissionReviewFinding[] | undefined, scopeKind: ReviewScopeKind): Promise<DerivedReviewReport | undefined> {
+async function readReviewReport(run: DelegateRun, requirementCount: number, scopePaths: string[], acceptedFindings: MissionReviewFinding[] | undefined, scopeKind: ReviewScopeKind): Promise<DerivedReviewReport | undefined> {
 	try {
 		const report = JSON.parse(await readFile(join(run.spec.artifactsDir, "review-report.json"), "utf8")) as { version?: unknown; verdict?: unknown; overallExplanation?: unknown; findings?: unknown };
 		if (report.version !== 1 || (report.verdict !== "clear" && report.verdict !== "changes_requested") || typeof report.overallExplanation !== "string" || !Array.isArray(report.findings) || report.findings.length > 1_000) return undefined;
@@ -928,7 +934,7 @@ async function readReviewReport(run: DelegateRun, requirementCount: number, scop
 			const blocking = submitted === "blocker" || submitted === "major";
 			const requirementLinked = requirementIndex !== undefined && requirementIndex < requirementCount;
 			const accepted = acceptedFindings === undefined || acceptedFindings.length === 0 || (requirementIndex !== undefined && acceptedRequirements.has(requirementIndex)) || criticalImpact !== undefined;
-			const withinScope = path !== undefined && scopePaths !== undefined && scopePaths.some((scopePath) => scopeKind === "exact_paths" ? path === scopePath : scopePath === "." || path === scopePath || path.startsWith(`${scopePath}/`));
+			const withinScope = path !== undefined && scopePaths.some((scopePath) => scopeKind === "exact_paths" ? path === scopePath : scopePath === "." || path === scopePath || path.startsWith(`${scopePath}/`));
 			const severity = blocking && (!requirementLinked && !criticalImpact || !accepted || !withinScope) ? "minor" : submitted;
 			findings.push({ index, severity, summary: finding.summary.slice(0, 4_000), ...(path ? { path } : {}), ...(Number.isInteger(finding.line) ? { line: finding.line as number } : {}), ...(requirementIndex !== undefined ? { requirementIndex } : {}), ...(criticalImpact ? { criticalImpact } : {}) });
 		}

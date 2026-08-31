@@ -12,6 +12,19 @@ interface ChainLinkArgs {
 	parent?: string;
 }
 
+interface ChainLoadArgs {
+	chain: string;
+	branch?: string;
+	link?: string;
+}
+
+interface ChainForkArgs {
+	chain: string;
+	branch: string;
+	from?: string;
+	fromBranch?: string;
+}
+
 export function registerChainCommands(pi: ExtensionAPI, service: ChainService): void {
 	pi.registerCommand("chains", {
 		description: "Browse Chains or search them with /chains <query>",
@@ -213,10 +226,10 @@ function parseLinkArgs(args: string): ChainLinkArgs | null {
 	return parsed;
 }
 
-function parseLoadArgs(args: string): { chain: string; branch?: string; link?: string } {
+function parseLoadArgs(args: string): ChainLoadArgs {
 	const parts = args.trim().split(/\s+/).filter(Boolean);
 	const chain = parts.shift() ?? "";
-	const parsed: { chain: string; branch?: string; link?: string } = { chain };
+	const parsed: ChainLoadArgs = { chain };
 	for (let i = 0; i < parts.length; i++) {
 		if (parts[i] === "--branch") parsed.branch = parts[++i];
 		else if (!parsed.link) parsed.link = parts[i];
@@ -224,12 +237,12 @@ function parseLoadArgs(args: string): { chain: string; branch?: string; link?: s
 	return parsed;
 }
 
-function parseForkArgs(args: string): { chain: string; branch: string; from?: string; fromBranch?: string } | null {
+function parseForkArgs(args: string): ChainForkArgs | null {
 	const parts = args.trim().split(/\s+/).filter(Boolean);
 	const chain = parts.shift();
 	const branch = parts.shift();
 	if (!chain || !branch) return null;
-	const parsed: { chain: string; branch: string; from?: string; fromBranch?: string } = { chain, branch };
+	const parsed: ChainForkArgs = { chain, branch };
 	for (let i = 0; i < parts.length; i++) {
 		if (parts[i] === "--from") parsed.from = parts[++i];
 		else if (parts[i] === "--from-branch") parsed.fromBranch = parts[++i];

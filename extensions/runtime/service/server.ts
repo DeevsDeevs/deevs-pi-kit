@@ -235,7 +235,7 @@ function closeServer(server: Server): Promise<void> {
 	return new Promise((resolve) => server.close(() => resolve()));
 }
 
-function socketIdentity(path: string): { dev: number; ino: number } {
+function socketIdentity(path: string) {
 	const info = lstatSync(path);
 	if (!info.isSocket()) throw new Error(`Runtime socket path is not a socket: ${path}`);
 	return { dev: info.dev, ino: info.ino };

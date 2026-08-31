@@ -25,6 +25,7 @@ import {
 	HOSTED_MONITOR_MAX_ENTRIES,
 	HOSTED_PARTICIPANT_TRANSITION_LIMIT,
 	HOSTED_STATE_MAX_BYTES,
+	type HostedAgentSessionIdentity,
 	type HostedAutoCapacityReservation,
 	type HostedBridgeLaunch,
 	type HostedExternalTarget,
@@ -610,7 +611,7 @@ export function deriveBridgeTargetKey(projectRoot: string, bridgeId: string): st
 	return `bridge_${createHash("sha256").update(projectRoot).update("\0").update(bridgeId).digest("hex")}`;
 }
 
-export function runtimeStatePaths(root: string): { instance: string; state: string } {
+export function runtimeStatePaths(root: string) {
 	return { instance: join(root, "instance.json"), state: join(root, "state.v1.json") };
 }
 
@@ -1092,7 +1093,7 @@ function managedTier(value: unknown): "managed" {
 	return value;
 }
 
-function validateAgentSession(value: unknown): { source: string; agent: string; kind: "id" | "path"; value: string } {
+function validateAgentSession(value: unknown): HostedAgentSessionIdentity {
 	const session = strictObject(value, "interactive agent session", ["source", "agent", "kind", "value"]);
 	if (session.kind !== "id" && session.kind !== "path") throw new Error("interactive agent session kind is invalid");
 	return { source: text(session.source, "agent session source", MAX_ID_BYTES), agent: text(session.agent, "agent session kind", 64), kind: session.kind, value: text(session.value, "agent session value", MAX_PATH_BYTES) };
@@ -1665,10 +1666,11 @@ function workspaceTargetMatches(target: HostedTarget, workspace: HostedWorkspace
 }
 
 function workspaceTransitionAllowed(from: HostedWorkspace["state"], to: HostedWorkspace["state"]): boolean {
-	const allowed: Record<HostedWorkspace["state"], HostedWorkspace["state"][]> = {
+	const transitions = {
 		provisioning: ["ready", "cleaned", "needs_attention"], ready: ["bound", "retained", "needs_attention", "cleaned"], bound: ["active", "retained", "needs_attention", "cleaned"], active: ["ready_handoff", "partial", "retained", "needs_attention"], ready_handoff: ["ready_handoff", "partial", "retained", "integrated", "cleaned", "needs_attention"], partial: ["ready_handoff", "partial", "retained", "integrated", "cleaned", "needs_attention"], retained: ["ready_handoff", "partial", "integrated", "cleaned", "needs_attention"], needs_attention: ["needs_attention", "retained", "cleaned"], integrated: ["cleaned", "needs_attention"], cleaned: [],
-	};
-	return allowed[from].includes(to);
+	} satisfies Record<HostedWorkspace["state"], readonly HostedWorkspace["state"][]>;
+	const allowed: readonly HostedWorkspace["state"][] = transitions[from];
+	return allowed.includes(to);
 }
 
 function sameIntegrationIdentity(left: HostedIntegration, right: HostedIntegration): boolean {
@@ -1676,8 +1678,9 @@ function sameIntegrationIdentity(left: HostedIntegration, right: HostedIntegrati
 }
 
 function integrationTransitionAllowed(from: HostedIntegration["state"], to: HostedIntegration["state"]): boolean {
-	const allowed: Record<HostedIntegration["state"], HostedIntegration["state"][]> = { preparing: ["prepared", "conflicted", "needs_attention"], prepared: ["finalized", "needs_attention", "cleaned"], conflicted: ["conflicted", "cleaned", "needs_attention"], needs_attention: ["needs_attention", "cleaned"], finalized: ["cleaned", "needs_attention"], cleaned: [] };
-	return allowed[from].includes(to);
+	const transitions = { preparing: ["prepared", "conflicted", "needs_attention"], prepared: ["finalized", "needs_attention", "cleaned"], conflicted: ["conflicted", "cleaned", "needs_attention"], needs_attention: ["needs_attention", "cleaned"], finalized: ["cleaned", "needs_attention"], cleaned: [] } satisfies Record<HostedIntegration["state"], readonly HostedIntegration["state"][]>;
+	const allowed: readonly HostedIntegration["state"][] = transitions[from];
+	return allowed.includes(to);
 }
 
 function sameBridgeLaunch(left: HostedBridgeLaunch, right: HostedBridgeLaunch): boolean {

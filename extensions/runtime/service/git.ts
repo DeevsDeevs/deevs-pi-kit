@@ -62,7 +62,7 @@ export class RuntimeGit {
 		const gitDir = await realpath((await this.text(canonical, ["rev-parse", "--path-format=absolute", "--absolute-git-dir"])).trim());
 		const commonDir = await realpath((await this.text(canonical, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim());
 		const branchRef = (await this.text(canonical, ["symbolic-ref", "-q", "HEAD"])).trim();
-		if (!/^refs\/heads\/[A-Za-z0-9._\/-]+$/.test(branchRef)) throw new RuntimeGitError("Project HEAD must be an ordinary local branch.");
+		if (!/^refs\/heads\/[A-Za-z0-9._/-]+$/.test(branchRef)) throw new RuntimeGitError("Project HEAD must be an ordinary local branch.");
 		const headCommit = commit((await this.text(canonical, ["rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"])).trim());
 		return { root: canonical, gitDir, commonDir, branchRef, headCommit };
 	}
@@ -385,7 +385,7 @@ export class RuntimeGit {
 	private async worktreeRecords(cwd: string): Promise<RuntimeWorktreeRecord[]> {
 		const values = splitNul(await this.output(cwd, ["worktree", "list", "--porcelain", "-z"]));
 		const result: RuntimeWorktreeRecord[] = [];
-		let current: { path?: string; headCommit?: string; branchRef?: string; detached?: boolean } = {};
+		let current: Partial<RuntimeWorktreeRecord> = {};
 		for (const value of values) {
 			if (!value) {
 				if (Object.keys(current).length > 0) {
@@ -466,7 +466,7 @@ export class RuntimeGit {
 	private runCodes(cwd: string, args: string[], allowed: number[], stdin?: string | Buffer, extraEnv?: NodeJS.ProcessEnv, maxBuffer = MAX_GIT_BUFFER): Promise<{ code: number; stdout: Buffer; stderr: Buffer }> {
 		return new Promise((resolvePromise, reject) => {
 			const child = execFile("git", gitArgs(args), { cwd, env: gitEnvironment(extraEnv), encoding: "buffer", maxBuffer, timeout: 30_000 }, (error, stdout, stderr) => {
-				const code = typeof (error as NodeJS.ErrnoException | null)?.code === "number" ? (error as unknown as { code: number }).code : error ? 1 : 0;
+				const code = typeof error?.code === "number" ? error.code : error ? 1 : 0;
 				if (!allowed.includes(code)) {
 					const detail = Buffer.from(stderr).toString("utf8").trim().slice(0, 2_000);
 					reject(new RuntimeGitError(`Git ${args[0] ?? "command"} failed${detail ? `: ${detail}` : "."}`));

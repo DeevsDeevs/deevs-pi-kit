@@ -137,13 +137,15 @@ function parseState(value: unknown): CollaboratorAutoState {
 	const record = object(value);
 	const allowed = new Set(["version", "enabled", "maxConcurrentStarts", "maxLiveCollaborators", "profileCeiling", "updatedAt", "generation"]);
 	if (!record || Object.keys(record).some((key) => !allowed.has(key)) || record.version !== 1 || typeof record.enabled !== "boolean" || record.maxConcurrentStarts !== 4 || record.maxLiveCollaborators !== 12 || record.profileCeiling !== "workspace-write" || typeof record.updatedAt !== "number" || !Number.isFinite(record.updatedAt) || typeof record.generation !== "string" || !/^auto_[A-Za-z0-9_-]+$/.test(record.generation)) throw new Error("Auto mode state is invalid.");
-	return record as unknown as CollaboratorAutoState;
+	return { version: 1, enabled: record.enabled, maxConcurrentStarts: 4, maxLiveCollaborators: 12, profileCeiling: "workspace-write", updatedAt: record.updatedAt, generation: record.generation };
 }
 
 function lockOwner(path: string): { token: string; pid: number; identity?: string } | undefined {
 	try {
 		const value = object(readJson(path, MAX_STATE_BYTES));
-		return value && typeof value.token === "string" && Number.isInteger(value.pid) && (value.pid as number) > 0 && (value.identity === undefined || typeof value.identity === "string") ? value as unknown as { token: string; pid: number; identity?: string } : undefined;
+		if (!value || typeof value.token !== "string" || typeof value.pid !== "number" || !Number.isInteger(value.pid) || value.pid <= 0 || (value.identity !== undefined && typeof value.identity !== "string")) return undefined;
+		const owner = { token: value.token, pid: value.pid };
+		return value.identity === undefined ? owner : { ...owner, identity: value.identity };
 	} catch { return undefined; }
 }
 
@@ -154,6 +156,7 @@ function readKeybindings(path: string): Record<string, unknown> {
 	return value;
 }
 
+// oxlint-disable-next-line anti-slop/no-unknown-returns -- Raw JSON is returned only to the schema parsers immediately above.
 function readJson(path: string, maxBytes: number): unknown {
 	if (lstatSync(path).isSymbolicLink()) throw new Error(`Refusing symbolic link: ${path}`);
 	const bytes = readFileSync(path);
@@ -184,10 +187,11 @@ function writeAtomic(root: string, path: string, value: unknown, maxBytes: numbe
 }
 
 function keys(value: unknown): string[] | undefined {
-	if (typeof value === "string" && value.trim()) return [value];
-	if (Array.isArray(value) && value.every((item) => typeof item === "string" && item.trim())) return value as string[];
+	if (nonEmptyString(value)) return [value];
+	if (Array.isArray(value) && value.every(nonEmptyString)) return value;
 	return undefined;
 }
+function nonEmptyString(value: unknown): value is string { return typeof value === "string" && !!value.trim(); }
 function hasKey(values: string[] | undefined, key: string): boolean { return !!values?.some((value) => value.trim().toLowerCase() === key); }
 function unique(values: string[]): string[] {
 	const seen = new Set<string>();
@@ -198,5 +202,8 @@ function unique(values: string[]): string[] {
 		return true;
 	});
 }
-function object(value: unknown): Record<string, unknown> | undefined { return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined; }
+function object(value: unknown): Record<string, unknown> | undefined {
+	// SAFETY: Non-null, non-array objects support the string-keyed property reads used by the schema parsers.
+	return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
 function message(error: unknown): string { return error instanceof Error ? error.message : String(error); }

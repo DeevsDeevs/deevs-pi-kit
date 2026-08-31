@@ -285,7 +285,7 @@ describe("Mission runtime", () => {
 		setSubagentService(service);
 		try {
 			const candidateId = await test.runtime.completionCandidateId(test.ctx);
-			test.state.append(test.pi, test.state.reviewEvent("running", { runId: run.spec.id, reason: "reviewing", worktreeFingerprint: expectedFingerprint(), candidateId }));
+			test.state.append(test.pi, test.state.reviewEvent("running", { runId: run.spec.id, reason: "reviewing", worktreeFingerprint: expectedFingerprint(), candidateId, scopePaths: ["."] }));
 			await test.emit("session_start", { reason: "resume" });
 			expect(test.messages).toEqual([]);
 			run.runtime.status = "completed";
@@ -717,6 +717,25 @@ describe("Mission runtime", () => {
 		}
 	});
 
+	it("relaunches a legacy review attempt that lacks persisted scope evidence", async () => {
+		const test = await setup();
+		const artifactsDir = mkdtempSync(join(tmpdir(), "mission-legacy-review-scope-"));
+		const candidateId = await test.runtime.completionCandidateId(test.ctx);
+		const run = { spec: { id: "review-legacy-scope", artifactsDir }, runtime: { status: "completed", output: "" } } as unknown as DelegateRun;
+		const service = { list: () => ({ runs: [], groups: [] }), executor: { get: () => run, onChange: () => () => undefined } } as unknown as SubagentService;
+		setSubagentService(service);
+		try {
+			test.state.append(test.pi, test.state.reviewEvent("running", { runId: run.spec.id, candidateId, worktreeFingerprint: expectedFingerprint() }));
+			writeFileSync(join(artifactsDir, "review-report.json"), JSON.stringify({ version: 1, overallExplanation: "legacy", verdict: "changes_requested", findings: [{ severity: "major", summary: "cannot be trusted without scope", path: "extensions/mission/runtime.ts", requirementIndex: 0 }] }));
+			expect(await (test.runtime as unknown as { reconcileReview: () => Promise<boolean> }).reconcileReview()).toBe(true);
+			expect(test.state.read()).toMatchObject({ reviewStatus: "due", reviewReason: "independent review scope evidence is missing; relaunch required" });
+			expect(test.state.readReviewFailureCount()).toBe(0);
+		} finally {
+			rmSync(artifactsDir, { recursive: true, force: true });
+			clearSubagentService(service);
+		}
+	});
+
 	it.each([
 		{ severity: "minor", submitted: "changes_requested", expected: "clear", blocking: 0, backlog: 1 },
 		{ severity: "major", submitted: "clear", expected: "changes_requested", blocking: 1, backlog: 0 },
@@ -771,7 +790,7 @@ describe("Mission runtime", () => {
 		const service = { list: () => ({ runs: [], groups: [] }), executor: { get: () => run, onChange: () => () => undefined } } as unknown as SubagentService;
 		setSubagentService(service);
 		try {
-			test.state.append(test.pi, test.state.reviewEvent("running", { runId: run.spec.id, candidateId, worktreeFingerprint: expectedFingerprint() }));
+			test.state.append(test.pi, test.state.reviewEvent("running", { runId: run.spec.id, candidateId, worktreeFingerprint: expectedFingerprint(), scopePaths: ["."] }));
 			writeFileSync(join(artifactsDir, "review-report.json"), JSON.stringify({ version: 1, overallExplanation: "unrelated", verdict: "changes_requested", findings: [{ severity: "major", summary: "not linked to scope" }] }));
 			expect(await (test.runtime as unknown as { reconcileReview: () => Promise<boolean> }).reconcileReview()).toBe(true);
 			expect(test.state.read()).toMatchObject({ reviewStatus: "awaiting_adjudication", reviewSuggestedVerdict: "clear", reviewBlockingFindingCount: 0, reviewBacklogFindingCount: 1, reviewHighestSeverity: "minor" });
