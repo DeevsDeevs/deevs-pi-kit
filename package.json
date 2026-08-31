@@ -10,6 +10,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "lint:anti-slop": "oxlint extensions/runtime extensions/mission extensions/shared",
     "test": "vitest run",
     "test:watch": "vitest",
     "audit": "node scripts/audit.mjs",
@@ -44,7 +45,9 @@
     "@earendil-works/pi-ai": "0.82.0",
     "@earendil-works/pi-coding-agent": "0.82.0",
     "@earendil-works/pi-tui": "0.82.0",
+    "@oxlint/plugins": "1.80.0",
     "@types/node": "^22.19.0",
+    "oxlint": "1.80.0",
     "typescript": "^5.9.3",
     "vitest": "^4.1.10"
   }
