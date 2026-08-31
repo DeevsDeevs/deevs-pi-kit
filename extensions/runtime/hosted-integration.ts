@@ -1922,6 +1922,7 @@ function parseCollaboratorLaunchState(value: unknown): CollaboratorLaunchState |
 
 const COLLABORATOR_NAME = /^[a-z][a-z0-9_-]{0,63}$/;
 const COLLABORATOR_MODEL = /^[A-Za-z0-9][A-Za-z0-9._/*:-]{0,199}$/;
+const PI_COLLABORATOR_MODEL = /^[a-z0-9][a-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._/:-]*$/;
 const FILE_TOOLS = new Set(["read", "grep", "find", "ls", "edit", "write"]);
 const READ_ONLY_PERSONA_TOOLS = new Set(["safe_read", "safe_list", "safe_search", "safe_diff"]);
 const WORKSPACE_WRITE_PERSONA_TOOLS = new Set([...READ_ONLY_PERSONA_TOOLS, "edit", "write"]);
@@ -1931,6 +1932,7 @@ function resolveCollaboratorCandidate(candidate: CollaboratorCandidate, defaultP
 	const participantId = collaboratorName(candidate.participantId, "participant ID");
 	const driver = collaboratorDriver(candidate.driver);
 	const requestedModel = collaboratorModel(candidate.model);
+	assertUnambiguousCollaboratorModel(driver, requestedModel);
 	const requestedProfile = collaboratorProfile(candidate.profile);
 	if (!candidate.persona) {
 		const profile = requestedProfile ?? defaultProfile ?? (driver === "pi" ? undefined : "read-only");
@@ -1945,6 +1947,7 @@ function resolveCollaboratorCandidate(candidate: CollaboratorCandidate, defaultP
 	if (!prompt || Buffer.byteLength(prompt) > 32 * 1024) throw new HostedRuntimeClientError("invalid_request", `Collaborator persona ${personaName} has an invalid prompt.`);
 	const persona: CollaboratorPersona = { name: definition.name, prompt, promptHash: createHash("sha256").update(prompt).digest("hex") };
 	const model = requestedModel ?? (driver === "pi" ? collaboratorModel(definition.model) : undefined);
+	assertUnambiguousCollaboratorModel(driver, model);
 	return { participantId, driver, profile, persona, ...(model ? { model } : {}) };
 }
 
@@ -2002,6 +2005,10 @@ function collaboratorDriver(value: CollaboratorDriver | undefined): Collaborator
 function collaboratorModel(value: string | undefined): string | undefined {
 	if (value !== undefined && !COLLABORATOR_MODEL.test(value)) throw new HostedRuntimeClientError("invalid_request", `model must match ${COLLABORATOR_MODEL}.`);
 	return value;
+}
+
+function assertUnambiguousCollaboratorModel(driver: CollaboratorDriver, model: string | undefined): void {
+	if (driver === "pi" && model !== undefined && !PI_COLLABORATOR_MODEL.test(model)) throw new HostedRuntimeClientError("invalid_request", "Explicit Pi collaborator models must be provider-qualified, for example openai-codex/gpt-5.6-sol.");
 }
 
 function collaboratorProfile(value: CollaboratorProfile | undefined): CollaboratorProfile | undefined {

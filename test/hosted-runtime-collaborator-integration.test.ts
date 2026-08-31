@@ -501,13 +501,14 @@ describe("hosted collaborator Pi integration", () => {
 		await expect(test.integration.startCollaborator({ participantId: "native-reviewer", protocol: "review", callerParticipantId: "main", driver: "codex", persona: "reviewer" }, test.ctx as never)).rejects.toThrow("requires unsupported safe_diff tooling");
 		expect(confirmations).toBe(0);
 		expect(test.execCalls.some((call) => call.args[0] === "tab" && call.args[1] === "create")).toBe(false);
-		for (const driver of ["claude-code", "codex"] as const) await expect(test.integration.startCollaborator({ participantId: driver, protocol: "review", callerParticipantId: "main", driver, ...(driver === "claude-code" ? { persona: "architect" } : {}) }, test.ctx as never)).resolves.toMatchObject({ started: true, paneId: "w1:p9" });
+		for (const driver of ["claude-code", "codex"] as const) await expect(test.integration.startCollaborator({ participantId: driver, protocol: "review", callerParticipantId: "main", driver, ...(driver === "claude-code" ? { persona: "architect", model: "fable" } : {}) }, test.ctx as never)).resolves.toMatchObject({ started: true, paneId: "w1:p9" });
 		expect(confirmations).toBe(2);
 		const tabs = test.execCalls.filter((call) => call.args[0] === "tab" && call.args[1] === "create");
 		expect(tabs).toHaveLength(2);
 		expect(tabs.every((call) => call.args.includes("--no-focus"))).toBe(true);
 		const starts = test.execCalls.filter((call) => call.args[0] === "agent" && call.args[1] === "start");
 		expect(starts.map((call) => call.args[call.args.indexOf("--kind") + 1])).toEqual(["claude", "codex"]);
+		expect(starts[0]!.args[starts[0]!.args.lastIndexOf("--model") + 1]).toBe("fable");
 		expect(starts.every((call) => /^[a-z][a-z0-9_-]{0,31}$/.test(call.args[2]!))).toBe(true);
 		expect(starts.every((call) => call.args.includes("--pane") && call.args.includes("w1:p9") && !call.args.join(" ").includes("bridge-runner"))).toBe(true);
 		expect(test.requests.filter((request) => request.method === "bridge.register").every((request) => (request.params.agentSession as { source: string }).source.startsWith("herdr:"))).toBe(true);
@@ -1243,6 +1244,8 @@ describe("hosted collaborator Pi integration", () => {
 		});
 		await test.integration.sessionStart(test.ctx as never);
 		await expect(test.integration.startCollaborator({ protocol: "review", callerParticipantId: "main", participantId: "fable", model: "terra; touch /tmp/nope" }, test.ctx as never)).rejects.toThrow("model must match");
+		await expect(test.integration.startCollaborator({ protocol: "review", callerParticipantId: "main", participantId: "fable", model: "gpt-5.6-sol" }, test.ctx as never)).rejects.toThrow("must be provider-qualified");
+		expect(test.execCalls.some((call) => call.args[0] === "tab")).toBe(false);
 		test.ctx.isProjectTrusted = () => false;
 		await expect(test.integration.startCollaborator({ protocol: "review", callerParticipantId: "main", participantId: "fable" }, test.ctx as never)).rejects.toThrow("trusted project");
 		test.ctx.isProjectTrusted = () => true;
