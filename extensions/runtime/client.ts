@@ -21,6 +21,7 @@ export class HostedRuntimeClient {
 		this.timeoutMs = timeoutMs;
 	}
 
+	// oxlint-disable-next-line anti-slop/no-unknown-returns -- RPC callers either decode the result immediately or serialize it unchanged at the tool boundary.
 	call(method: string, params: unknown): Promise<unknown> {
 		const id = `req_${randomUUID()}`;
 		const request = `${JSON.stringify({ v: 1, id, method, params })}\n`;
@@ -63,6 +64,7 @@ export class HostedRuntimeClient {
 		});
 	}
 
+	// oxlint-disable-next-line anti-slop/no-unknown-returns -- Registration callers validate the hello envelope before using its fields.
 	hello(): Promise<unknown> {
 		return this.call("hello", { minVersion: 1, maxVersion: 1 });
 	}

@@ -168,6 +168,7 @@ function fsyncDirectory(directory: string): void {
 	try { fsyncSync(fd); } finally { closeSync(fd); }
 }
 
+// oxlint-disable-next-line anti-slop/no-unknown-returns -- Snapshot and owner callers immediately pass this raw JSON to their versioned decoders.
 function readJsonFile(file: string, name: string): unknown {
 	if (!pathExists(file)) return undefined;
 	let fd: number | undefined;
