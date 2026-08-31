@@ -508,6 +508,7 @@ describe("hosted collaborator Pi integration", () => {
 		expect(tabs.every((call) => call.args.includes("--no-focus"))).toBe(true);
 		const starts = test.execCalls.filter((call) => call.args[0] === "agent" && call.args[1] === "start");
 		expect(starts.map((call) => call.args[call.args.indexOf("--kind") + 1])).toEqual(["claude", "codex"]);
+		expect(starts.every((call) => /^[a-z][a-z0-9_-]{0,31}$/.test(call.args[2]!))).toBe(true);
 		expect(starts.every((call) => call.args.includes("--pane") && call.args.includes("w1:p9") && !call.args.join(" ").includes("bridge-runner"))).toBe(true);
 		expect(test.requests.filter((request) => request.method === "bridge.register").every((request) => (request.params.agentSession as { source: string }).source.startsWith("herdr:"))).toBe(true);
 		await test.integration.sessionShutdown();
