@@ -2,8 +2,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, sym
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { BridgeJournalStore, readRunnerConfig, writeRunnerConfig } from "../extensions/runtime/legacy-bridge/journal.ts";
-import type { BridgeJournal, BridgeRunnerConfig } from "../extensions/runtime/legacy-bridge/types.ts";
+import { BridgeJournalStore } from "../extensions/runtime/legacy-bridge/journal.ts";
+import type { BridgeJournal } from "../extensions/runtime/legacy-bridge/types.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -58,15 +58,5 @@ describe("legacy bridge journal", () => {
 		expect(existsSync(linked)).toBe(false);
 		expect(readFileSync(join(outside, "marker"), "utf8")).toBe("keep\n");
 		expect(existsSync(join(turns, "turn_1"))).toBe(true);
-	});
-
-	it("keeps reconnect credentials only in the private controller config", () => {
-		const directory = root();
-		const path = join(directory, "config.v1.json");
-		const config: BridgeRunnerConfig = { version: 1, bridgeId: "bridge_1", driver: "fake", root: directory, runtimeSocket: join(directory, "runtime.sock"), projectRoot: directory, cwd: directory, clientGeneration: "client_1", protocol: "review", participantId: "fake", launchToken: `bridge_launch_bridge_1.${"a".repeat(43)}`, reconnectToken: "b".repeat(43), wallMs: 1_000 };
-		writeRunnerConfig(path, config);
-		expect(readRunnerConfig(path)).toEqual(config);
-		expect(statSync(path).mode & 0o777).toBe(0o600);
-		expect(new BridgeJournalStore(join(directory, "journal"), initial()).read()).not.toHaveProperty("reconnectToken");
 	});
 });

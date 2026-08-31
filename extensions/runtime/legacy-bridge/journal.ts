@@ -1,7 +1,7 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { chmodSync, closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { BRIDGE_RUNNER_MAX_BODY_BYTES, BRIDGE_RUNNER_MAX_FRAMES, BRIDGE_RUNNER_MAX_STATE_BYTES, BRIDGE_RUNNER_MAX_STDERR_BYTES, BRIDGE_RUNNER_MAX_STDOUT_BYTES, BRIDGE_RUNNER_MAX_TURNS, type BridgeAdmission, type BridgeJournal, type BridgeRunnerConfig, type BridgeTurn, type BridgeWorkerState } from "./types.ts";
+import { BRIDGE_RUNNER_MAX_BODY_BYTES, BRIDGE_RUNNER_MAX_FRAMES, BRIDGE_RUNNER_MAX_STATE_BYTES, BRIDGE_RUNNER_MAX_STDERR_BYTES, BRIDGE_RUNNER_MAX_STDOUT_BYTES, BRIDGE_RUNNER_MAX_TURNS, type BridgeAdmission, type BridgeJournal, type BridgeTurn, type BridgeWorkerState } from "./types.ts";
 
 const MAX_ID_BYTES = 200;
 const MAX_PATH_BYTES = 8 * 1024;
@@ -63,11 +63,7 @@ export class BridgeJournalStore {
 }
 
 export function readBridgeJournal(root: string): BridgeJournal | undefined { const value = readJson(join(root, "journal.v1.json"), BRIDGE_RUNNER_MAX_STATE_BYTES); return value === undefined ? undefined : validateJournal(value); }
-export function readRunnerConfig(path: string): BridgeRunnerConfig { return validateConfig(requiredJson(path, 64 * 1024)); }
-export function writeRunnerConfig(path: string, config: BridgeRunnerConfig): void { writeAtomic(path, validateConfig(config), 64 * 1024); }
 export function readWorkerState(path: string): BridgeWorkerState | undefined { const value = readJson(path, BRIDGE_RUNNER_MAX_STATE_BYTES); return value === undefined ? undefined : validateWorkerState(value); }
-export function writeWorkerState(path: string, state: BridgeWorkerState): void { writeAtomic(path, validateWorkerState(state), BRIDGE_RUNNER_MAX_STATE_BYTES); }
-export function writeWorkerSpec(path: string, value: unknown): void { writeAtomic(path, value, 256 * 1024); }
 
 function validateJournal(value: unknown): BridgeJournal {
 	const state = object(value, "bridge journal", ["version", "bridgeId", "driver", "targetKey", "participantKey", "holderGeneration", "protocol", "participantId", "driverSessionId", "nextSequence", "admissions", "turns", "status", "updatedAt"]);
@@ -136,19 +132,6 @@ function validateTurn(value: unknown): BridgeTurn {
 	return result;
 }
 
-function validateConfig(value: unknown): BridgeRunnerConfig {
-	const item = object(value, "bridge runner config", ["version", "bridgeId", "driver", "root", "runtimeSocket", "projectRoot", "cwd", "clientGeneration", "protocol", "participantId", "profile", "configurationHash", "model", "persona", "launchToken", "reconnectToken", "targetKey", "wallMs"]);
-	if (item.version !== 1 || !["fake", "claude-code", "codex"].includes(String(item.driver))) throw new BridgeJournalError("Bridge runner config version or driver is invalid.");
-	const driver = item.driver as BridgeRunnerConfig["driver"];
-	const profile = item.profile === undefined ? undefined : item.profile === "read-only" || item.profile === "workspace-write" ? item.profile : invalid("Bridge runner profile is invalid.");
-	const configurationHash = item.configurationHash === undefined ? undefined : hash(item.configurationHash, "configuration hash");
-	if (driver !== "fake" && (!profile || !configurationHash)) throw new BridgeJournalError("Native bridge runner requires an authorized profile and configuration hash.");
-	const projectRoot = canonicalDirectory(item.projectRoot, "project root");
-	const cwd = canonicalDirectory(item.cwd, "runner cwd");
-	if (profile === "read-only" && cwd !== projectRoot) throw new BridgeJournalError("Read-only bridge runner cwd must equal its project root.");
-	return { version: 1, bridgeId: text(item.bridgeId, "bridge ID", MAX_ID_BYTES), driver, root: text(item.root, "runner root", MAX_PATH_BYTES), runtimeSocket: text(item.runtimeSocket, "Runtime socket", MAX_PATH_BYTES), projectRoot, cwd, clientGeneration: text(item.clientGeneration, "client generation", MAX_ID_BYTES), protocol: text(item.protocol, "protocol", 64), participantId: text(item.participantId, "participant ID", 64), ...(profile ? { profile } : {}), ...(configurationHash ? { configurationHash } : {}), ...(item.model === undefined ? {} : { model: model(item.model) }), ...(item.persona === undefined ? {} : { persona: persona(item.persona) }), ...(item.launchToken === undefined ? {} : { launchToken: text(item.launchToken, "launch token", 512) }), reconnectToken: text(item.reconnectToken, "reconnect token", 200), ...(item.targetKey === undefined ? {} : { targetKey: text(item.targetKey, "target key", MAX_ID_BYTES) }), wallMs: positiveInteger(item.wallMs, "wall limit") };
-}
-
 function validateWorkerState(value: unknown): BridgeWorkerState {
 	const item = object(value, "bridge worker state", ["version", "turnId", "eventId", "attempt", "status", "workerPid", "workerIdentity", "childPid", "childIdentity", "stdoutBytes", "stderrBytes", "frames", "terminal", "error", "startedAt", "updatedAt", "endedAt"]);
 	if (item.version !== 1 || !["starting", "running", "terminal", "needs_attention"].includes(String(item.status))) throw new BridgeJournalError("Bridge worker version or status is invalid.");
@@ -158,15 +141,6 @@ function validateWorkerState(value: unknown): BridgeWorkerState {
 	return result;
 }
 
-function persona(value: unknown): NonNullable<BridgeRunnerConfig["persona"]> {
-	const item = object(value, "bridge persona", ["name", "prompt", "promptHash"]);
-	const result = { name: text(item.name, "persona name", 64), prompt: text(item.prompt, "persona prompt", 32 * 1024), promptHash: hash(item.promptHash, "persona prompt hash") };
-	if (createHash("sha256").update(result.prompt).digest("hex") !== result.promptHash) throw new BridgeJournalError("Bridge persona prompt hash does not match.");
-	return result;
-}
-function model(value: unknown): string { const result = text(value, "model", 200); if (!/^[A-Za-z0-9][A-Za-z0-9._/*:-]{0,199}$/.test(result)) throw new BridgeJournalError("Bridge model is invalid."); return result; }
-function hash(value: unknown, name: string): string { const result = text(value, name, 64); if (!/^[0-9a-f]{64}$/.test(result)) throw new BridgeJournalError(`${name} is invalid.`); return result; }
-function canonicalDirectory(value: unknown, name: string): string { const path = text(value, name, MAX_PATH_BYTES); try { const result = realpathSync(path); if (!lstatSync(result).isDirectory()) throw new Error(); return result; } catch { throw new BridgeJournalError(`${name} is unavailable.`); } }
 function invalid(message: string): never { throw new BridgeJournalError(message); }
 
 function prepareDirectory(path: string): void {
@@ -174,7 +148,6 @@ function prepareDirectory(path: string): void {
 	catch { throw new BridgeJournalError(`Cannot prepare bridge journal directory: ${path}`); }
 }
 
-function requiredJson(path: string, max: number): unknown { const value = readJson(path, max); if (value === undefined) throw new BridgeJournalError(`Required bridge file is missing: ${path}`); return value; }
 function readJson(path: string, max: number): unknown | undefined { let fd: number | undefined; try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW); const info = fstatSync(fd); if (!info.isFile() || info.size > max || (info.mode & 0o077) !== 0) throw new Error(); return JSON.parse(readFileSync(fd, "utf8")); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw new BridgeJournalError(`Cannot read bridge state: ${path}`); } finally { if (fd !== undefined) closeSync(fd); } }
 function writeAtomic(path: string, value: unknown, max: number): void { prepareDirectory(dirname(path)); const content = `${JSON.stringify(value, null, 2)}\n`; if (Buffer.byteLength(content) > max) throw new BridgeJournalError(`Bridge state exceeds ${max} bytes.`); if (lstatExistsSymlink(path)) throw new BridgeJournalError(`Refusing bridge state symlink: ${path}`); const temporary = join(dirname(path), `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`); let fd: number | undefined; try { fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); writeFileSync(fd, content); fsyncSync(fd); closeSync(fd); fd = undefined; renameSync(temporary, path); chmodSync(path, 0o600); const directory = openSync(dirname(path), constants.O_RDONLY | constants.O_NOFOLLOW); try { fsyncSync(directory); } finally { closeSync(directory); } } catch { if (fd !== undefined) closeSync(fd); try { unlinkSync(temporary); } catch {} throw new BridgeJournalError(`Cannot persist bridge state: ${path}`); } }
 function lstatExistsSymlink(path: string): boolean { try { return lstatSync(path).isSymbolicLink(); } catch { return false; } }

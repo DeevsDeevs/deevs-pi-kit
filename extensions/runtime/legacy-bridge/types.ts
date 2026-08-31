@@ -1,6 +1,5 @@
 export const BRIDGE_RUNNER_MAX_TURNS = 1_000;
 export const BRIDGE_RUNNER_MAX_BODY_BYTES = 16 * 1024;
-export const BRIDGE_RUNNER_MAX_LINE_BYTES = 256 * 1024;
 export const BRIDGE_RUNNER_MAX_STDOUT_BYTES = 1024 * 1024;
 export const BRIDGE_RUNNER_MAX_STDERR_BYTES = 256 * 1024;
 export const BRIDGE_RUNNER_MAX_FRAMES = 1_000;
@@ -10,18 +9,6 @@ export type BridgeExecutionState = "pending" | "starting" | "running" | "termina
 export type BridgeSessionAdvance = "none" | "committed" | "uncertain";
 export type BridgeTerminalStatus = "completed" | "failed" | "cancelled";
 export type BridgeDriver = "fake" | "claude-code" | "codex";
-export type BridgeProfile = "read-only" | "workspace-write";
-
-export interface BridgePersona {
-	name: string;
-	prompt: string;
-	promptHash: string;
-}
-
-export interface BridgeClaimReceipt {
-	claimId: string;
-	eventIds: string[];
-}
 
 export interface BridgeAdmission {
 	claimId: string;
@@ -80,49 +67,6 @@ export interface BridgeJournal {
 	turns: BridgeTurn[];
 	status: "starting" | "running" | "needs_attention" | "stopped";
 	updatedAt: number;
-}
-
-export interface BridgeRunnerConfig {
-	version: 1;
-	bridgeId: string;
-	driver: BridgeDriver;
-	root: string;
-	runtimeSocket: string;
-	projectRoot: string;
-	cwd: string;
-	clientGeneration: string;
-	protocol: string;
-	participantId: string;
-	profile?: BridgeProfile;
-	configurationHash?: string;
-	model?: string;
-	persona?: BridgePersona;
-	launchToken?: string;
-	reconnectToken: string;
-	targetKey?: string;
-	wallMs: number;
-}
-
-export type BridgeDriverFrame =
-	| { type: "session"; sessionId: string }
-	| { type: "text"; text: string }
-	| { type: "terminal"; status: BridgeTerminalStatus; body: string; sessionAdvance: BridgeSessionAdvance; sessionId?: string };
-
-export interface BridgeWorkerSpec {
-	version: 1;
-	turnId: string;
-	eventId: string;
-	attempt: number;
-	driver: BridgeDriver;
-	cwd: string;
-	body: string;
-	profile?: BridgeProfile;
-	model?: string;
-	persona?: BridgePersona;
-	sessionId?: string;
-	resumeSession?: boolean;
-	statePath: string;
-	wallMs: number;
 }
 
 export interface BridgeWorkerState {
