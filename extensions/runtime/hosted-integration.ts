@@ -751,7 +751,9 @@ export class HostedRuntimeIntegration {
 		if (auto) {
 			capacity.registration = registration;
 			capacity.operationId = operationId;
-			await this.client.call("participant.auto_capacity.reserve", { ...auth(registration), operationId, protocol, callerParticipantId, ...(expectedCaller ? { expectedCallerGeneration: expectedCaller.generation } : {}), participantIds: [participantId] });
+			const reservation = { ...auth(registration), operationId, protocol, callerParticipantId, participantIds: [participantId] };
+			if (expectedCaller) Object.assign(reservation, { expectedCallerGeneration: expectedCaller.generation });
+			await this.client.call("participant.auto_capacity.reserve", reservation);
 			this.recordAutoLifecycle(auto, "start", "authorized", registration, [participantName], operationId);
 		}
 		let acquiredCaller: ParticipantIdentity | undefined;
@@ -797,7 +799,11 @@ export class HostedRuntimeIntegration {
 		if (input.action === "reconcile_integration") return this.client.call("workspace.integration.reconcile", { ...authority, integrationId: input.integrationId });
 		if (input.action === "retain") return this.client.call("workspace.retain", { ...authority, workspaceId: input.workspaceId });
 		if (input.action === "reconcile") return this.client.call("workspace.reconcile", { ...authority, workspaceId: input.workspaceId });
-		if (input.action === "checkpoint") return this.client.call("workspace.checkpoint", { ...authority, workspaceId: input.workspaceId, ...(input.taskStatus ? { taskStatus: input.taskStatus } : {}) });
+		if (input.action === "checkpoint") {
+			const params = { ...authority, workspaceId: input.workspaceId };
+			if (input.taskStatus) Object.assign(params, { taskStatus: input.taskStatus });
+			return this.client.call("workspace.checkpoint", params);
+		}
 		if (!ctx.hasUI) throw new HostedRuntimeClientError("host_unavailable", "Workspace integration and cleanup require an interactive trusted Pi session.");
 		if (input.action === "prepare_integration") {
 			if (!await ctx.ui.confirm("Prepare collaborator integration?", `Create an isolated integration worktree for exact workspace ${input.workspaceId}? Main remains untouched.`, { signal })) return { declined: true };
@@ -933,7 +939,8 @@ export class HostedRuntimeIntegration {
 			if (!expectedCaller) throw new HostedRuntimeClientError("conflict", "Workspace-write launch requires an authoritatively held caller generation.");
 			const requestId = `workspace_request_${randomUUID()}`;
 			this.pi.appendEntry(HOSTED_WORKSPACE_REQUEST_ENTRY, { version: 1, requestId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, status: "pending" });
-			const createParams = { ...auth(registration), requestId, callerParticipantKey: expectedCaller.participantKey, expectedCallerGeneration: expectedCaller.generation, protocol, participantId, ...(existing ? { expectedParticipantGeneration: existing.generation } : {}), piSessionId: sessionId };
+			const createParams = { ...auth(registration), requestId, callerParticipantKey: expectedCaller.participantKey, expectedCallerGeneration: expectedCaller.generation, protocol, participantId, piSessionId: sessionId };
+			if (existing) Object.assign(createParams, { expectedParticipantGeneration: existing.generation });
 			let provisioned: Record<string, unknown> | undefined;
 			let createError: unknown;
 			try { provisioned = strictObject(await this.client.call("workspace.launch.create", createParams), "Workspace provision result"); }
@@ -1053,7 +1060,8 @@ export class HostedRuntimeIntegration {
 			if (candidate.profile === "workspace-write") {
 				const requestId = `workspace_request_${randomUUID()}`;
 				this.pi.appendEntry(HOSTED_WORKSPACE_REQUEST_ENTRY, { version: 1, requestId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, bridgeId, status: "pending" });
-				const params = { ...authority, requestId, protocol, participantId, ...(existing ? { expectedParticipantGeneration: existing.generation } : {}), bridgeId };
+				const params = { ...authority, requestId, protocol, participantId, bridgeId };
+				if (existing) Object.assign(params, { expectedParticipantGeneration: existing.generation });
 				let created: Record<string, unknown> | undefined;
 				let createError: unknown;
 				try { created = strictObject(await this.client.call("workspace.bridge.create", params), "Bridge workspace result"); }
@@ -1092,7 +1100,9 @@ export class HostedRuntimeIntegration {
 				await this.client.call("workspace.launch.bind", { ...authority, workspaceId: workspace.workspaceId, herdr: { paneId, terminalId } });
 			}
 			this.pi.appendEntry(HOSTED_BRIDGE_REQUEST_ENTRY, { version: 2, requestId: bridgeRequestId, bridgeId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, driver: candidate.driver, profile: candidate.profile, configurationHash, workspaceId: workspace?.workspaceId, paneId, terminalId, status: "pending" });
-			const launchParams = { ...authority, requestId: bridgeRequestId, launchId: bridgeId, ...(workspace ? { workspaceId: workspace.workspaceId } : {}), protocol, participantId, ...(existing ? { expectedParticipantGeneration: existing.generation } : {}), profile: candidate.profile, configurationHash, driver: candidate.driver, herdr: { paneId, terminalId }, metadata: { adapter: "herdr-agent-v1" } };
+			const launchParams = { ...authority, requestId: bridgeRequestId, launchId: bridgeId, protocol, participantId, profile: candidate.profile, configurationHash, driver: candidate.driver, herdr: { paneId, terminalId }, metadata: { adapter: "herdr-agent-v1" } };
+			if (workspace) Object.assign(launchParams, { workspaceId: workspace.workspaceId });
+			if (existing) Object.assign(launchParams, { expectedParticipantGeneration: existing.generation });
 			let launch: Record<string, unknown> | undefined;
 			let launchError: unknown;
 			bridgeRequestSubmitted = true;
@@ -1193,10 +1203,14 @@ export class HostedRuntimeIntegration {
 			{ type: "custom", customType: HOSTED_MANAGED_COLLABORATOR_ENTRY, data: { version: 1, managed: true }, id: managedEntryId, parentId: null, timestamp },
 		];
 		if (workspace) entries.push({ type: "custom", customType: HOSTED_COLLABORATOR_WORKSPACE_ENTRY, data: { version: 1, workspaceId: workspace.workspaceId, projectRoot, workspaceRoot: sessionCwd }, id: randomUUID(), parentId: managedEntryId, timestamp });
+		const profile: CollaboratorLaunchState = { version: 2, driver: candidate.driver };
+		if (candidate.model) profile.model = candidate.model;
+		if (candidate.profile) profile.profile = candidate.profile;
+		if (candidate.persona) profile.persona = candidate.persona;
 		entries.push({
 			type: "custom",
 			customType: HOSTED_COLLABORATOR_PROFILE_ENTRY,
-			data: { version: 2, driver: candidate.driver, ...(candidate.model ? { model: candidate.model } : {}), ...(candidate.profile ? { profile: candidate.profile } : {}), ...(candidate.persona ? { persona: candidate.persona } : {}) },
+			data: profile,
 			id: randomUUID(),
 			parentId: managedEntryId,
 			timestamp,
@@ -1636,20 +1650,16 @@ export class HostedRuntimeIntegration {
 	}
 
 	private claimMessage(claim: HostedClaimMessage, wakeId?: string) {
-		return {
-			customType: HOSTED_RUNTIME_MESSAGE,
-			content: hostedContent(claim.events),
-			display: false,
-			details: {
-				version: 1,
-				...(wakeId ? { wakeId } : {}),
-				claimId: claim.claimId,
-				eventIds: claim.eventIds,
-				mailbox: claim.events.filter((event) => event.type === "mailbox.message").map((event) => ({ eventId: event.eventId, sendId: event.sendId, senderParticipantKey: event.senderParticipantKey, recipientParticipantKey: event.recipientParticipantKey })),
-				tasks: claim.events.filter((event) => event.type === "mailbox.task").map((event) => ({ eventId: event.eventId, sendId: event.sendId, senderParticipantKey: event.senderParticipantKey, recipientParticipantKey: event.recipientParticipantKey })),
-				taskResults: claim.events.filter((event) => event.type === "mailbox.task_result").map((event) => ({ eventId: event.eventId, inReplyToEventId: event.inReplyToEventId, replyId: event.replyId, status: event.status, sessionAdvance: event.sessionAdvance, workspace: event.workspace })),
-			},
+		const details = {
+			version: 1,
+			claimId: claim.claimId,
+			eventIds: claim.eventIds,
+			mailbox: claim.events.filter((event) => event.type === "mailbox.message").map((event) => ({ eventId: event.eventId, sendId: event.sendId, senderParticipantKey: event.senderParticipantKey, recipientParticipantKey: event.recipientParticipantKey })),
+			tasks: claim.events.filter((event) => event.type === "mailbox.task").map((event) => ({ eventId: event.eventId, sendId: event.sendId, senderParticipantKey: event.senderParticipantKey, recipientParticipantKey: event.recipientParticipantKey })),
+			taskResults: claim.events.filter((event) => event.type === "mailbox.task_result").map((event) => ({ eventId: event.eventId, inReplyToEventId: event.inReplyToEventId, replyId: event.replyId, status: event.status, sessionAdvance: event.sessionAdvance, workspace: event.workspace })),
 		};
+		if (wakeId) Object.assign(details, { wakeId });
+		return { customType: HOSTED_RUNTIME_MESSAGE, content: hostedContent(claim.events), display: false, details };
 	}
 
 	private rememberAdmission(receipt: HostedReceipt, retry: boolean): void {
@@ -1682,7 +1692,9 @@ export class HostedRuntimeIntegration {
 	}
 
 	private recordAutoLifecycle(state: CollaboratorAutoState, action: CollaboratorManageAction, phase: "authorized" | "settled", registration: LiveClientRegistration, participants: string[], operationId: string, results?: CollaboratorManageResult[]): void {
-		this.pi.appendEntry(HOSTED_AUTO_LIFECYCLE_ENTRY, { version: 1, operationId, modeGeneration: state.generation, action, phase, targetKey: registration.targetKey, callerParticipantKey: this.participantIdentity?.participantKey, participants, ...(results ? { results: results.map((result) => ({ participant: result.participant, status: result.status })) } : {}), at: Date.now() });
+		const entry = { version: 1, operationId, modeGeneration: state.generation, action, phase, targetKey: registration.targetKey, callerParticipantKey: this.participantIdentity?.participantKey, participants, at: Date.now() };
+		if (results) Object.assign(entry, { results: results.map((result) => ({ participant: result.participant, status: result.status })) });
+		this.pi.appendEntry(HOSTED_AUTO_LIFECYCLE_ENTRY, entry);
 	}
 
 	private rememberWake(wakeId: string): void {
@@ -1725,7 +1737,9 @@ function parseClaim(value: unknown): HostedClaimMessage {
 		};
 		if (event.type === "mailbox.task_result") {
 			if (payload.status !== "completed" && payload.status !== "failed" && payload.status !== "cancelled" || payload.sessionAdvance !== "none" && payload.sessionAdvance !== "committed") throw new HostedRuntimeClientError("invalid_response", "Runtime task result status is invalid.");
-			return { eventId: text(event.eventId), type: "mailbox.task_result", summary: text(event.summary), body: text(payload.body), sendId: text(payload.sendId), replyId: text(payload.replyId), inReplyToEventId: text(payload.inReplyToEventId), status: payload.status, sessionAdvance: payload.sessionAdvance, senderParticipantKey: text(payload.senderParticipantKey), recipientParticipantKey: text(payload.recipientParticipantKey), ...(payload.workspace === undefined ? {} : { workspace: strictObject(payload.workspace, "Task workspace evidence") }) };
+			const result: Extract<HostedClaimEvent, { type: "mailbox.task_result" }> = { eventId: text(event.eventId), type: "mailbox.task_result", summary: text(event.summary), body: text(payload.body), sendId: text(payload.sendId), replyId: text(payload.replyId), inReplyToEventId: text(payload.inReplyToEventId), status: payload.status, sessionAdvance: payload.sessionAdvance, senderParticipantKey: text(payload.senderParticipantKey), recipientParticipantKey: text(payload.recipientParticipantKey) };
+			if (payload.workspace !== undefined) result.workspace = strictObject(payload.workspace, "Task workspace evidence");
+			return result;
 		}
 		throw new HostedRuntimeClientError("invalid_response", "Runtime event type is unsupported.");
 	});
@@ -1746,7 +1760,9 @@ function parseManagedAgentControl(value: unknown): ManagedAgentControl | undefin
 	const record = asRecord(value);
 	const session = asRecord(record?.agentSession);
 	if (record?.version !== 1 || (record.driver !== "claude-code" && record.driver !== "codex") || (record.state !== "pending" && record.state !== "active" && record.state !== "needs_attention" && record.state !== "stopped") || typeof record.bridgeId !== "string" || typeof record.targetKey !== "string" || typeof record.clientGeneration !== "string" || typeof record.reconnectToken !== "string" || typeof record.paneId !== "string" || typeof record.terminalId !== "string" || !session || typeof session.source !== "string" || typeof session.agent !== "string" || (session.kind !== "id" && session.kind !== "path") || typeof session.value !== "string") return undefined;
-	return { version: 1, bridgeId: record.bridgeId, targetKey: record.targetKey, driver: record.driver, clientGeneration: record.clientGeneration, reconnectToken: record.reconnectToken, ...(typeof record.launchToken === "string" ? { launchToken: record.launchToken } : {}), paneId: record.paneId, terminalId: record.terminalId, agentSession: { source: session.source, agent: session.agent, kind: session.kind, value: session.value }, state: record.state };
+	const control: ManagedAgentControl = { version: 1, bridgeId: record.bridgeId, targetKey: record.targetKey, driver: record.driver, clientGeneration: record.clientGeneration, reconnectToken: record.reconnectToken, paneId: record.paneId, terminalId: record.terminalId, agentSession: { source: session.source, agent: session.agent, kind: session.kind, value: session.value }, state: record.state };
+	if (typeof record.launchToken === "string") control.launchToken = record.launchToken;
+	return control;
 }
 
 function parseStartedAgent(value: string, paneId: string, terminalId: string, kind: "claude" | "codex", agentName: string): ManagedAgentControl["agentSession"] {
@@ -1900,34 +1916,31 @@ function parseParticipant(value: unknown): ClientParticipantStatus {
 	const participant = strictObject(value, "Runtime participant");
 	if (participant.state !== "held" && participant.state !== "vacant" && participant.state !== "ended") throw new HostedRuntimeClientError("invalid_response", "Participant state is invalid.");
 	const queued = asRecord(participant.queued);
-	return {
+	const result: ClientParticipantStatus = {
 		participantKey: text(participant.participantKey),
 		protocol: text(participant.protocol),
 		participantId: text(participant.participantId),
 		state: participant.state,
 		generation: text(participant.generation),
-		...(participant.holderTargetKey === undefined ? {} : { holderTargetKey: text(participant.holderTargetKey) }),
 		holderLive: booleanValue(participant.holderLive),
-		...(participant.driver === "pi" || participant.driver === "claude-code" || participant.driver === "codex" ? { driver: participant.driver } : {}),
-		...(participant.capabilityTier === "managed" || participant.capabilityTier === "durable" ? { capabilityTier: participant.capabilityTier } : {}),
-		...(participant.profile === "read-only" || participant.profile === "workspace-write" ? { profile: participant.profile } : {}),
-		...(queued ? { queued: { pending: integer(queued.pending), claimed: integer(queued.claimed) } } : {}),
 		lastTransition: { cause: text(strictObject(participant.lastTransition, "Participant transition").cause) },
 	};
+	if (participant.holderTargetKey !== undefined) result.holderTargetKey = text(participant.holderTargetKey);
+	if (participant.driver === "pi" || participant.driver === "claude-code" || participant.driver === "codex") result.driver = participant.driver;
+	if (participant.capabilityTier === "managed" || participant.capabilityTier === "durable") result.capabilityTier = participant.capabilityTier;
+	if (participant.profile === "read-only" || participant.profile === "workspace-write") result.profile = participant.profile;
+	if (queued) result.queued = { pending: integer(queued.pending), claimed: integer(queued.claimed) };
+	return result;
 }
 
 function parseParticipantIdentity(value: unknown): ParticipantIdentity | undefined {
 	const record = asRecord(value);
 	if (record?.version !== 1 || (record.disposition !== "held" && record.disposition !== "vacant" && record.disposition !== "ended")) return undefined;
 	if (typeof record.protocol !== "string" || typeof record.participantId !== "string") return undefined;
-	return {
-		version: 1,
-		protocol: record.protocol,
-		participantId: record.participantId,
-		...(typeof record.participantKey === "string" ? { participantKey: record.participantKey } : {}),
-		...(typeof record.generation === "string" ? { generation: record.generation } : {}),
-		disposition: record.disposition,
-	};
+	const identity: ParticipantIdentity = { version: 1, protocol: record.protocol, participantId: record.participantId, disposition: record.disposition };
+	if (typeof record.participantKey === "string") identity.participantKey = record.participantKey;
+	if (typeof record.generation === "string") identity.generation = record.generation;
+	return identity;
 }
 
 function parseCollaboratorLaunchState(value: unknown): CollaboratorLaunchState | undefined {
@@ -1947,13 +1960,11 @@ function parseCollaboratorLaunchState(value: unknown): CollaboratorLaunchState |
 		if (createHash("sha256").update(candidate.prompt).digest("hex") !== candidate.promptHash || record.profile === undefined) return undefined;
 		persona = { name: candidate.name, prompt: candidate.prompt, promptHash: candidate.promptHash };
 	}
-	return {
-		version: 2,
-		driver,
-		...(typeof record.model === "string" ? { model: record.model } : {}),
-		...(record.profile === "read-only" || record.profile === "workspace-write" ? { profile: record.profile } : {}),
-		...(persona ? { persona } : {}),
-	};
+	const state: CollaboratorLaunchState = { version: 2, driver };
+	if (typeof record.model === "string") state.model = record.model;
+	if (record.profile === "read-only" || record.profile === "workspace-write") state.profile = record.profile;
+	if (persona) state.persona = persona;
+	return state;
 }
 
 const COLLABORATOR_NAME = /^[a-z][a-z0-9_-]{0,63}$/;
@@ -1972,7 +1983,10 @@ function resolveCollaboratorCandidate(candidate: CollaboratorCandidate, defaultP
 	const requestedProfile = collaboratorProfile(candidate.profile);
 	if (!candidate.persona) {
 		const profile = requestedProfile ?? defaultProfile ?? (driver === "pi" ? undefined : "read-only");
-		return { participantId, driver, ...(requestedModel ? { model: requestedModel } : {}), ...(profile ? { profile } : {}) };
+		const result: ResolvedCollaboratorCandidate = { participantId, driver };
+		if (requestedModel) result.model = requestedModel;
+		if (profile) result.profile = profile;
+		return result;
 	}
 	const personaName = collaboratorName(candidate.persona, "persona");
 	const definition = findAgent(COLLABORATOR_PERSONAS, personaName);
@@ -1984,7 +1998,9 @@ function resolveCollaboratorCandidate(candidate: CollaboratorCandidate, defaultP
 	const persona: CollaboratorPersona = { name: definition.name, prompt, promptHash: createHash("sha256").update(prompt).digest("hex") };
 	const model = requestedModel ?? (driver === "pi" ? collaboratorModel(definition.model) : undefined);
 	assertUnambiguousCollaboratorModel(driver, model);
-	return { participantId, driver, profile, persona, ...(model ? { model } : {}) };
+	const result: ResolvedCollaboratorCandidate = { participantId, driver, profile, persona };
+	if (model) result.model = model;
+	return result;
 }
 
 function assertPersonaCompatible(persona: AgentDefinition, profile: CollaboratorProfile, driver: CollaboratorDriver): void {
@@ -2064,7 +2080,10 @@ function collaboratorRecipient(value: string, protocol: string): string {
 function parseCollaboratorBootstrap(value: string | undefined): { protocol: string; participantId: string; reviveAuthorized?: true } | undefined {
 	if (!value) return undefined;
 	const match = /^([a-z][a-z0-9_-]{0,63}):([a-z][a-z0-9_-]{0,63})(:revive)?$/.exec(value);
-	return match ? { protocol: match[1]!, participantId: match[2]!, ...(match[3] ? { reviveAuthorized: true as const } : {}) } : undefined;
+	if (!match) return undefined;
+	const result = { protocol: match[1]!, participantId: match[2]! };
+	if (match[3]) Object.assign(result, { reviveAuthorized: true as const });
+	return result;
 }
 
 function monitorSummary(value: unknown): string {
