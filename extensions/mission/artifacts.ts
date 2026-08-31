@@ -63,17 +63,19 @@ async function ensureDirectory(directory: string): Promise<void> {
 	try {
 		await mkdir(directory);
 	} catch (error) {
-		if (!isNodeError(error) || error.code !== "EEXIST") throw error;
+		if (!(error instanceof Error) || !("code" in error) || error.code !== "EEXIST") throw error;
 	}
 	const info = await lstat(directory);
 	if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(`Mission artifact path is not a real directory: ${directory}`);
 }
 
 async function writeArtifactFile(filePath: string, content: string): Promise<void> {
-	const existing = await lstat(filePath).catch((error: unknown) => {
-		if (isNodeError(error) && error.code === "ENOENT") return undefined;
-		throw error;
-	});
+	let existing: Awaited<ReturnType<typeof lstat>> | undefined;
+	try {
+		existing = await lstat(filePath);
+	} catch (error) {
+		if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
+	}
 	if (existing?.isSymbolicLink()) throw new Error(`Mission artifact path is a symlink: ${filePath}`);
 	const handle = await open(filePath, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
 	try {
@@ -83,9 +85,6 @@ async function writeArtifactFile(filePath: string, content: string): Promise<voi
 	}
 }
 
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-	return error instanceof Error && "code" in error;
-}
 
 function formatMissionMarkdown(mission: MissionCurrent, usage?: MissionUsage, progress: MissionProgressRecord[] = []): string {
 	const budget = [
