@@ -976,6 +976,12 @@ async function readReviewReport(run: DelegateRun, requirementCount: number, scop
 			if (criticalImpact) parsed.criticalImpact = criticalImpact;
 			findings.push(parsed);
 		}
+		if (scopeKind === "exact_paths") {
+			for (const finding of acceptedFindings ?? []) {
+				if ((finding.severity !== "blocker" && finding.severity !== "major") || (finding.path !== undefined && scopePaths.includes(finding.path))) continue;
+				findings.push({ ...finding, index: findings.length });
+			}
+		}
 		const severities = findings.map((finding) => finding.severity);
 		const blockingFindingCount = severities.filter((severity) => severity === "blocker" || severity === "major").length;
 		return {
