@@ -251,6 +251,17 @@ describe("Runtime isolated collaborator workspace", () => {
 		await stopping.stopConfirmed(main, native.participantKey, native.holderGeneration);
 		expect(test.store.read().workspaces[workspace.workspace.workspaceId]?.state).toBe("retained");
 		expect(readFileSync(join(test.project, "app.txt"), "utf8")).toBe("base\n");
+
+		const authority = { workspaceId: workspace.workspace.workspaceId, callerParticipantKey: mainParticipant.participantKey, expectedCallerGeneration: mainParticipant.generation };
+		writeFileSync(join(workspace.workspace.worktreePath, "recovered.txt"), "recover me\n");
+		const internals = test.coordinator as unknown as { git: { checkpoint: (...args: unknown[]) => Promise<unknown> } };
+		const checkpoint = internals.git.checkpoint.bind(internals.git);
+		internals.git.checkpoint = async () => { throw new Error("injected checkpoint failure"); };
+		await expect(test.coordinator.checkpoint(main, { ...authority, taskStatus: "cancelled" })).rejects.toThrow("injected checkpoint failure");
+		expect(test.store.read().workspaces[workspace.workspace.workspaceId]?.state).toBe("needs_attention");
+		expect(test.coordinator.retain(main, authority).state).toBe("retained");
+		internals.git.checkpoint = checkpoint;
+		expect(await test.coordinator.checkpoint(main, { ...authority, taskStatus: "cancelled" })).toMatchObject({ state: "partial", changedFiles: 1, taskStatus: "cancelled" });
 	});
 
 	it("exposes strict additive workspace RPC and capability discovery", async () => {
