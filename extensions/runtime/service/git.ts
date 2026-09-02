@@ -423,11 +423,22 @@ export class RuntimeGit {
 			if (metadata[1] !== "000000") materialized.push(path);
 		}
 		const ignored = splitNul(await this.output(cwd, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--"]));
-		if (materialized.length > MAX_PATHS || ignored.length > MAX_PATHS || ignored.some((path) => !path || Buffer.byteLength(path) > MAX_PATH_BYTES)) throw new RuntimeGitError("Main worktree exceeds ignored-path safety bounds.");
+		if (materialized.length > MAX_PATHS || ignored.some((path) => !path || Buffer.byteLength(path) > MAX_PATH_BYTES)) throw new RuntimeGitError("Main worktree exceeds ignored-path safety bounds.");
 		const configuredIgnoreCase = (await this.runCodes(cwd, ["config", "--type=bool", "--get", "core.ignorecase"], [0, 1])).stdout.toString("utf8").trim() === "true";
 		const ignoreCase = configuredIgnoreCase || await this.caseInsensitiveFilesystem(cwd);
 		const comparable = (path: string) => ignoreCase ? path.normalize("NFC").toLowerCase() : path;
-		return ignored.some((ignoredPath) => materialized.some((changedPath) => overlaps(comparable(ignoredPath), comparable(changedPath))));
+		const changedPaths = materialized.map(comparable).sort();
+		const ignoredPaths = ignored.map(comparable).sort();
+		let changedIndex = 0;
+		let ignoredIndex = 0;
+		while (changedIndex < changedPaths.length && ignoredIndex < ignoredPaths.length) {
+			const changedPath = changedPaths[changedIndex]!;
+			const ignoredPath = ignoredPaths[ignoredIndex]!;
+			if (overlaps(ignoredPath, changedPath)) return true;
+			if (changedPath < ignoredPath) changedIndex++;
+			else ignoredIndex++;
+		}
+		return false;
 	}
 
 	private async caseInsensitiveFilesystem(directory: string): Promise<boolean> {
