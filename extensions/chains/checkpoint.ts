@@ -1,7 +1,15 @@
 import { Text } from "@earendil-works/pi-tui";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { CustomEntry, ExtensionAPI, ExtensionContext, ToolCallEvent, ToolExecutionEndEvent, ToolExecutionStartEvent } from "@earendil-works/pi-coding-agent";
 
 export const CHAIN_CHECKPOINT_ENTRY = "deevs.chain-checkpoint.v1";
+
+type ToolInput = ToolCallEvent["input"];
+type CheckpointPayload = CustomEntry["data"] | ToolExecutionStartEvent["args"] | ToolExecutionEndEvent["result"] | ToolInput;
+type CheckpointValue = null | boolean | number | string | CheckpointValue[] | CheckpointObject;
+
+interface CheckpointObject {
+	[key: string]: CheckpointValue | undefined;
+}
 
 const CHECKPOINT_FAILURE_TOOLS = new Set([
 	"ask_user",
@@ -136,12 +144,12 @@ export class ChainCheckpointService {
 		this.record({ type: "saved", chain, branch, link, at: Date.now() });
 	}
 
-	checkpointFailed(error: unknown): void {
+	checkpointFailed(cause: unknown): void {
 		const cycle = this.pressureCycleId();
 		if (cycle === undefined) return;
 		this.checkpointFailureState = "failed";
 		this.checkpointFailureCycle = cycle;
-		this.checkpointFailureMessage = error instanceof Error ? error.message : String(error);
+		this.checkpointFailureMessage = cause instanceof Error ? cause.message : String(cause);
 	}
 
 	sessionChanged(): void {
@@ -190,7 +198,7 @@ export class ChainCheckpointService {
 		return this.immediateCheckpointDue() ? this.state.contextPressureAt : undefined;
 	}
 
-	blockTool(toolName: string, input?: Record<string, unknown>): string | undefined {
+	blockTool(toolName: string, input?: ToolInput): string | undefined {
 		const cycle = this.pressureCycleId();
 		if (cycle === undefined || toolName === "chain_save") return undefined;
 		const checkpointFailed = this.checkpointFailureState === "failed" && this.checkpointFailureCycle === cycle;
@@ -247,13 +255,14 @@ export class ChainCheckpointService {
 	}
 }
 
-function isCheckpointFailureTool(toolName: string, input?: Record<string, unknown>): boolean {
+function isCheckpointFailureTool(toolName: string, input?: ToolInput): boolean {
 	if (CHECKPOINT_FAILURE_TOOLS.has(toolName)) return true;
-	return toolName === "collaborator_manage" && (input?.action === "stop" || input?.action === "stand_down");
+	const action = asRecord(input)?.action;
+	return toolName === "collaborator_manage" && (action === "stop" || action === "stand_down");
 }
 
 export function registerChainCheckpoint(pi: ExtensionAPI, service: ChainCheckpointService): void {
-	const toolArgs = new Map<string, unknown>();
+	const toolArgs = new Map<string, ToolExecutionStartEvent["args"]>();
 	const pressureCheckpointCalls = new Map<string, number>();
 	const claimedPressureCycles = new Set<number>();
 	let pressureCompaction: { token: string; cycle: number } | undefined;
@@ -310,8 +319,7 @@ export function registerChainCheckpoint(pi: ExtensionAPI, service: ChainCheckpoi
 	pi.on("before_agent_start", (event, ctx) => {
 		service.restore(ctx);
 		service.checkContextPressure(ctx);
-		const systemPrompt = typeof event.systemPrompt === "string" ? event.systemPrompt : "";
-		const next = service.beforeAgentStart(systemPrompt);
+		const next = service.beforeAgentStart(event.systemPrompt);
 		return next ? { systemPrompt: next } : undefined;
 	});
 	pi.on("tool_call", (event, ctx) => {
@@ -336,11 +344,12 @@ export function registerChainCheckpoint(pi: ExtensionAPI, service: ChainCheckpoi
 			return;
 		}
 		const details = asRecord(asRecord(event.result)?.details);
-		if (event.toolName === "chain_save" && typeof args?.chain === "string") {
-			const link = asRecord(details?.link);
-			const branch = typeof args.branch === "string" ? args.branch : "main";
-			const filename = typeof link?.filename === "string" ? link.filename : undefined;
-			service.saved(args.chain, branch, filename);
+		const chain = stringValue(args?.chain);
+		const parsedBranch = stringValue(args?.branch);
+		const branch = parsedBranch ?? "main";
+		if (event.toolName === "chain_save" && chain !== undefined) {
+			const filename = stringValue(asRecord(details?.link)?.filename);
+			service.saved(chain, branch, filename);
 			if (pressureCycle !== undefined && !claimedPressureCycles.has(pressureCycle)) {
 				claimedPressureCycles.add(pressureCycle);
 				const sourceGeneration = sessionGeneration;
@@ -350,7 +359,7 @@ export function registerChainCheckpoint(pi: ExtensionAPI, service: ChainCheckpoi
 				compactAndContinue(
 					pi,
 					ctx,
-					args.chain,
+					chain,
 					branch,
 					filename,
 					() => sessionGeneration === sourceGeneration && ctx.sessionManager.getSessionFile() === sourceSessionFile,
@@ -359,12 +368,12 @@ export function registerChainCheckpoint(pi: ExtensionAPI, service: ChainCheckpoi
 			}
 			return;
 		}
-		if ((event.toolName === "chain_load" || event.toolName === "chain_context") && typeof args?.chain === "string") {
-			service.activate(args.chain, typeof args.branch === "string" ? args.branch : "main");
+		if ((event.toolName === "chain_load" || event.toolName === "chain_context") && chain !== undefined) {
+			service.activate(chain, branch);
 			return;
 		}
-		if (event.toolName === "chain_fork" && typeof args?.chain === "string" && typeof args.branch === "string") {
-			service.activate(args.chain, args.branch);
+		if (event.toolName === "chain_fork" && chain !== undefined && parsedBranch !== undefined) {
+			service.activate(chain, parsedBranch);
 			service.due("new Chain branch has no checkpoint", "branch_created");
 			return;
 		}
@@ -426,29 +435,48 @@ async function gitFingerprint(pi: ExtensionAPI, cwd: string): Promise<string | u
 	}
 }
 
-function parseOperation(value: unknown): ChainCheckpointOperation | undefined {
+function parseOperation(value: CustomEntry["data"]): ChainCheckpointOperation | undefined {
 	const operation = asRecord(value);
-	if (!operation || typeof operation.type !== "string" || typeof operation.at !== "number") return undefined;
-	if (operation.type === "activate" && typeof operation.chain === "string" && typeof operation.branch === "string") return { type: "activate", chain: operation.chain, branch: operation.branch, at: operation.at };
-	if (operation.type === "due" && typeof operation.reason === "string") return { type: "due", reason: operation.reason, code: chainDueCode(operation.code) ?? "other", at: operation.at };
-	if (operation.type === "saved" && typeof operation.chain === "string" && typeof operation.branch === "string" && (operation.link === undefined || typeof operation.link === "string")) {
-		const saved: ChainCheckpointOperation = { type: "saved", chain: operation.chain, branch: operation.branch, at: operation.at };
-		if (operation.link !== undefined) saved.link = operation.link;
+	const type = stringValue(operation?.type);
+	const at = numberValue(operation?.at);
+	if (type === undefined || at === undefined) return undefined;
+	const chain = stringValue(operation?.chain);
+	const branch = stringValue(operation?.branch);
+	if (type === "activate" && chain !== undefined && branch !== undefined) return { type, chain, branch, at };
+	const reason = stringValue(operation?.reason);
+	if (type === "due" && reason !== undefined) return { type, reason, code: chainDueCode(operation?.code) ?? "other", at };
+	const link = stringValue(operation?.link);
+	if (type === "saved" && chain !== undefined && branch !== undefined && (operation?.link === undefined || link !== undefined)) {
+		const saved: ChainCheckpointOperation = { type, chain, branch, at };
+		if (link !== undefined) saved.link = link;
 		return saved;
 	}
-	if (operation.type === "waived" && typeof operation.reason === "string") return { type: "waived", reason: operation.reason, at: operation.at };
-	if (operation.type === "context_reset") return { type: "context_reset", at: operation.at };
+	if (type === "waived" && reason !== undefined) return { type, reason, at };
+	if (type === "context_reset") return { type, at };
 	return undefined;
 }
 
-function chainDueCode(value: unknown): ChainDueCode | undefined {
+function chainDueCode(value: CheckpointValue | undefined): ChainDueCode | undefined {
 	if (value === "context_pressure" || value === "material_change" || value === "mission_milestone" || value === "mission_control" || value === "branch_created" || value === "other") return value;
 	return undefined;
 }
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-	// SAFETY: The runtime checks exclude null, primitives, and arrays before key access.
-	return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+function asRecord(value: CheckpointPayload): CheckpointObject | undefined {
+	if (value === null || Array.isArray(value)) return undefined;
+	try {
+		const prototype = Object.getPrototypeOf(value);
+		return prototype === Object.prototype || prototype === null ? Object.fromEntries(Object.entries(value)) : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function stringValue(value: CheckpointValue | undefined): string | undefined {
+	try { return String.prototype.valueOf.call(value) === value ? value : undefined; } catch { return undefined; }
+}
+
+function numberValue(value: CheckpointValue | undefined): number | undefined {
+	try { return Number.prototype.valueOf.call(value) === value ? value : undefined; } catch { return undefined; }
 }
 
 // SAFETY: This package exclusively owns the named hot-reload registry and initializes its exact shape below.
