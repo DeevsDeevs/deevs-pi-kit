@@ -427,18 +427,10 @@ export class RuntimeGit {
 		const configuredIgnoreCase = (await this.runCodes(cwd, ["config", "--type=bool", "--get", "core.ignorecase"], [0, 1])).stdout.toString("utf8").trim() === "true";
 		const ignoreCase = configuredIgnoreCase || await this.caseInsensitiveFilesystem(cwd);
 		const comparable = (path: string) => ignoreCase ? path.normalize("NFC").toLowerCase() : path;
-		const changedPaths = materialized.map(comparable).sort();
-		const ignoredPaths = ignored.map(comparable).sort();
-		let changedIndex = 0;
-		let ignoredIndex = 0;
-		while (changedIndex < changedPaths.length && ignoredIndex < ignoredPaths.length) {
-			const changedPath = changedPaths[changedIndex]!;
-			const ignoredPath = ignoredPaths[ignoredIndex]!;
-			if (overlaps(ignoredPath, changedPath)) return true;
-			if (changedPath < ignoredPath) changedIndex++;
-			else ignoredIndex++;
-		}
-		return false;
+		const changedPaths = new Set(materialized.map(comparable));
+		const ignoredPaths = new Set(ignored.map(comparable));
+		return [...changedPaths].some((path) => hasPathAncestor(ignoredPaths, path))
+			|| [...ignoredPaths].some((path) => hasPathAncestor(changedPaths, path));
 	}
 
 	private async caseInsensitiveFilesystem(directory: string): Promise<boolean> {
@@ -550,7 +542,10 @@ function inside(root: string, target: string): boolean {
 	const path = relative(root, target);
 	return path === "" || (!isAbsolute(path) && path !== ".." && !path.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`));
 }
-function overlaps(left: string, right: string): boolean { return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`); }
+function hasPathAncestor(candidates: Set<string>, path: string): boolean {
+	for (let end = path.length; end > 0; end = path.lastIndexOf("/", end - 1)) if (candidates.has(path.slice(0, end))) return true;
+	return false;
+}
 function safeNumber(value: bigint): number {
 	if (value > BigInt(Number.MAX_SAFE_INTEGER)) throw new RuntimeGitError("Git statistics exceed safe integer bounds.");
 	return Number(value);

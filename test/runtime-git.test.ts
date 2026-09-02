@@ -186,6 +186,7 @@ describe("Runtime Git workspace adapter", () => {
 		git(fixture.project, ["config", "core.ignoreCase", "false"]);
 
 		mkdirSync(join(fixture.project, "cache"));
+		writeFileSync(join(fixture.project, "cache-foo.ignored"), "lexically intervening user data\n");
 		writeFileSync(join(fixture.project, "cache", "child.ignored"), "nested user data\n");
 		await expect(runtime.finalize(repo, repo.headCommit, prepared.headCommit)).rejects.toThrow("overwrite ignored main-worktree data");
 		expect(readFileSync(join(fixture.project, "cache", "child.ignored"), "utf8")).toBe("nested user data\n");
