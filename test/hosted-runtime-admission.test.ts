@@ -105,7 +105,7 @@ describe("hosted Pi wake admission", () => {
 		expect(messages[0]).toMatchObject({ customType: HOSTED_RUNTIME_MESSAGE, display: false, details: { version: 1, wakeId: "wake_1", claimId: "claim_wake_1", eventIds: ["evt_wake_1"] } });
 		await integration.acceptWake("1 reg_1 wake_1", ctx as never);
 		expect(messages).toHaveLength(1);
-		integration.acknowledgeMessage({ role: "custom", ...messages[0] });
+		integration.acknowledgeMessage({ role: "custom", ...messages[0] } as never);
 		await vi.waitFor(() => expect(requests.some((request) => request.method === "inbox.ack" && request.params.claimId === "claim_wake_1")).toBe(true));
 
 		await integration.acceptWake("1 reg_1 wake_mail", ctx as never);
