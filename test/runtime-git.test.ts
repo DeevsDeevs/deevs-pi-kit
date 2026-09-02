@@ -210,6 +210,9 @@ describe("Runtime Git workspace adapter", () => {
 		expect(git(fixture.project, ["rev-parse", "HEAD"])).toBe(repo.headCommit);
 
 		rmSync(join(fixture.project, "collision.ignored"));
+		const ignoredBulk = join(fixture.project, "bulk");
+		mkdirSync(ignoredBulk);
+		for (let index = 0; index <= 10_000; index++) writeFileSync(join(ignoredBulk, `${index}.ignored`), "");
 		writeFileSync(join(fixture.project, "unrelated.ignored"), "preserve me\n");
 		expect(await runtime.finalize(repo, repo.headCommit, prepared.headCommit)).toBe(prepared.headCommit);
 		expect(readFileSync(join(fixture.project, "unrelated.ignored"), "utf8")).toBe("preserve me\n");
