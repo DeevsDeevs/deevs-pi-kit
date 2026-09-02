@@ -9,6 +9,12 @@ import { HostedStateStore } from "./state.ts";
 const REGISTRATION_LEASE_MS = 30_000;
 const MAX_ADMITTED_CLAIMS = 12;
 
+type HerdrValue = null | boolean | number | string | HerdrValue[] | HerdrObject;
+
+interface HerdrObject {
+	[key: string]: HerdrValue | undefined;
+}
+
 export type RegistrationErrorCode = "invalid_request" | "not_found" | "conflict" | "registration_stale" | "identity_mismatch" | "host_unavailable";
 
 export class RegistrationError extends Error {
@@ -484,7 +490,7 @@ function verifyPiSessionHeader(path: string, expectedId: string, expectedCwd: st
 	}
 }
 
-function parsePaneIdentity(value: unknown): HostedPaneIdentity {
+function parsePaneIdentity(value: HerdrValue | undefined): HostedPaneIdentity {
 	try {
 		const pane = strictObject(value, "Herdr pane");
 		if (!Number.isSafeInteger(pane.revision) || Number(pane.revision) < 0) throw new Error("invalid pane revision");
@@ -497,14 +503,15 @@ function parsePaneIdentity(value: unknown): HostedPaneIdentity {
 			paneCount: 0,
 			revision: Number(pane.revision),
 		};
-		if (typeof pane.agent === "string") result.agent = pane.agent;
+		const agent = stringValue(pane.agent);
+		if (agent !== undefined) result.agent = agent;
 		return result;
 	} catch {
 		throw new RegistrationError("host_unavailable", "Herdr returned malformed pane identity.");
 	}
 }
 
-function parseLiveAgent(value: unknown): HostedLiveAgent {
+function parseLiveAgent(value: HerdrValue | undefined): HostedLiveAgent {
 	try {
 		const agent = strictObject(value, "Herdr agent");
 		const label = text(agent.agent);
@@ -526,10 +533,14 @@ function parseLiveAgent(value: unknown): HostedLiveAgent {
 			status,
 			stateChangeSeq: Number(agent.state_change_seq),
 		};
-		if (typeof agent.tab_id === "string") result.tabId = agent.tab_id;
-		if (typeof agent.workspace_id === "string") result.workspaceId = agent.workspace_id;
-		if (typeof agent.name === "string") result.name = agent.name;
-		if (typeof agent.focused === "boolean") result.focused = agent.focused;
+		const tabId = stringValue(agent.tab_id);
+		const workspaceId = stringValue(agent.workspace_id);
+		const name = stringValue(agent.name);
+		const focused = booleanValue(agent.focused);
+		if (tabId !== undefined) result.tabId = tabId;
+		if (workspaceId !== undefined) result.workspaceId = workspaceId;
+		if (name !== undefined) result.name = name;
+		if (focused !== undefined) result.focused = focused;
 		return result;
 	} catch (error) {
 		if (error instanceof RegistrationError) throw error;
@@ -541,8 +552,7 @@ function canonicalPath(path: string): string | undefined {
 	try { return realpathSync(path); } catch { return undefined; }
 }
 
-// oxlint-disable-next-line anti-slop/no-unknown-returns -- Each Herdr query result is decoded by listAgents before identity decisions.
-function runHerdr(args: string[]): Promise<unknown> {
+function runHerdr(args: string[]): Promise<HerdrValue> {
 	return new Promise((resolve, reject) => {
 		execFile("herdr", args, { timeout: 2_000, maxBuffer: 1024 * 1024, encoding: "utf8" }, (error, stdout) => {
 			if (error) {
@@ -554,15 +564,38 @@ function runHerdr(args: string[]): Promise<unknown> {
 	});
 }
 
-function strictObject(value: unknown, name: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${name} must be an object.`);
-	// SAFETY: The preceding runtime check excludes null, primitives, and arrays before key access.
-	return value as Record<string, unknown>;
+function strictObject(value: HerdrValue | undefined, name: string): HerdrObject {
+	if (!isHerdrObject(value)) throw new Error(`${name} must be an object.`);
+	return value;
 }
 
-function text(value: unknown): string {
-	if (typeof value !== "string" || value.length === 0) throw new Error("expected non-empty text");
-	return value;
+function text(value: HerdrValue | undefined): string {
+	const result = stringValue(value);
+	if (result === undefined || result.length === 0) throw new Error("expected non-empty text");
+	return result;
+}
+
+function isHerdrObject(value: HerdrValue | undefined): value is HerdrObject {
+	if (value === null || value === undefined || Array.isArray(value)) return false;
+	try {
+		const prototype = Object.getPrototypeOf(value);
+		return prototype === Object.prototype || prototype === null;
+	} catch {
+		return false;
+	}
+}
+
+function stringValue(value: HerdrValue | undefined): string | undefined {
+	try {
+		const result = String.prototype.valueOf.call(value);
+		return result === value ? result : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function booleanValue(value: HerdrValue | undefined): boolean | undefined {
+	return value === true || value === false ? value : undefined;
 }
 
 function sameIds(left: string[], right: string[]): boolean {
