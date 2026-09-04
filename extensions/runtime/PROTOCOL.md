@@ -268,6 +268,38 @@ The adapter must never:
 - scrape the pane or infer result status from prose;
 - receive lifecycle, integration, or permission authority from an agent message.
 
+### Planned Codex connected adapter
+
+The first Codex upgrade targets `connected`, not `durable`. It attaches to the same visible interactive Codex process through Codex's structured `agent-turn-complete` notification. General user and project hooks remain disabled; launch configures only a package-owned top-level `notify` command. The notification command receives a Runtime-owned descriptor path, while Codex appends its structured JSON payload as the final argument.
+
+The descriptor is created before launch with owner-only permissions and contains a launch-scoped, reply-only credential. Runtime stores only its digest with the exact target and participant generation. The credential authorizes submission of a completion notification only; it cannot register a target, send arbitrary participant mail, settle tasks, or perform lifecycle, workspace, review, or Mission operations. Exact stop invalidates the credential and removes its descriptor after process quiescence.
+
+Connected automatic replies apply to one `mailbox.message` per submission. Other event types retain their existing managed semantics until they have an explicit structured reply route. Before calling `herdr agent prompt`, Runtime must durably record one pending turn containing:
+
+- target key, target client generation, participant key, and holder generation;
+- claim, inbound event, submission-attempt, and original sender IDs;
+- a digest of the complete prompt submitted to Herdr;
+- creation and expiry times plus a typed `submitting | submitted | completed | needs_attention` state.
+
+The notification adapter accepts only the exact bounded Codex payload shape for `type: "agent-turn-complete"`, including `thread-id`, `turn-id`, `cwd`, `input-messages`, and `last-assistant-message`. Runtime accepts it only when the reply credential, live target generation, held participant generation, canonical cwd, pending attempt, and digest of `input-messages` all match. Missing, malformed, stale, ambiguous, or cross-wired evidence fails closed.
+
+An accepted completion atomically:
+
+1. marks the matching turn `completed`;
+2. records the Codex thread and turn IDs;
+3. creates one participant-authenticated mailbox reply addressed to the original sender; and
+4. wakes that sender's current exact target.
+
+The reply ID is deterministic over the target generation and Codex thread/turn IDs. An exact duplicate callback is idempotent; reuse with changed input or output conflicts. `last-assistant-message` is untrusted message body only and never controls status or authority. A callback with no matching Runtime attempt—including a prompt typed directly by the user—is ignored or retained as non-authoritative diagnostics and cannot impersonate a participant.
+
+The adapter writes an owner-private bounded spool record before socket delivery. Runtime consumes or replays accepted records after restart and deduplicates them by reply ID. A completion may arrive before or after Herdr submission settlement; matching structured completion is stronger evidence that the prompt ran, while an unrelated or mismatched completion never resolves `submitting` or `needs_attention`.
+
+This transport remains `connected` because Codex launches the notification command asynchronously: a process or host failure can occur before the adapter durably spools the payload. Runtime must not advertise provider admission, exactly-once execution, no-loss delivery, or the `durable` tier from this mechanism. Typed tasks also remain unavailable because the notification exposes assistant text, not a schema-authoritative `completed | failed | cancelled` result. A later durable upgrade requires authenticated Codex app-server or Herdr turn receipts with replay and no-redelivery evidence.
+
+Introducing connected-target credentials and pending-turn records requires a new explicit Runtime state version with atomic v8 migration. Existing targets migrate as `managed`; migration never invents a credential, session binding, pending turn, or stronger capability.
+
+Connected capability is advertised only after launch configuration, callback authentication, spool recovery, exact deduplication, and a real structured round trip all succeed. Any failed gate leaves that target `managed` and preserves the existing submission-only behavior.
+
 ## Typed tasks
 
 `collaborator_task` is additive to free-form mail. It is available only when the recipient advertises `connected` or `durable` task capability.
@@ -340,7 +372,8 @@ The old durable runner may remain only if a separately named bounded execution p
 
 ## Deferred
 
-- Connected/durable Claude and Codex reply adapters.
+- Connected/durable Claude reply adapters.
+- Durable Codex turn transport beyond the planned connected notification adapter.
 - Recursive/content/modification/deletion monitoring.
 - Collaborator groups, broadcasts, and attachments.
 - Durable schedules and automatic takeover.
