@@ -573,7 +573,7 @@ describe("hosted collaborator Pi integration", () => {
 		await test.integration.sessionShutdown();
 	});
 
-	it("submits managed mail through Herdr only while the exact agent is idle and unfocused", async () => {
+	it.each([false, true])("submits managed mail only while idle and unfocused (heartbeat during launch: %s)", async (heartbeatDuringLaunch) => {
 		let launched = false;
 		let focused = true;
 		const managedRegistration = { ...registration, targetKey: "target_native", registrationId: "reg_native", registrationKey: "key_native" };
@@ -599,7 +599,23 @@ describe("hosted collaborator Pi integration", () => {
 			return { code: 0, stdout: "{}", stderr: "", killed: false };
 		});
 		await test.integration.sessionStart(test.ctx as never);
-		(test.integration as unknown as { stopHeartbeat(): void }).stopHeartbeat();
+		const internal = test.integration as unknown as {
+			stopHeartbeat(): void;
+			heartbeatManagedAgents(): Promise<void>;
+			client: { call(method: string, params: unknown): Promise<unknown> };
+		};
+		internal.stopHeartbeat();
+		if (heartbeatDuringLaunch) {
+			const call = internal.client.call.bind(internal.client);
+			let overlapped = false;
+			internal.client.call = async (method, params) => {
+				if (method === "bridge.register" && !overlapped) {
+					overlapped = true;
+					await internal.heartbeatManagedAgents();
+				}
+				return call(method, params);
+			};
+		}
 		await test.integration.startCollaborator({ participantId: "fable", protocol: "review", callerParticipantId: "main", driver: "codex" }, test.ctx as never);
 		await (test.integration as unknown as { heartbeat(): Promise<void> }).heartbeat();
 		expect(test.requests.some((request) => request.method === "inbox.claim")).toBe(false);
@@ -612,6 +628,7 @@ describe("hosted collaborator Pi integration", () => {
 		expect(test.requests.find((request) => request.method === "inbox.submit_begin")?.params).toMatchObject({ claimId: "claim_native", eventIds: ["event_native"] });
 		expect(test.requests.find((request) => request.method === "inbox.submit_settle")?.params).toMatchObject({ outcome: "submitted" });
 		await test.integration.sessionShutdown();
+		expect(test.requests.filter((request) => request.method === "bridge.register")).toHaveLength(1);
 	});
 
 	it("replaces an exact stood-down native process before restarting its participant", async () => {
