@@ -273,6 +273,7 @@ export class HostedRuntimeIntegration {
 	private readonly pendingAcks = new Set<string>();
 	private readonly managedAgentControls = new Map<string, ManagedAgentControl>();
 	private readonly managedAgentRegistrations = new Map<string, LiveClientRegistration>();
+	private readonly managedAgentLaunches = new Set<string>();
 	private managedAgentHeartbeatActive = false;
 	private participantIdentity?: ParticipantIdentity;
 	private collaboratorLaunch?: CollaboratorLaunchState;
@@ -1174,12 +1175,15 @@ export class HostedRuntimeIntegration {
 			const agentSession = parseStartedAgent(started.stdout, paneId, terminalId, kind, agentName);
 			const clientGeneration = `agent_client_${randomUUID()}`;
 			const control: ManagedAgentControl = { version: 1, bridgeId, targetKey, driver: candidate.driver, clientGeneration, reconnectToken, launchToken, paneId, terminalId, agentSession, state: "pending" };
-			this.persistManagedAgentControl(control);
-			const bridgeRegistration = parseRegistration(await this.client.call("bridge.register", { launchToken, reconnectToken, clientGeneration, admittedClaims: [], herdr: { paneId, terminalId }, agentSession }));
-			const activeControl: ManagedAgentControl = { ...control, launchToken: undefined, state: "active" };
-			this.managedAgentControls.set(targetKey, activeControl);
-			this.managedAgentRegistrations.set(targetKey, bridgeRegistration);
-			this.persistManagedAgentControl(activeControl);
+			this.managedAgentLaunches.add(targetKey);
+			try {
+				this.persistManagedAgentControl(control);
+				const bridgeRegistration = parseRegistration(await this.client.call("bridge.register", { launchToken, reconnectToken, clientGeneration, admittedClaims: [], herdr: { paneId, terminalId }, agentSession }));
+				this.managedAgentRegistrations.set(targetKey, bridgeRegistration);
+				this.persistManagedAgentControl({ ...control, launchToken: undefined, state: "active" });
+			} finally {
+				this.managedAgentLaunches.delete(targetKey);
+			}
 			const participant = (await this.listParticipants(registration)).find((item) => item.protocol === protocol && item.participantId === participantId);
 			if (!participant || participant.state !== "held" || participant.holderTargetKey !== targetKey || participant.generation === existing?.generation) throw new HostedRuntimeClientError("unavailable", `Interactive collaborator started in ${paneId}, but its Runtime identity did not settle; its tab was preserved for recovery.`);
 			ctx.ui.notify(`Interactive ${kind} collaborator ${protocol}/${participantId} started in ${paneId}.`, "info");
@@ -1481,7 +1485,7 @@ export class HostedRuntimeIntegration {
 		this.managedAgentHeartbeatActive = true;
 		try {
 			for (const [targetKey, control] of this.managedAgentControls) {
-				if (control.state === "needs_attention" || control.state === "stopped") continue;
+				if (this.managedAgentLaunches.has(targetKey) || control.state === "needs_attention" || control.state === "stopped") continue;
 				try {
 					let registration = this.managedAgentRegistrations.get(targetKey);
 					let heartbeat: ReturnType<typeof parseHeartbeat>;
