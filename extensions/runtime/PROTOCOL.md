@@ -263,6 +263,35 @@ The adapter must never:
 - scrape the pane or infer result status from prose;
 - receive lifecycle, integration, or permission authority from an agent message.
 
+### Communication proposal comparison
+
+MCP is a proposed transport, not a prerequisite for collaboration or durability. The requirement for automatic peer messaging is an authenticated, structured publication path from the same visible agent. Herdr already supplies process management, prompt submission, and agent-state observation; Runtime supplies participant authority, routing, and persistence.
+
+| Proposal | What it covers | Remaining cost or limitation |
+|---|---|---|
+| Existing Herdr API only | Visible interactive agents, prompt delivery, state waits, and operator inspection | Replies remain in the tab; no documented intentional peer publication or exact typed task-result API |
+| MCP over existing Runtime services | Explicit peer discovery, send/reply/status, and separately gated task operations through a shared tool interface | Requires a narrow adapter, launch credentials, permission-safe provider configuration, and live proof in both Claude and Codex |
+| Narrow Runtime CLI or provider-native tool | The same structured publications without MCP | Still requires credentials, schemas, retry handling, and provider integration; current Claude profiles disable shell, so a CLI is not a drop-in replacement |
+| Extend Herdr with structured messaging | Could consolidate the external API used for delivery and replies | Requires upstream implementation and an agent-side publication mechanism; moves the adapter rather than eliminating it |
+| Provider completion hooks or exact-session attachment | May expose structured turn observations or session evidence | Observation is not intentional peer publication; exact binding and supported same-session behavior require separate proof |
+
+#### Evidence and limits
+
+This comparison was checked against installed Herdr 0.8.2 command help, the published [Herdr 0.9.0 socket API reference](https://raw.githubusercontent.com/herdrdev/herdr/v0.9.0/docs/next/website/src/content/docs/socket-api.mdx), and `hosted-integration.ts`. The newer documentation is not evidence that the installed binary implements every newer feature.
+
+- Installed `agent prompt --help` explicitly says it does not track turns; when the agent is already working, that active turn's completion may satisfy its wait. A `done` state is not a reply correlated to Runtime event X.
+- `agent read` returns terminal snapshots. These are useful for inspection, but this protocol does not scrape them into authenticated replies or infer task status from their text.
+- The published socket reference documents agent management, state/session reporting, and lifecycle subscriptions, but no intentional recipient-addressed peer publication or exact task-result endpoint. Display metadata is not a substitute for such an endpoint.
+- `submitManagedAgentInbox()` currently calls `herdr agent prompt` and records submission outcome, not a structured reply. `interactiveAgentArgs()` restricts Claude to read/search or read/search/edit/write tools, without shell access.
+
+#### Decision boundary
+
+Keep Herdr for process control and prompt delivery. Existing Herdr-only managed collaboration is sufficient if replies staying in the visible tabs are acceptable. Automatic peer messaging requires an additional structured return path, but does not inherently require MCP.
+
+MCP remains the proposed first proof because it offers a shared tool interface for both providers. Choose it only if that proof establishes the smallest permission-safe path without broadening read-only access, enabling unrelated hooks, or creating another provider conversation. A narrower proven native interface may replace it; this comparison does not approve implementation or change current capabilities.
+
+Runtime publication receipts prove durable publication, not native admission, provider commit, or exactly-once execution, regardless of transport. Moving native delivery from the launching Pi into the daemon is a separate lifetime requirement: it is needed for delivery after that Pi exits, not because MCP is selected.
+
 ### Planned communication and UX redesign
 
 This section replaces the notify-first Codex proposal. It is a target contract, not a claim that connected native targets are implemented. Scope is collaborator communication and UX: preserve Pi's existing durable admission path, participant identity, isolated workspaces, exact lifecycle fencing, and trusted integration operations.
