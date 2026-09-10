@@ -1,6 +1,6 @@
 # Stage 0: restricted MCP compatibility probe
 
-Development only. This is not collaborator messaging, not a Runtime capability upgrade, and not a replacement for existing delivery. The implementation gate is in [MCP-PLAN.md](MCP-PLAN.md#stage-0--restricted-provider-compatibility).
+Development only. This is not collaborator messaging, not a Runtime capability upgrade, and not a replacement for existing delivery. Current implementation gates and the role of this historical proof are in [MCP-PLAN.md](MCP-PLAN.md#historical-evidence).
 
 ## Implemented probe
 

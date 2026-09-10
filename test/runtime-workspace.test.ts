@@ -8,7 +8,7 @@ import { DirectoryMonitorManager } from "../extensions/runtime/service/monitor.t
 import { HostedParticipantCoordinator } from "../extensions/runtime/service/participant.ts";
 import { dispatchHostedLine, type HostedProtocolContext } from "../extensions/runtime/service/protocol.ts";
 import { RuntimeRegistrationManager, type HostedHostVerifier, type HostedLiveAgent, type HostedPaneIdentity, type RegisterPiInput } from "../extensions/runtime/service/registration.ts";
-import { HostedStateStore, readHostedRuntimeState, runtimeStatePaths, validateHostedRuntimeState } from "../extensions/runtime/service/state.ts";
+import { HostedStateStore, validateHostedRuntimeState } from "../extensions/runtime/service/state.ts";
 import { HostedWakeCoordinator } from "../extensions/runtime/service/wake.ts";
 import { RuntimeWorkspaceCoordinator } from "../extensions/runtime/service/workspace.ts";
 
@@ -65,15 +65,6 @@ describe("Runtime isolated collaborator workspace", () => {
 		expect(launchToken).toMatch(/^workspace_launch_/);
 		expect(existsSync(provisioned.workspace.worktreePath)).toBe(true);
 		expect(readFileSync(join(test.project, "app.txt"), "utf8")).toBe("base\n");
-		const migrationRoot = join(test.root, "migration-runtime");
-		mkdirSync(migrationRoot);
-		const v4 = structuredClone(test.store.read()) as unknown as { version: number; messaging?: unknown; autoCapacityReservations?: unknown; workspaces: Record<string, { ownerKind?: string }> };
-		v4.version = 4;
-		delete v4.autoCapacityReservations;
-		delete v4.messaging;
-		for (const record of Object.values(v4.workspaces)) delete record.ownerKind;
-		writeFileSync(runtimeStatePaths(migrationRoot).state, JSON.stringify(v4));
-		expect(readHostedRuntimeState(migrationRoot).workspaces[provisioned.workspace.workspaceId]).toMatchObject({ ownerKind: "pi", piSessionId: "session_writer" });
 
 		test.host.panes.set("w1:p9", { paneId: "w1:p9", tabId: "w1:t9", workspaceId: "w1", terminalId: "term_writer", cwd: provisioned.workspace.worktreePath, paneCount: 1, revision: 1 });
 		await test.coordinator.bind(main, { workspaceId: provisioned.workspace.workspaceId, callerParticipantKey: mainParticipant.participantKey, expectedCallerGeneration: mainParticipant.generation, herdr: { paneId: "w1:p9", terminalId: "term_writer" } });

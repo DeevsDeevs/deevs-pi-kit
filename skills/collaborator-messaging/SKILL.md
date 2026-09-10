@@ -1,19 +1,20 @@
 ---
 name: collaborator-messaging
-description: Use an explicitly configured Runtime MCP connection for collaborator discovery, durable send, and publication status. Requires collaborator_peers; not the legacy Pi messaging tool.
+description: Use the configured Runtime MCP connection for collaborator discovery, durable send, exact receive, client receipts, replies, and publication status. Requires collaborator_peers.
 ---
 
 # Collaborator messaging
 
-Use this skill only when `collaborator_peers` is available through the configured MCP connection. Harness prefixes may differ. If absent, report that MCP messaging is not configured; do not reinterpret the legacy `collaborator_send` arguments.
+Use the configured MCP tools; harness prefixes may differ. If `collaborator_peers` is absent, report that messaging is not configured. Never substitute a different backend or argument format.
 
-1. Call `collaborator_peers` to learn your Runtime-derived identity, protocol, publication `namespaceId`, expiry, and existing peers. Follow `nextCursor` when needed.
-2. Send only explicit user-authorized mail using `collaborator_send` with that exact `namespaceId`, an independently chosen durable `operationId`, the existing `participantId`, and `body` (at most 16 KiB UTF-8).
-3. Save the publication receipt. On timeout, disconnect, or another ambiguous outcome, use `collaborator_status` or retry with the **same namespaceId, operationId, recipient, and body**. Changed input conflicts; a new operation ID intentionally creates new mail.
-4. Never move an uncertain operation to a new namespace, even after expiry, reconnection, or configuration replacement. Report the unresolved original identity to the user/controller. A namespace or authorization error does not authorize a fresh send.
+1. Call `collaborator_peers` for your Runtime-derived identity, protocol, `namespaceId`, expiry and peers. Follow `nextCursor` for peer discovery.
+2. Send explicit user-authorized mail with `collaborator_send`: exact namespace, a durable `operationId`, existing `participantId`, and `body` (maximum 16 KiB UTF-8). Keep the publication receipt and event ID.
+3. Given a mailbox event reference, call `collaborator_receive` with your namespace and that exact `eventId`. It returns one complete body and an offer containing `receiptToken`. Repeating receive recovers the same offer; it does not consume a native claim. Mail not published to this exact namespace is unavailable, including mail predating its issuance. There is no automatic history transfer after holder/client/namespace replacement.
+4. After receiving the body, explicitly call `collaborator_received` with the same namespace, event and token, or use `collaborator_reply` with those fields, a durable operation ID and your authorized reply body. Runtime derives the reply recipient and atomically records the client receipt and correlated publication. Replying to a replaced or expired original sender is rejected, not redirected.
+5. After uncertainty, use `collaborator_status` or repeat the original send/reply with **identical namespace, operation ID and all arguments**. A new operation ID creates new mail. Never migrate an uncertain operation into a new namespace; report its original identity to the user/controller.
 
-A publication receipt proves durable Runtime publication only. The returned event's `delivery` is separate evidence: pending/claimed is not admission; submitting/submitted/needs_attention is not provider commit. `acked` records the native admission path, not task completion. A null event with `history: pruned` means body/history retention ended, not that publication failed.
+Publication, retrieval offers, explicit client receipts and native admission are separate evidence. An offer does not prove the client saw the response. `receivedAt` is client receipt only—not durable Pi session admission, provider commit or task completion. Receipt does not delete the body or acknowledge the native inbox. Exact receive remains available within the namespace's retained offer lifetime.
 
-This foundation exposes only peers/send/status. Receive, client receipt, reply correlation, and typed tasks are not available here yet. Ordinary terminal answers are not automatically sent. Do not fabricate unsupported tool calls or forward a human conversation without authorization.
+`collaborator_status` looks up your publication operation. Its event's `delivery` is independently reported native-path evidence; `acked` is not task completion. Null event/history `pruned` means history retention ended, not failed publication. Typed task operations are not exposed by these messaging tools. Ordinary terminal answers are never automatically sent.
 
-Runtime derives sender identity and routing scope. Never request or print credentials, change agent ownership/configuration, claim/ack native inbox events, or perform lifecycle/workspace actions through MCP. Respect human turns and permission denials; never enable shell/hooks or bypass restrictions to repair messaging.
+Runtime owns routing and authority. Never request or print credentials, acquire ownership, claim/ack native inbox events, or perform lifecycle/workspace actions through MCP. Respect human turns and denials; do not enable shell/hooks or bypass permissions to repair messaging.

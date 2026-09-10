@@ -17,7 +17,6 @@ import { basename, join } from "node:path";
 import {
 	HOSTED_ACK_RETENTION_MS,
 	HOSTED_AUTO_MAX_COLLABORATORS,
-	HOSTED_BRIDGE_FORBIDDEN_METADATA_KEYS,
 	HOSTED_BRIDGE_MAX_METADATA_ENTRIES,
 	HOSTED_BRIDGE_MAX_METADATA_VALUE_BYTES,
 	HOSTED_MAILBOX_MAX_BODY_BYTES,
@@ -36,6 +35,7 @@ import {
 	type HostedFilesystemCreatedEvent,
 	type HostedMailboxMessageEvent,
 	type HostedMessagingGrant,
+	type HostedMessagingOffer,
 	type HostedMessagingReceipt,
 	type HostedMailboxTaskEvent,
 	type HostedMailboxTaskResultEvent,
@@ -58,7 +58,6 @@ const MAX_SUMMARY_BYTES = 2 * 1024;
 const MAX_STATE_RECORDS = 10_000;
 const HASH = /^[0-9a-f]{64}$/;
 const GIT_OID = /^[0-9a-f]{40,64}$/;
-const FORBIDDEN_BRIDGE_METADATA = new Set<string>(HOSTED_BRIDGE_FORBIDDEN_METADATA_KEYS);
 const WORKSPACE_BRANCH = /^refs\/heads\/runtime\/collab\/[A-Za-z0-9._-]+$/;
 const INTEGRATION_BRANCH = /^refs\/heads\/runtime\/integrate\/[A-Za-z0-9._-]+$/;
 const INSTANCE_MAX_BYTES = 4 * 1024;
@@ -90,7 +89,7 @@ export class HostedStateConflictError extends Error {
 }
 
 export function emptyHostedRuntimeState(): HostedRuntimeState {
-	return { version: 9, messaging: {}, targets: {}, autoCapacityReservations: {}, bridgeLaunches: {}, workspaces: {}, integrations: {}, monitors: {}, participants: {}, events: {}, dedupe: {}, claims: {}, wakes: {} };
+	return { version: 10, messaging: {}, targets: {}, autoCapacityReservations: {}, bridgeLaunches: {}, workspaces: {}, integrations: {}, monitors: {}, participants: {}, events: {}, dedupe: {}, claims: {}, wakes: {} };
 }
 
 export class HostedStateStore {
@@ -129,7 +128,7 @@ export class HostedStateStore {
 export function reduceHostedState(state: HostedRuntimeState, operation: HostedStateOperation): HostedRuntimeState {
 	if (operation.type === "messaging.issue") {
 		const grant = validateMessagingGrant(operation.grant, operation.grant.namespaceId);
-		if (state.messaging[grant.namespaceId] || grant.status !== "active" || Object.keys(grant.receipts).length) throw new HostedStateConflictError("conflict", "Messaging namespace must be newly issued.");
+		if (state.messaging[grant.namespaceId] || grant.status !== "active" || (Object.keys(grant.receipts).length || Object.keys(grant.offers).length)) throw new HostedStateConflictError("conflict", "Messaging namespace must be newly issued.");
 		assertMessagingHolder(state, grant, grant.createdAt);
 		return { ...state, messaging: { ...state.messaging, [grant.namespaceId]: grant } };
 	}
@@ -137,7 +136,7 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 		const grant = state.messaging[operation.namespaceId];
 		if (!grant || grant.status === "expired" || grant.status === "revoked" && operation.status === "revoked") return state;
 		// ponytail: terminal namespace IDs remain under the 10,000-record cap; prune tombstones if launch volume requires it.
-		return { ...state, messaging: { ...state.messaging, [grant.namespaceId]: { ...grant, status: operation.status, receipts: operation.status === "expired" ? {} : grant.receipts } } };
+		return { ...state, messaging: { ...state.messaging, [grant.namespaceId]: { ...grant, status: operation.status, receipts: operation.status === "expired" ? {} : grant.receipts, offers: operation.status === "expired" ? {} : grant.offers } } };
 	}
 	if (operation.type === "messaging.invalidate_client") {
 		let next = state;
@@ -146,23 +145,55 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 		}
 		return next;
 	}
-	if (operation.type === "messaging.send") {
+	if (operation.type === "messaging.receive" || operation.type === "messaging.received") {
+		const grant = state.messaging[operation.namespaceId];
+		if (!grant) throw new HostedStateConflictError("conflict", "Messaging namespace is absent.");
+		assertMessagingHolder(state, grant, operation.at);
+		assertStateId(operation.receiptToken, "Retrieval token");
+		const event = messagingReceivedEvent(state, grant, operation.eventId);
+		const existing = grant.offers[event.eventId];
+		if (operation.type === "messaging.received") {
+			if (!existing || existing.receiptToken !== operation.receiptToken || operation.at < existing.offeredAt) throw new HostedStateConflictError("conflict", "Receipt does not match an offer in this exact namespace.");
+			if (existing.receivedAt !== undefined) return state;
+		} else if (existing) return state;
+		const offer: HostedMessagingOffer = existing ? { ...existing, receivedAt: operation.at } : { eventId: event.eventId, receiptToken: operation.receiptToken, offeredAt: operation.at };
+		return { ...state, messaging: { ...state.messaging, [grant.namespaceId]: { ...grant, offers: { ...grant.offers, [event.eventId]: offer } } } };
+	}
+	if (operation.type === "messaging.send" || operation.type === "messaging.reply") {
 		const grant = state.messaging[operation.namespaceId];
 		if (!grant) throw new HostedStateConflictError("conflict", "Messaging namespace is absent.");
 		assertMessagingHolder(state, grant, operation.at);
 		assertStateId(operation.operationId, "Messaging operation ID");
-		const fingerprint = mailboxFingerprint(operation.recipientParticipantKey, operation.body);
+		const fingerprint = operation.type === "messaging.reply" ? messagingReplyFingerprint(operation.inReplyToEventId, operation.receiptToken, operation.body) : mailboxFingerprint(operation.recipientParticipantKey, operation.body);
 		const receipt = Object.hasOwn(grant.receipts, operation.operationId) ? grant.receipts[operation.operationId] : undefined;
 		if (receipt) {
 			if (receipt.fingerprint !== fingerprint) throw new HostedStateConflictError("conflict", "Messaging operation ID was reused with different input.");
 			return state;
 		}
+		let recipientParticipantKey: string;
+		let replyNamespaceId: string | undefined;
+		let receipted = state;
+		if (operation.type === "messaging.reply") {
+			const inbound = messagingReceivedEvent(state, grant, operation.inReplyToEventId);
+			const origin = Object.values(state.messaging).find(candidate => Object.values(candidate.receipts).some(receipt => receipt.eventId === inbound.eventId));
+			if (!origin || origin.participantKey !== inbound.source.id || origin.holderGeneration !== inbound.source.generation) throw new HostedStateConflictError("conflict", "Reply origin has no exact publication authority.");
+			assertMessagingHolder(state, origin, operation.at);
+			recipientParticipantKey = origin.participantKey;
+			replyNamespaceId = origin.namespaceId;
+			receipted = reduceHostedState(state, { type: "messaging.received", namespaceId: grant.namespaceId, eventId: inbound.eventId, receiptToken: operation.receiptToken, at: operation.at });
+		} else recipientParticipantKey = operation.recipientParticipantKey;
 		const sendId = messagingSendId(grant.namespaceId, operation.operationId);
-		const next = reduceHostedState(state, { type: "mailbox.send", senderParticipantKey: grant.participantKey, expectedSenderGeneration: grant.holderGeneration, senderTargetKey: grant.targetKey, recipientParticipantKey: operation.recipientParticipantKey, sendId, body: operation.body, eventId: operation.eventId, at: operation.at });
+		const next = reduceHostedState(receipted, { type: "mailbox.send", senderParticipantKey: grant.participantKey, expectedSenderGeneration: grant.holderGeneration, senderTargetKey: grant.targetKey, recipientParticipantKey, sendId, body: operation.body, eventId: operation.eventId, at: operation.at });
 		const event = next.events[operation.eventId];
 		if (!event || event.type !== "mailbox.message" || event.payload.sendId !== sendId) throw new HostedStateConflictError("conflict", "Messaging publication collided with an existing event.");
 		const published: HostedMessagingReceipt = { operationId: operation.operationId, fingerprint, eventId: event.eventId, recipientParticipantKey: event.recipientParticipantKey, sequence: event.source.sequence, createdAt: event.createdAt };
-		return { ...next, messaging: { ...next.messaging, [grant.namespaceId]: { ...grant, receipts: { ...grant.receipts, [operation.operationId]: published } } } };
+		if (operation.type === "messaging.reply") {
+			if (event.recipientBinding.kind !== "namespace" || event.recipientBinding.namespaceId !== replyNamespaceId) throw new HostedStateConflictError("conflict", "Reply recipient namespace is ambiguous or changed.");
+			published.inReplyToEventId = operation.inReplyToEventId;
+			published.replyToken = operation.receiptToken;
+			next.events = { ...next.events, [event.eventId]: { ...event, inReplyToEventId: operation.inReplyToEventId } };
+		}
+		return { ...next, messaging: { ...next.messaging, [grant.namespaceId]: { ...next.messaging[grant.namespaceId]!, receipts: { ...grant.receipts, [operation.operationId]: published } } } };
 	}
 	if (operation.type === "target.ensure") {
 		const existing = state.targets[operation.target.targetKey];
@@ -482,13 +513,16 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 		}
 		if (state.events[operation.eventId]) throw new HostedStateConflictError("conflict", "Mailbox event ID already exists.");
 		const sequence = (sender.outSeq[recipient.participantKey] ?? 0) + 1;
+		const namespaces = Object.values(state.messaging).filter(grant => grant.status === "active" && grant.participantKey === recipient.participantKey && recipient.state === "held" && grant.holderGeneration === recipient.generation && grant.targetKey === recipient.holderTargetKey && grant.configurationHash === messagingConfigurationHash(state.targets[grant.targetKey]!) && grant.createdAt <= operation.at && operation.at < grant.expiresAt);
+		// A namespace permanently binds holder, target and client. Never infer history access at receive time.
+		const recipientBinding: HostedMailboxMessageEvent["recipientBinding"] = namespaces.length === 1 ? { kind: "namespace", namespaceId: namespaces[0]!.namespaceId } : { kind: "unbound" };
 		const event: HostedMailboxMessageEvent | HostedMailboxTaskEvent = {
 			version: 1,
 			eventId: operation.eventId,
 			dedupeKey,
 			source: { kind: "participant", id: sender.participantKey, generation: sender.generation, sequence },
 			recipientParticipantKey: recipient.participantKey,
-			type: eventType,
+			...(eventType === "mailbox.message" ? { type: eventType, recipientBinding } : { type: eventType }),
 			createdAt: operation.at,
 			summary: `${eventType === "mailbox.task" ? "bounded task" : "message"} from ${sender.participantId} to ${recipient.participantId}`,
 			payload: {
@@ -695,11 +729,7 @@ export function readHostedRuntimeState(root: string): HostedRuntimeState {
 	const path = runtimeStatePaths(root).state;
 	const value = readJson(path, HOSTED_STATE_MAX_BYTES);
 	if (value === undefined) return emptyHostedRuntimeState();
-	const version = isPersistedStateFields(value) ? value.version : undefined;
-	if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8) return validateHostedRuntimeState(value);
-	const migrated = version === 1 ? migrateHostedRuntimeStateV1(value) : version === 2 ? migrateHostedRuntimeStateV2(value) : version === 3 ? migrateHostedRuntimeStateV3(value) : version === 4 ? migrateHostedRuntimeStateV4(value) : version === 5 ? migrateHostedRuntimeStateV5(value) : version === 6 ? migrateHostedRuntimeStateV6(value) : version === 7 ? migrateHostedRuntimeStateV7(value) : migrateHostedRuntimeStateV8(value);
-	writeAtomicJson(root, path, migrated, HOSTED_STATE_MAX_BYTES);
-	return migrated;
+	return validateHostedRuntimeState(value);
 }
 
 export function writeHostedRuntimeState(root: string, state: HostedRuntimeState): void {
@@ -710,9 +740,9 @@ export function writeHostedRuntimeState(root: string, state: HostedRuntimeState)
 export function validateHostedRuntimeState<Source>(value: Source): HostedRuntimeState {
 	try {
 		const state = strictObject(value, "runtime state", ["version", "messaging", "targets", "autoCapacityReservations", "bridgeLaunches", "workspaces", "integrations", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
-		if (state.version !== 9) throw new Error("unsupported runtime state version");
+		if (state.version !== 10) throw new Error("unsupported runtime state version");
 		const result: HostedRuntimeState = {
-			version: 9,
+			version: 10,
 			messaging: mapValues(state.messaging, "messaging namespaces", validateMessagingGrant),
 			targets: mapValues(state.targets, "targets", validateTarget),
 			autoCapacityReservations: mapValues(state.autoCapacityReservations, "Auto capacity reservations", validateAutoCapacityReservation),
@@ -733,147 +763,18 @@ export function validateHostedRuntimeState<Source>(value: Source): HostedRuntime
 	}
 }
 
-function migrateHostedRuntimeStateV1(value: PersistedStateValue): HostedRuntimeState {
-	try {
-		const state = strictObject(value, "runtime state v1", ["version", "targets", "monitors", "events", "dedupe", "claims", "wakes"]);
-		if (state.version !== 1) throw new Error("unsupported source runtime state version");
-		const result: HostedRuntimeState = {
-			version: 9,
-			messaging: {},
-			targets: mapValues(state.targets, "targets", validateLegacyPiTarget),
-			autoCapacityReservations: {},
-			bridgeLaunches: {},
-			workspaces: {},
-			integrations: {},
-			monitors: mapValues(state.monitors, "monitors", validateMonitor),
-			participants: {},
-			events: mapValues(state.events, "events", validateFilesystemEvent),
-			dedupe: mapStrings(state.dedupe, "dedupe"),
-			claims: mapValues(state.claims, "claims", validateClaim),
-			wakes: mapValues(state.wakes, "wakes", validateWake),
-		};
-		validateReferences(result);
-		return result;
-	} catch (error) {
-		throw storageError("Runtime state v1 migration failed", error);
-	}
-}
-
-function migrateHostedRuntimeStateV2(value: PersistedStateValue): HostedRuntimeState {
-	try {
-		const state = strictObject(value, "runtime state v2", ["version", "targets", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
-		if (state.version !== 2) throw new Error("unsupported source runtime state version");
-		const result: HostedRuntimeState = {
-			version: 9,
-			messaging: {},
-			targets: mapValues(state.targets, "targets", validateLegacyPiTarget),
-			autoCapacityReservations: {},
-			bridgeLaunches: {},
-			workspaces: {},
-			integrations: {},
-			monitors: mapValues(state.monitors, "monitors", validateMonitor),
-			participants: mapValues(state.participants, "participants", validateParticipant),
-			events: mapValues(state.events, "events", validateEvent),
-			dedupe: mapStrings(state.dedupe, "dedupe"),
-			claims: mapValues(state.claims, "claims", validateClaim),
-			wakes: mapValues(state.wakes, "wakes", validateWake),
-		};
-		validateReferences(result);
-		return result;
-	} catch (error) {
-		throw storageError("Runtime state v2 migration failed", error);
-	}
-}
-
-function migrateHostedRuntimeStateV3(value: PersistedStateValue): HostedRuntimeState {
-	try {
-		const state = strictObject(value, "runtime state v3", ["version", "targets", "bridgeLaunches", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
-		if (state.version !== 3) throw new Error("unsupported source runtime state version");
-		const result: HostedRuntimeState = {
-			version: 9,
-			messaging: {},
-			targets: mapValues(state.targets, "targets", (item, key) => validateTarget(item, key, true)),
-			autoCapacityReservations: {},
-			bridgeLaunches: mapValues(state.bridgeLaunches, "bridge launches", (item, key) => validateBridgeLaunch(item, key, true)),
-			workspaces: {},
-			integrations: {},
-			monitors: mapValues(state.monitors, "monitors", validateMonitor),
-			participants: mapValues(state.participants, "participants", validateParticipant),
-			events: mapValues(state.events, "events", validateEvent),
-			dedupe: mapStrings(state.dedupe, "dedupe"),
-			claims: mapValues(state.claims, "claims", validateClaim),
-			wakes: mapValues(state.wakes, "wakes", validateWake),
-		};
-		validateReferences(result);
-		return result;
-	} catch (error) {
-		throw storageError("Runtime state v3 migration failed", error);
-	}
-}
-
-function migrateHostedRuntimeStateV4(value: PersistedStateValue): HostedRuntimeState {
-	try {
-		const state = strictObject(value, "runtime state v4", ["version", "targets", "bridgeLaunches", "workspaces", "integrations", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
-		if (state.version !== 4) throw new Error("unsupported source runtime state version");
-		const result: HostedRuntimeState = {
-			version: 9,
-			messaging: {},
-			targets: mapValues(state.targets, "targets", (item, key) => validateTarget(item, key, true)),
-			autoCapacityReservations: {},
-			bridgeLaunches: mapValues(state.bridgeLaunches, "bridge launches", (item, key) => validateBridgeLaunch(item, key, true)),
-			workspaces: mapValues(state.workspaces, "workspaces", validateWorkspaceV4),
-			integrations: mapValues(state.integrations, "integrations", validateIntegration),
-			monitors: mapValues(state.monitors, "monitors", validateMonitor),
-			participants: mapValues(state.participants, "participants", validateParticipant),
-			events: mapValues(state.events, "events", validateEvent),
-			dedupe: mapStrings(state.dedupe, "dedupe"),
-			claims: mapValues(state.claims, "claims", validateClaim),
-			wakes: mapValues(state.wakes, "wakes", validateWake),
-		};
-		validateReferences(result);
-		return result;
-	} catch (error) {
-		throw storageError("Runtime state v4 migration failed", error);
-	}
-}
-
-function migrateHostedRuntimeStateV5(value: PersistedStateValue): HostedRuntimeState {
-	try {
-		const state = strictObject(value, "runtime state v5", ["version", "targets", "bridgeLaunches", "workspaces", "integrations", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
-		if (state.version !== 5) throw new Error("unsupported source runtime state version");
-		return validateHostedRuntimeState({ ...state, version: 9, messaging: {}, autoCapacityReservations: {} });
-	} catch (error) {
-		throw storageError("Runtime state v5 migration failed", error);
-	}
-}
-
-function migrateHostedRuntimeStateV6(value: PersistedStateValue): HostedRuntimeState {
-	try {
-		const state = strictObject(value, "runtime state v6", ["version", "targets", "bridgeLaunches", "workspaces", "integrations", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
-		if (state.version !== 6) throw new Error("unsupported source runtime state version");
-		return validateHostedRuntimeState({ ...state, version: 9, messaging: {}, autoCapacityReservations: {} });
-	} catch (error) {
-		throw storageError("Runtime state v6 migration failed", error);
-	}
-}
-
-function migrateHostedRuntimeStateV7(value: PersistedStateValue): HostedRuntimeState {
-	try {
-		const state = strictObject(value, "runtime state v7", ["version", "targets", "autoCapacityReservations", "bridgeLaunches", "workspaces", "integrations", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
-		if (state.version !== 7) throw new Error("unsupported source runtime state version");
-		return validateHostedRuntimeState({ ...state, version: 9, messaging: {} });
-	} catch (error) {
-		throw storageError("Runtime state v7 migration failed", error);
-	}
-}
-
-function migrateHostedRuntimeStateV8(value: PersistedStateValue): HostedRuntimeState {
-	const state = strictObject(value, "runtime state v8", ["version", "targets", "autoCapacityReservations", "bridgeLaunches", "workspaces", "integrations", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
-	return validateHostedRuntimeState({ ...state, version: 9, messaging: {} });
-}
-
 export function messagingSendId(namespaceId: string, operationId: string): string {
 	return `mcp_${createHash("sha256").update(JSON.stringify([namespaceId, operationId])).digest("hex")}`;
+}
+
+export function messagingReceivedEvent(state: HostedRuntimeState, grant: HostedMessagingGrant, eventId: string): HostedMailboxMessageEvent {
+	const event = state.events[eventId];
+	if (!event || event.type !== "mailbox.message" || event.recipientParticipantKey !== grant.participantKey || event.recipientBinding.kind !== "namespace" || event.recipientBinding.namespaceId !== grant.namespaceId) throw new HostedStateConflictError("conflict", "Event is not ordinary mail published to this exact namespace.");
+	return event;
+}
+
+function messagingReplyFingerprint(eventId: string, receiptToken: string, body: string): string {
+	return createHash("sha256").update(JSON.stringify(["reply", eventId, receiptToken, body])).digest("hex");
 }
 
 function assertMessagingHolder(state: HostedRuntimeState, grant: HostedMessagingGrant, at: number): void {
@@ -887,7 +788,7 @@ export function messagingConfigurationHash(target: HostedTarget): string {
 }
 
 function validateMessagingGrant<Source>(value: Source, key: string): HostedMessagingGrant {
-	const item = strictObject(value, "messaging namespace", ["namespaceId", "secretDigest", "participantKey", "holderGeneration", "targetKey", "clientGeneration", "terminalId", "configurationHash", "createdAt", "expiresAt", "status", "receipts"]);
+	const item = strictObject(value, "messaging namespace", ["namespaceId", "secretDigest", "participantKey", "holderGeneration", "targetKey", "clientGeneration", "terminalId", "configurationHash", "createdAt", "expiresAt", "status", "receipts", "offers"]);
 	const grant: HostedMessagingGrant = {
 		namespaceId: text(item.namespaceId, "messaging namespace", 200), secretDigest: hash(item.secretDigest, "messaging secret digest"),
 		participantKey: text(item.participantKey, "messaging participant", 200), holderGeneration: text(item.holderGeneration, "messaging holder", 200),
@@ -896,9 +797,20 @@ function validateMessagingGrant<Source>(value: Source, key: string): HostedMessa
 		createdAt: nonNegativeNumber(item.createdAt, "messaging creation"), expiresAt: nonNegativeNumber(item.expiresAt, "messaging expiry"),
 		status: enumValue(item.status, ["active", "revoked", "expired"], "invalid messaging state"),
 		receipts: mapValues(item.receipts, "messaging receipts", (value, key) => {
-			const receipt = strictObject(value, "messaging receipt", ["operationId", "fingerprint", "eventId", "recipientParticipantKey", "sequence", "createdAt"]);
-			const result = { operationId: text(receipt.operationId, "operation ID", 200), fingerprint: hash(receipt.fingerprint, "operation fingerprint"), eventId: text(receipt.eventId, "receipt event", 200), recipientParticipantKey: text(receipt.recipientParticipantKey, "receipt recipient", 200), sequence: integer(receipt.sequence, "receipt sequence"), createdAt: nonNegativeNumber(receipt.createdAt, "receipt creation") };
+			const receipt = strictObject(value, "messaging receipt", ["operationId", "fingerprint", "eventId", "recipientParticipantKey", "sequence", "createdAt", "inReplyToEventId", "replyToken"]);
+			const result: HostedMessagingReceipt = { operationId: text(receipt.operationId, "operation ID", 200), fingerprint: hash(receipt.fingerprint, "operation fingerprint"), eventId: text(receipt.eventId, "receipt event", 200), recipientParticipantKey: text(receipt.recipientParticipantKey, "receipt recipient", 200), sequence: integer(receipt.sequence, "receipt sequence"), createdAt: nonNegativeNumber(receipt.createdAt, "receipt creation") };
+			if (receipt.inReplyToEventId !== undefined) {
+				result.inReplyToEventId = text(receipt.inReplyToEventId, "reply event", 200);
+				result.replyToken = text(receipt.replyToken, "reply retrieval token", 200);
+			} else if (receipt.replyToken !== undefined) throw new Error("reply token lacks event correlation");
 			if (result.operationId !== key || result.sequence < 1) throw new Error("messaging receipt identity is invalid");
+			return result;
+		}),
+		offers: mapValues(item.offers, "messaging offers", (value, key) => {
+			const offer = strictObject(value, "messaging offer", ["eventId", "receiptToken", "offeredAt", "receivedAt"]);
+			const result: HostedMessagingOffer = { eventId: text(offer.eventId, "offered event", 200), receiptToken: text(offer.receiptToken, "retrieval token", 200), offeredAt: nonNegativeNumber(offer.offeredAt, "offer time") };
+			if (offer.receivedAt !== undefined) result.receivedAt = nonNegativeNumber(offer.receivedAt, "client receipt time");
+			if (result.eventId !== key || result.receivedAt !== undefined && result.receivedAt < result.offeredAt) throw new Error("messaging offer identity or time is invalid");
 			return result;
 		}),
 	};
@@ -939,8 +851,10 @@ function releaseClaim(state: HostedRuntimeState, targetKey: string, claimId: str
 }
 
 function pruneAcknowledged(state: HostedRuntimeState, before: number): HostedRuntimeState {
+	for (const grant of Object.values(state.messaging)) if (grant.expiresAt <= before) state = reduceHostedState(state, { type: "messaging.close", namespaceId: grant.namespaceId, status: "expired" });
+	const offered = new Set(Object.values(state.messaging).flatMap(grant => Object.keys(grant.offers)));
 	const removable = new Set(Object.values(state.events)
-		.filter((event) => event.delivery.status === "acked" && event.delivery.ackedAt < before)
+		.filter((event) => event.delivery.status === "acked" && event.delivery.ackedAt < before && !offered.has(event.eventId))
 		.map((event) => event.eventId));
 	let changed = true;
 	while (changed) {
@@ -1043,7 +957,7 @@ function validateInstance(value: PersistedStateValue): HostedRuntimeInstance {
 	}
 }
 
-function validateTarget(value: PersistedStateValue | undefined, key: string, legacyBridge = false): HostedTarget {
+function validateTarget(value: PersistedStateValue | undefined, key: string): HostedTarget {
 	const candidate = strictObject(value, "target");
 	if (candidate.kind === "pi") {
 		const target = strictObject(value, "Pi target", ["kind", "targetKey", "projectRoot", "piSessionId", "piSessionFile", "workspaceId", "workspaceRoot", "createdAt"]);
@@ -1059,9 +973,9 @@ function validateTarget(value: PersistedStateValue | undefined, key: string, leg
 	if (candidate.kind === "bridge" || candidate.kind === "agent") {
 		const target = strictObject(value, `${candidate.kind} target`, ["kind", "targetKey", "projectRoot", "bridgeId", "driver", "agentSession", "capabilityTier", "participantKey", "holderGeneration", "profile", "configurationHash", "clientGeneration", "reconnectDigest", "herdr", "workspaceId", "workspaceRoot", "metadata", "createdAt"]);
 		const interactive = candidate.kind === "agent";
-		if ((target.profile !== "read-only" && target.profile !== "workspace-write") || (target.workspaceId === undefined) !== (target.workspaceRoot === undefined) || (legacyBridge ? target.profile !== "read-only" || target.workspaceId !== undefined : (target.profile === "workspace-write") !== (target.workspaceId !== undefined)) || (interactive ? target.driver === undefined || target.agentSession === undefined || target.capabilityTier === undefined : target.driver !== undefined || target.agentSession !== undefined || target.capabilityTier !== undefined)) throw new Error("invalid external target profile, workspace, or interactive-agent authority");
+		if ((target.profile !== "read-only" && target.profile !== "workspace-write") || (target.workspaceId === undefined) !== (target.workspaceRoot === undefined) || ((target.profile === "workspace-write") !== (target.workspaceId !== undefined)) || (interactive ? target.driver === undefined || target.agentSession === undefined || target.capabilityTier === undefined : target.driver !== undefined || target.agentSession !== undefined || target.capabilityTier !== undefined)) throw new Error("invalid external target profile, workspace, or interactive-agent authority");
 		const shared = {
-			targetKey: text(target.targetKey, "target key", MAX_ID_BYTES), projectRoot: text(target.projectRoot, "project root", MAX_PATH_BYTES), bridgeId: text(target.bridgeId, "launch ID", MAX_ID_BYTES), participantKey: text(target.participantKey, "participant key", MAX_ID_BYTES), holderGeneration: text(target.holderGeneration, "holder generation", MAX_ID_BYTES), profile: target.profile === "read-only" ? "read-only" as const : "workspace-write" as const, configurationHash: hash(target.configurationHash, "configuration hash"), clientGeneration: text(target.clientGeneration, "client generation", MAX_ID_BYTES), reconnectDigest: hash(target.reconnectDigest, "reconnect digest"), herdr: validateBridgeHerdr(target.herdr), metadata: legacyBridge ? migrateBridgeMetadata(target.metadata) : validateBridgeMetadata(target.metadata), createdAt: nonNegativeNumber(target.createdAt, "target creation time"),
+			targetKey: text(target.targetKey, "target key", MAX_ID_BYTES), projectRoot: text(target.projectRoot, "project root", MAX_PATH_BYTES), bridgeId: text(target.bridgeId, "launch ID", MAX_ID_BYTES), participantKey: text(target.participantKey, "participant key", MAX_ID_BYTES), holderGeneration: text(target.holderGeneration, "holder generation", MAX_ID_BYTES), profile: target.profile === "read-only" ? "read-only" as const : "workspace-write" as const, configurationHash: hash(target.configurationHash, "configuration hash"), clientGeneration: text(target.clientGeneration, "client generation", MAX_ID_BYTES), reconnectDigest: hash(target.reconnectDigest, "reconnect digest"), herdr: validateBridgeHerdr(target.herdr), metadata: validateBridgeMetadata(target.metadata), createdAt: nonNegativeNumber(target.createdAt, "target creation time"),
 		};
 		if (target.workspaceId !== undefined) Object.assign(shared, { workspaceId: text(target.workspaceId, "workspace ID", MAX_ID_BYTES), workspaceRoot: text(target.workspaceRoot, "workspace root", MAX_PATH_BYTES) });
 		const result: HostedExternalTarget = interactive ? { kind: "agent", ...shared, driver: nativeDriver(target.driver), agentSession: validateAgentSession(target.agentSession), capabilityTier: managedTier(target.capabilityTier) } : { kind: "bridge", ...shared };
@@ -1071,15 +985,10 @@ function validateTarget(value: PersistedStateValue | undefined, key: string, leg
 	throw new Error("invalid target kind");
 }
 
-function validateLegacyPiTarget(value: PersistedStateValue | undefined, key: string): HostedTarget {
-	const target = strictObject(value, "legacy Pi target", ["targetKey", "projectRoot", "piSessionId", "piSessionFile", "createdAt"]);
-	return validateTarget({ kind: "pi", ...target }, key);
-}
-
-function validateBridgeLaunch(value: PersistedStateValue | undefined, key: string, legacyBridge = false): HostedBridgeLaunch {
+function validateBridgeLaunch(value: PersistedStateValue | undefined, key: string): HostedBridgeLaunch {
 	const launch = strictObject(value, "bridge launch", ["version", "launchId", "requestId", "launchDigest", "reconnectDigest", "callerParticipantKey", "callerGeneration", "callerTargetKey", "participantKey", "protocol", "participantId", "expectedParticipantGeneration", "holderGeneration", "targetKey", "projectRoot", "profile", "configurationHash", "driver", "herdr", "workspaceId", "workspaceRoot", "metadata", "createdAt", "expiresAt", "status", "consumedAt", "clientGeneration"]);
 	const status = enumValue(launch.status, ["pending", "consumed", "cancelled", "expired"], "invalid bridge launch status");
-	if (launch.version !== 1 || (launch.profile !== "read-only" && launch.profile !== "workspace-write") || (launch.workspaceId === undefined) !== (launch.workspaceRoot === undefined) || (legacyBridge ? launch.profile !== "read-only" || launch.workspaceId !== undefined : (launch.profile === "workspace-write") !== (launch.workspaceId !== undefined))) throw new Error("invalid bridge launch version, status, profile, or workspace authority");
+	if (launch.version !== 1 || (launch.profile !== "read-only" && launch.profile !== "workspace-write") || (launch.workspaceId === undefined) !== (launch.workspaceRoot === undefined) || ((launch.profile === "workspace-write") !== (launch.workspaceId !== undefined))) throw new Error("invalid bridge launch version, status, profile, or workspace authority");
 	const result: HostedBridgeLaunch = {
 		version: 1,
 		launchId: text(launch.launchId, "bridge launch ID", MAX_ID_BYTES),
@@ -1098,7 +1007,7 @@ function validateBridgeLaunch(value: PersistedStateValue | undefined, key: strin
 		profile: launch.profile,
 		configurationHash: hash(launch.configurationHash, "bridge configuration hash"),
 		herdr: validateBridgeHerdr(launch.herdr),
-		metadata: legacyBridge ? migrateBridgeMetadata(launch.metadata) : validateBridgeMetadata(launch.metadata),
+		metadata: validateBridgeMetadata(launch.metadata),
 		createdAt: nonNegativeNumber(launch.createdAt, "bridge launch creation time"),
 		expiresAt: nonNegativeNumber(launch.expiresAt, "bridge launch expiry"),
 		status,
@@ -1116,11 +1025,9 @@ function validateBridgeLaunch(value: PersistedStateValue | undefined, key: strin
 	return result;
 }
 
-function validateWorkspace(value: PersistedStateValue | undefined, key: string): HostedWorkspace { return validateWorkspaceRecord(value, key, false); }
-function validateWorkspaceV4(value: PersistedStateValue | undefined, key: string): HostedWorkspace { return validateWorkspaceRecord(value, key, true); }
-function validateWorkspaceRecord(value: PersistedStateValue | undefined, key: string, legacyPi: boolean): HostedWorkspace {
+function validateWorkspace(value: PersistedStateValue | undefined, key: string): HostedWorkspace {
 	const item = strictObject(value, "workspace", ["version", "workspaceId", "requestId", "projectRoot", "gitCommonDir", "worktreePath", "branchRef", "participantKey", "protocol", "participantId", "expectedParticipantGeneration", "holderGeneration", "targetKey", "ownerKind", "piSessionId", "bridgeId", "profile", "launchDigest", "callerParticipantKey", "callerGeneration", "callerTargetKey", "baseCommit", "headCommit", "herdr", "state", "taskStatus", "commits", "changedFiles", "additions", "deletions", "integratedHead", "createdAt", "expiresAt", "updatedAt"]);
-	const ownerKind = legacyPi ? "pi" : item.ownerKind;
+	const ownerKind = item.ownerKind;
 	const state = enumValue(item.state, ["provisioning", "ready", "bound", "active", "ready_handoff", "partial", "retained", "needs_attention", "integrated", "cleaned"], "invalid workspace state");
 	if (item.version !== 1 || item.profile !== "workspace-write" || (ownerKind !== "pi" && ownerKind !== "bridge")) throw new Error("invalid workspace version, owner, profile, or state");
 	if (ownerKind === "pi" ? !isPersistedString(item.piSessionId) || !isPersistedString(item.launchDigest) || item.bridgeId !== undefined : !isPersistedString(item.bridgeId) || item.piSessionId !== undefined || item.launchDigest !== undefined) throw new Error("workspace owner authority is inconsistent");
@@ -1218,16 +1125,6 @@ function validateAgentSession(value: PersistedStateValue | undefined): HostedAge
 	const session = strictObject(value, "interactive agent session", ["source", "agent", "kind", "value"]);
 	if (session.kind !== "id" && session.kind !== "path") throw new Error("interactive agent session kind is invalid");
 	return { source: text(session.source, "agent session source", MAX_ID_BYTES), agent: text(session.agent, "agent session kind", 64), kind: session.kind, value: text(session.value, "agent session value", MAX_PATH_BYTES) };
-}
-
-function migrateBridgeMetadata(value: PersistedStateValue | undefined): Record<string, string> {
-	const metadata = strictObject(value, "legacy bridge metadata");
-	if (Object.keys(metadata).length > HOSTED_BRIDGE_MAX_METADATA_ENTRIES) throw new Error("bridge metadata exceeds its entry limit");
-	const parsed = Object.fromEntries(Object.entries(metadata).map(([key, item]) => {
-		if (!/^[a-z][a-z0-9_-]{0,63}$/.test(key) || FORBIDDEN_BRIDGE_METADATA.has(key)) throw new Error("legacy bridge metadata key is invalid or reserved");
-		return [key, stringValue(item, "bridge metadata value", HOSTED_BRIDGE_MAX_METADATA_VALUE_BYTES)];
-	}));
-	return parsed.adapter ? { adapter: parsed.adapter } : parsed.format ? { adapter: parsed.format } : {};
 }
 
 function validateBridgeMetadata(value: PersistedStateValue | undefined): Record<string, string> {
@@ -1370,7 +1267,7 @@ function validateFilesystemEvent(value: PersistedStateValue | undefined, key: st
 }
 
 function validateMailboxEvent(value: PersistedStateValue | undefined, key: string): HostedMailboxMessageEvent | HostedMailboxTaskEvent {
-	const event = strictObject(value, "hosted mailbox event", ["version", "eventId", "dedupeKey", "source", "recipientParticipantKey", "type", "createdAt", "summary", "payload", "delivery"]);
+	const event = strictObject(value, "hosted mailbox event", ["version", "eventId", "dedupeKey", "source", "recipientParticipantKey", "type", "createdAt", "summary", "payload", "delivery", "recipientBinding", "inReplyToEventId"]);
 	if (event.version !== 1 || (event.type !== "mailbox.message" && event.type !== "mailbox.task")) throw new Error("invalid hosted mailbox event version or type");
 	const source = strictObject(event.source, "mailbox source", ["kind", "id", "generation", "sequence"]);
 	if (source.kind !== "participant") throw new Error("invalid mailbox source kind");
@@ -1389,7 +1286,7 @@ function validateMailboxEvent(value: PersistedStateValue | undefined, key: strin
 			sequence: integer(source.sequence, "source sequence"),
 		},
 		recipientParticipantKey,
-		type: eventType,
+		...(eventType === "mailbox.message" ? { type: eventType, recipientBinding: validateRecipientBinding(event.recipientBinding) } : { type: eventType }),
 		createdAt: nonNegativeNumber(event.createdAt, "event creation time"),
 		summary: stringValue(event.summary, "event summary", MAX_SUMMARY_BYTES),
 		payload: {
@@ -1401,10 +1298,19 @@ function validateMailboxEvent(value: PersistedStateValue | undefined, key: strin
 		},
 		delivery: validateDelivery(event.delivery),
 	};
+	if (result.type !== "mailbox.message" && (event.recipientBinding !== undefined || event.inReplyToEventId !== undefined)) throw new Error("only ordinary mail may carry messaging bindings");
+	if (result.type === "mailbox.message" && event.inReplyToEventId !== undefined) result.inReplyToEventId = text(event.inReplyToEventId, "reply event", 200);
 	if (result.eventId !== key || result.source.id !== result.payload.senderParticipantKey || recipientParticipantKey !== result.payload.recipientParticipantKey) throw new Error("mailbox event identity is inconsistent");
 	const expectedFingerprint = eventType === "mailbox.task" ? taskFingerprint(recipientParticipantKey, body) : mailboxFingerprint(recipientParticipantKey, body);
 	if (result.dedupeKey !== mailboxDedupeKey(result.source.id, result.payload.sendId) || result.payload.fingerprint !== expectedFingerprint) throw new Error("mailbox event dedupe or fingerprint is invalid");
 	return result;
+}
+
+function validateRecipientBinding(value: PersistedStateValue | undefined): HostedMailboxMessageEvent["recipientBinding"] {
+	const binding = strictObject(value, "mailbox recipient binding", ["kind", "namespaceId"]);
+	if (binding.kind === "unbound" && binding.namespaceId === undefined) return { kind: "unbound" };
+	if (binding.kind === "namespace") return { kind: "namespace", namespaceId: text(binding.namespaceId, "recipient namespace", 200) };
+	throw new Error("invalid mailbox recipient binding");
 }
 
 function validateTaskResultEvent(value: PersistedStateValue | undefined, key: string): HostedMailboxTaskResultEvent {
@@ -1515,6 +1421,11 @@ function validateWake(value: PersistedStateValue | undefined, key: string): Host
 }
 
 function validateReferences(state: HostedRuntimeState): void {
+	for (const event of Object.values(state.events)) {
+		if (event.type !== "mailbox.message" || event.recipientBinding?.kind !== "namespace") continue;
+		const grant = state.messaging[event.recipientBinding.namespaceId];
+		if (!grant || grant.participantKey !== event.recipientParticipantKey || event.createdAt < grant.createdAt || event.createdAt >= grant.expiresAt) throw new Error("mailbox recipient namespace binding is invalid");
+	}
 	let messagingRecords = Object.keys(state.messaging).length;
 	for (const grant of Object.values(state.messaging)) {
 		const sender = state.participants[grant.participantKey];
@@ -1522,13 +1433,22 @@ function validateReferences(state: HostedRuntimeState): void {
 		if (!sender || !target || sender.projectRoot !== target.projectRoot) throw new Error("messaging authority reference is invalid");
 		for (const receipt of Object.values(grant.receipts)) {
 			messagingRecords++;
+			if (receipt.inReplyToEventId !== undefined) {
+				const offer = grant.offers[receipt.inReplyToEventId];
+				if (!offer || offer.receiptToken !== receipt.replyToken || offer.receivedAt === undefined || offer.receivedAt > receipt.createdAt) throw new Error("reply receipt lacks its exact client-receipted offer");
+			}
 			const recipient = state.participants[receipt.recipientParticipantKey];
 			const event = state.events[receipt.eventId];
 			if (!recipient || recipient.projectRoot !== sender.projectRoot || recipient.protocol !== sender.protocol || receipt.createdAt < grant.createdAt || receipt.createdAt >= grant.expiresAt) throw new Error("messaging receipt scope or time is invalid");
-			if (event && (event.type !== "mailbox.message" || event.payload.senderParticipantKey !== grant.participantKey || event.payload.fingerprint !== receipt.fingerprint || event.payload.sendId !== messagingSendId(grant.namespaceId, receipt.operationId) || event.source.sequence !== receipt.sequence || event.createdAt !== receipt.createdAt || event.source.generation !== grant.holderGeneration)) throw new Error("messaging receipt event is inconsistent");
+			if (event && (event.type !== "mailbox.message" || event.payload.senderParticipantKey !== grant.participantKey || (receipt.inReplyToEventId === undefined ? event.payload.fingerprint !== receipt.fingerprint : messagingReplyFingerprint(receipt.inReplyToEventId, receipt.replyToken!, event.payload.body) !== receipt.fingerprint) || event.inReplyToEventId !== receipt.inReplyToEventId || event.payload.sendId !== messagingSendId(grant.namespaceId, receipt.operationId) || event.source.sequence !== receipt.sequence || event.createdAt !== receipt.createdAt || event.source.generation !== grant.holderGeneration)) throw new Error("messaging receipt event is inconsistent");
+		}
+		for (const offer of Object.values(grant.offers)) {
+			messagingRecords++;
+			const event = messagingReceivedEvent(state, grant, offer.eventId);
+			if (offer.offeredAt < grant.createdAt || offer.offeredAt < event.createdAt || offer.offeredAt >= grant.expiresAt || offer.receivedAt !== undefined && offer.receivedAt >= grant.expiresAt) throw new Error("messaging offer lifetime is invalid");
 		}
 	}
-	if (messagingRecords > MAX_STATE_RECORDS) throw new Error("messaging authority and receipts exceed capacity");
+	if (messagingRecords > MAX_STATE_RECORDS) throw new Error("messaging authority, receipts and offers exceed capacity");
 	for (const reservation of Object.values(state.autoCapacityReservations)) {
 		const target = state.targets[reservation.callerTargetKey];
 		if (target?.kind !== "pi" || target.projectRoot !== reservation.projectRoot) throw new Error("Auto capacity caller target is missing or invalid");
@@ -1676,10 +1596,6 @@ function nonNegativeNumber(value: PersistedStateValue | undefined, name: string)
 function boolean(value: PersistedStateValue | undefined, name: string): boolean {
 	if (value !== true && value !== false) throw new Error(`${name} must be a boolean`);
 	return value;
-}
-
-function isPersistedStateFields(value: PersistedStateValue): value is PersistedStateFields {
-	return value !== null && !Array.isArray(value) && Object(value) === value;
 }
 
 function isPersistedString(value: PersistedStateValue | undefined): value is string {
