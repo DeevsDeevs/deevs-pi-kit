@@ -187,7 +187,7 @@ A target is live only while `herdr agent get` resolves the exact pane to the sam
 
 A trusted launch is ordered:
 
-1. Resolve participant, driver, model, persona, and profile independently.
+1. Resolve participant, driver, model, persona, and profile independently. Normal native `workspace-write` requires fresh interactive confirmation even in Auto; no UI means no launch.
 2. Reserve Auto capacity when applicable.
 3. Persist an exact launch intent before creating Git or Herdr resources.
 4. Provision a Runtime-owned worktree first for `workspace-write`.
@@ -202,7 +202,11 @@ The participant ID provides the stable Runtime identity. The Herdr agent name is
 
 Response-loss recovery inspects only the exact persisted Herdr resource and launch intent. It either binds the matching live agent, closes the exact unbound resource, or retains `needs_attention`; it never selects an agent by label or starts a second agent speculatively.
 
-Persona instructions are supplied through the driver's immutable startup configuration where supported. After the trusted Runtime confirmation, Claude's owner-private trust store is atomically updated for the exact authorized launch cwd because Claude exposes no interactive trust-bypass flag; unrelated project state is preserved and concurrent changes fail closed. Codex receives an exact trusted-project override for that cwd and starts with hooks disabled. Thus neither an interactive trust prompt nor an unreviewed project hook blocks or weakens launch. If startup configuration cannot enforce the requested persona or model, launch fails rather than sending an ordinary chat message and pretending it is system authority.
+Normal native `workspace-write` preserves user configuration, hooks and native permission/trust prompts. Claude receives appended system context and an inline MCP server entry; Codex receives a server configuration override and startup user context, not replacement developer/system instructions. Controlled configuration hashes bind these requested arguments and the shared catalog, not ambient user settings or hooks. Guarded read-only retains its prior startup restrictions, including the exact Claude trust-store update and Codex trusted-project override/hook disable; it does not receive the new MCP provisioning. Never describe normal configuration as an edit-only tool boundary or automatically accept its prompts.
+
+Native control metadata is current-only version 2: session history stores an allowlisted binding and typed lifecycle state, never launch/reconnect credentials. Immutable owner-only `native-control-*.json` artifacts bind credentials to the controller session/file/cwd and exact native target/client/holder/configuration/session/terminal/project/worktree cwd. Missing, mismatched, unsafe or corrupt artifacts fail closed; unsupported token-bearing metadata is neither migrated nor rewritten. Existing logged authority requires explicit revocation/recovery; sanitizing a later entry does not erase old secrets. These control files are separate from model-facing MCP descriptors and are retained after stop.
+
+A consumed-register conflict may recover through one exact reconnect using the original private capability; it does not create a replacement client or namespace. Human prompts remain subject to the existing 30-second launch lease/start deadline. Timeout and hook-created worktree changes are preserved for explicit recovery, not bypassed or reset. Safe indefinite prompt continuation and broader crash/repair recovery remain unproven.
 
 ## Profiles and workspaces
 
@@ -211,11 +215,11 @@ Persona instructions are supplied through the driver's immutable startup configu
 Driver startup policy:
 
 - Claude read-only: non-bypass permission mode with only native read/search tools enabled.
-- Claude workspace-write: exact isolated worktree cwd and explicit edit/write tools; unrestricted host shell remains disabled unless an independently enforceable sandbox exists.
+- Claude workspace-write: isolated worktree cwd, normal user configuration/hooks/tool permissions; no Runtime edit-only tool filter or permission bypass.
 - Codex read-only: approval disabled for invisible prompts and read-only sandbox.
-- Codex workspace-write: approval disabled and workspace-write sandbox rooted at the isolated worktree.
+- Codex workspace-write: workspace-write sandbox at the isolated worktree, normal user configuration/hooks/approval policy.
 
-The profile is Runtime launch authority, not an OS security boundary against the trusted human operating the interactive agent. A user may deliberately alter an agent's interactive settings; Runtime must not silently continue claiming the original profile after a detectable restart or identity/configuration change. Model prose cannot change profile.
+The profile is Runtime launch authority, not an OS security boundary against the trusted human operating the interactive agent. Worktree cwd alone does not confine normal native hooks/tools or attest that they cannot affect other paths. A user may deliberately alter an agent's interactive settings; Runtime must not silently continue claiming the original profile after a detectable restart or identity/configuration change. Model prose cannot change profile.
 
 Workspace ownership, checkpointing, staged integration, and cleanup follow [`WORKSPACES.md`](WORKSPACES.md). Stop retains work; finalization requires clean unchanged main and separate trusted confirmation.
 
@@ -271,7 +275,7 @@ This comparison predates the selected shared-MCP design and current native-wake 
 
 Keep Herdr for process control and prompt delivery. Existing Herdr-only managed collaboration is sufficient if replies staying in the visible tabs are acceptable. Automatic peer messaging requires an additional structured return path, but does not inherently require MCP.
 
-MCP remains the proposed first proof because it offers a shared tool interface for both providers. Choose it only if that proof establishes the smallest permission-safe path without broadening read-only access, enabling unrelated hooks, or creating another provider conversation. A narrower proven native interface may replace it; this comparison does not approve implementation or change current capabilities.
+MCP is the selected shared interface for both providers. Guarded read-only must not silently gain permissions or hooks; explicitly confirmed normal native configuration is a separate policy that preserves the user's hooks and native permissions. Neither policy permits creating another provider conversation as a substitute for exact binding. This comparison alone does not approve rollout or certify live capabilities.
 
 Runtime publication receipts prove durable publication, not native admission, provider commit, or exactly-once execution, regardless of transport. Moving native delivery from the launching Pi into the daemon is a separate lifetime requirement: it is needed for delivery after that Pi exits, not because MCP is selected.
 
@@ -287,7 +291,7 @@ The Runtime daemon owns native-target delivery, verification, claim/submission t
 
 One package-owned MCP interface exposes the same peer discovery, message send/reply/status, and task send/result/status semantics used by Pi. It reuses Runtime routing and persistence rather than creating a second mailbox system. Claude and Codex attach through supported launch configuration in their existing visible Herdr agents. MCP transport processes carry no provider conversation state; they are owned by the provider or Herdr and cannot become detached services.
 
-MCP configuration must preserve read-only/workspace-write restrictions, exact cwd and model/persona settings, and existing hook restrictions. No broad permission bypass, enabling unrelated project hooks, new production dependency, or second provider session is implicit in this design. Provider-specific configuration and transport compatibility require proof before implementation rollout.
+MCP configuration must preserve the selected explicit policy: guarded read-only remains separate; normal native workspace-write retains user configuration/hooks/permissions after fresh interactive confirmation, even in Auto. Preserve exact cwd and selected model/context. Neither a permission bypass, silently widening a guarded profile, a new production dependency nor a second provider session is implicit in this design. Provider-specific configuration and transport compatibility require proof before implementation rollout.
 
 #### Full peer messaging and authority
 

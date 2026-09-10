@@ -686,6 +686,63 @@ it("returns no success or receipt on a real persistence failure", async () => {
 	expect(retry!.isError).toBe(false);
 });
 
+it("preserves an issued descriptor after an uncertain state commit", async () => {
+	const test = await setup({}, false);
+	const descriptorPath = messagingDescriptorPath(test.runtimeRoot, test.recipient.targetKey, "client_recipient");
+	const originalSync = fs.fsyncSync;
+	let injected = 0;
+	const fault = vi.spyOn(fs, "fsyncSync").mockImplementation(fd => {
+		if (fs.fstatSync(fd).isDirectory() && fs.existsSync(descriptorPath)) {
+			injected++;
+			throw Object.assign(new Error("Injected issuance directory-sync failure"), { code: "EIO" });
+		}
+		originalSync(fd);
+	});
+	syncBuiltinESMExports();
+	try {
+		await expect(test.issue(test.recipientParticipant)).rejects.toMatchObject({ code: "storage_error" });
+		expect(injected).toBe(1);
+	} finally { fault.mockRestore(); syncBuiltinESMExports(); }
+	expect(fs.existsSync(descriptorPath)).toBe(true);
+	const descriptor = readFileSync(descriptorPath, "utf8");
+	const grants = Object.values(test.readState().messaging).filter(grant => grant.participantKey === test.recipientParticipant.participantKey);
+	expect(grants).toHaveLength(1);
+	await expect(test.issue(test.recipientParticipant)).rejects.toMatchObject({ code: "storage_error" });
+	await test.restart();
+	const recovered = await test.issue(test.recipientParticipant);
+	expect(recovered.namespaceId).toBe(grants[0]!.namespaceId);
+	expect(recovered.descriptorPath).toBe(descriptorPath);
+	expect(readFileSync(descriptorPath, "utf8") === descriptor).toBe(true);
+	const [peers] = await mcp(descriptorPath, [{ name: "collaborator_peers", arguments: {} }]);
+	expect(peers!.isError).toBe(false);
+	expect(Object.keys(test.readState().messaging)).toHaveLength(2);
+});
+
+it("removes an uncommitted descriptor after a definite issuance failure", async () => {
+	const test = await setup({}, false);
+	const descriptorPath = messagingDescriptorPath(test.runtimeRoot, test.recipient.targetKey, "client_recipient");
+	const statePath = runtimeStatePaths(test.runtimeRoot).state;
+	const originalRename = fs.renameSync;
+	let injected = 0;
+	const fault = vi.spyOn(fs, "renameSync").mockImplementation((source, destination) => {
+		if (destination === statePath && fs.existsSync(descriptorPath)) {
+			injected++;
+			throw Object.assign(new Error("Injected issuance pre-rename failure"), { code: "EIO" });
+		}
+		originalRename(source, destination);
+	});
+	syncBuiltinESMExports();
+	try {
+		await expect(test.issue(test.recipientParticipant)).rejects.toMatchObject({ code: "storage_error" });
+		expect(injected).toBe(1);
+	} finally { fault.mockRestore(); syncBuiltinESMExports(); }
+	expect(fs.existsSync(descriptorPath)).toBe(false);
+	expect(Object.keys(test.readState().messaging)).toHaveLength(1);
+	const issued = await test.issue(test.recipientParticipant);
+	const [peers] = await mcp(issued.descriptorPath, [{ name: "collaborator_peers", arguments: {} }]);
+	expect(peers!.isError).toBe(false);
+});
+
 it("fences a post-rename directory-sync failure until restart, preserving the original publication", async () => {
 	const errors = new EventEmitter();
 	const monitorFailure = once(errors, "monitor-error");
