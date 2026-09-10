@@ -28,10 +28,12 @@ export class HostedRuntimeClientError extends Error {
 export class HostedRuntimeClient {
 	readonly socketPath: string;
 	private readonly timeoutMs: number;
+	private readonly maxResponseBytes: number;
 
-	constructor(socketPath: string, timeoutMs = 2_000) {
+	constructor(socketPath: string, timeoutMs = 2_000, maxResponseBytes = MAX_RESPONSE_BYTES) {
 		this.socketPath = socketPath;
 		this.timeoutMs = timeoutMs;
+		this.maxResponseBytes = maxResponseBytes;
 	}
 
 	// oxlint-disable-next-line anti-slop/no-unknown-returns -- RPC callers either decode the result immediately or serialize it unchanged at the tool boundary.
@@ -55,7 +57,7 @@ export class HostedRuntimeClient {
 			socket.once("close", () => finish(new HostedRuntimeClientError("unavailable", "Runtime closed without a response.")));
 			socket.on("data", (chunk: Buffer) => {
 				buffered = Buffer.concat([buffered, chunk]);
-				if (buffered.length > MAX_RESPONSE_BYTES) {
+				if (buffered.length > this.maxResponseBytes) {
 					finish(new HostedRuntimeClientError("invalid_response", "Runtime response exceeds the client limit."));
 					return;
 				}

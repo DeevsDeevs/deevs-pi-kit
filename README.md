@@ -158,10 +158,12 @@ Skills provide progressive guidance for when and how to use the tools:
 background-tasks  subagents       chain-system    wiki
 concept-diagrams  arxiv           todos           ask-user
 datadog-pup       grill-me        diagnose        codebase-orientation
-validation-review missions       collaborators
+validation-review missions       collaborators   collaborator-messaging
 ```
 
 ## Development
+
+Universal messaging is staged, not released: the [MCP compatibility probe](extensions/runtime/MCP-STAGE0.md) passed for its recorded restricted provider configurations. The opt-in [Stage 1 foundation](extensions/runtime/MCP-PLAN.md) adds a real MCP peers/send/status endpoint, restricted Runtime credentials, durable retry receipts, and a [shared messaging skill](skills/collaborator-messaging/SKILL.md). Production delivery and existing Pi tools are unchanged; the actual Pi MCP client and receive/reply remain future gates.
 
 ```bash
 npm install

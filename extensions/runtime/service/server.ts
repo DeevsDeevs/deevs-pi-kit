@@ -4,6 +4,7 @@ import { createConnection, createServer, type Server, type Socket } from "node:n
 import { join } from "node:path";
 import { TextDecoder } from "node:util";
 import { RuntimeBridgeCoordinator, type BridgeCoordinatorOptions } from "./bridge.ts";
+import { RuntimeMessaging } from "./messaging.ts";
 import { DirectoryMonitorManager, type DirectoryMonitorOptions } from "./monitor.ts";
 import { dispatchHostedLine, encodeHostedResponse, HOSTED_MAX_REQUEST_BYTES, invalidFrame, type HostedProtocolContext } from "./protocol.ts";
 import { HostedParticipantCoordinator, type HostedParticipantCoordinatorOptions } from "./participant.ts";
@@ -73,6 +74,7 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 		epoch: options.epoch ?? `epoch_${randomUUID()}`,
 		agentWake: "none",
 		registrations,
+		messaging: new RuntimeMessaging(store, registrations, participants, socketPath, options.participant?.now),
 		monitors,
 		wakes,
 		participants,

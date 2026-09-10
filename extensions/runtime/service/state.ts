@@ -35,6 +35,8 @@ import {
 	type HostedFileObservation,
 	type HostedFilesystemCreatedEvent,
 	type HostedMailboxMessageEvent,
+	type HostedMessagingGrant,
+	type HostedMessagingReceipt,
 	type HostedMailboxTaskEvent,
 	type HostedMailboxTaskResultEvent,
 	type HostedIntegration,
@@ -69,6 +71,13 @@ interface PersistedStateFields {
 
 export class HostedStateStorageError extends Error {
 	readonly code = "storage_error" as const;
+
+	readonly uncertain: boolean;
+
+	constructor(message: string, uncertain = false) {
+		super(message);
+		this.uncertain = uncertain;
+	}
 }
 
 export class HostedStateConflictError extends Error {
@@ -81,32 +90,80 @@ export class HostedStateConflictError extends Error {
 }
 
 export function emptyHostedRuntimeState(): HostedRuntimeState {
-	return { version: 8, targets: {}, autoCapacityReservations: {}, bridgeLaunches: {}, workspaces: {}, integrations: {}, monitors: {}, participants: {}, events: {}, dedupe: {}, claims: {}, wakes: {} };
+	return { version: 9, messaging: {}, targets: {}, autoCapacityReservations: {}, bridgeLaunches: {}, workspaces: {}, integrations: {}, monitors: {}, participants: {}, events: {}, dedupe: {}, claims: {}, wakes: {} };
 }
 
 export class HostedStateStore {
 	readonly root: string;
 	private state: HostedRuntimeState;
+	private uncertain = false;
 
 	constructor(root: string) {
 		this.root = root;
 		this.state = readHostedRuntimeState(root);
+		// A process restart alone does not flush a previously uncertain rename.
+		try {
+			const directory = openSync(root, constants.O_RDONLY | constants.O_NOFOLLOW);
+			try { fsyncSync(directory); } finally { closeSync(directory); }
+		} catch (error) { throw storageError("Cannot confirm recovered runtime storage", error, true); }
 	}
 
 	read(): HostedRuntimeState {
+		if (this.uncertain) throw new HostedStateStorageError("Runtime storage outcome is uncertain; restart and recover before reading or mutating state.", true);
 		return this.state;
 	}
 
 	apply(operation: HostedStateOperation): HostedRuntimeState {
-		const next = reduceHostedState(this.state, operation);
+		const next = reduceHostedState(this.read(), operation);
 		if (next === this.state) return this.state;
-		writeHostedRuntimeState(this.root, next);
+		try { writeHostedRuntimeState(this.root, next); }
+		catch (error) {
+			if (error instanceof HostedStateStorageError && error.uncertain) this.uncertain = true;
+			throw error;
+		}
 		this.state = next;
 		return next;
 	}
 }
 
 export function reduceHostedState(state: HostedRuntimeState, operation: HostedStateOperation): HostedRuntimeState {
+	if (operation.type === "messaging.issue") {
+		const grant = validateMessagingGrant(operation.grant, operation.grant.namespaceId);
+		if (state.messaging[grant.namespaceId] || grant.status !== "active" || Object.keys(grant.receipts).length) throw new HostedStateConflictError("conflict", "Messaging namespace must be newly issued.");
+		assertMessagingHolder(state, grant, grant.createdAt);
+		return { ...state, messaging: { ...state.messaging, [grant.namespaceId]: grant } };
+	}
+	if (operation.type === "messaging.close") {
+		const grant = state.messaging[operation.namespaceId];
+		if (!grant || grant.status === "expired" || grant.status === "revoked" && operation.status === "revoked") return state;
+		// ponytail: terminal namespace IDs remain under the 10,000-record cap; prune tombstones if launch volume requires it.
+		return { ...state, messaging: { ...state.messaging, [grant.namespaceId]: { ...grant, status: operation.status, receipts: operation.status === "expired" ? {} : grant.receipts } } };
+	}
+	if (operation.type === "messaging.invalidate_client") {
+		let next = state;
+		for (const grant of Object.values(state.messaging)) {
+			if (grant.targetKey === operation.targetKey && (grant.clientGeneration !== operation.clientGeneration || grant.terminalId !== operation.terminalId)) next = reduceHostedState(next, { type: "messaging.close", namespaceId: grant.namespaceId, status: "revoked" });
+		}
+		return next;
+	}
+	if (operation.type === "messaging.send") {
+		const grant = state.messaging[operation.namespaceId];
+		if (!grant) throw new HostedStateConflictError("conflict", "Messaging namespace is absent.");
+		assertMessagingHolder(state, grant, operation.at);
+		assertStateId(operation.operationId, "Messaging operation ID");
+		const fingerprint = mailboxFingerprint(operation.recipientParticipantKey, operation.body);
+		const receipt = Object.hasOwn(grant.receipts, operation.operationId) ? grant.receipts[operation.operationId] : undefined;
+		if (receipt) {
+			if (receipt.fingerprint !== fingerprint) throw new HostedStateConflictError("conflict", "Messaging operation ID was reused with different input.");
+			return state;
+		}
+		const sendId = messagingSendId(grant.namespaceId, operation.operationId);
+		const next = reduceHostedState(state, { type: "mailbox.send", senderParticipantKey: grant.participantKey, expectedSenderGeneration: grant.holderGeneration, senderTargetKey: grant.targetKey, recipientParticipantKey: operation.recipientParticipantKey, sendId, body: operation.body, eventId: operation.eventId, at: operation.at });
+		const event = next.events[operation.eventId];
+		if (!event || event.type !== "mailbox.message" || event.payload.sendId !== sendId) throw new HostedStateConflictError("conflict", "Messaging publication collided with an existing event.");
+		const published: HostedMessagingReceipt = { operationId: operation.operationId, fingerprint, eventId: event.eventId, recipientParticipantKey: event.recipientParticipantKey, sequence: event.source.sequence, createdAt: event.createdAt };
+		return { ...next, messaging: { ...next.messaging, [grant.namespaceId]: { ...grant, receipts: { ...grant.receipts, [operation.operationId]: published } } } };
+	}
 	if (operation.type === "target.ensure") {
 		const existing = state.targets[operation.target.targetKey];
 		if (existing) {
@@ -639,8 +696,8 @@ export function readHostedRuntimeState(root: string): HostedRuntimeState {
 	const value = readJson(path, HOSTED_STATE_MAX_BYTES);
 	if (value === undefined) return emptyHostedRuntimeState();
 	const version = isPersistedStateFields(value) ? value.version : undefined;
-	if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7) return validateHostedRuntimeState(value);
-	const migrated = version === 1 ? migrateHostedRuntimeStateV1(value) : version === 2 ? migrateHostedRuntimeStateV2(value) : version === 3 ? migrateHostedRuntimeStateV3(value) : version === 4 ? migrateHostedRuntimeStateV4(value) : version === 5 ? migrateHostedRuntimeStateV5(value) : version === 6 ? migrateHostedRuntimeStateV6(value) : migrateHostedRuntimeStateV7(value);
+	if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8) return validateHostedRuntimeState(value);
+	const migrated = version === 1 ? migrateHostedRuntimeStateV1(value) : version === 2 ? migrateHostedRuntimeStateV2(value) : version === 3 ? migrateHostedRuntimeStateV3(value) : version === 4 ? migrateHostedRuntimeStateV4(value) : version === 5 ? migrateHostedRuntimeStateV5(value) : version === 6 ? migrateHostedRuntimeStateV6(value) : version === 7 ? migrateHostedRuntimeStateV7(value) : migrateHostedRuntimeStateV8(value);
 	writeAtomicJson(root, path, migrated, HOSTED_STATE_MAX_BYTES);
 	return migrated;
 }
@@ -652,10 +709,11 @@ export function writeHostedRuntimeState(root: string, state: HostedRuntimeState)
 
 export function validateHostedRuntimeState<Source>(value: Source): HostedRuntimeState {
 	try {
-		const state = strictObject(value, "runtime state", ["version", "targets", "autoCapacityReservations", "bridgeLaunches", "workspaces", "integrations", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
-		if (state.version !== 8) throw new Error("unsupported runtime state version");
+		const state = strictObject(value, "runtime state", ["version", "messaging", "targets", "autoCapacityReservations", "bridgeLaunches", "workspaces", "integrations", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
+		if (state.version !== 9) throw new Error("unsupported runtime state version");
 		const result: HostedRuntimeState = {
-			version: 8,
+			version: 9,
+			messaging: mapValues(state.messaging, "messaging namespaces", validateMessagingGrant),
 			targets: mapValues(state.targets, "targets", validateTarget),
 			autoCapacityReservations: mapValues(state.autoCapacityReservations, "Auto capacity reservations", validateAutoCapacityReservation),
 			bridgeLaunches: mapValues(state.bridgeLaunches, "bridge launches", validateBridgeLaunch),
@@ -680,7 +738,8 @@ function migrateHostedRuntimeStateV1(value: PersistedStateValue): HostedRuntimeS
 		const state = strictObject(value, "runtime state v1", ["version", "targets", "monitors", "events", "dedupe", "claims", "wakes"]);
 		if (state.version !== 1) throw new Error("unsupported source runtime state version");
 		const result: HostedRuntimeState = {
-			version: 8,
+			version: 9,
+			messaging: {},
 			targets: mapValues(state.targets, "targets", validateLegacyPiTarget),
 			autoCapacityReservations: {},
 			bridgeLaunches: {},
@@ -705,7 +764,8 @@ function migrateHostedRuntimeStateV2(value: PersistedStateValue): HostedRuntimeS
 		const state = strictObject(value, "runtime state v2", ["version", "targets", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
 		if (state.version !== 2) throw new Error("unsupported source runtime state version");
 		const result: HostedRuntimeState = {
-			version: 8,
+			version: 9,
+			messaging: {},
 			targets: mapValues(state.targets, "targets", validateLegacyPiTarget),
 			autoCapacityReservations: {},
 			bridgeLaunches: {},
@@ -730,7 +790,8 @@ function migrateHostedRuntimeStateV3(value: PersistedStateValue): HostedRuntimeS
 		const state = strictObject(value, "runtime state v3", ["version", "targets", "bridgeLaunches", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
 		if (state.version !== 3) throw new Error("unsupported source runtime state version");
 		const result: HostedRuntimeState = {
-			version: 8,
+			version: 9,
+			messaging: {},
 			targets: mapValues(state.targets, "targets", (item, key) => validateTarget(item, key, true)),
 			autoCapacityReservations: {},
 			bridgeLaunches: mapValues(state.bridgeLaunches, "bridge launches", (item, key) => validateBridgeLaunch(item, key, true)),
@@ -755,7 +816,8 @@ function migrateHostedRuntimeStateV4(value: PersistedStateValue): HostedRuntimeS
 		const state = strictObject(value, "runtime state v4", ["version", "targets", "bridgeLaunches", "workspaces", "integrations", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
 		if (state.version !== 4) throw new Error("unsupported source runtime state version");
 		const result: HostedRuntimeState = {
-			version: 8,
+			version: 9,
+			messaging: {},
 			targets: mapValues(state.targets, "targets", (item, key) => validateTarget(item, key, true)),
 			autoCapacityReservations: {},
 			bridgeLaunches: mapValues(state.bridgeLaunches, "bridge launches", (item, key) => validateBridgeLaunch(item, key, true)),
@@ -779,7 +841,7 @@ function migrateHostedRuntimeStateV5(value: PersistedStateValue): HostedRuntimeS
 	try {
 		const state = strictObject(value, "runtime state v5", ["version", "targets", "bridgeLaunches", "workspaces", "integrations", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
 		if (state.version !== 5) throw new Error("unsupported source runtime state version");
-		return validateHostedRuntimeState({ ...state, version: 8, autoCapacityReservations: {} });
+		return validateHostedRuntimeState({ ...state, version: 9, messaging: {}, autoCapacityReservations: {} });
 	} catch (error) {
 		throw storageError("Runtime state v5 migration failed", error);
 	}
@@ -789,7 +851,7 @@ function migrateHostedRuntimeStateV6(value: PersistedStateValue): HostedRuntimeS
 	try {
 		const state = strictObject(value, "runtime state v6", ["version", "targets", "bridgeLaunches", "workspaces", "integrations", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
 		if (state.version !== 6) throw new Error("unsupported source runtime state version");
-		return validateHostedRuntimeState({ ...state, version: 8, autoCapacityReservations: {} });
+		return validateHostedRuntimeState({ ...state, version: 9, messaging: {}, autoCapacityReservations: {} });
 	} catch (error) {
 		throw storageError("Runtime state v6 migration failed", error);
 	}
@@ -799,10 +861,49 @@ function migrateHostedRuntimeStateV7(value: PersistedStateValue): HostedRuntimeS
 	try {
 		const state = strictObject(value, "runtime state v7", ["version", "targets", "autoCapacityReservations", "bridgeLaunches", "workspaces", "integrations", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
 		if (state.version !== 7) throw new Error("unsupported source runtime state version");
-		return validateHostedRuntimeState({ ...state, version: 8 });
+		return validateHostedRuntimeState({ ...state, version: 9, messaging: {} });
 	} catch (error) {
 		throw storageError("Runtime state v7 migration failed", error);
 	}
+}
+
+function migrateHostedRuntimeStateV8(value: PersistedStateValue): HostedRuntimeState {
+	const state = strictObject(value, "runtime state v8", ["version", "targets", "autoCapacityReservations", "bridgeLaunches", "workspaces", "integrations", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
+	return validateHostedRuntimeState({ ...state, version: 9, messaging: {} });
+}
+
+export function messagingSendId(namespaceId: string, operationId: string): string {
+	return `mcp_${createHash("sha256").update(JSON.stringify([namespaceId, operationId])).digest("hex")}`;
+}
+
+function assertMessagingHolder(state: HostedRuntimeState, grant: HostedMessagingGrant, at: number): void {
+	const holder = state.participants[grant.participantKey];
+	const target = state.targets[grant.targetKey];
+	if (grant.status !== "active" || !Number.isFinite(at) || at < grant.createdAt || at >= grant.expiresAt || holder?.state !== "held" || holder.generation !== grant.holderGeneration || holder.holderTargetKey !== grant.targetKey || !target || messagingConfigurationHash(target) !== grant.configurationHash) throw new HostedStateConflictError("conflict", "Messaging authority is expired, revoked, or no longer bound to this holder.");
+}
+
+export function messagingConfigurationHash(target: HostedTarget): string {
+	return target.kind === "pi" ? createHash("sha256").update(JSON.stringify([target.projectRoot, target.piSessionId, target.piSessionFile, target.workspaceId ?? null, target.workspaceRoot ?? null])).digest("hex") : target.configurationHash;
+}
+
+function validateMessagingGrant<Source>(value: Source, key: string): HostedMessagingGrant {
+	const item = strictObject(value, "messaging namespace", ["namespaceId", "secretDigest", "participantKey", "holderGeneration", "targetKey", "clientGeneration", "terminalId", "configurationHash", "createdAt", "expiresAt", "status", "receipts"]);
+	const grant: HostedMessagingGrant = {
+		namespaceId: text(item.namespaceId, "messaging namespace", 200), secretDigest: hash(item.secretDigest, "messaging secret digest"),
+		participantKey: text(item.participantKey, "messaging participant", 200), holderGeneration: text(item.holderGeneration, "messaging holder", 200),
+		targetKey: text(item.targetKey, "messaging target", 200), clientGeneration: text(item.clientGeneration, "messaging client", 200),
+		terminalId: text(item.terminalId, "messaging terminal", 200), configurationHash: hash(item.configurationHash, "messaging configuration"),
+		createdAt: nonNegativeNumber(item.createdAt, "messaging creation"), expiresAt: nonNegativeNumber(item.expiresAt, "messaging expiry"),
+		status: enumValue(item.status, ["active", "revoked", "expired"], "invalid messaging state"),
+		receipts: mapValues(item.receipts, "messaging receipts", (value, key) => {
+			const receipt = strictObject(value, "messaging receipt", ["operationId", "fingerprint", "eventId", "recipientParticipantKey", "sequence", "createdAt"]);
+			const result = { operationId: text(receipt.operationId, "operation ID", 200), fingerprint: hash(receipt.fingerprint, "operation fingerprint"), eventId: text(receipt.eventId, "receipt event", 200), recipientParticipantKey: text(receipt.recipientParticipantKey, "receipt recipient", 200), sequence: integer(receipt.sequence, "receipt sequence"), createdAt: nonNegativeNumber(receipt.createdAt, "receipt creation") };
+			if (result.operationId !== key || result.sequence < 1) throw new Error("messaging receipt identity is invalid");
+			return result;
+		}),
+	};
+	if (grant.namespaceId !== key || !/^msg_[0-9a-f-]{36}$/.test(key) || grant.expiresAt !== grant.createdAt + HOSTED_ACK_RETENTION_MS) throw new Error("messaging namespace identity or lifetime is invalid");
+	return grant;
 }
 
 function claimEvents(state: HostedRuntimeState, claim: HostedClaim): HostedRuntimeState {
@@ -913,6 +1014,7 @@ function writeAtomicJson(root: string, path: string, value: HostedRuntimeState |
 	if (Buffer.byteLength(content) > maxBytes) throw new HostedStateStorageError(`Runtime state exceeds ${maxBytes} bytes.`);
 	const temporary = join(root, `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`);
 	let fd: number | undefined;
+	let renamed = false;
 	try {
 		fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
 		writeFileSync(fd, content, "utf8");
@@ -920,13 +1022,14 @@ function writeAtomicJson(root: string, path: string, value: HostedRuntimeState |
 		closeSync(fd);
 		fd = undefined;
 		renameSync(temporary, path);
+		renamed = true;
 		chmodSync(path, 0o600);
 		const directory = openSync(root, constants.O_RDONLY | constants.O_NOFOLLOW);
 		try { fsyncSync(directory); } finally { closeSync(directory); }
 	} catch (error) {
 		if (fd !== undefined) closeSync(fd);
 		try { unlinkSync(temporary); } catch {}
-		throw storageError(`Cannot persist runtime state: ${path}`, error);
+		throw storageError(`Cannot persist runtime state: ${path}`, error, renamed);
 	}
 }
 
@@ -1412,6 +1515,20 @@ function validateWake(value: PersistedStateValue | undefined, key: string): Host
 }
 
 function validateReferences(state: HostedRuntimeState): void {
+	let messagingRecords = Object.keys(state.messaging).length;
+	for (const grant of Object.values(state.messaging)) {
+		const sender = state.participants[grant.participantKey];
+		const target = state.targets[grant.targetKey];
+		if (!sender || !target || sender.projectRoot !== target.projectRoot) throw new Error("messaging authority reference is invalid");
+		for (const receipt of Object.values(grant.receipts)) {
+			messagingRecords++;
+			const recipient = state.participants[receipt.recipientParticipantKey];
+			const event = state.events[receipt.eventId];
+			if (!recipient || recipient.projectRoot !== sender.projectRoot || recipient.protocol !== sender.protocol || receipt.createdAt < grant.createdAt || receipt.createdAt >= grant.expiresAt) throw new Error("messaging receipt scope or time is invalid");
+			if (event && (event.type !== "mailbox.message" || event.payload.senderParticipantKey !== grant.participantKey || event.payload.fingerprint !== receipt.fingerprint || event.payload.sendId !== messagingSendId(grant.namespaceId, receipt.operationId) || event.source.sequence !== receipt.sequence || event.createdAt !== receipt.createdAt || event.source.generation !== grant.holderGeneration)) throw new Error("messaging receipt event is inconsistent");
+		}
+	}
+	if (messagingRecords > MAX_STATE_RECORDS) throw new Error("messaging authority and receipts exceed capacity");
 	for (const reservation of Object.values(state.autoCapacityReservations)) {
 		const target = state.targets[reservation.callerTargetKey];
 		if (target?.kind !== "pi" || target.projectRoot !== reservation.projectRoot) throw new Error("Auto capacity caller target is missing or invalid");
@@ -1759,9 +1876,9 @@ function sameIds(left: readonly string[], right: readonly string[]): boolean {
 	return leftSorted.every((value, index) => value === rightSorted[index]);
 }
 
-function storageError(message: string, cause: unknown): HostedStateStorageError {
-	if (cause instanceof HostedStateStorageError) return cause;
-	return new HostedStateStorageError(`${message}: ${cause instanceof Error ? cause.message : String(cause)}`);
+function storageError(message: string, cause: unknown, uncertain = false): HostedStateStorageError {
+	if (cause instanceof HostedStateStorageError && !uncertain) return cause;
+	return new HostedStateStorageError(`${message}: ${cause instanceof Error ? cause.message : String(cause)}`, uncertain);
 }
 
 function isNodeError(cause: unknown): cause is NodeJS.ErrnoException {

@@ -266,6 +266,17 @@ export class HostedParticipantCoordinator {
 		return this.sendEnvelope("mailbox.send", registration, senderParticipantKey, expectedSenderGeneration, recipientParticipantKey, sendId, body);
 	}
 
+	sendMessaging(registration: HostedLiveRegistration, namespaceId: string, operationId: string, recipientParticipantKey: string, body: string): void {
+		const grant = this.store.read().messaging[namespaceId];
+		if (!grant || grant.targetKey !== registration.targetKey || grant.clientGeneration !== registration.clientGeneration) throw new HostedParticipantError("conflict", "Messaging sender binding changed.");
+		this.assertNotStopping(grant.participantKey);
+		this.assertTargetNotStopping(grant.targetKey);
+		const retry = Object.hasOwn(grant.receipts, operationId);
+		this.store.apply({ type: "messaging.send", namespaceId, operationId, recipientParticipantKey, body, eventId: this.options.createEventId?.() ?? `evt_${randomUUID()}`, at: this.now() });
+		const recipient = this.store.read().participants[recipientParticipantKey];
+		if (!retry && recipient?.state === "held") this.wakes.request(recipient.holderTargetKey!);
+	}
+
 	messageStatus(registration: HostedLiveRegistration, senderParticipantKey: string, expectedSenderGeneration: string, eventId: string): HostedMessageStatus {
 		const target = this.requireTarget(registration.targetKey);
 		const sender = this.requireParticipant(senderParticipantKey, target.projectRoot);

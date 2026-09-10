@@ -294,6 +294,8 @@ Runtime publication receipts prove durable publication, not native admission, pr
 
 ### Planned communication and UX redesign
 
+**Implementation plan:** [Universal MCP messaging](MCP-PLAN.md) specifies the revised shared Pi/Claude/Codex tool interface, skill, receive/admission semantics, and staged proof/migration gates. It supersedes the native-only MCP and full-body delivery assumptions below for future opted-in targets; existing released behavior remains unchanged. Following independent review, the user authorized implementation beginning with the restricted-provider Stage 0 proof. This is not rollout approval or a claim of implemented messaging.
+
 This section replaces the notify-first Codex proposal. It is a target contract, not a claim that connected native targets are implemented. Scope is collaborator communication and UX: preserve Pi's existing durable admission path, participant identity, isolated workspaces, exact lifecycle fencing, and trusted integration operations.
 
 #### Ownership and transport
@@ -351,12 +353,7 @@ Advertise capabilities per target: messaging, typed tasks, turn observation, and
 
 Daemon ownership and MCP credentials require an explicit state-version and wire migration, not just moving the heartbeat loop. Preserve atomic v1–v8 migration and unknown-version rejection. Existing targets remain managed until verified replacement or an explicitly designed authenticated handoff supplies new authority. No daemon credential is recovered by scanning arbitrary Pi session history. Fence old Pi-resident delivery and new daemon delivery at the service so they cannot both submit; specify handoff, failure and rollback behavior before migration ships. Malformed persisted authority fails closed and cannot revive an older valid record.
 
-Implementation phases, subject to separate approval:
-
-1. **Prove the interface:** bounded read-only MCP round trips in visible Claude and Codex; reply correlation, proactive peer mail, typed task publication, permission restrictions and unchanged focus. No production migration yet.
-2. **Design and migrate delivery ownership:** exact controller/credential handoff or verified replacement, service-side fencing, pending-mail preservation and rollback. Prove delivery continues after launching Pi exits and no duplicate submission during handoff/restart.
-3. **Ship connected messaging and UX:** durable publication receipts, independent status evidence, retry/conflict handling, queued-age visibility, sender churn, stale credential rejection and restart recovery. Preserve Pi behavior and managed-only rejection paths.
-4. **Add proven observation where useful:** exact-session/attempt correlation, human-turn interleaving, late callbacks and callback loss. Hooks cannot fabricate replies or task settlement; durable-tier advancement remains separately gated.
+The authoritative implementation sequence and acceptance gates are in [Universal MCP messaging — implementation stages](MCP-PLAN.md#implementation-stages-and-exit-gates): restricted-provider echo proof, messaging foundation, isolated three-harness proof, daemon delivery/Pi receive cutover, then messaging release. Typed task migration is a separately approved follow-up, not a prerequisite for messaging. Native observation and durable-tier advancement remain separately gated; hooks cannot fabricate replies or task settlement. Implementation is authorized subject to those gates; rollout still requires explicit approval.
 
 Inventory legacy targets and journals before any related removal. Retain `legacy-bridge/stop.ts`, worker/journal reads and compatibility until every inventoried item has explicit retirement/migration evidence. The communication redesign does not authorize speculative deletion or bypass existing workspace preservation rules.
 

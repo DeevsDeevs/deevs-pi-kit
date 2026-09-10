@@ -323,8 +323,33 @@ export interface HostedAutoCapacityReservation {
 	createdAt: number;
 }
 
+export interface HostedMessagingReceipt {
+	operationId: string;
+	fingerprint: string;
+	eventId: string;
+	recipientParticipantKey: string;
+	sequence: number;
+	createdAt: number;
+}
+
+export interface HostedMessagingGrant {
+	namespaceId: string;
+	secretDigest: string;
+	participantKey: string;
+	holderGeneration: string;
+	targetKey: string;
+	clientGeneration: string;
+	terminalId: string;
+	configurationHash: string;
+	createdAt: number;
+	expiresAt: number;
+	status: "active" | "revoked" | "expired";
+	receipts: Record<string, HostedMessagingReceipt>;
+}
+
 export interface HostedRuntimeState {
-	version: 8;
+	version: 9;
+	messaging: Record<string, HostedMessagingGrant>;
 	targets: Record<string, HostedTarget>;
 	autoCapacityReservations: Record<string, HostedAutoCapacityReservation>;
 	bridgeLaunches: Record<string, HostedBridgeLaunch>;
@@ -339,6 +364,10 @@ export interface HostedRuntimeState {
 }
 
 export type HostedStateOperation =
+	| { type: "messaging.issue"; grant: HostedMessagingGrant }
+	| { type: "messaging.close"; namespaceId: string; status: "revoked" | "expired" }
+	| { type: "messaging.invalidate_client"; targetKey: string; clientGeneration: string; terminalId: string }
+	| { type: "messaging.send"; namespaceId: string; operationId: string; recipientParticipantKey: string; body: string; eventId: string; at: number }
 	| { type: "target.ensure"; target: HostedTarget }
 	| { type: "auto_capacity.ensure"; reservation: HostedAutoCapacityReservation }
 	| { type: "auto_capacity.release"; operationId: string; callerTargetKey: string }
