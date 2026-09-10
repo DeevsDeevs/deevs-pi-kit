@@ -81,10 +81,42 @@ Crucially, **absence of the original receive result is not absence of all body t
 - Private artifacts: `/tmp/pi-kit-history-nICIKL/{run.mjs,probe.ts,report.json,verified.json,verify.py,copies/,rpc-*.jsonl}`. Thirteen RPC/lifecycle/compaction output files were scanned against copied OAuth credentials with zero leaks; the auth copy is absent. Temporary artifacts are not packaged or guaranteed to survive host cleanup.
 - Final copied transcript SHA-256: Alice `1a03030d416884f945bd5fef74866a7b40a188e97adf153d9e77cd991212818e`; Bob `e95391c8b8e52b70fd9f4356b3932001c2b1d7eea9cc35179338c54f3cffd7bf`.
 
+## Follow-up: upgraded local Runtime and peer replacement
+
+**Passed on 2026-09-10** with installed package pin `cd1e47f379f406e6757f906544b9863048430f1c` (the same messaging implementation). The user separately approved a local upgrade: the exact old v8 service was stopped, its service-state bytes and enabled Auto configuration were archived unchanged, and a fresh v12 Runtime started in **Manual** mode. Existing workspace/bridge paths and unrelated collaborator sessions were preserved; old identities, monitors and workspace tracking were **not migrated**. The controller then explicitly reloaded Pi and reacquired its identity. This is one approved local deployment, not general rollout certification.
+
+The existing controller, `demo/mcp-plan-controller`, and a Runtime-managed read-only Pi peer, `demo/mcp-upgrade-test`, used actual MCP and `openai-codex/gpt-6-astra` for two exchanges:
+
+| Exchange | Ping event | Correlated reply event |
+|---|---|---|
+| Before peer replacement | `evt_40372af2-34e2-41c0-97ab-f24ffeda7a3e` | `evt_9fdc2c44-b08b-48e3-b3da-dd7b3a1c5da0` |
+| After peer replacement | `evt_e413353d-f583-4520-a6db-e2a3c0df99e5` | `evt_54645df3-1879-4748-b0bc-e3288c98b9cb` |
+
+Both peers received their ping through an automatic body-free reference, retrieved it through MCP and replied once. Both replies reached the controller through automatic references, exact MCP retrieval and explicit client receipt. Reply bodies were `UPGRADE_ROUNDTRIP_1_OK` and `UPGRADE_ROUNDTRIP_2_OK`. Notifications waited for the controller to become idle; this is not a bounded-latency result.
+
+Between exchanges, trusted Runtime **stand-down/start** controls replaced the peer. Holder generation, client generation and namespace changed, and both original peer process identities were confirmed gone. The old namespace was `msg_11338996-fb2f-4297-9565-20e2912455d6`; its successor was `msg_87de81c9-bc18-448c-97f5-07585c97c303`.
+
+- An actual stdio MCP child initialized using the retained old private descriptor, then `collaborator_peers` returned **`registration_stale`**. The probe child was closed and awaited. The old grant's stored status remained `active`: that field alone does not establish current holder/client eligibility. No descriptor was overwritten or deleted.
+- An identical retry of controller operation `upgrade-live-roundtrip-20260910-1` recovered the original event, sequence and timestamp. It neither duplicated publication nor redirected the old ping to the successor. A new operation, `upgrade-live-roundtrip-20260910-2`, bound the fresh ping to the successor namespace.
+- The controller also compacted during the second exchange: stored compaction entry `486e75b0`, at `2026-09-10T18:54:24.078Z`, precedes that reply's reference offer. Subsequent retrieval and receipt succeeded in the unchanged controller namespace. This is an observed compaction overlap, not a forced matrix of branch changes, hot reloads or descriptor repairs.
+- A separate read-only Python verifier checked all four publications against native reference/receive records, complete content/details, exact tool-call arguments, reply correlation, publication/retry results, model metadata and stored ancestry. Every event retained native `delivery.status: pending`, with no associated native claim or wake. Readable storage still does not certify fsync or active-context preservation.
+
+Afterward, only the test peer was stopped. All **four captured peer process identities** were quiescent, both exact peer panes returned `pane_not_found`, and no process matched either peer's session/descriptor paths. The controller's MCP connection and the intentional local Runtime service remained live. Archived v8 hashes and protected directory identities were rechecked unchanged.
+
+Private artifacts: `/tmp/pi-kit-upgrade-live-jyky_ytl/{manifest.json,state-before-stop.json,retired-credential-probe.json,verify.py,verified.json,cleanup.json,*snapshot.jsonl}`. Verification command: `python3 /tmp/pi-kit-upgrade-live-jyky_ytl/verify.py`, exit 0. Three captured transcript snapshots were scanned against **five verification-time credential values** (three MCP secrets and current OAuth access/refresh): zero matches. No auth copy was made; this scan does not cover historical rotated OAuth values. Temporary artifacts are not packaged or guaranteed to survive host cleanup.
+
+| Captured transcript | SHA-256 |
+|---|---|
+| Initial peer | `4013766c1775fdb971cf22fa8b490247d04fede651acf41238d8617949b41249` |
+| Replacement peer | `3de7d48e70d1dfa111d97fb70b8e6887e15f79d3e6f7640d10307f7c661ef4c1` |
+| Controller snapshot | `caeac2bd1eb7d0ab9d5837954ed77116d297a1a83b3d2534943f805640430526` |
+
+The controller snapshot is a preserved byte prefix of a still-running session, not a claim that its live transcript stopped changing. Peer replacement created a new session; it was **not** a same-session hot reload. The verifier was a separate program, not independent raw-evidence certification by another reviewer.
+
 ## Still not established
 
-- Runtime-enabled restart/reload/tree/compaction re-registration, descriptor renewal and new messaging in live sessions. The copied-transcript proof above establishes storage/context behavior only.
+- General Runtime-enabled hot reload/tree/compaction re-registration, descriptor renewal/repair and fresh messaging across all transitions. The local evidence above covers explicit controller reload/reacquisition, controlled peer replacement and one observed controller compaction overlap only.
 - Reliable notification after a lost reference response: hints intentionally remain best-effort and non-replayed.
 - Fsync-based Pi body admission or daemon handoff guarantees.
 - A live three-harness ring. Claude/Codex automatic wakes remain blocked on safe native editor/process admission; prior isolated publications are separate historical evidence.
-- Installation or production rollout. Those still require explicit approval.
+- Broader production rollout beyond the explicitly approved local upgrade above.
