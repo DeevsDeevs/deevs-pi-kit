@@ -113,9 +113,35 @@ Private artifacts: `/tmp/pi-kit-upgrade-live-jyky_ytl/{manifest.json,state-befor
 
 The controller snapshot is a preserved byte prefix of a still-running session, not a claim that its live transcript stopped changing. Peer replacement created a new session; it was **not** a same-session hot reload. The verifier was a separate program, not independent raw-evidence certification by another reviewer.
 
+## Follow-up: Runtime-enabled same-session lifecycle
+
+**Passed on 2026-09-10**, using two isolated real Pi 0.85.1 TUIs, the same v12 implementation and `openai-codex/gpt-6-astra`. Unlike the copied-history test, Runtime and actual stdio MCP remained enabled throughout.
+
+Five exchanges completed: baseline, after same-session reload, on a branch before the earlier receives, after restoring the original branch, and after real-model compaction. A bounded driver initiated each ping through actual MCP using its owned Bob fixture's descriptor; Alice's model received and replied, and Bob's model received and explicitly recorded receipt. These were **not model-generated initiating sends**. Alice also had a private instrumentation tool that queued public SDK lifecycle commands after both client receipts and idle-state checks; it is not a shipping messaging tool.
+
+| Phase | Ping event | Correlated reply event |
+|---|---|---|
+| Baseline | `evt_58fd0304-42db-4c0a-9751-7b015daf80e9` | `evt_785b6add-ecd3-452e-aabd-6e37068e2f2b` |
+| After reload | `evt_cdec960c-613d-4c9e-baa7-f82429830b6a` | `evt_e599bbe4-6309-458e-82ff-cd93c0690763` |
+| Away branch | `evt_901b5a79-5469-4369-97f2-3f2a207bdcd7` | `evt_515cf893-f90b-46c7-aa9e-e02cb36a687d` |
+| Restored branch | `evt_557ed42d-5d9e-4377-929e-359e51546e11` | `evt_43414643-3d54-44fc-942f-1a421f92f4f2` |
+| After compaction | `evt_c7eebf83-102e-4d67-8814-93dab9674f14` | `evt_989a878b-04d6-48d3-92d1-f3f50e6fa082` |
+
+- Alice retained its process and session `7710b2a7-3a6b-4c84-b7ec-d5850c11002a` across reload. Its namespace changed from `msg_665b011c-ce66-4a55-83b8-b7015d6d850d` to `msg_64666243-7384-4dd9-aab9-11b4039bac59`; the latter stayed unchanged through navigation and compaction. Bob's namespace remained `msg_c2e80439-48f0-4607-b5a7-098313ba844b`.
+- The old Pi-owned MCP child was checked quiescent during reload. An actual old-descriptor MCP probe returned `registration_stale`; an identical original Bob send retry recovered the original ping event. Exactly ten events were retained, all with native delivery still `pending` and no claims or wakes.
+- Navigation selected participant **metadata**, not a custom-message node. A test-only metadata entry anchored each selection. Snapshots after each transition recorded an empty editor, idle state and no pending messages; no draft was cleared to force notification.
+- Compaction `efa7d215` used the normal model with `keepRecentTokens: 1`, no custom-summary hook, and 3,402 usage tokens. Earlier receive records remained stored/on ancestry but left the compaction-aware context entries; the new post-compaction receive appeared afterward. The away-branch receive remained stored but was excluded after branch restoration. This does not prove lossless summaries or absence of body text elsewhere.
+- A separate read-only verifier checked all ten events against native references, exact receive arguments/content/details, reply correlation, model metadata, authority binding, receipt chronology, branch/context snapshots and stable transcript bytes. It is a parent-written verifier, not independent raw-evidence certification.
+
+Successful driver: `j_mtvyo7ug_716d836f`, exit 0 in 2m44s. Five captured cleanup process identities were quiescent, three exact isolated tabs were removed, and copied auth was deleted afterward. The driver scanned both transcripts against five credential values before auth removal with zero leaks; retained MCP secrets were also checked against snapshots.
+
+Private artifacts: `/tmp/pi-kit-live-lifecycle-Tnokq0/{run.mjs,probe.ts,manifest.json,state-passed.json,verified.json,verify.py,proof-sessions/,*after*.json}`. Separate verifier exited 0. Transcript SHA-256: Alice `6c715db40fb8d2c6a0ffcdeeec63c2106b78971a57d67a84cba6e1d40ddbd5b4`; Bob `59e94522e459efbc8b30b46324c8218a2aa03be0f017e13f19824364cb5ac393`. Temporary artifacts are not packaged or guaranteed to survive cleanup.
+
+Two earlier fixture failures were retained and cleaned without changing production guards: the first attempted prohibited self-mail and published nothing; the second completed baseline/reload exchanges but selected a custom-message navigation target. Pi's SDK restores that target's content into the editor, conflicting with Runtime's empty-editor notification gate. That failed attempt did not directly record editor contents; its final ping remains published without a reference/body offer in its original isolated state. It was not transferred or relabeled received.
+
 ## Still not established
 
-- General Runtime-enabled hot reload/tree/compaction re-registration, descriptor renewal/repair and fresh messaging across all transitions. The local evidence above covers explicit controller reload/reacquisition, controlled peer replacement and one observed controller compaction overlap only.
+- General descriptor repair after orphaned/expired files, crash recovery, or uncertain operations. The lifecycle proof covers successful same-session transitions and normal renewal, not every failure interleaving.
 - Reliable notification after a lost reference response: hints intentionally remain best-effort and non-replayed.
 - Fsync-based Pi body admission or daemon handoff guarantees.
 - A live three-harness ring. Claude/Codex automatic wakes remain blocked on safe native editor/process admission; prior isolated publications are separate historical evidence.

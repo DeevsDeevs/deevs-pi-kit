@@ -3,12 +3,19 @@ import { createServer, type Server } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadBuiltinAgents } from "../extensions/subagents/agents.ts";
 import { HostedRuntimeClientError } from "../extensions/runtime/client.ts";
 import { CollaboratorAutoStore } from "../extensions/runtime/auto-mode.ts";
 import { HOSTED_AUTO_LIFECYCLE_ENTRY, HOSTED_BRIDGE_REQUEST_ENTRY, HOSTED_COLLABORATOR_PROFILE_ENTRY, HOSTED_COLLABORATOR_WORKSPACE_ENTRY, HOSTED_MANAGED_AGENT_CONTROL_ENTRY, HOSTED_MANAGED_COLLABORATOR_ENTRY, HOSTED_MESSAGING_REFERENCE, HOSTED_PARTICIPANT_ENTRY, HOSTED_WORKSPACE_REQUEST_ENTRY, HostedRuntimeIntegration, markClaudeWorkspaceTrusted } from "../extensions/runtime/hosted-integration.ts";
 import { deriveTargetKey } from "../extensions/runtime/service/registration.ts";
+import { messagingDescriptorPath } from "../extensions/runtime/service/messaging.ts";
+import { persistManagedAgentCredentials, type ManagedAgentBinding } from "../extensions/runtime/managed-agent-credentials.ts";
+
+vi.mock("../extensions/runtime/managed-agent-credentials.ts", async importOriginal => {
+	const original = await importOriginal<typeof import("../extensions/runtime/managed-agent-credentials.ts")>();
+	return { ...original, persistManagedAgentCredentials: vi.fn(original.persistManagedAgentCredentials) };
+});
 
 const roots: string[] = [];
 const servers: Server[] = [];
@@ -17,6 +24,7 @@ const originalWorkspaceLaunch = process.env.PI_RUNTIME_WORKSPACE_LAUNCH;
 const originalHerdrEnv = process.env.HERDR_ENV;
 const originalHerdrWorkspace = process.env.HERDR_WORKSPACE_ID;
 afterEach(async () => {
+	vi.mocked(persistManagedAgentCredentials).mockReset();
 	await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 	if (originalBootstrap === undefined) delete process.env.PI_RUNTIME_COLLABORATE;
@@ -39,7 +47,7 @@ async function setup(respond: (request: Request) => unknown, branch: unknown[] =
 	const runtimeRoot = join(root, "runtime");
 	const projectRoot = join(root, "project");
 	const sessionFile = join(root, "session.jsonl");
-	mkdirSync(runtimeRoot);
+	mkdirSync(runtimeRoot, { mode: 0o700 });
 	mkdirSync(projectRoot);
 	writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: "session_1", timestamp: "2026-01-01T00:00:00.000Z", cwd: projectRoot })}\n`);
 	const requests: Request[] = [];
@@ -102,6 +110,58 @@ function baseResponse(request: Request): unknown {
 	if (request.method === "participant.auto_capacity.reserve") return { reservation: { operationId: request.params.operationId } };
 	if (request.method === "participant.auto_capacity.release") return { released: true };
 	throw new Error(`unexpected ${request.method}`);
+}
+
+async function nativeWriterSetup(driver: "claude-code" | "codex", fault: "none" | "registration_hash" | "descriptor_path" | "shutdown_after_register" | "lost_register_response" | "lost_issue_response" = "none", auto = false) {
+	let registered = false;
+	let launch: Request;
+	let clientGeneration = "";
+	let registrationResponse: Record<string, unknown> | undefined;
+	let issued = false;
+	const test = await setup(async request => {
+		if (request.method === "participant.get") return mainParticipant;
+		if (request.method === "participant.acquire") return { participant: mainParticipant, revived: false, transitioned: false };
+		if (request.method === "participant.list") return { participants: [mainParticipant, ...(registered ? [{ ...fableParticipant, participantId: "native", participantKey: "participant_native", generation: "lease_native", holderTargetKey: "target_native", driver, profile: "workspace-write" }] : [])] };
+		if (request.method === "workspace.bridge.create") return { workspace: { workspaceId: "workspace_native", projectRoot: test.projectRoot, worktreePath: join(test.root, "worktree"), targetKey: "target_native" } };
+		if (request.method === "workspace.launch.bind") return { bound: true };
+		if (request.method === "bridge.launch.create") {
+			launch = request;
+			return { launchId: request.params.launchId, targetKey: "target_native", holderGeneration: "lease_native", expiresAt: Date.now() + 30_000, launchToken: `bridge_launch_${request.params.launchId}.${"x".repeat(43)}`, reconnectToken: "y".repeat(43) };
+		}
+		if (request.method === "bridge.register") {
+			if (registered) throw new HostedRuntimeClientError("conflict", "Consumed launch.");
+			registered = true;
+			clientGeneration = String(request.params.clientGeneration);
+			if (fault === "shutdown_after_register") await test.integration.sessionShutdown();
+			registrationResponse = { ...registration, targetKey: "target_native", paneId: "w1:p9", holderGeneration: "lease_native", profile: "workspace-write", driver, configurationHash: fault === "registration_hash" ? "different" : launch.params.configurationHash, projectRoot: test.projectRoot, cwd: join(test.root, "worktree"), agentSession: request.params.agentSession };
+			if (fault === "lost_register_response") throw new HostedRuntimeClientError("unavailable", "Injected lost response.");
+			return registrationResponse;
+		}
+		if (request.method === "bridge.reconnect" || request.method === "bridge.heartbeat") return registrationResponse;
+		if (request.method === "messaging.issue" && request.params.participantKey === "participant_native") {
+			expect(registered).toBe(true);
+			if (!issued && fault === "lost_issue_response") { issued = true; throw new HostedRuntimeClientError("unavailable", "Injected lost issuance response."); }
+			return { namespaceId: "msg_native", descriptorPath: fault === "descriptor_path" ? "/wrong/descriptor.json" : messagingDescriptorPath(test.runtimeRoot, "target_native", clientGeneration) };
+		}
+		if (request.method === "bridge.unregister") return { unregistered: true };
+		return baseResponse(request);
+	}, auto ? [{ type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } }] : []);
+	if (auto) new CollaboratorAutoStore(test.runtimeRoot).set(true);
+	mkdirSync(join(test.root, "worktree"));
+	test.setExec(async (command, args) => {
+		if (command === "node") return { code: 0, stdout: `${process.execPath}\n`, stderr: "", killed: false };
+		if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
+		if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9", terminal_id: "term_native" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
+		if (args[0] === "pane" && args[1] === "get") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p9", terminal_id: "term_native", cwd: join(test.root, "worktree") } } }), stderr: "", killed: false };
+		if (args[0] === "agent" && args[1] === "start") return { code: 0, stdout: JSON.stringify({ result: { agent: { agent: driver === "claude-code" ? "claude" : "codex", name: args[2], agent_status: "idle", focused: false, pane_id: "w1:p9", terminal_id: "term_native" } } }), stderr: "", killed: false };
+		return { code: 0, stdout: "{}", stderr: "", killed: false };
+	});
+	return test;
+}
+
+function managedControlFixture(ctx: Awaited<ReturnType<typeof setup>>["ctx"]) {
+	const binding: ManagedAgentBinding = { owner: { sessionId: ctx.sessionManager.getSessionId(), sessionFile: ctx.sessionManager.getSessionFile(), cwd: ctx.cwd }, projectRoot: ctx.cwd, cwd: ctx.cwd, bridgeId: "bridge_agent", targetKey: "target_agent", driver: "codex", clientGeneration: "client_agent", configurationHash: "a".repeat(64), holderGeneration: "lease_agent", paneId: "w1:p9", terminalId: "terminal_agent", agentSession: { source: "herdr:codex", agent: "codex", kind: "id", value: "agent_session" }, messagingConfigured: false };
+	return { binding, control: { version: 2, ...binding, registrationPending: false, state: "active" } };
 }
 
 function recoveredBridge(create: Request, status: "consumed" | "cancelled") {
@@ -257,10 +317,13 @@ describe("hosted collaborator Pi integration", () => {
 	});
 
 	it("holds an older managed agent control at needs-attention when its newest entry is malformed", async () => {
-		const control = { version: 1, bridgeId: "bridge_agent", targetKey: "target_agent", driver: "codex", clientGeneration: "client_agent", reconnectToken: "reconnect_agent", paneId: "w1:p9", terminalId: "terminal_agent", agentSession: { source: "herdr:codex", agent: "codex", kind: "id", value: "agent_session" }, state: "active" };
+		const branch: unknown[] = [];
+		const test = await setup(baseResponse, branch);
+		const { control, binding } = managedControlFixture(test.ctx);
 		const valid = { type: "custom", customType: HOSTED_MANAGED_AGENT_CONTROL_ENTRY, data: control };
-		const malformed = { type: "custom", customType: HOSTED_MANAGED_AGENT_CONTROL_ENTRY, data: { ...control, reconnectToken: 42 } };
-		const test = await setup(baseResponse, [valid, malformed]);
+		const malformed = { type: "custom", customType: HOSTED_MANAGED_AGENT_CONTROL_ENTRY, data: { ...control, registrationPending: "false" } };
+		branch.push(valid, malformed);
+		persistManagedAgentCredentials(test.runtimeRoot, binding, { launchToken: "launch_agent", reconnectToken: "reconnect_agent" });
 		await test.integration.sessionStart(test.ctx as never);
 		const internal = test.integration as unknown as { managedAgentControls: Map<string, { state: string }>; heartbeatManagedAgents: () => Promise<void> };
 		expect(internal.managedAgentControls.get("target_agent")).toMatchObject({ state: "needs_attention" });
@@ -271,15 +334,41 @@ describe("hosted collaborator Pi integration", () => {
 	});
 
 	it("lets a newer valid managed agent control supersede malformed persisted history", async () => {
-		const control = { version: 1, bridgeId: "bridge_agent", targetKey: "target_agent", driver: "codex", clientGeneration: "client_agent", reconnectToken: "reconnect_agent", paneId: "w1:p9", terminalId: "terminal_agent", agentSession: { source: "herdr:codex", agent: "codex", kind: "id", value: "agent_session" }, state: "active" };
+		const branch: unknown[] = [];
+		const test = await setup((request) => request.method === "bridge.reconnect" ? { ...registration, targetKey: "target_agent", registrationId: "reg_agent", registrationKey: "key_agent", paneId: "w1:p9" } : baseResponse(request), branch);
+		const { control, binding } = managedControlFixture(test.ctx);
 		const valid = { type: "custom", customType: HOSTED_MANAGED_AGENT_CONTROL_ENTRY, data: control };
-		const malformed = { type: "custom", customType: HOSTED_MANAGED_AGENT_CONTROL_ENTRY, data: { ...control, reconnectToken: 42 } };
-		const test = await setup((request) => request.method === "bridge.reconnect" ? { ...registration, targetKey: "target_agent", registrationId: "reg_agent", registrationKey: "key_agent" } : baseResponse(request), [malformed, valid]);
+		const malformed = { type: "custom", customType: HOSTED_MANAGED_AGENT_CONTROL_ENTRY, data: { ...control, registrationPending: "false" } };
+		branch.push(malformed, valid);
+		persistManagedAgentCredentials(test.runtimeRoot, binding, { launchToken: "launch_agent", reconnectToken: "reconnect_agent" });
 		await test.integration.sessionStart(test.ctx as never);
 		const internal = test.integration as unknown as { managedAgentControls: Map<string, { state: string }>; heartbeatManagedAgents: () => Promise<void> };
 		expect(internal.managedAgentControls.get("target_agent")).toMatchObject({ state: "active" });
 		await internal.heartbeatManagedAgents();
 		expect(test.requests.some((request) => request.method === "bridge.reconnect")).toBe(true);
+		await test.integration.sessionShutdown();
+	});
+
+	it.each(["legacy", "missing", "different_owner", "unknown_top", "unknown_owner", "unknown_session"] as const)("does not restore or migrate unavailable native authority: %s", async fault => {
+		const branch: unknown[] = [];
+		const test = await setup(baseResponse, branch);
+		const { control, binding } = managedControlFixture(test.ctx);
+		if (fault !== "missing") persistManagedAgentCredentials(test.runtimeRoot, binding, { launchToken: "launch_agent", reconnectToken: "reconnect_agent" });
+		const data: Record<string, unknown> = { ...control };
+		if (fault === "legacy") { data.version = 1; data.reconnectToken = "reconnect_agent"; }
+		if (fault === "different_owner") data.owner = { ...control.owner, sessionId: "another_session" };
+		if (fault === "unknown_top") data.extra = true;
+		if (fault === "unknown_owner") data.owner = { ...control.owner, extra: true };
+		if (fault === "unknown_session") data.agentSession = { ...control.agentSession, extra: true };
+		branch.push({ type: "custom", customType: HOSTED_MANAGED_AGENT_CONTROL_ENTRY, data });
+		const before = JSON.stringify(branch);
+		await test.integration.sessionStart(test.ctx as never);
+		const internal = test.integration as unknown as { managedAgentControls: Map<string, unknown>; heartbeatManagedAgents(): Promise<void> };
+		expect(internal.managedAgentControls.size).toBe(0);
+		await internal.heartbeatManagedAgents();
+		expect(test.requests.some(request => request.method === "bridge.register" || request.method === "bridge.reconnect")).toBe(false);
+		expect(JSON.stringify(branch)).toBe(before);
+		expect(test.entries.some(entry => entry.customType === HOSTED_MANAGED_AGENT_CONTROL_ENTRY)).toBe(false);
 		await test.integration.sessionShutdown();
 	});
 
@@ -658,7 +747,7 @@ describe("hosted collaborator Pi integration", () => {
 				holders.set(String(request.params.participantId), lastTargetKey);
 				return { launchId, targetKey: lastTargetKey, holderGeneration: `lease_${launchId}`, expiresAt: Date.now() + 30_000, launchToken: `bridge_launch_${launchId}.${"x".repeat(43)}`, reconnectToken: "y".repeat(43), herdr: { paneId: "w1:p9", terminalId: "term_native", tabId: "w1:t9", workspaceId: "w1" } };
 			}
-			if (request.method === "bridge.register") return { ...registration, targetKey: lastTargetKey };
+			if (request.method === "bridge.register") return { ...registration, targetKey: lastTargetKey, paneId: "w1:p9" };
 			return baseResponse(request);
 		});
 		let confirmations = 0;
@@ -690,10 +779,131 @@ describe("hosted collaborator Pi integration", () => {
 		await test.integration.sessionShutdown();
 	});
 
+	it.each([false, true])("requires fresh confirmation for normal native Auto launches (batch: %s)", async batch => {
+		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
+		const test = await setup(request => {
+			if (request.method === "participant.get") return mainParticipant;
+			if (request.method === "participant.list") return { participants: [mainParticipant] };
+			if (request.method === "participant.acquire") return { participant: mainParticipant, revived: false, transitioned: false };
+			return baseResponse(request);
+		}, [identity]);
+		new CollaboratorAutoStore(test.runtimeRoot).set(true);
+		await test.integration.sessionStart(test.ctx as never);
+		let confirmations = 0;
+		test.ctx.ui.confirm = async () => { confirmations++; return false; };
+		const candidate = { participantId: "native", driver: "codex" as const, profile: "workspace-write" as const };
+		const start = () => batch ? test.integration.startCollaborators([candidate], test.ctx as never) : test.integration.startCollaborator(candidate, test.ctx as never);
+		test.ctx.hasUI = false;
+		await expect(start()).rejects.toThrow("explicit interactive confirmation");
+		expect(confirmations).toBe(0);
+		test.ctx.hasUI = true;
+		await start();
+		expect(confirmations).toBe(1);
+		expect(test.requests.some(request => request.method === "participant.auto_capacity.reserve" || request.method === "workspace.bridge.create")).toBe(false);
+		expect(test.execCalls.some(call => call.args[0] === "agent" && call.args[1] === "start")).toBe(false);
+		await test.integration.sessionShutdown();
+	});
+
+	it.each(["claude-code", "codex"] as const)("provisions normal %s through native configuration and exact held registration", async driver => {
+		const test = await nativeWriterSetup(driver);
+		await test.integration.sessionStart(test.ctx as never);
+		await expect(test.integration.startCollaborator({ participantId: "native", protocol: "review", callerParticipantId: "main", driver, profile: "workspace-write" }, test.ctx as never)).resolves.toMatchObject({ started: true, paneId: "w1:p9" });
+		const registered = test.requests.find(request => request.method === "bridge.register")!;
+		const issue = test.requests.find(request => request.method === "messaging.issue" && request.params.participantKey === "participant_native")!;
+		expect(issue.params.expectedGeneration).toBe("lease_native");
+		expect(test.requests.indexOf(issue)).toBeGreaterThan(test.requests.indexOf(registered));
+		const start = test.execCalls.find(call => call.args[0] === "agent" && call.args[1] === "start")!;
+		expect(start.args.join("\n")).toContain(messagingDescriptorPath(test.runtimeRoot, "target_native", String(registered.params.clientGeneration)));
+		for (const flag of ["--safe-mode", "--permission-mode", "--ask-for-approval", "--disable", "--tools"]) expect(start.args).not.toContain(flag);
+		expect(start.args.join("\n")).not.toContain("trust_level");
+		expect(test.execCalls.some(call => call.args[0] === "agent" && call.args[1] === "prompt")).toBe(false);
+		expect(test.entries.filter(entry => entry.customType === HOSTED_MANAGED_AGENT_CONTROL_ENTRY).at(-1)?.data).toMatchObject({ version: 2, messagingConfigured: true, registrationPending: false, state: "active", clientGeneration: registered.params.clientGeneration });
+		const history = JSON.stringify(test.entries);
+		expect(history).not.toContain(String(registered.params.launchToken));
+		expect(history).not.toContain(String(registered.params.reconnectToken));
+		expect(history).not.toContain('"launchToken"');
+		expect(history).not.toContain('"reconnectToken"');
+		await test.integration.sessionShutdown();
+	});
+
+	it.each(["private_file", "metadata"] as const)("retries active control persistence before caching registration or issuing messaging: %s", async boundary => {
+		const test = await nativeWriterSetup("codex");
+		await test.integration.sessionStart(test.ctx as never);
+		if (boundary === "private_file") {
+			const persist = vi.mocked(persistManagedAgentCredentials);
+			const original = persist.getMockImplementation()!;
+			let attempts = 0;
+			persist.mockImplementation((...args) => { if (++attempts === 2) throw new Error("Injected active persistence failure."); original(...args); });
+		} else {
+			const append = test.pi.appendEntry;
+			let fail = true;
+			test.pi.appendEntry = (type, data) => {
+				if (type === HOSTED_MANAGED_AGENT_CONTROL_ENTRY && (data as { state: string }).state === "active" && fail) { fail = false; throw new Error("Injected metadata failure."); }
+				append(type, data);
+			};
+		}
+		await expect(test.integration.startCollaborator({ participantId: "native", protocol: "review", callerParticipantId: "main", driver: "codex", profile: "workspace-write" }, test.ctx as never)).rejects.toThrow();
+		const internal = test.integration as unknown as { managedAgentControls: Map<string, { state: string }>; managedAgentRegistrations: Map<string, unknown>; managedMessagingIssued: Set<string>; heartbeatManagedAgents(): Promise<void> };
+		expect(internal.managedAgentControls.get("target_native")?.state).toBe("pending");
+		expect(internal.managedAgentRegistrations.has("target_native")).toBe(false);
+		expect(test.requests.some(request => request.method === "messaging.issue" && request.params.participantKey === "participant_native")).toBe(false);
+		await internal.heartbeatManagedAgents();
+		expect(internal.managedAgentControls.get("target_native")?.state).toBe("active");
+		expect(internal.managedMessagingIssued.has("target_native")).toBe(true);
+		expect(test.requests.filter(request => request.method === "bridge.launch.create")).toHaveLength(1);
+		await test.integration.sessionShutdown();
+	});
+
+	it.each(["lost_register_response", "lost_issue_response"] as const)("recovers native coordinator response loss without replacement authority: %s", async fault => {
+		const test = await nativeWriterSetup("codex", fault);
+		await test.integration.sessionStart(test.ctx as never);
+		await expect(test.integration.startCollaborator({ participantId: "native", protocol: "review", callerParticipantId: "main", driver: "codex", profile: "workspace-write" }, test.ctx as never)).rejects.toThrow();
+		await (test.integration as unknown as { heartbeatManagedAgents(): Promise<void> }).heartbeatManagedAgents();
+		expect(test.requests.filter(request => request.method === "bridge.launch.create")).toHaveLength(1);
+		const firstRegistration = test.requests.find(request => request.method === "bridge.register")!;
+		if (fault === "lost_register_response") {
+			const reconnect = test.requests.find(request => request.method === "bridge.reconnect")!;
+			expect(reconnect.params).toMatchObject({ targetKey: "target_native", clientGeneration: firstRegistration.params.clientGeneration, reconnectToken: firstRegistration.params.reconnectToken });
+		} else {
+			const issues = test.requests.filter(request => request.method === "messaging.issue" && request.params.participantKey === "participant_native");
+			expect(issues).toHaveLength(2);
+			expect(issues[1]!.params).toEqual(issues[0]!.params);
+		}
+		expect((test.integration as unknown as { managedMessagingIssued: Set<string> }).managedMessagingIssued.has("target_native")).toBe(true);
+		expect(test.execCalls.filter(call => call.args[0] === "agent" && call.args[1] === "start")).toHaveLength(1);
+		expect(test.execCalls.some(call => call.args[0] === "tab" && call.args[1] === "close")).toBe(false);
+		await test.integration.sessionShutdown();
+	});
+
+	it.each([false, true])("preserves explicitly confirmed normal-native Auto ambiguity (batch: %s)", async batch => {
+		const test = await nativeWriterSetup("codex", "lost_register_response", true);
+		await test.integration.sessionStart(test.ctx as never);
+		let confirmations = 0;
+		test.ctx.ui.confirm = async () => { confirmations++; return true; };
+		const candidate = { participantId: "native", driver: "codex" as const, profile: "workspace-write" as const };
+		if (batch) expect(await test.integration.startCollaborators([candidate], test.ctx as never)).toMatchObject([{ status: "failed" }]);
+		else await expect(test.integration.startCollaborator(candidate, test.ctx as never)).rejects.toThrow();
+		expect(confirmations).toBe(1);
+		expect(test.execCalls.some(call => call.args[0] === "agent" && call.args[1] === "start")).toBe(true);
+		expect(test.execCalls.some(call => call.args[0] === "tab" && call.args[1] === "close")).toBe(false);
+		expect(test.requests.some(request => request.method === "bridge.launch.recover")).toBe(false);
+		await test.integration.sessionShutdown();
+	});
+
+	it.each(["registration_hash", "descriptor_path", "shutdown_after_register"] as const)("preserves native startup without adopting invalid messaging authority: %s", async fault => {
+		const test = await nativeWriterSetup("codex", fault);
+		await test.integration.sessionStart(test.ctx as never);
+		await expect(test.integration.startCollaborator({ participantId: "native", protocol: "review", callerParticipantId: "main", driver: "codex", profile: "workspace-write" }, test.ctx as never)).rejects.toThrow();
+		const issues = test.requests.filter(request => request.method === "messaging.issue" && request.params.participantKey === "participant_native");
+		expect(issues).toHaveLength(fault === "descriptor_path" ? 1 : 0);
+		expect(test.execCalls.some(call => call.args[0] === "tab" && call.args[1] === "close")).toBe(false);
+		await test.integration.sessionShutdown();
+	});
+
 	it.each([false, true])("keeps automatic native input blocked even idle and unfocused (heartbeat during launch: %s)", async (heartbeatDuringLaunch) => {
 		let launched = false;
 		let focused = true;
-		const managedRegistration = { ...registration, targetKey: "target_native", registrationId: "reg_native", registrationKey: "key_native" };
+		const managedRegistration = { ...registration, targetKey: "target_native", registrationId: "reg_native", registrationKey: "key_native", paneId: "w1:p9" };
 		const test = await setup((request) => {
 			if (request.method === "participant.list") return { participants: [mainParticipant, ...(launched ? [{ ...fableParticipant, driver: "codex", capabilityTier: "managed", profile: "read-only", holderTargetKey: "target_native" }] : [])] };
 			if (request.method === "participant.get") return mainParticipant;
@@ -751,7 +961,7 @@ describe("hosted collaborator Pi integration", () => {
 			if (request.method === "participant.list") return { participants: [mainParticipant, ...(launched ? [{ ...vacant, state: "held", generation: "lease_native", holderTargetKey: "target_native", holderLive: true, lastTransition: { cause: "acquire" } }] : [vacant])] };
 			if (request.method === "participant.stop_confirmed") return { participant: vacant, outcome: "stopped" };
 			if (request.method === "bridge.launch.create") return { launchId: request.params.launchId, targetKey: "target_native", holderGeneration: "lease_native", expiresAt: Date.now() + 30_000, launchToken: `bridge_launch_${request.params.launchId}.${"x".repeat(43)}`, reconnectToken: "y".repeat(43), herdr: { paneId: "w1:p9", terminalId: "term_native", tabId: "w1:t9", workspaceId: "w1" } };
-			if (request.method === "bridge.register") { launched = true; return { ...registration, targetKey: "target_native" }; }
+			if (request.method === "bridge.register") { launched = true; return { ...registration, targetKey: "target_native", paneId: "w1:p9" }; }
 			return baseResponse(request);
 		});
 		test.setExec(async (_command, args) => {

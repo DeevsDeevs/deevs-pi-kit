@@ -21,6 +21,9 @@ import { HostedRuntimeClient, HostedRuntimeClientError } from "./client.ts";
 import { AUTO_MAX_LIVE_COLLABORATORS, CollaboratorAutoStore, type CollaboratorAutoState } from "./auto-mode.ts";
 import { HOSTED_MAX_DELIVERY_BATCH, type HostedTaskWorkspaceEvidence } from "./hosted-types.ts";
 import { toolDefinitions } from "./mcp/tools.ts";
+import { nativeMessagingLaunch } from "./mcp/native.ts";
+import { persistManagedAgentCredentials, readManagedAgentCredentials, type ManagedAgentBinding } from "./managed-agent-credentials.ts";
+import { messagingDescriptorPath } from "./service/messaging.ts";
 
 // ponytail: two-second host verification is fine for small teams; add Runtime subscriptions if concurrent Pi count makes it measurable.
 const HEARTBEAT_MS = 2_000;
@@ -204,17 +207,11 @@ type CollaboratorTaskInput =
 	| { action: "result"; eventId: string; status: "completed" | "failed" | "cancelled"; body: string }
 	| { action: "status"; eventIds: string[] };
 
-interface ManagedAgentControl {
-	version: 1;
-	bridgeId: string;
-	targetKey: string;
-	driver: Exclude<CollaboratorDriver, "pi">;
-	clientGeneration: string;
+interface ManagedAgentControl extends Omit<ManagedAgentBinding, "messagingConfigured"> {
+	version: 2;
 	reconnectToken: string;
 	launchToken?: string;
-	paneId: string;
-	terminalId: string;
-	agentSession: { source: string; agent: string; kind: "id" | "path"; value: string };
+	messagingConfigured?: true;
 	state: "pending" | "active" | "needs_attention" | "stopped";
 }
 
@@ -266,6 +263,7 @@ export class HostedRuntimeIntegration {
 	private readonly managedAgentControls = new Map<string, ManagedAgentControl>();
 	private readonly managedAgentRegistrations = new Map<string, LiveClientRegistration>();
 	private readonly managedAgentLaunches = new Set<string>();
+	private readonly managedMessagingIssued = new Set<string>();
 	private managedAgentHeartbeatActive = false;
 	private participantIdentity?: ParticipantIdentity;
 	private collaboratorLaunch?: CollaboratorLaunchState;
@@ -692,6 +690,8 @@ export class HostedRuntimeIntegration {
 			const identity = this.requireParticipantIdentity();
 			if (identity.disposition !== "held") throw new HostedRuntimeClientError("conflict", "Batch collaborator start requires this Pi session to hold its collaborator identity.");
 			const normalized = candidates.map((candidate) => resolveCollaboratorCandidate(candidate, auto ? "read-only" : undefined));
+			const nativeConfirmation = normalized.some(usesNativeUserConfiguration);
+			if (nativeConfirmation && !ctx.hasUI) throw new HostedRuntimeClientError("host_unavailable", "Normal native configuration requires explicit interactive confirmation, including in Auto mode.");
 			if (new Set(normalized.map((candidate) => candidate.participantId)).size !== normalized.length) throw new HostedRuntimeClientError("conflict", "Batch collaborator participant IDs must be unique.");
 			if (normalized.some((candidate) => candidate.participantId === identity.participantId)) throw new HostedRuntimeClientError("conflict", "Caller and child collaborator identities must differ.");
 			const registration = await this.requireRegistration(ctx);
@@ -710,7 +710,7 @@ export class HostedRuntimeIntegration {
 			const operationId = `auto_op_${randomUUID()}`;
 			const projectRoot = realpathSync(ctx.cwd);
 			const summary = normalized.map((candidate) => { const prior = participants.find((participant) => participant.protocol === identity.protocol && participant.participantId === candidate.participantId); return `${identity.protocol}/${candidate.participantId} — ${collaboratorConfiguration(candidate)}, project ${projectRoot}, isolated worktree ${candidate.profile === "workspace-write" ? "yes" : "no"}, replace stood-down process ${prior?.state === "vacant" && prior.lastTransition.cause === "stand_down" ? "yes" : "no"}`; }).join("\n");
-			const confirmed = auto ? true : await ctx.ui.confirm("Start Runtime collaborators?", `As ${identity.protocol}/${identity.participantId}, start ${normalized.length} collaborators with concurrency up to 4 in no-focus Herdr tabs?\n\n${summary}`, { signal });
+			const confirmed = auto && !nativeConfirmation ? true : await ctx.ui.confirm("Start Runtime collaborators?",  `As ${identity.protocol}/${identity.participantId}, start ${normalized.length} collaborators with concurrency up to 4 in no-focus Herdr tabs?\n\n${summary}`, { signal });
 			throwIfAborted(signal);
 			if (!confirmed) return normalized.map((candidate) => ({ participant: `${identity.protocol}/${candidate.participantId}`, status: "declined" }));
 			if (auto) {
@@ -727,7 +727,7 @@ export class HostedRuntimeIntegration {
 					const index = next++;
 					const candidate = normalized[index]!;
 					try {
-						const paneId = await this.launchCollaborator(ctx, identity.protocol, candidate.participantId, false, signal, caller, candidate, !!auto);
+						const paneId = await this.launchCollaborator(ctx, identity.protocol, candidate.participantId, false, signal, caller, candidate, !!auto && !usesNativeUserConfiguration(candidate));
 						results[index] = { participant: `${identity.protocol}/${candidate.participantId}`, status: "started", paneId };
 					} catch (error) {
 						if (error instanceof HostedCollaboratorStartError && error.childMayBeLive) control.retainLock = true;
@@ -756,6 +756,8 @@ export class HostedRuntimeIntegration {
 		const protocol = collaboratorName(identity?.protocol ?? input.protocol, "protocol");
 		const callerParticipantId = collaboratorName(identity?.participantId ?? input.callerParticipantId, "caller participant ID");
 		const candidate = resolveCollaboratorCandidate(input, auto ? "read-only" : undefined);
+		const nativeConfirmation = usesNativeUserConfiguration(candidate);
+		if (nativeConfirmation && !ctx.hasUI) throw new HostedRuntimeClientError("host_unavailable", "Normal native configuration requires explicit interactive confirmation, including in Auto mode.");
 		const participantId = candidate.participantId;
 		if (identity && ((input.protocol && input.protocol !== protocol) || (input.callerParticipantId && input.callerParticipantId !== callerParticipantId))) throw new HostedRuntimeClientError("conflict", `Current collaborator identity is ${protocol}/${callerParticipantId}.`);
 		if (participantId === callerParticipantId) throw new HostedRuntimeClientError("conflict", "Caller and child collaborator identities must differ.");
@@ -793,7 +795,7 @@ export class HostedRuntimeIntegration {
 		const participantName = `${protocol}/${participantId}`;
 		const projectRoot = realpathSync(ctx.cwd);
 		const replacesStoodDown = child?.state === "vacant" && child.lastTransition.cause === "stand_down";
-		const confirmed = auto ? true : await ctx.ui.confirm("Start Runtime collaborator?", `${callerAction} ${participantName} using ${collaboratorConfiguration(candidate)}, project ${projectRoot}, isolated worktree ${candidate.profile === "workspace-write" ? "yes" : "no"}${replacesStoodDown ? ", replacing its exact stood-down process" : ""}, in a no-focus Herdr tab?`, { signal });
+		const confirmed = auto && !nativeConfirmation ? true : await ctx.ui.confirm("Start Runtime collaborator?",  `${callerAction} ${participantName} using ${collaboratorConfiguration(candidate)}, project ${projectRoot}, isolated worktree ${candidate.profile === "workspace-write" ? "yes" : "no"}${replacesStoodDown ? ", replacing its exact stood-down process" : ""}, in a no-focus Herdr tab?`, { signal });
 		throwIfAborted(signal);
 		if (!confirmed) return { started: false, participant: participantName };
 		if (auto) {
@@ -816,7 +818,7 @@ export class HostedRuntimeIntegration {
 				this.persistParticipant(acquiredCaller);
 				throwIfAborted(signal);
 			}
-			const paneId = await this.launchCollaborator(ctx, protocol, participantId, false, signal, launchCaller, candidate, !!auto);
+			const paneId = await this.launchCollaborator(ctx, protocol, participantId, false, signal, launchCaller, candidate, !!auto && !usesNativeUserConfiguration(candidate));
 			if (auto) this.recordAutoLifecycle(auto, "start", "settled", registration, [participantName], operationId, [{ participant: participantName, status: "started", paneId }]);
 			return { started: true, participant: participantName, paneId };
 		} catch (error) {
@@ -1068,7 +1070,12 @@ export class HostedRuntimeIntegration {
 		const registration = await this.requireRegistration(ctx);
 		const projectRoot = realpathSync(ctx.cwd);
 		const bridgeId = `launch_${randomUUID()}`;
-		const configurationHash = collaboratorConfigurationHash(candidate);
+		let configurationHash = collaboratorConfigurationHash(candidate);
+		const clientGeneration = `agent_client_${randomUUID()}`;
+		const identity = this.participantIdentity;
+		const scope = this.sessionScope(ctx, registration);
+		const current = () => scope() && this.participantIdentity === identity;
+		let messaging: ReturnType<typeof nativeMessagingLaunch> | undefined;
 		const authority = { ...auth(registration), callerParticipantKey: expectedCaller.participantKey, expectedCallerGeneration: expectedCaller.generation };
 		let workspace: { workspaceId: string; projectRoot: string; workspaceRoot: string; targetKey: string } | undefined;
 		let tabId: string | undefined;
@@ -1122,7 +1129,15 @@ export class HostedRuntimeIntegration {
 				await this.waitForHerdrPaneCwd(paneId, terminalId, launchCwd, signal);
 				await this.client.call("workspace.launch.bind", { ...authority, workspaceId: workspace.workspaceId, herdr: { paneId, terminalId } });
 			}
-			this.pi.appendEntry(HOSTED_BRIDGE_REQUEST_ENTRY, { version: 2, requestId: bridgeRequestId, bridgeId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, driver: candidate.driver, profile: candidate.profile, configurationHash, workspaceId: workspace?.workspaceId, paneId, terminalId, status: "pending" });
+			this.requireCurrentScope(current);
+			if (workspace) {
+				const node = await this.pi.exec("node", ["--print", "process.execPath"], { timeout: 3_000 });
+				this.requireCurrentScope(current);
+				if (node.code !== 0) throw new HostedRuntimeClientError("capability_unavailable", "Native messaging requires an available Node executable.");
+				messaging = nativeMessagingLaunch({ driver: candidate.driver, root: this.root, targetKey: workspace.targetKey, clientGeneration, nodeExecutable: node.stdout.trim(), model: candidate.model, personaPrompt: candidate.persona?.prompt });
+				configurationHash = messaging.configurationHash;
+			}
+			this.pi.appendEntry(HOSTED_BRIDGE_REQUEST_ENTRY, { version: 2, requestId: bridgeRequestId, bridgeId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, driver: candidate.driver, profile: candidate.profile, configurationHash, clientGeneration, workspaceId: workspace?.workspaceId, paneId, terminalId, status: "pending" });
 			const launchParams = { ...authority, requestId: bridgeRequestId, launchId: bridgeId, protocol, participantId, profile: candidate.profile, configurationHash, driver: candidate.driver, herdr: { paneId, terminalId }, metadata: { adapter: "herdr-agent-v1" } };
 			if (workspace) Object.assign(launchParams, { workspaceId: workspace.workspaceId });
 			if (existing) Object.assign(launchParams, { expectedParticipantGeneration: existing.generation });
@@ -1144,29 +1159,37 @@ export class HostedRuntimeIntegration {
 			const launchToken = text(launch.launchToken);
 			const reconnectToken = text(launch.reconnectToken);
 			const targetKey = text(launch.targetKey);
-			this.pi.appendEntry(HOSTED_BRIDGE_REQUEST_ENTRY, { version: 2, requestId: bridgeRequestId, bridgeId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, driver: candidate.driver, workspaceId: workspace?.workspaceId, targetKey, status: "authorized" });
+			this.requireCurrentScope(current);
+			if (messaging && targetKey !== workspace?.targetKey) throw new HostedRuntimeClientError("identity_mismatch", "Native messaging target differs from its authorized workspace.");
+			this.pi.appendEntry(HOSTED_BRIDGE_REQUEST_ENTRY, { version: 2, requestId: bridgeRequestId, bridgeId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, driver: candidate.driver, clientGeneration, configurationHash, workspaceId: workspace?.workspaceId, targetKey, status: "authorized" });
 			throwIfAborted(signal);
 			childMayBeLive = true;
 			const kind = candidate.driver === "claude-code" ? "claude" : "codex";
-			if (candidate.driver === "claude-code") this.trustClaudeWorkspace(launchCwd);
-			const nativeArgs = interactiveAgentArgs(candidate, launchCwd);
+			if (candidate.driver === "claude-code" && candidate.profile === "read-only") this.trustClaudeWorkspace(launchCwd);
+			const nativeArgs = messaging?.args ?? guardedNativeArgs(candidate, launchCwd);
+			if (messaging) ctx.ui.notify(`Complete any native trust or permission prompt in ${paneId}. Runtime will not accept it for you; startup has a bounded timeout.`, "info");
 			const agentName = managedAgentName(protocol, participantId, bridgeId);
 			const started = await this.pi.exec("herdr", ["agent", "start", agentName, "--kind", kind, "--pane", paneId, "--timeout", "30000", ...(nativeArgs.length ? ["--", ...nativeArgs] : [])], { timeout: 35_000 });
 			if (started.code !== 0) throw new HostedRuntimeClientError("host_unavailable", `Herdr could not start the interactive ${kind} collaborator in ${paneId}; its tab and launch authority were preserved.`);
+			this.requireCurrentScope(current);
 			const agentSession = parseStartedAgent(started.stdout, paneId, terminalId, kind, agentName);
-			const clientGeneration = `agent_client_${randomUUID()}`;
-			const control: ManagedAgentControl = { version: 1, bridgeId, targetKey, driver: candidate.driver, clientGeneration, reconnectToken, launchToken, paneId, terminalId, agentSession, state: "pending" };
+			const control: ManagedAgentControl = { version: 2, owner: { sessionId: ctx.sessionManager.getSessionId(), sessionFile: text(ctx.sessionManager.getSessionFile()), cwd: ctx.cwd }, projectRoot, cwd: launchCwd, bridgeId, targetKey, driver: candidate.driver, clientGeneration, configurationHash, holderGeneration: text(launch.holderGeneration), reconnectToken, launchToken, paneId, terminalId, agentSession, state: "pending" };
+			if (messaging) control.messagingConfigured = true;
 			this.managedAgentLaunches.add(targetKey);
 			try {
 				this.persistManagedAgentControl(control);
-				const bridgeRegistration = parseRegistration(await this.client.call("bridge.register", { launchToken, reconnectToken, clientGeneration, admittedClaims: [], herdr: { paneId, terminalId }, agentSession }));
-				this.managedAgentRegistrations.set(targetKey, bridgeRegistration);
+				const registered = await this.client.call("bridge.register", { launchToken, reconnectToken, clientGeneration, admittedClaims: [], herdr: { paneId, terminalId }, agentSession });
+				this.requireCurrentScope(current);
+				const bridgeRegistration = parseManagedRegistration(registered, control);
 				this.persistManagedAgentControl({ ...control, launchToken: undefined, state: "active" });
+				this.managedAgentRegistrations.set(targetKey, bridgeRegistration);
 			} finally {
 				this.managedAgentLaunches.delete(targetKey);
 			}
 			const participant = (await this.listParticipants(registration)).find((item) => item.protocol === protocol && item.participantId === participantId);
-			if (!participant || participant.state !== "held" || participant.holderTargetKey !== targetKey || participant.generation === existing?.generation) throw new HostedRuntimeClientError("unavailable", `Interactive collaborator started in ${paneId}, but its Runtime identity did not settle; its tab was preserved for recovery.`);
+			this.requireCurrentScope(current);
+			if (!participant || participant.state !== "held" || participant.holderTargetKey !== targetKey || participant.generation === existing?.generation || messaging && participant.generation !== launch.holderGeneration) throw new HostedRuntimeClientError("unavailable", `Interactive collaborator started in ${paneId}, but its Runtime identity did not settle; its tab was preserved for recovery.`);
+			if (messaging) await this.provisionManagedMessaging(ctx, registration, this.managedAgentControls.get(targetKey)!);
 			ctx.ui.notify(`Interactive ${kind} collaborator ${protocol}/${participantId} started in ${paneId}.`, "info");
 			return paneId;
 		} catch (error) {
@@ -1506,16 +1529,30 @@ export class HostedRuntimeIntegration {
 					let heartbeat: ReturnType<typeof parseHeartbeat>;
 					if (!registration) {
 						const admittedClaims: never[] = [];
-						const result = control.state === "pending" && control.launchToken
-							? await this.client.call("bridge.register", { launchToken: control.launchToken, reconnectToken: control.reconnectToken, clientGeneration: control.clientGeneration, admittedClaims, herdr: { paneId: control.paneId, terminalId: control.terminalId }, agentSession: control.agentSession })
-							: await this.client.call("bridge.reconnect", { targetKey, reconnectToken: control.reconnectToken, clientGeneration: control.clientGeneration, admittedClaims, herdr: { paneId: control.paneId, terminalId: control.terminalId } });
+						const reconnect = () => this.client.call("bridge.reconnect", { targetKey, reconnectToken: control.reconnectToken, clientGeneration: control.clientGeneration, admittedClaims, herdr: { paneId: control.paneId, terminalId: control.terminalId } });
+						let result: RuntimeResponse;
+						if (control.state === "pending" && control.launchToken) {
+							try { result = await this.client.call("bridge.register", { launchToken: control.launchToken, reconnectToken: control.reconnectToken, clientGeneration: control.clientGeneration, admittedClaims, herdr: { paneId: control.paneId, terminalId: control.terminalId }, agentSession: control.agentSession }); }
+							catch (error) {
+								if (!(error instanceof HostedRuntimeClientError) || error.code !== "conflict") throw error;
+								if (!current() || this.managedAgentControls.get(targetKey) !== control) return;
+								result = await reconnect();
+							}
+						} else result = await reconnect();
 						if (!current() || this.managedAgentControls.get(targetKey) !== control) return;
-						registration = parseRegistration(result);
+						registration = parseManagedRegistration(result, control);
 						heartbeat = { registration, inboxReady: asRecord(result)?.inboxReady === true };
 						if (control.state === "pending") this.persistManagedAgentControl({ ...control, launchToken: undefined, state: "active" });
-					} else heartbeat = parseHeartbeat(await this.client.call("bridge.heartbeat", auth(registration)));
+					} else {
+						heartbeat = parseHeartbeat(await this.client.call("bridge.heartbeat", auth(registration)));
+						if (!current() || this.managedAgentControls.get(targetKey) !== control) return;
+						if (heartbeat.registration.registrationId !== registration.registrationId || heartbeat.registration.registrationKey !== registration.registrationKey) throw new HostedRuntimeClientError("identity_mismatch", "Native heartbeat replaced its registration authority.");
+					}
 					if (!current()) return;
+					if (heartbeat.registration.targetKey !== targetKey || heartbeat.registration.paneId !== control.paneId) throw new HostedRuntimeClientError("identity_mismatch", "Native heartbeat replaced its target identity.");
 					this.managedAgentRegistrations.set(targetKey, heartbeat.registration);
+					const activeControl = this.managedAgentControls.get(targetKey);
+					if (activeControl?.messagingConfigured && !this.managedMessagingIssued.has(targetKey) && this.registration) await this.provisionManagedMessaging(this.ctx, this.registration, activeControl);
 					// Native automatic input is blocked until the provider can attest editor ownership and exact-session admission.
 				} catch (error) {
 					if (!current() || this.managedAgentControls.get(targetKey) !== control) return;
@@ -1524,6 +1561,20 @@ export class HostedRuntimeIntegration {
 				}
 			}
 		} finally { this.managedAgentHeartbeatActive = false; }
+	}
+
+	private async provisionManagedMessaging(ctx: ExtensionContext, registration: LiveClientRegistration, control: ManagedAgentControl): Promise<void> {
+		const identity = this.participantIdentity;
+		const scope = this.sessionScope(ctx, registration);
+		const current = () => scope() && this.participantIdentity === identity && this.managedAgentControls.get(control.targetKey) === control;
+		this.requireCurrentScope(current);
+		const participant = (await this.listParticipants(registration)).find(item => item.holderTargetKey === control.targetKey);
+		this.requireCurrentScope(current);
+		if (!control.messagingConfigured || control.state !== "active" || control.launchToken !== undefined || !participant || participant.state !== "held" || !participant.holderLive || participant.generation !== control.holderGeneration || participant.profile !== "workspace-write" || participant.driver !== control.driver) throw new HostedRuntimeClientError("identity_mismatch", "Native messaging requires its exact live configured participant.");
+		const issued = strictObject(await this.client.call("messaging.issue", { ...auth(registration), participantKey: participant.participantKey, expectedGeneration: participant.generation, confirmed: true }), "Native messaging descriptor");
+		this.requireCurrentScope(current);
+		if (issued.descriptorPath !== messagingDescriptorPath(this.root, control.targetKey, control.clientGeneration)) throw new HostedRuntimeClientError("identity_mismatch", "Native messaging descriptor differs from its configured client.");
+		this.managedMessagingIssued.add(control.targetKey);
 	}
 
 	private async offerMessagingReference(registration: LiveClientRegistration, ctx: ExtensionContext): Promise<void> {
@@ -1629,11 +1680,12 @@ export class HostedRuntimeIntegration {
 
 	private restoreManagedAgentControls(ctx: ExtensionContext): void {
 		this.managedAgentControls.clear();
+		this.managedMessagingIssued.clear();
 		this.managedAgentRegistrations.clear();
 		let malformed = false;
 		for (const entry of sessionBranch(ctx)) {
 			if (entry.type !== "custom" || entry.customType !== HOSTED_MANAGED_AGENT_CONTROL_ENTRY) continue;
-			const control = parseManagedAgentControl(entry.data);
+			const control = parseManagedAgentControl(entry.data, this.root, ctx);
 			if (control) {
 				this.managedAgentControls.set(control.targetKey, control);
 				continue;
@@ -1649,8 +1701,10 @@ export class HostedRuntimeIntegration {
 	}
 
 	private persistManagedAgentControl(control: ManagedAgentControl): void {
+		const binding = managedAgentBinding(control);
+		persistManagedAgentCredentials(this.root, binding, control);
+		this.pi.appendEntry(HOSTED_MANAGED_AGENT_CONTROL_ENTRY, { version: 2, ...binding, registrationPending: control.launchToken !== undefined, state: control.state });
 		this.managedAgentControls.set(control.targetKey, control);
-		this.pi.appendEntry(HOSTED_MANAGED_AGENT_CONTROL_ENTRY, control);
 	}
 
 	private async restoreHeldParticipant(registration: LiveClientRegistration, ctx: ExtensionContext): Promise<void> {
@@ -1816,13 +1870,39 @@ function parseReceipt(value: RestoredSessionData): HostedReceipt | undefined {
 	return { claimId: details.claimId, eventIds };
 }
 
-function parseManagedAgentControl(value: RestoredSessionData): ManagedAgentControl | undefined {
+function managedAgentBinding(control: ManagedAgentControl): ManagedAgentBinding {
+	return { owner: control.owner, projectRoot: control.projectRoot, cwd: control.cwd, bridgeId: control.bridgeId, targetKey: control.targetKey, driver: control.driver, clientGeneration: control.clientGeneration, configurationHash: control.configurationHash, holderGeneration: control.holderGeneration, paneId: control.paneId, terminalId: control.terminalId, agentSession: control.agentSession, messagingConfigured: control.messagingConfigured === true };
+}
+
+function parseManagedRegistration(value: RuntimeResponse, control: ManagedAgentControl): LiveClientRegistration {
+	const registration = parseRegistration(value);
+	if (registration.targetKey !== control.targetKey || registration.paneId !== control.paneId) throw new HostedRuntimeClientError("identity_mismatch", "Native registration differs from its authorized target.");
+	if (control.messagingConfigured) {
+		const result = strictObject(value, "Native registration");
+		const session = strictObject(result.agentSession, "Native registration session");
+		if (result.configurationHash !== control.configurationHash || result.holderGeneration !== control.holderGeneration || result.profile !== "workspace-write" || result.driver !== control.driver || result.projectRoot !== control.projectRoot || result.cwd !== control.cwd || session.source !== control.agentSession.source || session.agent !== control.agentSession.agent || session.kind !== control.agentSession.kind || session.value !== control.agentSession.value) throw new HostedRuntimeClientError("identity_mismatch", "Native registration differs from its messaging configuration or session.");
+	}
+	return registration;
+}
+
+const MANAGED_CONTROL_METADATA_KEYS = new Set(["version", "owner", "projectRoot", "cwd", "bridgeId", "targetKey", "driver", "clientGeneration", "configurationHash", "holderGeneration", "paneId", "terminalId", "agentSession", "messagingConfigured", "registrationPending", "state"]);
+
+function parseManagedAgentControl(value: RestoredSessionData, root: string, ctx: ExtensionContext): ManagedAgentControl | undefined {
 	const record = asRecord(value);
 	const session = asRecord(record?.agentSession);
-	if (record?.version !== 1 || (record.driver !== "claude-code" && record.driver !== "codex") || (record.state !== "pending" && record.state !== "active" && record.state !== "needs_attention" && record.state !== "stopped") || !isStringValue(record.bridgeId) || !isStringValue(record.targetKey) || !isStringValue(record.clientGeneration) || !isStringValue(record.reconnectToken) || !isStringValue(record.paneId) || !isStringValue(record.terminalId) || !session || !isStringValue(session.source) || !isStringValue(session.agent) || (session.kind !== "id" && session.kind !== "path") || !isStringValue(session.value)) return undefined;
-	const control: ManagedAgentControl = { version: 1, bridgeId: record.bridgeId, targetKey: record.targetKey, driver: record.driver, clientGeneration: record.clientGeneration, reconnectToken: record.reconnectToken, paneId: record.paneId, terminalId: record.terminalId, agentSession: { source: session.source, agent: session.agent, kind: session.kind, value: session.value }, state: record.state };
-	if (isStringValue(record.launchToken)) control.launchToken = record.launchToken;
-	return control;
+	const owner = asRecord(record?.owner);
+	if (!record || Object.keys(record).some(key => !MANAGED_CONTROL_METADATA_KEYS.has(key)) || !owner || Object.keys(owner).some(key => !["sessionId", "sessionFile", "cwd"].includes(key)) || !session || Object.keys(session).some(key => !["source", "agent", "kind", "value"].includes(key))) return undefined;
+	if (owner.sessionId !== ctx.sessionManager.getSessionId() || owner.sessionFile !== ctx.sessionManager.getSessionFile() || owner.cwd !== ctx.cwd || !isStringValue(owner.sessionId) || !isStringValue(owner.sessionFile) || !isStringValue(owner.cwd) || !isStringValue(record?.projectRoot) || !isStringValue(record?.cwd)) return undefined;
+	if (record?.version !== 2 || "launchToken" in record || "reconnectToken" in record || (record.registrationPending !== true && record.registrationPending !== false) || (record.messagingConfigured !== true && record.messagingConfigured !== false) || !isStringValue(record.configurationHash) || !/^[a-f0-9]{64}$/.test(record.configurationHash) || !isStringValue(record.holderGeneration) || (record.driver !== "claude-code" && record.driver !== "codex") || (record.state !== "pending" && record.state !== "active" && record.state !== "needs_attention" && record.state !== "stopped") || !isStringValue(record.bridgeId) || !isStringValue(record.targetKey) || !isStringValue(record.clientGeneration) || !isStringValue(record.paneId) || !isStringValue(record.terminalId) || !session || !isStringValue(session.source) || !isStringValue(session.agent) || (session.kind !== "id" && session.kind !== "path") || !isStringValue(session.value)) return undefined;
+	const binding: ManagedAgentBinding = { owner: { sessionId: owner.sessionId, sessionFile: owner.sessionFile, cwd: owner.cwd }, projectRoot: record.projectRoot, cwd: record.cwd, bridgeId: record.bridgeId, targetKey: record.targetKey, driver: record.driver, clientGeneration: record.clientGeneration, configurationHash: record.configurationHash, holderGeneration: record.holderGeneration, paneId: record.paneId, terminalId: record.terminalId, agentSession: { source: session.source, agent: session.agent, kind: session.kind, value: session.value }, messagingConfigured: record.messagingConfigured };
+	try {
+		const credentials = readManagedAgentCredentials(root, binding);
+		const { messagingConfigured, ...identity } = binding;
+		const control: ManagedAgentControl = { version: 2, ...identity, reconnectToken: credentials.reconnectToken, state: record.state };
+		if (record.registrationPending) control.launchToken = credentials.launchToken;
+		if (messagingConfigured) control.messagingConfigured = true;
+		return control;
+	} catch { return undefined; }
 }
 
 function parseStartedAgent(value: string, paneId: string, terminalId: string, kind: "claude" | "codex", agentName: string): ManagedAgentControl["agentSession"] {
@@ -1881,14 +1961,11 @@ function readClaudeTrustStore(configPath: string): string {
 	return readFileSync(configPath, "utf8");
 }
 
-function interactiveAgentArgs(candidate: ResolvedCollaboratorCandidate, launchCwd: string): string[] {
-	if (!candidate.profile || candidate.driver === "pi") return [];
-	if (candidate.driver === "claude-code") {
-		const tools = candidate.profile === "read-only" ? "Read,Glob,Grep" : "Read,Glob,Grep,Edit,Write";
-		return ["--safe-mode", "--permission-mode", candidate.profile === "read-only" ? "dontAsk" : "acceptEdits", "--tools", tools, ...(candidate.model ? ["--model", candidate.model] : []), ...(candidate.persona ? ["--append-system-prompt", candidate.persona.prompt] : [])];
-	}
+function guardedNativeArgs(candidate: ResolvedCollaboratorCandidate, launchCwd: string): string[] {
+	if (candidate.profile !== "read-only" || candidate.driver === "pi") throw new HostedRuntimeClientError("capability_unavailable", "Guarded native startup requires a read-only profile.");
+	if (candidate.driver === "claude-code") return ["--safe-mode", "--permission-mode", "dontAsk", "--tools", "Read,Glob,Grep", ...(candidate.model ? ["--model", candidate.model] : []), ...(candidate.persona ? ["--append-system-prompt", candidate.persona.prompt] : [])];
 	const trustedProject = `projects={ ${JSON.stringify(launchCwd)} = { trust_level = "trusted" } }`;
-	return ["--ask-for-approval", "never", "--sandbox", candidate.profile, "--disable", "hooks", "--config", trustedProject, ...(candidate.model ? ["--model", candidate.model] : []), ...(candidate.persona ? ["--config", `developer_instructions=${JSON.stringify(candidate.persona.prompt)}`] : [])];
+	return ["--ask-for-approval", "never", "--sandbox", "read-only", "--disable", "hooks", "--config", trustedProject, ...(candidate.model ? ["--model", candidate.model] : []), ...(candidate.persona ? ["--config", `developer_instructions=${JSON.stringify(candidate.persona.prompt)}`] : [])];
 }
 
 function hostedContent(events: HostedClaimMessage["events"]): string {
@@ -2063,8 +2140,13 @@ function assertPersonaCompatible(persona: AgentDefinition, profile: Collaborator
 	if (incompatible.length > 0) throw new HostedRuntimeClientError("conflict", `Collaborator persona ${persona.name} requires unsupported ${incompatible.join(", ")} tooling.`);
 }
 
+function usesNativeUserConfiguration(candidate: ResolvedCollaboratorCandidate): boolean {
+	return candidate.driver !== "pi" && candidate.profile === "workspace-write";
+}
+
 function collaboratorConfiguration(candidate: ResolvedCollaboratorCandidate): string {
-	return [`driver ${candidate.driver}`, candidate.model ? `model ${candidate.model}` : `model ${candidate.driver} default`, candidate.persona ? `persona ${candidate.persona.name}` : "persona none", candidate.profile ? `profile ${candidate.profile}` : "profile none"].join(", ");
+	const configuration = [`driver ${candidate.driver}`, candidate.model ? `model ${candidate.model}` : `model ${candidate.driver} default`, candidate.persona ? `persona ${candidate.persona.name}` : "persona none", candidate.profile ? `profile ${candidate.profile}` : "profile none"].join(", ");
+	return usesNativeUserConfiguration(candidate) ? `${configuration}, normal native configuration/hooks/permissions (not an edit-only tool boundary)` : configuration;
 }
 
 function collaboratorConfigurationHash(candidate: ResolvedCollaboratorCandidate): string {

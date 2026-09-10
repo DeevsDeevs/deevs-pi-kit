@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { HOSTED_ACK_RETENTION_MS, type HostedMessagingGrant } from "../hosted-types.ts";
 import { HostedParticipantCoordinator } from "./participant.ts";
 import { RegistrationError, RuntimeRegistrationManager, type HostedLiveRegistration } from "./registration.ts";
-import { deriveParticipantKey, HostedStateStore, messagingConfigurationHash, messagingReceivedEvent, messagingReferenceNamespace } from "./state.ts";
+import { deriveParticipantKey, HostedStateStorageError, HostedStateStore, messagingConfigurationHash, messagingReceivedEvent, messagingReferenceNamespace } from "./state.ts";
 
 export class RuntimeMessaging {
 	private inFlight = 0;
@@ -47,7 +47,7 @@ export class RuntimeMessaging {
 			fsyncSync(fd);
 			this.store.apply({ type: "messaging.issue", grant });
 		} catch (error) {
-			unlinkSync(descriptorPath);
+			if (!(error instanceof HostedStateStorageError && error.uncertain)) unlinkSync(descriptorPath);
 			throw error;
 		} finally {
 			closeSync(fd);
