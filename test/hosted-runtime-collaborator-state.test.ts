@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -6,8 +6,6 @@ import {
 	HOSTED_MAILBOX_MAX_BODY_BYTES,
 	HOSTED_PARTICIPANT_TRANSITION_LIMIT,
 	type HostedClaim,
-	type HostedFilesystemCreatedEvent,
-	type HostedMonitor,
 	type HostedRuntimeState,
 	type HostedTarget,
 } from "../extensions/runtime/hosted-types.ts";
@@ -21,6 +19,7 @@ import {
 	reduceHostedState,
 	runtimeStatePaths,
 	validateHostedRuntimeState,
+	writeHostedRuntimeState,
 } from "../extensions/runtime/service/state.ts";
 
 const projectRoot = "/project";
@@ -83,91 +82,26 @@ function activeClaim(eventId: string, targetKey = "target_fable"): HostedClaim {
 	};
 }
 
-function v1MonitorState(): { raw: Record<string, unknown>; event: HostedFilesystemCreatedEvent } {
-	let state = withTargets("target_main");
-	const monitor: HostedMonitor = {
-		monitorId: "monitor_1",
-		targetKey: "target_main",
-		generation: "monitor_generation_1",
-		directory: "/project/reviews",
-		settleMs: 250,
-		status: "watching",
-		sequence: 1,
-		entries: {},
-		createdAt: 2,
-		updatedAt: 3,
-	};
-	state = reduceHostedState(state, { type: "monitor.create", monitor: { ...monitor, sequence: 0 } });
-	const event: HostedFilesystemCreatedEvent = {
-		version: 1,
-		eventId: "event_existing",
-		dedupeKey: "monitor_1\0monitor_generation_1\0review.md",
-		source: { kind: "monitor", id: "monitor_1", generation: "monitor_generation_1", sequence: 1 },
-		targetKey: "target_main",
-		type: "filesystem.created",
-		createdAt: 3,
-		summary: "new file: review.md",
-		payload: { relativePath: "review.md", path: "/project/reviews/review.md", fileType: "regular", size: 10, mtimeMs: 3 },
-		delivery: { status: "pending" },
-	};
-	state = reduceHostedState(state, { type: "monitor.commit", monitor, events: [event] });
-	const { messaging: _messaging, participants: _participants, autoCapacityReservations: _autoCapacityReservations, bridgeLaunches: _bridgeLaunches, workspaces: _workspaces, integrations: _integrations, ...rest } = state;
-	const targets = Object.fromEntries(Object.entries(rest.targets).map(([key, value]) => { const { kind: _kind, ...legacy } = value; return [key, legacy]; }));
-	return { raw: { ...rest, targets, version: 1 }, event };
-}
-
 describe("hosted Runtime collaborator state", () => {
-	it("atomically migrates v1 state before use without changing existing Monitor events", () => {
-		const root = mkdtempSync(join(tmpdir(), "hosted-state-v3-"));
-		mkdirSync(root, { recursive: true });
-		const { raw, event } = v1MonitorState();
-		writeFileSync(runtimeStatePaths(root).state, `${JSON.stringify(raw, null, 2)}\n`);
-
-		const migrated = readHostedRuntimeState(root);
-		expect(migrated).toMatchObject({ version: 9, messaging: {}, autoCapacityReservations: {}, bridgeLaunches: {}, workspaces: {}, integrations: {}, participants: {}, targets: { target_main: { kind: "pi" } } });
-		expect(migrated.events[event.eventId]).toEqual(event);
-		expect(pendingHostedEvents(migrated, "target_main").map((candidate) => candidate.eventId)).toEqual([event.eventId]);
-		expect(JSON.parse(readFileSync(runtimeStatePaths(root).state, "utf8"))).toEqual(migrated);
-		expect(statSync(runtimeStatePaths(root).state).mode & 0o777).toBe(0o600);
+	it("roundtrips current state without rewriting it on read", () => {
+		const root = mkdtempSync(join(tmpdir(), "hosted-state-current-"));
+		try {
+			const state = send(pairedState(), "current", "event_current");
+			writeHostedRuntimeState(root, state);
+			const bytes = readFileSync(runtimeStatePaths(root).state);
+			expect(readHostedRuntimeState(root)).toEqual(state);
+			expect(readFileSync(runtimeStatePaths(root).state)).toEqual(bytes);
+		} finally { rmSync(root, { recursive: true, force: true }); }
 	});
 
-	it("migrates v2 Pi targets and collaborator ownership into discriminated v9 state", () => {
-		const root = mkdtempSync(join(tmpdir(), "hosted-state-v2-to-v4-"));
-		mkdirSync(root, { recursive: true });
-		const state = pairedState();
-		const { messaging: _messaging, autoCapacityReservations: _autoCapacityReservations, bridgeLaunches: _bridgeLaunches, workspaces: _workspaces, integrations: _integrations, ...rest } = state;
-		const targets = Object.fromEntries(Object.entries(rest.targets).map(([key, value]) => { const { kind: _kind, ...legacy } = value; return [key, legacy]; }));
-		writeFileSync(runtimeStatePaths(root).state, `${JSON.stringify({ ...rest, version: 2, targets }, null, 2)}\n`);
-		const migrated = readHostedRuntimeState(root);
-		expect(migrated).toMatchObject({ version: 9, messaging: {}, autoCapacityReservations: {}, bridgeLaunches: {}, workspaces: {}, integrations: {}, targets: { target_main: { kind: "pi" }, target_fable: { kind: "pi" } }, participants: { [participantKey("main")]: { state: "held", holderTargetKey: "target_main" }, [participantKey("fable")]: { state: "held", holderTargetKey: "target_fable" } } });
-	});
-
-	it.each([5, 6])("migrates the released v%i schema to v9 without changing durable references", (version) => {
-		const root = mkdtempSync(join(tmpdir(), `hosted-state-v${version}-to-v7-`));
-		mkdirSync(root, { recursive: true });
-		const state = pairedState();
-		const { messaging: _messaging, autoCapacityReservations: _autoCapacityReservations, ...legacy } = state;
-		writeFileSync(runtimeStatePaths(root).state, `${JSON.stringify({ ...legacy, version }, null, 2)}\n`);
-		const migrated = readHostedRuntimeState(root);
-		expect(migrated).toMatchObject({ version: 9, messaging: {}, autoCapacityReservations: {}, targets: state.targets, participants: state.participants, events: state.events });
-	});
-
-	it.each([7, 8])("migrates released v%i state to v9 without changing durable references", (version) => {
-		const root = mkdtempSync(join(tmpdir(), "hosted-state-v7-to-v8-"));
-		mkdirSync(root, { recursive: true });
-		const state = pairedState();
-		const { messaging: _messaging, ...legacy } = state;
-		writeFileSync(runtimeStatePaths(root).state, `${JSON.stringify({ ...legacy, version }, null, 2)}\n`);
-		expect(readHostedRuntimeState(root)).toEqual(state);
-	});
-
-	it("fails closed instead of accepting an unknown state version", () => {
-		const unknownVersion = { ...emptyHostedRuntimeState(), version: 10 };
+	it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 11])("rejects unsupported state version %i without rewriting it", (version) => {
+		const unknownVersion = { ...emptyHostedRuntimeState(), version };
 		expect(() => validateHostedRuntimeState(unknownVersion)).toThrow(HostedStateStorageError);
 		const root = mkdtempSync(join(tmpdir(), "hosted-state-unknown-version-"));
 		writeFileSync(runtimeStatePaths(root).state, `${JSON.stringify(unknownVersion)}\n`);
 		expect(() => readHostedRuntimeState(root)).toThrow(HostedStateStorageError);
 		expect(JSON.parse(readFileSync(runtimeStatePaths(root).state, "utf8"))).toEqual(unknownVersion);
+		rmSync(root, { recursive: true, force: true });
 	});
 
 	it("atomically reserves Auto capacity across held targets and concurrent acquisitions", () => {

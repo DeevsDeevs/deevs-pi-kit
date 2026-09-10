@@ -65,8 +65,9 @@ async function serve(path) {
 				client = new HostedRuntimeClient(authority.socketPath, 5000, 128 * 1024);
 			}
 			if (tool.name !== "collaborator_peers" && args.namespaceId !== authority.namespaceId) throw new Error("Namespace changed; never move an uncertain operation to a new namespace");
-			const method = tool.name === "collaborator_send" ? "messaging.send" : tool.name === "collaborator_peers" ? "messaging.peers" : "messaging.status";
-			const input = method === "messaging.send" ? { participantId: args.participantId, operationId: args.operationId, bodyBase64: Buffer.from(args.body).toString("base64") } : args;
+			const method = `messaging.${tool.name.slice("collaborator_".length)}`;
+			const { body, ...otherArgs } = args;
+			const input = method === "messaging.send" || method === "messaging.reply" ? { ...otherArgs, bodyBase64: Buffer.from(body).toString("base64") } : args;
 			const value = await client.call(method, { ...input, namespaceId: authority.namespaceId, secret: authority.secret });
 			return result({ isError: false, content: [{ type: "text", text: JSON.stringify(value) }], structuredContent: value });
 		} catch (cause) {

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { HOSTED_ACK_RETENTION_MS, type HostedMessagingGrant } from "../hosted-types.ts";
 import { HostedParticipantCoordinator } from "./participant.ts";
 import { RegistrationError, RuntimeRegistrationManager, type HostedLiveRegistration } from "./registration.ts";
-import { deriveParticipantKey, HostedStateStore, messagingConfigurationHash } from "./state.ts";
+import { deriveParticipantKey, HostedStateStore, messagingConfigurationHash, messagingReceivedEvent } from "./state.ts";
 
 export class RuntimeMessaging {
 	private inFlight = 0;
@@ -40,7 +40,7 @@ export class RuntimeMessaging {
 		if (existing) return { namespaceId: existing.namespaceId, descriptorPath, expiresAt: existing.expiresAt };
 		const namespaceId = `msg_${randomUUID()}`;
 		const secret = randomBytes(32).toString("base64url");
-		const grant: HostedMessagingGrant = { namespaceId, secretDigest: digest(secret), participantKey, holderGeneration: expectedGeneration, targetKey: target.targetKey, clientGeneration: registration.clientGeneration, terminalId: registration.host.terminalId, configurationHash: messagingConfigurationHash(target), createdAt, expiresAt: createdAt + HOSTED_ACK_RETENTION_MS, status: "active", receipts: {} };
+		const grant: HostedMessagingGrant = { namespaceId, secretDigest: digest(secret), participantKey, holderGeneration: expectedGeneration, targetKey: target.targetKey, clientGeneration: registration.clientGeneration, terminalId: registration.host.terminalId, configurationHash: messagingConfigurationHash(target), createdAt, expiresAt: createdAt + HOSTED_ACK_RETENTION_MS, status: "active", receipts: {}, offers: {} };
 		const fd = openSync(descriptorPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
 		try {
 			writeFileSync(fd, `${JSON.stringify({ version: 1, socketPath: this.socketPath, namespaceId, secret })}\n`);
@@ -85,17 +85,31 @@ export class RuntimeMessaging {
 				const binding = target.kind === "pi" ? { kind: target.kind, sessionId: target.piSessionId, sessionFile: target.piSessionFile, cwd: target.workspaceRoot ?? target.projectRoot } : { kind: target.kind };
 				return { caller: sender.participantId, protocol: sender.protocol, namespaceId, binding, expiresAt: grant.expiresAt, peers: page, nextCursor: offset + page.length < peers.length && last ? Buffer.from(`${namespaceId}:${last.participantKey}`).toString("base64url") : null };
 			}
+			if (input.method === "receive" || input.method === "received") {
+				this.store.apply({ type: input.method === "receive" ? "messaging.receive" : "messaging.received", namespaceId, eventId: input.eventId, receiptToken: input.method === "receive" ? `offer_${randomUUID()}` : input.receiptToken, at: this.now() });
+				const current = this.store.read().messaging[namespaceId]!;
+				const offer = current.offers[input.eventId]!;
+				if (input.method === "received") return { namespaceId, offer };
+				const event = messagingReceivedEvent(this.store.read(), current, input.eventId);
+				return { namespaceId, offer, message: { eventId: event.eventId, sender: this.store.read().participants[event.source.id]!.participantId, body: event.payload.body, inReplyToEventId: event.inReplyToEventId } };
+			}
 			if (input.method === "send") {
 				const recipientParticipantKey = deriveParticipantKey(sender.projectRoot, sender.protocol, input.participantId);
 				this.participants.sendMessaging(registration, namespaceId, input.operationId, recipientParticipantKey, input.body);
+			} else if (input.method === "reply") {
+				const receipt = Object.hasOwn(grant.receipts, input.operationId) ? grant.receipts[input.operationId] : undefined;
+				const recipient = receipt?.recipientParticipantKey ?? messagingReceivedEvent(this.store.read(), grant, input.eventId).source.id;
+				this.participants.sendMessaging(registration, namespaceId, input.operationId, recipient, input.body, { inReplyToEventId: input.eventId, receiptToken: input.receiptToken });
 			}
 			const current = this.store.read().messaging[namespaceId]!;
 			const receipt = Object.hasOwn(current.receipts, input.operationId) ? current.receipts[input.operationId] : undefined;
 			if (!receipt) throw new RegistrationError("not_found", "Operation has no publication receipt in this namespace.");
-			const { fingerprint: _fingerprint, ...publication } = receipt;
-			if (input.method === "send") return { namespaceId, publication };
+			const { fingerprint: _fingerprint, replyToken: _replyToken, ...publication } = receipt;
+			if (input.method === "send" || input.method === "reply") return { namespaceId, publication };
 			const event = this.store.read().events[receipt.eventId];
-			return { namespaceId, publication, event: event ?? null, history: event ? "retained" : "pruned" };
+			const receiver = event?.type === "mailbox.message" && event.recipientBinding.kind === "namespace" ? this.store.read().messaging[event.recipientBinding.namespaceId] : undefined;
+			const offer = receiver?.offers[receipt.eventId];
+			return { namespaceId, publication, event: event ?? null, history: event ? "retained" : "pruned", retrieval: offer ? { offeredAt: offer.offeredAt, receivedAt: offer.receivedAt ?? null } : null };
 		} finally {
 			this.inFlight--;
 		}
@@ -118,7 +132,10 @@ export class RuntimeMessaging {
 export type MessagingInput =
 	| { method: "peers"; cursor?: string }
 	| { method: "send"; participantId: string; operationId: string; body: string }
-	| { method: "status"; operationId: string };
+	| { method: "status"; operationId: string }
+	| { method: "receive"; eventId: string }
+	| { method: "received"; eventId: string; receiptToken: string }
+	| { method: "reply"; operationId: string; eventId: string; receiptToken: string; body: string };
 
 export function messagingDescriptorPath(root: string, targetKey: string, clientGeneration: string): string {
 	return join(root, `messaging-${digest(JSON.stringify([targetKey, clientGeneration]))}.json`);

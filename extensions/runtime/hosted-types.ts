@@ -209,6 +209,9 @@ export interface HostedFilesystemCreatedEvent extends HostedEventBase {
 }
 
 export interface HostedMailboxMessageEvent extends HostedEventBase {
+	// An unbound publication never acquires a later holder's authority.
+	recipientBinding: { kind: "namespace"; namespaceId: string } | { kind: "unbound" };
+	inReplyToEventId?: string;
 	source: HostedParticipantEventSource;
 	recipientParticipantKey: string;
 	type: "mailbox.message";
@@ -323,8 +326,17 @@ export interface HostedAutoCapacityReservation {
 	createdAt: number;
 }
 
+export interface HostedMessagingOffer {
+	eventId: string;
+	receiptToken: string;
+	offeredAt: number;
+	receivedAt?: number;
+}
+
 export interface HostedMessagingReceipt {
 	operationId: string;
+	inReplyToEventId?: string;
+	replyToken?: string;
 	fingerprint: string;
 	eventId: string;
 	recipientParticipantKey: string;
@@ -345,10 +357,11 @@ export interface HostedMessagingGrant {
 	expiresAt: number;
 	status: "active" | "revoked" | "expired";
 	receipts: Record<string, HostedMessagingReceipt>;
+	offers: Record<string, HostedMessagingOffer>;
 }
 
 export interface HostedRuntimeState {
-	version: 9;
+	version: 10;
 	messaging: Record<string, HostedMessagingGrant>;
 	targets: Record<string, HostedTarget>;
 	autoCapacityReservations: Record<string, HostedAutoCapacityReservation>;
@@ -368,6 +381,8 @@ export type HostedStateOperation =
 	| { type: "messaging.close"; namespaceId: string; status: "revoked" | "expired" }
 	| { type: "messaging.invalidate_client"; targetKey: string; clientGeneration: string; terminalId: string }
 	| { type: "messaging.send"; namespaceId: string; operationId: string; recipientParticipantKey: string; body: string; eventId: string; at: number }
+	| { type: "messaging.receive" | "messaging.received"; namespaceId: string; eventId: string; receiptToken: string; at: number }
+	| { type: "messaging.reply"; namespaceId: string; operationId: string; inReplyToEventId: string; receiptToken: string; body: string; eventId: string; at: number }
 	| { type: "target.ensure"; target: HostedTarget }
 	| { type: "auto_capacity.ensure"; reservation: HostedAutoCapacityReservation }
 	| { type: "auto_capacity.release"; operationId: string; callerTargetKey: string }

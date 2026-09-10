@@ -349,13 +349,13 @@ A supported structured attachment to the exact visible provider session is an al
 
 Advertise capabilities per target: messaging, typed tasks, turn observation, and commit/replay evidence separately. An authenticated successful MCP handshake/round trip establishes the proven messaging capability, not every capability associated with a provider name. Task capability requires its own schema, authority and live settlement gates. A connected target without task capability still rejects typed tasks. The release tests must cover recovery and deduplication; they are not destructive per-launch probes. Missing or failed runtime capability negotiation leaves the target managed or explicitly degraded, never silently falling back to scraping. MCP messaging alone remains `connected`, not `durable`.
 
-#### Migration and proof gates
+#### Current-schema and proof gates
 
-Daemon ownership and MCP credentials require an explicit state-version and wire migration, not just moving the heartbeat loop. Preserve atomic v1–v8 migration and unknown-version rejection. Existing targets remain managed until verified replacement or an explicitly designed authenticated handoff supplies new authority. No daemon credential is recovered by scanning arbitrary Pi session history. Fence old Pi-resident delivery and new daemon delivery at the service so they cannot both submit; specify handoff, failure and rollback behavior before migration ships. Malformed persisted authority fails closed and cannot revive an older valid record.
+The user explicitly chose a current-only implementation: no old-state migrations or legacy messaging fallback. Runtime accepts schema v10 and rejects older/unknown stores without rewriting them. Daemon ownership and MCP credentials require explicit current wire authority, not just moving the heartbeat loop. No daemon credential is recovered by scanning arbitrary Pi session history. Fence old Pi-resident delivery and new daemon delivery at the service so they cannot both submit; specify handoff, failure and rollback behavior before migration ships. Malformed persisted authority fails closed and cannot revive an older valid record.
 
-The authoritative implementation sequence and acceptance gates are in [Universal MCP messaging — implementation stages](MCP-PLAN.md#implementation-stages-and-exit-gates): restricted-provider echo proof, messaging foundation, isolated three-harness proof, daemon delivery/Pi receive cutover, then messaging release. Typed task migration is a separately approved follow-up, not a prerequisite for messaging. Native observation and durable-tier advancement remain separately gated; hooks cannot fabricate replies or task settlement. Implementation is authorized subject to those gates; rollout still requires explicit approval.
+The authoritative implementation sequence and acceptance gates are in [Universal MCP messaging — remaining gates](MCP-PLAN.md#remaining-implementation-gates): restricted-provider echo proof, messaging foundation, isolated three-harness proof, daemon delivery/Pi receive cutover, then messaging release. Typed task migration is a separately approved follow-up, not a prerequisite for messaging. Native observation and durable-tier advancement remain separately gated; hooks cannot fabricate replies or task settlement. Implementation is authorized subject to those gates; rollout still requires explicit approval.
 
-Inventory legacy targets and journals before any related removal. Retain `legacy-bridge/stop.ts`, worker/journal reads and compatibility until every inventoried item has explicit retirement/migration evidence. The communication redesign does not authorize speculative deletion or bypass existing workspace preservation rules.
+Remove obsolete compatibility code instead of extending it. This does not authorize deleting existing target data, journals or workspaces, or bypassing process-quiescence and workspace-preservation safeguards.
 
 ## Typed tasks
 
@@ -411,21 +411,9 @@ The Unix socket and state rely on owner-only filesystem permissions. Current Nod
 
 Herdr is an external trusted host capability, not an npm production dependency. Runtime validates Herdr protocol responses and exact identities; it never trusts labels or focused UI state as authority.
 
-## Migration from headless native bridges
+## No headless compatibility path
 
-The released v7 implementation may contain `kind: "bridge"` targets whose visible tab runs `bridge-runner/main.ts` and whose controller spawns `claude -p` or `codex exec` once per message. Those targets are legacy.
-
-Migration requirements:
-
-1. Do not mutate a live legacy target in place.
-2. Stand down or stop the exact legacy generation with existing worker-group quiescence rules.
-3. Retain any workspace and pending/attention journal evidence.
-4. Create a new interactive Herdr-agent target generation through the launch sequence above.
-5. Preserve participant mail ordering and workspace handoff references without reusing bridge credentials.
-6. Remove legacy controller tabs only after exact stop settles.
-7. Delete production `claude -p`/`codex exec` collaborator launch paths after migration gates pass.
-
-The old durable runner may remain only if a separately named bounded execution primitive still needs it. It must not be called a collaborator, hold a collaborator participant lease, or occupy a collaborator tab.
+Current collaborators use interactive Herdr sessions and the shared MCP interface. Headless bridge runners, hidden per-message provider processes and old argument formats are not supported release paths. Obsolete implementations still present are removal work, not fallback behavior to maintain. Existing user data remains untouched unless its exact cleanup is separately authorized.
 
 ## Deferred
 
@@ -453,5 +441,5 @@ The redesign is releasable only when isolated and live gates prove:
 10. Stop proves exact Herdr target/process settlement and retains workspace state.
 11. Pi durable collaborator behavior and Monitor admission remain unchanged.
 12. No collaborator tab contains a bridge-runner command or hidden per-message provider process.
-13. Legacy state migration retains mail, participant generations, attention evidence, and workspaces.
+13. Unsupported state is rejected without rewriting or deleting existing mail, authority evidence or workspaces.
 14. Manual and Auto capacity, authority, and zero-focus gates still pass.
