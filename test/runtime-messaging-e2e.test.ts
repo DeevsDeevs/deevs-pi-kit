@@ -8,6 +8,7 @@ import { join, resolve } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { HostedRuntimeClient } from "../extensions/runtime/client.ts";
 import { MessagingMcpClient } from "../extensions/runtime/mcp/client.ts";
+import { messagingDescriptorPath } from "../extensions/runtime/service/messaging.ts";
 import { HOSTED_ACK_RETENTION_MS, type HostedMessagingOffer, type HostedMessagingReceipt } from "../extensions/runtime/hosted-types.ts";
 import type { HostedLiveAgent, RegisterPiInput } from "../extensions/runtime/service/registration.ts";
 import { startRuntimeServer, type RuntimeServerHandle } from "../extensions/runtime/service/server.ts";
@@ -26,6 +27,8 @@ async function setup(monitor: { scanIntervalMs?: number; onError?: (error: Error
 	const projectRoot = join(root, "project");
 	mkdirSync(projectRoot);
 	const runtimeRoot = join(root, "runtime");
+	const sessionRoot = join(root, "proof-sessions");
+	mkdirSync(sessionRoot);
 	let now = 1000;
 	let beforeVerify = async () => {};
 	const agents = new Map<string, HostedLiveAgent>();
@@ -33,7 +36,7 @@ async function setup(monitor: { scanIntervalMs?: number; onError?: (error: Error
 	for (const name of ["sender", "recipient", "outsider"]) {
 		const cwd = name === "outsider" ? join(root, "other-project") : projectRoot;
 		mkdirSync(cwd, { recursive: true });
-		const file = join(root, `${name}.jsonl`);
+		const file = join(sessionRoot, `${name}.jsonl`);
 		writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: name, cwd })}\n`);
 		agents.set(name, { paneId: name, terminalId: `terminal_${name}`, cwd, agentSession: { source: "herdr:pi", agent: "pi", kind: "path", value: file }, status: "idle", stateChangeSeq: 1 });
 		inputs.set(name, { projectRoot: cwd, piSessionId: name, piSessionFile: file, clientGeneration: `client_${name}`, admittedClaims: [], herdr: { paneId: name, terminalId: `terminal_${name}` } });
@@ -85,11 +88,17 @@ async function mcp(path: string, calls: Call[]): Promise<Result[]> {
 	} finally { clearTimeout(timeout); if (child.exitCode === null) child.kill("SIGKILL"); }
 }
 
-async function piSession(test: Awaited<ReturnType<typeof setup>>, extraArgs: string[] = []) {
-	const env: NodeJS.ProcessEnv = { ...process.env, PI_CODING_AGENT_DIR: join(test.root, "pi-home") };
+async function piSession(test: Awaited<ReturnType<typeof setup>>, extraArgs: string[] = [], defaultRuntime = false) {
+	const env: NodeJS.ProcessEnv = { ...process.env, PI_CODING_AGENT_DIR: defaultRuntime ? test.root : join(test.root, "pi-home") };
 	delete env.PI_PACKAGE_DIR;
+	if (defaultRuntime) {
+		const bin = join(test.root, "bin");
+		mkdirSync(bin, { recursive: true });
+		writeFileSync(join(bin, "herdr"), `#!${process.execPath}\nif (JSON.stringify(process.argv.slice(2)) !== JSON.stringify(["pane", "current", "--current"])) process.exit(1);\nconsole.log(JSON.stringify({result:{pane:{pane_id:"sender",terminal_id:"terminal_sender"}}}));\n`, { mode: 0o700 });
+		env.PATH = `${bin}:${env.PATH}`;
+	}
 	const binary = process.env.PI_KIT_MCP_TEST_PI;
-	const child = spawn(binary ?? process.execPath, [...(binary ? [] : [resolve("node_modules/@earendil-works/pi-coding-agent/dist/cli.js")]), "--mode", "rpc", "--no-extensions", "--no-skills", "--no-context-files", "--no-prompt-templates", "--tools", "collaborator_peers,collaborator_send,collaborator_status", "-e", resolve("extensions/runtime/mcp/pi.ts"), "-e", resolve("test/fixtures/mcp-pi-provider.ts"), "--provider", "mcp-proof", "--model", "proof", "--session", test.inputs.get("sender")!.piSessionFile, "--runtime-mcp-descriptor", test.issued.descriptorPath, ...extraArgs], { cwd: test.inputs.get("sender")!.projectRoot, env, stdio: "pipe" });
+	const child = spawn(binary ?? process.execPath, [...(binary ? [] : [resolve("node_modules/@earendil-works/pi-coding-agent/dist/cli.js")]), "--mode", "rpc", "--no-extensions", "--no-skills", "--no-context-files", "--no-prompt-templates", "--tools", "collaborator_peers,collaborator_send,collaborator_status", "-e", resolve(defaultRuntime ? "extensions/runtime/index.ts" : "test/fixtures/mcp-pi-adapter.ts"), "-e", resolve("test/fixtures/mcp-pi-provider.ts"), "--provider", "mcp-proof", "--model", "proof", "--session", test.inputs.get("sender")!.piSessionFile, ...(defaultRuntime ? [] : ["--runtime-mcp-descriptor", test.issued.descriptorPath]), ...extraArgs], { cwd: test.inputs.get("sender")!.projectRoot, env, stdio: "pipe" });
 	const completed = once(child, "close");
 	const events = new EventEmitter();
 	events.on("error", () => {});
@@ -234,6 +243,35 @@ it("rejects unconfigured recipients without publishing and fences tokens, namesp
 	expect(Object.keys(test.readState().events)).toEqual([eventId]);
 	expect(test.readState().events[eventId]!.delivery.status).toBe("pending");
 });
+
+it("uses the default Runtime registrar, real registration and private issuance through the actual MCP child", async () => {
+	const test = await setup();
+	const sessionFile = test.inputs.get("sender")!.piSessionFile;
+	writeFileSync(sessionFile, readFileSync(sessionFile, "utf8") + JSON.stringify({ type: "custom", id: "b00c0001", parentId: null, timestamp: new Date().toISOString(), customType: "deevs.hosted-runtime.participant.v1", data: { version: 1, protocol: "proof", participantId: "sender", participantKey: test.senderParticipant.participantKey, generation: test.senderParticipant.generation, disposition: "held" } }) + "\n");
+	expect(readFileSync(sessionFile, "utf8")).toContain('"customType":"deevs.hosted-runtime.participant.v1"');
+	expect(JSON.parse(readFileSync(sessionFile, "utf8").split("\n")[0]!).id).toBe("sender");
+	const pi = await piSession(test, [], true);
+	const peers = await pi.call({ name: "collaborator_peers", arguments: {} });
+	expect(peers.isError, JSON.stringify({ content: peers.result.content, errors: pi.frames.filter(frame => frame.type === "extension_error") })).toBe(false);
+	const namespaceId = peers.result.details.namespaceId as string;
+	expect(namespaceId).not.toBe(test.issued.namespaceId);
+	const grant = test.readState().messaging[namespaceId]!;
+	expect(grant.participantKey).toBe(test.senderParticipant.participantKey);
+	expect(grant.clientGeneration).not.toBe("client_sender");
+	const args = { ...send("default-runtime").arguments, namespaceId };
+	const sent = await pi.call({ name: "collaborator_send", arguments: args });
+	expect(sent.isError).toBe(false);
+	const lookup = await pi.call({ name: "collaborator_status", arguments: { namespaceId, operationId: "default-runtime" } });
+	expect(lookup.result.details.publication).toEqual(sent.result.details.publication);
+	const oldArguments = await pi.call({ name: "collaborator_send", arguments: { messages: [] } } as never);
+	expect(oldArguments.isError).toBe(true);
+	expect(Object.keys(test.readState().events)).toHaveLength(1);
+	await pi.close();
+	const transcript = readFileSync(sessionFile, "utf8");
+	const descriptor = JSON.parse(readFileSync(messagingDescriptorPath(test.runtimeRoot, grant.targetKey, grant.clientGeneration), "utf8"));
+	expect(transcript).not.toContain(descriptor.secret);
+	expect(transcript).toContain('"toolName":"collaborator_send"');
+}, 30_000);
 
 it("persists native Pi receive results while keeping explicit client receipt separate from admission", async () => {
 	const test = await setup();
@@ -628,9 +666,8 @@ it("blocks a new Pi session using an old descriptor and respects an explicit too
 	const absent = await limited.call({ name: "collaborator_send", arguments: { ...send("disallowed").arguments, namespaceId: test.issued.namespaceId } });
 	expect(absent.isError).toBe(true);
 	expect(absent.result.content[0].text).toContain("not found");
-	await limited.command({ type: "prompt", message: "/proof-enable-legacy" });
-	const collision = await limited.call({ name: "collaborator_peers", arguments: {} });
-	expect(collision.isError).toBe(true);
-	expect(collision.result.content[0].text).toContain("without the legacy Runtime extension");
+	await limited.command({ type: "prompt", message: "/proof-add-command" });
+	const peers = await limited.call({ name: "collaborator_peers", arguments: {} });
+	expect(peers.isError).toBe(false);
 	expect(Object.keys(test.readState().events)).toHaveLength(0);
 }, 30_000);

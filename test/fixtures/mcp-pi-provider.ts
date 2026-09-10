@@ -6,7 +6,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 // Deterministic model only. Pi's Agent loop, tool wrappers, persistence, MCP child
 // and Runtime socket/store remain real; no credentials or network model are used.
 export default function proofProvider(pi: ExtensionAPI): void {
-	pi.registerCommand("proof-enable-legacy", { description: "Test-only collision fixture", handler: async () => { pi.registerCommand("runtime", { description: "Test-only legacy command", handler: async () => {} }); } });
+	pi.on("project_trust", () => ({ trusted: "yes" }));
+	pi.registerCommand("proof-add-command", { description: "Test-only command coexistence", handler: async () => { pi.registerCommand("runtime", { description: "Test-only unrelated command", handler: async () => {} }); } });
 	pi.registerProvider("mcp-proof", {
 		api: "mcp-proof", baseUrl: "http://unused.invalid", apiKey: "test-only",
 		models: [{ id: "proof", name: "Proof", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200000, maxTokens: 8192 }],

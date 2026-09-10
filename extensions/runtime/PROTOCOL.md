@@ -246,7 +246,7 @@ Rules:
 - A submitted event is retained for audit and explicit operator retry; Runtime does not automatically replay it.
 - The agent's response remains visible in its tab. Runtime does not synthesize a sender-authenticated reply from terminal text.
 
-The `collaborator_send` result therefore exposes recipient tier and delivery state. A caller that requires automatic structural completion must use a connected/durable collaborator or a bounded Subagent instead.
+That managed full-body path is pending replacement, not a supported MCP fallback. Current `collaborator_send` returns a namespace-scoped publication receipt; `collaborator_status` reports retained delivery evidence separately. The old Pi batch-send/status registrar is removed. A caller that requires automatic structural completion must use a task-capable collaborator or a bounded Subagent instead.
 
 Direct user prompts typed in the Claude/Codex tab are not themselves Runtime mail. In a connected target, the agent may intentionally publish mail through its authenticated tools during a human-driven turn; it speaks as that collaborator, never as the human or another participant. This grants no Runtime lifecycle, integration, discard, review verdict, or Mission completion authority.
 
