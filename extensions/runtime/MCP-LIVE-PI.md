@@ -57,9 +57,33 @@ The verifier used ordinary read-only file reads, not Pi's potentially writing `l
 
 An earlier **setup-only** attempt at `/tmp/pi-kit-live-pair-W64NN2/` failed because the driver assumed every successful Herdr command returned JSON; `pane run` returned empty output. No model agents were launched in that attempt. The driver was corrected to accept empty successful command responses and typed already-absent cleanup results. Its one service process was confirmed quiescent and its auth copy removed (`j_mtvs5z3j_50a6cc2b`, exit 0). No production guard was relaxed to make the live proof pass.
 
+## Follow-up: copied-transcript history proof
+
+**Passed on 2026-09-10** using the installed Pi 0.85.1 binary in bounded RPC runs against separate copies of both live transcripts. This was a history-only test: **Runtime/MCP extensions and authority were not loaded**, and no new mail was sent. It does not certify live Runtime re-registration or descriptor renewal across these transitions.
+
+A private probe extension called public `ctx.navigateTree()` and `ctx.reload()` methods and exposed read-only branch/context snapshots. RPC `get_entries` and `get_messages` supplied complete records and active messages. After navigation, a test-only custom metadata entry anchored the selected position for restart; this does not assert that navigation alone persists a leaf selection. Both original transcript files remained unchanged, and their complete bytes remained the prefix of each modified copy.
+
+The following outcomes were checked for **both** sessions:
+
+| Phase | Exact receive result in active messages | Receive entry on ancestry | Exact record still stored |
+|---|---|---|---|
+| Open saved transcript | Yes | Yes | Yes |
+| Navigate before receive; reload; process restart | No | No | Yes |
+| Restore original branch; reload | Yes | Yes | Yes |
+| Compact; process restart; reload | No | Yes | Yes |
+
+Compaction used Pi's normal summarizer with the configured `openai-codex/gpt-6-astra` model, no custom-summary hook, and an explicitly small **`keepRecentTokens: 1`** to exercise removal from active context. The two compactions reported 2,878 and 1,315 usage tokens. This is not a default-threshold or large-body test. The observed compaction entries used `firstKeptEntryId`, not `retainedTail`.
+
+Crucially, **absence of the original receive result is not absence of all body text**: both short test bodies still appeared somewhere in the compacted active messages. Summary/tail text is not the original structured tool-result evidence and cannot guarantee lossless preservation of arbitrary bodies, receipt tokens or authority. After compaction, all-entry/ancestry inspection and active model context answer different questions.
+
+- Successful driver: **`j_mtvsy5z5_db646c93`**, exit 0, 46 seconds; six owned Pi children closed before copied auth deletion. No persistent/interactive server was started.
+- Separate read-only verifier: `python3 /tmp/pi-kit-history-nICIKL/verify.py`, exit 0; checked raw RPC results, all 18 phase snapshots, original byte prefixes, exact receive records and unchanged source/copy bytes during verification. Lifecycle records separately confirmed six RPC startups and six reloads.
+- Private artifacts: `/tmp/pi-kit-history-nICIKL/{run.mjs,probe.ts,report.json,verified.json,verify.py,copies/,rpc-*.jsonl}`. Thirteen RPC/lifecycle/compaction output files were scanned against copied OAuth credentials with zero leaks; the auth copy is absent. Temporary artifacts are not packaged or guaranteed to survive host cleanup.
+- Final copied transcript SHA-256: Alice `1a03030d416884f945bd5fef74866a7b40a188e97adf153d9e77cd991212818e`; Bob `e95391c8b8e52b70fd9f4356b3932001c2b1d7eea9cc35179338c54f3cffd7bf`.
+
 ## Still not established
 
-- Restart/reload, branch navigation and compaction body-history behavior in real sessions.
+- Runtime-enabled restart/reload/tree/compaction re-registration, descriptor renewal and new messaging in live sessions. The copied-transcript proof above establishes storage/context behavior only.
 - Reliable notification after a lost reference response: hints intentionally remain best-effort and non-replayed.
 - Fsync-based Pi body admission or daemon handoff guarantees.
 - A live three-harness ring. Claude/Codex automatic wakes remain blocked on safe native editor/process admission; prior isolated publications are separate historical evidence.
