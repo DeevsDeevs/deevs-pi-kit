@@ -89,7 +89,7 @@ export class HostedStateConflictError extends Error {
 }
 
 export function emptyHostedRuntimeState(): HostedRuntimeState {
-	return { version: 10, messaging: {}, targets: {}, autoCapacityReservations: {}, bridgeLaunches: {}, workspaces: {}, integrations: {}, monitors: {}, participants: {}, events: {}, dedupe: {}, claims: {}, wakes: {} };
+	return { version: 11, messaging: {}, targets: {}, autoCapacityReservations: {}, bridgeLaunches: {}, workspaces: {}, integrations: {}, monitors: {}, participants: {}, events: {}, dedupe: {}, claims: {}, wakes: {} };
 }
 
 export class HostedStateStore {
@@ -601,7 +601,7 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 		const target = state.targets[operation.targetKey];
 		if (!claim || claim.status !== "active" || claim.targetKey !== operation.targetKey || !sameIds(claim.eventIds, operation.eventIds) || target?.kind !== "agent" || target.capabilityTier !== "managed") throw new HostedStateConflictError("claim_conflict", "Managed submission claim or target is invalid.");
 		const claimedEvents = claim.eventIds.map((eventId) => state.events[eventId]);
-		if (!claimedEvents.every((event): event is HostedEvent => event !== undefined && event.delivery.status === "claimed" && event.delivery.claimId === claim.claimId)) throw new HostedStateConflictError("claim_conflict", "Managed submission events are not held by the exact claim.");
+		if (!claimedEvents.every((event): event is HostedEvent => event !== undefined && eventClaimTargetMatches(state, event, claim.targetKey) && event.delivery.status === "claimed" && event.delivery.claimId === claim.claimId)) throw new HostedStateConflictError("claim_conflict", "Managed submission events are not held by the exact claim.");
 		const events = { ...state.events };
 		for (const event of claimedEvents) events[event.eventId] = { ...event, delivery: { status: "submitting", claimId: claim.claimId, attemptId: operation.attemptId, startedAt: operation.at } };
 		return { ...state, events };
@@ -611,7 +611,7 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 		const claim = state.claims[operation.claimId];
 		if (!claim || claim.status !== "active" || claim.targetKey !== operation.targetKey || !sameIds(claim.eventIds, operation.eventIds)) throw new HostedStateConflictError("claim_conflict", "Managed submission settlement claim is invalid.");
 		const submittingEvents = claim.eventIds.map((eventId) => state.events[eventId]);
-		if (!submittingEvents.every((event): event is HostedEvent => event !== undefined && event.delivery.status === "submitting" && event.delivery.claimId === claim.claimId && event.delivery.attemptId === operation.attemptId)) throw new HostedStateConflictError("claim_conflict", "Managed submission settlement does not match its exact attempt.");
+		if (!submittingEvents.every((event): event is HostedEvent => event !== undefined && eventClaimTargetMatches(state, event, claim.targetKey) && event.delivery.status === "submitting" && event.delivery.claimId === claim.claimId && event.delivery.attemptId === operation.attemptId)) throw new HostedStateConflictError("claim_conflict", "Managed submission settlement does not match its exact attempt.");
 		const events = { ...state.events };
 		for (const event of submittingEvents) {
 			const delivery: HostedEventDelivery = operation.outcome === "submitted" ? { status: "submitted", claimId: claim.claimId, attemptId: operation.attemptId, submittedAt: operation.at } : operation.outcome === "needs_attention" ? { status: "needs_attention", claimId: claim.claimId, attemptId: operation.attemptId, recordedAt: operation.at } : { status: "pending", latestClaimId: claim.claimId };
@@ -674,7 +674,7 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 		const wake = state.wakes[operation.claim.targetKey];
 		const existingClaim = state.claims[operation.claim.claimId];
 		if (!wake) {
-			if (existingClaim && sameClaim(existingClaim, operation.claim)) return state;
+			if (existingClaim && sameClaim(existingClaim, operation.claim)) return claimEvents(state, operation.claim);
 			throw new HostedStateConflictError("claim_conflict", "Wake is absent or no longer current.");
 		}
 		if (wake.wakeId !== operation.wakeId || wake.registrationId !== operation.claim.registrationId) throw new HostedStateConflictError("claim_conflict", "Wake does not match this claim owner.");
@@ -741,9 +741,9 @@ export function writeHostedRuntimeState(root: string, state: HostedRuntimeState)
 export function validateHostedRuntimeState<Source>(value: Source): HostedRuntimeState {
 	try {
 		const state = strictObject(value, "runtime state", ["version", "messaging", "targets", "autoCapacityReservations", "bridgeLaunches", "workspaces", "integrations", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
-		if (state.version !== 10) throw new Error("unsupported runtime state version");
+		if (state.version !== 11) throw new Error("unsupported runtime state version");
 		const result: HostedRuntimeState = {
-			version: 10,
+			version: 11,
 			messaging: mapValues(state.messaging, "messaging namespaces", validateMessagingGrant),
 			targets: mapValues(state.targets, "targets", validateTarget),
 			autoCapacityReservations: mapValues(state.autoCapacityReservations, "Auto capacity reservations", validateAutoCapacityReservation),
@@ -820,6 +820,7 @@ function validateMessagingGrant<Source>(value: Source, key: string): HostedMessa
 }
 
 function claimEvents(state: HostedRuntimeState, claim: HostedClaim): HostedRuntimeState {
+	if (claim.eventIds.some(eventId => state.events[eventId]?.type === "mailbox.message")) throw new HostedStateConflictError("claim_conflict", "Ordinary mail cannot enter native claims.");
 	const existing = state.claims[claim.claimId];
 	if (existing) {
 		if (!sameClaim(existing, claim)) throw new HostedStateConflictError("claim_conflict", "Claim ID does not match its durable receipt.");
@@ -838,6 +839,7 @@ function claimEvents(state: HostedRuntimeState, claim: HostedClaim): HostedRunti
 function releaseClaim(state: HostedRuntimeState, targetKey: string, claimId: string, eventIds: string[], at: number): HostedRuntimeState {
 	const claim = state.claims[claimId];
 	if (!claim || claim.targetKey !== targetKey || !sameIds(claim.eventIds, eventIds) || claim.status !== "active") return state;
+	if (claim.eventIds.some(eventId => state.events[eventId]?.type === "mailbox.message")) throw new HostedStateConflictError("claim_conflict", "Ordinary mail cannot enter native claims.");
 	const events = { ...state.events };
 	for (const eventId of claim.eventIds) {
 		const event = events[eventId];
@@ -853,9 +855,11 @@ function releaseClaim(state: HostedRuntimeState, targetKey: string, claimId: str
 
 function pruneAcknowledged(state: HostedRuntimeState, before: number): HostedRuntimeState {
 	for (const grant of Object.values(state.messaging)) if (grant.expiresAt <= before) state = reduceHostedState(state, { type: "messaging.close", namespaceId: grant.namespaceId, status: "expired" });
-	const offered = new Set(Object.values(state.messaging).flatMap(grant => Object.keys(grant.offers)));
+	const protectedMail = new Set(Object.values(state.messaging).flatMap(grant => [...Object.keys(grant.offers), ...Object.values(grant.receipts).map(receipt => receipt.eventId)]));
 	const removable = new Set(Object.values(state.events)
-		.filter((event) => event.delivery.status === "acked" && event.delivery.ackedAt < before && !offered.has(event.eventId))
+		.filter((event) => event.type === "mailbox.message"
+			? event.createdAt < before && !protectedMail.has(event.eventId) && (event.recipientBinding.kind === "unbound" || state.messaging[event.recipientBinding.namespaceId]?.status === "expired")
+			: event.delivery.status === "acked" && event.delivery.ackedAt < before)
 		.map((event) => event.eventId));
 	let changed = true;
 	while (changed) {
@@ -1300,7 +1304,10 @@ function validateMailboxEvent(value: PersistedStateValue | undefined, key: strin
 		delivery: validateDelivery(event.delivery),
 	};
 	if (result.type !== "mailbox.message" && (event.recipientBinding !== undefined || event.inReplyToEventId !== undefined)) throw new Error("only ordinary mail may carry messaging bindings");
-	if (result.type === "mailbox.message" && event.inReplyToEventId !== undefined) result.inReplyToEventId = text(event.inReplyToEventId, "reply event", 200);
+	if (result.type === "mailbox.message") {
+		if (result.delivery.status !== "pending" || result.delivery.latestClaimId !== undefined) throw new Error("ordinary mail cannot carry native delivery evidence");
+		if (event.inReplyToEventId !== undefined) result.inReplyToEventId = text(event.inReplyToEventId, "reply event", 200);
+	}
 	if (result.eventId !== key || result.source.id !== result.payload.senderParticipantKey || recipientParticipantKey !== result.payload.recipientParticipantKey) throw new Error("mailbox event identity is inconsistent");
 	const expectedFingerprint = eventType === "mailbox.task" ? taskFingerprint(recipientParticipantKey, body) : mailboxFingerprint(recipientParticipantKey, body);
 	if (result.dedupeKey !== mailboxDedupeKey(result.source.id, result.payload.sendId) || result.payload.fingerprint !== expectedFingerprint) throw new Error("mailbox event dedupe or fingerprint is invalid");
@@ -1652,6 +1659,7 @@ function hasActiveParticipantClaim(state: HostedRuntimeState, participantKey: st
 }
 
 export function hostedEventRoutesToTarget(state: HostedRuntimeState, event: HostedEvent, targetKey: string): boolean {
+	if (event.type === "mailbox.message") return false;
 	if (event.type === "filesystem.created") return event.targetKey === targetKey;
 	const participant = state.participants[event.recipientParticipantKey];
 	return participant?.state === "held" && participant.holderTargetKey === targetKey;
@@ -1663,6 +1671,7 @@ function deliveryBelongsToClaim(delivery: HostedEventDelivery, claimId: string):
 }
 
 function eventClaimTargetMatches(state: HostedRuntimeState, event: HostedEvent, targetKey: string): boolean {
+	if (event.type === "mailbox.message") return false;
 	if (event.type === "filesystem.created") return event.targetKey === targetKey;
 	const participant = state.participants[event.recipientParticipantKey];
 	const target = state.targets[targetKey];

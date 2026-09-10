@@ -105,7 +105,7 @@ describe("hosted participant coordinator", () => {
 		expect(() => test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "send_1", "Changed.")).toThrow(expect.objectContaining({ code: "conflict" }));
 	});
 
-	it("submits managed mail once and rejects typed tasks without connected capability", async () => {
+	it("excludes ordinary managed mail, preserves Monitor submission, and rejects tasks without connected capability", async () => {
 		const test = setup();
 		const { main, fable, mainParticipant, fableParticipant } = await acquirePair(test);
 		const vacant = test.participants.standDown(fable, fableParticipant.participantKey);
@@ -118,23 +118,34 @@ describe("hosted participant coordinator", () => {
 		const managed = test.participants.get(main, fableParticipant.participantKey);
 		expect(test.participants.list(main).find((participant) => participant.participantId === "fable")).toMatchObject({ driver: "codex", capabilityTier: "managed", profile: "read-only" });
 		expect(() => test.participants.sendTask(main, mainParticipant.participantKey, mainParticipant.generation, managed.participantKey, "task_managed", "Do work.")).toThrow(expect.objectContaining({ code: "capability_unavailable" }));
-		const message = test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, managed.participantKey, "send_managed", "Please inspect.");
+		const ordinary = test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, managed.participantKey, "send_managed", "Please inspect.");
 		let managedClaim = 0;
 		const wakes = new HostedWakeCoordinator(test.store, { now: () => 1_001, createClaimId: () => `claim_managed_${++managedClaim}` });
+		expect(() => wakes.claim(managedRegistration, 1)).toThrow("Inbox has no pending events");
+		expect(test.store.read().events[ordinary.eventId]?.delivery).toEqual({ status: "pending" });
+		const monitors = new DirectoryMonitorManager(test.store, { automatic: false });
+		const monitor = monitors.create(managedTarget.targetKey, test.projectRoot, 0);
+		const nativeEvent = (name: string) => {
+			writeFileSync(join(test.projectRoot, name), "native monitor input");
+			monitors.reconcile(monitor.monitorId);
+			monitors.reconcile(monitor.monitorId);
+			return Object.values(test.store.read().events).find(event => event.type === "filesystem.created" && event.payload.relativePath === name)!;
+		};
+		const message = nativeEvent("submit.txt");
 		const claim = wakes.claim(managedRegistration, 1);
 		expect(claim.events.map((event) => event.eventId)).toEqual([message.eventId]);
 		wakes.submitBegin(managedRegistration, claim.claim.claimId, claim.claim.eventIds, "attempt_1");
 		expect(test.store.read().events[message.eventId]?.delivery.status).toBe("submitting");
 		wakes.submitSettle(managedRegistration, claim.claim.claimId, claim.claim.eventIds, "attempt_1", "submitted");
 		expect(test.store.read().events[message.eventId]?.delivery.status).toBe("submitted");
-		expect(test.participants.messageStatus(main, mainParticipant.participantKey, mainParticipant.generation, message.eventId)).toMatchObject({ recipientTier: "managed", deliveryState: "submitted" });
-		const ambiguous = test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, managed.participantKey, "send_ambiguous", "Ambiguous.");
+		expect(wakes.status(managedRegistration).submitted).toBe(1);
+		const ambiguous = nativeEvent("ambiguous.txt");
 		const second = wakes.claim(managedRegistration, 1);
 		wakes.submitBegin(managedRegistration, second.claim.claimId, second.claim.eventIds, "attempt_2");
 		wakes.submitSettle(managedRegistration, second.claim.claimId, second.claim.eventIds, "attempt_2", "needs_attention");
 		expect(test.store.read().events[ambiguous.eventId]?.delivery.status).toBe("needs_attention");
-		expect(test.participants.messageStatus(main, mainParticipant.participantKey, mainParticipant.generation, ambiguous.eventId)).toMatchObject({ deliveryState: "needs_attention" });
-		const rejected = test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, managed.participantKey, "send_rejected", "Retry safely.");
+		expect(wakes.status(managedRegistration).needsAttention).toBe(1);
+		const rejected = nativeEvent("rejected.txt");
 		const third = wakes.claim(managedRegistration, 1);
 		wakes.submitBegin(managedRegistration, third.claim.claimId, third.claim.eventIds, "attempt_3");
 		wakes.submitSettle(managedRegistration, third.claim.claimId, third.claim.eventIds, "attempt_3", "pending");
@@ -262,14 +273,12 @@ describe("hosted participant coordinator", () => {
 		expect(participants.takeover(successor, fableParticipant.participantKey, fableParticipant.generation)).toMatchObject({ holderTargetKey: successor.targetKey });
 	});
 
-	it.each(["message", "task", "task_result"] as const)("waits for an old holder %s claim to expire before takeover", async (kind) => {
+	it.each(["task", "task_result"] as const)("waits for an old holder %s claim to expire before takeover", async (kind) => {
 		const test = setup();
 		const { main, fable, mainParticipant, fableParticipant } = await acquirePair(test);
 		const successor = await register(test, "successor");
 		const task = kind === "task_result" ? test.participants.sendTask(main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "task_for_result_claim", "Return a result.") : undefined;
-		const event = kind === "message"
-			? test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "send_claimed", "Claim me.")
-			: kind === "task"
+		const event = kind === "task"
 				? test.participants.sendTask(main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "task_claimed", "Claim this task.")
 				: test.participants.resultTask(fable, fableParticipant.participantKey, fableParticipant.generation, task!.eventId, "result_claimed", "completed", "Claim this result.", "committed");
 		const holder = kind === "task_result" ? main : fable;

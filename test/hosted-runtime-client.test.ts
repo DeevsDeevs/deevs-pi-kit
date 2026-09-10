@@ -76,7 +76,7 @@ describe("hosted runtime client vertical", () => {
 		expect(await client.call("monitor.create", { ...auth, directory: watchRoot, settleMs: 250 })).toMatchObject({ monitorId: "mon_client", status: "watching" });
 		expect(await client.call("monitor.get", auth)).toMatchObject({ monitor: { monitorId: "mon_client" } });
 		await client.call("mailbox.send", { ...auth, senderParticipantKey: sender.participant.participantKey, expectedSenderGeneration: sender.participant.generation, recipientParticipantKey: recipient.participant.participantKey, sendId: "send_client", body: "Focused mail" });
-		expect(await client.call("pi.heartbeat", fableAuth)).toMatchObject({ paneId: "w1:p2", inboxReady: true });
+		expect(await client.call("pi.heartbeat", fableAuth)).toMatchObject({ paneId: "w1:p2", inboxReady: false });
 		host.agent = { ...mainAgent, paneId: "w1:p9", focused: true, stateChangeSeq: 5 };
 		expect(await client.call("pi.heartbeat", auth)).toMatchObject({ paneId: "w1:p9", hostStateChangeSeq: 5, inboxReady: false });
 		await expect(client.call("monitor.get", { ...auth, registrationKey: "wrong" })).rejects.toMatchObject({ code: "registration_stale" });

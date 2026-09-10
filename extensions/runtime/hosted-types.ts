@@ -361,7 +361,7 @@ export interface HostedMessagingGrant {
 }
 
 export interface HostedRuntimeState {
-	version: 10;
+	version: 11;
 	messaging: Record<string, HostedMessagingGrant>;
 	targets: Record<string, HostedTarget>;
 	autoCapacityReservations: Record<string, HostedAutoCapacityReservation>;

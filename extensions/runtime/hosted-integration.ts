@@ -60,7 +60,6 @@ interface HostedReceiptDetails extends HostedReceipt {
 
 interface HostedClaimDetails extends HostedReceiptDetails {
 	wakeId?: string;
-	mailbox: Array<{ eventId: string; sendId: string; senderParticipantKey: string; recipientParticipantKey: string }>;
 	tasks: Array<{ eventId: string; sendId: string; senderParticipantKey: string; recipientParticipantKey: string }>;
 	taskResults: Array<{ eventId: string; inReplyToEventId: string; replyId: string; status: "completed" | "failed" | "cancelled"; sessionAdvance: "none" | "committed"; workspace?: HostedTaskWorkspaceEvidence }>;
 }
@@ -102,7 +101,6 @@ interface RecoveredBridgeLaunch {
 
 type HostedClaimEvent =
 	| { eventId: string; type: "filesystem.created"; summary: string; path: string }
-	| { eventId: string; type: "mailbox.message"; summary: string; body: string; sendId: string; senderParticipantKey: string; recipientParticipantKey: string }
 	| { eventId: string; type: "mailbox.task"; summary: string; body: string; sendId: string; senderParticipantKey: string; recipientParticipantKey: string }
 	| { eventId: string; type: "mailbox.task_result"; summary: string; body: string; sendId: string; replyId: string; inReplyToEventId: string; status: "completed" | "failed" | "cancelled"; sessionAdvance: "none" | "committed"; senderParticipantKey: string; recipientParticipantKey: string; workspace?: HostedTaskWorkspaceEvidence };
 
@@ -1468,35 +1466,13 @@ export class HostedRuntimeIntegration {
 						if (control.state === "pending") this.persistManagedAgentControl({ ...control, launchToken: undefined, state: "active" });
 					} else heartbeat = parseHeartbeat(await this.client.call("bridge.heartbeat", auth(registration)));
 					this.managedAgentRegistrations.set(targetKey, heartbeat.registration);
-					if (heartbeat.inboxReady) await this.submitManagedAgentInbox(control, heartbeat.registration);
+					// Native automatic input is blocked until the provider can attest editor ownership and exact-session admission.
 				} catch (error) {
 					this.managedAgentRegistrations.delete(targetKey);
 					if (error instanceof HostedRuntimeClientError && ["not_found", "conflict", "identity_mismatch"].includes(error.code)) this.persistManagedAgentControl({ ...control, launchToken: undefined, state: "needs_attention" });
 				}
 			}
 		} finally { this.managedAgentHeartbeatActive = false; }
-	}
-
-	private async submitManagedAgentInbox(control: ManagedAgentControl, registration: LiveClientRegistration): Promise<void> {
-		const inspected = await this.pi.exec("herdr", ["agent", "get", control.paneId], { timeout: 2_000 });
-		if (inspected.code !== 0) return;
-		const agent = parseManagedAgent(inspected.stdout);
-		if (!sameAgentSession(agent.agentSession, control.agentSession) || agent.paneId !== control.paneId || agent.terminalId !== control.terminalId) {
-			this.persistManagedAgentControl({ ...control, state: "needs_attention" });
-			return;
-		}
-		if (agent.focused || (agent.status !== "idle" && agent.status !== "done")) return;
-		const claim = parseClaim(await this.client.call("inbox.claim", { ...auth(registration), maxEvents: 1 }));
-		if (claim.status === "acked") return;
-		const attemptId = `submit_${randomUUID()}`;
-		await this.client.call("inbox.submit_begin", { ...auth(registration), claimId: claim.claimId, eventIds: claim.eventIds, attemptId });
-		let outcome: "submitted" | "pending" | "needs_attention" = "needs_attention";
-		try {
-			const submitted = await this.pi.exec("herdr", ["agent", "prompt", control.paneId, managedAgentContent(claim.events)], { timeout: 5_000 });
-			outcome = submitted.code === 0 ? "submitted" : herdrPromptProvedNotSubmitted(submitted.stdout, submitted.stderr) ? "pending" : "needs_attention";
-		} finally {
-			await this.client.call("inbox.submit_settle", { ...auth(registration), claimId: claim.claimId, eventIds: claim.eventIds, attemptId, outcome });
-		}
 	}
 
 	private async admitHeartbeatInbox(registration: LiveClientRegistration, ctx: ExtensionContext): Promise<void> {
@@ -1666,7 +1642,6 @@ export class HostedRuntimeIntegration {
 			version: 1,
 			claimId: claim.claimId,
 			eventIds: claim.eventIds,
-			mailbox: claim.events.filter((event) => event.type === "mailbox.message").map((event) => ({ eventId: event.eventId, sendId: event.sendId, senderParticipantKey: event.senderParticipantKey, recipientParticipantKey: event.recipientParticipantKey })),
 			tasks: claim.events.filter((event) => event.type === "mailbox.task").map((event) => ({ eventId: event.eventId, sendId: event.sendId, senderParticipantKey: event.senderParticipantKey, recipientParticipantKey: event.recipientParticipantKey })),
 			taskResults: claim.events.filter((event) => event.type === "mailbox.task_result").map((event) => ({ eventId: event.eventId, inReplyToEventId: event.inReplyToEventId, replyId: event.replyId, status: event.status, sessionAdvance: event.sessionAdvance, workspace: event.workspace })),
 		};
@@ -1738,7 +1713,7 @@ function parseClaim(value: RuntimeResponse): HostedClaimMessage {
 		const event = strictObject(value, "Runtime event");
 		const payload = strictObject(event.payload, "Runtime event payload");
 		if (event.type === "filesystem.created") return { eventId: text(event.eventId), type: "filesystem.created", summary: text(event.summary), path: text(payload.path) };
-		if (event.type === "mailbox.message" || event.type === "mailbox.task") return {
+		if (event.type === "mailbox.task") return {
 			eventId: text(event.eventId),
 			type: event.type,
 			summary: text(event.summary),
@@ -1795,10 +1770,6 @@ function parseManagedAgent(value: string): ManagedAgentStatus {
 	return { paneId: text(agent.pane_id), terminalId: text(agent.terminal_id), status: agent.agent_status, focused: booleanValue(agent.focused), agentSession: { source: text(session.source), agent: text(session.agent), kind: session.kind, value: text(session.value) } };
 }
 
-function sameAgentSession(left: ManagedAgentControl["agentSession"], right: ManagedAgentControl["agentSession"]): boolean {
-	return left.source === right.source && left.agent === right.agent && left.kind === right.kind && left.value === right.value;
-}
-
 function managedAgentName(protocol: string, participantId: string, bridgeId: string): string {
 	return `collab-${createHash("sha256").update(`${protocol}\0${participantId}\0${bridgeId}`).digest("hex").slice(0, 25)}`;
 }
@@ -1847,23 +1818,10 @@ function interactiveAgentArgs(candidate: ResolvedCollaboratorCandidate, launchCw
 	return ["--ask-for-approval", "never", "--sandbox", candidate.profile, "--disable", "hooks", "--config", trustedProject, ...(candidate.model ? ["--model", candidate.model] : []), ...(candidate.persona ? ["--config", `developer_instructions=${JSON.stringify(candidate.persona.prompt)}`] : [])];
 }
 
-function managedAgentContent(events: HostedClaimMessage["events"]): string {
-	return hostedContent(events).replace("Runtime admitted durable external events:", "Runtime submitted collaborator events:");
-}
-
-function herdrPromptProvedNotSubmitted(stdout: string, stderr: string): boolean {
-	for (const value of [stdout, stderr]) try {
-		const error = asRecord(asRecord(JSON.parse(value))?.error);
-		if (error?.code === "agent_not_found" || error?.code === "agent_not_ready" || error?.code === "invalid_argument") return true;
-	} catch {}
-	return false;
-}
-
 function hostedContent(events: HostedClaimMessage["events"]): string {
 	const lines = ["Runtime admitted durable external events:"];
 	for (const event of events) {
 		if (event.type === "filesystem.created") lines.push(`- ${event.type} ${event.eventId}: ${event.summary} (${event.path})`);
-		else if (event.type === "mailbox.message") lines.push(`\n[Collaborator message ${event.eventId}: ${event.summary}; sender key ${event.senderParticipantKey}; send ${event.sendId}]\n${event.body}\n[End collaborator message]`);
 		else if (event.type === "mailbox.task") lines.push(`\n[Bounded collaborator task ${event.eventId}: ${event.summary}; sender key ${event.senderParticipantKey}; send ${event.sendId}]\n${event.body}\n[End bounded task]\nSettle structurally with collaborator_task action=result and eventId=${event.eventId}.`);
 		else lines.push(`\n[Typed collaborator task result ${event.eventId}; in reply to ${event.inReplyToEventId}; status=${event.status}; replyId=${event.replyId}; sessionAdvance=${event.sessionAdvance}]\n${event.body}\n[End typed task result]`);
 	}
