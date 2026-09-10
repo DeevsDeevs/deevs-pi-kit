@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { HostedRuntimeClient } from "../extensions/runtime/client.ts";
+import { MessagingMcpClient } from "../extensions/runtime/mcp/client.ts";
 import { HOSTED_ACK_RETENTION_MS, type HostedMessagingReceipt } from "../extensions/runtime/hosted-types.ts";
 import type { HostedLiveAgent, RegisterPiInput } from "../extensions/runtime/service/registration.ts";
 import { startRuntimeServer, type RuntimeServerHandle } from "../extensions/runtime/service/server.ts";
@@ -81,6 +82,67 @@ async function mcp(path: string, calls: Call[]): Promise<Result[]> {
 		expect(stdout + stderr).not.toContain(secret);
 		return responses.slice(2).map(response => response.result) as Result[];
 	} finally { clearTimeout(timeout); if (child.exitCode === null) child.kill("SIGKILL"); }
+}
+
+async function piSession(test: Awaited<ReturnType<typeof setup>>, extraArgs: string[] = []) {
+	const env: NodeJS.ProcessEnv = { ...process.env, PI_CODING_AGENT_DIR: join(test.root, "pi-home") };
+	delete env.PI_PACKAGE_DIR;
+	const binary = process.env.PI_KIT_MCP_TEST_PI;
+	const child = spawn(binary ?? process.execPath, [...(binary ? [] : [resolve("node_modules/@earendil-works/pi-coding-agent/dist/cli.js")]), "--mode", "rpc", "--no-extensions", "--no-skills", "--no-context-files", "--no-prompt-templates", "--tools", "collaborator_peers,collaborator_send,collaborator_status", "-e", resolve("extensions/runtime/mcp/pi.ts"), "-e", resolve("test/fixtures/mcp-pi-provider.ts"), "--provider", "mcp-proof", "--model", "proof", "--session", test.inputs.get("sender")!.piSessionFile, "--runtime-mcp-descriptor", test.issued.descriptorPath, ...extraArgs], { cwd: test.inputs.get("sender")!.projectRoot, env, stdio: "pipe" });
+	const completed = once(child, "close");
+	const events = new EventEmitter();
+	events.on("error", () => {});
+	child.once("close", () => events.emit("error", new Error(`Pi exited: ${stderr}`)));
+	const frames: any[] = [];
+	let pending = "";
+	let stderr = "";
+	let bytes = 0;
+	child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+		bytes += Buffer.byteLength(chunk);
+		if (bytes > 8 * 1024 * 1024) { child.kill("SIGTERM"); return; }
+		pending += chunk;
+		let newline: number;
+		while ((newline = pending.indexOf("\n")) >= 0) {
+			const frame = JSON.parse(pending.slice(0, newline));
+			pending = pending.slice(newline + 1);
+			frames.push(frame);
+			events.emit(frame.type === "response" ? frame.id : frame.type, frame);
+		}
+	});
+	child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr = (stderr + chunk).slice(-16384); });
+	const timer = setTimeout(() => child.kill("SIGTERM"), 40_000);
+	const kill = setTimeout(() => child.kill("SIGKILL"), 45_000);
+	let id = 0;
+	const command = async (input: object) => {
+		const requestId = `rpc-${++id}`;
+		const response = once(events, requestId);
+		child.stdin.write(`${JSON.stringify({ ...input, id: requestId })}\n`);
+		const [result] = await response;
+		expect(result, stderr).toMatchObject({ success: true });
+		return result.data;
+	};
+	let closed = false;
+	const close = async () => {
+		if (closed) return;
+		closed = true;
+		child.stdin.end();
+		try {
+			const [code] = await completed;
+			expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+			expect(JSON.stringify(frames) + stderr).not.toContain(test.descriptor.secret);
+		} finally { clearTimeout(timer); clearTimeout(kill); }
+	};
+	cleanups.push(close);
+	await command({ type: "get_state" });
+	return { command, close, frames, async call(call: Call) {
+		const start = frames.length;
+		const settled = once(events, "agent_settled");
+		await command({ type: "prompt", message: JSON.stringify(call) });
+		await settled;
+		const result = frames.slice(start).find(frame => frame.type === "tool_execution_end");
+		expect(result, JSON.stringify(frames.slice(start))).toBeDefined();
+		return result;
+	} };
 }
 
 const send = (operationId: string, body = "Please inspect."): Call => ({ name: "collaborator_send", arguments: { participantId: "recipient", operationId, body } });
@@ -267,3 +329,90 @@ it("persists terminal expiry across clock rollback and restart without republish
 	expect(test.readState().messaging[test.issued.namespaceId]?.status).toBe("expired");
 	expect(Object.keys(test.readState().events)).toHaveLength(1);
 });
+
+it("negotiates actual MCP before descriptor issuance, transports escaped results, and settles cancellation", async () => {
+	const test = await setup();
+	const future = `${test.issued.descriptorPath}.future`;
+	const client = new MessagingMcpClient(future);
+	cleanups.push(() => client.close());
+	await client.initialize();
+	expect((await client.callTool("collaborator_peers", {})).isError).toBe(true);
+	writeFileSync(future, readFileSync(test.issued.descriptorPath), { mode: 0o600 });
+	const args: Record<string, string> = { ...send("client-escaped", "\u0000".repeat(16384)).arguments, namespaceId: test.issued.namespaceId };
+	expect((await client.callTool("collaborator_send", args)).isError).toBe(false);
+	const result = await client.callTool("collaborator_status", { namespaceId: test.issued.namespaceId, operationId: args.operationId });
+	expect(JSON.parse(result.content[0]!.text)).toEqual(result.structuredContent);
+	expect((result.structuredContent as Result["structuredContent"]).event?.payload.body).toBe(args.body);
+	const entered = new EventEmitter();
+	let release!: () => void;
+	const blocked = new Promise<void>(resolve => { release = resolve; });
+	test.setVerificationHook(async () => { entered.emit("entered"); await blocked; });
+	const waiting = once(entered, "entered");
+	const abort = new AbortController();
+	const cancelledArgs = { ...args, operationId: "cancelled-send" };
+	const pending = client.callTool("collaborator_send", cancelledArgs, abort.signal);
+	const rejected = expect(pending).rejects.toThrow("MCP transport stopped");
+	await waiting;
+	abort.abort();
+	try { await rejected; await client.close(); expect(client.closed).toBe(true); }
+	finally { release(); }
+	test.setVerificationHook(async () => {});
+	const replacement = new MessagingMcpClient(future);
+	cleanups.push(() => replacement.close());
+	await replacement.initialize();
+	const committed = await replacement.callTool("collaborator_status", { namespaceId: test.issued.namespaceId, operationId: cancelledArgs.operationId });
+	expect(committed.isError).toBe(false);
+	const recovered = await replacement.callTool("collaborator_send", cancelledArgs);
+	expect(recovered.structuredContent?.publication).toEqual(committed.structuredContent?.publication);
+	expect(Object.keys(test.readState().events)).toHaveLength(2);
+});
+
+it("runs real Pi tool calls over MCP, preserves errors and full results, and recovers after Pi restart", async () => {
+	const test = await setup();
+	const pi = await piSession(test);
+	const peers = await pi.call({ name: "collaborator_peers", arguments: {} });
+	expect(peers.isError).toBe(false);
+	expect(peers.result.details.binding).toEqual({ kind: "pi", sessionId: "sender", sessionFile: test.inputs.get("sender")!.piSessionFile, cwd: test.inputs.get("sender")!.projectRoot });
+	const args: Record<string, string> = { ...send("pi-wire", "\u0000".repeat(16384)).arguments, namespaceId: test.issued.namespaceId };
+	const sent = await pi.call({ name: "collaborator_send", arguments: args });
+	expect(sent.isError).toBe(false);
+	const seen = await pi.call({ name: "collaborator_status", arguments: { namespaceId: test.issued.namespaceId, operationId: args.operationId } });
+	expect(seen.isError).toBe(false);
+	expect(seen.result.details.event.payload.body).toBe(args.body);
+	const conflict = await pi.call({ name: "collaborator_send", arguments: { ...args, body: "changed" } });
+	expect(conflict.isError).toBe(true);
+	expect(JSON.parse(conflict.result.content[0].text).code).toBe("conflict");
+	const end = pi.frames.filter(frame => frame.type === "message_end" && frame.message.role === "assistant").at(-1);
+	expect(JSON.parse(end.message.content[0].text)).toEqual({ tools: ["collaborator_peers", "collaborator_send", "collaborator_status"], sharedSkill: true });
+	await pi.close();
+	const transcript = readFileSync(test.inputs.get("sender")!.piSessionFile, "utf8");
+	expect(transcript).not.toContain(test.descriptor.secret);
+	const persisted = transcript.trim().split("\n").map(line => JSON.parse(line)).filter(entry => entry.message?.role === "toolResult");
+	expect(persisted.map(entry => entry.message.isError)).toEqual([false, false, false, true]);
+	expect(persisted[2].message.details.event.payload.body).toBe(args.body);
+	const restarted = await piSession(test);
+	const retry = await restarted.call({ name: "collaborator_send", arguments: args });
+	expect(retry.isError).toBe(false);
+	expect(retry.result.details.publication).toEqual(sent.result.details.publication);
+	expect(Object.keys(test.readState().events)).toEqual([sent.result.details.publication.eventId]);
+}, 30_000);
+
+it("blocks a new Pi session using an old descriptor and respects an explicit tool allowlist", async () => {
+	const test = await setup();
+	const pi = await piSession(test);
+	await pi.command({ type: "new_session" });
+	const denied = await pi.call({ name: "collaborator_send", arguments: { ...send("wrong-session").arguments, namespaceId: test.issued.namespaceId } });
+	expect(denied.isError).toBe(true);
+	expect(denied.result.content[0].text).toContain("does not belong to this exact Pi session");
+	expect(Object.keys(test.readState().events)).toHaveLength(0);
+	await pi.close();
+	const limited = await piSession(test, ["--tools", "collaborator_peers"]);
+	const absent = await limited.call({ name: "collaborator_send", arguments: { ...send("disallowed").arguments, namespaceId: test.issued.namespaceId } });
+	expect(absent.isError).toBe(true);
+	expect(absent.result.content[0].text).toContain("not found");
+	await limited.command({ type: "prompt", message: "/proof-enable-legacy" });
+	const collision = await limited.call({ name: "collaborator_peers", arguments: {} });
+	expect(collision.isError).toBe(true);
+	expect(collision.result.content[0].text).toContain("without the legacy Runtime extension");
+	expect(Object.keys(test.readState().events)).toHaveLength(0);
+}, 30_000);

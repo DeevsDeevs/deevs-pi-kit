@@ -1,0 +1,8 @@
+const text = (maxLength = 200) => ({ type: "string", minLength: 1, maxLength });
+export const tools = [
+	{ name: "collaborator_peers", description: "List up to 12 peers in your exact project/protocol, your identity and retry namespace. Follow nextCursor for more.", properties: { cursor: text(512) }, required: [], readOnlyHint: true },
+	{ name: "collaborator_send", description: "Durably publish explicit mail to an existing peer. Reuse the same operationId and input after uncertainty; never automatically retry under a new namespace. This receipt is not delivery or admission.", properties: { namespaceId: text(), participantId: text(64), operationId: text(), body: text(16384) }, required: ["namespaceId", "participantId", "operationId", "body"], readOnlyHint: false },
+	{ name: "collaborator_status", description: "Look up an operation in your current namespace. Publication and the retained event's native delivery evidence are distinct. A null event means pruned history, not failed publication.", properties: { namespaceId: text(), operationId: text() }, required: ["namespaceId", "operationId"], readOnlyHint: true },
+];
+
+export const toolDefinitions = tools.map(({ properties, required, readOnlyHint, ...tool }) => ({ ...tool, inputSchema: { type: "object", properties, required, additionalProperties: false }, annotations: { readOnlyHint, destructiveHint: false, idempotentHint: true, openWorldHint: false } }));

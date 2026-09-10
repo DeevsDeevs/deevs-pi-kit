@@ -81,7 +81,9 @@ export class RuntimeMessaging {
 				}
 				const page = peers.slice(offset, offset + 12).map((p) => ({ participantId: p.participantId, state: p.state, holderLive: p.state === "held" && this.registrations.hasLiveTarget(p.holderTargetKey!) }));
 				const last = peers[offset + page.length - 1];
-				return { caller: sender.participantId, protocol: sender.protocol, namespaceId, expiresAt: grant.expiresAt, peers: page, nextCursor: offset + page.length < peers.length && last ? Buffer.from(`${namespaceId}:${last.participantKey}`).toString("base64url") : null };
+				const target = this.store.read().targets[grant.targetKey]!;
+				const binding = target.kind === "pi" ? { kind: target.kind, sessionId: target.piSessionId, sessionFile: target.piSessionFile, cwd: target.workspaceRoot ?? target.projectRoot } : { kind: target.kind };
+				return { caller: sender.participantId, protocol: sender.protocol, namespaceId, binding, expiresAt: grant.expiresAt, peers: page, nextCursor: offset + page.length < peers.length && last ? Buffer.from(`${namespaceId}:${last.participantKey}`).toString("base64url") : null };
 			}
 			if (input.method === "send") {
 				const recipientParticipantKey = deriveParticipantKey(sender.projectRoot, sender.protocol, input.participantId);

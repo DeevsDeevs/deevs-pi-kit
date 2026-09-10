@@ -163,7 +163,9 @@ validation-review missions       collaborators   collaborator-messaging
 
 ## Development
 
-Universal messaging is staged, not released: the [MCP compatibility probe](extensions/runtime/MCP-STAGE0.md) passed for its recorded restricted provider configurations. The opt-in [Stage 1 foundation](extensions/runtime/MCP-PLAN.md) adds a real MCP peers/send/status endpoint, restricted Runtime credentials, durable retry receipts, and a [shared messaging skill](skills/collaborator-messaging/SKILL.md). Production delivery and existing Pi tools are unchanged; the actual Pi MCP client and receive/reply remain future gates.
+The experimental Pi MCP adapter can be explicitly loaded with `-e /path/to/deevs-pi-kit/extensions/runtime/mcp/pi.ts --runtime-mcp-descriptor /absolute/private/descriptor.json`. Use an isolated, normally registered Pi target without the legacy Runtime extension (`--no-extensions` plus explicit extension paths). It owns a real stdio MCP child, supplies the shared messaging skill, and checks the descriptor's exact Pi session/file/cwd binding before forwarding calls. It does not register targets, renew leases, receive mail, or replace production delivery. See the [adapter evidence and limits](extensions/runtime/MCP-PLAN.md#pi-mcp-adapter).
+
+Universal messaging is staged, not released: the [MCP compatibility probe](extensions/runtime/MCP-STAGE0.md) passed for its recorded restricted provider configurations. The opt-in [Stage 1 foundation](extensions/runtime/MCP-PLAN.md) adds a real MCP peers/send/status endpoint, restricted Runtime credentials, durable retry receipts, and a [shared messaging skill](skills/collaborator-messaging/SKILL.md). Production delivery and existing Pi tools are unchanged; receive/reply and durable Pi receive admission remain future gates.
 
 ```bash
 npm install

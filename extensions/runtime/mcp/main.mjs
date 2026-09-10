@@ -3,15 +3,10 @@ import { once } from "node:events";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { HostedRuntimeClient } from "../client.ts";
+import { tools, toolDefinitions } from "./tools.ts";
 
 const MAX_FRAME = 256 * 1024;
 const object = value => value !== null && typeof value === "object" && !Array.isArray(value);
-const text = (maxLength = 200) => ({ type: "string", minLength: 1, maxLength });
-const tools = [
-	{ name: "collaborator_peers", description: "List up to 12 peers in your exact project/protocol, your identity and retry namespace. Follow nextCursor for more.", properties: { cursor: text(512) }, required: [], readOnlyHint: true },
-	{ name: "collaborator_send", description: "Durably publish explicit mail to an existing peer. Reuse the same operationId and input after uncertainty; never automatically retry under a new namespace. This receipt is not delivery or admission.", properties: { namespaceId: text(), participantId: text(64), operationId: text(), body: text(16384) }, required: ["namespaceId", "participantId", "operationId", "body"], readOnlyHint: false },
-	{ name: "collaborator_status", description: "Look up an operation in your current namespace. Publication and the retained event's native delivery evidence are distinct. A null event means pruned history, not failed publication.", properties: { namespaceId: text(), operationId: text() }, required: ["namespaceId", "operationId"], readOnlyHint: true },
-];
 let phase = "new";
 let windowStart = Date.now();
 let requests = 0;
@@ -55,7 +50,7 @@ async function serve(path) {
 		if (phase !== "ready") return error(-32600, "Initialize first");
 		if (request.method === "tools/list") {
 			if (Object.keys(params).some(key => key !== "_meta")) return error(-32602, "Unexpected list params");
-			return result({ tools: tools.map(({ properties, required, readOnlyHint, ...tool }) => ({ ...tool, inputSchema: { type: "object", properties, required, additionalProperties: false }, annotations: { readOnlyHint, destructiveHint: false, idempotentHint: true, openWorldHint: false } })) });
+			return result({ tools: toolDefinitions });
 		}
 		if (request.method !== "tools/call") return error(-32601, "Method not found");
 		const tool = tools.find(tool => tool.name === params.name);
