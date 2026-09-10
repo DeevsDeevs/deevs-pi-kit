@@ -24,6 +24,7 @@ describe("hosted Pi wake admission", () => {
 		writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: "session_1", timestamp: "2026-01-01T00:00:00.000Z", cwd: projectRoot })}\n`);
 		const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
 		let inboxClaims = 0;
+		let ordinaryClaims = false;
 		const server = createServer((socket) => {
 			let buffered = "";
 			socket.setEncoding("utf8");
@@ -45,10 +46,10 @@ describe("hosted Pi wake admission", () => {
 						status: "active",
 						events: wakeId === "wake_mail"
 							? [
-								{ version: 1, eventId: "evt_mail", type: "mailbox.message", summary: "message from fable", payload: { body: "Please inspect the race.", sendId: "send_mail", senderParticipantKey: "participant_fable", recipientParticipantKey: "participant_main" } },
 								{ version: 1, eventId: "evt_task", type: "mailbox.task", summary: "bounded task from fable", payload: { body: "Return a typed result.", sendId: "send_task", senderParticipantKey: "participant_fable", recipientParticipantKey: "participant_main" } },
 								{ version: 1, eventId: "evt_result", type: "mailbox.task_result", summary: "completed task result", payload: { body: "Done.", sendId: "reply_task", replyId: "reply_task", inReplyToEventId: "evt_prior_task", status: "completed", sessionAdvance: "committed", senderParticipantKey: "participant_fable", recipientParticipantKey: "participant_main" } },
 							]
+							: wakeId === "wake_ordinary" ? [{ eventId: "evt_ordinary", type: "mailbox.message", summary: "ordinary mail", payload: { body: "Must not be injected." } }]
 							: [{ version: 1, eventId: `evt_${wakeId}`, type: "filesystem.created", summary: `new file: ${wakeId}.md`, payload: { path: join(projectRoot, `${wakeId}.md`) } }],
 					};
 				}
@@ -59,7 +60,7 @@ describe("hosted Pi wake admission", () => {
 						claimId: heartbeat ? "claim_heartbeat" : "claim_focused",
 						leaseUntil: 99_999,
 						status: "active",
-						events: [{ version: 1, eventId: heartbeat ? "evt_heartbeat" : "evt_focused", type: "mailbox.message", summary: "message from reviewer", payload: { body: heartbeat ? "Automatic focused reply." : "Focused-safe reply.", sendId: heartbeat ? "send_heartbeat" : "send_focused", senderParticipantKey: "participant_reviewer", recipientParticipantKey: "participant_main" } }],
+						events: [{ version: 1, eventId: heartbeat ? "evt_heartbeat" : "evt_focused", type: ordinaryClaims ? "mailbox.message" : "mailbox.task", summary: "message from reviewer", payload: { body: heartbeat ? "Automatic focused reply." : "Focused-safe reply.", sendId: heartbeat ? "send_heartbeat" : "send_focused", senderParticipantKey: "participant_reviewer", recipientParticipantKey: "participant_main" } }],
 					};
 				}
 				socket.end(`${JSON.stringify({ v: 1, id: request.id, ok: true, result })}\n`);
@@ -113,7 +114,6 @@ describe("hosted Pi wake admission", () => {
 			customType: HOSTED_RUNTIME_MESSAGE,
 			content: expect.stringContaining("Settle structurally with collaborator_task action=result and eventId=evt_task."),
 			details: {
-				mailbox: [{ eventId: "evt_mail", sendId: "send_mail", senderParticipantKey: "participant_fable", recipientParticipantKey: "participant_main" }],
 				tasks: [{ eventId: "evt_task", sendId: "send_task", senderParticipantKey: "participant_fable", recipientParticipantKey: "participant_main" }],
 				taskResults: [{ eventId: "evt_result", inReplyToEventId: "evt_prior_task", replyId: "reply_task", status: "completed", sessionAdvance: "committed" }],
 			},
@@ -126,6 +126,13 @@ describe("hosted Pi wake admission", () => {
 		await (integration as unknown as { heartbeat(): Promise<void> }).heartbeat();
 		expect(messages[2]).toMatchObject({ customType: HOSTED_RUNTIME_MESSAGE, content: expect.stringContaining("Automatic focused reply."), details: { claimId: "claim_heartbeat", eventIds: ["evt_heartbeat"] } });
 		expect(messageOptions[2]).toEqual({ triggerTurn: true, deliverAs: "followUp" });
+
+		await integration.acceptWake("1 reg_1 wake_ordinary", ctx as never);
+		ordinaryClaims = true;
+		expect(await integration.beforeAgentStart("SYSTEM", ctx as never)).toBeUndefined();
+		await (integration as unknown as { heartbeat(): Promise<void> }).heartbeat();
+		expect(messages).toHaveLength(3);
+		expect(JSON.stringify(messages)).not.toContain("Must not be injected.");
 
 		sendFails = true;
 		await integration.acceptWake("1 reg_1 wake_2", ctx as never);

@@ -94,7 +94,7 @@ describe("hosted Runtime collaborator state", () => {
 		} finally { rmSync(root, { recursive: true, force: true }); }
 	});
 
-	it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 11])("rejects unsupported state version %i without rewriting it", (version) => {
+	it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12])("rejects unsupported state version %i without rewriting it", (version) => {
 		const unknownVersion = { ...emptyHostedRuntimeState(), version };
 		expect(() => validateHostedRuntimeState(unknownVersion)).toThrow(HostedStateStorageError);
 		const root = mkdtempSync(join(tmpdir(), "hosted-state-unknown-version-"));
@@ -163,15 +163,16 @@ describe("hosted Runtime collaborator state", () => {
 		expect(state.participants[key]?.transitions.at(-1)?.generation).toBe(state.participants[key]?.generation);
 	});
 
-	it("routes participant-addressed mail only to the current holder", () => {
+	it("never routes ordinary mail into current or successor native inboxes", () => {
 		let state = send(pairedState(), "send_1", "event_1");
 		expect(pendingHostedEvents(state, "target_main")).toEqual([]);
-		expect(pendingHostedEvents(state, "target_fable").map((event) => event.eventId)).toEqual(["event_1"]);
+		expect(pendingHostedEvents(state, "target_fable")).toEqual([]);
 		const key = participantKey("fable");
 		state = reduceHostedState(state, { type: "participant.stand_down", participantKey: key, targetKey: "target_fable", generation: "vacant_1", at: 11 });
 		expect(pendingHostedEvents(state, "target_fable")).toEqual([]);
 		state = acquire(state, "fable", "target_successor", "lease_successor", 12);
-		expect(pendingHostedEvents(state, "target_successor").map((event) => event.eventId)).toEqual(["event_1"]);
+		expect(pendingHostedEvents(state, "target_successor")).toEqual([]);
+		expect(() => reduceHostedState(state, { type: "inbox.claim", claim: activeClaim("event_1", "target_successor") })).toThrow("Ordinary mail");
 	});
 
 	it("deduplicates exact sends, rejects changed retries, and advances per-pair sequence", () => {
@@ -181,7 +182,7 @@ describe("hosted Runtime collaborator state", () => {
 		expect(() => send(state, "send_1", "event_changed", "Changed body")).toThrow(HostedStateConflictError);
 		expect(() => send(state, "send_stale", "event_stale", "Stale sender", "lease_stale")).toThrow(HostedStateConflictError);
 		state = send(state, "send_2", "event_2", "Second body");
-		const events = pendingHostedEvents(state, "target_fable");
+		const events = Object.values(state.events);
 		expect(events.map((event) => [event.eventId, event.source.sequence])).toEqual([["event_1", 1], ["event_2", 2]]);
 		expect(state.participants[participantKey("main")]?.outSeq[participantKey("fable")]).toBe(2);
 	});
@@ -198,8 +199,8 @@ describe("hosted Runtime collaborator state", () => {
 		expect(() => send(pairedState(), "send_large", "event_large", "x".repeat(HOSTED_MAILBOX_MAX_BODY_BYTES + 1))).toThrow(HostedStateConflictError);
 	});
 
-	it("blocks takeover while recipient mail has an active claim", () => {
-		let state = send(pairedState(), "send_1", "event_1");
+	it("blocks takeover while a bounded task has an active claim", () => {
+		let state = reduceHostedState(pairedState(), { type: "task.send", senderParticipantKey: participantKey("main"), expectedSenderGeneration: "lease_main", senderTargetKey: "target_main", recipientParticipantKey: participantKey("fable"), sendId: "send_1", eventId: "event_1", body: "Bounded.", at: 10 });
 		const claim = activeClaim("event_1");
 		state = reduceHostedState(state, { type: "inbox.claim", claim });
 		expect(() => reduceHostedState(state, { type: "participant.takeover", participantKey: participantKey("fable"), targetKey: "target_successor", generation: "lease_takeover", at: 21 })).toThrow(HostedStateConflictError);
@@ -208,8 +209,8 @@ describe("hosted Runtime collaborator state", () => {
 		expect(pendingHostedEvents(state, "target_successor").map((event) => event.eventId)).toEqual(["event_1"]);
 	});
 
-	it("keeps participant sends schema-valid through claim, acknowledgement, and retention", () => {
-		let state = send(pairedState(), "send_1", "event_1");
+	it("keeps bounded tasks schema-valid through claim, acknowledgement, and retention", () => {
+		let state = reduceHostedState(pairedState(), { type: "task.send", senderParticipantKey: participantKey("main"), expectedSenderGeneration: "lease_main", senderTargetKey: "target_main", recipientParticipantKey: participantKey("fable"), sendId: "send_1", eventId: "event_1", body: "Bounded.", at: 10 });
 		const claim = activeClaim("event_1");
 		state = reduceHostedState(state, { type: "inbox.claim", claim });
 		state = reduceHostedState(state, { type: "inbox.ack", targetKey: claim.targetKey, claimId: claim.claimId, eventIds: claim.eventIds, at: 60 });
@@ -246,7 +247,7 @@ describe("hosted Runtime collaborator state", () => {
 		expect(reverse.events.event_result_reverse).toBeDefined();
 
 		let mixed = reduceHostedState(pairedState(), { type: "task.send", senderParticipantKey: participantKey("main"), expectedSenderGeneration: "lease_main", senderTargetKey: "target_main", recipientParticipantKey: participantKey("fable"), sendId: "task_mixed", eventId: "event_task_mixed", body: "Bounded.", at: 10 });
-		mixed = reduceHostedState(mixed, { type: "mailbox.send", senderParticipantKey: participantKey("main"), expectedSenderGeneration: "lease_main", senderTargetKey: "target_main", recipientParticipantKey: participantKey("fable"), sendId: "message_mixed", eventId: "event_message_mixed", body: "Free form.", at: 10 });
+		mixed = reduceHostedState(mixed, { type: "task.send", senderParticipantKey: participantKey("main"), expectedSenderGeneration: "lease_main", senderTargetKey: "target_main", recipientParticipantKey: participantKey("fable"), sendId: "other_task_mixed", eventId: "event_message_mixed", body: "Another bounded task.", at: 10 });
 		mixed = reduceHostedState(mixed, { type: "task.result", senderParticipantKey: participantKey("fable"), expectedSenderGeneration: "lease_fable", senderTargetKey: "target_fable", sendId: "reply_mixed", eventId: "event_result_mixed", inReplyToEventId: "event_task_mixed", status: "completed", body: "Done.", sessionAdvance: "committed", at: 11 });
 		const mixedClaim: HostedClaim = { claimId: "claim_mixed", targetKey: "target_fable", registrationId: "registration_fable", clientGeneration: "client_fable", eventIds: ["event_task_mixed", "event_message_mixed"], createdAt: 20, leaseUntil: 50, status: "active" };
 		mixed = reduceHostedState(mixed, { type: "inbox.claim", claim: mixedClaim });
@@ -255,6 +256,52 @@ describe("hosted Runtime collaborator state", () => {
 		expect(mixed.events.event_task_mixed).toBeDefined();
 		expect(mixed.events.event_message_mixed).toBeDefined();
 		expect(validateHostedRuntimeState(mixed)).toEqual(mixed);
+	});
+
+	it.each([
+		{ status: "pending", latestClaimId: "claim_mail" },
+		{ status: "claimed", claimId: "claim_mail" },
+		{ status: "submitting", claimId: "claim_mail", attemptId: "attempt", startedAt: 20 },
+		{ status: "submitted", claimId: "claim_mail", attemptId: "attempt", submittedAt: 20 },
+		{ status: "needs_attention", claimId: "claim_mail", attemptId: "attempt", recordedAt: 20 },
+		{ status: "acked", claimId: "claim_mail", ackedAt: 20 },
+	])("rejects ordinary-mail native delivery evidence $status without rewriting the store", (delivery) => {
+		const state = send(pairedState(), "send_1", "event_1");
+		const forged = { ...state, claims: { claim_mail: activeClaim("event_1") }, events: { event_1: { ...state.events.event_1, delivery } } };
+		expect(() => validateHostedRuntimeState(forged)).toThrow("ordinary mail cannot carry native delivery evidence");
+		const root = mkdtempSync(join(tmpdir(), "hosted-state-native-mail-"));
+		try {
+			const bytes = `${JSON.stringify(forged)}\n`;
+			writeFileSync(runtimeStatePaths(root).state, bytes);
+			expect(() => readHostedRuntimeState(root)).toThrow(HostedStateStorageError);
+			expect(readFileSync(runtimeStatePaths(root).state, "utf8")).toBe(bytes);
+		} finally { rmSync(root, { recursive: true, force: true }); }
+	});
+
+	it("prunes unbound ordinary mail only after its age boundary without native ACK or dangling dedupe", () => {
+		const state = send(pairedState(), "unbound", "event_unbound");
+		expect(reduceHostedState(state, { type: "retention.prune", before: 10 })).toBe(state);
+		const pruned = reduceHostedState(state, { type: "retention.prune", before: 11 });
+		expect(pruned.events).toEqual({});
+		expect(pruned.claims).toEqual({});
+		expect(pruned.dedupe).toEqual({});
+		const root = mkdtempSync(join(tmpdir(), "hosted-state-unbound-retention-"));
+		try {
+			writeHostedRuntimeState(root, pruned);
+			expect(readHostedRuntimeState(root)).toEqual(pruned);
+		} finally { rmSync(root, { recursive: true, force: true }); }
+	});
+
+	it("rejects ordinary-mail claim and wake replay and cannot reconcile or ACK a forged native claim", () => {
+		const state = send(pairedState(), "send_1", "event_1");
+		const claim = activeClaim("event_1");
+		expect(() => reduceHostedState(state, { type: "inbox.claim", claim })).toThrow("Ordinary mail");
+		const forged = structuredClone(state);
+		forged.claims[claim.claimId] = claim;
+		forged.events.event_1!.delivery = { status: "claimed", claimId: claim.claimId };
+		expect(() => reduceHostedState(forged, { type: "wake.accept", wakeId: "wake_forged", claim })).toThrow("Ordinary mail");
+		for (const type of ["inbox.ack", "inbox.reconcile"] as const) expect(reduceHostedState(forged, { type, targetKey: claim.targetKey, claimId: claim.claimId, eventIds: claim.eventIds, at: 30 })).toBe(forged);
+		expect(() => reduceHostedState(forged, { type: "inbox.release", targetKey: claim.targetKey, claimId: claim.claimId, eventIds: claim.eventIds, at: 30 })).toThrow("Ordinary mail");
 	});
 
 	it("rejects corrupted participant and mailbox references during validation", () => {

@@ -194,7 +194,7 @@ function claimIdForWake(wakeId: string): string {
 
 function claimEvents(events: Record<string, HostedEvent>, claim: HostedClaim): HostedEvent[] {
 	const result = claim.eventIds.map((eventId) => events[eventId]);
-	if (!result.every((event): event is HostedEvent => event !== undefined)) throw new HostedInboxError("claim_conflict", "Claim event is missing from durable state.");
+	if (!result.every((event): event is HostedEvent => event !== undefined && event.type !== "mailbox.message")) throw new HostedInboxError("claim_conflict", "Native claim event is missing or belongs to ordinary MCP mail.");
 	return result;
 }
 

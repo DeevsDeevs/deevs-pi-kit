@@ -572,7 +572,7 @@ describe("hosted collaborator Pi integration", () => {
 		await test.integration.sessionShutdown();
 	});
 
-	it.each([false, true])("submits managed mail only while idle and unfocused (heartbeat during launch: %s)", async (heartbeatDuringLaunch) => {
+	it.each([false, true])("keeps automatic native input blocked even idle and unfocused (heartbeat during launch: %s)", async (heartbeatDuringLaunch) => {
 		let launched = false;
 		let focused = true;
 		const managedRegistration = { ...registration, targetKey: "target_native", registrationId: "reg_native", registrationKey: "key_native" };
@@ -620,12 +620,8 @@ describe("hosted collaborator Pi integration", () => {
 		expect(test.requests.some((request) => request.method === "inbox.claim")).toBe(false);
 		focused = false;
 		await (test.integration as unknown as { heartbeat(): Promise<void> }).heartbeat();
-		const prompt = test.execCalls.find((call) => call.args[0] === "agent" && call.args[1] === "prompt")!;
-		expect(prompt.args.slice(0, 3)).toEqual(["agent", "prompt", "w1:p9"]);
-		expect(prompt.args).not.toContain("--wait");
-		expect(prompt.args[3]).toContain("Please review.");
-		expect(test.requests.find((request) => request.method === "inbox.submit_begin")?.params).toMatchObject({ claimId: "claim_native", eventIds: ["event_native"] });
-		expect(test.requests.find((request) => request.method === "inbox.submit_settle")?.params).toMatchObject({ outcome: "submitted" });
+		expect(test.execCalls.some((call) => call.args[0] === "agent" && (call.args[1] === "prompt" || call.args[1] === "send-keys"))).toBe(false);
+		expect(test.requests.some((request) => ["inbox.claim", "inbox.submit_begin", "inbox.submit_settle"].includes(request.method))).toBe(false);
 		await test.integration.sessionShutdown();
 		expect(test.requests.filter((request) => request.method === "bridge.register")).toHaveLength(1);
 	});
