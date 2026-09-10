@@ -326,6 +326,14 @@ export interface HostedAutoCapacityReservation {
 	createdAt: number;
 }
 
+export interface HostedMessagingReference {
+	eventId: string;
+	attemptId: string;
+	registrationId: string;
+	clientGeneration: string;
+	offeredAt: number;
+}
+
 export interface HostedMessagingOffer {
 	eventId: string;
 	receiptToken: string;
@@ -358,10 +366,11 @@ export interface HostedMessagingGrant {
 	status: "active" | "revoked" | "expired";
 	receipts: Record<string, HostedMessagingReceipt>;
 	offers: Record<string, HostedMessagingOffer>;
+	references: Record<string, HostedMessagingReference>;
 }
 
 export interface HostedRuntimeState {
-	version: 11;
+	version: 12;
 	messaging: Record<string, HostedMessagingGrant>;
 	targets: Record<string, HostedTarget>;
 	autoCapacityReservations: Record<string, HostedAutoCapacityReservation>;
@@ -378,6 +387,7 @@ export interface HostedRuntimeState {
 
 export type HostedStateOperation =
 	| { type: "messaging.issue"; grant: HostedMessagingGrant }
+	| { type: "messaging.reference"; namespaceId: string; reference: HostedMessagingReference }
 	| { type: "messaging.close"; namespaceId: string; status: "revoked" | "expired" }
 	| { type: "messaging.invalidate_client"; targetKey: string; clientGeneration: string; terminalId: string }
 	| { type: "messaging.send"; namespaceId: string; operationId: string; recipientParticipantKey: string; body: string; eventId: string; at: number }

@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { loadBuiltinAgents } from "../extensions/subagents/agents.ts";
 import { HostedRuntimeClientError } from "../extensions/runtime/client.ts";
 import { CollaboratorAutoStore } from "../extensions/runtime/auto-mode.ts";
-import { HOSTED_AUTO_LIFECYCLE_ENTRY, HOSTED_BRIDGE_REQUEST_ENTRY, HOSTED_COLLABORATOR_PROFILE_ENTRY, HOSTED_COLLABORATOR_WORKSPACE_ENTRY, HOSTED_MANAGED_AGENT_CONTROL_ENTRY, HOSTED_MANAGED_COLLABORATOR_ENTRY, HOSTED_PARTICIPANT_ENTRY, HOSTED_WORKSPACE_REQUEST_ENTRY, HostedRuntimeIntegration, markClaudeWorkspaceTrusted } from "../extensions/runtime/hosted-integration.ts";
+import { HOSTED_AUTO_LIFECYCLE_ENTRY, HOSTED_BRIDGE_REQUEST_ENTRY, HOSTED_COLLABORATOR_PROFILE_ENTRY, HOSTED_COLLABORATOR_WORKSPACE_ENTRY, HOSTED_MANAGED_AGENT_CONTROL_ENTRY, HOSTED_MANAGED_COLLABORATOR_ENTRY, HOSTED_MESSAGING_REFERENCE, HOSTED_PARTICIPANT_ENTRY, HOSTED_WORKSPACE_REQUEST_ENTRY, HostedRuntimeIntegration, markClaudeWorkspaceTrusted } from "../extensions/runtime/hosted-integration.ts";
 import { deriveTargetKey } from "../extensions/runtime/service/registration.ts";
 
 const roots: string[] = [];
@@ -52,12 +52,11 @@ async function setup(respond: (request: Request) => unknown, branch: unknown[] =
 			if (newline < 0) return;
 			const request = JSON.parse(buffered.slice(0, newline)) as { id: string; method: string; params: Record<string, unknown> };
 			requests.push({ method: request.method, params: request.params });
-			try {
-				const result = respond(request);
+			void Promise.resolve().then(() => respond(request)).then(result => {
 				socket.end(`${JSON.stringify({ v: 1, id: request.id, ok: true, result })}\n`);
-			} catch (error) {
+			}, error => {
 				socket.end(`${JSON.stringify({ v: 1, id: request.id, ok: false, error: { code: error instanceof HostedRuntimeClientError ? error.code : "conflict", message: error instanceof Error ? error.message : String(error) } })}\n`);
-			}
+			});
 		});
 	});
 	servers.push(server);
@@ -67,12 +66,16 @@ async function setup(respond: (request: Request) => unknown, branch: unknown[] =
 	const statuses: Array<{ key: string; value: string | undefined }> = [];
 	const execCalls: Array<{ command: string; args: string[] }> = [];
 	let execHandler = async (command: string, args: string[]) => ({ code: 0, stdout: command === "herdr" && args[0] === "pane" ? JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }) : "{}", stderr: "", killed: false });
+	const sent: Array<{ message: unknown; options: unknown }> = [];
 	const pi = {
+		getActiveTools: () => ["collaborator_receive"],
+		sendMessage(message: unknown, options: unknown) { sent.push({ message, options }); },
 		appendEntry(customType: string, data: unknown) { entries.push({ customType, data }); },
 		exec: async (command: string, args: string[]) => { execCalls.push({ command, args }); return execHandler(command, args); },
 	};
 	const ctx = {
 		cwd: projectRoot,
+		mode: "tui",
 		hasUI: true,
 		isProjectTrusted: () => true,
 		isIdle: () => true,
@@ -85,7 +88,7 @@ async function setup(respond: (request: Request) => unknown, branch: unknown[] =
 		sessionManager: { getSessionFile: () => sessionFile, getSessionId: () => "session_1", getBranch: () => branch },
 	};
 	const integration = new HostedRuntimeIntegration(pi as never, runtimeRoot, () => {});
-	return { root, runtimeRoot, projectRoot, requests, entries, notifications, statuses, execCalls, pi, ctx, integration, setExec(handler: typeof execHandler) { execHandler = handler; } };
+	return { root, runtimeRoot, projectRoot, requests, entries, notifications, statuses, execCalls, sent, pi, ctx, integration, setExec(handler: typeof execHandler) { execHandler = handler; } };
 }
 
 const registration = { targetKey: "target_main", registrationId: "reg_1", registrationKey: "key_1", leaseUntil: 99_999, hostStateChangeSeq: 1, paneId: "w1:p1" };
@@ -318,6 +321,121 @@ describe("hosted collaborator Pi integration", () => {
 		}, [identity]);
 		await test.integration.sessionStart(test.ctx as never);
 		expect(test.requests.some(request => request.method === "messaging.issue")).toBe(false);
+		await test.integration.sessionShutdown();
+	});
+
+	it.each(["pane", "registration"])("abandons stale startup before installing registration or participant metadata: %s", async boundary => {
+		const test = await setup(request => {
+			if (request.method === "pi.register" && boundary === "registration") test.integration.sessionCompact(test.ctx as never);
+			return baseResponse(request);
+		});
+		if (boundary === "pane") test.setExec(async () => {
+			test.integration.sessionCompact(test.ctx as never);
+			return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
+		});
+		await test.integration.sessionStart(test.ctx as never);
+		expect((test.integration as unknown as { registration?: unknown }).registration).toBeUndefined();
+		expect(test.entries).toEqual([]);
+		expect(test.requests.some(request => request.method === "participant.get" || request.method === "messaging.issue")).toBe(false);
+		if (boundary === "registration") expect(test.requests.filter(request => request.method === "pi.unregister")).toEqual([{ method: "pi.unregister", params: { registrationId: "reg_1", registrationKey: "key_1" } }]);
+		else expect(test.requests.some(request => request.method === "pi.register")).toBe(false);
+		await test.integration.sessionShutdown();
+	});
+
+	it.each(["tree", "compact", "shutdown"])("fences stale held-identity restoration after %s", async change => {
+		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
+		const test = await setup(async request => {
+			if (request.method === "participant.get") {
+				if (change === "tree") test.integration.sessionTree(test.ctx as never);
+				else if (change === "compact") test.integration.sessionCompact(test.ctx as never);
+				else await test.integration.sessionShutdown();
+				throw new HostedRuntimeClientError("not_found", "stale failure must not persist a vacant correction");
+			}
+			return baseResponse(request);
+		}, [identity]);
+		await test.integration.sessionStart(test.ctx as never);
+		expect(test.entries).toEqual([]);
+		expect(test.notifications).toEqual([]);
+		expect(test.requests.some(request => request.method === "messaging.issue" || request.method === "participant.acquire")).toBe(false);
+		await test.integration.sessionShutdown();
+	});
+
+	it.each(["ready", "tree", "compact", "shutdown", "editor", "busy", "pending", "session", "registration", "holder", "send_failure", "failure"])("offers a body-free, non-ACK Pi reference only in the original ready scope: %s", async change => {
+		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
+		const test = await setup(async request => {
+			if (request.method === "participant.get") return mainParticipant;
+			if (request.method === "participant.acquire") return { participant: mainParticipant, revived: false, transitioned: false };
+			if (request.method === "messaging.reference") {
+				if (change === "tree") test.integration.sessionTree(test.ctx as never);
+				if (change === "compact") test.integration.sessionCompact(test.ctx as never);
+				if (change === "shutdown") await test.integration.sessionShutdown();
+				if (change === "editor") Object.assign(test.ctx.ui, { getEditorText: () => "human draft" });
+				if (change === "busy") test.ctx.isIdle = () => false;
+				if (change === "pending") test.ctx.hasPendingMessages = () => true;
+				if (change === "session") test.ctx.sessionManager.getSessionId = () => "different";
+				if (change === "registration") (test.integration as unknown as { registration: unknown }).registration = { ...registration, registrationKey: "replacement" };
+				if (change === "holder") (test.integration as unknown as { participantIdentity: unknown }).participantIdentity = { ...identity.data, generation: "replacement" };
+				if (change === "send_failure") test.pi.sendMessage = () => { throw new Error("SDK submission failed"); };
+				if (change === "failure") throw new HostedRuntimeClientError("storage_error", "uncertain reference");
+				return { acquired: true, attemptId: request.params.attemptId, namespaceId: "msg_reference", eventId: "event_reference" };
+			}
+			return baseResponse(request);
+		}, [identity]);
+		Object.assign(test.ctx.ui, { getEditorText: () => "" });
+		await test.integration.sessionStart(test.ctx as never);
+		await (test.integration as unknown as { heartbeat(): Promise<void> }).heartbeat();
+		expect(test.requests.filter(request => request.method === "messaging.reference")).toHaveLength(1);
+		if (change === "ready") {
+			expect(test.sent).toEqual([{ message: { customType: HOSTED_MESSAGING_REFERENCE, content: expect.stringContaining('"eventId":"event_reference"'), display: false, details: { namespaceId: "msg_reference", eventId: "event_reference" } }, options: { triggerTurn: true, deliverAs: "followUp" } }]);
+			test.integration.acknowledgeMessage({ role: "custom", timestamp: 0, ...(test.sent[0]!.message as { customType: string; content: string; display: boolean }) });
+		} else expect(test.sent).toEqual([]);
+		expect(test.requests.some(request => request.method === "inbox.ack" || request.method.startsWith("inbox.submit"))).toBe(false);
+		if (change === "failure" || change === "send_failure") expect(await test.integration.messagingDescriptor(test.ctx as never)).toBe("/private/descriptor.json");
+		if (change === "registration") expect((test.integration as unknown as { registration: unknown }).registration).toMatchObject({ registrationKey: "replacement" });
+		await test.integration.sessionShutdown();
+	});
+
+	it.each(["editor", "busy", "pending", "headless", "unknown_editor", "disabled_receive", "rpc"])("does not acquire a reference with unsafe initial readiness: %s", async gate => {
+		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
+		const test = await setup(request => {
+			if (request.method === "participant.get") return mainParticipant;
+			if (request.method === "participant.acquire") return { participant: mainParticipant, revived: false, transitioned: false };
+			return baseResponse(request);
+		}, [identity]);
+		if (gate !== "unknown_editor") Object.assign(test.ctx.ui, { getEditorText: () => gate === "editor" ? " " : "" });
+		if (gate === "disabled_receive") test.pi.getActiveTools = () => [];
+		if (gate === "headless") test.ctx.hasUI = false;
+		if (gate === "rpc") test.ctx.mode = "rpc";
+		if (gate === "busy") test.ctx.isIdle = () => false;
+		if (gate === "pending") test.ctx.hasPendingMessages = () => true;
+		await test.integration.sessionStart(test.ctx as never);
+		await (test.integration as unknown as { heartbeat(): Promise<void> }).heartbeat();
+		expect(test.requests.some(request => request.method === "messaging.reference")).toBe(false);
+		expect(test.sent).toEqual([]);
+		await test.integration.sessionShutdown();
+	});
+
+	it("keeps heartbeat single-flight and cannot restore a registration after navigation and a late heartbeat failure", async () => {
+		let entered!: () => void;
+		let release!: () => void;
+		const started = new Promise<void>(resolve => { entered = resolve; });
+		const blocked = new Promise<void>(resolve => { release = resolve; });
+		const test = await setup(async request => {
+			if (request.method === "pi.heartbeat") { entered(); await blocked; throw new Error("late failure"); }
+			return baseResponse(request);
+		});
+		await test.integration.sessionStart(test.ctx as never);
+		const integration = test.integration as unknown as { heartbeat(): Promise<void>; registration?: unknown };
+		const original = integration.registration;
+		const pending = integration.heartbeat();
+		await started;
+		try {
+			await integration.heartbeat();
+			expect(test.requests.filter(request => request.method === "pi.heartbeat")).toHaveLength(1);
+			test.integration.sessionTree(test.ctx as never);
+		} finally { release(); }
+		await pending;
+		expect(integration.registration).toBe(original);
 		await test.integration.sessionShutdown();
 	});
 

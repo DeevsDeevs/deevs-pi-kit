@@ -35,6 +35,7 @@ import {
 	type HostedFilesystemCreatedEvent,
 	type HostedMailboxMessageEvent,
 	type HostedMessagingGrant,
+	type HostedMessagingReference,
 	type HostedMessagingOffer,
 	type HostedMessagingReceipt,
 	type HostedMailboxTaskEvent,
@@ -89,7 +90,7 @@ export class HostedStateConflictError extends Error {
 }
 
 export function emptyHostedRuntimeState(): HostedRuntimeState {
-	return { version: 11, messaging: {}, targets: {}, autoCapacityReservations: {}, bridgeLaunches: {}, workspaces: {}, integrations: {}, monitors: {}, participants: {}, events: {}, dedupe: {}, claims: {}, wakes: {} };
+	return { version: 12, messaging: {}, targets: {}, autoCapacityReservations: {}, bridgeLaunches: {}, workspaces: {}, integrations: {}, monitors: {}, participants: {}, events: {}, dedupe: {}, claims: {}, wakes: {} };
 }
 
 export class HostedStateStore {
@@ -128,7 +129,7 @@ export class HostedStateStore {
 export function reduceHostedState(state: HostedRuntimeState, operation: HostedStateOperation): HostedRuntimeState {
 	if (operation.type === "messaging.issue") {
 		const grant = validateMessagingGrant(operation.grant, operation.grant.namespaceId);
-		if (state.messaging[grant.namespaceId] || grant.status !== "active" || (Object.keys(grant.receipts).length || Object.keys(grant.offers).length)) throw new HostedStateConflictError("conflict", "Messaging namespace must be newly issued.");
+		if (state.messaging[grant.namespaceId] || grant.status !== "active" || (Object.keys(grant.receipts).length || Object.keys(grant.offers).length || Object.keys(grant.references).length)) throw new HostedStateConflictError("conflict", "Messaging namespace must be newly issued.");
 		assertMessagingHolder(state, grant, grant.createdAt);
 		return { ...state, messaging: { ...state.messaging, [grant.namespaceId]: grant } };
 	}
@@ -136,7 +137,7 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 		const grant = state.messaging[operation.namespaceId];
 		if (!grant || grant.status === "expired" || grant.status === "revoked" && operation.status === "revoked") return state;
 		// ponytail: terminal namespace IDs remain under the 10,000-record cap; prune tombstones if launch volume requires it.
-		return { ...state, messaging: { ...state.messaging, [grant.namespaceId]: { ...grant, status: operation.status, receipts: operation.status === "expired" ? {} : grant.receipts, offers: operation.status === "expired" ? {} : grant.offers } } };
+		return { ...state, messaging: { ...state.messaging, [grant.namespaceId]: { ...grant, status: operation.status, receipts: operation.status === "expired" ? {} : grant.receipts, offers: operation.status === "expired" ? {} : grant.offers, references: operation.status === "expired" ? {} : grant.references } } };
 	}
 	if (operation.type === "messaging.invalidate_client") {
 		let next = state;
@@ -144,6 +145,16 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 			if (grant.targetKey === operation.targetKey && (grant.clientGeneration !== operation.clientGeneration || grant.terminalId !== operation.terminalId)) next = reduceHostedState(next, { type: "messaging.close", namespaceId: grant.namespaceId, status: "revoked" });
 		}
 		return next;
+	}
+	if (operation.type === "messaging.reference") {
+		const reference = validateMessagingReference(operation.reference, operation.reference.eventId);
+		const grant = state.messaging[operation.namespaceId];
+		if (!grant || messagingReferenceNamespace(state, grant.targetKey, reference.clientGeneration, grant.terminalId, reference.offeredAt).namespaceId !== grant.namespaceId) throw new HostedStateConflictError("conflict", "Reference namespace is unavailable.");
+		if (Object.values(grant.references).some(existing => existing.attemptId === reference.attemptId)) return state;
+		const event = messagingReceivedEvent(state, grant, reference.eventId);
+		if (reference.offeredAt < event.createdAt) throw new HostedStateConflictError("conflict", "Reference predates publication.");
+		if (grant.references[event.eventId] || grant.offers[event.eventId]) return state;
+		return { ...state, messaging: { ...state.messaging, [grant.namespaceId]: { ...grant, references: { ...grant.references, [event.eventId]: reference } } } };
 	}
 	if (operation.type === "messaging.receive" || operation.type === "messaging.received") {
 		const grant = state.messaging[operation.namespaceId];
@@ -741,9 +752,9 @@ export function writeHostedRuntimeState(root: string, state: HostedRuntimeState)
 export function validateHostedRuntimeState<Source>(value: Source): HostedRuntimeState {
 	try {
 		const state = strictObject(value, "runtime state", ["version", "messaging", "targets", "autoCapacityReservations", "bridgeLaunches", "workspaces", "integrations", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
-		if (state.version !== 11) throw new Error("unsupported runtime state version");
+		if (state.version !== 12) throw new Error("unsupported runtime state version");
 		const result: HostedRuntimeState = {
-			version: 11,
+			version: 12,
 			messaging: mapValues(state.messaging, "messaging namespaces", validateMessagingGrant),
 			targets: mapValues(state.targets, "targets", validateTarget),
 			autoCapacityReservations: mapValues(state.autoCapacityReservations, "Auto capacity reservations", validateAutoCapacityReservation),
@@ -774,6 +785,17 @@ export function messagingReceivedEvent(state: HostedRuntimeState, grant: HostedM
 	return event;
 }
 
+export function messagingReferenceNamespace(state: HostedRuntimeState, targetKey: string, clientGeneration: string, terminalId: string, at: number): HostedMessagingGrant {
+	const target = state.targets[targetKey];
+	if (target?.kind !== "pi") throw new HostedStateConflictError("conflict", "Only a Pi self-registration can offer references.");
+	const eligible = Object.values(state.messaging).filter(grant => {
+		const holder = state.participants[grant.participantKey];
+		return grant.targetKey === targetKey && grant.status === "active" && holder?.state === "held" && holder.holderTargetKey === targetKey && holder.generation === grant.holderGeneration && grant.configurationHash === messagingConfigurationHash(target) && grant.createdAt <= at && at < grant.expiresAt;
+	});
+	if (eligible.length !== 1 || eligible[0]!.clientGeneration !== clientGeneration || eligible[0]!.terminalId !== terminalId) throw new HostedStateConflictError("conflict", "Pi reference namespace is absent, stale or ambiguous.");
+	return eligible[0]!;
+}
+
 function messagingReplyFingerprint(eventId: string, receiptToken: string, body: string): string {
 	return createHash("sha256").update(JSON.stringify(["reply", eventId, receiptToken, body])).digest("hex");
 }
@@ -789,7 +811,7 @@ export function messagingConfigurationHash(target: HostedTarget): string {
 }
 
 function validateMessagingGrant<Source>(value: Source, key: string): HostedMessagingGrant {
-	const item = strictObject(value, "messaging namespace", ["namespaceId", "secretDigest", "participantKey", "holderGeneration", "targetKey", "clientGeneration", "terminalId", "configurationHash", "createdAt", "expiresAt", "status", "receipts", "offers"]);
+	const item = strictObject(value, "messaging namespace", ["namespaceId", "secretDigest", "participantKey", "holderGeneration", "targetKey", "clientGeneration", "terminalId", "configurationHash", "createdAt", "expiresAt", "status", "receipts", "offers", "references"]);
 	const grant: HostedMessagingGrant = {
 		namespaceId: text(item.namespaceId, "messaging namespace", 200), secretDigest: hash(item.secretDigest, "messaging secret digest"),
 		participantKey: text(item.participantKey, "messaging participant", 200), holderGeneration: text(item.holderGeneration, "messaging holder", 200),
@@ -807,6 +829,7 @@ function validateMessagingGrant<Source>(value: Source, key: string): HostedMessa
 			if (result.operationId !== key || result.sequence < 1) throw new Error("messaging receipt identity is invalid");
 			return result;
 		}),
+		references: mapValues(item.references, "messaging references", validateMessagingReference),
 		offers: mapValues(item.offers, "messaging offers", (value, key) => {
 			const offer = strictObject(value, "messaging offer", ["eventId", "receiptToken", "offeredAt", "receivedAt"]);
 			const result: HostedMessagingOffer = { eventId: text(offer.eventId, "offered event", 200), receiptToken: text(offer.receiptToken, "retrieval token", 200), offeredAt: nonNegativeNumber(offer.offeredAt, "offer time") };
@@ -817,6 +840,13 @@ function validateMessagingGrant<Source>(value: Source, key: string): HostedMessa
 	};
 	if (grant.namespaceId !== key || !/^msg_[0-9a-f-]{36}$/.test(key) || grant.expiresAt !== grant.createdAt + HOSTED_ACK_RETENTION_MS) throw new Error("messaging namespace identity or lifetime is invalid");
 	return grant;
+}
+
+function validateMessagingReference<Source>(value: Source, key: string): HostedMessagingReference {
+	const item = strictObject(value, "messaging reference", ["eventId", "attemptId", "registrationId", "clientGeneration", "offeredAt"]);
+	const result = { eventId: text(item.eventId, "reference event", 200), attemptId: text(item.attemptId, "reference attempt", 200), registrationId: text(item.registrationId, "reference registration", 200), clientGeneration: text(item.clientGeneration, "reference client", 200), offeredAt: nonNegativeNumber(item.offeredAt, "reference time") };
+	if (result.eventId !== key) throw new Error("messaging reference identity is invalid");
+	return result;
 }
 
 function claimEvents(state: HostedRuntimeState, claim: HostedClaim): HostedRuntimeState {
@@ -855,7 +885,7 @@ function releaseClaim(state: HostedRuntimeState, targetKey: string, claimId: str
 
 function pruneAcknowledged(state: HostedRuntimeState, before: number): HostedRuntimeState {
 	for (const grant of Object.values(state.messaging)) if (grant.expiresAt <= before) state = reduceHostedState(state, { type: "messaging.close", namespaceId: grant.namespaceId, status: "expired" });
-	const protectedMail = new Set(Object.values(state.messaging).flatMap(grant => [...Object.keys(grant.offers), ...Object.values(grant.receipts).map(receipt => receipt.eventId)]));
+	const protectedMail = new Set(Object.values(state.messaging).flatMap(grant => [...Object.keys(grant.offers), ...Object.keys(grant.references), ...Object.values(grant.receipts).map(receipt => receipt.eventId)]));
 	const removable = new Set(Object.values(state.events)
 		.filter((event) => event.type === "mailbox.message"
 			? event.createdAt < before && !protectedMail.has(event.eventId) && (event.recipientBinding.kind === "unbound" || state.messaging[event.recipientBinding.namespaceId]?.status === "expired")
@@ -1450,13 +1480,20 @@ function validateReferences(state: HostedRuntimeState): void {
 			if (!recipient || recipient.projectRoot !== sender.projectRoot || recipient.protocol !== sender.protocol || receipt.createdAt < grant.createdAt || receipt.createdAt >= grant.expiresAt) throw new Error("messaging receipt scope or time is invalid");
 			if (event && (event.type !== "mailbox.message" || event.payload.senderParticipantKey !== grant.participantKey || (receipt.inReplyToEventId === undefined ? event.payload.fingerprint !== receipt.fingerprint : messagingReplyFingerprint(receipt.inReplyToEventId, receipt.replyToken!, event.payload.body) !== receipt.fingerprint) || event.inReplyToEventId !== receipt.inReplyToEventId || event.payload.sendId !== messagingSendId(grant.namespaceId, receipt.operationId) || event.source.sequence !== receipt.sequence || event.createdAt !== receipt.createdAt || event.source.generation !== grant.holderGeneration)) throw new Error("messaging receipt event is inconsistent");
 		}
+		const referenceAttempts = new Set<string>();
+		for (const reference of Object.values(grant.references)) {
+			messagingRecords++;
+			const event = messagingReceivedEvent(state, grant, reference.eventId);
+			if (target.kind !== "pi" || grant.status === "expired" || reference.clientGeneration !== grant.clientGeneration || reference.offeredAt < grant.createdAt || reference.offeredAt < event.createdAt || reference.offeredAt >= grant.expiresAt || referenceAttempts.has(reference.attemptId)) throw new Error("messaging reference authority, lifetime or attempt identity is invalid");
+			referenceAttempts.add(reference.attemptId);
+		}
 		for (const offer of Object.values(grant.offers)) {
 			messagingRecords++;
 			const event = messagingReceivedEvent(state, grant, offer.eventId);
 			if (offer.offeredAt < grant.createdAt || offer.offeredAt < event.createdAt || offer.offeredAt >= grant.expiresAt || offer.receivedAt !== undefined && offer.receivedAt >= grant.expiresAt) throw new Error("messaging offer lifetime is invalid");
 		}
 	}
-	if (messagingRecords > MAX_STATE_RECORDS) throw new Error("messaging authority, receipts and offers exceed capacity");
+	if (messagingRecords > MAX_STATE_RECORDS) throw new Error("messaging authority, receipts, offers and references exceed capacity");
 	for (const reservation of Object.values(state.autoCapacityReservations)) {
 		const target = state.targets[reservation.callerTargetKey];
 		if (target?.kind !== "pi" || target.projectRoot !== reservation.projectRoot) throw new Error("Auto capacity caller target is missing or invalid");

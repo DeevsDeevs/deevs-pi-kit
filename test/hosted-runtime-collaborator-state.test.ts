@@ -94,7 +94,7 @@ describe("hosted Runtime collaborator state", () => {
 		} finally { rmSync(root, { recursive: true, force: true }); }
 	});
 
-	it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12])("rejects unsupported state version %i without rewriting it", (version) => {
+	it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13])("rejects unsupported state version %i without rewriting it", (version) => {
 		const unknownVersion = { ...emptyHostedRuntimeState(), version };
 		expect(() => validateHostedRuntimeState(unknownVersion)).toThrow(HostedStateStorageError);
 		const root = mkdtempSync(join(tmpdir(), "hosted-state-unknown-version-"));
