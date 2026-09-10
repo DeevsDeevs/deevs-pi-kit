@@ -5,7 +5,7 @@ description: Start, message, inspect, and stop persistent Runtime collaborators;
 
 # Runtime Collaborators
 
-Collaborators are persistent interactive peers, not bounded jobs. Pi targets provide durable structured delivery; Claude Code and Codex initially provide managed interactive Herdr sessions whose replies remain in their tabs. Use a subagent when typed settlement is required.
+Collaborators are persistent interactive peers, not bounded jobs. Runtime owns identity and mail; Herdr owns interactive sessions. Ordinary messaging uses the [shared MCP skill](../collaborator-messaging/SKILL.md). Native startup configuration and reference-wake integration remain unreleased: never infer messaging readiness or durable admission from a provider name. Use a subagent for bounded work.
 
 ## Modes
 
@@ -21,7 +21,7 @@ Use `/runtime auto setup` once to move Pi thinking cycling to `Ctrl+Shift+T` and
 
 1. Use `collaborator_manage` only from explicit user lifecycle intent in MANUAL, or from the main Pi's own decision while the AUTO indicator is active.
 2. Select driver, persona, model, and execution profile independently. Driver omission uses Pi; `claude-code` and `codex` launch as genuine interactive Herdr agents.
-3. Send directly to an exact known participant with `collaborator_send`; do not list merely to validate a known recipient. Use `action=status` only at a dependency gate. Managed delivery is `submitted`, not durable admission, and replies stay in the agent tab.
+3. Use `collaborator_peers` to obtain your namespace, then the shared MCP send/receive/received/reply/status tools. Do not call `collaborator_list` merely to validate a known recipient. Preserve exact namespace/operation IDs after uncertainty; `collaborator_status` is a dependency-gate lookup, not polling. There is no batch `messages` or `action=status` messaging API. Explicit replies use MCP; terminal answers are not automatically sent.
 4. Use `collaborator_task action=send` only for a recipient advertising `connected` or `durable` task capability. Managed-only Claude/Codex reject it with `capability_unavailable`. Never infer status from prose or poll.
 5. For a writer, stop the exact participant before `collaborator_workspace checkpoint`; stop retains its isolated worktree and queued mail.
 6. Inspect exact base/head with `safe_diff`. If acceptable, separately confirm `prepare_integration`, review the staged result, then confirm `finalize_integration` only while main is still clean and unchanged.

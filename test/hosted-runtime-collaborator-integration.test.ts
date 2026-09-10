@@ -95,6 +95,7 @@ const fableParticipant = { participantKey: "participant_fable", projectRoot: "/p
 function baseResponse(request: Request): unknown {
 	if (request.method === "pi.register" || request.method === "pi.heartbeat") return registration;
 	if (request.method === "pi.unregister") return { unregistered: true };
+	if (request.method === "messaging.issue") return { descriptorPath: "/private/descriptor.json" };
 	if (request.method === "participant.auto_capacity.reserve") return { reservation: { operationId: request.params.operationId } };
 	if (request.method === "participant.auto_capacity.release") return { released: true };
 	throw new Error(`unexpected ${request.method}`);
@@ -306,36 +307,34 @@ describe("hosted collaborator Pi integration", () => {
 		await test.integration.sessionShutdown();
 	});
 
-	it("restores held identity, sends ordered collaborator messages, and never auto-takes over rotation", async () => {
+	it("settles startup without recursive registration when shutdown races messaging provisioning", async () => {
 		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
-		let rotated = false;
-		let sequence = 3;
-		const test = await setup((request) => {
-			if (request.method === "participant.get") return rotated ? { ...mainParticipant, holderTargetKey: "target_other" } : mainParticipant;
-			if (request.method === "participant.acquire") return { participant: mainParticipant, revived: false, transitioned: true };
-			if (request.method === "participant.list") return { participants: [mainParticipant, fableParticipant] };
-			if (request.method === "mailbox.send") {
-				if (request.params.body === "Fail.") throw new HostedRuntimeClientError("unavailable", "send failed");
-				return { eventId: `event_${++sequence}`, sequence };
+		const test = await setup(request => {
+			if (request.method === "participant.get") {
+				void test.integration.sessionShutdown();
+				return mainParticipant;
 			}
 			return baseResponse(request);
 		}, [identity]);
 		await test.integration.sessionStart(test.ctx as never);
-		await expect(test.integration.sendCollaboratorMessages([{ participantId: "other/fable", body: "Wrong protocol." }], "tool_call_0", test.ctx as never)).rejects.toThrow("does not match current protocol");
-		expect(await test.integration.sendCollaboratorMessages([
-			{ participantId: "review/fable", body: "First." },
-			{ participantId: "fable", body: "Second." },
-			{ participantId: "fable", body: "Fail." },
-		], "tool_call_1", test.ctx as never)).toEqual([
-			{ eventId: "event_4", sequence: 4, recipient: "review/fable", status: "sent", recipientTier: "unbound", deliveryState: "pending" },
-			{ eventId: "event_5", sequence: 5, recipient: "review/fable", status: "sent", recipientTier: "unbound", deliveryState: "pending" },
-			{ recipient: "review/fable", status: "failed", error: "send failed" },
-		]);
-		const sends = test.requests.filter((request) => request.method === "mailbox.send");
-		expect(sends.map((send) => send.params.body)).toEqual(["First.", "Second.", "Fail."]);
-		expect(sends.map((send) => send.params)).toEqual(sends.map((send) => expect.objectContaining({ senderParticipantKey: "participant_main", expectedSenderGeneration: "lease_main", recipientParticipantKey: "participant_fable", body: send.params.body })));
-		expect(new Set(sends.map((send) => String(send.params.sendId))).size).toBe(3);
-		expect(sends.map((send) => String(send.params.sendId))).toEqual(sends.map(() => expect.stringMatching(/^send_[a-f0-9]{32}$/)));
+		expect(test.requests.some(request => request.method === "messaging.issue")).toBe(false);
+		await test.integration.sessionShutdown();
+	});
+
+	it("provisions messaging only for held identity and never auto-takes over rotation", async () => {
+		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
+		let rotated = false;
+		const test = await setup((request) => {
+			if (request.method === "participant.get") return rotated ? { ...mainParticipant, holderTargetKey: "target_other" } : mainParticipant;
+			if (request.method === "participant.acquire") return { participant: mainParticipant, revived: false, transitioned: true };
+			if (request.method === "participant.list") return { participants: [mainParticipant, fableParticipant] };
+			if (request.method === "messaging.issue") return { descriptorPath: "/private/descriptor.json" };
+			return baseResponse(request);
+		}, [identity]);
+		await test.integration.sessionStart(test.ctx as never);
+		expect(await test.integration.messagingDescriptor(test.ctx as never)).toBe("/private/descriptor.json");
+		expect(test.requests.filter(request => request.method === "messaging.issue").map(request => request.params)).toEqual(Array(2).fill({ registrationId: "reg_1", registrationKey: "key_1", participantKey: "participant_main", expectedGeneration: "lease_main", confirmed: true }));
+		expect(test.requests.some(request => request.method === "mailbox.send")).toBe(false);
 		await test.integration.sessionShutdown();
 
 		rotated = true;
@@ -523,7 +522,7 @@ describe("hosted collaborator Pi integration", () => {
 		await test.integration.sessionStart(test.ctx as never);
 		await expect(test.integration.startCollaborator({ participantId: "bounded" }, test.ctx as never)).resolves.toMatchObject({ started: true });
 		const launch = test.execCalls.find((call) => call.args[0] === "pane" && call.args[1] === "run")!;
-		expect(launch.args[3]).toContain("--tools 'read,grep,find,ls,safe_diff,collaborator_list,collaborator_send,collaborator_task,chain_save,chain_load,chain_context'");
+		expect(launch.args[3]).toContain("--tools 'read,grep,find,ls,safe_diff,collaborator_list,collaborator_peers,collaborator_send,collaborator_status,collaborator_receive,collaborator_received,collaborator_reply,collaborator_task,chain_save,chain_load,chain_context'");
 		expect(launch.args[3]).not.toContain(",edit,write");
 		const profile = readFileSync(paneRunSessionFile(launch.args), "utf8").trim().split("\n").map((line) => JSON.parse(line)).find((entry) => entry.customType === HOSTED_COLLABORATOR_PROFILE_ENTRY)?.data;
 		expect(profile).toEqual({ version: 2, driver: "pi", profile: "read-only" });
@@ -896,7 +895,7 @@ describe("hosted collaborator Pi integration", () => {
 		const created = test.execCalls.find((call) => call.args[0] === "tab" && call.args[1] === "create")!;
 		expect(created.args.some((argument) => argument.startsWith("PI_RUNTIME_COLLABORATOR_PERSONA="))).toBe(false);
 		const launched = test.execCalls.find((call) => call.args[0] === "pane" && call.args[1] === "run")!;
-		expect(launched.args[3]).toContain("--tools 'read,grep,find,ls,safe_diff,collaborator_list,collaborator_send,collaborator_task,chain_save,chain_load,chain_context'");
+		expect(launched.args[3]).toContain("--tools 'read,grep,find,ls,safe_diff,collaborator_list,collaborator_peers,collaborator_send,collaborator_status,collaborator_receive,collaborator_received,collaborator_reply,collaborator_task,chain_save,chain_load,chain_context'");
 		const sessionEntries = readFileSync(paneRunSessionFile(launched.args), "utf8").trim().split("\n").map((line) => JSON.parse(line));
 		expect(sessionEntries[1]).toMatchObject({ type: "custom", customType: HOSTED_MANAGED_COLLABORATOR_ENTRY, data: { version: 1, managed: true }, parentId: null });
 		expect(sessionEntries[2]).toMatchObject({ type: "custom", customType: HOSTED_COLLABORATOR_PROFILE_ENTRY, data: { version: 2, driver: "pi", profile: "read-only", persona: { name: "architect" } }, parentId: sessionEntries[1].id });

@@ -20,6 +20,7 @@ import type { AgentDefinition } from "../subagents/catalog-types.ts";
 import { HostedRuntimeClient, HostedRuntimeClientError } from "./client.ts";
 import { AUTO_MAX_LIVE_COLLABORATORS, CollaboratorAutoStore, type CollaboratorAutoState } from "./auto-mode.ts";
 import { HOSTED_MAX_DELIVERY_BATCH, type HostedTaskWorkspaceEvidence } from "./hosted-types.ts";
+import { toolDefinitions } from "./mcp/tools.ts";
 
 // ponytail: two-second host verification is fine for small teams; add Runtime subscriptions if concurrent Pi count makes it measurable.
 const HEARTBEAT_MS = 2_000;
@@ -34,7 +35,7 @@ export const HOSTED_BRIDGE_REQUEST_ENTRY = "deevs.hosted-runtime.bridge-request.
 export const HOSTED_MANAGED_AGENT_CONTROL_ENTRY = "deevs.hosted-runtime.managed-agent-control.v1";
 const COLLABORATOR_ENV = "PI_RUNTIME_COLLABORATE";
 const COLLABORATOR_WORKSPACE_ENV = "PI_RUNTIME_WORKSPACE_LAUNCH";
-const COLLABORATOR_METADATA_TOOLS = ["collaborator_list", "collaborator_send", "collaborator_task", "chain_save", "chain_load", "chain_context"] as const;
+const COLLABORATOR_METADATA_TOOLS = ["collaborator_list", ...toolDefinitions.map(tool => tool.name), "collaborator_task", "chain_save", "chain_load", "chain_context"] as const;
 const READ_ONLY_COLLABORATOR_TOOLS = ["read", "grep", "find", "ls", "safe_diff", ...COLLABORATOR_METADATA_TOOLS] as const;
 const WORKSPACE_WRITE_COLLABORATOR_TOOLS = [...READ_ONLY_COLLABORATOR_TOOLS, "edit", "write"] as const;
 const COLLABORATOR_PERSONAS = loadBuiltinAgents();
@@ -236,16 +237,6 @@ interface WorkspaceRegistrationStatus {
 	participantState: "held" | "vacant";
 	protocol: string;
 	participantId: string;
-}
-
-interface CollaboratorMessageResult {
-	recipient: string;
-	status: "sent" | "failed" | "cancelled";
-	eventId?: string;
-	sequence?: number;
-	recipientTier?: "managed" | "durable" | "unbound";
-	deliveryState?: "pending" | "submitting" | "submitted" | "needs_attention";
-	error?: string;
 }
 
 class HostedCollaboratorStartError extends HostedRuntimeClientError {
@@ -471,6 +462,7 @@ export class HostedRuntimeIntegration {
 				if (existing?.state === "ended" && !await ctx.ui.confirm("Revive collaborator identity?", `Revive ${protocol}/${participantId} and make its queued mail deliverable?`)) return;
 				const result = parseAcquireResult(await this.client.call("participant.acquire", { ...auth(registration), protocol, participantId, revive: existing?.state === "ended" }));
 				this.persistParticipant({ version: 1, protocol, participantId, participantKey: result.participant.participantKey, generation: result.participant.generation, disposition: "held" });
+				await this.messagingDescriptor(ctx);
 				ctx.ui.notify(`Collaborating as ${protocol}/${participantId}${result.revived ? " (revived)" : ""}.`, "info");
 				return;
 			}
@@ -876,42 +868,16 @@ export class HostedRuntimeIntegration {
 		return parseSerializedResponse(await this.client.call("workspace.integration.cleanup", { ...authority, integrationId, discardConfirmed: unfinalized }), "Integration cleanup");
 	}
 
-	async sendCollaboratorMessages(messages: Array<{ participantId: string; body: string }>, toolCallId: string, ctx: ExtensionContext, signal?: AbortSignal): Promise<CollaboratorMessageResult[]> {
-		if (messages.length < 1 || messages.length > 12) throw new HostedRuntimeClientError("invalid_request", "Collaborator send requires 1 to 12 messages.");
-		const identity = this.requireParticipantIdentity();
-		if (identity.disposition !== "held" || !identity.participantKey || !identity.generation) throw new HostedRuntimeClientError("conflict", "Current collaborator identity is not authoritatively held.");
-		const registration = await this.requireRegistration(ctx);
-		const participants = await this.listParticipants(registration);
-		const resolved = messages.map((message) => {
-			const participantId = collaboratorRecipient(message.participantId, identity.protocol);
-			const recipient = participants.find((participant) => participant.protocol === identity.protocol && participant.participantId === participantId);
-			if (!recipient) throw new HostedRuntimeClientError("not_found", `No ${identity.protocol}/${participantId} participant exists.`);
-			return { ...message, participantId, recipient };
-		});
-		const results: CollaboratorMessageResult[] = [];
-		for (const [index, message] of resolved.entries()) {
-			const recipient = `${identity.protocol}/${message.participantId}`;
-			if (signal?.aborted) {
-				results.push(...resolved.slice(index).map((pending) => ({ recipient: `${identity.protocol}/${pending.participantId}`, status: "cancelled" as const })));
-				break;
-			}
-			try {
-				const sendId = `send_${createHash("sha256").update(`${toolCallId}:${index}`).digest("hex").slice(0, 32)}`;
-				const result = strictObject(await this.client.call("mailbox.send", { ...auth(registration), senderParticipantKey: identity.participantKey, expectedSenderGeneration: identity.generation, recipientParticipantKey: message.recipient.participantKey, sendId, body: message.body }), "Collaborator send result");
-				results.push({ recipient, status: "sent", eventId: text(result.eventId), sequence: integer(result.sequence), recipientTier: message.recipient.capabilityTier ?? "unbound", deliveryState: "pending" });
-			} catch (error) {
-				results.push({ recipient, status: signal?.aborted ? "cancelled" : "failed", error: error instanceof Error ? error.message : String(error) });
-			}
-		}
-		return results;
+	async messagingDescriptor(ctx: ExtensionContext): Promise<string> {
+		return this.provisionMessaging(await this.requireRegistration(ctx));
 	}
 
-	async collaboratorMessageStatus(eventIds: string[], ctx: ExtensionContext): Promise<SerializedValue> {
-		if (eventIds.length < 1 || eventIds.length > 12 || new Set(eventIds).size !== eventIds.length) throw new HostedRuntimeClientError("invalid_request", "Message status requires 1 to 12 unique event IDs.");
+	private async provisionMessaging(registration: LiveClientRegistration): Promise<string> {
 		const identity = this.requireParticipantIdentity();
-		if (identity.disposition !== "held" || !identity.participantKey || !identity.generation) throw new HostedRuntimeClientError("conflict", "Current collaborator identity is not authoritatively held.");
-		const registration = await this.requireRegistration(ctx);
-		return parseSerializedResponse(await this.client.call("mailbox.status", { ...auth(registration), senderParticipantKey: identity.participantKey, expectedSenderGeneration: identity.generation, eventIds }), "Mailbox status");
+		if (!this.active || this.registration?.registrationId !== registration.registrationId || identity.disposition !== "held" || !identity.participantKey || !identity.generation) throw new HostedRuntimeClientError("conflict", "Current collaborator identity is not authoritatively held.");
+		const issued = strictObject(await this.client.call("messaging.issue", { ...auth(registration), participantKey: identity.participantKey, expectedGeneration: identity.generation, confirmed: true }), "Messaging issuance");
+		if (!this.active || this.registration?.registrationId !== registration.registrationId || this.participantIdentity?.participantKey !== identity.participantKey || this.participantIdentity.generation !== identity.generation || this.participantIdentity.disposition !== "held") throw new HostedRuntimeClientError("registration_stale", "Collaborator changed during messaging provisioning.");
+		return text(issued.descriptorPath);
 	}
 
 	async manageCollaboratorTask(input: CollaboratorTaskInput, toolCallId: string, ctx: ExtensionContext, signal?: AbortSignal): Promise<SerializedValue> {
@@ -1434,7 +1400,10 @@ export class HostedRuntimeIntegration {
 		}
 		this.registration = registration;
 		this.startHeartbeat();
-		try { await this.restoreHeldParticipant(registration, ctx); } catch (error) { ctx.ui.notify(`Collaborator identity unavailable: ${error instanceof Error ? error.message : String(error)}`, "warning"); }
+		try {
+			await this.restoreHeldParticipant(registration, ctx);
+			if (this.participantIdentity?.disposition === "held") await this.provisionMessaging(registration);
+		} catch (error) { ctx.ui.notify(`Collaborator identity or messaging unavailable: ${error instanceof Error ? error.message : String(error)}`, "warning"); }
 		return registration;
 	}
 
