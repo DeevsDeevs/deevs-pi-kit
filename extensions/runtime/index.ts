@@ -114,6 +114,7 @@ export default function runtimeExtension(pi: ExtensionAPI): void {
 		hosted.sessionTree(ctx);
 		void runtimeDelivery.maybeDeliver();
 	});
+	pi.on("session_compact", (_event, ctx) => hosted.sessionCompact(ctx));
 	pi.on("message_start", (event) => {
 		runtimeDelivery.acknowledgeMessage(event.message);
 		hosted.acknowledgeMessage(event.message);

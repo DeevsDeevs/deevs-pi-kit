@@ -25,6 +25,7 @@ import { toolDefinitions } from "./mcp/tools.ts";
 // ponytail: two-second host verification is fine for small teams; add Runtime subscriptions if concurrent Pi count makes it measurable.
 const HEARTBEAT_MS = 2_000;
 export const HOSTED_RUNTIME_MESSAGE = "deevs.hosted-runtime.v1";
+export const HOSTED_MESSAGING_REFERENCE = "deevs.hosted-runtime.messaging-reference.v1";
 export const HOSTED_PARTICIPANT_ENTRY = "deevs.hosted-runtime.participant.v1";
 export const HOSTED_COLLABORATOR_PROFILE_ENTRY = "deevs.hosted-runtime.collaborator-profile.v1";
 export const HOSTED_AUTO_LIFECYCLE_ENTRY = "deevs.hosted-runtime.auto-lifecycle.v1";
@@ -257,6 +258,8 @@ export class HostedRuntimeIntegration {
 	private heartbeatTimer?: NodeJS.Timeout;
 	private ctx?: ExtensionContext;
 	private active = false;
+	private sessionEpoch = 0;
+	private heartbeatActive = false;
 	private readonly handledWakeIds = new Set<string>();
 	private readonly admittedClaims = new Map<string, string[]>();
 	private readonly pendingAcks = new Set<string>();
@@ -300,6 +303,7 @@ export class HostedRuntimeIntegration {
 	}
 
 	async sessionStart(ctx: ExtensionContext): Promise<void> {
+		this.sessionEpoch++;
 		this.active = true;
 		this.ctx = ctx;
 		this.restoreManagedCollaborator(ctx);
@@ -316,6 +320,7 @@ export class HostedRuntimeIntegration {
 	}
 
 	sessionTree(ctx: ExtensionContext): void {
+		this.sessionEpoch++;
 		this.ctx = ctx;
 		this.restoreManagedCollaborator(ctx);
 		this.restoreCollaboratorWorkspace(ctx);
@@ -326,7 +331,13 @@ export class HostedRuntimeIntegration {
 		this.restoreManagedAgentControls(ctx);
 	}
 
+	sessionCompact(ctx: ExtensionContext): void {
+		this.sessionEpoch++;
+		this.ctx = ctx;
+	}
+
 	async sessionShutdown(): Promise<void> {
+		this.sessionEpoch++;
 		this.active = false;
 		this.workspaceRegistrationActive = false;
 		const ui = this.ctx?.ui;
@@ -344,13 +355,15 @@ export class HostedRuntimeIntegration {
 	async beforeAgentStart(systemPrompt: string, ctx: ExtensionContext): Promise<BeforeAgentStartResult | undefined> {
 		this.ctx = ctx;
 		if (!this.active) return;
+		const current = this.sessionScope(ctx);
 		const result: BeforeAgentStartResult = {};
 		if (this.collaboratorLaunch?.persona) result.systemPrompt = `${systemPrompt}\n\n# Collaborator persona: ${this.collaboratorLaunch.persona.name}\n\n${this.collaboratorLaunch.persona.prompt}`;
 		let registration: LiveClientRegistration;
 		try { registration = await this.requireRegistration(ctx); } catch { return result.systemPrompt ? result : undefined; }
+		if (!current()) return;
 		let claim: HostedClaimMessage;
 		try { claim = parseClaim(await this.client.call("inbox.claim", auth(registration))); } catch { return result.systemPrompt ? result : undefined; }
-		if (!this.active) {
+		if (!current()) {
 			await this.releaseClaim(registration, claim);
 			return;
 		}
@@ -867,14 +880,18 @@ export class HostedRuntimeIntegration {
 	}
 
 	async messagingDescriptor(ctx: ExtensionContext): Promise<string> {
-		return this.provisionMessaging(await this.requireRegistration(ctx));
+		const current = this.sessionScope(ctx);
+		const registration = await this.requireRegistration(ctx);
+		return this.provisionMessaging(registration, current);
 	}
 
-	private async provisionMessaging(registration: LiveClientRegistration): Promise<string> {
+	private async provisionMessaging(registration: LiveClientRegistration, current: () => boolean): Promise<string> {
+		this.requireCurrentScope(current);
 		const identity = this.requireParticipantIdentity();
 		if (!this.active || this.registration?.registrationId !== registration.registrationId || identity.disposition !== "held" || !identity.participantKey || !identity.generation) throw new HostedRuntimeClientError("conflict", "Current collaborator identity is not authoritatively held.");
 		const issued = strictObject(await this.client.call("messaging.issue", { ...auth(registration), participantKey: identity.participantKey, expectedGeneration: identity.generation, confirmed: true }), "Messaging issuance");
-		if (!this.active || this.registration?.registrationId !== registration.registrationId || this.participantIdentity?.participantKey !== identity.participantKey || this.participantIdentity.generation !== identity.generation || this.participantIdentity.disposition !== "held") throw new HostedRuntimeClientError("registration_stale", "Collaborator changed during messaging provisioning.");
+		this.requireCurrentScope(current);
+		if (!this.active || this.registration?.registrationId !== registration.registrationId || this.registration.registrationKey !== registration.registrationKey || this.participantIdentity?.participantKey !== identity.participantKey || this.participantIdentity.generation !== identity.generation || this.participantIdentity.disposition !== "held") throw new HostedRuntimeClientError("registration_stale", "Collaborator changed during messaging provisioning.");
 		return text(issued.descriptorPath);
 	}
 
@@ -1350,6 +1367,18 @@ export class HostedRuntimeIntegration {
 		throw new HostedRuntimeClientError("unavailable", "Runtime service did not become ready.");
 	}
 
+	private sessionScope(ctx: ExtensionContext, registration?: LiveClientRegistration): () => boolean {
+		const epoch = this.sessionEpoch;
+		const sessionId = ctx.sessionManager.getSessionId();
+		const sessionFile = ctx.sessionManager.getSessionFile();
+		const cwd = ctx.cwd;
+		return () => this.active && this.sessionEpoch === epoch && this.ctx?.cwd === cwd && this.ctx.sessionManager.getSessionId() === sessionId && this.ctx.sessionManager.getSessionFile() === sessionFile && (!registration || this.registration?.registrationId === registration.registrationId && this.registration.registrationKey === registration.registrationKey && this.registration.targetKey === registration.targetKey);
+	}
+
+	private requireCurrentScope(current: () => boolean): void {
+		if (!current()) throw new HostedRuntimeClientError("registration_stale", "Pi session or registration changed during Runtime work.");
+	}
+
 	private async requireRegistration(ctx: ExtensionContext): Promise<LiveClientRegistration> {
 		if (this.registration) return this.registration;
 		await this.start(ctx);
@@ -1366,11 +1395,13 @@ export class HostedRuntimeIntegration {
 	}
 
 	private async registerOnce(ctx: ExtensionContext): Promise<LiveClientRegistration> {
+		const current = this.sessionScope(ctx);
 		if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Runtime registration requires a trusted project.");
 		const sessionFile = ctx.sessionManager.getSessionFile();
 		if (!sessionFile) throw new HostedRuntimeClientError("invalid_request", "Runtime requires a persisted Pi session.");
 		const sessionId = ctx.sessionManager.getSessionId();
 		const host = await this.currentHerdrPane();
+		this.requireCurrentScope(current);
 		const admittedClaims = [...this.admittedClaims].slice(-HOSTED_MAX_DELIVERY_BATCH).map(([claimId, eventIds]) => ({ claimId, eventIds }));
 		const workspace = this.collaboratorWorkspace;
 		const workspaceRegistration = workspace ? { workspaceId: workspace.workspaceId, piSessionId: sessionId, piSessionFile: realpathSync(sessionFile), clientGeneration: this.clientGeneration, admittedClaims, herdr: { paneId: host.paneId, terminalId: host.terminalId } } : undefined;
@@ -1378,12 +1409,17 @@ export class HostedRuntimeIntegration {
 		if (this.workspaceLaunchToken && workspaceRegistration) {
 			try { result = await this.client.call("workspace.pi.register", { ...workspaceRegistration, launchToken: this.workspaceLaunchToken }); }
 			catch (error) {
+				this.requireCurrentScope(current);
 				try { result = await this.client.call("workspace.pi.reconnect", workspaceRegistration); }
 				catch { throw error; }
 			}
 		} else if (workspaceRegistration) result = await this.client.call("workspace.pi.reconnect", workspaceRegistration);
 		else result = await this.client.call("pi.register", { projectRoot: realpathSync(ctx.cwd), piSessionId: sessionId, piSessionFile: realpathSync(sessionFile), clientGeneration: this.clientGeneration, admittedClaims, herdr: { paneId: host.paneId, terminalId: host.terminalId } });
 		const registration = parseRegistration(result);
+		if (!current()) {
+			try { await this.client.call("pi.unregister", auth(registration)); } catch {}
+			this.requireCurrentScope(current);
+		}
 		if (workspace) {
 			const binding = parseWorkspaceRegistration(result);
 			if (binding.workspaceId !== workspace.workspaceId || realpathSync(binding.projectRoot) !== workspace.projectRoot || realpathSync(binding.workspaceRoot) !== workspace.workspaceRoot) throw new HostedRuntimeClientError("identity_mismatch", "Runtime workspace registration does not match persisted child workspace identity.");
@@ -1392,16 +1428,14 @@ export class HostedRuntimeIntegration {
 			this.workspaceRegistrationActive = binding.participantState === "held";
 		}
 		this.pendingAcks.clear();
-		if (!this.active) {
-			try { await this.client.call("pi.unregister", auth(registration)); } catch {}
-			throw new HostedRuntimeClientError("registration_stale", "Pi session shut down while registration was in flight.");
-		}
 		this.registration = registration;
 		this.startHeartbeat();
 		try {
 			await this.restoreHeldParticipant(registration, ctx);
-			if (this.participantIdentity?.disposition === "held") await this.provisionMessaging(registration);
-		} catch (error) { ctx.ui.notify(`Collaborator identity or messaging unavailable: ${error instanceof Error ? error.message : String(error)}`, "warning"); }
+			this.requireCurrentScope(current);
+			if (this.participantIdentity?.disposition === "held") await this.provisionMessaging(registration, current);
+		} catch (error) { if (current()) ctx.ui.notify(`Collaborator identity or messaging unavailable: ${error instanceof Error ? error.message : String(error)}`, "warning"); }
+		this.requireCurrentScope(current);
 		return registration;
 	}
 
@@ -1425,33 +1459,47 @@ export class HostedRuntimeIntegration {
 	}
 
 	private async heartbeat(): Promise<void> {
-		if (!this.active || !this.ctx) return;
-		this.updateAutoStatus(this.ctx);
+		if (this.heartbeatActive || !this.active || !this.ctx) return;
+		this.heartbeatActive = true;
+		const ctx = this.ctx;
 		const registration = this.registration;
+		const current = this.sessionScope(ctx, registration);
 		try {
+			this.updateAutoStatus(ctx);
 			if (!registration) {
-				if (existsSync(this.client.socketPath)) await this.register(this.ctx);
+				if (existsSync(this.client.socketPath)) await this.register(ctx);
 				return;
 			}
 			const heartbeat = parseHeartbeat(await this.client.call("pi.heartbeat", auth(registration)));
+			this.requireCurrentScope(current);
+			if (heartbeat.registration.registrationId !== registration.registrationId || heartbeat.registration.registrationKey !== registration.registrationKey || heartbeat.registration.targetKey !== registration.targetKey) throw new HostedRuntimeClientError("registration_stale", "Heartbeat replaced its registration identity.");
 			this.registration = heartbeat.registration;
-			if (this.participantIdentity?.participantKey) await this.restoreHeldParticipant(this.registration, this.ctx);
+			if (this.participantIdentity?.participantKey) await this.restoreHeldParticipant(this.registration, ctx);
+			this.requireCurrentScope(current);
 			if (this.collaboratorWorkspace) this.workspaceRegistrationActive = this.participantIdentity?.disposition === "held";
 			await this.retryAdmissions(this.registration);
-			if (heartbeat.inboxReady) await this.admitHeartbeatInbox(this.registration, this.ctx);
+			this.requireCurrentScope(current);
+			if (heartbeat.inboxReady) await this.admitHeartbeatInbox(this.registration, ctx);
+			this.requireCurrentScope(current);
+			await this.offerMessagingReference(this.registration, ctx);
 		} catch {
-			this.registration = undefined;
-			this.workspaceRegistrationActive = false;
+			if (current()) {
+				this.registration = undefined;
+				this.workspaceRegistrationActive = false;
+			}
 		} finally {
-			await this.heartbeatManagedAgents();
+			try { if (current()) await this.heartbeatManagedAgents(); }
+			finally { this.heartbeatActive = false; }
 		}
 	}
 
 	private async heartbeatManagedAgents(): Promise<void> {
-		if (this.managedAgentHeartbeatActive || !this.active) return;
+		if (this.managedAgentHeartbeatActive || !this.active || !this.ctx) return;
+		const current = this.sessionScope(this.ctx);
 		this.managedAgentHeartbeatActive = true;
 		try {
 			for (const [targetKey, control] of this.managedAgentControls) {
+				if (!current()) return;
 				if (this.managedAgentLaunches.has(targetKey) || control.state === "needs_attention" || control.state === "stopped") continue;
 				try {
 					let registration = this.managedAgentRegistrations.get(targetKey);
@@ -1461,13 +1509,16 @@ export class HostedRuntimeIntegration {
 						const result = control.state === "pending" && control.launchToken
 							? await this.client.call("bridge.register", { launchToken: control.launchToken, reconnectToken: control.reconnectToken, clientGeneration: control.clientGeneration, admittedClaims, herdr: { paneId: control.paneId, terminalId: control.terminalId }, agentSession: control.agentSession })
 							: await this.client.call("bridge.reconnect", { targetKey, reconnectToken: control.reconnectToken, clientGeneration: control.clientGeneration, admittedClaims, herdr: { paneId: control.paneId, terminalId: control.terminalId } });
+						if (!current() || this.managedAgentControls.get(targetKey) !== control) return;
 						registration = parseRegistration(result);
 						heartbeat = { registration, inboxReady: asRecord(result)?.inboxReady === true };
 						if (control.state === "pending") this.persistManagedAgentControl({ ...control, launchToken: undefined, state: "active" });
 					} else heartbeat = parseHeartbeat(await this.client.call("bridge.heartbeat", auth(registration)));
+					if (!current()) return;
 					this.managedAgentRegistrations.set(targetKey, heartbeat.registration);
 					// Native automatic input is blocked until the provider can attest editor ownership and exact-session admission.
 				} catch (error) {
+					if (!current() || this.managedAgentControls.get(targetKey) !== control) return;
 					this.managedAgentRegistrations.delete(targetKey);
 					if (error instanceof HostedRuntimeClientError && ["not_found", "conflict", "identity_mismatch"].includes(error.code)) this.persistManagedAgentControl({ ...control, launchToken: undefined, state: "needs_attention" });
 				}
@@ -1475,12 +1526,28 @@ export class HostedRuntimeIntegration {
 		} finally { this.managedAgentHeartbeatActive = false; }
 	}
 
+	private async offerMessagingReference(registration: LiveClientRegistration, ctx: ExtensionContext): Promise<void> {
+		const identity = this.participantIdentity;
+		const scope = this.sessionScope(ctx, registration);
+		const ready = () => scope() && this.participantIdentity === identity && identity?.disposition === "held" && this.pi.getActiveTools().includes("collaborator_receive") && ctx.mode === "tui" && ctx.hasUI && ctx.isIdle() && !ctx.hasPendingMessages() && ctx.ui.getEditorText() === "";
+		try {
+			if (!ready() || !identity?.participantKey || !identity.generation) return;
+			const attemptId = `reference_${randomUUID()}`;
+			const result = strictObject(await this.client.call("messaging.reference", { ...auth(registration), attemptId, participantKey: identity.participantKey, expectedGeneration: identity.generation }), "Messaging reference");
+			if (result.acquired !== true || result.attemptId !== attemptId || !ready()) return;
+			const reference = { namespaceId: text(result.namespaceId), eventId: text(result.eventId) };
+			// Offering a hint is not SDK submission, body retrieval, client receipt or native admission. Never replay a lost hint.
+			this.pi.sendMessage({ customType: HOSTED_MESSAGING_REFERENCE, content: `Runtime ordinary-mail reference: ${JSON.stringify(reference)}\nUse collaborator_receive with this namespaceId and eventId to retrieve its body through the shared MCP interface. This hint is not a body receipt or native admission.`, display: false, details: reference }, { triggerTurn: true, deliverAs: "followUp" });
+		} catch { /* Best-effort hints neither replay nor invalidate a healthy registration. */ }
+	}
+
 	private async admitHeartbeatInbox(registration: LiveClientRegistration, ctx: ExtensionContext): Promise<void> {
-		if (!this.active || !ctx.isIdle() || ctx.hasPendingMessages()) return;
+		const current = this.sessionScope(ctx, registration);
+		if (!current() || !ctx.isIdle() || ctx.hasPendingMessages()) return;
 		let claim: HostedClaimMessage;
 		try { claim = parseClaim(await this.client.call("inbox.claim", auth(registration))); } catch { return; }
 		if (claim.status === "acked") return;
-		if (!this.active || this.registration?.registrationId !== registration.registrationId || !ctx.isIdle() || ctx.hasPendingMessages()) {
+		if (!current() || !ctx.isIdle() || ctx.hasPendingMessages()) {
 			await this.releaseClaim(registration, claim);
 			return;
 		}
@@ -1588,10 +1655,14 @@ export class HostedRuntimeIntegration {
 
 	private async restoreHeldParticipant(registration: LiveClientRegistration, ctx: ExtensionContext): Promise<void> {
 		const identity = this.participantIdentity;
+		const scope = this.sessionScope(ctx, registration);
+		const currentScope = () => scope() && this.participantIdentity === identity;
 		if (!identity || identity.disposition !== "held") return;
+		this.requireCurrentScope(currentScope);
 		if (identity.participantKey) {
 			try {
 				const current = parseParticipant(await this.client.call("participant.get", { ...auth(registration), participantKey: identity.participantKey }));
+				this.requireCurrentScope(currentScope);
 				if (current.protocol !== identity.protocol || current.participantId !== identity.participantId) {
 					this.persistParticipant({ version: 1, protocol: identity.protocol, participantId: identity.participantId, disposition: "vacant" });
 					ctx.ui.notify(`Collaborator identity key does not match ${identity.protocol}/${identity.participantId}; explicit acquire is required.`, "warning");
@@ -1603,6 +1674,7 @@ export class HostedRuntimeIntegration {
 					return;
 				}
 			} catch (error) {
+				this.requireCurrentScope(currentScope);
 				if (error instanceof HostedRuntimeClientError && error.code === "not_found") {
 					this.persistParticipant({ version: 1, protocol: identity.protocol, participantId: identity.participantId, disposition: "vacant" });
 					ctx.ui.notify(`Collaborator ${identity.protocol}/${identity.participantId} is absent from Runtime; explicit acquire is required.`, "warning");
@@ -1612,6 +1684,7 @@ export class HostedRuntimeIntegration {
 			}
 		}
 		const result = parseAcquireResult(await this.client.call("participant.acquire", { ...auth(registration), protocol: identity.protocol, participantId: identity.participantId, revive: identity.reviveAuthorized === true }));
+		this.requireCurrentScope(currentScope);
 		const restored: ParticipantIdentity = { version: 1, protocol: identity.protocol, participantId: identity.participantId, participantKey: result.participant.participantKey, generation: result.participant.generation, disposition: "held" };
 		if (identity.participantKey !== restored.participantKey || identity.generation !== restored.generation) this.persistParticipant(restored);
 	}

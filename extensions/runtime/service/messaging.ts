@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { HOSTED_ACK_RETENTION_MS, type HostedMessagingGrant } from "../hosted-types.ts";
 import { HostedParticipantCoordinator } from "./participant.ts";
 import { RegistrationError, RuntimeRegistrationManager, type HostedLiveRegistration } from "./registration.ts";
-import { deriveParticipantKey, HostedStateStore, messagingConfigurationHash, messagingReceivedEvent } from "./state.ts";
+import { deriveParticipantKey, HostedStateStore, messagingConfigurationHash, messagingReceivedEvent, messagingReferenceNamespace } from "./state.ts";
 
 export class RuntimeMessaging {
 	private inFlight = 0;
@@ -40,7 +40,7 @@ export class RuntimeMessaging {
 		if (existing) return { namespaceId: existing.namespaceId, descriptorPath, expiresAt: existing.expiresAt };
 		const namespaceId = `msg_${randomUUID()}`;
 		const secret = randomBytes(32).toString("base64url");
-		const grant: HostedMessagingGrant = { namespaceId, secretDigest: digest(secret), participantKey, holderGeneration: expectedGeneration, targetKey: target.targetKey, clientGeneration: registration.clientGeneration, terminalId: registration.host.terminalId, configurationHash: messagingConfigurationHash(target), createdAt, expiresAt: createdAt + HOSTED_ACK_RETENTION_MS, status: "active", receipts: {}, offers: {} };
+		const grant: HostedMessagingGrant = { namespaceId, secretDigest: digest(secret), participantKey, holderGeneration: expectedGeneration, targetKey: target.targetKey, clientGeneration: registration.clientGeneration, terminalId: registration.host.terminalId, configurationHash: messagingConfigurationHash(target), createdAt, expiresAt: createdAt + HOSTED_ACK_RETENTION_MS, status: "active", receipts: {}, offers: {}, references: {} };
 		const fd = openSync(descriptorPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
 		try {
 			writeFileSync(fd, `${JSON.stringify({ version: 1, socketPath: this.socketPath, namespaceId, secret })}\n`);
@@ -53,6 +53,27 @@ export class RuntimeMessaging {
 			closeSync(fd);
 		}
 		return { namespaceId, descriptorPath, expiresAt: grant.expiresAt };
+	}
+
+	async reference(caller: HostedLiveRegistration, attemptId: string, participantKey: string, expectedGeneration: string) {
+		if (this.inFlight >= 12) throw new RegistrationError("conflict", "Messaging request capacity is exhausted.");
+		this.inFlight++;
+		try {
+			this.registrations.authorize(caller.registrationId, caller.registrationKey);
+			const original = messagingReferenceNamespace(this.store.read(), caller.targetKey, caller.clientGeneration, caller.host.terminalId, this.now());
+			if (original.participantKey !== participantKey || original.holderGeneration !== expectedGeneration) throw new RegistrationError("registration_stale", "Pi reference holder does not match its caller snapshot.");
+			const verified = await this.registrations.verifyTarget(caller.targetKey);
+			this.registrations.authorize(caller.registrationId, caller.registrationKey);
+			if (verified.registrationId !== caller.registrationId || verified.registrationKey !== caller.registrationKey || verified.clientGeneration !== caller.clientGeneration || verified.host.terminalId !== caller.host.terminalId) throw new RegistrationError("registration_stale", "Pi reference caller changed during verification.");
+			const at = this.now();
+			const grant = messagingReferenceNamespace(this.store.read(), caller.targetKey, caller.clientGeneration, caller.host.terminalId, at);
+			if (grant.namespaceId !== original.namespaceId) throw new RegistrationError("registration_stale", "Pi reference namespace changed during verification.");
+			if (Object.values(grant.references).some(reference => reference.attemptId === attemptId)) return { acquired: false as const };
+			const event = Object.values(this.store.read().events).filter(event => event.type === "mailbox.message" && event.recipientBinding.kind === "namespace" && event.recipientBinding.namespaceId === grant.namespaceId && !grant.references[event.eventId] && !grant.offers[event.eventId]).sort((a, b) => a.createdAt - b.createdAt || a.eventId.localeCompare(b.eventId))[0];
+			if (!event) return { acquired: false as const };
+			this.store.apply({ type: "messaging.reference", namespaceId: grant.namespaceId, reference: { eventId: event.eventId, attemptId, registrationId: caller.registrationId, clientGeneration: caller.clientGeneration, offeredAt: at } });
+			return { acquired: true as const, namespaceId: grant.namespaceId, eventId: event.eventId, attemptId };
+		} finally { this.inFlight--; }
 	}
 
 	async call(namespaceId: string, secret: string, input: MessagingInput) {
