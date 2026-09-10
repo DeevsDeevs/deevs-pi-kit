@@ -11,7 +11,7 @@ import { MessagingMcpClient } from "../extensions/runtime/mcp/client.ts";
 import { HOSTED_ACK_RETENTION_MS, type HostedMessagingOffer, type HostedMessagingReceipt } from "../extensions/runtime/hosted-types.ts";
 import type { HostedLiveAgent, RegisterPiInput } from "../extensions/runtime/service/registration.ts";
 import { startRuntimeServer, type RuntimeServerHandle } from "../extensions/runtime/service/server.ts";
-import { HostedStateStorageError, HostedStateStore, readHostedRuntimeState, runtimeStatePaths, writeHostedRuntimeState } from "../extensions/runtime/service/state.ts";
+import { HostedStateStorageError, HostedStateStore, readHostedRuntimeState, reduceHostedState, runtimeStatePaths, validateHostedRuntimeState, writeHostedRuntimeState } from "../extensions/runtime/service/state.ts";
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -21,7 +21,7 @@ type Participant = { participantKey: string; generation: string };
 type Call = { name: string; arguments: Record<string, string> };
 type Result = { isError: boolean; content: Array<{ type: string; text: string }>; structuredContent: { namespaceId: string; offer?: HostedMessagingOffer; message?: { eventId: string; body: string; inReplyToEventId?: string }; publication: Omit<HostedMessagingReceipt, "fingerprint">; event?: { eventId: string; payload: { body: string }; delivery: { status: string } }; peers?: Array<{ participantId: string }> } };
 
-async function setup(monitor: { scanIntervalMs?: number; onError?: (error: Error) => void; onEvents?: (targetKey: string) => void; now?: () => number } = {}) {
+async function setup(monitor: { scanIntervalMs?: number; onError?: (error: Error) => void; onEvents?: (targetKey: string) => void; now?: () => number } = {}, recipientReady = true) {
 	const root = mkdtempSync(join(tmpdir(), "messaging-e2e-"));
 	const projectRoot = join(root, "project");
 	mkdirSync(projectRoot);
@@ -54,6 +54,7 @@ async function setup(monitor: { scanIntervalMs?: number; onError?: (error: Error
 	await acquire(outsider, "outsider");
 	const issue = async (participant = senderParticipant) => await client.call("messaging.issue", { registrationId: sender.registrationId, registrationKey: sender.registrationKey, participantKey: participant.participantKey, expectedGeneration: participant.generation, confirmed: true }) as { namespaceId: string; descriptorPath: string };
 	const issued = await issue();
+	if (recipientReady) await issue(recipientParticipant);
 	const { namespaceId, secret } = JSON.parse(readFileSync(issued.descriptorPath, "utf8")) as { namespaceId: string; secret: string };
 	const descriptor = { namespaceId, secret };
 	return { root, runtimeRoot, client, sender, recipient, outsider, senderParticipant, recipientParticipant, issued, issue, descriptor, inputs, register, setVerificationHook(hook: () => Promise<void>) { beforeVerify = hook; }, setNow(value: number) { now = value; }, async restart() { await server.close(); server = await startRuntimeServer(options); Object.assign(sender, await register("sender")); Object.assign(recipient, await register("recipient")); }, readState() { return readHostedRuntimeState(runtimeRoot); } };
@@ -188,16 +189,31 @@ it("offers exact full mail without consuming native claims and atomically correl
 	expect(Object.keys(test.readState().events)).toHaveLength(2);
 });
 
-it("never rebinds pre-issuance mail and rejects wrong token, namespace and replacement-client history", async () => {
-	const test = await setup();
-	const [old] = await mcp(test.issued.descriptorPath, [send("before-issuance")]);
+it("rejects unconfigured recipients without publishing and fences tokens, namespaces and replacement-client history", async () => {
+	const test = await setup({}, false);
+	const [denied] = await mcp(test.issued.descriptorPath, [send("before-issuance")]);
+	expect(denied!.isError).toBe(true);
+	expect(denied!.content[0]!.text).toContain("Recipient MCP namespace is unavailable or ambiguous");
+	expect(test.readState().events).toEqual({});
+	expect(test.readState().messaging[test.issued.namespaceId]!.receipts).toEqual({});
 	const recipient = await test.issue(test.recipientParticipant);
-	const [oldRetry, sent] = await mcp(test.issued.descriptorPath, [send("before-issuance"), send("bound")]);
-	expect(oldRetry!.structuredContent.publication).toEqual(old!.structuredContent.publication);
-	const oldId = old!.structuredContent.publication.eventId;
+	const [sent] = await mcp(test.issued.descriptorPath, [send("before-issuance")]);
+	expect(sent!.isError).toBe(false);
 	const eventId = sent!.structuredContent.publication.eventId;
-	const [oldDenied, offered] = await mcp(recipient.descriptorPath, [receive(oldId), receive(eventId)]);
-	expect(oldDenied!.isError).toBe(true);
+	// Inspect a separate current-schema snapshot: prior unbound receipts must still recover,
+	// but ambiguous authority must never allow a fresh publication.
+	const snapshot = test.readState();
+	const oldEvent = snapshot.events[eventId]!;
+	if (oldEvent.type !== "mailbox.message") throw new Error("Expected ordinary mail fixture");
+	oldEvent.recipientBinding = { kind: "unbound" };
+	const duplicateId = "msg_00000000-0000-0000-0000-000000000000";
+	snapshot.messaging[duplicateId] = { ...snapshot.messaging[recipient.namespaceId]!, namespaceId: duplicateId };
+	const ambiguous = validateHostedRuntimeState(snapshot);
+	const retry = { type: "messaging.send" as const, namespaceId: test.issued.namespaceId, operationId: "before-issuance", recipientParticipantKey: test.recipientParticipant.participantKey, body: "Please inspect.", eventId: "evt_retry", at: 1000 };
+	expect(reduceHostedState(ambiguous, retry)).toBe(ambiguous);
+	expect(() => reduceHostedState(ambiguous, { ...retry, operationId: "ambiguous" })).toThrow("Recipient MCP namespace is unavailable or ambiguous");
+	expect(Object.keys(ambiguous.events)).toEqual([eventId]);
+	const [offered] = await mcp(recipient.descriptorPath, [receive(eventId)]);
 	const offer = offered!.structuredContent.offer!;
 	const [wrongToken] = await mcp(recipient.descriptorPath, [received({ ...offer, receiptToken: "wrong" })]);
 	expect(wrongToken!.isError).toBe(true);
@@ -211,6 +227,11 @@ it("never rebinds pre-issuance mail and rejects wrong token, namespace and repla
 	const [notInherited] = await mcp(replacement.descriptorPath, [receive(eventId)]);
 	expect(stale!.isError).toBe(true);
 	expect(notInherited!.isError).toBe(true);
+	await test.client.call("participant.stand_down", { registrationId: test.recipient.registrationId, registrationKey: test.recipient.registrationKey, participantKey: test.recipientParticipant.participantKey, expectedGeneration: test.recipientParticipant.generation });
+	const [committedRetry, newSend] = await mcp(test.issued.descriptorPath, [send("before-issuance"), send("recipient-no-longer-ready")]);
+	expect(committedRetry!.structuredContent.publication).toEqual(sent!.structuredContent.publication);
+	expect(newSend!.isError).toBe(true);
+	expect(Object.keys(test.readState().events)).toEqual([eventId]);
 	expect(test.readState().events[eventId]!.delivery.status).toBe("pending");
 });
 

@@ -186,6 +186,7 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 		const next = reduceHostedState(receipted, { type: "mailbox.send", senderParticipantKey: grant.participantKey, expectedSenderGeneration: grant.holderGeneration, senderTargetKey: grant.targetKey, recipientParticipantKey, sendId, body: operation.body, eventId: operation.eventId, at: operation.at });
 		const event = next.events[operation.eventId];
 		if (!event || event.type !== "mailbox.message" || event.payload.sendId !== sendId) throw new HostedStateConflictError("conflict", "Messaging publication collided with an existing event.");
+		if (event.recipientBinding.kind !== "namespace") throw new HostedStateConflictError("conflict", "Recipient MCP namespace is unavailable or ambiguous; no message was published.");
 		const published: HostedMessagingReceipt = { operationId: operation.operationId, fingerprint, eventId: event.eventId, recipientParticipantKey: event.recipientParticipantKey, sequence: event.source.sequence, createdAt: event.createdAt };
 		if (operation.type === "messaging.reply") {
 			if (event.recipientBinding.kind !== "namespace" || event.recipientBinding.namespaceId !== replyNamespaceId) throw new HostedStateConflictError("conflict", "Reply recipient namespace is ambiguous or changed.");
