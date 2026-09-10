@@ -111,7 +111,7 @@ function v1MonitorState(): { raw: Record<string, unknown>; event: HostedFilesyst
 		delivery: { status: "pending" },
 	};
 	state = reduceHostedState(state, { type: "monitor.commit", monitor, events: [event] });
-	const { participants: _participants, autoCapacityReservations: _autoCapacityReservations, bridgeLaunches: _bridgeLaunches, workspaces: _workspaces, integrations: _integrations, ...rest } = state;
+	const { messaging: _messaging, participants: _participants, autoCapacityReservations: _autoCapacityReservations, bridgeLaunches: _bridgeLaunches, workspaces: _workspaces, integrations: _integrations, ...rest } = state;
 	const targets = Object.fromEntries(Object.entries(rest.targets).map(([key, value]) => { const { kind: _kind, ...legacy } = value; return [key, legacy]; }));
 	return { raw: { ...rest, targets, version: 1 }, event };
 }
@@ -124,44 +124,45 @@ describe("hosted Runtime collaborator state", () => {
 		writeFileSync(runtimeStatePaths(root).state, `${JSON.stringify(raw, null, 2)}\n`);
 
 		const migrated = readHostedRuntimeState(root);
-		expect(migrated).toMatchObject({ version: 8, autoCapacityReservations: {}, bridgeLaunches: {}, workspaces: {}, integrations: {}, participants: {}, targets: { target_main: { kind: "pi" } } });
+		expect(migrated).toMatchObject({ version: 9, messaging: {}, autoCapacityReservations: {}, bridgeLaunches: {}, workspaces: {}, integrations: {}, participants: {}, targets: { target_main: { kind: "pi" } } });
 		expect(migrated.events[event.eventId]).toEqual(event);
 		expect(pendingHostedEvents(migrated, "target_main").map((candidate) => candidate.eventId)).toEqual([event.eventId]);
 		expect(JSON.parse(readFileSync(runtimeStatePaths(root).state, "utf8"))).toEqual(migrated);
 		expect(statSync(runtimeStatePaths(root).state).mode & 0o777).toBe(0o600);
 	});
 
-	it("migrates v2 Pi targets and collaborator ownership into discriminated v8 state", () => {
+	it("migrates v2 Pi targets and collaborator ownership into discriminated v9 state", () => {
 		const root = mkdtempSync(join(tmpdir(), "hosted-state-v2-to-v4-"));
 		mkdirSync(root, { recursive: true });
 		const state = pairedState();
-		const { autoCapacityReservations: _autoCapacityReservations, bridgeLaunches: _bridgeLaunches, workspaces: _workspaces, integrations: _integrations, ...rest } = state;
+		const { messaging: _messaging, autoCapacityReservations: _autoCapacityReservations, bridgeLaunches: _bridgeLaunches, workspaces: _workspaces, integrations: _integrations, ...rest } = state;
 		const targets = Object.fromEntries(Object.entries(rest.targets).map(([key, value]) => { const { kind: _kind, ...legacy } = value; return [key, legacy]; }));
 		writeFileSync(runtimeStatePaths(root).state, `${JSON.stringify({ ...rest, version: 2, targets }, null, 2)}\n`);
 		const migrated = readHostedRuntimeState(root);
-		expect(migrated).toMatchObject({ version: 8, autoCapacityReservations: {}, bridgeLaunches: {}, workspaces: {}, integrations: {}, targets: { target_main: { kind: "pi" }, target_fable: { kind: "pi" } }, participants: { [participantKey("main")]: { state: "held", holderTargetKey: "target_main" }, [participantKey("fable")]: { state: "held", holderTargetKey: "target_fable" } } });
+		expect(migrated).toMatchObject({ version: 9, messaging: {}, autoCapacityReservations: {}, bridgeLaunches: {}, workspaces: {}, integrations: {}, targets: { target_main: { kind: "pi" }, target_fable: { kind: "pi" } }, participants: { [participantKey("main")]: { state: "held", holderTargetKey: "target_main" }, [participantKey("fable")]: { state: "held", holderTargetKey: "target_fable" } } });
 	});
 
-	it.each([5, 6])("migrates the released v%i schema to v8 without changing durable references", (version) => {
+	it.each([5, 6])("migrates the released v%i schema to v9 without changing durable references", (version) => {
 		const root = mkdtempSync(join(tmpdir(), `hosted-state-v${version}-to-v7-`));
 		mkdirSync(root, { recursive: true });
 		const state = pairedState();
-		const { autoCapacityReservations: _autoCapacityReservations, ...legacy } = state;
+		const { messaging: _messaging, autoCapacityReservations: _autoCapacityReservations, ...legacy } = state;
 		writeFileSync(runtimeStatePaths(root).state, `${JSON.stringify({ ...legacy, version }, null, 2)}\n`);
 		const migrated = readHostedRuntimeState(root);
-		expect(migrated).toMatchObject({ version: 8, autoCapacityReservations: {}, targets: state.targets, participants: state.participants, events: state.events });
+		expect(migrated).toMatchObject({ version: 9, messaging: {}, autoCapacityReservations: {}, targets: state.targets, participants: state.participants, events: state.events });
 	});
 
-	it("migrates released v7 state to v8 without changing durable references", () => {
+	it.each([7, 8])("migrates released v%i state to v9 without changing durable references", (version) => {
 		const root = mkdtempSync(join(tmpdir(), "hosted-state-v7-to-v8-"));
 		mkdirSync(root, { recursive: true });
 		const state = pairedState();
-		writeFileSync(runtimeStatePaths(root).state, `${JSON.stringify({ ...state, version: 7 }, null, 2)}\n`);
+		const { messaging: _messaging, ...legacy } = state;
+		writeFileSync(runtimeStatePaths(root).state, `${JSON.stringify({ ...legacy, version }, null, 2)}\n`);
 		expect(readHostedRuntimeState(root)).toEqual(state);
 	});
 
 	it("fails closed instead of accepting an unknown state version", () => {
-		const unknownVersion = { ...emptyHostedRuntimeState(), version: 9 };
+		const unknownVersion = { ...emptyHostedRuntimeState(), version: 10 };
 		expect(() => validateHostedRuntimeState(unknownVersion)).toThrow(HostedStateStorageError);
 		const root = mkdtempSync(join(tmpdir(), "hosted-state-unknown-version-"));
 		writeFileSync(runtimeStatePaths(root).state, `${JSON.stringify(unknownVersion)}\n`);

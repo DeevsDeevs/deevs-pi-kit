@@ -118,11 +118,11 @@ describe("authoritative Runtime bridge launch", () => {
 		const migrationRoot = mkdtempSync(join(tmpdir(), "pi-kit-runtime-v3-to-v4-"));
 		roots.push(migrationRoot);
 		mkdirSync(migrationRoot, { recursive: true });
-		const { autoCapacityReservations: _autoCapacityReservations, workspaces: _workspaces, integrations: _integrations, ...v3 } = structuredClone(test.store.read());
+		const { messaging: _messaging, autoCapacityReservations: _autoCapacityReservations, workspaces: _workspaces, integrations: _integrations, ...v3 } = structuredClone(test.store.read());
 		(v3.targets[launch.targetKey] as { metadata: Record<string, string> }).metadata = { format: "legacy-v1" };
 		v3.bridgeLaunches[launch.launchId]!.metadata = { format: "legacy-v1" };
 		writeFileSync(runtimeStatePaths(migrationRoot).state, JSON.stringify({ ...v3, version: 3 }));
-		expect(readHostedRuntimeState(migrationRoot)).toMatchObject({ version: 8, autoCapacityReservations: {}, workspaces: {}, integrations: {}, targets: { [launch.targetKey]: { kind: "bridge", bridgeId: launch.launchId, metadata: { adapter: "legacy-v1" } } }, bridgeLaunches: { [launch.launchId]: { status: "consumed", metadata: { adapter: "legacy-v1" } } } });
+		expect(readHostedRuntimeState(migrationRoot)).toMatchObject({ version: 9, messaging: {}, autoCapacityReservations: {}, workspaces: {}, integrations: {}, targets: { [launch.targetKey]: { kind: "bridge", bridgeId: launch.launchId, metadata: { adapter: "legacy-v1" } } }, bridgeLaunches: { [launch.launchId]: { status: "consumed", metadata: { adapter: "legacy-v1" } } } });
 		expect(test.registrations.isLiveTarget(launch.targetKey)).toBe(true);
 		await expect(test.bridges.register({ launchToken: launch.launchToken, reconnectToken: launch.reconnectToken, clientGeneration: "client_bridge", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" } })).rejects.toMatchObject({ code: "conflict" });
 

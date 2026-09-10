@@ -1,6 +1,7 @@
 import { HOSTED_BRIDGE_MAX_METADATA_ENTRIES, HOSTED_BRIDGE_MAX_METADATA_VALUE_BYTES, HOSTED_MAILBOX_MAX_BODY_BYTES, HOSTED_MAX_DELIVERY_BATCH, HOSTED_MONITOR_MAX_ENTRIES, HOSTED_PROTOCOL_VERSION, type HostedAgentSessionIdentity, type HostedMonitor } from "../hosted-types.ts";
 import { RuntimeBridgeCoordinator, type BridgeReconnectInput, type BridgeRegisterInput, type CreateBridgeLaunchInput } from "./bridge.ts";
 import { DirectoryMonitorManager } from "./monitor.ts";
+import { RuntimeMessaging, type MessagingInput } from "./messaging.ts";
 import { HostedParticipantCoordinator } from "./participant.ts";
 import { RuntimeRegistrationManager, type RegisterPiInput, type RegisterWorkspacePiInput } from "./registration.ts";
 import { HostedWakeCoordinator, type HostedClaimResult } from "./wake.ts";
@@ -34,6 +35,7 @@ export interface HostedProtocolContext {
 	agentWake: "herdr_exact_agent" | "none";
 	degradedReason?: "host_unavailable";
 	registrations?: RuntimeRegistrationManager;
+	messaging?: RuntimeMessaging;
 	monitors?: DirectoryMonitorManager;
 	wakes?: HostedWakeCoordinator;
 	participants?: HostedParticipantCoordinator;
@@ -70,6 +72,32 @@ export async function dispatchHostedLine(line: string, context: HostedProtocolCo
 		const bridges = context.bridges;
 		const workspaces = context.workspaces;
 		if (!registrations || !monitors || !wakes) return failure(id, "capability_unavailable", "Hosted runtime methods are unavailable in this process.");
+
+		if (method === "messaging.issue") {
+			if (!context.messaging) return failure(id, "capability_unavailable", "Messaging authority is unavailable.");
+			const input = strictObject(params, "messaging.issue params", ["registrationId", "registrationKey", "participantKey", "expectedGeneration", "confirmed"]);
+			if (input.confirmed !== true) throw new Error("Messaging issuance requires explicit controller confirmation.");
+			const caller = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
+			return success(id, await context.messaging.issue(caller, boundedText(input.participantKey, "participant key", 200), boundedText(input.expectedGeneration, "holder generation", 200)));
+		}
+		if (method === "messaging.peers" || method === "messaging.send" || method === "messaging.status") {
+			if (!context.messaging) return failure(id, "capability_unavailable", "Messaging authority is unavailable.");
+			const allowed = method === "messaging.peers" ? ["namespaceId", "secret", "cursor"] : method === "messaging.send" ? ["namespaceId", "secret", "operationId", "participantId", "bodyBase64"] : ["namespaceId", "secret", "operationId"];
+			const input = strictObject(params, `${method} params`, allowed);
+			let operation: MessagingInput;
+			if (method === "messaging.peers") operation = input.cursor === undefined ? { method: "peers" } : { method: "peers", cursor: boundedText(input.cursor, "cursor", 512) };
+			else if (method === "messaging.status") operation = { method: "status", operationId: boundedText(input.operationId, "operation ID", 200) };
+			else {
+				// Base64 avoids expanding a 16 KiB body past the unchanged 64 KiB RPC request cap.
+				const encoded = boundedText(input.bodyBase64, "encoded body", 24 * 1024);
+				const bytes = Buffer.from(encoded, "base64");
+				if (bytes.toString("base64") !== encoded || bytes.length > HOSTED_MAILBOX_MAX_BODY_BYTES) throw new Error("Messaging body encoding or byte limit is invalid.");
+				operation = { method: "send", operationId: boundedText(input.operationId, "operation ID", 200), participantId: participantName(input.participantId, "recipient participant ID"), body: new TextDecoder("utf-8", { fatal: true }).decode(bytes) };
+			}
+			const result = success(id, await context.messaging.call(boundedText(input.namespaceId, "namespace ID", 200), boundedText(input.secret, "messaging secret", 200), operation));
+			if (Buffer.byteLength(encodeHostedResponse(result)) > 128 * 1024) return failure(id, "conflict", "Messaging response exceeds its byte limit.");
+			return result;
+		}
 
 		if (method === "workspace.pi.register" || method === "workspace.pi.reconnect") {
 			if (!workspaces) return failure(id, "capability_unavailable", "Runtime workspace registration is unavailable in this process.");
@@ -666,7 +694,7 @@ function errorCode(cause: unknown): HostedErrorCode {
 	return "internal";
 }
 
-const HOSTED_METHODS = new Set(["pi.register", "pi.heartbeat", "pi.unregister", "bridge.launch.create", "bridge.launch.recover", "bridge.launch.cancel", "bridge.register", "bridge.reconnect", "bridge.heartbeat", "bridge.unregister", "workspace.launch.create", "workspace.bridge.create", "workspace.launch.bind", "workspace.launch.recover", "workspace.pi.register", "workspace.pi.reconnect", "workspace.inspect", "workspace.integration.inspect", "workspace.retain", "workspace.reconcile", "workspace.checkpoint", "workspace.integration.prepare", "workspace.integration.reconcile", "workspace.integration.finalize", "workspace.cleanup", "workspace.integration.cleanup", "monitor.create", "monitor.get", "monitor.delete", "wake.accept", "inbox.claim", "inbox.ack", "inbox.release", "inbox.submit_begin", "inbox.submit_settle", "inbox.status", "participant.auto_capacity.list", "participant.auto_capacity.reserve", "participant.auto_capacity.release", "participant.auto_capacity.recover", "participant.acquire", "participant.get", "participant.list", "participant.stand_down", "participant.stand_down_confirmed", "participant.stop_confirmed", "participant.release", "participant.takeover", "mailbox.send", "mailbox.status", "task.send", "task.result", "task.status"]);
+const HOSTED_METHODS = new Set(["messaging.issue", "messaging.peers", "messaging.send", "messaging.status", "pi.register", "pi.heartbeat", "pi.unregister", "bridge.launch.create", "bridge.launch.recover", "bridge.launch.cancel", "bridge.register", "bridge.reconnect", "bridge.heartbeat", "bridge.unregister", "workspace.launch.create", "workspace.bridge.create", "workspace.launch.bind", "workspace.launch.recover", "workspace.pi.register", "workspace.pi.reconnect", "workspace.inspect", "workspace.integration.inspect", "workspace.retain", "workspace.reconcile", "workspace.checkpoint", "workspace.integration.prepare", "workspace.integration.reconcile", "workspace.integration.finalize", "workspace.cleanup", "workspace.integration.cleanup", "monitor.create", "monitor.get", "monitor.delete", "wake.accept", "inbox.claim", "inbox.ack", "inbox.release", "inbox.submit_begin", "inbox.submit_settle", "inbox.status", "participant.auto_capacity.list", "participant.auto_capacity.reserve", "participant.auto_capacity.release", "participant.auto_capacity.recover", "participant.acquire", "participant.get", "participant.list", "participant.stand_down", "participant.stand_down_confirmed", "participant.stop_confirmed", "participant.release", "participant.takeover", "mailbox.send", "mailbox.status", "task.send", "task.result", "task.status"]);
 
 const ERROR_CODES: ReadonlySet<string> = new Set([
 	"invalid_request", "unsupported_version", "capability_unavailable", "not_found", "conflict", "registration_stale", "identity_mismatch", "claim_conflict", "host_unavailable", "busy", "storage_error", "internal",

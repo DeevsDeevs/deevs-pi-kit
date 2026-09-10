@@ -151,7 +151,9 @@ export class DirectoryMonitorManager {
 	}
 
 	private reconcileAll(): void {
-		for (const monitor of Object.values(this.store.read().monitors)) this.reconcileSafely(monitor.monitorId);
+		try {
+			for (const monitor of Object.values(this.store.read().monitors)) this.reconcileSafely(monitor.monitorId);
+		} catch (error) { this.options.onError?.(error instanceof Error ? error : new Error(String(error))); }
 	}
 
 	private reconcileSafely(monitorId: string): void {

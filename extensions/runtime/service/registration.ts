@@ -228,6 +228,7 @@ export class RuntimeRegistrationManager {
 			this.ready(renewed.targetKey);
 			return renewed;
 		}
+		this.store.apply({ type: "messaging.invalidate_client", targetKey, clientGeneration, terminalId: verified.terminalId });
 		const terminalRegistrationId = this.byTerminal.get(verified.terminalId);
 		const registrationId = credentials?.registrationId ?? this.options.createId?.() ?? `reg_${randomUUID()}`;
 		const registrationKey = credentials?.registrationKey ?? this.options.createKey?.() ?? randomBytes(32).toString("base64url");

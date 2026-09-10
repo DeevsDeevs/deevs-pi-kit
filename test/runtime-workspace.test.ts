@@ -67,9 +67,10 @@ describe("Runtime isolated collaborator workspace", () => {
 		expect(readFileSync(join(test.project, "app.txt"), "utf8")).toBe("base\n");
 		const migrationRoot = join(test.root, "migration-runtime");
 		mkdirSync(migrationRoot);
-		const v4 = structuredClone(test.store.read()) as unknown as { version: number; autoCapacityReservations?: unknown; workspaces: Record<string, { ownerKind?: string }> };
+		const v4 = structuredClone(test.store.read()) as unknown as { version: number; messaging?: unknown; autoCapacityReservations?: unknown; workspaces: Record<string, { ownerKind?: string }> };
 		v4.version = 4;
 		delete v4.autoCapacityReservations;
+		delete v4.messaging;
 		for (const record of Object.values(v4.workspaces)) delete record.ownerKind;
 		writeFileSync(runtimeStatePaths(migrationRoot).state, JSON.stringify(v4));
 		expect(readHostedRuntimeState(migrationRoot).workspaces[provisioned.workspace.workspaceId]).toMatchObject({ ownerKind: "pi", piSessionId: "session_writer" });
