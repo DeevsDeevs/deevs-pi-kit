@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -28,7 +29,15 @@ it.each(["claude-code", "codex"] as const)("compiles %s native configuration wit
 	expect(launch.args.join("\n")).not.toContain("trust_level");
 	const context = driver === "claude-code" ? launch.args[launch.args.indexOf("--append-system-prompt") + 1]! : launch.args.at(-1)!;
 	expect(context).toContain("Selected persona context.");
-	expect(context).toContain(readFileSync(resolve("skills/collaborator-messaging/SKILL.md"), "utf8").replace(/\s+/gu, " ").trim());
+	const skill = readFileSync(resolve("skills/collaborator-messaging/SKILL.md"), "utf8");
+	expect(context).toContain(resolve("skills/collaborator-messaging/SKILL.md"));
+	expect(context).not.toContain(skill.replace(/\s+/gu, " ").trim());
+	expect(context).toContain("Wait for explicit operator input");
+	expect(context).toContain("Before using messaging tools, read the shared skill");
+	const hash = (content: string) => createHash("sha256").update(JSON.stringify({ version: 1, driver, profile: "workspace-write", policy: "native-user-configuration", args: launch.args, tools: toolDefinitions, skill: content })).digest("hex");
+	expect(launch.configurationHash).toBe(hash(skill));
+	expect(launch.configurationHash).not.toBe(hash(`${skill}\nChanged policy.`));
+	expect(escapedCommandBytes(driver, launch.args)).toBeLessThanOrEqual(4000);
 	expect(nativeMessagingLaunch({ ...config, personaPrompt: "Selected persona context." }).configurationHash).toBe(launch.configurationHash);
 	if (driver === "claude-code") {
 		const servers = JSON.parse(launch.args[launch.args.indexOf("--mcp-config") + 1]!).mcpServers;
@@ -39,6 +48,26 @@ it.each(["claude-code", "codex"] as const)("compiles %s native configuration wit
 		expect(launch.args[launch.args.indexOf("--config") + 1]).toBe(`mcp_servers.${launch.serverName}={command=${JSON.stringify(realpathSync(process.execPath))},args=${JSON.stringify([resolve("extensions/runtime/mcp/main.mjs"), launch.descriptorPath])}}`);
 		expect(launch.args.at(-2)).toBe("--");
 	}
+});
+
+function escapedCommandBytes(driver: "claude-code" | "codex", args: string[]): number {
+	return Buffer.byteLength([driver === "claude-code" ? "claude" : "codex", ...args].map(arg => `'${arg.replaceAll("'", "'\\''")}'`).join(" "));
+}
+
+it.each(["claude-code", "codex"] as const)("bounds the escaped %s launch command before authority or process creation", driver => {
+	const config = input(driver);
+	const initial = nativeMessagingLaunch(config);
+	const remaining = 4000 - escapedCommandBytes(driver, initial.args);
+	expect(remaining).toBeGreaterThan(0);
+	const personaPrompt = config.personaPrompt + "x".repeat(remaining);
+	expect(escapedCommandBytes(driver, nativeMessagingLaunch({ ...config, personaPrompt }).args)).toBe(4000);
+	expect(() => nativeMessagingLaunch({ ...config, personaPrompt: `${personaPrompt}x` })).toThrow("4000-byte");
+	for (const oversized of ["x".repeat(4001), "'".repeat(1100), "💡".repeat(1100)]) {
+		expect(() => nativeMessagingLaunch({ ...config, personaPrompt: oversized })).toThrow("4000-byte");
+		expect(() => nativeMessagingLaunch({ ...config, model: oversized })).toThrow("4000-byte");
+		expect(() => nativeMessagingLaunch({ ...config, root: `${config.root}/${oversized}` })).toThrow("4000-byte");
+	}
+	expect(readdirSync(config.root)).toEqual([]);
 });
 
 it.each(["claude-code", "codex"] as const)("rejects remaining %s argument control characters before launch", driver => {
