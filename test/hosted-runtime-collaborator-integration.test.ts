@@ -880,14 +880,14 @@ describe("hosted collaborator Pi integration", () => {
 		{ stdout: JSON.stringify({ error: { code: "PRIVATE_START_DETAIL" } }), expected: "unclassified" },
 		{ stdout: "PRIVATE_START_DETAIL", expected: "unclassified" },
 		{ stdout: JSON.stringify({ error: { code: "agent_pane_busy", message: "PRIVATE_START_DETAIL".repeat(1000) } }), expected: "unclassified" },
-	])("reports only bounded known native start diagnostics: $expected", async ({ stdout, expected }) => {
+	].flatMap(testCase => (["stdout", "stderr"] as const).map(stream => ({ ...testCase, stream }))))("reports only bounded known native start diagnostics: $stream/$expected", async ({ stdout, expected, stream }) => {
 		const test = await nativeWriterSetup("codex");
 		const exec = test.pi.exec;
 		let starts = 0;
 		test.pi.exec = async (command, args) => {
 			if (command === "herdr" && args[0] === "agent" && args[1] === "start") {
 				starts++;
-				return { code: 1, stdout, stderr: "PRIVATE_START_DETAIL", killed: false };
+				return { code: 1, stdout: stream === "stdout" ? stdout : "", stderr: stream === "stderr" ? stdout : "PRIVATE_START_DETAIL", killed: false };
 			}
 			return exec(command, args);
 		};
@@ -1506,7 +1506,7 @@ describe("hosted collaborator Pi integration", () => {
 		await test.integration.sessionShutdown();
 	});
 
-	it("releases native Auto capacity only after typed exact host absence", async () => {
+	it.each(["stdout", "stderr"] as const)("releases native Auto capacity only after typed exact host absence on %s", async stream => {
 		for (const [hostCode, releases] of [["tab_not_found", true], ["host_unavailable", false]] as const) {
 			const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
 			let launchRequest: Request | undefined;
@@ -1524,7 +1524,10 @@ describe("hosted collaborator Pi integration", () => {
 				if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9", terminal_id: "term_9" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
 				if (args[0] === "agent" && args[1] === "start") return { code: 1, stdout: "", stderr: "dispatch uncertain", killed: false };
 				if (args[0] === "tab" && args[1] === "close") return { code: 1, stdout: "", stderr: "close uncertain", killed: false };
-				if (args[0] === "tab" && args[1] === "get") return { code: 1, stdout: JSON.stringify({ error: { code: hostCode, message: "typed" } }), stderr: "", killed: false };
+				if (args[0] === "tab" && args[1] === "get") {
+					const output = JSON.stringify({ error: { code: hostCode, message: "typed" } });
+					return { code: 1, stdout: stream === "stdout" ? output : "", stderr: stream === "stderr" ? output : "", killed: false };
+				}
 				return { code: 0, stdout: "{}", stderr: "", killed: false };
 			});
 			await test.integration.sessionStart(test.ctx as never);
