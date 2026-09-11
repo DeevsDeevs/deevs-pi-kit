@@ -1172,7 +1172,7 @@ export class HostedRuntimeIntegration {
 			const started = await this.pi.exec("herdr", ["agent", "start", agentName, "--kind", kind, "--pane", paneId, "--timeout", "30000", ...(nativeArgs.length ? ["--", ...nativeArgs] : [])], { timeout: 35_000 });
 			if (started.code !== 0) {
 				const knownCodes = ["invalid_agent_name", "unsupported_agent_kind", "invalid_agent_argument", "invalid_agent_timeout", "agent_pane_not_found", "agent_pane_busy", "agent_pane_unavailable", "agent_start_input_failed", "agent_name_taken", "agent_start_failed", "agent_name_lost", "timeout"];
-				const diagnostic = (started.stdout.length <= 8192 ? knownCodes.find(code => isHerdrError(started.stdout, code)) : undefined) ?? "unclassified";
+				const diagnostic = knownCodes.find(code => isHerdrError(started, code)) ?? "unclassified";
 				throw new HostedRuntimeClientError("host_unavailable", `Herdr could not start the interactive ${kind} collaborator in ${paneId} (exit ${started.code}; Herdr ${diagnostic}); its tab and launch authority were preserved.`);
 			}
 			this.requireCurrentScope(current);
@@ -1211,7 +1211,7 @@ export class HostedRuntimeIntegration {
 					const closed = await this.pi.exec("herdr", resource, { timeout: 5_000 });
 					if (closed.code !== 0) {
 						const stillLive = await this.pi.exec("herdr", [tabId ? "tab" : "pane", "get", tabId ?? paneId!], { timeout: 2_000 });
-						if (!isHerdrError(stillLive.stdout, tabId ? "tab_not_found" : "pane_not_found")) throw new HostedCollaboratorStartError("host_unavailable", "Ambiguous native collaborator startup could not be terminated; its capacity lock and recovery artifacts were preserved.", true);
+						if (!isHerdrError(stillLive, tabId ? "tab_not_found" : "pane_not_found")) throw new HostedCollaboratorStartError("host_unavailable", "Ambiguous native collaborator startup could not be terminated; its capacity lock and recovery artifacts were preserved.", true);
 					}
 				}
 				if (workspace) await this.client.call("workspace.retain", { ...authority, workspaceId: workspace.workspaceId });
@@ -2307,8 +2307,11 @@ function isBooleanValue(value: RuntimeResponse): value is boolean {
 	try { return Boolean.prototype.valueOf.call(value) === value; } catch { return false; }
 }
 
-function isHerdrError(stdout: string, expectedCode: string): boolean {
-	try { return strictObject(strictObject(JSON.parse(stdout), "Herdr response").error, "Herdr error").code === expectedCode; } catch { return false; }
+function isHerdrError(result: { stdout: string; stderr: string }, expectedCode: string): boolean {
+	return [result.stdout, result.stderr].some(output => {
+		if (output.length > 8192) return false;
+		try { return strictObject(strictObject(JSON.parse(output), "Herdr response").error, "Herdr error").code === expectedCode; } catch { return false; }
+	});
 }
 
 function shellQuote(value: string): string {
