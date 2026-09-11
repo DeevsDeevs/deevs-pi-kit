@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { execFile } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +7,7 @@ import { DirectoryMonitorManager } from "../extensions/runtime/service/monitor.t
 import { dispatchHostedLine, type HostedProtocolContext } from "../extensions/runtime/service/protocol.ts";
 import {
 	deriveTargetKey,
+	HerdrCliHostVerifier,
 	RegistrationError,
 	RuntimeRegistrationManager,
 	type HostedHostVerifier,
@@ -14,6 +16,12 @@ import {
 } from "../extensions/runtime/service/registration.ts";
 import { HostedStateStore, pendingHostedEvents } from "../extensions/runtime/service/state.ts";
 import { HostedWakeCoordinator } from "../extensions/runtime/service/wake.ts";
+
+const herdrResult = vi.hoisted(() => ({ value: {} as unknown }));
+vi.mock("node:child_process", async importOriginal => ({
+	...await importOriginal<typeof import("node:child_process")>(),
+	execFile: vi.fn((_command: string, _args: string[], _options: object, callback: (error: Error | null, stdout: string) => void) => callback(null, JSON.stringify({ result: herdrResult.value }))),
+}));
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -72,6 +80,31 @@ function setup() {
 	};
 	return { root, projectRoot, watchRoot, sessionFile, store, host, registrations, input, setNow: (value: number) => { now = value; } };
 }
+
+describe("Herdr exact-terminal verification", () => {
+	const own = { agent: "pi", pane_id: "w1:p1", terminal_id: "term_1", cwd: "/project", agent_session: { source: "herdr:pi", agent: "pi", kind: "path", value: "/session.jsonl" }, agent_status: "idle", state_change_seq: 1 };
+	const unrelated = { agent: "codex", pane_id: "w2:p1", terminal_id: "term_2", cwd: "/other", agent_status: "idle", state_change_seq: 1 };
+
+	it("does not require session identity from an unrelated terminal", async () => {
+		herdrResult.value = { agents: [unrelated, own] };
+		await expect(new HerdrCliHostVerifier().findTerminal("term_1")).resolves.toMatchObject({ terminalId: "term_1", paneId: "w1:p1", agentSession: own.agent_session });
+		expect(execFile).toHaveBeenCalledWith("herdr", ["agent", "list"], expect.objectContaining({ timeout: 2000 }), expect.any(Function));
+		herdrResult.value = { agent: unrelated };
+		await expect(new HerdrCliHostVerifier().getPane("w2:p1")).rejects.toMatchObject({ code: "host_unavailable" });
+	});
+
+	it.each([
+		{ name: "malformed matching identity", agents: [{ ...unrelated, terminal_id: "term_1" }], code: "host_unavailable" },
+		{ name: "duplicate with malformed matching identity", agents: [own, { ...unrelated, terminal_id: "term_1" }], code: "identity_mismatch" },
+		{ name: "missing routing identity", agents: [own, {}], code: "host_unavailable" },
+		{ name: "wrong routing identity type", agents: [own, { terminal_id: 42 }], code: "host_unavailable" },
+		{ name: "absent terminal", agents: [unrelated], code: "identity_mismatch" },
+		{ name: "malformed list", agents: null, code: "host_unavailable" },
+	])("fails closed for $name", async ({ agents, code }) => {
+		herdrResult.value = { agents };
+		await expect(new HerdrCliHostVerifier().findTerminal("term_1")).rejects.toMatchObject({ code });
+	});
+});
 
 describe("hosted Pi registration", () => {
 	it("derives a canonical durable target and idempotently renews one client generation", async () => {

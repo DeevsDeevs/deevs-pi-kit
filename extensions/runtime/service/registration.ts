@@ -328,9 +328,12 @@ export class HerdrCliHostVerifier implements HostedHostVerifier {
 		const response = await runHerdr(["agent", "list"]);
 		const agents = strictObject(strictObject(response, "Herdr response").result, "Herdr result").agents;
 		if (!Array.isArray(agents)) throw new RegistrationError("host_unavailable", "Herdr agent list is malformed.");
-		const matches = agents.map(parseLiveAgent).filter((agent) => agent.terminalId === terminalId);
+		const matches = agents.filter(agent => {
+			try { return text(strictObject(agent, "Herdr agent").terminal_id) === terminalId; }
+			catch { throw new RegistrationError("host_unavailable", "Herdr returned malformed agent routing identity."); }
+		});
 		if (matches.length !== 1) throw new RegistrationError("identity_mismatch", "The registered terminal is not uniquely live in Herdr.");
-		return matches[0]!;
+		return parseLiveAgent(matches[0]);
 	}
 
 	async getPaneIdentity(paneId: string): Promise<HostedPaneIdentity> {
