@@ -216,6 +216,7 @@ interface ManagedAgentControl extends Omit<ManagedAgentBinding, "messagingConfig
 }
 
 interface ManagedAgentStatus {
+	name: string;
 	paneId: string;
 	terminalId: string;
 	status: "idle" | "working" | "blocked" | "done" | "unknown";
@@ -1911,7 +1912,7 @@ function parseManagedAgentControl(value: RestoredSessionData, root: string, ctx:
 
 function parseStartedAgent(value: string, paneId: string, terminalId: string, kind: "claude" | "codex", agentName: string): ManagedAgentControl["agentSession"] {
 	const agent = parseManagedAgent(value);
-	if (agent.paneId !== paneId || agent.terminalId !== terminalId || agent.agentSession.source !== `herdr:${kind}` || agent.agentSession.agent !== kind || agent.agentSession.value !== agentName) throw new HostedRuntimeClientError("identity_mismatch", "Herdr started agent identity does not match the authorized collaborator target.");
+	if (agent.paneId !== paneId || agent.terminalId !== terminalId || agent.agentSession.source !== `herdr:${kind}` || agent.agentSession.agent !== kind || agent.name !== agentName) throw new HostedRuntimeClientError("identity_mismatch", "Herdr started agent identity does not match the authorized collaborator target.");
 	return agent.agentSession;
 }
 
@@ -1923,8 +1924,9 @@ function parseManagedAgent(value: string): ManagedAgentStatus {
 	const agentKind = text(agent.agent);
 	const session = agent.agent_session === undefined ? { source: `herdr:${agentKind}`, agent: agentKind, kind: "id" as const, value: text(agent.name) } : strictObject(agent.agent_session, "Herdr agent session");
 	if (session.kind !== "id" && session.kind !== "path") throw new HostedRuntimeClientError("invalid_response", "Herdr agent session kind is invalid.");
+	if (session.agent !== agentKind || session.source !== `herdr:${agentKind}`) throw new HostedRuntimeClientError("identity_mismatch", "Herdr agent session does not match its reported driver.");
 	if (agent.agent_status !== "idle" && agent.agent_status !== "working" && agent.agent_status !== "blocked" && agent.agent_status !== "done" && agent.agent_status !== "unknown") throw new HostedRuntimeClientError("invalid_response", "Herdr agent status is invalid.");
-	return { paneId: text(agent.pane_id), terminalId: text(agent.terminal_id), status: agent.agent_status, focused: booleanValue(agent.focused), agentSession: { source: text(session.source), agent: text(session.agent), kind: session.kind, value: text(session.value) } };
+	return { name: text(agent.name), paneId: text(agent.pane_id), terminalId: text(agent.terminal_id), status: agent.agent_status, focused: booleanValue(agent.focused), agentSession: { source: text(session.source), agent: text(session.agent), kind: session.kind, value: text(session.value) } };
 }
 
 function managedAgentName(protocol: string, participantId: string, bridgeId: string): string {

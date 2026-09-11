@@ -153,7 +153,7 @@ async function nativeWriterSetup(driver: "claude-code" | "codex", fault: "none" 
 		if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
 		if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9", terminal_id: "term_native" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
 		if (args[0] === "pane" && args[1] === "get") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p9", terminal_id: "term_native", cwd: join(test.root, "worktree") } } }), stderr: "", killed: false };
-		if (args[0] === "agent" && args[1] === "start") return { code: 0, stdout: JSON.stringify({ result: { agent: { agent: driver === "claude-code" ? "claude" : "codex", name: args[2], agent_status: "idle", focused: false, pane_id: "w1:p9", terminal_id: "term_native" } } }), stderr: "", killed: false };
+		if (args[0] === "agent" && args[1] === "start") return { code: 0, stdout: JSON.stringify({ result: { agent: { agent: driver === "claude-code" ? "claude" : "codex", name: args[2], agent_session: { source: `herdr:${driver === "claude-code" ? "claude" : "codex"}`, agent: driver === "claude-code" ? "claude" : "codex", kind: "id", value: "11111111-2222-4333-8444-555555555555" }, agent_status: "idle", focused: false, pane_id: "w1:p9", terminal_id: "term_native" } } }), stderr: "", killed: false };
 		return { code: 0, stdout: "{}", stderr: "", killed: false };
 	});
 	return test;
@@ -809,6 +809,7 @@ describe("hosted collaborator Pi integration", () => {
 		await test.integration.sessionStart(test.ctx as never);
 		await expect(test.integration.startCollaborator({ participantId: "native", protocol: "review", callerParticipantId: "main", driver, profile: "workspace-write" }, test.ctx as never)).resolves.toMatchObject({ started: true, paneId: "w1:p9" });
 		const registered = test.requests.find(request => request.method === "bridge.register")!;
+		expect(registered.params.agentSession).toEqual({ source: `herdr:${driver === "claude-code" ? "claude" : "codex"}`, agent: driver === "claude-code" ? "claude" : "codex", kind: "id", value: "11111111-2222-4333-8444-555555555555" });
 		const issue = test.requests.find(request => request.method === "messaging.issue" && request.params.participantKey === "participant_native")!;
 		expect(issue.params.expectedGeneration).toBe("lease_native");
 		expect(test.requests.indexOf(issue)).toBeGreaterThan(test.requests.indexOf(registered));
@@ -817,12 +818,37 @@ describe("hosted collaborator Pi integration", () => {
 		for (const flag of ["--safe-mode", "--permission-mode", "--ask-for-approval", "--disable", "--tools"]) expect(start.args).not.toContain(flag);
 		expect(start.args.join("\n")).not.toContain("trust_level");
 		expect(test.execCalls.some(call => call.args[0] === "agent" && call.args[1] === "prompt")).toBe(false);
-		expect(test.entries.filter(entry => entry.customType === HOSTED_MANAGED_AGENT_CONTROL_ENTRY).at(-1)?.data).toMatchObject({ version: 2, messagingConfigured: true, registrationPending: false, state: "active", clientGeneration: registered.params.clientGeneration });
+		expect(test.entries.filter(entry => entry.customType === HOSTED_MANAGED_AGENT_CONTROL_ENTRY).at(-1)?.data).toMatchObject({ version: 2, messagingConfigured: true, registrationPending: false, state: "active", clientGeneration: registered.params.clientGeneration, agentSession: registered.params.agentSession });
 		const history = JSON.stringify(test.entries);
 		expect(history).not.toContain(String(registered.params.launchToken));
 		expect(history).not.toContain(String(registered.params.reconnectToken));
 		expect(history).not.toContain('"launchToken"');
 		expect(history).not.toContain('"reconnectToken"');
+		await test.integration.sessionShutdown();
+	});
+
+	it.each(["managed_name", "missing_name", "pane", "terminal", "driver", "session_driver", "session_kind"] as const)("preserves native startup on mismatched %s without registering it", async mismatch => {
+		const test = await nativeWriterSetup("claude-code");
+		const exec = test.pi.exec;
+		test.pi.exec = async (command, args) => {
+			const result = await exec(command, args);
+			if (command !== "herdr" || args[0] !== "agent" || args[1] !== "start") return result;
+			const response = JSON.parse(result.stdout);
+			const agent = response.result.agent;
+			if (mismatch === "managed_name") { agent.agent_session.value = agent.name; agent.name = "wrong-managed-name"; }
+			if (mismatch === "missing_name") delete agent.name;
+			if (mismatch === "pane") agent.pane_id = "w1:p2";
+			if (mismatch === "terminal") agent.terminal_id = "term_other";
+			if (mismatch === "driver") agent.agent = "codex";
+			if (mismatch === "session_driver") { agent.agent_session.source = "herdr:codex"; agent.agent_session.agent = "codex"; }
+			if (mismatch === "session_kind") agent.agent_session.kind = "unknown";
+			return { ...result, stdout: JSON.stringify(response) };
+		};
+		await test.integration.sessionStart(test.ctx as never);
+		await expect(test.integration.startCollaborator({ participantId: "native", protocol: "review", callerParticipantId: "main", driver: "claude-code", profile: "workspace-write" }, test.ctx as never)).rejects.toThrow();
+		expect(test.requests.some(request => request.method === "bridge.register")).toBe(false);
+		expect(test.requests.some(request => request.method === "messaging.issue" && request.params.participantKey === "participant_native")).toBe(false);
+		expect(test.execCalls.some(call => call.args[0] === "tab" && call.args[1] === "close")).toBe(false);
 		await test.integration.sessionShutdown();
 	});
 
