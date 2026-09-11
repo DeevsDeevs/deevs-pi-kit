@@ -875,6 +875,34 @@ describe("hosted collaborator Pi integration", () => {
 		await test.integration.sessionShutdown();
 	});
 
+	it.each([
+		{ stdout: JSON.stringify({ error: { code: "agent_pane_busy", message: "PRIVATE_START_DETAIL" } }), expected: "agent_pane_busy" },
+		{ stdout: JSON.stringify({ error: { code: "PRIVATE_START_DETAIL" } }), expected: "unclassified" },
+		{ stdout: "PRIVATE_START_DETAIL", expected: "unclassified" },
+		{ stdout: JSON.stringify({ error: { code: "agent_pane_busy", message: "PRIVATE_START_DETAIL".repeat(1000) } }), expected: "unclassified" },
+	])("reports only bounded known native start diagnostics: $expected", async ({ stdout, expected }) => {
+		const test = await nativeWriterSetup("codex");
+		const exec = test.pi.exec;
+		let starts = 0;
+		test.pi.exec = async (command, args) => {
+			if (command === "herdr" && args[0] === "agent" && args[1] === "start") {
+				starts++;
+				return { code: 1, stdout, stderr: "PRIVATE_START_DETAIL", killed: false };
+			}
+			return exec(command, args);
+		};
+		await test.integration.sessionStart(test.ctx as never);
+		const error = await test.integration.startCollaborator({ participantId: "native", protocol: "review", callerParticipantId: "main", driver: "codex", profile: "workspace-write" }, test.ctx as never).catch(error => error);
+		expect(error).toBeInstanceOf(Error);
+		expect(error.message).toContain(`exit 1; Herdr ${expected}`);
+		expect(error.message).toContain("preserved");
+		expect(JSON.stringify([error.message, test.entries, test.notifications])).not.toContain("PRIVATE_START_DETAIL");
+		expect(starts).toBe(1);
+		expect(test.execCalls.some(call => call.args[0] === "tab" && call.args[1] === "close")).toBe(false);
+		expect(test.requests.some(request => request.method === "bridge.register" || request.method === "bridge.launch.recover")).toBe(false);
+		await test.integration.sessionShutdown();
+	});
+
 	it.each([false, true])("preserves explicitly confirmed normal-native Auto ambiguity (batch: %s)", async batch => {
 		const test = await nativeWriterSetup("codex", "lost_register_response", true);
 		await test.integration.sessionStart(test.ctx as never);
