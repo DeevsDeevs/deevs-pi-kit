@@ -14,8 +14,9 @@ function input(driver: "claude-code" | "codex") {
 }
 
 it.each(["claude-code", "codex"] as const)("compiles %s native configuration without processes, credentials or permission overrides", driver => {
-	const config = input(driver);
+	const config = { ...input(driver), personaPrompt: "Selected persona\r\n\tcontext." };
 	const launch = nativeMessagingLaunch(config);
+	for (const arg of launch.args) expect(arg).not.toMatch(/\p{Cc}/u);
 	expect(readdirSync(config.root)).toEqual([]);
 	expect(launch.descriptorPath.startsWith(`${config.root}/messaging-`)).toBe(true);
 	expect(launch.configurationHash).toMatch(/^[a-f0-9]{64}$/);
@@ -26,8 +27,9 @@ it.each(["claude-code", "codex"] as const)("compiles %s native configuration wit
 	expect(launch.args.join("\n")).not.toContain("developer_instructions=");
 	expect(launch.args.join("\n")).not.toContain("trust_level");
 	const context = driver === "claude-code" ? launch.args[launch.args.indexOf("--append-system-prompt") + 1]! : launch.args.at(-1)!;
-	expect(context).toContain(config.personaPrompt);
-	expect(context).toContain(readFileSync(resolve("skills/collaborator-messaging/SKILL.md"), "utf8"));
+	expect(context).toContain("Selected persona context.");
+	expect(context).toContain(readFileSync(resolve("skills/collaborator-messaging/SKILL.md"), "utf8").replace(/\s+/gu, " ").trim());
+	expect(nativeMessagingLaunch({ ...config, personaPrompt: "Selected persona context." }).configurationHash).toBe(launch.configurationHash);
 	if (driver === "claude-code") {
 		const servers = JSON.parse(launch.args[launch.args.indexOf("--mcp-config") + 1]!).mcpServers;
 		expect(Object.keys(servers)).toEqual([launch.serverName]);
@@ -37,6 +39,15 @@ it.each(["claude-code", "codex"] as const)("compiles %s native configuration wit
 		expect(launch.args[launch.args.indexOf("--config") + 1]).toBe(`mcp_servers.${launch.serverName}={command=${JSON.stringify(realpathSync(process.execPath))},args=${JSON.stringify([resolve("extensions/runtime/mcp/main.mjs"), launch.descriptorPath])}}`);
 		expect(launch.args.at(-2)).toBe("--");
 	}
+});
+
+it.each(["claude-code", "codex"] as const)("rejects remaining %s argument control characters before launch", driver => {
+	const config = input(driver);
+	for (const control of ["\u0000", "\u001b", "\u007f", "\u0085"]) {
+		expect(() => nativeMessagingLaunch({ ...config, personaPrompt: `Context${control}` })).toThrow("control characters");
+		expect(() => nativeMessagingLaunch({ ...config, model: `model${control}` })).toThrow("control characters");
+	}
+	expect(readdirSync(config.root)).toEqual([]);
 });
 
 it("binds configuration and server identity to the exact planned client", () => {
