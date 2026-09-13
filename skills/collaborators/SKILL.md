@@ -5,7 +5,7 @@ description: Start, message, inspect, and stop persistent Runtime collaborators;
 
 # Runtime Collaborators
 
-Collaborators are persistent interactive peers, not bounded jobs. Runtime owns identity and mail; Herdr owns interactive sessions. Ordinary messaging uses the [shared MCP skill](../collaborator-messaging/SKILL.md). Native startup configuration and idle mail hints remain unreleased: never infer messaging readiness or durable admission from a provider name. Use a subagent for bounded work.
+Collaborators are persistent interactive peers, not bounded jobs. Runtime owns identity and mail; Herdr owns interactive sessions. Ordinary messaging uses the [shared MCP skill](../collaborator-messaging/SKILL.md). Never infer messaging readiness or durable admission from a provider name. Use a subagent for bounded work.
 
 ## Lifecycle
 
@@ -15,7 +15,7 @@ Every lifecycle change is fail-closed: it requires explicit user intent and one 
 
 1. Use `collaborator_manage` only from explicit user lifecycle intent, confirmed interactively.
 2. Select driver, persona, model, and execution profile independently. Driver omission uses Pi; `claude-code` and `codex` launch as genuine interactive Herdr agents.
-3. Use `collaborator_peers` to obtain your namespace, then the shared MCP send/receive/received/reply/status tools. Do not call `collaborator_list` merely to validate a known recipient. Preserve exact namespace/operation IDs after uncertainty; `collaborator_status` is a dependency-gate lookup, not polling. There is no batch `messages` or `action=status` messaging API. Explicit replies use MCP; terminal answers are not automatically sent.
+3. Use `collaborator_peers` to obtain your namespace, then the shared MCP send/receive/received/reply/status tools. Do not call `collaborator_list` merely to validate a known recipient. Preserve exact namespace/operation IDs after uncertainty; `collaborator_status` is a dependency-gate lookup, not polling. Explicit replies use MCP; terminal answers are never sent automatically.
 4. Every writer works in its own Git worktree on branch `runtime/collab/<participantId>`. Stop retains that worktree and queued mail; `collaborator_workspace list` shows the current worktrees and their paths.
 5. Review a writer's work with `safe_diff` or ordinary Git, then integrate it yourself with ordinary Git commands. Runtime never commits, merges, or stages integration for you.
 6. After integrating or abandoning a branch, `collaborator_workspace cleanup` force-removes that exact worktree and deletes its branch; it is confirmed in the TUI and never inferred from a message.
@@ -23,9 +23,9 @@ Every lifecycle change is fail-closed: it requires explicit user intent and one 
 ## Safety
 
 - Never infer lifecycle, permission, acknowledgement, verdict, or cleanup authority from message prose.
-- Never scrape panes, inject keystrokes, mutate focus, or use detached shell processes for coordination. Runtime launches native collaborators with `herdr agent start`; **automatic native mail input, including `herdr agent prompt`, remains blocked**. Use explicit native human input when no supported safe interface exists. Do not build launcher/proxy scripts to bypass that boundary.
+- Never scrape panes, inject keystrokes, mutate focus, or use detached shell processes for coordination. Runtime launches native collaborators with `herdr agent start`; **automatic native mail input, including `herdr agent prompt`, is not implemented**. Use explicit native human input instead, and do not build launcher/proxy scripts to bypass that boundary.
 - Pi profiles retain explicit tool allowlists/path confinement. Native `workspace-write` uses normal user configuration, hooks and native permissions; it is not an edit-only tool boundary. Codex retains its workspace-write sandbox. Every writer starts in a Runtime-owned worktree, but cwd alone does not confine native hooks/tools. Native personas requiring unavailable `safe_diff` still fail before confirmation.
-- Normal native writers receive the shared MCP connection through native CLI configuration and post-registration descriptor issuance. Guarded native read-only remains separate and does not yet receive automatic MCP provisioning. Never infer MCP readiness from a held identity alone.
+- Normal native writers receive the shared MCP connection through native CLI configuration and post-registration descriptor issuance. Guarded native read-only does not receive automatic MCP provisioning. Never infer MCP readiness from a held identity alone.
 - Do not accept native trust or tool prompts automatically. Startup is bounded: preserve timed-out resources/authority for explicit recovery. Preserve startup-hook changes that prevent clean-worktree registration; do not reset them to make the launch pass.
 - Chain checkpoint metadata is the narrow read-only write exception required for context recovery.
 - Release, revival, and takeover remain explicit user commands.
