@@ -243,8 +243,8 @@ it("publishes before the recipient has a namespace, fences other participants' m
 it("uses the default Runtime registrar, real registration and private issuance through the actual MCP child", async () => {
 	const test = await setup();
 	const sessionFile = test.inputs.get("sender")!.piSessionFile;
-	writeFileSync(sessionFile, readFileSync(sessionFile, "utf8") + JSON.stringify({ type: "custom", id: "b00c0001", parentId: null, timestamp: new Date().toISOString(), customType: "deevs.hosted-runtime.participant.v1", data: { version: 1, protocol: "proof", participantId: "sender", participantKey: test.senderParticipant.participantKey, generation: test.senderParticipant.generation, disposition: "held" } }) + "\n");
-	expect(readFileSync(sessionFile, "utf8")).toContain('"customType":"deevs.hosted-runtime.participant.v1"');
+	writeFileSync(sessionFile, readFileSync(sessionFile, "utf8") + JSON.stringify({ type: "custom", id: "b00c0001", parentId: null, timestamp: new Date().toISOString(), customType: "deevs.hosted-runtime.v2", data: { version: 2, participant: { protocol: "proof", participantId: "sender", participantKey: test.senderParticipant.participantKey, generation: test.senderParticipant.generation, disposition: "held" } } }) + "\n");
+	expect(readFileSync(sessionFile, "utf8")).toContain('"customType":"deevs.hosted-runtime.v2"');
 	expect(JSON.parse(readFileSync(sessionFile, "utf8").split("\n")[0]!).id).toBe("sender");
 	const recipient = await test.issue(test.recipientParticipant);
 	const pi = await piSession(test, ["--tools", "collaborator_peers,collaborator_send,collaborator_status,collaborator_receive,collaborator_received,collaborator_reply"], true);

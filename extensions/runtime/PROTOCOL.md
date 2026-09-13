@@ -174,7 +174,7 @@ A trusted launch is ordered:
 
 There are no launch tokens, reconnect tokens, launch digests, configuration hashes, or launch reservation records. The participant generation is the only lease, and the launching Pi registers the bound target with its own registration authority.
 
-Native control metadata is current-only version 3: session history stores an allowlisted, credential-free binding (owner session/file/cwd, project, cwd, agent name, target key, driver, profile, protocol, participant ID, client and holder generation, pane/terminal, managed session) plus typed lifecycle state. Malformed metadata fails closed to `needs_attention` and is neither migrated nor rewritten.
+Native control metadata is part of the current-only `deevs.hosted-runtime.v2` session entry: session history stores an allowlisted, credential-free binding (owner session/file/cwd, project, cwd, agent name, target key, driver, profile, protocol, participant ID, client and holder generation, pane/terminal, managed session) plus typed lifecycle state. Malformed metadata fails closed to `needs_attention` and is neither migrated nor rewritten.
 
 Normal native `workspace-write` preserves user configuration, hooks and native permission/trust prompts. Claude receives appended system context and an inline MCP server entry; Codex receives a server configuration override and startup user context, not replacement developer/system instructions. Native context references the package's shared messaging skill by absolute path instead of embedding its body; after explicit operator input, the native client must read that file before messaging. The compiler conservatively caps the single-quoted, UTF-8 launch command at 4000 bytes, before native dispatch (workspace/tab allocation can already have occurred). Oversized paths, models or persona context fail closed; no truncated prompt or alternate launcher is used. Guarded read-only retains its prior startup restrictions, including the exact Claude trust-store update and Codex trusted-project override/hook disable; it does not receive the new MCP provisioning. Never describe normal configuration as an edit-only tool boundary or automatically accept its prompts. Human prompts remain subject to the existing 30-second start deadline. Timeout and hook-created worktree changes are preserved for explicit recovery, not bypassed or reset.
 
@@ -287,6 +287,8 @@ Pi receives pending work through its in-process heartbeat. Runtime does not prom
 Monitor scope remains direct-child creation only; recursive/content/modification/deletion monitoring is deferred.
 
 ## Persistence and security boundary
+
+Pi persists its whole Runtime collaboration state in one hidden session entry, `deevs.hosted-runtime.v2`: participant identity, collaborator launch metadata, the collaborator worktree, and managed native agent controls. Each append writes the current record; restore reads the last one on the branch. Older entry kinds are ignored rather than migrated, and a malformed record fails closed — no identity, read-only Pi launch enforcement, and managed controls that require attention.
 
 Runtime state uses strict schema validation and atomic temporary-write/fsync/rename/directory-fsync replacement. Corruption fails closed.
 

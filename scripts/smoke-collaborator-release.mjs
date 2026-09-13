@@ -30,7 +30,7 @@ const herdrIntegration = join(homedir(), ".pi", "agent", "extensions", "herdr-ag
 const runtimeExtension = join(repo, "extensions", "runtime", "index.ts");
 const missionExtension = join(repo, "extensions", "mission", "index.ts");
 const missionHoldExtension = join(base, "mission-hold.ts");
-const participantEntry = "deevs.hosted-runtime.participant.v1";
+const sessionEntry = "deevs.hosted-runtime.v2";
 const hostedEntry = "deevs.hosted-runtime.v1";
 
 if (!existsSync(herdrIntegration)) throw new Error(`Herdr Pi integration is missing: ${herdrIntegration}`);
@@ -177,18 +177,18 @@ async function createProductionMission(pi) {
 }
 
 async function acquire(pi, participantId) {
-	const before = sessionEntries(pi.sessionFile).filter((entry) => entry.type === "custom" && entry.customType === participantEntry).length;
+	const before = sessionEntries(pi.sessionFile).filter((entry) => entry.type === "custom" && entry.customType === sessionEntry).length;
 	cli("agent", "prompt", pi.pane.pane_id, `/runtime collaborate review ${participantId}`);
 	await waitFor(() => participant("review", participantId)?.state === "held", `${participantId} did not become held`);
 	await waitFor(() => {
-		const entries = sessionEntries(pi.sessionFile).filter((entry) => entry.type === "custom" && entry.customType === participantEntry);
+		const entries = sessionEntries(pi.sessionFile).filter((entry) => entry.type === "custom" && entry.customType === sessionEntry);
 		const latest = entries.at(-1);
-		return entries.length > before && latest?.data?.participantId === participantId && latest.data.disposition === "held";
+		return entries.length > before && latest?.data?.participant?.participantId === participantId && latest.data.participant.disposition === "held";
 	}, `${participantId} identity was not persisted`);
 }
 
 async function launchCollaborator(parent, participantId) {
-	const callerEntriesBefore = sessionEntries(parent.sessionFile).filter((entry) => entry.type === "custom" && entry.customType === participantEntry).length;
+	const callerEntriesBefore = sessionEntries(parent.sessionFile).filter((entry) => entry.type === "custom" && entry.customType === sessionEntry).length;
 	cli("agent", "prompt", parent.pane.pane_id, "release-gate collaborator tool launch");
 	await waitFor(() => readPane(parent.pane.pane_id, 200).includes("Start Runtime collaborator?"), "collaborator_manage did not request trusted confirmation", 60_000);
 	cli("pane", "send-keys", parent.pane.pane_id, "y", "enter");
@@ -198,9 +198,9 @@ async function launchCollaborator(parent, participantId) {
 	}, `${participantId} did not acquire through the collaborator_manage tool`, 60_000);
 	await waitFor(() => participant("review", "alpha")?.state === "held", "collaborator_manage did not acquire the caller identity");
 	await waitFor(() => {
-		const entries = sessionEntries(parent.sessionFile).filter((entry) => entry.type === "custom" && entry.customType === participantEntry);
+		const entries = sessionEntries(parent.sessionFile).filter((entry) => entry.type === "custom" && entry.customType === sessionEntry);
 		const latest = entries.at(-1);
-		return entries.length > callerEntriesBefore && latest?.data?.participantId === "alpha" && latest.data.disposition === "held";
+		return entries.length > callerEntriesBefore && latest?.data?.participant?.participantId === "alpha" && latest.data.participant.disposition === "held";
 	}, "collaborator_manage did not persist caller acquisition");
 	const launched = await waitFor(() => {
 		const tabs = cli("tab", "list", "--workspace", parent.pane.workspace_id).result.tabs;
@@ -215,10 +215,10 @@ async function launchCollaborator(parent, participantId) {
 	assert.equal(header.type, "session");
 	assert.equal(header.version, 3);
 	assert.equal(header.cwd, projectRoot);
-	const launchConfig = sessionEntries(launched.sessionFile).find((entry) => entry.type === "custom" && entry.customType === "deevs.hosted-runtime.collaborator-profile.v1");
+	const launchConfig = sessionEntries(launched.sessionFile).find((entry) => entry.type === "custom" && entry.customType === sessionEntry);
 	assert.equal(launchConfig?.data?.version, 2, "Collaborator launch did not persist versioned launch metadata");
-	assert.equal(launchConfig?.data?.driver, "pi", "Omitted collaborator driver did not resolve to Pi");
-	await waitFor(() => sessionEntries(launched.sessionFile).filter((entry) => entry.type === "custom" && entry.customType === participantEntry).at(-1)?.data?.participantId === participantId, `${participantId} launch identity was not persisted`);
+	assert.equal(launchConfig?.data?.launch?.driver, "pi", "Omitted collaborator driver did not resolve to Pi");
+	await waitFor(() => sessionEntries(launched.sessionFile).filter((entry) => entry.type === "custom" && entry.customType === sessionEntry).at(-1)?.data?.participant?.participantId === participantId, `${participantId} launch identity was not persisted`);
 	await waitFor(() => readPane(parent.pane.pane_id, 200).includes(`Started review/${participantId} in`), `parent tool did not confirm ${participantId} production launch`);
 	return { ...launched, sessionId: header.id, callerAcquired: true };
 }
@@ -270,7 +270,7 @@ function appendParticipantIdentity(path, value) {
 		id: randomUUID(),
 		parentId: parent?.id ?? null,
 		timestamp: new Date().toISOString(),
-		customType: participantEntry,
+		customType: sessionEntry,
 		data: value,
 	})}\n`);
 }
@@ -459,7 +459,7 @@ try {
 
 	cli("agent", "prompt", alphaPi.pane.pane_id, "/runtime stand-down");
 	await waitFor(() => participant("review", "alpha").state === "vacant", "restored alpha identity could not stand down");
-	await waitFor(() => sessionEntries(alphaSessionFile).filter((entry) => entry.type === "custom" && entry.customType === participantEntry).at(-1)?.data?.disposition === "vacant", "alpha stand-down disposition was not persisted");
+	await waitFor(() => sessionEntries(alphaSessionFile).filter((entry) => entry.type === "custom" && entry.customType === sessionEntry).at(-1)?.data?.participant?.disposition === "vacant", "alpha stand-down disposition was not persisted");
 	betaDirect = await directRegistration(betaPi, betaSessionId, "direct_beta_2");
 	const queuedWhileVacant = await send(betaDirect, alphaKey, "send_vacant", "vacant-queue release marker; do not use tools or modify files");
 	assert.equal(readState().events[queuedWhileVacant.eventId].delivery.status, "pending");
@@ -499,7 +499,7 @@ try {
 
 	await closePi(betaPi);
 	await betaDirect.client.call("pi.unregister", auth(betaDirect.registration)).catch(() => {});
-	appendParticipantIdentity(betaSessionFile, { version: 1, protocol: "review", participantId: "alpha", participantKey: alphaKey, generation: taken.generation, disposition: "held" });
+	appendParticipantIdentity(betaSessionFile, { version: 2, participant: { protocol: "review", participantId: "alpha", participantKey: alphaKey, generation: taken.generation, disposition: "held" } });
 	betaPi = await startPi("collaborator-beta-2-takeover", betaSessionFile);
 	await assertRuntimeRegistered(betaPi);
 	await waitMessage(betaSessionFile, "takeover-claim release marker", 2);
