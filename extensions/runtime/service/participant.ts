@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { HostedMailboxMessageEvent, HostedParticipant, HostedStateOperation, HostedTarget } from "../hosted-types.ts";
+import type { HostedCollaboratorDriver, HostedMailboxMessageEvent, HostedParticipant, HostedStateOperation, HostedTarget } from "../hosted-types.ts";
 import { RuntimeRegistrationManager, type HostedLiveRegistration } from "./registration.ts";
 import { deriveParticipantKey, HostedStateStore } from "./state.ts";
 
@@ -25,7 +25,7 @@ export interface HostedParticipantStatus {
 	generation: string;
 	holderTargetKey?: string;
 	holderLive: boolean;
-	driver?: "pi" | "claude-code" | "codex";
+	driver?: HostedCollaboratorDriver;
 	profile?: "read-only" | "workspace-write";
 	queued?: { pending: number; claimed: number };
 	lastTransition: HostedParticipant["transitions"][number];
