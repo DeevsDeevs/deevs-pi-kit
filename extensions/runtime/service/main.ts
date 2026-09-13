@@ -8,7 +8,8 @@ try {
 		process.stdout.write("Usage: node extensions/runtime/service/main.ts [--root PATH]\n");
 	} else {
 		const server = await startRuntimeServer({ root: options.root });
-		process.stdout.write(`${JSON.stringify({ status: "ready", runtimeId: server.runtimeId, epoch: server.epoch, socket: server.socketPath })}\n`);
+		const ready = { status: "ready", runtimeId: server.runtimeId, epoch: server.epoch, socket: server.socketPath };
+		process.stdout.write(`${JSON.stringify(ready)}\n`);
 		let stopping = false;
 		const stop = async () => {
 			if (stopping) return;
@@ -34,7 +35,12 @@ try {
 	process.exitCode = 1;
 }
 
-function parseArgs(args: string[]) {
+interface RuntimeArgs {
+	root: string;
+	help: boolean;
+}
+
+function parseArgs(args: string[]): RuntimeArgs {
 	let root = join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "runtime");
 	let help = false;
 	for (let index = 0; index < args.length; index++) {

@@ -1,7 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { lstatSync, readdirSync, realpathSync, watch, type FSWatcher } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { HOSTED_MONITOR_MAX_ENTRIES, type HostedFileObservation, type HostedFilesystemCreatedEvent, type HostedMonitor } from "../hosted-types.ts";
+import {
+	HOSTED_MONITOR_MAX_ENTRIES,
+	type HostedFileObservation,
+	type HostedFilesystemCreatedEvent,
+	type HostedMonitor,
+} from "../hosted-types.ts";
 import { HostedStateStore } from "./state.ts";
 
 const DEFAULT_SCAN_INTERVAL_MS = 5_000;
@@ -13,6 +18,12 @@ export class MonitorInputError extends Error {
 
 export class MonitorLimitError extends Error {
 	readonly code = "storage_error" as const;
+}
+
+/** One directory entry as the scanner observed it. */
+interface ScannedFile {
+	size: number;
+	mtimeMs: number;
 }
 
 export interface DirectoryMonitorOptions {
@@ -57,18 +68,26 @@ export class DirectoryMonitorManager {
 	}
 
 	create(targetKey: string, directory: string, settleMs = 250): HostedMonitor {
-		if (!Number.isSafeInteger(settleMs) || settleMs < 0 || settleMs > 60_000) throw new MonitorInputError("settleMs must be an integer from 0 to 60000.");
+		if (!Number.isSafeInteger(settleMs) || settleMs < 0 || settleMs > 60_000) {
+			throw new MonitorInputError("settleMs must be an integer from 0 to 60000.");
+		}
 		const target = this.store.read().targets[targetKey];
 		if (!target) throw new MonitorInputError("Unknown runtime target.");
 		const canonicalDirectory = canonicalMonitorRoot(directory);
-		if (!inside(target.projectRoot, canonicalDirectory)) throw new MonitorInputError("Monitor directory must stay within the registered project root.");
+		if (!inside(target.projectRoot, canonicalDirectory)) {
+			throw new MonitorInputError("Monitor directory must stay within the registered project root.");
+		}
 		const existing = Object.values(this.store.read().monitors).find((monitor) => monitor.targetKey === targetKey);
 		if (existing?.directory === canonicalDirectory) return existing;
 		const now = this.now();
 		const current = scanRegularFiles(canonicalDirectory);
-		if (current.size > HOSTED_MONITOR_MAX_ENTRIES) throw new MonitorLimitError(`Monitor baseline exceeds ${HOSTED_MONITOR_MAX_ENTRIES} entries.`);
+		if (current.size > HOSTED_MONITOR_MAX_ENTRIES) {
+			throw new MonitorLimitError(`Monitor baseline exceeds ${HOSTED_MONITOR_MAX_ENTRIES} entries.`);
+		}
 		const entries: Record<string, HostedFileObservation> = {};
-		for (const [relativePath, file] of current) entries[relativePath] = { relativePath, ...file, stableSince: now, present: true, emitted: true };
+		for (const [relativePath, file] of current) {
+			entries[relativePath] = { relativePath, ...file, stableSince: now, present: true, emitted: true };
+		}
 		const monitor: HostedMonitor = {
 			monitorId: this.createId("mon"),
 			targetKey,
@@ -82,7 +101,8 @@ export class DirectoryMonitorManager {
 			updatedAt: now,
 		};
 		const state = this.store.apply({ type: "monitor.create", monitor });
-		const created = Object.values(state.monitors).find((candidate) => candidate.targetKey === targetKey)!;
+		const created = Object.values(state.monitors).find((candidate) => candidate.targetKey === targetKey);
+		if (!created) throw new MonitorLimitError("Monitor was not recorded in durable state.");
 		if (this.started) this.ensureWatcher(created);
 		return created;
 	}
@@ -100,7 +120,7 @@ export class DirectoryMonitorManager {
 		const currentMonitor = this.store.read().monitors[monitorId];
 		if (!currentMonitor) return undefined;
 		const now = this.now();
-		let files: Map<string, { size: number; mtimeMs: number }>;
+		let files: Map<string, ScannedFile>;
 		try {
 			files = scanRegularFiles(currentMonitor.directory);
 		} catch {
@@ -126,7 +146,9 @@ export class DirectoryMonitorManager {
 				entries[relativePath] = { ...previous, ...file, stableSince: now, present: true };
 			}
 		}
-		if (Object.keys(entries).length > HOSTED_MONITOR_MAX_ENTRIES) throw new MonitorLimitError(`Monitor cursor exceeds ${HOSTED_MONITOR_MAX_ENTRIES} entries.`);
+		if (Object.keys(entries).length > HOSTED_MONITOR_MAX_ENTRIES) {
+			throw new MonitorLimitError(`Monitor cursor exceeds ${HOSTED_MONITOR_MAX_ENTRIES} entries.`);
+		}
 
 		let sequence = currentMonitor.sequence;
 		const events: HostedFilesystemCreatedEvent[] = [];
@@ -136,7 +158,9 @@ export class DirectoryMonitorManager {
 			sequence++;
 			events.push(createdEvent(currentMonitor, entry, sequence, now));
 		}
-		const changed = currentMonitor.status !== "watching" || sequence !== currentMonitor.sequence || !sameObservations(entries, currentMonitor.entries);
+		const changed = currentMonitor.status !== "watching"
+			|| sequence !== currentMonitor.sequence
+			|| !sameObservations(entries, currentMonitor.entries);
 		const monitor: HostedMonitor = changed ? { ...currentMonitor, status: "watching", sequence, entries, updatedAt: now } : currentMonitor;
 		if (changed) {
 			this.store.apply({ type: "monitor.commit", monitor, events });
@@ -163,7 +187,8 @@ export class DirectoryMonitorManager {
 	private ensureWatcher(monitor: HostedMonitor): void {
 		if (this.watchers.has(monitor.monitorId)) return;
 		try {
-			const watcher = watch(monitor.directory, () => this.schedule(monitor.monitorId, this.options.watchDebounceMs ?? DEFAULT_WATCH_DEBOUNCE_MS));
+			const debounceMs = this.options.watchDebounceMs ?? DEFAULT_WATCH_DEBOUNCE_MS;
+			const watcher = watch(monitor.directory, () => this.schedule(monitor.monitorId, debounceMs));
 			watcher.once("error", (error) => {
 				if (this.watchers.get(monitor.monitorId) === watcher) this.stopWatcher(monitor.monitorId);
 				this.options.onError?.(error);
@@ -218,10 +243,10 @@ function canonicalMonitorRoot(directory: string): string {
 	return realpathSync(absolute);
 }
 
-function scanRegularFiles(directory: string): Map<string, { size: number; mtimeMs: number }> {
+function scanRegularFiles(directory: string): Map<string, ScannedFile> {
 	const root = lstatSync(directory);
 	if (root.isSymbolicLink() || !root.isDirectory()) throw new Error("Monitor root is unavailable.");
-	const files = new Map<string, { size: number; mtimeMs: number }>();
+	const files = new Map<string, ScannedFile>();
 	for (const entry of readdirSync(directory, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name))) {
 		if (entry.isSymbolicLink()) continue;
 		try {

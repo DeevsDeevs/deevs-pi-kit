@@ -6,9 +6,20 @@ import { TextDecoder } from "node:util";
 import { RuntimeAgentBinder, type AgentBinderOptions } from "./bridge.ts";
 import { RuntimeMessaging } from "./messaging.ts";
 import { DirectoryMonitorManager, type DirectoryMonitorOptions } from "./monitor.ts";
-import { dispatchHostedLine, encodeHostedResponse, HOSTED_MAX_REQUEST_BYTES, invalidFrame, type HostedProtocolContext } from "./protocol.ts";
+import {
+	dispatchHostedLine,
+	encodeHostedResponse,
+	HOSTED_MAX_REQUEST_BYTES,
+	invalidFrame,
+	type HostedProtocolContext,
+} from "./protocol.ts";
 import { HostedParticipantCoordinator, type HostedParticipantCoordinatorOptions } from "./participant.ts";
-import { HerdrCliHostVerifier, RuntimeRegistrationManager, type HostedHostVerifier, type RegistrationManagerOptions } from "./registration.ts";
+import {
+	HerdrCliHostVerifier,
+	RuntimeRegistrationManager,
+	type HostedHostVerifier,
+	type RegistrationManagerOptions,
+} from "./registration.ts";
 import { HostedStateStore, loadOrCreateRuntimeInstance } from "./state.ts";
 import { HostedWakeCoordinator, type HostedWakeOptions } from "./wake.ts";
 import { RuntimeWorktrees } from "./worktree.ts";
@@ -38,6 +49,18 @@ export interface RuntimeServerHandle {
 	close(): Promise<void>;
 }
 
+/** The long-lived services a started runtime must shut down again. */
+interface RuntimeLifecycle {
+	monitors: DirectoryMonitorManager;
+	registrations: RuntimeRegistrationManager;
+	wakes: HostedWakeCoordinator;
+}
+
+interface SocketIdentity {
+	dev: number;
+	ino: number;
+}
+
 export async function startRuntimeServer(options: RuntimeServerOptions): Promise<RuntimeServerHandle> {
 	const instance = loadOrCreateRuntimeInstance(options.root);
 	const store = new HostedStateStore(options.root);
@@ -62,9 +85,10 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 	wakes = new HostedWakeCoordinator(store, options.wake);
 	const worktrees = new RuntimeWorktrees(options.root, store);
 	const bridges = new RuntimeAgentBinder(store, registrations, host, options.bridge);
+	const closeTarget = host.closeTarget;
 	participants = new HostedParticipantCoordinator(store, registrations, wakes, {
 		...options.participant,
-		stopTarget: options.participant?.stopTarget ?? (host.closeTarget ? (target) => host.closeTarget!(target, options.root) : undefined),
+		stopTarget: options.participant?.stopTarget ?? (closeTarget ? (target) => closeTarget(target, options.root) : undefined),
 	});
 	const socketPath = options.socketPath ?? join(options.root, "runtime.sock");
 	const context: HostedProtocolContext = {
@@ -79,38 +103,49 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 		bridges,
 		worktrees,
 	};
+	return await serve(options, context, socketPath, { monitors, registrations, wakes });
+}
+
+async function serve(
+	options: RuntimeServerOptions,
+	context: HostedProtocolContext,
+	socketPath: string,
+	lifecycle: RuntimeLifecycle,
+): Promise<RuntimeServerHandle> {
 	const sockets = new Set<Socket>();
 	const server = createServer((socket) => handleConnection(socket, context, sockets));
 	await listenWithStaleRecovery(server, socketPath, options.probeTimeoutMs ?? 250);
 	try {
 		chmodSync(socketPath, 0o600);
 		const identity = socketIdentity(socketPath);
-		monitors.start();
+		lifecycle.monitors.start();
 		let closed = false;
 		return {
 			root: options.root,
 			socketPath,
-			runtimeId: instance.runtimeId,
+			runtimeId: context.runtimeId,
 			epoch: context.epoch,
 			async close() {
 				if (closed) return;
 				closed = true;
-				monitors.close();
-				wakes.close();
-				registrations.close();
+				closeLifecycle(lifecycle);
 				for (const socket of sockets) socket.destroy();
 				await closeServer(server);
 				if (sameSocket(socketPath, identity)) try { unlinkSync(socketPath); } catch {}
 			},
 		};
 	} catch (error) {
-		monitors.close();
-		wakes.close();
-		registrations.close();
+		closeLifecycle(lifecycle);
 		await closeServer(server);
 		try { unlinkSync(socketPath); } catch {}
 		throw error;
 	}
+}
+
+function closeLifecycle(lifecycle: RuntimeLifecycle): void {
+	lifecycle.monitors.close();
+	lifecycle.wakes.close();
+	lifecycle.registrations.close();
 }
 
 async function listenWithStaleRecovery(server: Server, socketPath: string, probeTimeoutMs: number): Promise<void> {
@@ -120,7 +155,9 @@ async function listenWithStaleRecovery(server: Server, socketPath: string, probe
 			return;
 		} catch (error) {
 			if (!(error instanceof Error) || !("code" in error) || error.code !== "EADDRINUSE") throw error;
-			if (await probeSocket(socketPath, probeTimeoutMs)) throw new RuntimeAlreadyRunningError(`Runtime is already listening at ${socketPath}.`);
+			if (await probeSocket(socketPath, probeTimeoutMs)) {
+				throw new RuntimeAlreadyRunningError(`Runtime is already listening at ${socketPath}.`);
+			}
 			// ponytail: a fully saturated local socket backlog could look stale; add an OS lock only if this same-uid self-DoS appears in practice.
 			const stale = `${socketPath}.stale.${process.pid}.${randomUUID()}`;
 			try {
@@ -235,13 +272,13 @@ function closeServer(server: Server): Promise<void> {
 	return new Promise((resolve) => server.close(() => resolve()));
 }
 
-function socketIdentity(path: string) {
+function socketIdentity(path: string): SocketIdentity {
 	const info = lstatSync(path);
 	if (!info.isSocket()) throw new Error(`Runtime socket path is not a socket: ${path}`);
 	return { dev: info.dev, ino: info.ino };
 }
 
-function sameSocket(path: string, identity: { dev: number; ino: number }): boolean {
+function sameSocket(path: string, identity: SocketIdentity): boolean {
 	try {
 		const info = lstatSync(path);
 		return info.isSocket() && info.dev === identity.dev && info.ino === identity.ino;
