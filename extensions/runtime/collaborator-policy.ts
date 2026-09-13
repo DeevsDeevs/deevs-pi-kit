@@ -10,7 +10,8 @@ import { toolDefinitions } from "./mcp/tools.ts";
 import { isStringValue } from "./responses.ts";
 import { COLLABORATOR_MODEL, COLLABORATOR_NAME, type CollaboratorPersona } from "./session-record.ts";
 
-const COLLABORATOR_METADATA_TOOLS = ["collaborator_list", ...toolDefinitions.map(tool => tool.name), "chain_save", "chain_load", "chain_context"] as const;
+const MESSAGING_TOOLS = toolDefinitions.map(tool => tool.name);
+const COLLABORATOR_METADATA_TOOLS = ["collaborator_list", ...MESSAGING_TOOLS, "chain_save", "chain_load", "chain_context"] as const;
 export const READ_ONLY_COLLABORATOR_TOOLS = ["read", "grep", "find", "ls", "safe_diff", ...COLLABORATOR_METADATA_TOOLS] as const;
 export const WORKSPACE_WRITE_COLLABORATOR_TOOLS = [...READ_ONLY_COLLABORATOR_TOOLS, "edit", "write"] as const;
 const COLLABORATOR_PERSONAS = loadBuiltinAgents();
@@ -81,7 +82,9 @@ interface ResolvedPersona {
 function resolvePersona(requested: string, profile: HostedCollaboratorProfile, driver: HostedCollaboratorDriver): ResolvedPersona {
 	const personaName = collaboratorName(requested, "persona");
 	const definition = findAgent(COLLABORATOR_PERSONAS, personaName);
-	if (!definition || definition.disabled) throw new HostedRuntimeClientError("not_found", `Unknown or disabled collaborator persona ${personaName}.`);
+	if (!definition || definition.disabled) {
+		throw new HostedRuntimeClientError("not_found", `Unknown or disabled collaborator persona ${personaName}.`);
+	}
 	assertPersonaCompatible(definition, profile, driver);
 	const prompt = definition.body.trim();
 	if (!prompt || Buffer.byteLength(prompt) > 32 * 1024) {
@@ -97,7 +100,8 @@ function assertPersonaCompatible(persona: AgentDefinition, profile: HostedCollab
 	const supported = profile === "read-only" ? READ_ONLY_PERSONA_TOOLS : WORKSPACE_WRITE_PERSONA_TOOLS;
 	const incompatible = persona.tools.filter((tool) => !supported.has(tool) && !OPTIONAL_COLLABORATOR_PERSONA_TOOLS.has(tool));
 	if (incompatible.length > 0) {
-		throw new HostedRuntimeClientError("conflict", `Collaborator persona ${persona.name} requires unsupported ${incompatible.join(", ")} tooling.`);
+		const detail = `Collaborator persona ${persona.name} requires unsupported ${incompatible.join(", ")} tooling.`;
+		throw new HostedRuntimeClientError("conflict", detail);
 	}
 }
 
@@ -157,7 +161,9 @@ function resolveExistingTarget(requested: string, allowMissing: boolean): string
 }
 
 export function collaboratorName(value: string | undefined, name: string): string {
-	if (!value || !COLLABORATOR_NAME.test(value)) throw new HostedRuntimeClientError("invalid_request", `${name} must match ${COLLABORATOR_NAME}.`);
+	if (!value || !COLLABORATOR_NAME.test(value)) {
+		throw new HostedRuntimeClientError("invalid_request", `${name} must match ${COLLABORATOR_NAME}.`);
+	}
 	return value;
 }
 
@@ -176,7 +182,8 @@ function collaboratorModel(value: string | undefined): string | undefined {
 
 function assertUnambiguousCollaboratorModel(driver: HostedCollaboratorDriver, model: string | undefined): void {
 	if (driver !== "pi" || model === undefined || PI_COLLABORATOR_MODEL.test(model)) return;
-	throw new HostedRuntimeClientError("invalid_request", "Explicit Pi collaborator models must be provider-qualified, for example openai-codex/gpt-5.6-sol.");
+	const detail = "Explicit Pi collaborator models must be provider-qualified, for example openai-codex/gpt-5.6-sol.";
+	throw new HostedRuntimeClientError("invalid_request", detail);
 }
 
 function collaboratorProfile(value: HostedCollaboratorProfile | undefined): HostedCollaboratorProfile | undefined {

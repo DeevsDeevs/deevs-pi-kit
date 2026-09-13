@@ -34,7 +34,12 @@ export interface RuntimeSessionHooks {
 	admittedClaims(): HostedReceipt[];
 	clearPendingAcks(): void;
 	afterRegister(registration: LiveClientRegistration, ctx: ExtensionContext, current: () => boolean): Promise<void>;
-	afterHeartbeat(registration: LiveClientRegistration, ctx: ExtensionContext, heartbeat: HostedHeartbeat, current: () => boolean): Promise<void>;
+	afterHeartbeat(
+		registration: LiveClientRegistration,
+		ctx: ExtensionContext,
+		heartbeat: HostedHeartbeat,
+		current: () => boolean,
+	): Promise<void>;
 	afterHeartbeatSettled(): Promise<void>;
 }
 
@@ -159,7 +164,9 @@ export class RuntimeSession {
 
 	requireParticipantIdentity(): ParticipantIdentity {
 		const identity = this.store.identity;
-		if (!identity) throw new HostedRuntimeClientError("not_found", "This Pi session has no collaborator identity. Use /runtime collaborate first.");
+		if (!identity) {
+			throw new HostedRuntimeClientError("not_found", "This Pi session has no collaborator identity. Use /runtime collaborate first.");
+		}
 		return identity;
 	}
 
@@ -177,7 +184,9 @@ export class RuntimeSession {
 			await this.client.hello();
 			return;
 		} catch {}
-		if (process.env.HERDR_ENV !== "1") throw new HostedRuntimeClientError("host_unavailable", "Runtime start requires this Pi session to run inside Herdr.");
+		if (process.env.HERDR_ENV !== "1") {
+			throw new HostedRuntimeClientError("host_unavailable", "Runtime start requires this Pi session to run inside Herdr.");
+		}
 		if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Runtime start requires a trusted project.");
 		mkdirSync(this.root, { recursive: true, mode: 0o700 });
 		const workspace = await this.createServicesWorkspace();
@@ -227,7 +236,8 @@ export class RuntimeSession {
 		if (!sessionFile) throw new HostedRuntimeClientError("invalid_request", "Runtime requires a persisted Pi session.");
 		const host = await currentHerdrPane(this.pi);
 		this.requireCurrentScope(current);
-		const registration = parseRegistration(await this.client.call("pi.register", this.registrationParams(ctx, sessionFile, host.paneId, host.terminalId)));
+		const params = this.registrationParams(ctx, sessionFile, host.paneId, host.terminalId);
+		const registration = parseRegistration(await this.client.call("pi.register", params));
 		if (!current()) {
 			try { await this.client.call("pi.unregister", auth(registration)); } catch {}
 			this.requireCurrentScope(current);
@@ -240,7 +250,8 @@ export class RuntimeSession {
 			this.requireCurrentScope(current);
 			await this.hooks.afterRegister(registration, ctx, current);
 		} catch (error) {
-			if (current()) ctx.ui.notify(`Collaborator identity or messaging unavailable: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			const cause = error instanceof Error ? error.message : String(error);
+			if (current()) ctx.ui.notify(`Collaborator identity or messaging unavailable: ${cause}`, "warning");
 		}
 		this.requireCurrentScope(current);
 		return registration;
@@ -325,7 +336,8 @@ export class RuntimeSession {
 			generation: acquired.participant.generation,
 			disposition: "held",
 		};
-		if (identity.participantKey !== restored.participantKey || identity.generation !== restored.generation) this.store.persistIdentity(restored);
+		const changed = identity.participantKey !== restored.participantKey || identity.generation !== restored.generation;
+		if (changed) this.store.persistIdentity(restored);
 	}
 
 	/** True when the persisted key resolved and no further acquisition should follow. */
@@ -344,13 +356,15 @@ export class RuntimeSession {
 			this.requireCurrentScope(currentScope);
 			if (!(error instanceof HostedRuntimeClientError) || error.code !== "not_found") throw error;
 			this.store.persistIdentity({ protocol: identity.protocol, participantId: identity.participantId, disposition: "vacant" });
-			ctx.ui.notify(`Collaborator ${identity.protocol}/${identity.participantId} is absent from Runtime; explicit acquire is required.`, "warning");
+			const name = `${identity.protocol}/${identity.participantId}`;
+			ctx.ui.notify(`Collaborator ${name} is absent from Runtime; explicit acquire is required.`, "warning");
 			return true;
 		}
 		this.requireCurrentScope(currentScope);
 		if (current.protocol !== identity.protocol || current.participantId !== identity.participantId) {
 			this.store.persistIdentity({ protocol: identity.protocol, participantId: identity.participantId, disposition: "vacant" });
-			ctx.ui.notify(`Collaborator identity key does not match ${identity.protocol}/${identity.participantId}; explicit acquire is required.`, "warning");
+			const name = `${identity.protocol}/${identity.participantId}`;
+			ctx.ui.notify(`Collaborator identity key does not match ${name}; explicit acquire is required.`, "warning");
 			return true;
 		}
 		if (current.state === "held" && current.holderTargetKey === registration.targetKey) return false;
@@ -360,7 +374,8 @@ export class RuntimeSession {
 			generation: current.generation,
 			disposition: current.state === "ended" ? "ended" : "vacant",
 		});
-		ctx.ui.notify(`Collaborator ${identity.protocol}/${identity.participantId} is ${current.state}; explicit acquire or takeover is required.`, "warning");
+		const name = `${identity.protocol}/${identity.participantId}`;
+		ctx.ui.notify(`Collaborator ${name} is ${current.state}; explicit acquire or takeover is required.`, "warning");
 		return true;
 	}
 }

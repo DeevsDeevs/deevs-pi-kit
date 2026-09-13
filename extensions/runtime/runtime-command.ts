@@ -18,7 +18,8 @@ import {
 import type { RuntimeSession } from "./runtime-session.ts";
 import type { ParticipantIdentity } from "./session-record.ts";
 
-const USAGE = "Usage: /runtime [status|start|register|monitor <directory>|monitor-delete|collaborate <protocol> <id>|collaborator-start <protocol> <id>|participants|stand-down|leave|takeover <protocol> <id>]";
+const USAGE = "Usage: /runtime [status|start|register|monitor <directory>|monitor-delete|collaborate <protocol> <id>"
+	+ "|collaborator-start <protocol> <id>|participants|stand-down|leave|takeover <protocol> <id>]";
 
 export interface RuntimeCommandServices {
 	session: RuntimeSession;
@@ -121,8 +122,13 @@ async function runRelinquish({ services, ctx }: RuntimeCommandInput, action: "st
 		if (!await ctx.ui.confirm("End collaborator identity?", detail)) return;
 	}
 	const method = action === "stand-down" ? "participant.stand_down" : "participant.release";
-	const participant = parseParticipant(await session.client.call(method, { ...auth(registration), participantKey: identity.participantKey }));
-	session.store.persistIdentity({ ...identity, generation: participant.generation, disposition: action === "stand-down" ? "vacant" : "ended" });
+	const params = { ...auth(registration), participantKey: identity.participantKey };
+	const participant = parseParticipant(await session.client.call(method, params));
+	session.store.persistIdentity({
+		...identity,
+		generation: participant.generation,
+		disposition: action === "stand-down" ? "vacant" : "ended",
+	});
 	ctx.ui.notify(`${identity.protocol}/${identity.participantId} is now ${participant.state}.`, "info");
 }
 
@@ -138,7 +144,12 @@ async function recoverParticipantKey(
 		&& participant.state === "held"
 		&& participant.holderTargetKey === registration.targetKey);
 	if (!current) throw new HostedRuntimeClientError("not_found", "Current collaborator identity has no recoverable durable participant key.");
-	const recovered: ParticipantIdentity = { ...identity, participantKey: current.participantKey, generation: current.generation, disposition: "held" };
+	const recovered: ParticipantIdentity = {
+		...identity,
+		participantKey: current.participantKey,
+		generation: current.generation,
+		disposition: "held",
+	};
 	session.store.persistIdentity(recovered);
 	return recovered;
 }
@@ -151,7 +162,12 @@ async function runTakeover({ services, args, ctx }: RuntimeCommandInput): Promis
 	if (!existing) throw new HostedRuntimeClientError("not_found", "Participant does not exist in this project.");
 	const detail = `Take over ${protocol}/${participantId} generation ${existing.generation}? The current holder must be offline.`;
 	if (!await ctx.ui.confirm("Take over collaborator identity?", detail)) return;
-	const params = { ...auth(registration), participantKey: existing.participantKey, expectedGeneration: existing.generation, confirmed: true };
+	const params = {
+		...auth(registration),
+		participantKey: existing.participantKey,
+		expectedGeneration: existing.generation,
+		confirmed: true,
+	};
 	const participant = parseParticipant(await session.client.call("participant.takeover", params));
 	session.store.persistIdentity({
 		protocol,
@@ -213,6 +229,10 @@ function participantArguments(args: string[], usage: string): ParticipantArgumen
 	return { protocol, participantId };
 }
 
-function findParticipant(participants: ClientParticipantStatus[], protocol: string, participantId: string): ClientParticipantStatus | undefined {
+function findParticipant(
+	participants: ClientParticipantStatus[],
+	protocol: string,
+	participantId: string,
+): ClientParticipantStatus | undefined {
 	return participants.find((participant) => participant.protocol === protocol && participant.participantId === participantId);
 }
