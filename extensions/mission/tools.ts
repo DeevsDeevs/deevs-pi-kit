@@ -3,11 +3,11 @@ import { readdir, readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
-import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { defineTool, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import { initializeMissionArtifacts, missionRoot, updateMissionSummaryArtifact, writeCompletionAudit, writeMissionProgressArtifacts } from "./artifacts.ts";
 import type { MissionState } from "./state.ts";
 import { discoverMissionTakeoverCandidates, listSnapshotTakeoverCandidates, selectMissionTakeoverCandidate } from "./takeover.ts";
-import type { MissionCompleteInput, MissionCreateInput, MissionCurrent, MissionProgressInput, MissionSearchInput, MissionTakeoverCandidate, MissionTakeoverInput, MissionUpdateInput } from "./types.ts";
+import type { MissionCompleteInput, MissionCreateInput, MissionCurrent, MissionProgressInput, MissionSearchInput, MissionTakeoverCandidate, MissionTakeoverInput, MissionUpdateInput, MissionUsage } from "./types.ts";
 
 const CreateSchema = Type.Object({
 	objective: Type.String({ description: "Mission objective/user request" }),
@@ -83,6 +83,15 @@ const CompleteSchema = Type.Object({
 	authorizeCompletion: Type.Optional(Type.Boolean({ description: "Request trusted user authorization to complete the exact current candidate" })),
 });
 
+export interface MissionCompletionResult {
+	mission?: MissionCurrent;
+	usage: MissionUsage;
+	userRequested: boolean;
+	blockers?: string[];
+	alreadyComplete?: boolean;
+	audit?: Array<{ requirementIndex: number; evidence: string }>;
+}
+
 export interface MissionCompletionHooks {
 	validateCompletion?: (input: MissionCompleteInput, ctx: ExtensionContext, directUserRequest?: boolean) => Promise<string[]> | string[];
 	authorizeCompletion?: (ctx: ExtensionContext) => Promise<string>;
@@ -119,12 +128,13 @@ export async function resumeMission(pi: ExtensionAPI, state: MissionState, reaso
 	if (!explanation) throw new Error("Resuming a Mission requires a reason.");
 	const current = state.readAny();
 	if (!current) throw new Error("No Mission exists on this branch.");
-	if (current.status === "blocked" && (current.reviewCorrectionCount ?? 0) > (current.reviewCorrectionLimit ?? 3)) throw new Error("Mission cannot resume past the review correction limit; use trusted mission_progress reviewContinue authorization first.");
+	if (current.status === "blocked" && current.review.correction.count > current.review.correction.limit) throw new Error("Mission cannot resume past the review correction limit; use trusted mission_progress reviewContinue authorization first.");
 	const remainingLimit = state.limitExceeded();
 	if (remainingLimit) throw new Error(`Mission cannot resume while its ${remainingLimit} limit is exhausted; raise it with mission_update (or "/mission update --${remainingLimit === "token" ? "budget" : remainingLimit === "cost" ? "cost" : remainingLimit === "turn" ? "turns" : "deadline"} ..." when headless) first.`);
 	if (current.status === "active") return current;
 	if (!["paused", "blocked", "terminal_error", "budget_limited", "usage_limited", "ended"].includes(current.status)) throw new Error(`Mission cannot resume from ${current.status}.`);
-	const mission = state.append(pi, state.statusEvent("active", explanation))!;
+	const mission = state.append(pi, state.statusEvent("active", explanation));
+	if (!mission) throw new Error("Mission resume lost canonical state.");
 	await updateMissionSummaryArtifact(mission, state.readUsage());
 	return mission;
 }
@@ -148,7 +158,8 @@ export async function takeoverMission(
 	directUserRequest = false,
 ): Promise<MissionCurrent> {
 	state.loadFromSession(ctx);
-	if (state.readAny()) throw new Error(`This session already controls Mission ${state.readAny()!.missionId}.`);
+	const existingMission = state.readAny();
+	if (existingMission) throw new Error(`This session already controls Mission ${existingMission.missionId}.`);
 	const reason = input.reason.trim();
 	if (!reason) throw new Error("Mission takeover requires a reason.");
 	const discover = hooks.discoverTakeoverCandidates ?? discoverMissionTakeoverCandidates;
@@ -176,7 +187,21 @@ export async function takeoverMission(
 const USER_END_AUDIT = [{ requirementIndex: 0, evidence: "The user explicitly asked to end/complete the mission; this records closure without claiming all objective requirements are satisfied. Use /mission resume to continue if needed." }];
 
 export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setContext: (ctx: ExtensionContext) => void, hooks: MissionToolHooks = {}): void {
-	pi.registerTool({
+	const tools = [
+		createGetTool(state, setContext),
+		createTakeoverTool(pi, state, setContext, hooks),
+		createResumeTool(pi, state, setContext, hooks),
+		createCreateTool(pi, state, setContext, hooks),
+		createProgressTool(pi, state, setContext, hooks),
+		createUpdateTool(pi, state, setContext, hooks),
+		createSearchTool(setContext),
+		createCompleteTool(pi, state, setContext, hooks),
+	];
+	for (const tool of tools) pi.registerTool(tool);
+}
+
+function createGetTool(state: MissionState, setContext: (ctx: ExtensionContext) => void) {
+	return defineTool({
 		name: "mission_get",
 		label: "Get Mission",
 		description: "Get active Mission state, usage, chain, and artifacts.",
@@ -196,8 +221,10 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 			return { content: [{ type: "text" as const, text }], details: { mission, usage, takeoverCandidates: candidates.map((candidate) => ({ mission: candidate.snapshot.mission, owner: candidate.snapshot.owner, source: candidate.source })), persistenceError: error } };
 		},
 	});
+}
 
-	pi.registerTool({
+function createTakeoverTool(pi: ExtensionAPI, state: MissionState, setContext: (ctx: ExtensionContext) => void, hooks: MissionToolHooks) {
+	return defineTool({
 		name: "mission_takeover",
 		label: "Take Over Mission",
 		description: "Take control of a Mission whose previous Pi session is stopped or broken, then resume it immediately when limits permit.",
@@ -217,8 +244,10 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 			return { content: [{ type: "text" as const, text: `Mission ${outcome}: ${mission.title}\n${formatMissionLocation(mission)}` }], details: { mission, usage: state.readUsage() } };
 		},
 	});
+}
 
-	pi.registerTool({
+function createResumeTool(pi: ExtensionAPI, state: MissionState, setContext: (ctx: ExtensionContext) => void, hooks: MissionToolHooks) {
+	return defineTool({
 		name: "mission_resume",
 		label: "Resume Mission",
 		description: "Resume a paused or blocked Mission when the user authorizes continuation or resolves its recorded blocker.",
@@ -242,7 +271,7 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 			}
 			const explanation = params.reason.trim();
 			if (!explanation) throw new Error("Resuming a Mission requires a reason.");
-			if (current.status === "blocked" && (current.reviewCorrectionCount ?? 0) > (current.reviewCorrectionLimit ?? 3)) throw new Error("Mission cannot resume past the review correction limit; use trusted mission_progress reviewContinue authorization first.");
+			if (current.status === "blocked" && current.review.correction.count > current.review.correction.limit) throw new Error("Mission cannot resume past the review correction limit; use trusted mission_progress reviewContinue authorization first.");
 			const remainingLimit = state.limitExceeded();
 			if (remainingLimit) throw new Error(`Mission cannot resume while its ${remainingLimit} limit is exhausted; revise that limit with mission_update first.`);
 			if (!["paused", "blocked", "terminal_error", "budget_limited", "usage_limited", "ended"].includes(current.status)) throw new Error(`Mission cannot resume from ${current.status}.`);
@@ -254,8 +283,10 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 			return { content: [{ type: "text" as const, text: `Mission resumed: ${mission.title}\n${formatMissionLocation(mission)}${formatContinuation(blockers)}` }], details: { mission, usage: state.readUsage(), continuationBlockers: blockers } };
 		},
 	});
+}
 
-	pi.registerTool({
+function createCreateTool(pi: ExtensionAPI, state: MissionState, setContext: (ctx: ExtensionContext) => void, hooks: MissionToolHooks) {
+	return defineTool({
 		name: "mission_create",
 		label: "Create Mission",
 		description: "Create a persistent single-controller workspace Mission when explicitly requested.",
@@ -286,8 +317,35 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 			return { content: [{ type: "text" as const, text: `Mission created: ${mission.title}\n${formatMissionLocation(mission)}` }], details: { mission, usage: state.readUsage() } };
 		},
 	});
+}
 
-	pi.registerTool({
+function assertProgressReviewControlsValid(params: MissionProgressInput, currentMission: MissionCurrent | undefined): void {
+	if (params.reviewSkip && params.reviewVerdict) throw new Error("Review waiver and adjudication are mutually exclusive.");
+	if (!params.reviewVerdict && (params.reviewRunId || params.reviewReason)) throw new Error("reviewRunId and reviewReason require reviewVerdict.");
+	if (params.reviewSkip && !params.reviewSkipReason?.trim()) throw new Error("Review waiver requires a non-empty reviewSkipReason.");
+	if (params.reviewContinue !== true && params.reviewContinueReason) throw new Error("reviewContinueReason requires reviewContinue=true.");
+	if (params.reviewContinue && (params.reviewSkip || params.reviewVerdict)) throw new Error("Review continuation authorization cannot be combined with waiver or adjudication.");
+	if (params.reviewContinue && !params.reviewContinueReason?.trim()) throw new Error("Review continuation authorization requires a reason.");
+	if (params.reviewContinue && (!currentMission || currentMission.status !== "blocked" || currentMission.review.correction.count <= currentMission.review.correction.limit)) throw new Error("Mission is not blocked on the review correction limit.");
+	if (params.reviewSkip && (currentMission?.review.admission.status === "starting" || currentMission?.review.admission.status === "running")) throw new Error("Cannot skip review while reviewer admission/execution is active; settle it first.");
+	if (params.reviewVerdict) assertReviewAdjudicationValid(params, currentMission);
+}
+
+function assertReviewAdjudicationValid(params: MissionProgressInput, current: MissionCurrent | undefined): void {
+	if (!current || current.review.admission.status !== "awaiting_adjudication" || !params.reviewRunId || params.reviewRunId !== current.review.admission.runId) throw new Error("Review adjudication requires the exact awaiting reviewer run id.");
+	if (!params.reviewReason?.trim()) throw new Error("Review adjudication requires an evidence-based reason.");
+	if (params.reviewVerdict !== current.review.adjudication.suggestedVerdict) throw new Error(`Adjudication must match the severity-derived reviewer verdict: ${current.review.adjudication.suggestedVerdict ?? "unknown"}.`);
+}
+
+async function authorizeProgressReviewControls(params: MissionProgressInput, ctx: ExtensionContext): Promise<void> {
+	if (params.reviewContinue && !ctx.hasUI) throw new Error("Headless sessions cannot authorize additional review correction cycles; use the trusted Mission command in an interactive session.");
+	if (params.reviewContinue && !await ctx.ui.confirm("Continue Mission review corrections?", `Authorize one additional correction cycle? ${params.reviewContinueReason?.trim()}`)) throw new Error("An additional review correction cycle was not authorized by the user.");
+	if (params.reviewSkip && !ctx.hasUI) throw new Error("Headless sessions cannot waive independent review. Let the reviewer subagent run and adjudicate its result with reviewVerdict, or end the Mission with /mission end.");
+	if (params.reviewSkip && !await ctx.ui.confirm("Skip Mission review?", `Record this review waiver: ${params.reviewSkipReason?.trim()}`)) throw new Error("Mission review waiver was not authorized by the user.");
+}
+
+function createProgressTool(pi: ExtensionAPI, state: MissionState, setContext: (ctx: ExtensionContext) => void, hooks: MissionToolHooks) {
+	return defineTool({
 		name: "mission_progress",
 		label: "Mission Progress",
 		description: "Record compact progress/evidence/remaining work in searchable Mission logs.",
@@ -305,34 +363,18 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 		async execute(_toolCallId: string, params: MissionProgressInput, _signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
 			setContext(ctx);
 			state.loadFromSession(ctx);
-			const currentMission = state.read();
-			if (params.reviewSkip && params.reviewVerdict) throw new Error("Review waiver and adjudication are mutually exclusive.");
-			if (!params.reviewVerdict && (params.reviewRunId || params.reviewReason)) throw new Error("reviewRunId and reviewReason require reviewVerdict.");
-			if (params.reviewSkip && !params.reviewSkipReason?.trim()) throw new Error("Review waiver requires a non-empty reviewSkipReason.");
-			if (params.reviewContinue !== true && params.reviewContinueReason) throw new Error("reviewContinueReason requires reviewContinue=true.");
-			if (params.reviewContinue && (params.reviewSkip || params.reviewVerdict)) throw new Error("Review continuation authorization cannot be combined with waiver or adjudication.");
-			if (params.reviewContinue && !params.reviewContinueReason?.trim()) throw new Error("Review continuation authorization requires a reason.");
-			if (params.reviewContinue && (!currentMission || currentMission.status !== "blocked" || (currentMission.reviewCorrectionCount ?? 0) <= (currentMission.reviewCorrectionLimit ?? 3))) throw new Error("Mission is not blocked on the review correction limit.");
-			if (params.reviewSkip && (currentMission?.reviewStatus === "starting" || currentMission?.reviewStatus === "running")) throw new Error("Cannot skip review while reviewer admission/execution is active; settle it first.");
-			if (params.reviewVerdict) {
-				const current = currentMission;
-				if (!current || current.reviewStatus !== "awaiting_adjudication" || !params.reviewRunId || params.reviewRunId !== current.reviewRunId) throw new Error("Review adjudication requires the exact awaiting reviewer run id.");
-				if (!params.reviewReason?.trim()) throw new Error("Review adjudication requires an evidence-based reason.");
-				if (params.reviewVerdict !== current.reviewSuggestedVerdict) throw new Error(`Adjudication must match the severity-derived reviewer verdict: ${current.reviewSuggestedVerdict ?? "unknown"}.`);
-			}
-			if (params.reviewContinue && !ctx.hasUI) throw new Error("Headless sessions cannot authorize additional review correction cycles; use the trusted Mission command in an interactive session.");
-			if (params.reviewContinue && !await ctx.ui.confirm("Continue Mission review corrections?", `Authorize one additional correction cycle? ${params.reviewContinueReason!.trim()}`)) throw new Error("An additional review correction cycle was not authorized by the user.");
-			if (params.reviewSkip && !ctx.hasUI) throw new Error("Headless sessions cannot waive independent review. Let the reviewer subagent run and adjudicate its result with reviewVerdict, or end the Mission with /mission end.");
-			if (params.reviewSkip && !await ctx.ui.confirm("Skip Mission review?", `Record this review waiver: ${params.reviewSkipReason!.trim()}`)) throw new Error("Mission review waiver was not authorized by the user.");
+			assertProgressReviewControlsValid(params, state.read());
+			await authorizeProgressReviewControls(params, ctx);
 			const waiverFingerprint = params.reviewSkip ? await hooks.workspaceFingerprint?.(ctx) : undefined;
 			if (params.reviewSkip && !waiverFingerprint) throw new Error("Mission review waiver could not fingerprint the typed workspace.");
 			const event = state.progressEvent(params);
-			let mission = state.append(pi, event)!;
+			let mission = state.append(pi, event);
+			if (!mission) throw new Error("Mission progress lost canonical state.");
 			if (params.reviewContinue) {
 				hooks.authorizeReviewContinuation?.(ctx);
 				mission = state.readAny() ?? mission;
 			}
-			if (params.reviewSkip) mission = state.append(pi, state.reviewEvent("skipped", { skippedReason: params.reviewSkipReason, worktreeFingerprint: waiverFingerprint }))!;
+			if (params.reviewSkip) mission = state.append(pi, state.reviewEvent("skipped", { skippedReason: params.reviewSkipReason, worktreeFingerprint: waiverFingerprint })) ?? mission;
 			hooks.onProgress?.(params, ctx);
 			mission = state.readAny() ?? mission;
 			const usage = state.readUsage();
@@ -340,8 +382,10 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 			return { content: [{ type: "text" as const, text: `Mission progress recorded: ${mission.title}\nLog: .missions/${mission.slug}/log.md` }], details: { mission, progress: state.readProgress().at(-1), usage } };
 		},
 	});
+}
 
-	pi.registerTool({
+function createUpdateTool(pi: ExtensionAPI, state: MissionState, setContext: (ctx: ExtensionContext) => void, hooks: MissionToolHooks) {
+	return defineTool({
 		name: "mission_update",
 		label: "Update Mission",
 		description: "Revise the active Mission objective or success criteria with a recorded reason.",
@@ -360,8 +404,10 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 			return { content: [{ type: "text" as const, text: `Mission updated: ${mission.title}\nObjective version: ${mission.objectiveVersion}` }], details: { mission, usage: state.readUsage() } };
 		},
 	});
+}
 
-	pi.registerTool({
+function createSearchTool(setContext: (ctx: ExtensionContext) => void) {
+	return defineTool({
 		name: "mission_search",
 		label: "Search Missions",
 		description: "Search .missions markdown and generated progress logs.",
@@ -378,8 +424,18 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 			return { content: [{ type: "text" as const, text: formatMissionSearchResults(results) }], details: { results } };
 		},
 	});
+}
 
-	pi.registerTool({
+async function authorizeCompleteToolRequest(params: MissionCompleteInput, ctx: ExtensionContext): Promise<void> {
+	if (params.userRequested && params.authorizeCompletion) throw new Error("Mission end and completion authorization are mutually exclusive.");
+	if (params.userRequested && !ctx.hasUI) throw new Error("Headless Mission end requires the trusted /mission end command.");
+	if (params.userRequested && !await ctx.ui.confirm("End Mission?", "End this Mission without claiming its remaining requirements are complete?")) throw new Error("Mission end was not authorized by the user.");
+	if (params.authorizeCompletion && !ctx.hasUI) throw new Error("Headless Mission completion authorization requires the trusted /mission complete command.");
+	if (params.authorizeCompletion && !await ctx.ui.confirm("Authorize Mission completion?", "Latch completion to the exact current objective, scope, and workspace fingerprint?")) throw new Error("Mission completion was not authorized by the user.");
+}
+
+function createCompleteTool(pi: ExtensionAPI, state: MissionState, setContext: (ctx: ExtensionContext) => void, hooks: MissionToolHooks) {
+	return defineTool({
 		name: "mission_complete",
 		label: "Complete Mission",
 		description: "Authorize and complete the exact converged Mission candidate, or end immediately on explicit user request.",
@@ -393,18 +449,15 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 		renderCall: (args: MissionCompleteInput, theme: Theme) => missionCall(args.userRequested ? "end" : "complete", args.summary ?? "", theme),
 		renderResult: (result: { details?: MissionResultDetails }, options: { expanded: boolean }, theme: Theme) => missionResult(result.details, options.expanded, theme, Boolean(result.details?.blockers?.length)),
 		async execute(_toolCallId: string, params: MissionCompleteInput, _signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
-			if (params.userRequested && params.authorizeCompletion) throw new Error("Mission end and completion authorization are mutually exclusive.");
-			if (params.userRequested && !ctx.hasUI) throw new Error("Headless Mission end requires the trusted /mission end command.");
-			if (params.userRequested && !await ctx.ui.confirm("End Mission?", "End this Mission without claiming its remaining requirements are complete?")) throw new Error("Mission end was not authorized by the user.");
-			if (params.authorizeCompletion && !ctx.hasUI) throw new Error("Headless Mission completion authorization requires the trusted /mission complete command.");
-			if (params.authorizeCompletion && !await ctx.ui.confirm("Authorize Mission completion?", "Latch completion to the exact current objective, scope, and workspace fingerprint?")) throw new Error("Mission completion was not authorized by the user.");
+			await authorizeCompleteToolRequest(params, ctx);
 			setContext(ctx);
 			const result = await completeMission(pi, state, ctx, params, params.userRequested ? "mission_complete called by explicit user request" : "mission_complete called", hooks);
-			if (result.alreadyComplete) return { content: [{ type: "text" as const, text: `Mission already complete: ${result.mission!.title}` }], details: result };
 			if (result.blockers?.length) return { content: [{ type: "text" as const, text: `Mission completion blocked:\n${result.blockers.map((blocker) => `- ${blocker}`).join("\n")}` }], details: result };
+			if (!result.mission) throw new Error("Mission completion lost canonical state.");
+			if (result.alreadyComplete) return { content: [{ type: "text" as const, text: `Mission already complete: ${result.mission.title}` }], details: result };
 			const verb = result.userRequested ? "ended" : "complete";
 			const resumeHint = result.userRequested ? "\nResume: /mission resume" : "";
-			return { content: [{ type: "text" as const, text: `Mission ${verb}: ${result.mission!.title}\nUsage: ${result.usage.totalTokens} tokens, $${result.usage.totalCostUsd.toFixed(4)}\n${formatMissionLocation(result.mission!)}${resumeHint}` }], details: result };
+			return { content: [{ type: "text" as const, text: `Mission ${verb}: ${result.mission.title}\nUsage: ${result.usage.totalTokens} tokens, $${result.usage.totalCostUsd.toFixed(4)}\n${formatMissionLocation(result.mission)}${resumeHint}` }], details: result };
 		},
 	});
 }
@@ -417,7 +470,7 @@ export async function completeMission(
 	reason: string,
 	hooks: MissionCompletionHooks = {},
 	directUserRequest = false,
-) {
+): Promise<MissionCompletionResult> {
 	state.loadFromSession(ctx);
 	let existing = state.readAny();
 	let usage = state.readUsage();
@@ -440,8 +493,11 @@ export async function completeMission(
 	const summary = input.summary ?? (userRequested ? USER_END_SUMMARY : undefined);
 	const audit = userRequested ? USER_END_AUDIT : input.audit?.length ? input.audit : undefined;
 	let mission: MissionCurrent;
-	if (userRequested) mission = state.append(pi, state.statusEvent("ended", reason, summary))!;
-	else {
+	if (userRequested) {
+		const ended = state.append(pi, state.statusEvent("ended", reason, summary));
+		if (!ended) throw new Error("Mission end lost canonical state.");
+		mission = ended;
+	} else {
 		const candidateId = await hooks.completionCandidateId?.(ctx);
 		if (!candidateId) return { mission: existing, usage, blockers: ["Mission completion candidate could not be revalidated before terminal commit."], userRequested: false };
 		const finalBlockers = hooks.validateCompletion ? await hooks.validateCompletion(input, ctx, directUserRequest) : [];
@@ -449,7 +505,9 @@ export async function completeMission(
 		if (finalBlockers.length || finalCandidateId !== candidateId) return { mission: state.readAny(), usage: state.readUsage(), blockers: [...finalBlockers, ...(finalCandidateId === candidateId ? [] : ["Mission completion candidate changed during final gate validation."])], userRequested: false };
 		state.loadFromSession(ctx);
 		try {
-			mission = state.append(pi, state.completionEvent(candidateId, `completion_${randomUUID()}`, audit, reason, summary))!;
+			const completed = state.append(pi, state.completionEvent(candidateId, `completion_${randomUUID()}`, audit, reason, summary));
+			if (!completed) throw new Error("Mission completion lost canonical state.");
+			mission = completed;
 		} catch (error) {
 			state.loadFromSession(ctx);
 			const raced = state.readAny();
@@ -472,20 +530,21 @@ export async function completeMission(
 }
 
 async function settleCompletionEffects(pi: ExtensionAPI, state: MissionState, ctx: ExtensionContext, mission: MissionCurrent, hooks: MissionCompletionHooks): Promise<void> {
-	if (!mission.completionId || mission.completionEffectsStatus === "done") return;
-	const existing = completionEffectsInFlight.get(mission.completionId);
+	const completionId = mission.completionId;
+	if (!completionId || mission.completionEffectsStatus === "done") return;
+	const existing = completionEffectsInFlight.get(completionId);
 	if (existing) return existing;
 	const operation = (async () => {
 		try {
 			await writeCompletionAudit(mission, mission.lastSummary, mission.completionAudit, state.readUsage(), state.readProgress());
-			await hooks.onCompleted?.(ctx, mission, mission.completionId);
-			state.append(pi, state.completionEffectsDoneEvent(mission.completionId!));
+			await hooks.onCompleted?.(ctx, mission, completionId);
+			state.append(pi, state.completionEffectsDoneEvent(completionId));
 		} catch (error) {
 			ctx.ui?.notify?.(`Mission completed; artifact/notification step remains pending: ${error instanceof Error ? error.message : String(error)}`, "warning");
 		}
 	})();
-	completionEffectsInFlight.set(mission.completionId, operation);
-	try { await operation; } finally { completionEffectsInFlight.delete(mission.completionId); }
+	completionEffectsInFlight.set(completionId, operation);
+	try { await operation; } finally { completionEffectsInFlight.delete(completionId); }
 }
 
 function missionCall(action: string, target: string, theme: Theme): Text {
@@ -499,7 +558,7 @@ function missionResult(details: MissionResultDetails | undefined, expanded: bool
 		const mission = value.mission;
 		const color = isError ? "error" : mission.status === "complete" ? "success" : mission.status === "active" ? "warning" : "muted";
 		let text = `${theme.fg(color, value.alreadyComplete ? "already complete" : mission.status)} ${theme.fg("accent", mission.title)} ${theme.fg("muted", mission.missionId)}`;
-		if (mission.reviewStatus && mission.reviewStatus !== "not_required") text += ` · review ${mission.reviewStatus}${mission.reviewOutcome ? ` (${mission.reviewOutcome})` : ""}`;
+		if (mission.review.admission.status && mission.review.admission.status !== "not_required") text += ` · review ${mission.review.admission.status}${mission.review.admission.outcome ? ` (${mission.review.admission.outcome})` : ""}`;
 		if (value.usage) text += ` · ${value.usage.totalTokens} tokens`;
 		if (expanded) text += `\n${mission.objective}`;
 		return new Text(text, 0, 0);
@@ -565,7 +624,7 @@ export function formatMission(mission: ReturnType<MissionState["readAny"]>, usag
 		objective,
 		requirements ? `Req: ${requirements}` : undefined,
 		`Usage: ${budget}`,
-		mission.reviewStatus === "awaiting_adjudication" ? `Review: run ${mission.reviewRunId ?? "missing"}; derived ${mission.reviewSuggestedVerdict ?? "unknown"}; severity ${mission.reviewHighestSeverity ?? "none"}; blocking ${mission.reviewBlockingFindingCount ?? 0}; backlog ${mission.reviewBacklogFindingCount ?? 0}; evidence via subagent_wait.` : undefined,
+		mission.review.admission.status === "awaiting_adjudication" ? `Review: run ${mission.review.admission.runId ?? "missing"}; derived ${mission.review.adjudication.suggestedVerdict ?? "unknown"}; severity ${mission.review.findings.highestSeverity ?? "none"}; blocking ${mission.review.findings.blockingCount}; backlog ${mission.review.findings.backlogCount}; evidence via subagent_wait.` : undefined,
 		formatMissionLocation(mission),
 		mission.lastReason ? `Reason: ${compactMissionText(mission.lastReason, 160)}` : undefined,
 	].filter(Boolean).join("\n");

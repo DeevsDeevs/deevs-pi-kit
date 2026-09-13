@@ -2,8 +2,8 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, 
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SessionManager, type ExtensionAPI, type ExtensionContext, type SessionInfo } from "@earendil-works/pi-coding-agent";
-import { MissionState, MISSION_CUSTOM_TYPE } from "../extensions/mission/state.ts";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { MissionState } from "../extensions/mission/state.ts";
 import { readMissionSnapshot, withMissionLock, writeMissionSnapshot } from "../extensions/mission/persistence.ts";
 import { discoverMissionTakeoverCandidates } from "../extensions/mission/takeover.ts";
 import { registerMissionTools } from "../extensions/mission/tools.ts";
@@ -50,7 +50,7 @@ describe("Mission takeover", () => {
 		source.candidate.snapshot.reviewFailureCount = 2;
 
 		const taken = firstState.takeover(first.pi, source.candidate, first.ctx, "source session broke");
-		expect(taken).toMatchObject({ status: "active", reviewStatus: "due", lastReason: "source session broke" });
+		expect(taken).toMatchObject({ status: "active", lastReason: "source session broke", review: { admission: { status: "due" } } });
 		expect(taken.generation).not.toBe(source.candidate.snapshot.mission.generation);
 		expect(firstState.readProgress().map((item) => item.summary)).toEqual(["Started"]);
 		expect(firstState.readOwner()?.sessionId).toBe("new-session");
@@ -83,7 +83,7 @@ describe("Mission takeover", () => {
 		const successor = session(cwd, "successor-session");
 		const state = new MissionState();
 		const taken = state.takeover(successor.pi, source.candidate, successor.ctx, "old controller stopped");
-		expect(taken).toMatchObject({ reviewStatus: "changes_requested", reviewRunId: "review-major", reviewReason: "Major finding requires correction" });
+		expect(taken).toMatchObject({ review: { admission: { status: "changes_requested", runId: "review-major", reason: "Major finding requires correction" } } });
 	});
 
 	it("preserves one unchanged adjudicated candidate and its user completion authorization across takeover", async () => {
@@ -96,30 +96,14 @@ describe("Mission takeover", () => {
 		const successor = session(cwd, "successor-session");
 		const state = new MissionState();
 		const taken = state.takeover(successor.pi, source.candidate, successor.ctx, "old controller stopped");
-		expect(taken).toMatchObject({ reviewStatus: "clear", reviewCandidateId: "candidate-stable", reviewAdjudicatedCandidateId: "candidate-stable", reviewAdjudicatedVerdict: "clear", completionLatchCandidateId: "candidate-stable", completionLatchReviewStatus: "clear" });
-	});
-
-	it("discovers a pre-upgrade Mission from its exact same-cwd session branch", async () => {
-		const cwd = mkdtempSync(path.join(tmpdir(), "mission-legacy-takeover-"));
-		cleanup.push(cwd);
-		const source = session(cwd, "legacy-session");
-		const legacy = new MissionState();
-		legacy.loadLegacyBranch(source.branch as Array<any>, cwd);
-		const event = await legacy.create({ objective: "Legacy objective", chain: "legacy" }, source.ctx);
-		source.pi.appendEntry(MISSION_CUSTOM_TYPE, event);
-		const replay = new MissionState();
-		replay.loadLegacyBranch(source.branch as Array<any>, cwd);
-
-		const info = { path: source.sessionFile, id: "legacy-session", cwd } as SessionInfo;
-		const manager = { getBranch: () => source.branch };
-		vi.spyOn(SessionManager, "list").mockResolvedValue([info]);
-		vi.spyOn(SessionManager, "open").mockReturnValue(manager as unknown as SessionManager);
-		const current = session(cwd, "current-session");
-		const candidates = await discoverMissionTakeoverCandidates(current.ctx);
-
-		expect(candidates).toHaveLength(1);
-		expect(candidates[0]).toMatchObject({ source: "legacy_session", snapshot: { owner: { sessionId: "legacy-session" }, mission: { objective: "Legacy objective" } } });
-		expect(replay.readAny()?.missionId).toBe(candidates[0]?.snapshot.mission.missionId);
+		expect(taken).toMatchObject({
+			review: {
+				admission: { status: "clear" },
+				candidate: { id: "candidate-stable" },
+				adjudication: { adjudicatedCandidateId: "candidate-stable", adjudicatedVerdict: "clear" },
+				completionLatch: { candidateId: "candidate-stable", reviewStatus: "clear" },
+			},
+		});
 	});
 
 	it("requires trusted confirmation and resumes immediately through mission_takeover", async () => {
@@ -128,7 +112,7 @@ describe("Mission takeover", () => {
 		const source = await sourceMission(cwd);
 		const target = session(cwd, "tool-session");
 		const state = new MissionState();
-		let tool: { execute: (...args: unknown[]) => Promise<{ details?: { mission?: { status?: string; reviewStatus?: string } } }> } | undefined;
+		let tool: { execute: (...args: unknown[]) => Promise<{ details?: { mission?: { status?: string; review?: { admission?: { status?: string } } } } }> } | undefined;
 		let takenOver = 0;
 		const pi = {
 			...target.pi,
@@ -150,7 +134,7 @@ describe("Mission takeover", () => {
 		symlinkSync(outsideProjection, projection);
 
 		const result = await tool!.execute("call", { missionId: source.candidate.snapshot.mission.missionId, reason: "old session crashed" }, undefined, undefined, target.ctx);
-		expect(result.details?.mission).toMatchObject({ status: "active", reviewStatus: "due" });
+		expect(result.details?.mission).toMatchObject({ status: "active", review: { admission: { status: "due" } } });
 		expect(state.readUsage().totalTokens).toBe(123);
 		expect(discoveries).toBe(2);
 		expect(takenOver).toBe(1);
@@ -178,12 +162,12 @@ describe("Mission takeover", () => {
 		const cwd = mkdtempSync(path.join(tmpdir(), "mission-takeover-review-limit-"));
 		cleanup.push(cwd);
 		const source = await sourceMission(cwd);
-		source.candidate.snapshot.mission.reviewCorrectionCount = 4;
-		source.candidate.snapshot.mission.reviewCorrectionLimit = 3;
+		source.candidate.snapshot.mission.review.correction.count = 4;
+		source.candidate.snapshot.mission.review.correction.limit = 3;
 		const successor = session(cwd, "successor-session");
 		const state = new MissionState();
 		const taken = state.takeover(successor.pi, source.candidate, successor.ctx, "old controller stopped");
-		expect(taken).toMatchObject({ status: "blocked", reviewCorrectionCount: 4, reviewCorrectionLimit: 3 });
+		expect(taken).toMatchObject({ status: "blocked", review: { correction: { count: 4, limit: 3 } } });
 	});
 
 	it("rejects fractional durable correction counters", async () => {
@@ -193,10 +177,10 @@ describe("Mission takeover", () => {
 		const slug = source.candidate.snapshot.mission.slug;
 		const snapshotFile = path.join(cwd, ".missions", ".state", `${slug}.json`);
 		const snapshot = JSON.parse(readFileSync(snapshotFile, "utf8"));
-		snapshot.mission.reviewCorrectionLimit = 3.5;
+		snapshot.mission.review.correction.limit = 3.5;
 		writeFileSync(snapshotFile, JSON.stringify(snapshot));
 		expect(() => readMissionSnapshot(cwd, slug)).toThrow("reviewCorrectionLimit must be an integer");
-		snapshot.mission.reviewCorrectionLimit = 3;
+		snapshot.mission.review.correction.limit = 3;
 		snapshot.revision = Number.MAX_SAFE_INTEGER + 1;
 		writeFileSync(snapshotFile, JSON.stringify(snapshot));
 		expect(() => readMissionSnapshot(cwd, slug)).toThrow("Unsupported Mission snapshot version or revision");
@@ -214,15 +198,14 @@ describe("Mission takeover", () => {
 		const snapshot = structuredClone(source.candidate.snapshot);
 		const slug = snapshot.mission.slug;
 		const snapshotFile = path.join(cwd, ".missions", ".state", `${slug}.json`);
-		snapshot.mission.reviewStatus = "due";
-		snapshot.mission.reviewLegacyRelaunchAuthorized = true;
-		snapshot.mission.reviewAdjudications = [{ candidateId: "candidate", verdict: "changes_requested" }];
-		snapshot.mission.reviewFindings = [{ index: 0, severity: "major", summary: "Finding", path: "extensions/mission/persistence.ts", line: 1, requirementIndex: 0 }];
-		snapshot.mission.reviewScopeRevisions = [{ root: ".", base: "a".repeat(40), head: "b".repeat(40) }];
+		snapshot.mission.review.admission.status = "due";
+		snapshot.mission.review.adjudication.history = [{ candidateId: "candidate", verdict: "changes_requested" }];
+		snapshot.mission.review.findings.items = [{ index: 0, severity: "major", summary: "Finding", path: "extensions/mission/persistence.ts", line: 1, requirementIndex: 0 }];
+		snapshot.mission.review.candidate.scopeRevisions = [{ root: ".", base: "a".repeat(40), head: "b".repeat(40) }];
 		snapshot.mission.completionAudit = [{ requirementIndex: 0, evidence: "Evidence" }];
 		snapshot.progress[0]!.validation = [{ command: "check", exitCode: 0, objectiveVersion: 1, summary: "Passed", artifact: "result.txt" }];
 		writeMissionSnapshot(cwd, snapshot);
-		expect(readMissionSnapshot(cwd, slug)).toMatchObject({ mission: { artifactDir: snapshot.mission.artifactDir, reviewLegacyRelaunchAuthorized: true }, usage: { totalTokens: snapshot.usage.mainTokens + snapshot.usage.subagentTokens, totalCostUsd: snapshot.usage.mainCostUsd + snapshot.usage.subagentCostUsd } });
+		expect(readMissionSnapshot(cwd, slug)).toMatchObject({ mission: { artifactDir: snapshot.mission.artifactDir }, usage: { totalTokens: snapshot.usage.mainTokens + snapshot.usage.subagentTokens, totalCostUsd: snapshot.usage.mainCostUsd + snapshot.usage.subagentCostUsd } });
 
 		const record = (value: unknown) => value as Record<string, unknown>;
 		const cases: Array<[string, (value: MissionSnapshot) => void]> = [
@@ -232,9 +215,16 @@ describe("Mission takeover", () => {
 			["progress", (value) => { record(value.progress[0]).extra_progress = true; }],
 			["validation", (value) => { record(value.progress[0]!.validation[0]).extra_validation = true; }],
 			["usage", (value) => { record(value.usage).extra_usage = true; }],
-			["adjudication", (value) => { record(value.mission.reviewAdjudications![0]).extra_adjudication = true; }],
-			["finding", (value) => { record(value.mission.reviewFindings![0]).extra_finding = true; }],
-			["revision", (value) => { record(value.mission.reviewScopeRevisions![0]).extra_revision = true; }],
+			["review", (value) => { record(value.mission.review).extra_review = true; }],
+			["admission", (value) => { record(value.mission.review.admission).extra_admission = true; }],
+			["candidate", (value) => { record(value.mission.review.candidate).extra_candidate = true; }],
+			["adjudication state", (value) => { record(value.mission.review.adjudication).extra_adjudication_state = true; }],
+			["findings state", (value) => { record(value.mission.review.findings).extra_findings_state = true; }],
+			["correction", (value) => { record(value.mission.review.correction).extra_correction = true; }],
+			["completion latch", (value) => { record(value.mission.review.completionLatch).extra_completion_latch = true; }],
+			["adjudication", (value) => { record(value.mission.review.adjudication.history[0]).extra_adjudication = true; }],
+			["finding", (value) => { record(value.mission.review.findings.items![0]).extra_finding = true; }],
+			["revision", (value) => { record(value.mission.review.candidate.scopeRevisions![0]).extra_revision = true; }],
 			["completion audit", (value) => { record(value.mission.completionAudit![0]).extra_audit = true; }],
 		];
 		for (const [label, mutate] of cases) {
