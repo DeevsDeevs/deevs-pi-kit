@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
 import { lstat, mkdir, open } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { MissionCurrent, MissionProgressRecord, MissionUsage } from "./types.ts";
+import type { MissionCurrent, MissionProgressRecord, MissionRequirementAudit, MissionUsage } from "./types.ts";
 
 export function missionRoot(cwd: string): string {
 	return join(cwd, ".missions");
@@ -24,7 +24,11 @@ export async function updateMissionSummaryArtifact(mission: MissionCurrent, usag
 	await writeArtifactFile(join(mission.artifactDir, "mission.md"), formatMissionMarkdown(mission, usage));
 }
 
-export async function writeMissionProgressArtifacts(mission: MissionCurrent, progress: MissionProgressRecord[], usage?: MissionUsage): Promise<void> {
+export async function writeMissionProgressArtifacts(
+	mission: MissionCurrent,
+	progress: MissionProgressRecord[],
+	usage?: MissionUsage,
+): Promise<void> {
 	await prepareArtifactDirectory(mission.artifactDir);
 	await Promise.all([
 		writeArtifactFile(join(mission.artifactDir, "log.md"), formatProgressLogMarkdown(mission, progress)),
@@ -32,7 +36,13 @@ export async function writeMissionProgressArtifacts(mission: MissionCurrent, pro
 	]);
 }
 
-export async function writeCompletionAudit(mission: MissionCurrent, summary: string | undefined, audit: Array<{ requirementIndex: number; evidence: string }> | undefined, usage: MissionUsage, progress: MissionProgressRecord[] = []): Promise<void> {
+export async function writeCompletionAudit(
+	mission: MissionCurrent,
+	summary: string | undefined,
+	audit: MissionRequirementAudit[] | undefined,
+	usage: MissionUsage,
+	progress: MissionProgressRecord[] = [],
+): Promise<void> {
 	await prepareArtifactDirectory(mission.artifactDir);
 	const lines = [
 		formatMissionMarkdown(mission, usage, progress).trimEnd(),
@@ -48,7 +58,12 @@ export async function writeCompletionAudit(mission: MissionCurrent, summary: str
 		"### Requirement Evidence",
 		"",
 	];
-	if (audit?.length) for (const item of audit) lines.push(`- [${item.requirementIndex}] ${mission.requirements[item.requirementIndex] ?? "(unknown requirement)"}: ${item.evidence.trim()}`);
+	if (audit?.length) {
+		for (const item of audit) {
+			const requirement = mission.requirements[item.requirementIndex] ?? "(unknown requirement)";
+			lines.push(`- [${item.requirementIndex}] ${requirement}: ${item.evidence.trim()}`);
+		}
+	}
 	else lines.push("- (Model did not provide a structured audit. See final conversation turn for evidence.)");
 	lines.push("");
 	await writeArtifactFile(join(mission.artifactDir, "mission.md"), lines.join("\n"));
@@ -91,7 +106,9 @@ function formatMissionMarkdown(mission: MissionCurrent, usage?: MissionUsage, pr
 		mission.tokenBudget ? `Token budget: ${mission.tokenBudget}` : "Token budget: unbounded",
 		mission.costBudgetUsd ? `Cost budget: $${mission.costBudgetUsd}` : "Cost budget: unbounded",
 	].join("\n");
-	const usageText = usage ? [`Tokens used: ${usage.totalTokens}`, `Cost used: $${usage.totalCostUsd.toFixed(4)}`].join("\n") : "Usage: not accounted yet";
+	const usageText = usage
+		? [`Tokens used: ${usage.totalTokens}`, `Cost used: $${usage.totalCostUsd.toFixed(4)}`].join("\n")
+		: "Usage: not accounted yet";
 	const latest = progress.at(-1);
 	return [
 		`# Mission: ${mission.title}`,
@@ -143,7 +160,14 @@ function formatProgressLogMarkdown(mission: MissionCurrent, progress: MissionPro
 	for (const item of progress) {
 		lines.push(`## ${new Date(item.at).toISOString()}${item.checkpoint ? " checkpoint" : ""}`, "", item.summary, "");
 		if (item.evidence.length) lines.push("Evidence:", ...item.evidence.map((value) => `- ${value}`), "");
-		if (item.validation.length) lines.push("Validation:", ...item.validation.map((value) => `- ${value.command} → ${value.exitCode}${value.summary ? ` · ${value.summary}` : ""}${value.artifact ? ` · ${value.artifact}` : ""}`), "");
+		if (item.validation.length) {
+			const validation = item.validation.map((value) => {
+				const summary = value.summary ? ` · ${value.summary}` : "";
+				const artifact = value.artifact ? ` · ${value.artifact}` : "";
+				return `- ${value.command} → ${value.exitCode}${summary}${artifact}`;
+			});
+			lines.push("Validation:", ...validation, "");
+		}
 		if (item.remaining.length) lines.push("Remaining:", ...item.remaining.map((value) => `- ${value}`), "");
 	}
 	return lines.join("\n");

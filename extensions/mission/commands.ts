@@ -3,13 +3,39 @@ import { initializeMissionArtifacts, updateMissionSummaryArtifact } from "./arti
 import type { MissionState } from "./state.ts";
 import { listSnapshotTakeoverCandidates } from "./takeover.ts";
 import { completeMission, formatContinuation, formatMission, resumeMission, takeoverMission, updateMission } from "./tools.ts";
-import type { MissionCompleteInput, MissionCreateInput, MissionCurrent, MissionStatus, MissionTakeoverCandidate, MissionUpdateInput } from "./types.ts";
+import type { MissionCompletionHooks } from "./tools.ts";
+import type {
+	MissionCreateInput,
+	MissionCurrent,
+	MissionStatus,
+	MissionTakeoverCandidate,
+	MissionUpdateInput,
+} from "./types.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
 import { chainCheckpoints } from "../chains/checkpoint.ts";
 import { FULL_SCREEN_OVERLAY } from "../shared/dashboard.ts";
 import { MissionDashboard } from "./ui.ts";
 
-export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, setContext: (ctx: ExtensionContext) => void, maybeContinue: (ctx: ExtensionContext) => void, hooks: { validateCompletion?: (input: MissionCompleteInput, ctx: ExtensionContext, directUserRequest?: boolean) => Promise<string[]> | string[]; authorizeCompletion?: (ctx: ExtensionContext) => Promise<string>; completionCandidateId?: (ctx: ExtensionContext) => Promise<string | undefined>; onCreated?: (ctx: ExtensionContext) => void | Promise<void>; onTakenOver?: (ctx: ExtensionContext, mission: MissionCurrent) => void; discoverTakeoverCandidates?: (ctx: ExtensionContext) => Promise<MissionTakeoverCandidate[]>; onChanged?: (ctx: ExtensionContext) => void; onResumed?: (ctx: ExtensionContext) => void; continuationBlockers?: (ctx: ExtensionContext) => string[]; onObjectiveUpdated?: (input: MissionUpdateInput, ctx: ExtensionContext) => void; onCompleted?: (ctx: ExtensionContext, mission: MissionCurrent, completionId?: string) => Promise<void> | void } = {}): void {
+/** Runtime hooks the trusted /mission command surface calls; each one is optional. */
+interface MissionCommandHooks extends MissionCompletionHooks {
+	onCreated?: (ctx: ExtensionContext) => void | Promise<void>;
+	onTakenOver?: (ctx: ExtensionContext, mission: MissionCurrent) => void;
+	discoverTakeoverCandidates?: (ctx: ExtensionContext) => Promise<MissionTakeoverCandidate[]>;
+	onChanged?: (ctx: ExtensionContext) => void;
+	onResumed?: (ctx: ExtensionContext) => void;
+	continuationBlockers?: (ctx: ExtensionContext) => string[];
+	onObjectiveUpdated?: (input: MissionUpdateInput, ctx: ExtensionContext) => void;
+}
+
+type SetMissionContext = (ctx: ExtensionContext) => void;
+
+export function registerMissionCommands(
+	pi: ExtensionAPI,
+	state: MissionState,
+	setContext: SetMissionContext,
+	maybeContinue: (ctx: ExtensionContext) => void,
+	hooks: MissionCommandHooks = {},
+): void {
 	pi.registerCommand("mission", {
 		description: "Create/manage a durable single-controller Mission.",
 		handler: async (args, ctx) => {
@@ -17,84 +43,170 @@ export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, s
 			state.loadFromSession(ctx);
 			const trimmed = args.trim();
 			if (!trimmed || trimmed === "status" || trimmed === "show") {
-				if (ctx.mode === "tui" && ctx.hasUI && state.readAny()) {
-					await showMissionDashboard(pi, state, ctx, setContext, hooks);
-				} else await showTextViewer(ctx, "Mission", formatMission(state.readAny(), state.readUsage()));
+				await showMissionStatus(pi, state, ctx, setContext, hooks);
 				return;
 			}
-
 			const command = trimmed.toLowerCase();
 			if (command === "takeover" || command.startsWith("takeover ")) {
-				try {
-					const selector = trimmed.slice("takeover".length).trim();
-					const mission = await takeoverMission(pi, state, ctx, { missionId: selector, reason: "/mission takeover" }, hooks, true);
-					ctx.ui.notify(`Mission taken over${mission.status === "active" ? " and resumed" : ""}:\n${formatMission(mission, state.readUsage())}`, "info");
-				} catch (error) {
-					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
-				}
+				await runTakeover(pi, state, ctx, trimmed, hooks);
 				return;
 			}
 			if (["pause", "resume", "clear"].includes(command)) {
-				if (command === "resume") {
-					try {
-						const mission = await resumeMission(pi, state, "/resume");
-						hooks.onResumed?.(ctx);
-						ctx.ui.notify(`${formatMission(mission, state.readUsage())}${formatContinuation(hooks.continuationBlockers?.(ctx) ?? [])}`, "info");
-					} catch (error) {
-						ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
-					}
-					return;
-				}
-				const status = command === "pause" ? "paused" : "cleared";
-				await setStatus(pi, state, status, ctx, `/${command}`);
-				if (status === "paused") chainCheckpoints.current?.due("Mission paused", "mission_control");
-				hooks.onChanged?.(ctx);
+				await runLifecycle(pi, state, ctx, command, hooks);
 				return;
 			}
 			if (command === "update" || command.startsWith("update ")) {
-				try {
-					const params = parseUpdateArgs(trimmed.slice("update".length).trim());
-					const mission = await updateMission(pi, state, ctx, params, hooks);
-					ctx.ui.notify(`Mission updated: ${mission.title}\nObjective version: ${mission.objectiveVersion}\n${formatMission(mission, state.readUsage())}`, "info");
-					hooks.onChanged?.(ctx);
-				} catch (error) {
-					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
-				}
+				await runUpdate(pi, state, ctx, trimmed, hooks);
 				return;
 			}
 			if (command === "complete" || command === "end" || command === "stop") {
-				try {
-					const result = await completeMission(pi, state, ctx, command === "complete" ? { authorizeCompletion: true } : { userRequested: true }, `/mission ${command}`, hooks, true);
-					if (result.alreadyComplete) ctx.ui.notify(`Mission already complete: ${result.mission?.title ?? "unknown"}`, "info");
-					else if (result.blockers?.length) ctx.ui.notify(`Mission completion blocked:\n${result.blockers.map((blocker) => `- ${blocker}`).join("\n")}`, "error");
-					else ctx.ui.notify(`${formatMission(result.mission, result.usage)}\nResume: /mission resume`, "info");
-				} catch (error) {
-					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
-				}
+				await runCompletion(pi, state, ctx, command, hooks);
 				return;
 			}
-
-			try {
-				if (!state.readAny()) {
-					const takeoverCandidates = listSnapshotTakeoverCandidates(ctx);
-					if (takeoverCandidates.length) throw new Error(`A Mission already exists in another session: ${takeoverCandidates.map((candidate) => candidate.snapshot.mission.missionId).join(", ")}. Use /mission takeover instead.`);
-				}
-				if (!ctx.sessionManager.getSessionFile() || !ctx.sessionManager.getSessionId()) throw new Error("Mission creation requires a persisted Pi session owner.");
-				const input = parseCreateArgs(trimmed);
-				const event = await state.create(input, ctx);
-				const mission = state.append(pi, event)!;
-				await hooks.onCreated?.(ctx);
-				try { await initializeMissionArtifacts(mission, state.readUsage()); } catch (error) { ctx.ui.notify(`Mission created, but generated artifacts could not be initialized: ${error instanceof Error ? error.message : String(error)}`, "warning"); }
-				ctx.ui.notify(`Mission created: ${mission.title}\nChain: ${mission.chain}@${mission.chainBranch}\nArtifacts: .missions/${mission.slug}`, "info");
-				maybeContinue(ctx);
-			} catch (error) {
-				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
-			}
+			await runCreate(pi, state, ctx, trimmed, maybeContinue, hooks);
 		},
 	});
 }
 
-async function setStatus(pi: ExtensionAPI, state: MissionState, status: MissionStatus, ctx: ExtensionContext, reason: string): Promise<void> {
+async function showMissionStatus(
+	pi: ExtensionAPI,
+	state: MissionState,
+	ctx: ExtensionContext,
+	setContext: SetMissionContext,
+	hooks: MissionCommandHooks,
+): Promise<void> {
+	if (ctx.mode === "tui" && ctx.hasUI && state.readAny()) {
+		await showMissionDashboard(pi, state, ctx, setContext, hooks);
+		return;
+	}
+	await showTextViewer(ctx, "Mission", formatMission(state.readAny(), state.readUsage()));
+}
+
+async function runTakeover(
+	pi: ExtensionAPI,
+	state: MissionState,
+	ctx: ExtensionContext,
+	trimmed: string,
+	hooks: MissionCommandHooks,
+): Promise<void> {
+	try {
+		const selector = trimmed.slice("takeover".length).trim();
+		const input = { missionId: selector, reason: "/mission takeover" };
+		const mission = await takeoverMission(pi, state, ctx, input, hooks, true);
+		const resumed = mission.status === "active" ? " and resumed" : "";
+		ctx.ui.notify(`Mission taken over${resumed}:\n${formatMission(mission, state.readUsage())}`, "info");
+	} catch (error) {
+		ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+	}
+}
+
+async function runLifecycle(
+	pi: ExtensionAPI,
+	state: MissionState,
+	ctx: ExtensionContext,
+	command: string,
+	hooks: MissionCommandHooks,
+): Promise<void> {
+	if (command === "resume") {
+		try {
+			const mission = await resumeMission(pi, state, "/resume");
+			hooks.onResumed?.(ctx);
+			const continuation = formatContinuation(hooks.continuationBlockers?.(ctx) ?? []);
+			ctx.ui.notify(`${formatMission(mission, state.readUsage())}${continuation}`, "info");
+		} catch (error) {
+			ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+		}
+		return;
+	}
+	const status: MissionStatus = command === "pause" ? "paused" : "cleared";
+	await setStatus(pi, state, status, ctx, `/${command}`);
+	if (status === "paused") chainCheckpoints.current?.due("Mission paused", "mission_control");
+	hooks.onChanged?.(ctx);
+}
+
+async function runUpdate(
+	pi: ExtensionAPI,
+	state: MissionState,
+	ctx: ExtensionContext,
+	trimmed: string,
+	hooks: MissionCommandHooks,
+): Promise<void> {
+	try {
+		const params = parseUpdateArgs(trimmed.slice("update".length).trim());
+		const mission = await updateMission(pi, state, ctx, params, hooks);
+		const summary = formatMission(mission, state.readUsage());
+		ctx.ui.notify(`Mission updated: ${mission.title}\nObjective version: ${mission.objectiveVersion}\n${summary}`, "info");
+		hooks.onChanged?.(ctx);
+	} catch (error) {
+		ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+	}
+}
+
+async function runCompletion(
+	pi: ExtensionAPI,
+	state: MissionState,
+	ctx: ExtensionContext,
+	command: string,
+	hooks: MissionCommandHooks,
+): Promise<void> {
+	try {
+		const input = command === "complete" ? { authorizeCompletion: true } : { userRequested: true };
+		const result = await completeMission(pi, state, ctx, input, `/mission ${command}`, hooks, true);
+		if (result.alreadyComplete) {
+			ctx.ui.notify(`Mission already complete: ${result.mission?.title ?? "unknown"}`, "info");
+		} else if (result.blockers?.length) {
+			const blockers = result.blockers.map((blocker) => `- ${blocker}`).join("\n");
+			ctx.ui.notify(`Mission completion blocked:\n${blockers}`, "error");
+		} else ctx.ui.notify(`${formatMission(result.mission, result.usage)}\nResume: /mission resume`, "info");
+	} catch (error) {
+		ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+	}
+}
+
+async function runCreate(
+	pi: ExtensionAPI,
+	state: MissionState,
+	ctx: ExtensionContext,
+	trimmed: string,
+	maybeContinue: (ctx: ExtensionContext) => void,
+	hooks: MissionCommandHooks,
+): Promise<void> {
+	try {
+		if (!state.readAny()) {
+			const takeoverCandidates = listSnapshotTakeoverCandidates(ctx);
+			if (takeoverCandidates.length) {
+				const ids = takeoverCandidates.map((candidate) => candidate.snapshot.mission.missionId).join(", ");
+				throw new Error(`A Mission already exists in another session: ${ids}. Use /mission takeover instead.`);
+			}
+		}
+		if (!ctx.sessionManager.getSessionFile() || !ctx.sessionManager.getSessionId()) {
+			throw new Error("Mission creation requires a persisted Pi session owner.");
+		}
+		const event = await state.create(parseCreateArgs(trimmed), ctx);
+		const mission = state.append(pi, event);
+		if (!mission) throw new Error("Mission creation lost canonical state.");
+		await hooks.onCreated?.(ctx);
+		try {
+			await initializeMissionArtifacts(mission, state.readUsage());
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			ctx.ui.notify(`Mission created, but generated artifacts could not be initialized: ${message}`, "warning");
+		}
+		const location = `Chain: ${mission.chain}@${mission.chainBranch}\nArtifacts: .missions/${mission.slug}`;
+		ctx.ui.notify(`Mission created: ${mission.title}\n${location}`, "info");
+		maybeContinue(ctx);
+	} catch (error) {
+		ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+	}
+}
+
+async function setStatus(
+	pi: ExtensionAPI,
+	state: MissionState,
+	status: MissionStatus,
+	ctx: ExtensionContext,
+	reason: string,
+): Promise<void> {
 	try {
 		const event = state.statusEvent(status, reason);
 		const mission = state.append(pi, event);
@@ -110,7 +222,7 @@ async function showMissionDashboard(
 	state: MissionState,
 	ctx: ExtensionContext,
 	setContext: (ctx: ExtensionContext) => void,
-	hooks: { onChanged?: (ctx: ExtensionContext) => void },
+	hooks: Pick<MissionCommandHooks, "onChanged">,
 ): Promise<void> {
 	await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
 		const render = () => tui.requestRender();
@@ -138,7 +250,7 @@ export function parseCreateArgs(input: string): MissionCreateInput {
 	const objectiveParts: string[] = [];
 	const result: MissionCreateInput = { objective: "" };
 	for (let i = 0; i < tokens.length; i += 1) {
-		const token = unquote(tokens[i]!);
+		const token = unquote(tokens[i]);
 		if (token === "--budget" || token === "--tokens" || token === "--token-budget") result.tokenBudget = parseBudget(tokens[++i], token);
 		else if (token.startsWith("--budget=")) result.tokenBudget = parseBudget(token.slice("--budget=".length), "--budget");
 		else if (token === "--cost") result.costBudgetUsd = parseCost(tokens[++i]);
@@ -170,15 +282,19 @@ export function parseUpdateArgs(input: string): MissionUpdateInput {
 		return value.toLowerCase() === "none" ? null : parse(value);
 	};
 	for (let i = 0; i < tokens.length; i += 1) {
-		const token = unquote(tokens[i]!);
-		if (token === "--budget" || token === "--tokens" || token === "--token-budget") result.tokenBudget = limit(tokens[++i], (v) => parseBudget(v, token));
+		const token = unquote(tokens[i]);
+		if (token === "--budget" || token === "--tokens" || token === "--token-budget") {
+			result.tokenBudget = limit(tokens[++i], (value) => parseBudget(value, token));
+		}
 		else if (token.startsWith("--budget=")) result.tokenBudget = limit(token.slice("--budget=".length), (v) => parseBudget(v, "--budget"));
 		else if (token === "--cost") result.costBudgetUsd = limit(tokens[++i], parseCost);
 		else if (token.startsWith("--cost=")) result.costBudgetUsd = limit(token.slice("--cost=".length), parseCost);
 		else if (token === "--turns" || token === "--turn-budget") result.turnBudget = limit(tokens[++i], (v) => parsePositiveInt(v, token));
 		else if (token.startsWith("--turns=")) result.turnBudget = limit(token.slice("--turns=".length), (v) => parsePositiveInt(v, "--turns"));
 		else if (token === "--deadline" || token === "--wall") result.wallDeadlineMs = limit(tokens[++i], (v) => parsePositiveInt(v, token));
-		else if (token.startsWith("--deadline=")) result.wallDeadlineMs = limit(token.slice("--deadline=".length), (v) => parsePositiveInt(v, "--deadline"));
+		else if (token.startsWith("--deadline=")) {
+			result.wallDeadlineMs = limit(token.slice("--deadline=".length), (value) => parsePositiveInt(value, "--deadline"));
+		}
 		else if (token === "--objective") result.objective = unquote(tokens[++i] ?? "");
 		else if (token.startsWith("--objective=")) result.objective = token.slice("--objective=".length);
 		else if (token === "--requirement" || token === "--req") (result.requirements ??= []).push(unquote(tokens[++i] ?? ""));
@@ -190,8 +306,16 @@ export function parseUpdateArgs(input: string): MissionUpdateInput {
 		else reasonParts.push(token);
 	}
 	result.reason = reasonParts.join(" ").trim() || "/mission update";
-	if (result.objective === undefined && result.requirements === undefined && result.paths === undefined && result.tokenBudget === undefined && result.costBudgetUsd === undefined && result.turnBudget === undefined && result.wallDeadlineMs === undefined) {
-		throw new Error("Nothing to update. Provide at least one of --objective, --req, --path, --budget, --cost, --turns, --deadline (use 'none' to remove a limit).");
+	const nothingToUpdate = result.objective === undefined
+		&& result.requirements === undefined
+		&& result.paths === undefined
+		&& result.tokenBudget === undefined
+		&& result.costBudgetUsd === undefined
+		&& result.turnBudget === undefined
+		&& result.wallDeadlineMs === undefined;
+	if (nothingToUpdate) {
+		throw new Error("Nothing to update. Provide at least one of --objective, --req, --path, --budget, --cost, --turns,"
+			+ " --deadline (use 'none' to remove a limit).");
 	}
 	return result;
 }
