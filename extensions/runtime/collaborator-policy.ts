@@ -36,6 +36,16 @@ export interface ResolvedCollaboratorCandidate {
 	persona?: CollaboratorPersona;
 }
 
+/** A failed start whose child process may already be live, so its resources are preserved for recovery. */
+export class HostedCollaboratorStartError extends HostedRuntimeClientError {
+	readonly childMayBeLive: boolean;
+
+	constructor(code: string, message: string, childMayBeLive: boolean) {
+		super(code, message);
+		this.childMayBeLive = childMayBeLive;
+	}
+}
+
 export interface CollaboratorToolBlock {
 	block: true;
 	reason: string;

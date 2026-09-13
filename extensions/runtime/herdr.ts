@@ -9,7 +9,7 @@ export const HERDR_AGENT_START_CODES = [
 	"agent_name_lost", "timeout",
 ];
 
-export interface HerdrPane {
+interface HerdrPane {
 	paneId: string;
 	terminalId: string;
 }
@@ -20,7 +20,7 @@ export interface CollaboratorTab {
 	terminalId: string;
 }
 
-export interface HerdrExecResult {
+interface HerdrExecResult {
 	stdout: string;
 	stderr: string;
 }
