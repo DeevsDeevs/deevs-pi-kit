@@ -9,7 +9,7 @@ import { RuntimeAgentBinder, type BindAgentInput, type BoundAgentResult } from "
 import { DirectoryMonitorManager } from "./monitor.ts";
 import { RuntimeMessaging, type MessagingInput } from "./messaging.ts";
 import { HostedParticipantCoordinator } from "./participant.ts";
-import { RuntimeRegistrationManager, type RegisterPiInput } from "./registration.ts";
+import { RuntimeRegistrationManager, type HostedLiveRegistration, type RegisterPiInput } from "./registration.ts";
 import { HostedWakeCoordinator, type HostedClaimResult } from "./wake.ts";
 import { RuntimeWorktrees, type EnsureWorktreeInput, type RemoveWorktreeInput } from "./worktree.ts";
 
@@ -53,6 +53,22 @@ export type HostedResponse =
 	| { v: 1; id: string | null; ok: true; result: unknown }
 	| { v: 1; id: string | null; ok: false; error: { code: HostedErrorCode; message: string } };
 
+/** One authorized call: the envelope fields plus the runtime services every hosted method needs. */
+interface HostedMethodCall {
+	id: string;
+	params: JsonValue | undefined;
+	context: HostedProtocolContext;
+	registrations: RuntimeRegistrationManager;
+	monitors: DirectoryMonitorManager;
+	wakes: HostedWakeCoordinator;
+}
+
+type HostedMethodHandler = (call: HostedMethodCall) => HostedResponse | Promise<HostedResponse>;
+
+class HostedCapabilityError extends Error {
+	readonly code = "capability_unavailable" as const;
+}
+
 export async function dispatchHostedLine(line: string, context: HostedProtocolContext): Promise<HostedResponse> {
 	let value: JsonValue;
 	try {
@@ -68,169 +84,10 @@ export async function dispatchHostedLine(line: string, context: HostedProtocolCo
 		if (version !== HOSTED_PROTOCOL_VERSION) return failure(id, "unsupported_version", "Unsupported protocol envelope version.");
 		const request = strictObject(value, "request", ["v", "id", "method", "params"]);
 		const method = boundedText(request.method, "method", 100);
-		const params = request.params;
-		if (method === "hello") return hello(id, params, context);
-		if (!HOSTED_METHODS.has(method)) return failure(id, "not_found", "Unknown runtime method.");
-		const registrations = context.registrations;
-		const monitors = context.monitors;
-		const wakes = context.wakes;
-		const participants = context.participants;
-		const bridges = context.bridges;
-		const worktrees = context.worktrees;
-		if (!registrations || !monitors || !wakes) return failure(id, "capability_unavailable", "Hosted runtime methods are unavailable in this process.");
-
-		if (method === "messaging.issue") {
-			if (!context.messaging) return failure(id, "capability_unavailable", "Messaging authority is unavailable.");
-			const input = strictObject(params, "messaging.issue params", ["registrationId", "registrationKey", "participantKey", "expectedGeneration", "confirmed"]);
-			if (input.confirmed !== true) throw new Error("Messaging issuance requires explicit controller confirmation.");
-			const caller = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
-			return success(id, await context.messaging.issue(caller, boundedText(input.participantKey, "participant key", 200), boundedText(input.expectedGeneration, "holder generation", 200)));
-		}
-		if (MESSAGING_CALL_FIELDS.has(method)) {
-			if (!context.messaging) return failure(id, "capability_unavailable", "Messaging authority is unavailable.");
-			const input = strictObject(params, `${method} params`, ["namespaceId", "secret", ...MESSAGING_CALL_FIELDS.get(method) ?? []]);
-			const result = success(id, await context.messaging.call(boundedText(input.namespaceId, "namespace ID", 200), boundedText(input.secret, "messaging secret", 200), messagingCallInput(input, method)));
-			if (Buffer.byteLength(encodeHostedResponse(result)) > 128 * 1024) return failure(id, "conflict", "Messaging response exceeds its byte limit.");
-			return result;
-		}
-
-		if (method.startsWith("worktree.")) {
-			if (!worktrees) return failure(id, "capability_unavailable", "Runtime worktree authority is unavailable in this process.");
-			const parsed = worktreeParams(params, method);
-			const caller = registrations.authorize(parsed.registrationId, parsed.registrationKey);
-			if (parsed.method === "worktree.list") return success(id, { worktrees: await worktrees.list(caller) });
-			if (parsed.method === "worktree.ensure") return success(id, await worktrees.ensure(caller, parsed.input));
-			return success(id, await worktrees.remove(caller, parsed.input));
-		}
-		if (method === "bridge.bind") {
-			if (!bridges) return failure(id, "capability_unavailable", "Runtime Herdr agent binding is unavailable in this process.");
-			const parsed = bindAgentParams(params);
-			const caller = registrations.authorize(parsed.registrationId, parsed.registrationKey);
-			return success(id, boundAgentResult(await bridges.bind(caller, parsed.input)));
-		}
-		if (method === "bridge.heartbeat") {
-			const auth = authParams(params);
-			const registration = await registrations.heartbeat(auth.registrationId, auth.registrationKey);
-			return success(id, { ...registrationResult(registration), inboxReady: wakes.status(registration).pending > 0 });
-		}
-		if (method === "bridge.unregister") {
-			const auth = authParams(params);
-			registrations.unregister(auth.registrationId, auth.registrationKey);
-			return success(id, { unregistered: true });
-		}
-		if (method === "pi.register") {
-			const registration = await registrations.register(registerParams(params));
-			return success(id, registrationResult(registration));
-		}
-		if (method === "pi.heartbeat") {
-			const auth = authParams(params);
-			const registration = await registrations.heartbeat(auth.registrationId, auth.registrationKey);
-			const mail = context.messaging?.unread(registration);
-			const heartbeat: JsonObject = { ...registrationResult(registration), inboxReady: wakes.status(registration).pending > 0 };
-			if (mail) heartbeat.mail = { namespaceId: mail.namespaceId, eventId: mail.eventId };
-			return success(id, heartbeat);
-		}
-		if (method === "pi.unregister") {
-			const auth = authParams(params);
-			registrations.unregister(auth.registrationId, auth.registrationKey);
-			return success(id, { unregistered: true });
-		}
-		if (method === "monitor.create") {
-			const input = strictObject(params, "monitor.create params", ["registrationId", "registrationKey", "directory", "settleMs"]);
-			const registration = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
-			const monitor = monitors.create(registration.targetKey, boundedText(input.directory, "monitor directory", 8 * 1024), integer(input.settleMs, "settleMs"));
-			return success(id, monitorResult(monitor));
-		}
-		if (method === "monitor.get") {
-			const auth = authParams(params);
-			const registration = registrations.authorize(auth.registrationId, auth.registrationKey);
-			const monitor = monitors.get(registration.targetKey);
-			return success(id, { monitor: monitor ? monitorResult(monitor) : null });
-		}
-		if (method === "monitor.delete") {
-			const input = strictObject(params, "monitor.delete params", ["registrationId", "registrationKey", "monitorId"]);
-			const registration = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
-			monitors.delete(registration.targetKey, boundedText(input.monitorId, "monitor ID", 200));
-			return success(id, { deleted: true });
-		}
-		if (method === "wake.accept") {
-			const input = strictObject(params, "wake.accept params", ["registrationId", "registrationKey", "wakeId"]);
-			const registration = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
-			return success(id, claimResult(wakes.accept(registration, boundedText(input.wakeId, "wake ID", 200))));
-		}
-		if (method === "inbox.claim") {
-			const input = strictObject(params, "inbox.claim params", ["registrationId", "registrationKey", "maxEvents"]);
-			const registration = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
-			const maxEvents = input.maxEvents === undefined ? HOSTED_MAX_DELIVERY_BATCH : integer(input.maxEvents, "claim batch limit");
-			if (maxEvents < 1 || maxEvents > HOSTED_MAX_DELIVERY_BATCH) throw new Error(`claim batch limit must be between 1 and ${HOSTED_MAX_DELIVERY_BATCH}`);
-			return success(id, claimResult(wakes.claim(registration, maxEvents)));
-		}
-		if (method === "inbox.ack" || method === "inbox.release") {
-			const input = claimReceiptParams(params, method);
-			const registration = registrations.authorize(input.registrationId, input.registrationKey);
-			if (method === "inbox.ack") wakes.ack(registration, input.claimId, input.eventIds);
-			else wakes.release(registration, input.claimId, input.eventIds);
-			return success(id, { settled: true });
-		}
-		if (method === "inbox.status") {
-			const auth = authParams(params);
-			return success(id, wakes.status(registrations.authorize(auth.registrationId, auth.registrationKey)));
-		}
-		if (method === "mailbox.status") {
-			if (!participants) return failure(id, "capability_unavailable", "Collaborator mailbox methods are unavailable in this process.");
-			const input = strictObject(params, "mailbox.status params", ["registrationId", "registrationKey", "senderParticipantKey", "expectedSenderGeneration", "eventIds"]);
-			const registration = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
-			const eventIds = boundedArray(input.eventIds, "event IDs", 12).map((eventId) => boundedText(eventId, "event ID", 200));
-			if (eventIds.length < 1 || new Set(eventIds).size !== eventIds.length) throw new Error("message status event IDs must contain 1 to 12 unique items");
-			return success(id, { messages: eventIds.map((eventId) => participants.messageStatus(registration, boundedText(input.senderParticipantKey, "sender participant key", 200), boundedText(input.expectedSenderGeneration, "sender generation", 200), eventId)) });
-		}
-		if (method.startsWith("participant.") || method === "mailbox.send") {
-			if (!participants) return failure(id, "capability_unavailable", "Collaborator mailbox methods are unavailable in this process.");
-			if (method === "participant.acquire") {
-				const input = strictObject(params, "participant.acquire params", ["registrationId", "registrationKey", "protocol", "participantId", "revive"]);
-				const revive = input.revive === undefined ? false : booleanValue(input.revive, "participant revive must be a boolean");
-				const registration = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
-				return success(id, participants.acquire(registration, participantName(input.protocol, "protocol"), participantName(input.participantId, "participant ID"), revive));
-			}
-			if (method === "participant.list") {
-				const auth = authParams(params);
-				return success(id, { participants: participants.list(registrations.authorize(auth.registrationId, auth.registrationKey)) });
-			}
-			if (method === "participant.stand_down") {
-				const input = strictObject(params, "participant.stand_down params", ["registrationId", "registrationKey", "participantKey", "expectedGeneration"]);
-				const registration = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
-				return success(id, participants.standDown(registration, boundedText(input.participantKey, "participant key", 200), input.expectedGeneration === undefined ? undefined : boundedText(input.expectedGeneration, "expected participant generation", 200)));
-			}
-			if (method === "participant.stand_down_confirmed") {
-				const input = strictObject(params, "participant.stand_down_confirmed params", ["registrationId", "registrationKey", "participantKey", "expectedGeneration", "confirmed"]);
-				if (input.confirmed !== true) throw new Error("participant confirmed stand-down requires explicit confirmation");
-				const registration = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
-				return success(id, participants.standDownConfirmed(registration, boundedText(input.participantKey, "participant key", 200), boundedText(input.expectedGeneration, "expected participant generation", 200)));
-			}
-			if (method === "participant.stop_confirmed") {
-				const input = strictObject(params, "participant.stop_confirmed params", ["registrationId", "registrationKey", "participantKey", "expectedGeneration", "confirmed"]);
-				if (input.confirmed !== true) throw new Error("participant stop requires explicit confirmation");
-				const registration = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
-				return success(id, await participants.stopConfirmed(registration, boundedText(input.participantKey, "participant key", 200), boundedText(input.expectedGeneration, "expected participant generation", 200)));
-			}
-			if (method === "participant.get" || method === "participant.release") {
-				const input = participantAuthParams(params, method);
-				const registration = registrations.authorize(input.registrationId, input.registrationKey);
-				if (method === "participant.get") return success(id, participants.get(registration, input.participantKey));
-				return success(id, participants.release(registration, input.participantKey));
-			}
-			if (method === "participant.takeover") {
-				const input = strictObject(params, "participant.takeover params", ["registrationId", "registrationKey", "participantKey", "expectedGeneration", "confirmed"]);
-				if (input.confirmed !== true) throw new Error("participant takeover requires explicit confirmation");
-				const registration = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
-				return success(id, participants.takeover(registration, boundedText(input.participantKey, "participant key", 200), boundedText(input.expectedGeneration, "expected participant generation", 200)));
-			}
-			const input = strictObject(params, "mailbox.send params", ["registrationId", "registrationKey", "senderParticipantKey", "expectedSenderGeneration", "recipientParticipantKey", "sendId", "body"]);
-			const registration = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
-			const event = participants.send(registration, boundedText(input.senderParticipantKey, "sender participant key", 200), boundedText(input.expectedSenderGeneration, "expected sender generation", 200), boundedText(input.recipientParticipantKey, "recipient participant key", 200), boundedText(input.sendId, "send ID", 200), boundedText(input.body, "mailbox body", HOSTED_MAILBOX_MAX_BODY_BYTES));
-			return success(id, { eventId: event.eventId, sequence: event.source.sequence });
-		}
-		return failure(id, "not_found", "Unknown runtime method.");
+		if (method === "hello") return hello(id, request.params, context);
+		const handle = HOSTED_METHODS.get(method);
+		if (!handle) return failure(id, "not_found", "Unknown runtime method.");
+		return await handle(authorizedCall(id, request.params, context));
 	} catch (error) {
 		return failure(candidateId, errorCode(error), error instanceof Error ? error.message : "Invalid request.");
 	}
@@ -242,6 +99,14 @@ export function encodeHostedResponse(response: HostedResponse): string {
 
 export function invalidFrame(message: string): HostedResponse {
 	return failure(null, "invalid_request", message);
+}
+
+function authorizedCall(id: string, params: JsonValue | undefined, context: HostedProtocolContext): HostedMethodCall {
+	const registrations = context.registrations;
+	const monitors = context.monitors;
+	const wakes = context.wakes;
+	if (!registrations || !monitors || !wakes) throw new HostedCapabilityError("Hosted runtime methods are unavailable in this process.");
+	return { id, params, context, registrations, monitors, wakes };
 }
 
 function hello(id: string, value: JsonValue | undefined, context: HostedProtocolContext): HostedResponse {
@@ -264,16 +129,321 @@ function hello(id: string, value: JsonValue | undefined, context: HostedProtocol
 	return success(id, { version: 1, runtimeId: context.runtimeId, epoch: context.epoch, capabilities });
 }
 
+async function issueMessaging(call: HostedMethodCall): Promise<HostedResponse> {
+	const messaging = requireMessaging(call);
+	const fields = ["registrationId", "registrationKey", "participantKey", "expectedGeneration", "confirmed"];
+	const input = strictObject(call.params, "messaging.issue params", fields);
+	if (input.confirmed !== true) throw new Error("Messaging issuance requires explicit controller confirmation.");
+	const caller = authorize(call, input);
+	const participantKey = boundedText(input.participantKey, "participant key", 200);
+	const expectedGeneration = boundedText(input.expectedGeneration, "holder generation", 200);
+	return success(call.id, await messaging.issue(caller, participantKey, expectedGeneration));
+}
+
+async function callMessaging(call: HostedMethodCall, method: string): Promise<HostedResponse> {
+	const messaging = requireMessaging(call);
+	const input = strictObject(call.params, `${method} params`, ["namespaceId", "secret", ...MESSAGING_CALL_FIELDS.get(method) ?? []]);
+	const namespaceId = boundedText(input.namespaceId, "namespace ID", 200);
+	const secret = boundedText(input.secret, "messaging secret", 200);
+	const result = success(call.id, await messaging.call(namespaceId, secret, messagingCallInput(input, method)));
+	if (Buffer.byteLength(encodeHostedResponse(result)) > 128 * 1024) {
+		return failure(call.id, "conflict", "Messaging response exceeds its byte limit.");
+	}
+	return result;
+}
+
+async function listWorktrees(call: HostedMethodCall): Promise<HostedResponse> {
+	const worktrees = requireWorktrees(call);
+	const auth = authParams(call.params, "worktree.list");
+	return success(call.id, { worktrees: await worktrees.list(call.registrations.authorize(auth.registrationId, auth.registrationKey)) });
+}
+
+async function ensureWorktree(call: HostedMethodCall): Promise<HostedResponse> {
+	const worktrees = requireWorktrees(call);
+	const parsed = worktreeEnsureParams(call.params);
+	const caller = call.registrations.authorize(parsed.registrationId, parsed.registrationKey);
+	return success(call.id, await worktrees.ensure(caller, parsed.input));
+}
+
+async function removeWorktree(call: HostedMethodCall): Promise<HostedResponse> {
+	const worktrees = requireWorktrees(call);
+	const parsed = worktreeRemoveParams(call.params);
+	const caller = call.registrations.authorize(parsed.registrationId, parsed.registrationKey);
+	return success(call.id, await worktrees.remove(caller, parsed.input));
+}
+
+async function bindAgent(call: HostedMethodCall): Promise<HostedResponse> {
+	const bridges = call.context.bridges;
+	if (!bridges) throw new HostedCapabilityError("Runtime Herdr agent binding is unavailable in this process.");
+	const parsed = bindAgentParams(call.params);
+	const caller = call.registrations.authorize(parsed.registrationId, parsed.registrationKey);
+	return success(call.id, boundAgentResult(await bridges.bind(caller, parsed.input)));
+}
+
+async function registerPi(call: HostedMethodCall): Promise<HostedResponse> {
+	return success(call.id, registrationResult(await call.registrations.register(registerParams(call.params))));
+}
+
+async function heartbeatAgent(call: HostedMethodCall): Promise<HostedResponse> {
+	const auth = authParams(call.params, "registration");
+	const registration = await call.registrations.heartbeat(auth.registrationId, auth.registrationKey);
+	return success(call.id, { ...registrationResult(registration), inboxReady: call.wakes.status(registration).pending > 0 });
+}
+
+async function heartbeatPi(call: HostedMethodCall): Promise<HostedResponse> {
+	const auth = authParams(call.params, "registration");
+	const registration = await call.registrations.heartbeat(auth.registrationId, auth.registrationKey);
+	const mail = call.context.messaging?.unread(registration);
+	const heartbeat: JsonObject = { ...registrationResult(registration), inboxReady: call.wakes.status(registration).pending > 0 };
+	if (mail) heartbeat.mail = { namespaceId: mail.namespaceId, eventId: mail.eventId };
+	return success(call.id, heartbeat);
+}
+
+function unregister(call: HostedMethodCall): HostedResponse {
+	const auth = authParams(call.params, "registration");
+	call.registrations.unregister(auth.registrationId, auth.registrationKey);
+	return success(call.id, { unregistered: true });
+}
+
+function createMonitor(call: HostedMethodCall): HostedResponse {
+	const input = strictObject(call.params, "monitor.create params", ["registrationId", "registrationKey", "directory", "settleMs"]);
+	const registration = authorize(call, input);
+	const directory = boundedText(input.directory, "monitor directory", 8 * 1024);
+	const monitor = call.monitors.create(registration.targetKey, directory, integer(input.settleMs, "settleMs"));
+	return success(call.id, monitorResult(monitor));
+}
+
+function getMonitor(call: HostedMethodCall): HostedResponse {
+	const auth = authParams(call.params, "registration");
+	const registration = call.registrations.authorize(auth.registrationId, auth.registrationKey);
+	const monitor = call.monitors.get(registration.targetKey);
+	return success(call.id, { monitor: monitor ? monitorResult(monitor) : null });
+}
+
+function deleteMonitor(call: HostedMethodCall): HostedResponse {
+	const input = strictObject(call.params, "monitor.delete params", ["registrationId", "registrationKey", "monitorId"]);
+	const registration = authorize(call, input);
+	call.monitors.delete(registration.targetKey, boundedText(input.monitorId, "monitor ID", 200));
+	return success(call.id, { deleted: true });
+}
+
+function acceptWake(call: HostedMethodCall): HostedResponse {
+	const input = strictObject(call.params, "wake.accept params", ["registrationId", "registrationKey", "wakeId"]);
+	const registration = authorize(call, input);
+	return success(call.id, claimResult(call.wakes.accept(registration, boundedText(input.wakeId, "wake ID", 200))));
+}
+
+function claimInbox(call: HostedMethodCall): HostedResponse {
+	const input = strictObject(call.params, "inbox.claim params", ["registrationId", "registrationKey", "maxEvents"]);
+	const registration = authorize(call, input);
+	const maxEvents = input.maxEvents === undefined ? HOSTED_MAX_DELIVERY_BATCH : integer(input.maxEvents, "claim batch limit");
+	if (maxEvents < 1 || maxEvents > HOSTED_MAX_DELIVERY_BATCH) {
+		throw new Error(`claim batch limit must be between 1 and ${HOSTED_MAX_DELIVERY_BATCH}`);
+	}
+	return success(call.id, claimResult(call.wakes.claim(registration, maxEvents)));
+}
+
+function ackInbox(call: HostedMethodCall): HostedResponse {
+	const input = claimReceiptParams(call.params, "inbox.ack");
+	const registration = call.registrations.authorize(input.registrationId, input.registrationKey);
+	call.wakes.ack(registration, input.claimId, input.eventIds);
+	return success(call.id, { settled: true });
+}
+
+function releaseInbox(call: HostedMethodCall): HostedResponse {
+	const input = claimReceiptParams(call.params, "inbox.release");
+	const registration = call.registrations.authorize(input.registrationId, input.registrationKey);
+	call.wakes.release(registration, input.claimId, input.eventIds);
+	return success(call.id, { settled: true });
+}
+
+function inboxStatus(call: HostedMethodCall): HostedResponse {
+	const auth = authParams(call.params, "registration");
+	return success(call.id, call.wakes.status(call.registrations.authorize(auth.registrationId, auth.registrationKey)));
+}
+
+function mailboxStatus(call: HostedMethodCall): HostedResponse {
+	const participants = requireParticipants(call);
+	const fields = ["registrationId", "registrationKey", "senderParticipantKey", "expectedSenderGeneration", "eventIds"];
+	const input = strictObject(call.params, "mailbox.status params", fields);
+	const registration = authorize(call, input);
+	const eventIds = boundedArray(input.eventIds, "event IDs", 12).map((eventId) => boundedText(eventId, "event ID", 200));
+	if (eventIds.length < 1 || new Set(eventIds).size !== eventIds.length) {
+		throw new Error("message status event IDs must contain 1 to 12 unique items");
+	}
+	const senderParticipantKey = boundedText(input.senderParticipantKey, "sender participant key", 200);
+	const senderGeneration = boundedText(input.expectedSenderGeneration, "sender generation", 200);
+	const messages = eventIds.map((eventId) => participants.messageStatus(registration, senderParticipantKey, senderGeneration, eventId));
+	return success(call.id, { messages });
+}
+
+function sendMailbox(call: HostedMethodCall): HostedResponse {
+	const participants = requireParticipants(call);
+	const fields = [
+		"registrationId", "registrationKey", "senderParticipantKey", "expectedSenderGeneration",
+		"recipientParticipantKey", "sendId", "body",
+	];
+	const input = strictObject(call.params, "mailbox.send params", fields);
+	const registration = authorize(call, input);
+	const event = participants.send(
+		registration,
+		boundedText(input.senderParticipantKey, "sender participant key", 200),
+		boundedText(input.expectedSenderGeneration, "expected sender generation", 200),
+		boundedText(input.recipientParticipantKey, "recipient participant key", 200),
+		boundedText(input.sendId, "send ID", 200),
+		boundedText(input.body, "mailbox body", HOSTED_MAILBOX_MAX_BODY_BYTES),
+	);
+	return success(call.id, { eventId: event.eventId, sequence: event.source.sequence });
+}
+
+function acquireParticipant(call: HostedMethodCall): HostedResponse {
+	const participants = requireParticipants(call);
+	const fields = ["registrationId", "registrationKey", "protocol", "participantId", "revive"];
+	const input = strictObject(call.params, "participant.acquire params", fields);
+	const revive = input.revive === undefined ? false : booleanValue(input.revive, "participant revive must be a boolean");
+	const registration = authorize(call, input);
+	const protocol = participantName(input.protocol, "protocol");
+	const participantId = participantName(input.participantId, "participant ID");
+	return success(call.id, participants.acquire(registration, protocol, participantId, revive));
+}
+
+function listParticipants(call: HostedMethodCall): HostedResponse {
+	const participants = requireParticipants(call);
+	const auth = authParams(call.params, "registration");
+	const registration = call.registrations.authorize(auth.registrationId, auth.registrationKey);
+	return success(call.id, { participants: participants.list(registration) });
+}
+
+function getParticipant(call: HostedMethodCall): HostedResponse {
+	const participants = requireParticipants(call);
+	const input = participantAuthParams(call.params, "participant.get");
+	const registration = call.registrations.authorize(input.registrationId, input.registrationKey);
+	return success(call.id, participants.get(registration, input.participantKey));
+}
+
+function releaseParticipant(call: HostedMethodCall): HostedResponse {
+	const participants = requireParticipants(call);
+	const input = participantAuthParams(call.params, "participant.release");
+	const registration = call.registrations.authorize(input.registrationId, input.registrationKey);
+	return success(call.id, participants.release(registration, input.participantKey));
+}
+
+function standDownParticipant(call: HostedMethodCall): HostedResponse {
+	const participants = requireParticipants(call);
+	const fields = ["registrationId", "registrationKey", "participantKey", "expectedGeneration"];
+	const input = strictObject(call.params, "participant.stand_down params", fields);
+	const registration = authorize(call, input);
+	const participantKey = boundedText(input.participantKey, "participant key", 200);
+	const expectedGeneration = input.expectedGeneration === undefined
+		? undefined
+		: boundedText(input.expectedGeneration, "expected participant generation", 200);
+	return success(call.id, participants.standDown(registration, participantKey, expectedGeneration));
+}
+
+function standDownParticipantConfirmed(call: HostedMethodCall): HostedResponse {
+	const participants = requireParticipants(call);
+	const message = "participant confirmed stand-down requires explicit confirmation";
+	const params = confirmedParams(call.params, "participant.stand_down_confirmed", message);
+	const registration = authorize(call, params);
+	const participantKey = boundedText(params.participantKey, "participant key", 200);
+	const expectedGeneration = boundedText(params.expectedGeneration, "expected participant generation", 200);
+	return success(call.id, participants.standDownConfirmed(registration, participantKey, expectedGeneration));
+}
+
+async function stopParticipantConfirmed(call: HostedMethodCall): Promise<HostedResponse> {
+	const participants = requireParticipants(call);
+	const params = confirmedParams(call.params, "participant.stop_confirmed", "participant stop requires explicit confirmation");
+	const registration = authorize(call, params);
+	const participantKey = boundedText(params.participantKey, "participant key", 200);
+	const expectedGeneration = boundedText(params.expectedGeneration, "expected participant generation", 200);
+	return success(call.id, await participants.stopConfirmed(registration, participantKey, expectedGeneration));
+}
+
+function takeoverParticipant(call: HostedMethodCall): HostedResponse {
+	const participants = requireParticipants(call);
+	const params = confirmedParams(call.params, "participant.takeover", "participant takeover requires explicit confirmation");
+	const registration = authorize(call, params);
+	const participantKey = boundedText(params.participantKey, "participant key", 200);
+	const expectedGeneration = boundedText(params.expectedGeneration, "expected participant generation", 200);
+	return success(call.id, participants.takeover(registration, participantKey, expectedGeneration));
+}
+
+const HOSTED_METHODS = new Map<string, HostedMethodHandler>([
+	["messaging.issue", issueMessaging],
+	["messaging.peers", (call) => callMessaging(call, "messaging.peers")],
+	["messaging.send", (call) => callMessaging(call, "messaging.send")],
+	["messaging.status", (call) => callMessaging(call, "messaging.status")],
+	["messaging.receive", (call) => callMessaging(call, "messaging.receive")],
+	["messaging.received", (call) => callMessaging(call, "messaging.received")],
+	["messaging.reply", (call) => callMessaging(call, "messaging.reply")],
+	["pi.register", registerPi],
+	["pi.heartbeat", heartbeatPi],
+	["pi.unregister", unregister],
+	["bridge.bind", bindAgent],
+	["bridge.heartbeat", heartbeatAgent],
+	["bridge.unregister", unregister],
+	["worktree.list", listWorktrees],
+	["worktree.ensure", ensureWorktree],
+	["worktree.remove", removeWorktree],
+	["monitor.create", createMonitor],
+	["monitor.get", getMonitor],
+	["monitor.delete", deleteMonitor],
+	["wake.accept", acceptWake],
+	["inbox.claim", claimInbox],
+	["inbox.ack", ackInbox],
+	["inbox.release", releaseInbox],
+	["inbox.status", inboxStatus],
+	["participant.acquire", acquireParticipant],
+	["participant.get", getParticipant],
+	["participant.list", listParticipants],
+	["participant.stand_down", standDownParticipant],
+	["participant.stand_down_confirmed", standDownParticipantConfirmed],
+	["participant.stop_confirmed", stopParticipantConfirmed],
+	["participant.release", releaseParticipant],
+	["participant.takeover", takeoverParticipant],
+	["mailbox.send", sendMailbox],
+	["mailbox.status", mailboxStatus],
+]);
+
+function requireMessaging(call: HostedMethodCall): RuntimeMessaging {
+	const messaging = call.context.messaging;
+	if (!messaging) throw new HostedCapabilityError("Messaging authority is unavailable.");
+	return messaging;
+}
+
+function requireParticipants(call: HostedMethodCall): HostedParticipantCoordinator {
+	const participants = call.context.participants;
+	if (!participants) throw new HostedCapabilityError("Collaborator mailbox methods are unavailable in this process.");
+	return participants;
+}
+
+function requireWorktrees(call: HostedMethodCall): RuntimeWorktrees {
+	const worktrees = call.context.worktrees;
+	if (!worktrees) throw new HostedCapabilityError("Runtime worktree authority is unavailable in this process.");
+	return worktrees;
+}
+
+function authorize(call: HostedMethodCall, params: JsonObject): HostedLiveRegistration {
+	const registrationId = boundedText(params.registrationId, "registration ID", 200);
+	const registrationKey = boundedText(params.registrationKey, "registration key", 200);
+	return call.registrations.authorize(registrationId, registrationKey);
+}
+
 function registerParams(value: JsonValue | undefined): RegisterPiInput {
-	const params = strictObject(value, "pi.register params", ["projectRoot", "piSessionId", "piSessionFile", "clientGeneration", "admittedClaims", "herdr"]);
+	const fields = ["projectRoot", "piSessionId", "piSessionFile", "clientGeneration", "admittedClaims", "herdr"];
+	const params = strictObject(value, "pi.register params", fields);
 	const admitted = boundedArray(params.admittedClaims, "admittedClaims", 12).map((value, index) => {
 		const receipt = strictObject(value, `admittedClaims[${index}]`, ["claimId", "eventIds"]);
-		const eventIds = boundedArray(receipt.eventIds, `admittedClaims[${index}].eventIds`, HOSTED_MAX_DELIVERY_BATCH).map((eventId) => boundedText(eventId, "event ID", 200));
+		const eventIds = boundedArray(receipt.eventIds, `admittedClaims[${index}].eventIds`, HOSTED_MAX_DELIVERY_BATCH)
+			.map((eventId) => boundedText(eventId, "event ID", 200));
 		if (new Set(eventIds).size !== eventIds.length) throw new Error("Admitted claim event IDs must be unique.");
 		return { claimId: boundedText(receipt.claimId, "claim ID", 200), eventIds };
 	});
 	const host = strictObject(params.herdr, "pi.register herdr", ["paneId", "terminalId", "agentName"]);
-	const herdr: RegisterPiInput["herdr"] = { paneId: boundedText(host.paneId, "Herdr pane ID", 200), terminalId: boundedText(host.terminalId, "Herdr terminal ID", 200) };
+	const herdr: RegisterPiInput["herdr"] = {
+		paneId: boundedText(host.paneId, "Herdr pane ID", 200),
+		terminalId: boundedText(host.terminalId, "Herdr terminal ID", 200),
+	};
 	if (host.agentName !== undefined) herdr.agentName = boundedText(host.agentName, "Herdr agent name", 200);
 	return {
 		projectRoot: boundedText(params.projectRoot, "project root", 8 * 1024),
@@ -299,34 +469,45 @@ interface ClaimReceiptParams extends RegistrationAuth {
 	eventIds: string[];
 }
 
-interface AuthorizedParams<T> extends RegistrationAuth {
-	input: T;
+interface AuthorizedParams<Input> extends RegistrationAuth {
+	input: Input;
 }
 
-type WorktreeParams =
-	| { method: "worktree.list" }
-	| ({ method: "worktree.ensure" } & AuthorizedParams<EnsureWorktreeInput>)
-	| ({ method: "worktree.remove" } & AuthorizedParams<RemoveWorktreeInput>);
+const WORKTREE_FIELDS = [
+	"registrationId", "registrationKey", "callerParticipantKey",
+	"expectedCallerGeneration", "protocol", "participantId",
+];
 
-function worktreeParams(value: JsonValue | undefined, method: string): WorktreeParams & RegistrationAuth {
-	if (method === "worktree.list") {
-		const params = strictObject(value, "worktree.list params", ["registrationId", "registrationKey"]);
-		return { method, registrationId: boundedText(params.registrationId, "registration ID", 200), registrationKey: boundedText(params.registrationKey, "registration key", 200) };
+function worktreeEnsureParams(value: JsonValue | undefined): AuthorizedParams<EnsureWorktreeInput> {
+	const params = strictObject(value, "worktree.ensure params", WORKTREE_FIELDS);
+	const input = worktreeInput(params);
+	return { ...registrationAuth(params), input };
+}
+
+function worktreeRemoveParams(value: JsonValue | undefined): AuthorizedParams<RemoveWorktreeInput> {
+	const params = strictObject(value, "worktree.remove params", [...WORKTREE_FIELDS, "discardConfirmed"]);
+	const input = worktreeInput(params);
+	const auth = registrationAuth(params);
+	if (params.discardConfirmed !== true && params.discardConfirmed !== false) {
+		throw new Error("worktree discard confirmation must be boolean");
 	}
-	if (method !== "worktree.ensure" && method !== "worktree.remove") throw new Error("unsupported worktree method");
-	const allowed = ["registrationId", "registrationKey", "callerParticipantKey", "expectedCallerGeneration", "protocol", "participantId", ...(method === "worktree.remove" ? ["discardConfirmed"] : [])];
-	const params = strictObject(value, `${method} params`, allowed);
-	const input: EnsureWorktreeInput = {
+	return { ...auth, input: { ...input, discardConfirmed: params.discardConfirmed } };
+}
+
+function registrationAuth(params: JsonObject): RegistrationAuth {
+	return {
+		registrationId: boundedText(params.registrationId, "registration ID", 200),
+		registrationKey: boundedText(params.registrationKey, "registration key", 200),
+	};
+}
+
+function worktreeInput(params: JsonObject): EnsureWorktreeInput {
+	return {
 		callerParticipantKey: boundedText(params.callerParticipantKey, "caller participant key", 200),
 		expectedCallerGeneration: boundedText(params.expectedCallerGeneration, "expected caller generation", 200),
 		protocol: participantName(params.protocol, "protocol"),
 		participantId: participantName(params.participantId, "participant ID"),
 	};
-	const registrationId = boundedText(params.registrationId, "registration ID", 200);
-	const registrationKey = boundedText(params.registrationKey, "registration key", 200);
-	if (method === "worktree.ensure") return { method, registrationId, registrationKey, input };
-	if (params.discardConfirmed !== true && params.discardConfirmed !== false) throw new Error("worktree discard confirmation must be boolean");
-	return { method, registrationId, registrationKey, input: { ...input, discardConfirmed: params.discardConfirmed } };
 }
 
 function bindAgentParams(value: JsonValue | undefined): AuthorizedParams<BindAgentInput> {
@@ -351,7 +532,7 @@ function bindAgentParams(value: JsonValue | undefined): AuthorizedParams<BindAge
 	if (params.expectedParticipantGeneration !== undefined) {
 		input.expectedParticipantGeneration = boundedText(params.expectedParticipantGeneration, "expected participant generation", 200);
 	}
-	return { registrationId: boundedText(params.registrationId, "registration ID", 200), registrationKey: boundedText(params.registrationKey, "registration key", 200), input };
+	return { ...registrationAuth(params), input };
 }
 
 function nativeDriver(value: JsonValue | undefined): "claude-code" | "codex" {
@@ -359,21 +540,20 @@ function nativeDriver(value: JsonValue | undefined): "claude-code" | "codex" {
 	return value;
 }
 
-function authParams(value: JsonValue | undefined): RegistrationAuth {
-	const params = strictObject(value, "registration params", ["registrationId", "registrationKey"]);
-	return {
-		registrationId: boundedText(params.registrationId, "registration ID", 200),
-		registrationKey: boundedText(params.registrationKey, "registration key", 200),
-	};
+function authParams(value: JsonValue | undefined, name: string): RegistrationAuth {
+	return registrationAuth(strictObject(value, `${name} params`, ["registrationId", "registrationKey"]));
 }
 
 function participantAuthParams(value: JsonValue | undefined, name: string): ParticipantAuth {
 	const params = strictObject(value, `${name} params`, ["registrationId", "registrationKey", "participantKey"]);
-	return {
-		registrationId: boundedText(params.registrationId, "registration ID", 200),
-		registrationKey: boundedText(params.registrationKey, "registration key", 200),
-		participantKey: boundedText(params.participantKey, "participant key", 200),
-	};
+	return { ...registrationAuth(params), participantKey: boundedText(params.participantKey, "participant key", 200) };
+}
+
+function confirmedParams(value: JsonValue | undefined, name: string, message: string): JsonObject {
+	const fields = ["registrationId", "registrationKey", "participantKey", "expectedGeneration", "confirmed"];
+	const params = strictObject(value, `${name} params`, fields);
+	if (params.confirmed !== true) throw new Error(message);
+	return params;
 }
 
 function participantName(value: JsonValue | undefined, name: string): string {
@@ -384,17 +564,13 @@ function participantName(value: JsonValue | undefined, name: string): string {
 
 function claimReceiptParams(value: JsonValue | undefined, name: string): ClaimReceiptParams {
 	const params = strictObject(value, `${name} params`, ["registrationId", "registrationKey", "claimId", "eventIds"]);
-	const eventIds = boundedArray(params.eventIds, "eventIds", HOSTED_MAX_DELIVERY_BATCH).map((eventId) => boundedText(eventId, "event ID", 200));
+	const eventIds = boundedArray(params.eventIds, "eventIds", HOSTED_MAX_DELIVERY_BATCH)
+		.map((eventId) => boundedText(eventId, "event ID", 200));
 	if (eventIds.length === 0 || new Set(eventIds).size !== eventIds.length) throw new Error("Claim event IDs must be non-empty and unique.");
-	return {
-		registrationId: boundedText(params.registrationId, "registration ID", 200),
-		registrationKey: boundedText(params.registrationKey, "registration key", 200),
-		claimId: boundedText(params.claimId, "claim ID", 200),
-		eventIds,
-	};
+	return { ...registrationAuth(params), claimId: boundedText(params.claimId, "claim ID", 200), eventIds };
 }
 
-function registrationResult(registration: Awaited<ReturnType<RuntimeRegistrationManager["register"]>>) {
+function registrationResult(registration: HostedLiveRegistration) {
 	return {
 		targetKey: registration.targetKey,
 		registrationId: registration.registrationId,
@@ -419,7 +595,13 @@ function boundAgentResult(result: BoundAgentResult) {
 }
 
 function monitorResult(monitor: HostedMonitor) {
-	return { monitorId: monitor.monitorId, generation: monitor.generation, directory: monitor.directory, status: monitor.status, settleMs: monitor.settleMs };
+	return {
+		monitorId: monitor.monitorId,
+		generation: monitor.generation,
+		directory: monitor.directory,
+		status: monitor.status,
+		settleMs: monitor.settleMs,
+	};
 }
 
 function claimResult(result: HostedClaimResult) {
@@ -459,35 +641,27 @@ const MESSAGING_CALL_FIELDS = new Map<string, readonly string[]>([
 ]);
 
 function messagingCallInput(input: JsonObject, method: string): MessagingInput {
-	if (method === "messaging.peers") return input.cursor === undefined ? { method: "peers" } : { method: "peers", cursor: boundedText(input.cursor, "cursor", 512) };
+	if (method === "messaging.peers") {
+		return input.cursor === undefined ? { method: "peers" } : { method: "peers", cursor: boundedText(input.cursor, "cursor", 512) };
+	}
 	if (method === "messaging.status") return { method: "status", operationId: boundedText(input.operationId, "operation ID", 200) };
 	if (method === "messaging.receive") return { method: "receive", eventId: boundedText(input.eventId, "event ID", 200) };
 	if (method === "messaging.received") return { method: "received", eventId: boundedText(input.eventId, "event ID", 200) };
 	// Base64 avoids expanding a 16 KiB body past the unchanged 64 KiB RPC request cap.
 	const encoded = boundedText(input.bodyBase64, "encoded body", 24 * 1024);
 	const bytes = Buffer.from(encoded, "base64");
-	if (bytes.toString("base64") !== encoded || bytes.length > HOSTED_MAILBOX_MAX_BODY_BYTES) throw new Error("Messaging body encoding or byte limit is invalid.");
+	if (bytes.toString("base64") !== encoded || bytes.length > HOSTED_MAILBOX_MAX_BODY_BYTES) {
+		throw new Error("Messaging body encoding or byte limit is invalid.");
+	}
 	const body = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 	const operationId = boundedText(input.operationId, "operation ID", 200);
 	if (method === "messaging.reply") return { method: "reply", operationId, eventId: boundedText(input.eventId, "event ID", 200), body };
 	return { method: "send", operationId, participantId: participantName(input.participantId, "recipient participant ID"), body };
 }
 
-const HOSTED_METHODS = new Set([
-	"messaging.issue", "messaging.peers", "messaging.send", "messaging.status",
-	"messaging.receive", "messaging.received", "messaging.reply",
-	"pi.register", "pi.heartbeat", "pi.unregister",
-	"bridge.bind", "bridge.heartbeat", "bridge.unregister",
-	"worktree.ensure", "worktree.list", "worktree.remove",
-	"monitor.create", "monitor.get", "monitor.delete",
-	"wake.accept", "inbox.claim", "inbox.ack", "inbox.release", "inbox.status",
-	"participant.acquire", "participant.get", "participant.list", "participant.stand_down",
-	"participant.stand_down_confirmed", "participant.stop_confirmed", "participant.release", "participant.takeover",
-	"mailbox.send", "mailbox.status",
-]);
-
 const ERROR_CODES: ReadonlySet<string> = new Set([
-	"invalid_request", "unsupported_version", "capability_unavailable", "not_found", "conflict", "registration_stale", "identity_mismatch", "claim_conflict", "host_unavailable", "busy", "storage_error", "internal",
+	"invalid_request", "unsupported_version", "capability_unavailable", "not_found", "conflict", "registration_stale",
+	"identity_mismatch", "claim_conflict", "host_unavailable", "busy", "storage_error", "internal",
 ]);
 
 function isHostedErrorCode(value: string): value is HostedErrorCode {
@@ -512,7 +686,9 @@ function boundedArray(value: JsonValue | undefined, name: string, max: number): 
 }
 
 function boundedText(value: JsonValue | undefined, name: string, maxBytes: number): string {
-	if (!isText(value) || value.length === 0 || Buffer.byteLength(value) > maxBytes) throw new Error(`${name} must be a non-empty string of at most ${maxBytes} bytes.`);
+	if (!isText(value) || value.length === 0 || Buffer.byteLength(value) > maxBytes) {
+		throw new Error(`${name} must be a non-empty string of at most ${maxBytes} bytes.`);
+	}
 	return value;
 }
 
