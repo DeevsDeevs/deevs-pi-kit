@@ -12,6 +12,7 @@ import type {
 	MissionCreateInput,
 	MissionCurrent,
 	MissionEvent,
+	MissionEventKind,
 	MissionOwner,
 	MissionProgressInput,
 	MissionProgressRecord,
@@ -158,7 +159,8 @@ export class MissionState {
 			}
 			if (!anchor && !this.current) {
 				const foreign = snapshots.filter((candidate) => candidate.owner.sessionId !== owner.sessionId && !["complete", "ended", "cleared"].includes(candidate.mission.status));
-				if (foreign.length === 1) this.ownershipConflict = { missionId: foreign[0]!.mission.missionId, ownerSessionId: foreign[0]!.owner.sessionId };
+				const [onlyForeign] = foreign;
+				if (onlyForeign && foreign.length === 1) this.ownershipConflict = { missionId: onlyForeign.mission.missionId, ownerSessionId: onlyForeign.owner.sessionId };
 				else if (foreign.length > 1) this.persistenceError = `Multiple takeover candidates exist: ${foreign.map((candidate) => candidate.mission.missionId).join(", ")}`;
 				if (foreign.length) return;
 			}
@@ -191,7 +193,8 @@ export class MissionState {
 		const explanation = reason.trim();
 		if (!explanation) throw new Error("Mission takeover requires a reason.");
 		this.loadFromSession(ctx);
-		if (this.readAny()) throw new Error(`This session already controls Mission ${this.current!.missionId}.`);
+		const existing = this.readAny();
+		if (existing) throw new Error(`This session already controls Mission ${existing.missionId}.`);
 		const source = candidate.snapshot;
 		const cwd = ctx.cwd;
 		const branch = ctx.sessionManager.getBranch();
@@ -258,7 +261,7 @@ export class MissionState {
 		} catch {
 			// Canonical ownership already transferred; the session mirror is repairable on reload.
 		}
-		return this.readAny()!;
+		return { ...taken.mission, artifactDir: missionDir(cwd, taken.mission.slug) };
 	}
 
 	private loadBranch(branch: Array<any>, cwd: string): void {
@@ -315,20 +318,22 @@ export class MissionState {
 	}
 
 	private bootstrapSnapshot(owner: MissionOwner): void {
-		if (!this.current || !this.cwd) return;
-		withMissionWorkspaceLock(this.cwd, () => {
-			const existing = listMissionSnapshots(this.cwd!).filter((snapshot) => !["complete", "ended", "cleared"].includes(snapshot.mission.status) && snapshot.mission.missionId !== this.current!.missionId);
+		const current = this.current;
+		const cwd = this.cwd;
+		if (!current || !cwd) return;
+		withMissionWorkspaceLock(cwd, () => {
+			const existing = listMissionSnapshots(cwd).filter((snapshot) => !["complete", "ended", "cleared"].includes(snapshot.mission.status) && snapshot.mission.missionId !== current.missionId);
 			if (existing.length) throw new Error(`A Mission is already controlled in this workspace: ${existing.map((snapshot) => snapshot.mission.missionId).join(", ")}.`);
-			withMissionLock(this.cwd!, this.current!.slug, () => {
-				const stored = readMissionSnapshot(this.cwd!, this.current!.slug);
+			withMissionLock(cwd, current.slug, () => {
+				const stored = readMissionSnapshot(cwd, current.slug);
 				if (stored) {
 					if (stored.owner.sessionId !== owner.sessionId) throw new Error("Mission is already controlled by another Pi session.");
-					this.restoreSnapshot(stored, [], this.cwd!, false);
+					this.restoreSnapshot(stored, [], cwd, false);
 					return;
 				}
 				const snapshot = this.exportSnapshot(owner);
 				snapshot.revision = 1;
-				writeMissionSnapshot(this.cwd!, snapshot);
+				writeMissionSnapshot(cwd, snapshot);
 				this.snapshotRevision = 1;
 			});
 		});
@@ -374,7 +379,7 @@ export class MissionState {
 				generation: randomUUID(),
 				objectiveVersion: 1,
 				turnBudget: positiveInteger(input.turnBudget, "turnBudget"),
-				wallDeadlineAt: input.wallDeadlineMs === undefined ? undefined : now + positiveNumber(input.wallDeadlineMs, "wallDeadlineMs")!,
+				wallDeadlineAt: input.wallDeadlineMs === undefined ? undefined : now + requirePositive(input.wallDeadlineMs, "wallDeadlineMs"),
 				reviewStatus: "due",
 				initialBaselinePending: true,
 				reviewUpdatedAt: now,
@@ -393,20 +398,23 @@ export class MissionState {
 
 	append(pi: { appendEntry<T = unknown>(customType: string, data?: T): void }, event: MissionEvent): MissionCurrent | undefined {
 		try {
-			if (!this.cwd || !this.owner) {
+			const cwd = this.cwd;
+			const owner = this.owner;
+			if (!cwd || !owner) {
 				pi.appendEntry(MISSION_CUSTOM_TYPE, event);
 				this.applyEvent(event);
 				if (event.reviewOutcome === "failed") this.reviewFailureCount++;
 				return this.readAny();
 			}
-			const persist = () => withMissionLock(this.cwd!, event.slug ?? this.current?.slug ?? "", () => {
-				const stored = readMissionSnapshot(this.cwd!, event.slug ?? this.current!.slug);
+			// SAFETY: append() only ever receives a "created" event as the first event for a Mission; every later event kind is only reachable once loadFromSession()/create() has populated this.current, so its slug stands in for the missing event.slug.
+			const persist = () => withMissionLock(cwd, event.slug ?? this.current?.slug ?? "", () => {
+				const stored = readMissionSnapshot(cwd, event.slug ?? this.current!.slug);
 				if (event.kind === "created" && stored) throw new Error(`Mission artifact state already exists: ${event.slug}`);
 				const currentUsage = this.usage;
 				if (event.kind !== "created") {
-					if (!stored || stored.owner.sessionId !== this.owner!.sessionId) throw new Error("Mission is controlled by another Pi session.");
+					if (!stored || stored.owner.sessionId !== owner.sessionId) throw new Error("Mission is controlled by another Pi session.");
 					if (stored.revision !== this.snapshotRevision) throw new Error("Mission state changed concurrently; reload before retrying.");
-					this.restoreSnapshot(stored, [], this.cwd!, false);
+					this.restoreSnapshot(stored, [], cwd, false);
 					this.usage = currentUsage;
 				}
 				if (stored?.revision === Number.MAX_SAFE_INTEGER) throw new Error("Mission state revision space is exhausted.");
@@ -414,12 +422,12 @@ export class MissionState {
 				this.applyEvent(event);
 				if (event.reviewOutcome === "failed") this.reviewFailureCount++;
 				try {
-					const snapshot = this.exportSnapshot(this.owner!);
+					const snapshot = this.exportSnapshot(owner);
 					snapshot.revision = (stored?.revision ?? 0) + 1;
-					writeMissionSnapshot(this.cwd!, snapshot);
+					writeMissionSnapshot(cwd, snapshot);
 					this.snapshotRevision = snapshot.revision;
 				} catch (error) {
-					if (stored) { this.restoreSnapshot(stored, [], this.cwd!, false); this.usage = currentUsage; }
+					if (stored) { this.restoreSnapshot(stored, [], cwd, false); this.usage = currentUsage; }
 					else this.clearLoadedState();
 					throw error;
 				}
@@ -428,8 +436,8 @@ export class MissionState {
 			const needsWorkspaceAdmission = event.kind === "created" || (event.kind === "status_changed" && event.status === "active" && this.current?.status === "ended");
 			if (needsWorkspaceAdmission) {
 				const selfId = event.missionId ?? this.current?.missionId;
-				withMissionWorkspaceLock(this.cwd, () => {
-					const existing = listMissionSnapshots(this.cwd!).filter((snapshot) => snapshot.mission.missionId !== selfId && !["complete", "ended", "cleared"].includes(snapshot.mission.status));
+				withMissionWorkspaceLock(cwd, () => {
+					const existing = listMissionSnapshots(cwd).filter((snapshot) => snapshot.mission.missionId !== selfId && !["complete", "ended", "cleared"].includes(snapshot.mission.status));
 					if (existing.length) throw new Error(`A Mission already exists in this workspace: ${existing.map((snapshot) => snapshot.mission.missionId).join(", ")}.`);
 					persist();
 				});
@@ -475,7 +483,7 @@ export class MissionState {
 		if (input.tokenBudget !== undefined) event.tokenBudget = input.tokenBudget === null || input.tokenBudget === 0 ? null : positiveNumber(input.tokenBudget, "tokenBudget");
 		if (input.costBudgetUsd !== undefined) event.costBudgetUsd = input.costBudgetUsd === null || input.costBudgetUsd === 0 ? null : positiveNumber(input.costBudgetUsd, "costBudgetUsd");
 		if (input.turnBudget !== undefined) event.turnBudget = input.turnBudget === null || input.turnBudget === 0 ? null : positiveInteger(input.turnBudget, "turnBudget");
-		if (input.wallDeadlineMs !== undefined) event.wallDeadlineAt = input.wallDeadlineMs === null || input.wallDeadlineMs === 0 ? null : Date.now() + positiveNumber(input.wallDeadlineMs, "wallDeadlineMs")!;
+		if (input.wallDeadlineMs !== undefined) event.wallDeadlineAt = input.wallDeadlineMs === null || input.wallDeadlineMs === 0 ? null : Date.now() + requirePositive(input.wallDeadlineMs, "wallDeadlineMs");
 		if (identityChanged) {
 			event.reviewStatus = "due";
 			event.reviewReason = "Mission objective changed";
@@ -648,102 +656,137 @@ export class MissionState {
 		return mission;
 	}
 
+	// One small handler per event kind, keyed so TypeScript enforces the table stays exhaustive as MissionEventKind grows.
+	// Kinds with no mutation beyond the common status/review/completion fields applied after dispatch are no-ops.
+	private readonly eventHandlers = {
+		created: () => {}, // built directly by applyCreated(); never reaches this table.
+		taken_over: () => {}, // mirrored straight to the session branch; filtered out before loadBranch() replays events.
+		status_changed: () => {},
+		continued: (current, event) => this.applyContinued(current, event),
+		completed: (current, event) => this.applyCompleted(current, event),
+		completion_effects_done: (current, event) => this.applyCompletionEffectsDone(current, event),
+		completion_latched: () => {},
+		completion_latch_cleared: () => {},
+		progress: (current, event) => this.applyProgress(current, event),
+		objective_updated: (current, event) => this.applyObjectiveUpdated(current, event),
+		review_changed: () => {},
+		review_policy_updated: () => {},
+		workspace_fingerprinted: () => {},
+		settled: (current, event) => this.applySettled(current, event),
+	} satisfies Record<MissionEventKind, (current: MissionCurrent, event: MissionEvent) => void>;
+
 	private applyEvent(event: MissionEvent): void {
 		if (event.kind === "created") {
-			if (!event.objective || !event.slug || !event.chain || !event.artifactDir) return;
-			const requirements = normalizeRequirements(event.requirements?.length ? event.requirements : inferRequirements(event.objective));
-			this.progress = [];
-			this.continuationProgressIndex = 0;
-			this.reviewFailureCount = 0;
-			this.current = {
-				missionId: event.missionId,
-				objective: event.objective,
-				title: normalizeTitle(event.title) || deriveMissionTitle(event.objective, requirements),
-				requirements,
-				status: event.status ?? "active",
-				createdAt: event.at,
-				updatedAt: event.at,
-				slug: event.slug,
-				chain: event.chain,
-				chainBranch: event.chainBranch ?? DEFAULT_CHAIN_BRANCH,
-				artifactDir: event.artifactDir,
-				paths: normalizePaths(event.paths),
-				tokenBudget: event.tokenBudget ?? undefined,
-				costBudgetUsd: event.costBudgetUsd ?? undefined,
-				baselineMainTokens: event.baselineMainTokens ?? 0,
-				baselineSubagentTokens: event.baselineSubagentTokens ?? 0,
-				baselineMainCostUsd: event.baselineMainCostUsd ?? 0,
-				baselineSubagentCostUsd: event.baselineSubagentCostUsd ?? 0,
-				generation: event.generation,
-				objectiveVersion: event.objectiveVersion ?? 1,
-				turnBudget: event.turnBudget ?? undefined,
-				wallDeadlineAt: event.wallDeadlineAt ?? undefined,
-				review: buildInitialReview(event),
-				completionId: event.completionId,
-				completionEffectsStatus: event.completionEffectsStatus,
-				blockerFingerprint: event.blockerFingerprint,
-				blockerCount: event.blockerCount ?? 0,
-				turnCount: event.turnCount ?? 0,
-			};
+			this.applyCreated(event);
 			return;
 		}
 		if (!this.current || this.current.missionId !== event.missionId) return;
 		if (event.generation && this.current.generation && event.generation !== this.current.generation) return;
-		if (event.kind === "completed" && event.completionId) {
-			if (this.current.status !== "active") throw new Error("Mission completion was already committed or the Mission is no longer active.");
-			if (this.current.objectiveVersion !== event.expectedObjectiveVersion || this.current.review.completionLatch.candidateId !== event.reviewCandidateId) throw new Error("Mission completion candidate changed before terminal commit.");
-		}
-		if (event.kind === "completion_effects_done" && (this.current.status !== "complete" || this.current.completionId !== event.completionId)) throw new Error("Mission completion effects do not match the terminal operation.");
-		this.current.updatedAt = event.at;
-		if (event.status) this.current.status = event.status;
-		if (event.reason) this.current.lastReason = event.reason;
-		if (event.summary) this.current.lastSummary = event.summary;
-		if (event.kind === "continued") {
-			this.current.lastContinuationAt = event.at;
-			this.current.turnCount = event.turnCount ?? (this.current.turnCount ?? 0) + 1;
-			this.continuationProgressIndex = this.progress.length;
-		}
-		if (event.kind === "objective_updated") {
-			this.continuationProgressIndex = this.progress.length;
-			const identityChanged = event.objectiveVersion === undefined || event.objectiveVersion !== (this.current.objectiveVersion ?? 1);
-			if (event.objective) this.current.objective = event.objective;
-			if (event.requirements) this.current.requirements = normalizeRequirements(event.requirements);
-			if (event.paths !== undefined) this.current.paths = normalizePaths(event.paths);
-			if (event.tokenBudget !== undefined) this.current.tokenBudget = event.tokenBudget ?? undefined;
-			if (event.costBudgetUsd !== undefined) this.current.costBudgetUsd = event.costBudgetUsd ?? undefined;
-			if (event.turnBudget !== undefined) this.current.turnBudget = event.turnBudget ?? undefined;
-			if (event.wallDeadlineAt !== undefined) this.current.wallDeadlineAt = event.wallDeadlineAt ?? undefined;
-			this.current.objectiveVersion = event.objectiveVersion ?? (this.current.objectiveVersion ?? 1) + 1;
-			if (identityChanged) resetReviewForNewIdentity(this.current.review);
-		}
+		const current = this.current;
+		this.eventHandlers[event.kind](current, event);
+		current.updatedAt = event.at;
+		if (event.status) current.status = event.status;
+		if (event.reason) current.lastReason = event.reason;
+		if (event.summary) current.lastSummary = event.summary;
 		// A review that reaches the reviewer or clears wipes the transient failure streak, so weeks-apart intermittent reviewer failures cannot accumulate into a permanent three-strike block.
 		if (event.reviewStatus === "awaiting_adjudication" || event.reviewStatus === "clear") this.reviewFailureCount = 0;
-		applyReviewAdmissionFields(this.current.review.admission, event);
-		applyReviewCandidateFields(this.current.review.candidate, event);
-		applyReviewAdjudicationFields(this.current.review.adjudication, event);
-		applyReviewFindingsFields(this.current.review.findings, event);
-		applyReviewCorrectionFields(this.current.review.correction, event);
-		applyCompletionLatchFields(this.current.review.completionLatch, event);
-		if (event.completionId !== undefined) this.current.completionId = event.completionId;
-		if (event.completionEffectsStatus !== undefined) this.current.completionEffectsStatus = event.completionEffectsStatus;
-		if (event.completionAudit !== undefined) this.current.completionAudit = event.completionAudit.map((item) => ({ ...item }));
-		if (event.kind === "settled") {
-			this.current.blockerFingerprint = event.blockerFingerprint;
-			this.current.blockerCount = event.blockerCount ?? 0;
-		}
-		if (event.kind === "progress" && event.summary) {
-			this.progress.push({
-				missionId: event.missionId,
-				at: event.at,
-				summary: event.summary,
-				evidence: normalizeProgressList(event.evidence, 20),
-				remaining: normalizeProgressList(event.remaining, 20),
-				validation: normalizeValidation(event.validation, this.current.objectiveVersion ?? 1),
-				checkpoint: event.checkpoint === true,
-				blocked: event.blocked === true,
-				blockerId: event.blockerId,
-			});
-		}
+		applyReviewAdmissionFields(current.review.admission, event);
+		applyReviewCandidateFields(current.review.candidate, event);
+		applyReviewAdjudicationFields(current.review.adjudication, event);
+		applyReviewFindingsFields(current.review.findings, event);
+		applyReviewCorrectionFields(current.review.correction, event);
+		applyCompletionLatchFields(current.review.completionLatch, event);
+		if (event.completionId !== undefined) current.completionId = event.completionId;
+		if (event.completionEffectsStatus !== undefined) current.completionEffectsStatus = event.completionEffectsStatus;
+		if (event.completionAudit !== undefined) current.completionAudit = event.completionAudit.map((item) => ({ ...item }));
+	}
+
+	private applyCreated(event: MissionEvent): void {
+		if (!event.objective || !event.slug || !event.chain || !event.artifactDir) return;
+		const requirements = normalizeRequirements(event.requirements?.length ? event.requirements : inferRequirements(event.objective));
+		this.progress = [];
+		this.continuationProgressIndex = 0;
+		this.reviewFailureCount = 0;
+		this.current = {
+			missionId: event.missionId,
+			objective: event.objective,
+			title: normalizeTitle(event.title) || deriveMissionTitle(event.objective, requirements),
+			requirements,
+			status: event.status ?? "active",
+			createdAt: event.at,
+			updatedAt: event.at,
+			slug: event.slug,
+			chain: event.chain,
+			chainBranch: event.chainBranch ?? DEFAULT_CHAIN_BRANCH,
+			artifactDir: event.artifactDir,
+			paths: normalizePaths(event.paths),
+			tokenBudget: event.tokenBudget ?? undefined,
+			costBudgetUsd: event.costBudgetUsd ?? undefined,
+			baselineMainTokens: event.baselineMainTokens ?? 0,
+			baselineSubagentTokens: event.baselineSubagentTokens ?? 0,
+			baselineMainCostUsd: event.baselineMainCostUsd ?? 0,
+			baselineSubagentCostUsd: event.baselineSubagentCostUsd ?? 0,
+			generation: event.generation,
+			objectiveVersion: event.objectiveVersion ?? 1,
+			turnBudget: event.turnBudget ?? undefined,
+			wallDeadlineAt: event.wallDeadlineAt ?? undefined,
+			review: buildInitialReview(event),
+			completionId: event.completionId,
+			completionEffectsStatus: event.completionEffectsStatus,
+			blockerFingerprint: event.blockerFingerprint,
+			blockerCount: event.blockerCount ?? 0,
+			turnCount: event.turnCount ?? 0,
+		};
+	}
+
+	private applyContinued(current: MissionCurrent, event: MissionEvent): void {
+		current.lastContinuationAt = event.at;
+		current.turnCount = event.turnCount ?? (current.turnCount ?? 0) + 1;
+		this.continuationProgressIndex = this.progress.length;
+	}
+
+	private applyObjectiveUpdated(current: MissionCurrent, event: MissionEvent): void {
+		this.continuationProgressIndex = this.progress.length;
+		const identityChanged = event.objectiveVersion === undefined || event.objectiveVersion !== (current.objectiveVersion ?? 1);
+		if (event.objective) current.objective = event.objective;
+		if (event.requirements) current.requirements = normalizeRequirements(event.requirements);
+		if (event.paths !== undefined) current.paths = normalizePaths(event.paths);
+		if (event.tokenBudget !== undefined) current.tokenBudget = event.tokenBudget ?? undefined;
+		if (event.costBudgetUsd !== undefined) current.costBudgetUsd = event.costBudgetUsd ?? undefined;
+		if (event.turnBudget !== undefined) current.turnBudget = event.turnBudget ?? undefined;
+		if (event.wallDeadlineAt !== undefined) current.wallDeadlineAt = event.wallDeadlineAt ?? undefined;
+		current.objectiveVersion = event.objectiveVersion ?? (current.objectiveVersion ?? 1) + 1;
+		if (identityChanged) resetReviewForNewIdentity(current.review);
+	}
+
+	private applySettled(current: MissionCurrent, event: MissionEvent): void {
+		current.blockerFingerprint = event.blockerFingerprint;
+		current.blockerCount = event.blockerCount ?? 0;
+	}
+
+	private applyProgress(current: MissionCurrent, event: MissionEvent): void {
+		if (!event.summary) return;
+		this.progress.push({
+			missionId: event.missionId,
+			at: event.at,
+			summary: event.summary,
+			evidence: normalizeProgressList(event.evidence, 20),
+			remaining: normalizeProgressList(event.remaining, 20),
+			validation: normalizeValidation(event.validation, current.objectiveVersion ?? 1),
+			checkpoint: event.checkpoint === true,
+			blocked: event.blocked === true,
+			blockerId: event.blockerId,
+		});
+	}
+
+	private applyCompleted(current: MissionCurrent, event: MissionEvent): void {
+		if (!event.completionId) return;
+		if (current.status !== "active") throw new Error("Mission completion was already committed or the Mission is no longer active.");
+		if (current.objectiveVersion !== event.expectedObjectiveVersion || current.review.completionLatch.candidateId !== event.reviewCandidateId) throw new Error("Mission completion candidate changed before terminal commit.");
+	}
+
+	private applyCompletionEffectsDone(current: MissionCurrent, event: MissionEvent): void {
+		if (current.status !== "complete" || current.completionId !== event.completionId) throw new Error("Mission completion effects do not match the terminal operation.");
 	}
 }
 
@@ -1025,13 +1068,16 @@ function deriveMissionTitle(objective: string, requirements: string[]): string {
 }
 
 function titleCaseWord(word: string): string {
-	return word ? `${word[0]!.toUpperCase()}${word.slice(1)}` : word;
+	return word ? `${word[0].toUpperCase()}${word.slice(1)}` : word;
+}
+
+function requirePositive(value: number, name: string): number {
+	if (!Number.isFinite(value) || value <= 0) throw new Error(`${name} must be positive when provided.`);
+	return value;
 }
 
 function positiveNumber(value: number | undefined, name: string): number | undefined {
-	if (value === undefined) return undefined;
-	if (!Number.isFinite(value) || value <= 0) throw new Error(`${name} must be positive when provided.`);
-	return value;
+	return value === undefined ? undefined : requirePositive(value, name);
 }
 
 function positiveInteger(value: number | undefined, name: string): number | undefined {
