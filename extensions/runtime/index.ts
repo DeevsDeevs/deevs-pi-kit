@@ -83,22 +83,6 @@ export default function runtimeExtension(pi: ExtensionAPI): void {
 			return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }], details: result };
 		},
 	});
-	pi.registerTool({
-		name: "collaborator_task",
-		label: "Manage Bounded Collaborator Task",
-		description: "Send explicit bounded tasks, publish one schema-validated result, or collect structural task status without parsing prose.",
-		promptSnippet: "Use typed collaborator tasks only for explicit bounded automated work; ordinary collaboration remains free-form messaging.",
-		promptGuidelines: ["Use action=send only when completion/failure/cancellation must be consumed structurally; use collaborator_send for normal peer conversation.", "A recipient settles an admitted bounded task with action=result and the exact task event ID. Status is typed and never inferred from body prose.", "Use action=status at a dependency or final-settlement gate, not for polling. Task results do not authorize lifecycle, profile, integration, Mission completion, or verdict changes."],
-		parameters: Type.Union([
-			Type.Object({ action: Type.Literal("send"), tasks: Type.Array(Type.Object({ participantId: Type.String(), body: Type.String() }), { minItems: 1, maxItems: 12 }) }),
-			Type.Object({ action: Type.Literal("result"), eventId: Type.String(), status: Type.Union([Type.Literal("completed"), Type.Literal("failed"), Type.Literal("cancelled")]), body: Type.String() }),
-			Type.Object({ action: Type.Literal("status"), eventIds: Type.Array(Type.String(), { minItems: 1, maxItems: 12 }) }),
-		]),
-		async execute(toolCallId, params: { action: "send"; tasks: Array<{ participantId: string; body: string }> } | { action: "result"; eventId: string; status: "completed" | "failed" | "cancelled"; body: string } | { action: "status"; eventIds: string[] }, signal, _onUpdate, ctx) {
-			const result = await hosted.manageCollaboratorTask(params, toolCallId, ctx, signal);
-			return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }], details: result };
-		},
-	});
 	pi.registerCommand("pi-kit-runtime-wake", {
 		description: "Internal durable Runtime wake protocol",
 		handler: (args, ctx) => hosted.acceptWake(args, ctx),

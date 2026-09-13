@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { HostedMailboxMessageEvent, HostedMailboxTaskEvent, HostedMailboxTaskResultEvent, HostedParticipant, HostedStateOperation, HostedTarget, HostedTaskWorkspaceEvidence } from "../hosted-types.ts";
+import type { HostedMailboxMessageEvent, HostedParticipant, HostedStateOperation, HostedTarget } from "../hosted-types.ts";
 import { RuntimeRegistrationManager, type HostedLiveRegistration } from "./registration.ts";
 import { deriveParticipantKey, HostedStateStore } from "./state.ts";
 
@@ -24,7 +24,6 @@ export interface HostedParticipantStatus {
 	holderTargetKey?: string;
 	holderLive: boolean;
 	driver?: "pi" | "claude-code" | "codex";
-	capabilityTier?: "managed" | "durable";
 	profile?: "read-only" | "workspace-write";
 	queued?: { pending: number; claimed: number };
 	lastTransition: HostedParticipant["transitions"][number];
@@ -33,28 +32,8 @@ export interface HostedParticipantStatus {
 export interface HostedMessageStatus {
 	eventId: string;
 	recipientParticipantKey: string;
-	recipientTier: "managed" | "durable" | "unbound";
 	deliveryState: "pending" | "submitting" | "submitted" | "needs_attention" | "admitted";
 }
-
-export interface HostedPendingTaskStatus {
-	eventId: string;
-	recipientParticipantKey: string;
-	status: "pending";
-}
-
-export interface HostedSettledTaskStatus {
-	eventId: string;
-	recipientParticipantKey: string;
-	status: "completed" | "failed" | "cancelled";
-	resultEventId: string;
-	replyId: string;
-	body: string;
-	sessionAdvance: "none" | "committed";
-	workspace?: HostedTaskWorkspaceEvidence;
-}
-
-export type HostedTaskStatus = HostedPendingTaskStatus | HostedSettledTaskStatus;
 
 export interface HostedParticipantCoordinatorOptions {
 	now?: () => number;
@@ -222,7 +201,18 @@ export class HostedParticipantCoordinator {
 	}
 
 	send(registration: HostedLiveRegistration, senderParticipantKey: string, expectedSenderGeneration: string, recipientParticipantKey: string, sendId: string, body: string): HostedMailboxMessageEvent {
-		return this.sendEnvelope("mailbox.send", registration, senderParticipantKey, expectedSenderGeneration, recipientParticipantKey, sendId, body);
+		const target = this.requireTarget(registration.targetKey);
+		this.assertNotStopping(senderParticipantKey);
+		const sender = this.requireParticipant(senderParticipantKey, target.projectRoot);
+		if (sender.state !== "held" || sender.generation !== expectedSenderGeneration || sender.holderTargetKey !== registration.targetKey) throw new HostedParticipantError("conflict", "Sender identity or generation changed before send.");
+		const recipient = this.requireParticipant(recipientParticipantKey, target.projectRoot);
+		if (recipient.state === "ended") throw new HostedParticipantError("not_found", "Mailbox recipient has ended.");
+		this.store.apply({ type: "mailbox.send", senderParticipantKey: sender.participantKey, expectedSenderGeneration, senderTargetKey: registration.targetKey, recipientParticipantKey, sendId, eventId: this.options.createEventId?.() ?? `evt_${randomUUID()}`, body, at: this.now() });
+		const event = Object.values(this.store.read().events).find((candidate): candidate is HostedMailboxMessageEvent => candidate.type === "mailbox.message" && candidate.payload.senderParticipantKey === sender.participantKey && candidate.payload.sendId === sendId);
+		if (!event) throw new HostedParticipantError("conflict", "Mailbox send did not produce a durable event.");
+		const currentRecipient = this.store.read().participants[recipientParticipantKey];
+		if (currentRecipient?.state === "held") this.wakes.request(currentRecipient.holderTargetKey!);
+		return event;
 	}
 
 	sendMessaging(registration: HostedLiveRegistration, namespaceId: string, operationId: string, recipientParticipantKey: string, body: string, reply?: { inReplyToEventId: string; receiptToken: string }): void {
@@ -242,74 +232,8 @@ export class HostedParticipantCoordinator {
 		if (sender.state !== "held" || sender.generation !== expectedSenderGeneration || sender.holderTargetKey !== registration.targetKey) throw new HostedParticipantError("conflict", "Message status caller identity or generation changed.");
 		const event = this.store.read().events[eventId];
 		if (!event || event.type !== "mailbox.message" || event.payload.senderParticipantKey !== senderParticipantKey) throw new HostedParticipantError("not_found", "Mailbox message is absent for this sender.");
-		const recipient = this.store.read().participants[event.recipientParticipantKey];
-		const recipientTarget = recipient?.holderTargetKey ? this.store.read().targets[recipient.holderTargetKey] : undefined;
-		const recipientTier = recipientTarget?.kind === "agent" ? "managed" : recipientTarget?.kind === "pi" ? "durable" : "unbound";
 		const deliveryState = event.delivery.status === "acked" ? "admitted" : event.delivery.status === "claimed" ? "pending" : event.delivery.status;
-		return { eventId, recipientParticipantKey: event.recipientParticipantKey, recipientTier, deliveryState };
-	}
-
-	sendTask(registration: HostedLiveRegistration, senderParticipantKey: string, expectedSenderGeneration: string, recipientParticipantKey: string, sendId: string, body: string): HostedMailboxTaskEvent {
-		return this.sendEnvelope("task.send", registration, senderParticipantKey, expectedSenderGeneration, recipientParticipantKey, sendId, body);
-	}
-
-	recoverTaskResult(registration: HostedLiveRegistration, senderParticipantKey: string, expectedSenderGeneration: string, inReplyToEventId: string, sendId: string, status: "completed" | "failed" | "cancelled", body: string, sessionAdvance: "none" | "committed"): HostedMailboxTaskResultEvent | undefined {
-		const target = this.requireTarget(registration.targetKey);
-		const sender = this.requireParticipant(senderParticipantKey, target.projectRoot);
-		if (sender.state !== "held" || sender.generation !== expectedSenderGeneration || sender.holderTargetKey !== registration.targetKey) throw new HostedParticipantError("conflict", "Task result sender identity or generation changed.");
-		const task = this.store.read().events[inReplyToEventId];
-		if (!task || task.type !== "mailbox.task" || task.recipientParticipantKey !== senderParticipantKey) throw new HostedParticipantError("not_found", "Bounded task is absent for this responder.");
-		const event = Object.values(this.store.read().events).find((candidate): candidate is HostedMailboxTaskResultEvent => candidate.type === "mailbox.task_result" && candidate.payload.senderParticipantKey === senderParticipantKey && candidate.payload.sendId === sendId);
-		if (!event) return undefined;
-		if (event.payload.inReplyToEventId !== inReplyToEventId || event.payload.status !== status || event.payload.body !== body || event.payload.sessionAdvance !== sessionAdvance) throw new HostedParticipantError("conflict", "Task result retry changed its durable input.");
-		return event;
-	}
-
-	resultTask(registration: HostedLiveRegistration, senderParticipantKey: string, expectedSenderGeneration: string, inReplyToEventId: string, sendId: string, status: "completed" | "failed" | "cancelled", body: string, sessionAdvance: "none" | "committed", workspace?: HostedTaskWorkspaceEvidence): HostedMailboxTaskResultEvent {
-		const target = this.requireTarget(registration.targetKey);
-		this.assertNotStopping(senderParticipantKey);
-		this.requireParticipant(senderParticipantKey, target.projectRoot);
-		const operation: Extract<HostedStateOperation, { type: "task.result" }> = { type: "task.result", senderParticipantKey, expectedSenderGeneration, senderTargetKey: registration.targetKey, sendId, eventId: this.options.createEventId?.() ?? `evt_${randomUUID()}`, inReplyToEventId, status, body, sessionAdvance, at: this.now() };
-		if (workspace) operation.workspace = workspace;
-		this.store.apply(operation);
-		const event = Object.values(this.store.read().events).find((candidate): candidate is HostedMailboxTaskResultEvent => candidate.type === "mailbox.task_result" && candidate.payload.senderParticipantKey === senderParticipantKey && candidate.payload.sendId === sendId);
-		if (!event) throw new HostedParticipantError("conflict", "Task result did not produce a durable event.");
-		const recipient = this.store.read().participants[event.recipientParticipantKey];
-		if (recipient?.state === "held") this.wakes.request(recipient.holderTargetKey!);
-		return event;
-	}
-
-	taskStatus(registration: HostedLiveRegistration, senderParticipantKey: string, expectedSenderGeneration: string, eventId: string): HostedTaskStatus {
-		const target = this.requireTarget(registration.targetKey);
-		const sender = this.requireParticipant(senderParticipantKey, target.projectRoot);
-		if (sender.state !== "held" || sender.generation !== expectedSenderGeneration || sender.holderTargetKey !== registration.targetKey) throw new HostedParticipantError("conflict", "Task status caller identity or generation changed.");
-		const task = this.store.read().events[eventId];
-		if (!task || task.type !== "mailbox.task" || task.payload.senderParticipantKey !== senderParticipantKey) throw new HostedParticipantError("not_found", "Bounded task is absent for this sender.");
-		const result = Object.values(this.store.read().events).find((candidate): candidate is HostedMailboxTaskResultEvent => candidate.type === "mailbox.task_result" && candidate.payload.inReplyToEventId === task.eventId);
-		if (!result) return { eventId: task.eventId, recipientParticipantKey: task.recipientParticipantKey, status: "pending" };
-		const status: HostedSettledTaskStatus = { eventId: task.eventId, recipientParticipantKey: task.recipientParticipantKey, status: result.payload.status, resultEventId: result.eventId, replyId: result.payload.replyId, body: result.payload.body, sessionAdvance: result.payload.sessionAdvance };
-		if (result.payload.workspace) status.workspace = result.payload.workspace;
-		return status;
-	}
-
-	private sendEnvelope(type: "mailbox.send", registration: HostedLiveRegistration, senderParticipantKey: string, expectedSenderGeneration: string, recipientParticipantKey: string, sendId: string, body: string): HostedMailboxMessageEvent;
-	private sendEnvelope(type: "task.send", registration: HostedLiveRegistration, senderParticipantKey: string, expectedSenderGeneration: string, recipientParticipantKey: string, sendId: string, body: string): HostedMailboxTaskEvent;
-	private sendEnvelope(type: "mailbox.send" | "task.send", registration: HostedLiveRegistration, senderParticipantKey: string, expectedSenderGeneration: string, recipientParticipantKey: string, sendId: string, body: string): HostedMailboxMessageEvent | HostedMailboxTaskEvent {
-		const target = this.requireTarget(registration.targetKey);
-		this.assertNotStopping(senderParticipantKey);
-		const sender = this.requireParticipant(senderParticipantKey, target.projectRoot);
-		if (sender.state !== "held" || sender.generation !== expectedSenderGeneration || sender.holderTargetKey !== registration.targetKey) throw new HostedParticipantError("conflict", "Sender identity or generation changed before send.");
-		const recipient = this.requireParticipant(recipientParticipantKey, target.projectRoot);
-		if (recipient.state === "ended") throw new HostedParticipantError("not_found", "Mailbox recipient has ended.");
-		const recipientTarget = recipient.holderTargetKey ? this.store.read().targets[recipient.holderTargetKey] : undefined;
-		if (type === "task.send" && recipientTarget?.kind === "agent" && recipientTarget.capabilityTier === "managed") throw new HostedParticipantError("capability_unavailable", "Managed-only collaborators do not support typed tasks.");
-		this.store.apply({ type, senderParticipantKey: sender.participantKey, expectedSenderGeneration, senderTargetKey: registration.targetKey, recipientParticipantKey, sendId, eventId: this.options.createEventId?.() ?? `evt_${randomUUID()}`, body, at: this.now() });
-		const eventType = type === "task.send" ? "mailbox.task" : "mailbox.message";
-		const event = Object.values(this.store.read().events).find((candidate): candidate is HostedMailboxMessageEvent | HostedMailboxTaskEvent => candidate.type === eventType && candidate.payload.senderParticipantKey === sender.participantKey && candidate.payload.sendId === sendId);
-		if (!event) throw new HostedParticipantError("conflict", "Mailbox send did not produce a durable event.");
-		const currentRecipient = this.store.read().participants[recipientParticipantKey];
-		if (currentRecipient?.state === "held") this.wakes.request(currentRecipient.holderTargetKey!);
-		return event;
+		return { eventId, recipientParticipantKey: event.recipientParticipantKey, deliveryState };
 	}
 
 	private leave(registration: HostedLiveRegistration, participantKey: string, type: "participant.stand_down" | "participant.release", expectedGeneration?: string): HostedParticipantStatus {
@@ -345,10 +269,8 @@ export class HostedParticipantCoordinator {
 		if (participant.holderTargetKey) status.holderTargetKey = participant.holderTargetKey;
 		if (holder?.kind === "pi") {
 			status.driver = "pi";
-			status.capabilityTier = "durable";
 		} else if (holder?.kind === "agent") {
 			status.driver = holder.driver;
-			status.capabilityTier = holder.capabilityTier;
 			status.profile = holder.profile;
 		}
 		if (includeQueue) status.queued = { pending, claimed };

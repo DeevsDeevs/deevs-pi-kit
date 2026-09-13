@@ -143,8 +143,8 @@ describe("authoritative Runtime bridge launch", () => {
 		await expect(test.bridges.register({ launchToken: launch.launchToken, reconnectToken: launch.reconnectToken, clientGeneration: "agent_client", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" } })).rejects.toMatchObject({ code: "invalid_request" });
 		await expect(test.bridges.register({ launchToken: launch.launchToken, reconnectToken: launch.reconnectToken, clientGeneration: "agent_client", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" }, agentSession: { ...session, value: "wrong-session" } })).rejects.toMatchObject({ code: "identity_mismatch" });
 		const registered = await test.bridges.register({ launchToken: launch.launchToken, reconnectToken: launch.reconnectToken, clientGeneration: "agent_client", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" }, agentSession: session });
-		expect(registered).toMatchObject({ driver: "codex", capabilityTier: "managed", agentSession: session });
-		expect(test.store.read().targets[launch.targetKey]).toMatchObject({ kind: "agent", driver: "codex", capabilityTier: "managed", agentSession: session });
+		expect(registered).toMatchObject({ driver: "codex", agentSession: session });
+		expect(test.store.read().targets[launch.targetKey]).toMatchObject({ kind: "agent", driver: "codex", agentSession: session });
 	});
 
 	it("recovers an uncertain launch response without regenerating authority", async () => {

@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import type { HostedIntegration, HostedPiTarget, HostedTaskWorkspaceEvidence, HostedWorkspace } from "../hosted-types.ts";
+import type { HostedIntegration, HostedPiTarget, HostedWorkspace } from "../hosted-types.ts";
 import { RuntimeGit, RuntimeGitError, type RuntimeRepository, type RuntimeWorktreeIdentity } from "./git.ts";
 import { deriveTargetKey, RuntimeRegistrationManager, type HostedHostVerifier, type HostedLiveRegistration, type RegisterWorkspacePiInput } from "./registration.ts";
 import { deriveBridgeTargetKey, deriveParticipantKey, HostedStateStore } from "./state.ts";
@@ -193,25 +193,6 @@ export class RuntimeWorkspaceCoordinator {
 			if (!target || target.kind !== "pi" || !target.workspaceId || (!held && !stoodDown)) throw new HostedWorkspaceError("conflict", "Workspace Pi participant succession is no longer authorized.");
 			const registration = await this.registrations.registerWorkspacePi(input, target);
 			return this.registrationResult(registration, workspace);
-		});
-	}
-
-	async taskEvidence(targetKey: string): Promise<HostedTaskWorkspaceEvidence | undefined> { return this.withTaskEvidence(targetKey, (evidence) => evidence); }
-
-	async withTaskEvidence<T>(targetKey: string, publish: (evidence?: HostedTaskWorkspaceEvidence) => T): Promise<T> {
-		const target = this.store.read().targets[targetKey];
-		if (!target?.workspaceId) return publish();
-		const workspace = this.workspace(target.workspaceId);
-		if (workspace.targetKey !== targetKey || target.workspaceRoot !== workspace.worktreePath) throw new HostedWorkspaceError("conflict", "Task result workspace target does not match Runtime ownership.");
-		const repository = await this.durableRepository(workspace);
-		return this.withRepository(repository.commonDir, async () => {
-			const current = this.workspace(workspace.workspaceId);
-			if (current.targetKey !== targetKey || target.workspaceRoot !== current.worktreePath) throw new HostedWorkspaceError("conflict", "Task result workspace target changed.");
-			const currentRepository = await this.durableRepository(current);
-			if (currentRepository.commonDir !== repository.commonDir) throw new HostedWorkspaceError("identity_mismatch", "Workspace repository identity changed.");
-			await this.git.verifyWorktree(currentRepository, current.worktreePath, current.branchRef, current.headCommit);
-			const status = await this.git.status(current.worktreePath);
-			return publish({ workspaceId: current.workspaceId, baseCommit: current.baseCommit, headCommit: current.headCommit, branchRef: current.branchRef, state: current.state, dirty: !status.clean, artifactRef: current.branchRef, capturedAt: this.now() });
 		});
 	}
 

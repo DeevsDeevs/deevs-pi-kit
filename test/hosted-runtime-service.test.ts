@@ -48,7 +48,7 @@ describe("hosted runtime protocol", () => {
 					agentWake: "none",
 					degradedReason: "host_unavailable",
 					maxDeliveryBatch: 12,
-					targets: { pi: { tier: "durable" }, "claude-code": { tier: "managed" }, codex: { tier: "managed" } },
+					targets: ["pi", "claude-code", "codex"],
 					monitor: { maxEntries: 10_000 },
 				},
 			},
