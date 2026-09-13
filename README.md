@@ -144,13 +144,25 @@ When Pi runs inside Herdr (`HERDR_ENV=1`), normalize legacy and Kitty Alt+Enter 
 
 ### Hosted runtime
 
-Runtime watches newly created direct-child files and delivers them to one exact Pi session across restarts. It stores events before the verified Pi session claims them in-process through its two-second heartbeat or next submitted turn; Herdr remains the process layer and is never prompted or focused for inbox delivery. On first use, a missing Runtime starts in the initial tab of a dedicated, no-focus `pi-kit-services` Herdr workspace instead of altering the caller's workspace.
+Runtime is a local daemon with two jobs. It watches newly created direct-child files in a monitored directory and delivers them to one
+exact Pi session across restarts, claiming them in-process through Pi's heartbeat instead of prompting or focusing any pane. It also
+hosts persistent Pi, Claude Code, and Codex collaborators as real interactive agents in no-focus Herdr tabs, each holding a durable
+participant identity lease, and each writer working in its own Git worktree on `runtime/collab/<participantId>`.
 
-Runtime can also host persistent Pi, Claude Code, and Codex collaborators in no-focus Herdr tabs. Participant identities and messages are exclusive and durable. Every start, stand-down, stop, release, takeover, and worktree removal requires one explicit, confirmed interactive step; collaborator prose never authorizes any of it. Normal native configuration requires the same fresh interactive confirmation. Models use separated tools: `collaborator_list` for discovery, `collaborator_manage` for participant/process lifecycle, `collaborator_workspace` to list collaborator worktrees and confirm exact worktree cleanup, and the six shared MCP peers/send/status/receive/received/reply tools for ordinary mail. Starts launch at most four concurrently. Their driver, model, persona, and execution profile are independent: omission selects Pi, while `claude-code` and `codex` launch as genuine interactive Herdr agents. Runtime uses `herdr agent start` for launch; automatic Claude/Codex prompt injection is blocked until safe provider admission exists. It never hides a print-mode provider worker in the collaborator tab. Native Monitor receipts remain separate from MCP read receipts; durable Pi receive admission is not yet certified. Claude/Codex mail remains stored without automatic terminal submission, and direct human interaction remains available. A launched native collaborator is identified by its project and the Runtime-generated Herdr agent name, verified with `herdr agent get` at bind and on every heartbeat; Runtime fences managed-session identity, participant generation, cwd, profile, worktree and stop authority. Startup/repair uncertainty remains fail-closed. Starts may select a driver-owned model and any enabled trusted built-in subagent persona plus a separate `read-only` or `workspace-write` profile; persona starts default to read-only, required incompatible tools fail before confirmation, runner-only tools such as a subagent's structured review sink remain optional in free-form collaborator mode, and selected model/context is passed through driver-owned startup arguments. Pi stores profile metadata; native context/persistence follows the client. Profile enforcement is driver-specific: Pi retains explicit tool allowlists/path confinement; guarded native readers retain their existing restrictions. Native `workspace-write` uses normal user configuration, hooks and native permissions rather than an edit-only tool allowlist; Codex still receives its workspace-write sandbox. Every writer receives a distinct Runtime-owned Git worktree as cwd, created with `git worktree add -b runtime/collab/<participantId> <runtimeRoot>/workspaces/<participantId> HEAD`; that directory choice alone does not confine normal native hooks/tools or prove they cannot affect the main checkout. Stop preserves that worktree, and a restart or reacquire reuses it. Runtime never commits, merges, or stages integration: review the writer's branch and integrate it with ordinary Git. `collaborator_workspace` keeps two actions, `list` and a confirmed `cleanup` that force-removes one exact worktree and deletes its branch. Pi reviewer personas can use bounded `safe_diff` to inspect exact Git revisions without shell, hooks, lazy object fetching, replacement refs, external diff/text conversion, or pagers. Read-only collaborators may still write Chain checkpoint metadata required for context recovery. Single start may acquire or reacquire the caller identity, while multi-start requires an already-held caller. Stand-down preserves the process, stop also closes the exact plugin-managed single-pane Herdr tab, and both preserve queued messages. Release, revival, and takeover remain user commands.
+Every start, stand-down, stop, release, takeover, and worktree cleanup needs one explicit confirmed interactive step; collaborator prose
+never authorizes any of them. Automatic prompt injection into a Claude/Codex tab is not implemented — their mail waits for human input in
+the tab. Runtime never commits or merges: review a writer's branch and integrate it with ordinary Git.
 
-Normal native writers receive the same package-owned MCP server and shared messaging workflow through native CLI configuration—no launcher/proxy script. Runtime issues the private descriptor only after verified native registration and held identity. Native trust/tool prompts are not accepted automatically; the existing bounded startup lease may require explicit recovery if a prompt takes too long. Startup hook changes that conflict with clean-worktree verification are preserved, not reset. Guarded native read-only launches do not yet receive automatic MCP provisioning. Ordinary native mail still requires explicit native input; no automatic wake is enabled.
+Tools: `collaborator_list` for discovery, `collaborator_manage` for participant and process lifecycle, `collaborator_workspace` to list
+worktrees and confirm exact cleanup, plus the six shared MCP mail tools (`collaborator_peers`, `collaborator_send`,
+`collaborator_receive`, `collaborator_received`, `collaborator_reply`, `collaborator_status`) used by Pi, Claude Code, and Codex alike
+through one stdio interface and the [shared messaging skill](skills/collaborator-messaging/SKILL.md).
 
-Commands: `/runtime start`, `/runtime status`, `/runtime register`, `/runtime monitor <directory>`, `/runtime monitor-delete`, `/runtime collaborate <protocol> <id>`, `/runtime collaborator-start <protocol> <id> [model]`, `/runtime participants`, `/runtime stand-down`, `/runtime leave`, and `/runtime takeover <protocol> <id>`. Runtime never starts or changes Herdr layout without a user command or confirmed collaborator start call. See [`extensions/runtime/PROTOCOL.md`](extensions/runtime/PROTOCOL.md).
+Commands: `/runtime start`, `/runtime status`, `/runtime register`, `/runtime monitor <directory>`, `/runtime monitor-delete`,
+`/runtime collaborate <protocol> <id>`, `/runtime collaborator-start <protocol> <id> [model]`, `/runtime participants`,
+`/runtime stand-down`, `/runtime leave`, and `/runtime takeover <protocol> <id>`.
+
+See [`extensions/runtime/PROTOCOL.md`](extensions/runtime/PROTOCOL.md) for the wire protocol, method map, identity rules, and limits.
 
 ## Skills
 
@@ -165,16 +177,13 @@ validation-review missions       collaborators   collaborator-messaging
 
 ## Development
 
-Universal messaging remains unreleased. Pi, Claude Code and Codex use one stdio MCP interface and [shared messaging skill](skills/collaborator-messaging/SKILL.md). Pi provisions its private descriptor after trusted registration restores an already-held identity, or after explicit `/runtime collaborate <protocol> <id>` acquisition; messaging cannot acquire identity. For normal native writers, use a confirmed `collaborator_manage` start with the selected driver and `workspace-write` profile, then explicitly instruct the native client to read the supplied skill and call `collaborator_peers`. Respect native permission prompts; guarded read-only does not yet receive automatic MCP provisioning.
-
-Runtime accepts only schema v17, without migration or legacy messaging fallback. Pi's idle, empty-TUI mail hints are best-effort and never automatically replay after uncertainty; RPC/headless modes do not provide editor authority. Automatic native wakes remain blocked. Read receipts are not native ACKs, provider commits or fsync-based admission. General descriptor repair and daemon delivery handoff remain unproven. See the [current messaging contract and limits](extensions/runtime/PROTOCOL.md#shared-mcp-messaging). Historical plans and live-run evidence remain available in Git history.
-
 ```bash
 npm install
-npm run check
-npm run smoke:runtime-release       # isolated Monitor release gate; requires Herdr + Pi integration
-npm run smoke:collaborator-release       # Confirmed production collaborator + Mission completion-once gate
-npm run smoke:native-release             # deterministic interactive-target + Git worktree gate
+npm run lint:anti-slop && npm run typecheck && npm test
+npm run smoke:runtime-release        # isolated Monitor gate; starts real Herdr + Pi processes
+npm run smoke:collaborator-release   # confirmed collaborator + Mission completion-once gate
+npm run smoke:native-release         # deterministic interactive-target and Git worktree gate
 ```
 
-`npm run check` runs typechecking, tests, RPC/print/JSON mode smokes, the lockfile audit, and a package dry run. The isolated Runtime/Collaborator gates are separate because they start real Herdr and Pi processes. The deterministic native gate exercises Runtime's interactive-target and worktree boundary.
+`npm run check` additionally runs the RPC/print/JSON mode smokes, the lockfile audit, and a package dry run. The release gates are kept
+out of it because they start real Herdr and Pi processes.

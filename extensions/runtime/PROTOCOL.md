@@ -1,330 +1,150 @@
 # Hosted Runtime protocol
 
-> **Current Runtime contract and release gates.** Universal messaging remains unreleased. Runtime accepts only state schema v17; unsupported stores fail without migration, rewriting or deletion. Interactive collaborators have no legacy headless delivery fallback.
-
-Runtime provides durable local routing and lifecycle authority for work that must survive Pi and Runtime restarts. Herdr owns live agent panes, terminals, process supervision, and interactive prompt submission. Runtime adds durable participant identity, mailbox state, explicit capabilities, per-writer Git worktrees, and recovery.
-
-A **collaborator is a real interactive Herdr-managed coding agent**. Pi, Claude Code, and Codex collaborators remain visible and usable in their Herdr tabs. A service process or per-message print-mode CLI is not itself a collaborator.
-
-Runtime does not replace bounded Jobs, Subagents, Workflows, Missions, or session Cron.
+Runtime is a local daemon providing durable Monitor delivery to one exact Pi session, durable participant identity, durable mail, and
+lifecycle authority over persistent collaborators living in Herdr tabs, which owns processes, panes, and interactive input. Runtime
+accepts only state schema v17; unsupported stores fail closed. Collaborators keep identity and conversation across turns; use a Subagent
+for bounded structured work.
 
 ## Execution primitives
 
-| Primitive | Lifetime | User-visible interaction | Settlement | Authority |
+| Primitive | Lifetime | Interaction | Settlement | Authority |
 |---|---|---|---|---|
-| Job | One bounded command | No persistent tab | Exit/timeout | Parent Pi |
-| Subagent | One bounded delegated run | Artifact/result | Terminal result | Parent Pi/Subagent service |
-| Collaborator | Persistent named peer | Real Herdr agent tab | Explicit stand-down/stop | Runtime participant lease |
+| Job | One bounded command | No tab | Exit/timeout | Parent Pi |
+| Subagent | One bounded delegated run | Result artifact | Terminal result | Subagent service |
+| Collaborator | Persistent named peer | Real Herdr agent tab | Stand-down/stop | Runtime participant lease |
 | Mission | Long-running objective | Parent Pi | Completion latch | Mission state machine |
 
-Subagents remain the structured bounded-review/task data plane. Collaborators retain identity and conversation across turns and may receive work from either the user in their tab or another Runtime participant.
+## Guarantees and non-guarantees
 
-## Target capabilities
+Guaranteed:
+- Monitor events, mail, and participant state persist before delivery or host mutation, and a live target binds exact project, Herdr
+  workspace/tab/pane/terminal, agent kind, and agent session. Restart preserves them all, invalidating registration leases.
+- Authorization consumes validated IDs, generations, keys, and confirmation booleans; prose is display-only, and busy, blocked, offline,
+  or unverifiable targets retain pending events. No operation focuses or scrapes a pane; stop preserves collaborator worktrees.
 
-Runtime can launch, verify, inspect, stand down, and stop every target's exact Herdr agent, and persists ordinary mail for explicit MCP retrieval when that connection is configured. The user can interact directly in any agent's tab; automatic native prompt injection remains blocked for all of them. Neither host readiness nor an MCP client receipt proves a semantic reply or durable provider commit for any driver.
+Not guaranteed:
+- No automatic prompt injection into a Claude/Codex tab, no reply capture from terminal output, and no claim of provider exactly-once
+  execution, durable model admission, or semantic completion.
+- Worktree cwd is launch authority, not an OS boundary, and Runtime is no isolation boundary against a hostile same-UID process.
 
-| Driver | Target | Direct tab interaction | Automatic structured reply |
-|---|---|---:|---:|
-| Pi | Herdr Pi agent with in-process Runtime extension | yes | yes |
-| Claude Code | Herdr Claude agent | yes | no |
-| Codex | Herdr Codex agent | yes | no |
+## Topology
 
-Claude/Codex do **not** require MCP, hooks, or a provider plugin for lifecycle capability. Configured native writers can explicitly publish ordinary mail through shared MCP. Terminal answers are not automatically forwarded.
-
-Capability checks are typed. Runtime must return `capability_unavailable` rather than silently falling back to pane scraping, regex extraction, direct terminal input, or a hidden print-mode process.
-
-## Core guarantees
-
-- Monitor events, mailbox messages, and participant state are persisted before delivery or host mutation.
-- A live target is bound to exact project, Herdr workspace/tab/pane/terminal, agent kind, and stable agent-session identity.
-- Routing and authorization consume validated IDs, generations, keys, capabilities, statuses, receipts, and confirmation booleans. Prose is display-only.
-- Busy, blocked, offline, or unverifiable agents retain pending Runtime events.
-- Runtime and collaborator lifecycle operations never focus a pane, tab, or workspace.
-- Runtime never scrapes a pane or parses model prose to derive acknowledgement, task status, verdict, permission, or lifecycle authority.
-- Direct human interaction in a collaborator tab is first-class but is not a Runtime control-plane operation.
-- Runtime restart preserves durable monitors, messages, participants, and bound agent targets while invalidating live registration leases.
-- Stop preserves the collaborator worktree. Removing one is a separate confirmed operation; integration is the user's own Git work.
-
-## Explicit non-guarantees
-
-For a Claude/Codex target:
-
-- automatic prompt injection is blocked: Herdr does not attest editor emptiness or queued process-incarnation ownership;
-- Runtime does not claim provider exactly-once execution, durable model admission, semantic completion, or automatic reply capture;
-- a provider/terminal crash after Herdr submission may lose the turn;
-- an ambiguous Herdr submission may have duplicated the prompt before Runtime can classify it;
-- automatic Claude/Codex-to-Pi mailbox replies are not synthesized from terminal output.
-
-These limits are surfaced in target capabilities and delivery results. They are never hidden behind a successful-looking free-form message.
-
-## Runtime topology
-
-Runtime reuses one healthy Unix socket per Pi agent directory. On `/runtime start` or the first Runtime-dependent operation, a missing daemon starts in the initial tab of a dedicated, no-focus `pi-kit-services` Herdr workspace rooted at the Runtime state directory.
-
-Collaborators are different:
-
-- each collaborator occupies a real Herdr agent tab in the requesting project workspace;
-- Claude launches with `herdr agent start --kind claude`;
-- Codex launches with `herdr agent start --kind codex`;
-- Pi launches with `herdr agent start --kind pi`;
-- the tab contains the actual interactive provider UI, never a Runtime bridge command;
-- Runtime communicates through Herdr's structured agent API, not `pane run`, `pane send-*`, direct PTY bytes, or focus mutation.
-
-The Runtime daemon may contain small driver adapters for startup arguments, identity verification, and capability declaration. Those adapters are control code inside the service/controller; they do not own a visible collaborator tab and do not spawn one provider CLI per mailbox event.
-
-Default files:
-
-```text
-$PI_CODING_AGENT_DIR/runtime/
-  instance.json
-  state.v1.json
-  runtime.sock
-```
-
-The directory is mode `0700`; state and socket are mode `0600`.
+One Unix socket per Pi agent directory. A missing daemon starts in the initial tab of a dedicated no-focus `pi-kit-services` Herdr
+workspace rooted at the Runtime state directory. Each collaborator instead occupies a real Herdr agent tab in the requesting project
+workspace, started with `herdr agent start --kind pi|claude|codex`; that tab holds the real provider UI, never a Runtime bridge command,
+and Runtime drives it only through Herdr's structured agent API — never `pane run`, `pane send-*`, PTY bytes, or focus mutation. State is
+`instance.json`, `state.v1.json`, `runtime.sock`, and `workspaces/<participantId>/` under `$PI_CODING_AGENT_DIR/runtime/`, a mode `0700`
+directory holding mode `0600` files.
 
 ## Wire transport
 
-Runtime requests and responses are newline-delimited JSON over the Unix socket. Request lines are limited to 64 KiB. Invalid framing or JSON closes the connection after an error response.
+Newline-delimited JSON over the Unix socket, capped at 64 KiB per request line and 128 KiB per messaging response. Invalid framing or
+JSON closes the connection after an error response.
 
 ```json
-{"v":1,"id":"req_...","method":"hello","params":{}}
-{"v":1,"id":"req_...","ok":true,"result":{}}
+{"v":1,"id":"req_...","method":"hello","params":{"minVersion":1,"maxVersion":1}}
 {"v":1,"id":"req_...","ok":false,"error":{"code":"not_found","message":"diagnostic"}}
 ```
 
-The wire version may remain v1 while methods are added compatibly. `runtimeId` persists; `epoch` changes on every service start. `hello` advertises target and delivery capabilities rather than a single misleading parity flag.
+`runtimeId` persists; `epoch` changes on every service start. `hello` returns `{version, runtimeId, epoch, capabilities}`, carrying
+`agentWake`, `maxDeliveryBatch`, `targets`, `monitor`, and — when the matching authority is loaded — `mailbox`, `interactiveAgent`, and
+`worktree`. Error codes: `invalid_request`, `unsupported_version`, `capability_unavailable`, `not_found`, `conflict`, `busy`,
+`registration_stale`, `identity_mismatch`, `claim_conflict`, `host_unavailable`, `storage_error`, `internal`.
 
-```json
-{
-  "version": 1,
-  "runtimeId": "rt_...",
-  "epoch": "epoch_...",
-  "capabilities": {
-    "maxDeliveryBatch": 12,
-    "targets": ["pi", "claude-code", "codex"],
-    "interactiveAgent": {"bind":"herdr_agent_name"},
-    "worktree": {"isolatedWrite":true}
-  }
-}
-```
-
-Error codes include:
-
-```text
-invalid_request          unsupported_version     capability_unavailable
-not_found                conflict                registration_stale
-identity_mismatch        claim_conflict          host_unavailable
-busy                     storage_error           internal
-```
-
-## Runtime methods
-
-Public method names remain additive. Exact implementation naming may be introduced during migration, but responsibilities are fixed:
+## Methods
 
 | Responsibility | Methods |
 |---|---|
 | Service | `hello` |
 | Pi registration | `pi.register`, `pi.heartbeat`, `pi.unregister` |
-| Monitor | `monitor.create`, `monitor.get`, `monitor.delete` |
-| Inbox | `inbox.claim`, `inbox.ack`, `inbox.release`, `inbox.status` |
-| Participants | `participant.acquire`, `participant.get`, `participant.list`, `participant.stand_down`, `participant.stop_confirmed`, `participant.release`, `participant.takeover` |
-| Mail | `mailbox.send`, `mailbox.status` |
 | Interactive agent | `bridge.bind`, `bridge.heartbeat`, `bridge.unregister` |
+| Monitor | `monitor.create`, `monitor.get`, `monitor.delete` |
+| Inbox and wake | `inbox.claim`, `inbox.ack`, `inbox.release`, `inbox.status`, `wake.accept` |
+| Participants | `participant.acquire`, `participant.get`, `participant.list`, `participant.stand_down`, `participant.stand_down_confirmed`, `participant.stop_confirmed`, `participant.release`, `participant.takeover` |
+| Mail | `mailbox.send`, `mailbox.status` |
+| Messaging | `messaging.issue`, `messaging.peers`, `messaging.send`, `messaging.status`, `messaging.receive`, `messaging.received`, `messaging.reply` |
 | Worktrees | `worktree.ensure`, `worktree.list`, `worktree.remove` |
 
-All methods except `hello` and initial registration require exact current authority. Mutations are idempotent on typed durable keys. Changed retries conflict.
+Every method except `hello` and initial registration requires exact current authority. Mutations are idempotent on typed durable keys.
 
 ## Target identity
 
-### Pi target
+A **Pi target** is canonical project root plus Pi session ID; registration verifies the session file header, Herdr pane/terminal/session
+identity, canonical cwd, and exclusive live ownership, then issues an epoch-scoped registration key renewed by heartbeat. A
+**Claude/Codex target** is keyed `agent_<sha256(projectRoot\0agentName)>` on the Runtime-generated Herdr agent name, and stores the driver
+key, Herdr managed-agent session, exact workspace/tab/pane/terminal IDs, participant key and held generation, requested profile, optional
+worktree path, and the client generation its MCP descriptor is bound to. Labels and terminal titles are never authoritative: the target is
+live only while `herdr agent get <name>` resolves the same name, kind, managed session, pane/tab/workspace/terminal, and canonical cwd,
+and its participant generation is still held. Mismatch fails closed — registration goes stale, the participant vacates through stop.
 
-A stable Pi target is derived from canonical project root and Pi session ID. Registration verifies the session file header, Herdr pane/terminal/session identity, canonical cwd, and exclusive live ownership. Pi receives an epoch-scoped registration key and renews it through heartbeat.
+## Collaborator launch
 
-Pi supports Monitor delivery through its in-process extension: it claims pending work, writes a hidden custom message into Pi session history, and acknowledges at `message_start`. Registration reconciles historical receipts after crashes. This path excludes ordinary MCP mail; SDK hooks do not certify fsync-based body admission.
+1. Resolve participant, driver, model, persona, and profile independently (`workspace-write` requires fresh interactive confirmation),
+   and read the child participant's generation as the expected reservation: absent, or `vacant` at that generation.
+2. Provision the `workspace-write` worktree, reusing an existing checkout, then create one empty no-focus Herdr tab at the intended cwd.
+3. Run `herdr agent start <collab-hash> --kind pi|claude|codex --pane <id>` with driver-owned startup arguments after `--`.
+4. Call `bridge.bind` with held participant authority, agent name, driver, profile, and client and expected participant generations; it is
+   idempotent for that exact tuple, so an uncertain response is retried.
+5. Runtime re-verifies `herdr agent get`, binds the target and acquires the participant in one state operation, then hands the
+   registration back to the launching Pi.
 
-### Interactive Herdr-agent target
+A failure before `herdr agent start` closes the created tab; a failure after it preserves the tab and reports `needs_attention`. There are
+no launch, reconnect, or reservation tokens — the participant generation is the only lease. Claude receives appended system context and an
+inline MCP server entry, Codex a server-configuration override and startup user context; both reference the shared messaging skill by
+absolute path, and the launch command is capped at 4000 bytes and fails closed rather than truncating.
 
-A Claude/Codex target is identified by canonical project root plus the Runtime-generated Herdr agent name; its key is `agent_<sha256(projectRoot\0agentName)>`. Beside that identity it stores:
+## Worktrees
 
-- closed driver key: `claude-code | codex`;
-- stable managed-agent identity: the Herdr agent session (`{source: herdr:<kind>, agent: <kind>, kind, value}`);
-- exact Herdr workspace, tab, pane, and terminal IDs;
-- participant key and the participant generation the lease holds;
-- requested profile, optional Runtime worktree path, and the client generation its MCP descriptor is bound to.
+`read-only` is the default. `workspace-write` gets one Runtime-owned worktree at `<runtimeRoot>/workspaces/<participantId>` on branch
+`runtime/collab/<participantId>`; no writer gets the main checkout as cwd, and Runtime verifies the cwd is a separate worktree of the same
+repository. Runtime owns only creation, listing, and confirmed removal, never commits or merges; stop retains the worktree, and
+`worktree.remove` force-removes it and deletes its branch after a trusted confirmation.
 
-Display labels and terminal titles are never authoritative.
+## Mailbox and MCP messaging
 
-A target is live only while `herdr agent get <name>` resolves the same agent name, kind, managed session, pane/tab/workspace/terminal, and canonical cwd, and its participant generation is still held by that target. Unknown or mismatched identity fails closed: the registration goes stale and the participant is vacated through the ordinary stop path. Herdr 0.8 does not expose a separate `agent_session` field for every managed driver, so Runtime generates an unguessable bounded agent name and persists `{source: herdr:<kind>, agent: <kind>, kind: id, value: <name>}` as the managed identity in that case.
+A participant is `(canonicalProjectRoot, protocol, participantId)` in `held`, `vacant`, or `ended` state. Mail is addressed to the
+participant: a later namespace of the same held participant reads it, and mail to a vacant participant queues for its next holder. Two
+durable records exist — a **namespace** (one credential per target and client generation: participant, holder generation, secret digest,
+expiry, operation-ID to event-ID map) and a **message** `{eventId, from, to, body, inReplyToEventId?, createdAt, readAt?}`. Ordinary mail
+is retrieved only through the package-owned stdio MCP endpoint and its six tools
+([shared skill](../../skills/collaborator-messaging/SKILL.md)): `collaborator_peers`, `collaborator_send`, `collaborator_receive`,
+`collaborator_received`, `collaborator_reply`, `collaborator_status`. It never enters native pending queues, claims, ACKs, or
+reconciliation, so a retained event's `delivery.status` stays `pending`. Pi's notification instead rides the `pi.heartbeat` response: with
+exactly one live namespace, the reply carries the `namespaceId` and `eventId` of the oldest unread message, offered once per session, only
+in `ctx.mode === "tui"` with an idle session and known-empty editor. That hint is notification, not delivery.
 
-## Interactive collaborator launch
-
-A trusted launch is ordered:
-
-1. Resolve participant, driver, model, persona, and profile independently. Normal native `workspace-write` requires fresh interactive confirmation; no UI means no launch.
-2. Read the child participant's current generation as the expected reservation: absent, or `vacant` at that exact generation.
-3. Provision the Runtime-owned worktree first for `workspace-write`, reusing the existing one when it is already checked out.
-4. Create one empty no-focus Herdr tab at the exact intended cwd and generate the opaque `collab-<hash>` agent name.
-5. Call `herdr agent start <name> --kind claude|codex --pane <id>` with driver-owned startup arguments after `--`.
-6. Call `bridge.bind` with the caller's held participant authority, the agent name, driver, profile, client generation, and the expected participant generation.
-7. Runtime re-reads `herdr agent get <name>`, verifying name, agent kind, managed session, pane/tab/workspace/terminal, and that cwd is the project root or its authorized worktree.
-8. Runtime binds the target and acquires the participant in one state operation, then installs the target's registration and returns it to the launching Pi.
-9. `bridge.bind` is idempotent for one exact agent name, driver, profile and client generation, so an uncertain response is retried and a restarted Pi session rebinds instead of holding a reconnect credential.
-10. A failure before `herdr agent start` closes the exact created tab; a failure after it preserves the tab and reports `needs_attention`, because the agent may be live.
-
-There are no launch tokens, reconnect tokens, launch digests, configuration hashes, or launch reservation records. The participant generation is the only lease, and the launching Pi registers the bound target with its own registration authority.
-
-Native control metadata is part of the current-only `deevs.hosted-runtime.v2` session entry: session history stores an allowlisted, credential-free binding (owner session/file/cwd, project, cwd, agent name, target key, driver, profile, protocol, participant ID, client and holder generation, pane/terminal, managed session) plus typed lifecycle state. Malformed metadata fails closed to `needs_attention` and is neither migrated nor rewritten.
-
-Normal native `workspace-write` preserves user configuration, hooks and native permission/trust prompts. Claude receives appended system context and an inline MCP server entry; Codex receives a server configuration override and startup user context, not replacement developer/system instructions. Native context references the package's shared messaging skill by absolute path instead of embedding its body; after explicit operator input, the native client must read that file before messaging. The compiler conservatively caps the single-quoted, UTF-8 launch command at 4000 bytes, before native dispatch (workspace/tab allocation can already have occurred). Oversized paths, models or persona context fail closed; no truncated prompt or alternate launcher is used. Guarded read-only retains its prior startup restrictions, including the exact Claude trust-store update and Codex trusted-project override/hook disable; it does not receive the new MCP provisioning. Never describe normal configuration as an edit-only tool boundary or automatically accept its prompts. Human prompts remain subject to the existing 30-second start deadline. Timeout and hook-created worktree changes are preserved for explicit recovery, not bypassed or reset.
-
-## Profiles and worktrees
-
-`read-only` is the default. `workspace-write` requires typed launch authority and one Runtime-owned Git worktree at `<runtimeRoot>/workspaces/<participantId>` on branch `runtime/collab/<participantId>`. No collaborator writer receives the main checkout as cwd. A writer registers with the main project root as its identity namespace and the worktree as its cwd; Runtime verifies that cwd is a separate worktree of the same repository.
-
-Driver startup policy:
-
-- Claude read-only: non-bypass permission mode with only native read/search tools enabled.
-- Claude workspace-write: isolated worktree cwd, normal user configuration/hooks/tool permissions; no Runtime edit-only tool filter or permission bypass.
-- Codex read-only: approval disabled for invisible prompts and read-only sandbox.
-- Codex workspace-write: workspace-write sandbox at the isolated worktree, normal user configuration/hooks/approval policy.
-
-The profile is Runtime launch authority, not an OS security boundary against the trusted human operating the interactive agent. Worktree cwd alone does not confine normal native hooks/tools or attest that they cannot affect other paths. A user may deliberately alter an agent's interactive settings; Runtime must not silently continue claiming the original profile after a detectable restart or identity/configuration change. Model prose cannot change profile.
-
-Runtime owns only worktree creation, listing, and confirmed removal. It never commits, checkpoints, merges, or stages integration: reviewing a writer's branch and merging it is ordinary user Git work. Stop retains the worktree; `worktree.remove` force-removes it and deletes its branch after a trusted confirmation.
-
-## Managed mailbox delivery
-
-Mailbox events remain durable and identity-addressed. A participant is `(canonicalProjectRoot, protocol, participantId)` in `held`, `vacant`, or `ended` state. Sender authority always binds the exact participant key and generation.
-
-Ordinary mail is retrieved only through the shared MCP interface. It is excluded from native pending queues, claims, ACKs, reconciliation and wake replay. Current-state validation rejects any ordinary-mail native delivery evidence without rewriting the store. Native Monitor and supported task delivery remain separate.
-
-Claude/Codex automatic terminal prompt injection is blocked even when idle and unfocused. Herdr's paste/delayed-Enter queue cannot attest editor emptiness, honor cancellation throughout submission, or bind its eventual reader to an exact process incarnation. No `agent.prompt`, keystroke or full-body fallback is used for automatic mail. Direct human interaction and exact lifecycle management remain available.
-
-Pi mail notification rides the existing `pi.heartbeat` response: when the target has exactly one live namespace, the reply carries `mail` with the `namespaceId` and `eventId` of the oldest message addressed to its participant that has no `readAt`. There is no attempt ID and no durable notification record. The single-flight Pi heartbeat checks lifecycle epoch, exact session/registration, held identity, enabled receive tool, idle/no-pending state and a known empty TUI editor before offering the hint. Only `ctx.mode === "tui"` qualifies: RPC has UI dialogs but a synthetic empty editor, so RPC, other headless and unknown-editor contexts skip notification. The distinct custom message exposes only namespace/event IDs, and Pi offers each event at most once per session. A hint is not submission, admission or a read receipt merely because `sendMessage()` ran; this is best-effort notification, not reliable delivery.
-
-The managed full-body path is removed, not retained as an MCP fallback. Current `collaborator_send` returns the published event ID; `collaborator_status` returns that message, including its `readAt`. The old Pi batch-send/status registrar is removed. A caller that requires automatic structural completion must use a bounded Subagent instead.
-
-Direct user prompts typed in the Claude/Codex tab are not themselves Runtime mail. With a configured MCP connection, the agent may intentionally publish mail through its authenticated tools during a human-driven turn; it speaks as that collaborator, never as the human or another participant. This grants no Runtime lifecycle, integration, discard, review verdict, or Mission completion authority.
-
-## Native reply adapters
-
-Native turn admission and durable session commit are separate capabilities requiring their own structural evidence; a reply tool call alone proves neither.
-
-Ordinary replies from Pi, Claude Code and Codex use one package-owned MCP interface over Runtime mail. Provider hooks are observation channels, not reply extraction. Supported exact same-session attachment or future Herdr turn receipts may supply stronger evidence only after live verification.
-
-The adapter must never:
-
-- launch a second hidden provider session;
-- replace the visible interactive agent with `claude -p`, `codex exec`, or another print-mode worker;
-- scrape the pane or infer result status from prose;
-- receive lifecycle, integration, or permission authority from an agent message.
-
-## Shared MCP messaging
-
-One package-owned stdio endpoint, six schemas and the [shared skill](../../skills/collaborator-messaging/SKILL.md) serve Pi, Claude Code and Codex. Runtime owns routing, authority and persistent mail; Herdr owns interactive processes. There is no second mailbox backend, direct Pi messaging registrar, old batch-argument translation, or MCP lifecycle/task passthrough.
-
-Messaging has exactly two durable records. A **namespace** is one credential per (target, client generation): participant, holder generation, secret digest, creation/expiry and a map of operation ID to published event ID. A **message** is `{eventId, from (participant, generation, sequence), to, body, inReplyToEventId?, createdAt, readAt?}`.
-
-| Tool | Contract |
-|---|---|
-| `collaborator_peers` | Caller namespace/identity/expiry and up to 12 same-project/protocol peers per page. |
-| `collaborator_send` | Explicit recipient, namespace, operation ID and body; publishes one message and records its operation ID. |
-| `collaborator_receive` | One exact event addressed to the caller's participant; returns the complete body and changes nothing. |
-| `collaborator_received` | Sets `readAt` on one exact message. Idempotent; the body stays retrievable. |
-| `collaborator_reply` | Publishes to the original sender with `inReplyToEventId` set and sets `readAt` on the original, in one commit. |
-| `collaborator_status` | Looks up one of the caller's operations and returns the published message with its `readAt`. |
-
-### Setup and authority
-
-Pi uses a real MCP child after trusted registration restores an already-held identity, or after explicit `/runtime collaborate <protocol> <id>` acquisition. Tools recheck exact session/file/cwd and holder/client authority. Normal native writers receive the endpoint through supported launch configuration and private post-registration descriptor issuance. Their native client reads the supplied skill and calls peers after explicit human input; trust/tool prompts are not automatically accepted. Guarded read-only automatic provisioning remains unavailable.
-
-A namespace permanently binds participant, holder generation, target, client, terminal and configuration. Credentials are owner-private, data-plane-only; authorization stores retain their digest. MCP cannot acquire identity, control processes/profiles/worktrees, adjudicate reviews or complete Missions. Exact authority is checked before and after asynchronous host verification. Stop, replacement and stand-down fence old-holder publications.
-
-Mail is addressed to a participant, not to a namespace: a later namespace of the same held participant reads the same mail, and a message to a vacant participant queues for its next holder. A different participant cannot receive it. A reply derives its recipient from the inbound message's sender and rejects a redirected recipient.
-
-After uncertainty, look up or repeat the original operation with **identical namespace, operation ID and all arguments**. A repeat returns the original event; changed input conflicts. A new operation ID creates new mail. Never migrate an uncertain operation to a successor namespace.
-
-### Evidence, bounds and recovery
-
-Publication, the idle mail hint, `readAt` and native admission are distinct. `readAt` is a client read receipt only; ordinary events stay native-delivery `pending` and never enter claims or ACKs. Missing replies or hints are not proof of failure or completion.
-
-- Bodies are limited to 16 KiB UTF-8; receive returns one complete message, not a truncated body. Runtime requests are bounded at 64 KiB, messaging responses at 128 KiB and MCP frames at 256 KiB. Namespaces and their operation records share a 10,000-record cap; state is capped at 8 MiB.
-- An operation record retains its message until the publishing namespace expires; expiry clears the namespace's operations and leaves a terminal tombstone. Retention does not transfer history to a new namespace.
-- Post-rename storage uncertainty fences reads/mutations until disk recovery and directory sync. Never restore an older snapshot over an uncertain commit. Cancellation is not proof of non-publication.
-- Exact old-process quiescence and unresolved original operation identities must be accounted for before descriptor cleanup or replacement. Malformed authority fails closed; do not recover credentials by scanning arbitrary session history.
-
-### Unresolved guarantees
-
-Pi mail hints remain best-effort and are not replayed after loss, navigation or client replacement; a missing hint is not proof that no mail exists. Automatic Claude/Codex wakes remain blocked without authoritative editor/process-incarnation/human-priority evidence. Explicit human-driven MCP mail does not upgrade native durable-admission capability.
-
-Readable Pi JSONL, SDK hooks, MCP replies and client receipts do not certify fsync-based body admission or exactly-once native input consumption. A controlled daemon restart with fresh authority is not proof of atomic delivery handoff or delivery survival after the initiating Pi exits. Orphaned/expired descriptor repair and general crash/uncertain-operation interleavings remain unproven. Normal native settings/hooks are not confined by worktree cwd, and configuration hashes do not attest ambient settings or a later skill read. Broader rollout requires separate approval; historical validation records remain in Git history.
-
-## Stop, stand-down, and recovery
-
-- Stand-down vacates participant availability while preserving the exact interactive agent and its worktree for later controlled replacement or recovery.
-- Stop targets only the exact Runtime-managed Herdr agent/tab generation.
-- Runtime requests Herdr closure and waits for exact agent/tab absence and process-tree settlement before vacating the participant.
-- Missing or mismatched identities, ambiguous closure, or surviving owned processes become `needs_attention`.
-- Stop never deletes a worktree or uncommitted changes.
-- Release, revival, takeover, and worktree removal remain separate trusted operations.
-
-No model prose can request or confirm these transitions.
+Bodies are capped at 16 KiB UTF-8, namespaces and operation records share a 10,000-record cap, and state is capped at 8 MiB. After
+uncertainty, repeat the original operation with identical namespace, operation ID, and arguments: a repeat returns the original event,
+changed input conflicts, a new operation ID creates new mail. MCP cannot acquire identity, control processes, profiles, or worktrees.
 
 ## Monitor and Pi admission
 
-A Monitor observes newly created direct-child regular files beneath one canonical non-symlink directory. Existing files form a non-emitting baseline. `fs.watch` is only a latency hint; startup, hints, and fallback reconciliation use the same authoritative scan. Cursor and event state commit atomically before notification.
+A Monitor observes newly created direct-child regular files under one canonical non-symlink directory; existing files form a non-emitting
+baseline. `fs.watch` is a latency hint only — startup, hints, and reconciliation use the same authoritative scan. Cursor and event state
+commit atomically before notification, and events move `pending -> claimed -> acked`, returning to `pending` on release or lease expiry.
+Pi claims a bounded batch through its in-process heartbeat, writes one hidden model-visible custom message, and acknowledges at
+`message_start`; registration reconciles historical session receipts after a crash. Runtime never prompts or focuses a Pi pane.
 
-Monitor events follow:
+## Stop, stand-down, recovery
 
-```text
-pending -> claimed -> acked
-                  \-> pending  (release or lease expiry)
-```
-
-Pi receives pending work through its in-process heartbeat. Runtime does not prompt or focus a Pi pane. The Pi extension claims a bounded batch, writes one hidden model-visible custom message, and acknowledges at `message_start`. Historical session receipts close the post-admission/pre-ack crash window.
-
-Monitor scope remains direct-child creation only; recursive/content/modification/deletion monitoring is deferred.
+- Stand-down vacates participant availability, preserving the agent, its worktree, and queued mail.
+- Stop targets only the exact Runtime-managed agent/tab generation, waits for agent/tab absence and process-tree settlement before
+  vacating the participant, and never deletes a worktree. Missing or mismatched identity, ambiguous closure, or surviving owned
+  processes become `needs_attention`.
+- Release, revival, takeover, and worktree removal are separate trusted operations; no model prose can request or confirm one.
 
 ## Persistence and security boundary
 
-Pi persists its whole Runtime collaboration state in one hidden session entry, `deevs.hosted-runtime.v2`: participant identity, collaborator launch metadata, the collaborator worktree, and managed native agent controls. Each append writes the current record; restore reads the last one on the branch. Older entry kinds are ignored rather than migrated, and a malformed record fails closed — no identity, read-only Pi launch enforcement, and managed controls that require attention.
+Pi persists its Runtime collaboration state in one hidden session entry, `deevs.hosted-runtime.v2`: participant identity, launch metadata,
+worktree, and managed native agent controls. Each append writes the current record and restore reads the last one on the branch; older
+entry kinds are ignored rather than migrated, and a malformed record fails closed. Runtime state uses strict schema validation with atomic
+write/fsync/rename/directory-fsync replacement, and corruption fails closed. Socket and state rely on owner-only permissions, and Node
+Unix sockets expose no peer credentials, so random credentials protect against accidental and cross-wired children only. Herdr is an
+external trusted host capability, not an npm dependency; Runtime validates its responses and never trusts labels.
 
-Runtime state uses strict schema validation and atomic temporary-write/fsync/rename/directory-fsync replacement. Corruption fails closed.
+## Known limitations
 
-The Unix socket and state rely on owner-only filesystem permissions. Current Node Unix sockets do not expose peer credentials, so Runtime is not an isolation boundary against a hostile same-UID process. Random registration/launch credentials protect against accidental and cross-wired children, not memory inspection by the same user.
-
-Herdr is an external trusted host capability, not an npm production dependency. Runtime validates Herdr protocol responses and exact identities; it never trusts labels or focused UI state as authority.
-
-## No headless compatibility path
-
-Current collaborators use interactive Herdr sessions and the shared MCP interface. Headless bridge runners, hidden per-message provider processes and old argument formats are not supported release paths. Obsolete implementations still present are removal work, not fallback behavior to maintain. Existing user data remains untouched unless its exact cleanup is separately authorized.
-
-## Deferred
-
-- Native durable admission and automatic delivery beyond explicit MCP messaging.
-- Recursive/content/modification/deletion monitoring.
-- Collaborator groups, broadcasts, and attachments.
-- Durable schedules and automatic takeover.
-- Native service installers and Windows transport.
-- Public driver/plugin SDK.
-- Full host-access collaborator profile.
-
-## Release gates
-
-The redesign is releasable only when isolated and live gates prove:
-
-1. Claude and Codex launch through `herdr agent start` into real interactive tabs.
-2. The user can type directly and receive responses in both tabs.
-3. Native automatic admission proves exact-session ownership, editor safety and human priority without focus mutation; until then it stays blocked.
-4. Busy/blocked/focused/unknown targets retain pending events.
-5. Publication, the idle mail hint, body retrieval and `readAt` remain separate evidence.
-6. Ambiguous prompt results fail closed without automatic duplicate replay.
-7. Targets reject automatic-reply claims with `capability_unavailable` until structural evidence exists.
-8. Exact model/persona/profile/cwd/session identity is verified after start and restart.
-9. Read-only and worktree workspace-write launches apply the intended driver startup policy.
-10. Stop proves exact Herdr target/process settlement and retains the worktree.
-11. Monitor and supported task admission remain intact; ordinary Pi mail is hinted on heartbeat and retrieved through actual MCP only.
-12. No collaborator tab contains a bridge-runner command or hidden per-message provider process.
-13. Unsupported state is rejected without rewriting or deleting existing mail, authority evidence or worktrees.
-14. Confirmed-start authority and zero-focus gates still pass.
+- Automatic native wakes are not implemented: Claude/Codex mail waits for explicit human input in the tab.
+- An MCP client receipt is not provider admission; `readAt` proves neither a durable commit nor task completion, and Pi mail hints are not
+  replayed after loss. Guarded native read-only launches do not receive automatic MCP provisioning, and monitoring stays direct-child
+  creation only — no collaborator groups, broadcasts, attachments, or durable schedules either.
