@@ -5,7 +5,7 @@ description: Start, message, inspect, and stop persistent Runtime collaborators;
 
 # Runtime Collaborators
 
-Collaborators are persistent interactive peers, not bounded jobs. Runtime owns identity and mail; Herdr owns interactive sessions. Ordinary messaging uses the [shared MCP skill](../collaborator-messaging/SKILL.md). Native startup configuration and reference-wake integration remain unreleased: never infer messaging readiness or durable admission from a provider name. Use a subagent for bounded work.
+Collaborators are persistent interactive peers, not bounded jobs. Runtime owns identity and mail; Herdr owns interactive sessions. Ordinary messaging uses the [shared MCP skill](../collaborator-messaging/SKILL.md). Native startup configuration and idle mail hints remain unreleased: never infer messaging readiness or durable admission from a provider name. Use a subagent for bounded work.
 
 ## Lifecycle
 

@@ -27,7 +27,7 @@ import { deriveAgentTargetKey } from "./service/state.ts";
 // ponytail: two-second host verification is fine for small teams; add Runtime subscriptions if concurrent Pi count makes it measurable.
 const HEARTBEAT_MS = 2_000;
 export const HOSTED_RUNTIME_MESSAGE = "deevs.hosted-runtime.v1";
-export const HOSTED_MESSAGING_REFERENCE = "deevs.hosted-runtime.messaging-reference.v1";
+const HOSTED_MESSAGING_MAIL = "deevs.hosted-runtime.messaging-mail.v1";
 export const HOSTED_PARTICIPANT_ENTRY = "deevs.hosted-runtime.participant.v1";
 export const HOSTED_COLLABORATOR_PROFILE_ENTRY = "deevs.hosted-runtime.collaborator-profile.v1";
 export const HOSTED_MANAGED_COLLABORATOR_ENTRY = "deevs.hosted-runtime.managed-collaborator.v1";
@@ -273,6 +273,7 @@ export class HostedRuntimeIntegration {
 	private readonly managedAgentRegistrations = new Map<string, LiveClientRegistration>();
 	private readonly managedAgentLaunches = new Set<string>();
 	private readonly managedMessagingIssued = new Set<string>();
+	private readonly hintedMail = new Set<string>();
 	private managedAgentHeartbeatActive = false;
 	private participantIdentity?: ParticipantIdentity;
 	private collaboratorLaunch?: CollaboratorLaunchState;
@@ -1250,7 +1251,7 @@ export class HostedRuntimeIntegration {
 			this.requireCurrentScope(current);
 			if (heartbeat.inboxReady) await this.admitHeartbeatInbox(this.registration, ctx);
 			this.requireCurrentScope(current);
-			await this.offerMessagingReference(this.registration, ctx);
+			this.offerMailHint(this.registration, ctx, heartbeat.mail);
 		} catch {
 			if (current()) this.registration = undefined;
 		} finally {
@@ -1274,7 +1275,7 @@ export class HostedRuntimeIntegration {
 						const bound = await this.rebindManagedAgent(control);
 						if (!current() || this.managedAgentControls.get(targetKey) !== control) return;
 						registration = bound.registration;
-						heartbeat = { registration, inboxReady: false };
+						heartbeat = { registration, inboxReady: false, mail: undefined };
 					} else {
 						heartbeat = parseHeartbeat(await this.client.call("bridge.heartbeat", auth(registration)));
 						if (!current() || this.managedAgentControls.get(targetKey) !== control) return;
@@ -1352,19 +1353,15 @@ export class HostedRuntimeIntegration {
 		this.managedMessagingIssued.add(control.targetKey);
 	}
 
-	private async offerMessagingReference(registration: LiveClientRegistration, ctx: ExtensionContext): Promise<void> {
+	/** Best-effort idle hint. Not submission, body retrieval, read receipt or native admission; never replayed. */
+	private offerMailHint(registration: LiveClientRegistration, ctx: ExtensionContext, mail: MailHint | undefined): void {
 		const identity = this.participantIdentity;
 		const scope = this.sessionScope(ctx, registration);
-		const ready = () => scope() && this.participantIdentity === identity && identity?.disposition === "held" && this.pi.getActiveTools().includes("collaborator_receive") && ctx.mode === "tui" && ctx.hasUI && ctx.isIdle() && !ctx.hasPendingMessages() && ctx.ui.getEditorText() === "";
-		try {
-			if (!ready() || !identity?.participantKey || !identity.generation) return;
-			const attemptId = `reference_${randomUUID()}`;
-			const result = strictObject(await this.client.call("messaging.reference", { ...auth(registration), attemptId, participantKey: identity.participantKey, expectedGeneration: identity.generation }), "Messaging reference");
-			if (result.acquired !== true || result.attemptId !== attemptId || !ready()) return;
-			const reference = { namespaceId: text(result.namespaceId), eventId: text(result.eventId) };
-			// Offering a hint is not SDK submission, body retrieval, client receipt or native admission. Never replay a lost hint.
-			this.pi.sendMessage({ customType: HOSTED_MESSAGING_REFERENCE, content: `Runtime ordinary-mail reference: ${JSON.stringify(reference)}\nUse collaborator_receive with this namespaceId and eventId to retrieve its body through the shared MCP interface. This hint is not a body receipt or native admission.`, display: false, details: reference }, { triggerTurn: true, deliverAs: "followUp" });
-		} catch { /* Best-effort hints neither replay nor invalidate a healthy registration. */ }
+		const ready = scope() && identity?.disposition === "held" && this.pi.getActiveTools().includes("collaborator_receive") && ctx.mode === "tui" && ctx.hasUI && ctx.isIdle() && !ctx.hasPendingMessages() && ctx.ui.getEditorText() === "";
+		if (!mail || !ready || this.hintedMail.has(mail.eventId)) return;
+		// One hint per message per session; the set stays as small as this session's mail.
+		this.hintedMail.add(mail.eventId);
+		this.pi.sendMessage({ customType: HOSTED_MESSAGING_MAIL, content: `Runtime mail waiting: ${JSON.stringify(mail)}\nUse collaborator_receive with this namespaceId and eventId to read its body through the shared MCP interface.`, display: false, details: mail }, { triggerTurn: true, deliverAs: "followUp" });
 	}
 
 	private async admitHeartbeatInbox(registration: LiveClientRegistration, ctx: ExtensionContext): Promise<void> {
@@ -1779,10 +1776,21 @@ function parseRegistration(value: RuntimeResponse): LiveClientRegistration {
 	};
 }
 
+interface MailHint {
+	namespaceId: string;
+	eventId: string;
+}
+
 function parseHeartbeat(value: RuntimeResponse) {
 	const result = strictObject(value, "Runtime heartbeat");
 	if (result.inboxReady !== undefined && !isBooleanValue(result.inboxReady)) throw new HostedRuntimeClientError("invalid_response", "Runtime heartbeat inbox readiness is invalid.");
-	return { registration: parseRegistration(result), inboxReady: result.inboxReady === true };
+	return { registration: parseRegistration(result), inboxReady: result.inboxReady === true, mail: parseMailHint(result.mail) };
+}
+
+function parseMailHint(value: RuntimeResponse | undefined): MailHint | undefined {
+	if (value === undefined) return undefined;
+	const hint = strictObject(value, "Runtime mail hint");
+	return { namespaceId: text(hint.namespaceId), eventId: text(hint.eventId) };
 }
 
 function auth(registration: LiveClientRegistration) {

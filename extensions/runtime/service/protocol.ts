@@ -79,12 +79,6 @@ export async function dispatchHostedLine(line: string, context: HostedProtocolCo
 		const worktrees = context.worktrees;
 		if (!registrations || !monitors || !wakes) return failure(id, "capability_unavailable", "Hosted runtime methods are unavailable in this process.");
 
-		if (method === "messaging.reference") {
-			if (!context.messaging) return failure(id, "capability_unavailable", "Messaging authority is unavailable.");
-			const input = strictObject(params, "messaging.reference params", ["registrationId", "registrationKey", "attemptId", "participantKey", "expectedGeneration"]);
-			const caller = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
-			return success(id, await context.messaging.reference(caller, boundedText(input.attemptId, "reference attempt", 200), boundedText(input.participantKey, "participant key", 200), boundedText(input.expectedGeneration, "holder generation", 200)));
-		}
 		if (method === "messaging.issue") {
 			if (!context.messaging) return failure(id, "capability_unavailable", "Messaging authority is unavailable.");
 			const input = strictObject(params, "messaging.issue params", ["registrationId", "registrationKey", "participantKey", "expectedGeneration", "confirmed"]);
@@ -92,26 +86,10 @@ export async function dispatchHostedLine(line: string, context: HostedProtocolCo
 			const caller = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
 			return success(id, await context.messaging.issue(caller, boundedText(input.participantKey, "participant key", 200), boundedText(input.expectedGeneration, "holder generation", 200)));
 		}
-		if (["messaging.peers", "messaging.send", "messaging.status", "messaging.receive", "messaging.received", "messaging.reply"].includes(method)) {
+		if (MESSAGING_CALL_FIELDS.has(method)) {
 			if (!context.messaging) return failure(id, "capability_unavailable", "Messaging authority is unavailable.");
-			const fields = { "messaging.peers": ["cursor"], "messaging.send": ["operationId", "participantId", "bodyBase64"], "messaging.status": ["operationId"], "messaging.receive": ["eventId"], "messaging.received": ["eventId", "receiptToken"], "messaging.reply": ["operationId", "eventId", "receiptToken", "bodyBase64"] };
-			const allowed = ["namespaceId", "secret", ...Object.entries(fields).find(([name]) => name === method)![1]];
-			const input = strictObject(params, `${method} params`, allowed);
-			let operation: MessagingInput;
-			if (method === "messaging.peers") operation = input.cursor === undefined ? { method: "peers" } : { method: "peers", cursor: boundedText(input.cursor, "cursor", 512) };
-			else if (method === "messaging.status") operation = { method: "status", operationId: boundedText(input.operationId, "operation ID", 200) };
-			else if (method === "messaging.receive") operation = { method: "receive", eventId: boundedText(input.eventId, "event ID", 200) };
-			else if (method === "messaging.received") operation = { method: "received", eventId: boundedText(input.eventId, "event ID", 200), receiptToken: boundedText(input.receiptToken, "retrieval token", 200) };
-			else {
-				// Base64 avoids expanding a 16 KiB body past the unchanged 64 KiB RPC request cap.
-				const encoded = boundedText(input.bodyBase64, "encoded body", 24 * 1024);
-				const bytes = Buffer.from(encoded, "base64");
-				if (bytes.toString("base64") !== encoded || bytes.length > HOSTED_MAILBOX_MAX_BODY_BYTES) throw new Error("Messaging body encoding or byte limit is invalid.");
-				const body = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-				const operationId = boundedText(input.operationId, "operation ID", 200);
-				operation = method === "messaging.reply" ? { method: "reply", operationId, eventId: boundedText(input.eventId, "event ID", 200), receiptToken: boundedText(input.receiptToken, "retrieval token", 200), body } : { method: "send", operationId, participantId: participantName(input.participantId, "recipient participant ID"), body };
-			}
-			const result = success(id, await context.messaging.call(boundedText(input.namespaceId, "namespace ID", 200), boundedText(input.secret, "messaging secret", 200), operation));
+			const input = strictObject(params, `${method} params`, ["namespaceId", "secret", ...MESSAGING_CALL_FIELDS.get(method) ?? []]);
+			const result = success(id, await context.messaging.call(boundedText(input.namespaceId, "namespace ID", 200), boundedText(input.secret, "messaging secret", 200), messagingCallInput(input, method)));
 			if (Buffer.byteLength(encodeHostedResponse(result)) > 128 * 1024) return failure(id, "conflict", "Messaging response exceeds its byte limit.");
 			return result;
 		}
@@ -147,7 +125,10 @@ export async function dispatchHostedLine(line: string, context: HostedProtocolCo
 		if (method === "pi.heartbeat") {
 			const auth = authParams(params);
 			const registration = await registrations.heartbeat(auth.registrationId, auth.registrationKey);
-			return success(id, { ...registrationResult(registration), inboxReady: wakes.status(registration).pending > 0 });
+			const mail = context.messaging?.unread(registration);
+			const heartbeat: JsonObject = { ...registrationResult(registration), inboxReady: wakes.status(registration).pending > 0 };
+			if (mail) heartbeat.mail = { namespaceId: mail.namespaceId, eventId: mail.eventId };
+			return success(id, heartbeat);
 		}
 		if (method === "pi.unregister") {
 			const auth = authParams(params);
@@ -468,8 +449,32 @@ function errorCode(cause: unknown): HostedErrorCode {
 	return "internal";
 }
 
+const MESSAGING_CALL_FIELDS = new Map<string, readonly string[]>([
+	["messaging.peers", ["cursor"]],
+	["messaging.send", ["operationId", "participantId", "bodyBase64"]],
+	["messaging.status", ["operationId"]],
+	["messaging.receive", ["eventId"]],
+	["messaging.received", ["eventId"]],
+	["messaging.reply", ["operationId", "eventId", "bodyBase64"]],
+]);
+
+function messagingCallInput(input: JsonObject, method: string): MessagingInput {
+	if (method === "messaging.peers") return input.cursor === undefined ? { method: "peers" } : { method: "peers", cursor: boundedText(input.cursor, "cursor", 512) };
+	if (method === "messaging.status") return { method: "status", operationId: boundedText(input.operationId, "operation ID", 200) };
+	if (method === "messaging.receive") return { method: "receive", eventId: boundedText(input.eventId, "event ID", 200) };
+	if (method === "messaging.received") return { method: "received", eventId: boundedText(input.eventId, "event ID", 200) };
+	// Base64 avoids expanding a 16 KiB body past the unchanged 64 KiB RPC request cap.
+	const encoded = boundedText(input.bodyBase64, "encoded body", 24 * 1024);
+	const bytes = Buffer.from(encoded, "base64");
+	if (bytes.toString("base64") !== encoded || bytes.length > HOSTED_MAILBOX_MAX_BODY_BYTES) throw new Error("Messaging body encoding or byte limit is invalid.");
+	const body = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+	const operationId = boundedText(input.operationId, "operation ID", 200);
+	if (method === "messaging.reply") return { method: "reply", operationId, eventId: boundedText(input.eventId, "event ID", 200), body };
+	return { method: "send", operationId, participantId: participantName(input.participantId, "recipient participant ID"), body };
+}
+
 const HOSTED_METHODS = new Set([
-	"messaging.reference", "messaging.issue", "messaging.peers", "messaging.send", "messaging.status",
+	"messaging.issue", "messaging.peers", "messaging.send", "messaging.status",
 	"messaging.receive", "messaging.received", "messaging.reply",
 	"pi.register", "pi.heartbeat", "pi.unregister",
 	"bridge.bind", "bridge.heartbeat", "bridge.unregister",

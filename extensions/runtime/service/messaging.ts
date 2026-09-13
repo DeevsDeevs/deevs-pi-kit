@@ -1,10 +1,87 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { closeSync, constants, fsyncSync, openSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HOSTED_ACK_RETENTION_MS, type HostedMessagingGrant } from "../hosted-types.ts";
+import {
+	HOSTED_ACK_RETENTION_MS,
+	type HostedMailboxMessageEvent,
+	type HostedMessagingGrant,
+	type HostedParticipant,
+	type HostedParticipantState,
+	type HostedRuntimeState,
+} from "../hosted-types.ts";
 import { HostedParticipantCoordinator } from "./participant.ts";
 import { RegistrationError, RuntimeRegistrationManager, type HostedLiveRegistration } from "./registration.ts";
-import { deriveParticipantKey, HostedStateStorageError, HostedStateStore, messagingConfigurationHash, messagingReceivedEvent, messagingReferenceNamespace } from "./state.ts";
+import { deriveParticipantKey, HostedStateStorageError, HostedStateStore, messagingConfigurationHash, messagingInboxEvent } from "./state.ts";
+
+const MAX_IN_FLIGHT = 12;
+const PEER_PAGE = 12;
+
+export type MessagingInput =
+	| { method: "peers"; cursor?: string }
+	| { method: "send"; participantId: string; operationId: string; body: string }
+	| { method: "status"; operationId: string }
+	| { method: "receive"; eventId: string }
+	| { method: "received"; eventId: string }
+	| { method: "reply"; operationId: string; eventId: string; body: string };
+
+interface MessagingMailHint {
+	namespaceId: string;
+	eventId: string;
+}
+
+interface MessagingIssued {
+	namespaceId: string;
+	descriptorPath: string;
+	expiresAt: number;
+}
+
+interface MessagingPeer {
+	participantId: string;
+	state: HostedParticipantState;
+	holderLive: boolean;
+}
+
+interface MessagingPeersResult {
+	namespaceId: string;
+	caller: string;
+	protocol: string;
+	binding: { kind: "pi"; sessionId: string; sessionFile: string; cwd: string } | { kind: "agent" };
+	expiresAt: number;
+	peers: MessagingPeer[];
+	nextCursor: string | null;
+}
+
+interface MessagingMessage {
+	eventId: string;
+	from: string;
+	body: string;
+	createdAt: number;
+	inReplyToEventId?: string;
+	readAt?: number;
+}
+
+interface MessagingMessageResult {
+	namespaceId: string;
+	message: MessagingMessage;
+}
+
+interface MessagingReadResult {
+	namespaceId: string;
+	eventId: string;
+	readAt: number;
+}
+
+interface MessagingPublishedResult {
+	namespaceId: string;
+	eventId: string;
+}
+
+interface MessagingStatusResult {
+	namespaceId: string;
+	event: HostedMailboxMessageEvent;
+}
+
+type MessagingResult = MessagingPeersResult | MessagingMessageResult | MessagingReadResult | MessagingPublishedResult | MessagingStatusResult;
 
 export class RuntimeMessaging {
 	private inFlight = 0;
@@ -22,25 +99,25 @@ export class RuntimeMessaging {
 		this.now = now;
 	}
 
-	async issue(caller: HostedLiveRegistration, participantKey: string, expectedGeneration: string) {
+	async issue(caller: HostedLiveRegistration, participantKey: string, expectedGeneration: string): Promise<MessagingIssued> {
 		const callerParticipant = Object.values(this.store.read().participants).find((p) => p.state === "held" && p.holderTargetKey === caller.targetKey);
 		const participant = this.store.read().participants[participantKey];
-		if (this.store.read().targets[caller.targetKey]?.kind !== "pi" || !callerParticipant || !participant || callerParticipant.projectRoot !== participant.projectRoot || callerParticipant.protocol !== participant.protocol || participant.state !== "held" || participant.generation !== expectedGeneration) throw new RegistrationError("identity_mismatch", "Messaging issuance requires a held Pi controller in the exact project/protocol and target generation.");
-		const registration = await this.registrations.verifyTarget(participant.holderTargetKey!);
+		if (this.store.read().targets[caller.targetKey]?.kind !== "pi" || !callerParticipant || !participant || callerParticipant.projectRoot !== participant.projectRoot || callerParticipant.protocol !== participant.protocol || participant.state !== "held" || participant.generation !== expectedGeneration || !participant.holderTargetKey) throw new RegistrationError("identity_mismatch", "Messaging issuance requires a held Pi controller in the exact project/protocol and target generation.");
+		const registration = await this.registrations.verifyTarget(participant.holderTargetKey);
 		this.registrations.authorize(caller.registrationId, caller.registrationKey);
 		this.registrations.authorize(registration.registrationId, registration.registrationKey);
 		const currentCaller = this.store.read().participants[callerParticipant.participantKey];
 		if (currentCaller?.state !== "held" || currentCaller.generation !== callerParticipant.generation || currentCaller.holderTargetKey !== caller.targetKey) throw new RegistrationError("registration_stale", "Messaging controller changed during verification.");
-		const target = this.store.read().targets[registration.targetKey]!;
+		const target = this.store.read().targets[registration.targetKey];
 		const currentParticipant = this.store.read().participants[participantKey];
-		if (currentParticipant?.state !== "held" || currentParticipant.generation !== expectedGeneration || currentParticipant.holderTargetKey !== registration.targetKey) throw new RegistrationError("registration_stale", "Messaging recipient authority changed during issuance.");
+		if (!target || currentParticipant?.state !== "held" || currentParticipant.generation !== expectedGeneration || currentParticipant.holderTargetKey !== registration.targetKey) throw new RegistrationError("registration_stale", "Messaging recipient authority changed during issuance.");
 		const createdAt = this.now();
 		const descriptorPath = messagingDescriptorPath(this.store.root, target.targetKey, registration.clientGeneration);
 		const existing = Object.values(this.store.read().messaging).find(grant => grant.targetKey === target.targetKey && grant.clientGeneration === registration.clientGeneration && grant.terminalId === registration.host.terminalId && grant.holderGeneration === expectedGeneration && grant.configurationHash === messagingConfigurationHash(target) && grant.status === "active" && createdAt >= grant.createdAt && createdAt < grant.expiresAt);
 		if (existing) return { namespaceId: existing.namespaceId, descriptorPath, expiresAt: existing.expiresAt };
 		const namespaceId = `msg_${randomUUID()}`;
 		const secret = randomBytes(32).toString("base64url");
-		const grant: HostedMessagingGrant = { namespaceId, secretDigest: digest(secret), participantKey, holderGeneration: expectedGeneration, targetKey: target.targetKey, clientGeneration: registration.clientGeneration, terminalId: registration.host.terminalId, configurationHash: messagingConfigurationHash(target), createdAt, expiresAt: createdAt + HOSTED_ACK_RETENTION_MS, status: "active", receipts: {}, offers: {}, references: {} };
+		const grant: HostedMessagingGrant = { namespaceId, secretDigest: digest(secret), participantKey, holderGeneration: expectedGeneration, targetKey: target.targetKey, clientGeneration: registration.clientGeneration, terminalId: registration.host.terminalId, configurationHash: messagingConfigurationHash(target), createdAt, expiresAt: createdAt + HOSTED_ACK_RETENTION_MS, status: "active", operations: {} };
 		const fd = openSync(descriptorPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
 		try {
 			writeFileSync(fd, `${JSON.stringify({ version: 1, socketPath: this.socketPath, namespaceId, secret })}\n`);
@@ -55,85 +132,118 @@ export class RuntimeMessaging {
 		return { namespaceId, descriptorPath, expiresAt: grant.expiresAt };
 	}
 
-	async reference(caller: HostedLiveRegistration, attemptId: string, participantKey: string, expectedGeneration: string) {
-		if (this.inFlight >= 12) throw new RegistrationError("conflict", "Messaging request capacity is exhausted.");
-		this.inFlight++;
-		try {
-			this.registrations.authorize(caller.registrationId, caller.registrationKey);
-			const original = messagingReferenceNamespace(this.store.read(), caller.targetKey, caller.clientGeneration, caller.host.terminalId, this.now());
-			if (original.participantKey !== participantKey || original.holderGeneration !== expectedGeneration) throw new RegistrationError("registration_stale", "Pi reference holder does not match its caller snapshot.");
-			const verified = await this.registrations.verifyTarget(caller.targetKey);
-			this.registrations.authorize(caller.registrationId, caller.registrationKey);
-			if (verified.registrationId !== caller.registrationId || verified.registrationKey !== caller.registrationKey || verified.clientGeneration !== caller.clientGeneration || verified.host.terminalId !== caller.host.terminalId) throw new RegistrationError("registration_stale", "Pi reference caller changed during verification.");
-			const at = this.now();
-			const grant = messagingReferenceNamespace(this.store.read(), caller.targetKey, caller.clientGeneration, caller.host.terminalId, at);
-			if (grant.namespaceId !== original.namespaceId) throw new RegistrationError("registration_stale", "Pi reference namespace changed during verification.");
-			if (Object.values(grant.references).some(reference => reference.attemptId === attemptId)) return { acquired: false as const };
-			const event = Object.values(this.store.read().events).filter(event => event.type === "mailbox.message" && event.recipientBinding.kind === "namespace" && event.recipientBinding.namespaceId === grant.namespaceId && !grant.references[event.eventId] && !grant.offers[event.eventId]).sort((a, b) => a.createdAt - b.createdAt || a.eventId.localeCompare(b.eventId))[0];
-			if (!event) return { acquired: false as const };
-			this.store.apply({ type: "messaging.reference", namespaceId: grant.namespaceId, reference: { eventId: event.eventId, attemptId, registrationId: caller.registrationId, clientGeneration: caller.clientGeneration, offeredAt: at } });
-			return { acquired: true as const, namespaceId: grant.namespaceId, eventId: event.eventId, attemptId };
-		} finally { this.inFlight--; }
+	/** Best-effort idle hint for a Pi holder: the oldest unread message in its sole live namespace. */
+	unread(registration: HostedLiveRegistration): MessagingMailHint | undefined {
+		const state = this.store.read();
+		const grant = liveTargetNamespace(state, registration, this.now());
+		if (!grant) return undefined;
+		const [event] = Object.values(state.events)
+			.filter((candidate): candidate is HostedMailboxMessageEvent => candidate.type === "mailbox.message" && candidate.recipientParticipantKey === grant.participantKey && candidate.readAt === undefined)
+			.sort((left, right) => left.createdAt - right.createdAt || left.eventId.localeCompare(right.eventId));
+		return event ? { namespaceId: grant.namespaceId, eventId: event.eventId } : undefined;
 	}
 
-	async call(namespaceId: string, secret: string, input: MessagingInput) {
-		if (this.inFlight >= 12) throw new RegistrationError("conflict", "Messaging request capacity is exhausted; retry the same operation ID.");
+	async call(namespaceId: string, secret: string, input: MessagingInput): Promise<MessagingResult> {
+		if (this.inFlight >= MAX_IN_FLIGHT) throw new RegistrationError("conflict", "Messaging request capacity is exhausted; retry the same operation ID.");
 		this.inFlight++;
 		try {
-			this.authorize(namespaceId, secret);
-			const grant = this.store.read().messaging[namespaceId]!;
-			const registration = await this.registrations.verifyTarget(grant.targetKey);
-			this.authorize(namespaceId, secret);
-			this.registrations.authorize(registration.registrationId, registration.registrationKey);
-			if (registration.clientGeneration !== grant.clientGeneration || registration.host.terminalId !== grant.terminalId) {
-				this.store.apply({ type: "messaging.close", namespaceId, status: "revoked" });
-				throw new RegistrationError("registration_stale", "Messaging client binding changed.");
-			}
-			const sender = this.store.read().participants[grant.participantKey]!;
-			if (input.method === "peers") {
-				const peers = Object.values(this.store.read().participants).filter((p) => p.projectRoot === sender.projectRoot && p.protocol === sender.protocol && p.participantKey !== sender.participantKey).sort((a, b) => a.participantId.localeCompare(b.participantId));
-				let offset = 0;
-				if (input.cursor !== undefined) {
-					const decoded = Buffer.from(input.cursor, "base64url").toString("utf8");
-					const prefix = `${namespaceId}:`;
-					const index = peers.findIndex((p) => decoded === `${prefix}${p.participantKey}`);
-					if (index < 0 || Buffer.from(decoded).toString("base64url") !== input.cursor) throw new RegistrationError("invalid_request", "Messaging cursor is absent or outside this namespace.");
-					offset = index + 1;
+			const { grant, registration } = await this.verify(namespaceId, secret);
+			switch (input.method) {
+				case "peers": return this.peers(grant, input.cursor);
+				case "receive": return this.receive(grant, input.eventId);
+				case "received": return this.markRead(grant, input.eventId);
+				case "status": return this.status(grant, input.operationId);
+				case "send": return this.publish(registration, grant, input.operationId, this.recipientKey(grant, input.participantId), input.body);
+				case "reply": return this.publishReply(registration, grant, input.operationId, input.eventId, input.body);
+				default: {
+					const unsupported: never = input;
+					throw new RegistrationError("invalid_request", `Unsupported messaging method ${JSON.stringify(unsupported)}.`);
 				}
-				const page = peers.slice(offset, offset + 12).map((p) => ({ participantId: p.participantId, state: p.state, holderLive: p.state === "held" && this.registrations.hasLiveTarget(p.holderTargetKey!) }));
-				const last = peers[offset + page.length - 1];
-				const target = this.store.read().targets[grant.targetKey]!;
-				const binding = target.kind === "pi" ? { kind: target.kind, sessionId: target.piSessionId, sessionFile: target.piSessionFile, cwd: target.worktreePath ?? target.projectRoot } : { kind: target.kind };
-				return { caller: sender.participantId, protocol: sender.protocol, namespaceId, binding, expiresAt: grant.expiresAt, peers: page, nextCursor: offset + page.length < peers.length && last ? Buffer.from(`${namespaceId}:${last.participantKey}`).toString("base64url") : null };
 			}
-			if (input.method === "receive" || input.method === "received") {
-				this.store.apply({ type: input.method === "receive" ? "messaging.receive" : "messaging.received", namespaceId, eventId: input.eventId, receiptToken: input.method === "receive" ? `offer_${randomUUID()}` : input.receiptToken, at: this.now() });
-				const current = this.store.read().messaging[namespaceId]!;
-				const offer = current.offers[input.eventId]!;
-				if (input.method === "received") return { namespaceId, offer };
-				const event = messagingReceivedEvent(this.store.read(), current, input.eventId);
-				return { namespaceId, offer, message: { eventId: event.eventId, sender: this.store.read().participants[event.source.id]!.participantId, body: event.payload.body, inReplyToEventId: event.inReplyToEventId } };
-			}
-			if (input.method === "send") {
-				const recipientParticipantKey = deriveParticipantKey(sender.projectRoot, sender.protocol, input.participantId);
-				this.participants.sendMessaging(registration, namespaceId, input.operationId, recipientParticipantKey, input.body);
-			} else if (input.method === "reply") {
-				const receipt = Object.hasOwn(grant.receipts, input.operationId) ? grant.receipts[input.operationId] : undefined;
-				const recipient = receipt?.recipientParticipantKey ?? messagingReceivedEvent(this.store.read(), grant, input.eventId).source.id;
-				this.participants.sendMessaging(registration, namespaceId, input.operationId, recipient, input.body, { inReplyToEventId: input.eventId, receiptToken: input.receiptToken });
-			}
-			const current = this.store.read().messaging[namespaceId]!;
-			const receipt = Object.hasOwn(current.receipts, input.operationId) ? current.receipts[input.operationId] : undefined;
-			if (!receipt) throw new RegistrationError("not_found", "Operation has no publication receipt in this namespace.");
-			const { fingerprint: _fingerprint, replyToken: _replyToken, ...publication } = receipt;
-			if (input.method === "send" || input.method === "reply") return { namespaceId, publication };
-			const event = this.store.read().events[receipt.eventId];
-			const receiver = event?.type === "mailbox.message" && event.recipientBinding.kind === "namespace" ? this.store.read().messaging[event.recipientBinding.namespaceId] : undefined;
-			const offer = receiver?.offers[receipt.eventId];
-			return { namespaceId, publication, event: event ?? null, history: event ? "retained" : "pruned", retrieval: offer ? { offeredAt: offer.offeredAt, receivedAt: offer.receivedAt ?? null } : null };
 		} finally {
 			this.inFlight--;
 		}
+	}
+
+	private peers(grant: HostedMessagingGrant, cursor?: string): MessagingPeersResult {
+		const state = this.store.read();
+		const sender = this.requireParticipant(grant.participantKey);
+		const peers = Object.values(state.participants).filter((p) => p.projectRoot === sender.projectRoot && p.protocol === sender.protocol && p.participantKey !== sender.participantKey).sort((a, b) => a.participantId.localeCompare(b.participantId));
+		const offset = cursor === undefined ? 0 : peerCursorOffset(peers, grant.namespaceId, cursor);
+		const page = peers.slice(offset, offset + PEER_PAGE).map((p) => ({ participantId: p.participantId, state: p.state, holderLive: p.state === "held" && p.holderTargetKey !== undefined && this.registrations.hasLiveTarget(p.holderTargetKey) }));
+		const last = peers[offset + page.length - 1];
+		const target = state.targets[grant.targetKey];
+		if (!target) throw new RegistrationError("registration_stale", "Messaging target is absent.");
+		const binding = target.kind === "pi" ? { kind: target.kind, sessionId: target.piSessionId, sessionFile: target.piSessionFile, cwd: target.worktreePath ?? target.projectRoot } : { kind: target.kind };
+		const more = offset + page.length < peers.length && last !== undefined;
+		return { namespaceId: grant.namespaceId, caller: sender.participantId, protocol: sender.protocol, binding, expiresAt: grant.expiresAt, peers: page, nextCursor: more && last ? Buffer.from(`${grant.namespaceId}:${last.participantKey}`).toString("base64url") : null };
+	}
+
+	private receive(grant: HostedMessagingGrant, eventId: string): MessagingMessageResult {
+		const state = this.store.read();
+		const event = messagingInboxEvent(state, grant, eventId);
+		const sender = this.requireParticipant(event.source.id);
+		const message: MessagingMessage = { eventId, from: sender.participantId, body: event.body, createdAt: event.createdAt };
+		if (event.inReplyToEventId !== undefined) message.inReplyToEventId = event.inReplyToEventId;
+		if (event.readAt !== undefined) message.readAt = event.readAt;
+		return { namespaceId: grant.namespaceId, message };
+	}
+
+	private markRead(grant: HostedMessagingGrant, eventId: string): MessagingReadResult {
+		this.store.apply({ type: "messaging.read", namespaceId: grant.namespaceId, eventId, at: this.now() });
+		const event = messagingInboxEvent(this.store.read(), grant, eventId);
+		if (event.readAt === undefined) throw new RegistrationError("conflict", "Message read time was not recorded.");
+		return { namespaceId: grant.namespaceId, eventId, readAt: event.readAt };
+	}
+
+	private status(grant: HostedMessagingGrant, operationId: string): MessagingStatusResult {
+		const eventId = Object.hasOwn(grant.operations, operationId) ? grant.operations[operationId] : undefined;
+		const event = eventId === undefined ? undefined : this.store.read().events[eventId];
+		if (!event || event.type !== "mailbox.message") throw new RegistrationError("not_found", "Operation has no publication in this namespace.");
+		return { namespaceId: grant.namespaceId, event };
+	}
+
+	private publishReply(registration: HostedLiveRegistration, grant: HostedMessagingGrant, operationId: string, eventId: string, body: string): MessagingPublishedResult {
+		const inbound = messagingInboxEvent(this.store.read(), grant, eventId);
+		return this.publish(registration, grant, operationId, inbound.source.id, body, eventId);
+	}
+
+	private publish(registration: HostedLiveRegistration, grant: HostedMessagingGrant, operationId: string, recipientParticipantKey: string, body: string, inReplyToEventId?: string): MessagingPublishedResult {
+		this.participants.sendMessaging(registration, grant.namespaceId, { operationId, recipientParticipantKey, body, inReplyToEventId });
+		const current = this.requireGrant(grant.namespaceId);
+		const eventId = Object.hasOwn(current.operations, operationId) ? current.operations[operationId] : undefined;
+		if (eventId === undefined) throw new RegistrationError("not_found", "Operation has no publication in this namespace.");
+		return { namespaceId: grant.namespaceId, eventId };
+	}
+
+	private recipientKey(grant: HostedMessagingGrant, participantId: string): string {
+		const sender = this.requireParticipant(grant.participantKey);
+		return deriveParticipantKey(sender.projectRoot, sender.protocol, participantId);
+	}
+
+	private async verify(namespaceId: string, secret: string): Promise<{ grant: HostedMessagingGrant; registration: HostedLiveRegistration }> {
+		this.authorize(namespaceId, secret);
+		const registration = await this.registrations.verifyTarget(this.requireGrant(namespaceId).targetKey);
+		this.authorize(namespaceId, secret);
+		this.registrations.authorize(registration.registrationId, registration.registrationKey);
+		const grant = this.requireGrant(namespaceId);
+		if (registration.clientGeneration !== grant.clientGeneration || registration.host.terminalId !== grant.terminalId) {
+			this.store.apply({ type: "messaging.close", namespaceId, status: "revoked" });
+			throw new RegistrationError("registration_stale", "Messaging client binding changed.");
+		}
+		return { grant, registration };
+	}
+
+	private requireGrant(namespaceId: string): HostedMessagingGrant {
+		const grant = this.store.read().messaging[namespaceId];
+		if (!grant) throw new RegistrationError("registration_stale", "Messaging namespace is absent.");
+		return grant;
+	}
+
+	private requireParticipant(participantKey: string): HostedParticipant {
+		const participant = this.store.read().participants[participantKey];
+		if (!participant) throw new RegistrationError("registration_stale", "Messaging participant is absent.");
+		return participant;
 	}
 
 	private authorize(namespaceId: string, secret: string): void {
@@ -150,16 +260,34 @@ export class RuntimeMessaging {
 	}
 }
 
-export type MessagingInput =
-	| { method: "peers"; cursor?: string }
-	| { method: "send"; participantId: string; operationId: string; body: string }
-	| { method: "status"; operationId: string }
-	| { method: "receive"; eventId: string }
-	| { method: "received"; eventId: string; receiptToken: string }
-	| { method: "reply"; operationId: string; eventId: string; receiptToken: string; body: string };
-
 export function messagingDescriptorPath(root: string, targetKey: string, clientGeneration: string): string {
 	return join(root, `messaging-${digest(JSON.stringify([targetKey, clientGeneration]))}.json`);
+}
+
+function liveTargetNamespace(state: HostedRuntimeState, registration: HostedLiveRegistration, at: number): HostedMessagingGrant | undefined {
+	const target = state.targets[registration.targetKey];
+	if (!target) return undefined;
+	const eligible = Object.values(state.messaging).filter(grant => {
+		const holder = state.participants[grant.participantKey];
+		return grant.targetKey === registration.targetKey
+			&& grant.status === "active"
+			&& grant.clientGeneration === registration.clientGeneration
+			&& grant.terminalId === registration.host.terminalId
+			&& grant.configurationHash === messagingConfigurationHash(target)
+			&& holder?.state === "held"
+			&& holder.holderTargetKey === grant.targetKey
+			&& holder.generation === grant.holderGeneration
+			&& grant.createdAt <= at
+			&& at < grant.expiresAt;
+	});
+	return eligible.length === 1 ? eligible[0] : undefined;
+}
+
+function peerCursorOffset(peers: HostedParticipant[], namespaceId: string, cursor: string): number {
+	const decoded = Buffer.from(cursor, "base64url").toString("utf8");
+	const index = peers.findIndex((peer) => decoded === `${namespaceId}:${peer.participantKey}`);
+	if (index < 0 || Buffer.from(decoded).toString("base64url") !== cursor) throw new RegistrationError("invalid_request", "Messaging cursor is absent or outside this namespace.");
+	return index + 1;
 }
 
 function digest(value: string): string {

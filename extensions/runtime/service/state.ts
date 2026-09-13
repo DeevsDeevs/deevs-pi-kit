@@ -32,9 +32,7 @@ import {
 	type HostedHerdrLocator,
 	type HostedMailboxMessageEvent,
 	type HostedMessagingGrant,
-	type HostedMessagingReference,
-	type HostedMessagingOffer,
-	type HostedMessagingReceipt,
+	type HostedMessagingSend,
 	type HostedMonitor,
 	type HostedParticipant,
 	type HostedParticipantTransition,
@@ -80,7 +78,7 @@ export class HostedStateConflictError extends Error {
 }
 
 export function emptyHostedRuntimeState(): HostedRuntimeState {
-	return { version: 16, messaging: {}, targets: {}, monitors: {}, participants: {}, events: {}, dedupe: {}, claims: {}, wakes: {} };
+	return { version: 17, messaging: {}, targets: {}, monitors: {}, participants: {}, events: {}, dedupe: {}, claims: {}, wakes: {} };
 }
 
 export class HostedStateStore {
@@ -119,7 +117,7 @@ export class HostedStateStore {
 export function reduceHostedState(state: HostedRuntimeState, operation: HostedStateOperation): HostedRuntimeState {
 	if (operation.type === "messaging.issue") {
 		const grant = validateMessagingGrant(operation.grant, operation.grant.namespaceId);
-		if (state.messaging[grant.namespaceId] || grant.status !== "active" || (Object.keys(grant.receipts).length || Object.keys(grant.offers).length || Object.keys(grant.references).length)) throw new HostedStateConflictError("conflict", "Messaging namespace must be newly issued.");
+		if (state.messaging[grant.namespaceId] || grant.status !== "active" || Object.keys(grant.operations).length) throw new HostedStateConflictError("conflict", "Messaging namespace must be newly issued.");
 		assertMessagingHolder(state, grant, grant.createdAt);
 		return { ...state, messaging: { ...state.messaging, [grant.namespaceId]: grant } };
 	}
@@ -127,7 +125,8 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 		const grant = state.messaging[operation.namespaceId];
 		if (!grant || grant.status === "expired" || grant.status === "revoked" && operation.status === "revoked") return state;
 		// ponytail: terminal namespace IDs remain under the 10,000-record cap; prune tombstones if launch volume requires it.
-		return { ...state, messaging: { ...state.messaging, [grant.namespaceId]: { ...grant, status: operation.status, receipts: operation.status === "expired" ? {} : grant.receipts, offers: operation.status === "expired" ? {} : grant.offers, references: operation.status === "expired" ? {} : grant.references } } };
+		const closed = { ...grant, status: operation.status, operations: operation.status === "expired" ? {} : grant.operations };
+		return { ...state, messaging: { ...state.messaging, [grant.namespaceId]: closed } };
 	}
 	if (operation.type === "messaging.invalidate_client") {
 		let next = state;
@@ -136,67 +135,16 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 		}
 		return next;
 	}
-	if (operation.type === "messaging.reference") {
-		const reference = validateMessagingReference(operation.reference, operation.reference.eventId);
-		const grant = state.messaging[operation.namespaceId];
-		if (!grant || messagingReferenceNamespace(state, grant.targetKey, reference.clientGeneration, grant.terminalId, reference.offeredAt).namespaceId !== grant.namespaceId) throw new HostedStateConflictError("conflict", "Reference namespace is unavailable.");
-		if (Object.values(grant.references).some(existing => existing.attemptId === reference.attemptId)) return state;
-		const event = messagingReceivedEvent(state, grant, reference.eventId);
-		if (reference.offeredAt < event.createdAt) throw new HostedStateConflictError("conflict", "Reference predates publication.");
-		if (grant.references[event.eventId] || grant.offers[event.eventId]) return state;
-		return { ...state, messaging: { ...state.messaging, [grant.namespaceId]: { ...grant, references: { ...grant.references, [event.eventId]: reference } } } };
-	}
-	if (operation.type === "messaging.receive" || operation.type === "messaging.received") {
+	if (operation.type === "messaging.read") {
 		const grant = state.messaging[operation.namespaceId];
 		if (!grant) throw new HostedStateConflictError("conflict", "Messaging namespace is absent.");
 		assertMessagingHolder(state, grant, operation.at);
-		assertStateId(operation.receiptToken, "Retrieval token");
-		const event = messagingReceivedEvent(state, grant, operation.eventId);
-		const existing = grant.offers[event.eventId];
-		if (operation.type === "messaging.received") {
-			if (!existing || existing.receiptToken !== operation.receiptToken || operation.at < existing.offeredAt) throw new HostedStateConflictError("conflict", "Receipt does not match an offer in this exact namespace.");
-			if (existing.receivedAt !== undefined) return state;
-		} else if (existing) return state;
-		const offer: HostedMessagingOffer = existing ? { ...existing, receivedAt: operation.at } : { eventId: event.eventId, receiptToken: operation.receiptToken, offeredAt: operation.at };
-		return { ...state, messaging: { ...state.messaging, [grant.namespaceId]: { ...grant, offers: { ...grant.offers, [event.eventId]: offer } } } };
+		const event = messagingInboxEvent(state, grant, operation.eventId);
+		if (event.readAt !== undefined) return state;
+		return { ...state, events: { ...state.events, [event.eventId]: { ...event, readAt: operation.at } } };
 	}
-	if (operation.type === "messaging.send" || operation.type === "messaging.reply") {
-		const grant = state.messaging[operation.namespaceId];
-		if (!grant) throw new HostedStateConflictError("conflict", "Messaging namespace is absent.");
-		assertMessagingHolder(state, grant, operation.at);
-		assertStateId(operation.operationId, "Messaging operation ID");
-		const fingerprint = operation.type === "messaging.reply" ? messagingReplyFingerprint(operation.inReplyToEventId, operation.receiptToken, operation.body) : mailboxFingerprint(operation.recipientParticipantKey, operation.body);
-		const receipt = Object.hasOwn(grant.receipts, operation.operationId) ? grant.receipts[operation.operationId] : undefined;
-		if (receipt) {
-			if (receipt.fingerprint !== fingerprint) throw new HostedStateConflictError("conflict", "Messaging operation ID was reused with different input.");
-			return state;
-		}
-		let recipientParticipantKey: string;
-		let replyNamespaceId: string | undefined;
-		let receipted = state;
-		if (operation.type === "messaging.reply") {
-			const inbound = messagingReceivedEvent(state, grant, operation.inReplyToEventId);
-			const origin = Object.values(state.messaging).find(candidate => Object.values(candidate.receipts).some(receipt => receipt.eventId === inbound.eventId));
-			if (!origin || origin.participantKey !== inbound.source.id || origin.holderGeneration !== inbound.source.generation) throw new HostedStateConflictError("conflict", "Reply origin has no exact publication authority.");
-			assertMessagingHolder(state, origin, operation.at);
-			recipientParticipantKey = origin.participantKey;
-			replyNamespaceId = origin.namespaceId;
-			receipted = reduceHostedState(state, { type: "messaging.received", namespaceId: grant.namespaceId, eventId: inbound.eventId, receiptToken: operation.receiptToken, at: operation.at });
-		} else recipientParticipantKey = operation.recipientParticipantKey;
-		const sendId = messagingSendId(grant.namespaceId, operation.operationId);
-		const next = reduceHostedState(receipted, { type: "mailbox.send", senderParticipantKey: grant.participantKey, expectedSenderGeneration: grant.holderGeneration, senderTargetKey: grant.targetKey, recipientParticipantKey, sendId, body: operation.body, eventId: operation.eventId, at: operation.at });
-		const event = next.events[operation.eventId];
-		if (!event || event.type !== "mailbox.message" || event.payload.sendId !== sendId) throw new HostedStateConflictError("conflict", "Messaging publication collided with an existing event.");
-		if (event.recipientBinding.kind !== "namespace") throw new HostedStateConflictError("conflict", "Recipient MCP namespace is unavailable or ambiguous; no message was published.");
-		const published: HostedMessagingReceipt = { operationId: operation.operationId, fingerprint, eventId: event.eventId, recipientParticipantKey: event.recipientParticipantKey, sequence: event.source.sequence, createdAt: event.createdAt };
-		if (operation.type === "messaging.reply") {
-			if (event.recipientBinding.kind !== "namespace" || event.recipientBinding.namespaceId !== replyNamespaceId) throw new HostedStateConflictError("conflict", "Reply recipient namespace is ambiguous or changed.");
-			published.inReplyToEventId = operation.inReplyToEventId;
-			published.replyToken = operation.receiptToken;
-			next.events = { ...next.events, [event.eventId]: { ...event, inReplyToEventId: operation.inReplyToEventId } };
-		}
-		return { ...next, messaging: { ...next.messaging, [grant.namespaceId]: { ...next.messaging[grant.namespaceId]!, receipts: { ...grant.receipts, [operation.operationId]: published } } } };
-	}
+	if (operation.type === "messaging.send") return publishMessagingEvent(state, operation);
+
 	if (operation.type === "target.ensure") {
 		const existing = state.targets[operation.target.targetKey];
 		if (existing) {
@@ -366,35 +314,30 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 		if (!operation.body.trim() || Buffer.byteLength(operation.body) > HOSTED_MAILBOX_MAX_BODY_BYTES) throw new HostedStateConflictError("conflict", "Mailbox body is empty or exceeds its byte limit.");
 		if (!operation.sendId.trim() || Buffer.byteLength(operation.sendId) > MAX_ID_BYTES) throw new HostedStateConflictError("conflict", "Mailbox send ID is invalid.");
 		const dedupeKey = mailboxDedupeKey(sender.participantKey, operation.sendId);
-		const fingerprint = mailboxFingerprint(recipient.participantKey, operation.body);
 		const existingId = state.dedupe[dedupeKey];
 		if (existingId) {
 			const existing = state.events[existingId];
-			if (existing?.type === "mailbox.message" && existing.payload.senderParticipantKey === sender.participantKey && existing.payload.recipientParticipantKey === recipient.participantKey && existing.payload.sendId === operation.sendId && existing.payload.fingerprint === fingerprint) return state;
+			const sameSend = existing?.type === "mailbox.message"
+				&& existing.source.id === sender.participantKey
+				&& existing.recipientParticipantKey === recipient.participantKey
+				&& existing.sendId === operation.sendId
+				&& existing.body === operation.body;
+			if (sameSend) return state;
 			throw new HostedStateConflictError("conflict", "Mailbox send ID was already used with different input.");
 		}
 		if (state.events[operation.eventId]) throw new HostedStateConflictError("conflict", "Mailbox event ID already exists.");
 		const sequence = (sender.outSeq[recipient.participantKey] ?? 0) + 1;
-		const namespaces = Object.values(state.messaging).filter(grant => grant.status === "active" && grant.participantKey === recipient.participantKey && recipient.state === "held" && grant.holderGeneration === recipient.generation && grant.targetKey === recipient.holderTargetKey && grant.configurationHash === messagingConfigurationHash(state.targets[grant.targetKey]!) && grant.createdAt <= operation.at && operation.at < grant.expiresAt);
-		// A namespace permanently binds holder, target and client. Never infer history access at receive time.
-		const recipientBinding: HostedMailboxMessageEvent["recipientBinding"] = namespaces.length === 1 ? { kind: "namespace", namespaceId: namespaces[0]!.namespaceId } : { kind: "unbound" };
 		const event: HostedMailboxMessageEvent = {
 			version: 1,
 			eventId: operation.eventId,
 			dedupeKey,
+			type: "mailbox.message",
 			source: { kind: "participant", id: sender.participantKey, generation: sender.generation, sequence },
 			recipientParticipantKey: recipient.participantKey,
-			type: "mailbox.message",
-			recipientBinding,
+			sendId: operation.sendId,
+			body: operation.body,
 			createdAt: operation.at,
 			summary: `message from ${sender.participantId} to ${recipient.participantId}`,
-			payload: {
-				sendId: operation.sendId,
-				senderParticipantKey: sender.participantKey,
-				recipientParticipantKey: recipient.participantKey,
-				body: operation.body,
-				fingerprint,
-			},
 			delivery: { status: "pending" },
 		};
 		const nextSender = { ...sender, outSeq: { ...sender.outSeq, [recipient.participantKey]: sequence }, updatedAt: operation.at };
@@ -547,9 +490,9 @@ export function validateHostedRuntimeState<Source>(value: Source): HostedRuntime
 	try {
 		const fields = ["version", "messaging", "targets", "monitors", "participants", "events", "dedupe", "claims", "wakes"];
 		const state = strictObject(value, "runtime state", fields);
-		if (state.version !== 16) throw new Error("unsupported runtime state version");
+		if (state.version !== 17) throw new Error("unsupported runtime state version");
 		const result: HostedRuntimeState = {
-			version: 16,
+			version: 17,
 			messaging: mapValues(state.messaging, "messaging namespaces", validateMessagingGrant),
 			targets: mapValues(state.targets, "targets", validateTarget),
 			monitors: mapValues(state.monitors, "monitors", validateMonitor),
@@ -566,29 +509,53 @@ export function validateHostedRuntimeState<Source>(value: Source): HostedRuntime
 	}
 }
 
-export function messagingSendId(namespaceId: string, operationId: string): string {
+function messagingSendId(namespaceId: string, operationId: string): string {
 	return `mcp_${createHash("sha256").update(JSON.stringify([namespaceId, operationId])).digest("hex")}`;
 }
 
-export function messagingReceivedEvent(state: HostedRuntimeState, grant: HostedMessagingGrant, eventId: string): HostedMailboxMessageEvent {
+export function messagingInboxEvent(state: HostedRuntimeState, grant: HostedMessagingGrant, eventId: string): HostedMailboxMessageEvent {
 	const event = state.events[eventId];
-	if (!event || event.type !== "mailbox.message" || event.recipientParticipantKey !== grant.participantKey || event.recipientBinding.kind !== "namespace" || event.recipientBinding.namespaceId !== grant.namespaceId) throw new HostedStateConflictError("conflict", "Event is not ordinary mail published to this exact namespace.");
+	if (event?.type !== "mailbox.message") throw new HostedStateConflictError("conflict", "Event is not ordinary mail.");
+	if (event.recipientParticipantKey !== grant.participantKey) throw new HostedStateConflictError("conflict", "Event is not addressed to this namespace's participant.");
 	return event;
 }
 
-export function messagingReferenceNamespace(state: HostedRuntimeState, targetKey: string, clientGeneration: string, terminalId: string, at: number): HostedMessagingGrant {
-	const target = state.targets[targetKey];
-	if (target?.kind !== "pi") throw new HostedStateConflictError("conflict", "Only a Pi self-registration can offer references.");
-	const eligible = Object.values(state.messaging).filter(grant => {
-		const holder = state.participants[grant.participantKey];
-		return grant.targetKey === targetKey && grant.status === "active" && holder?.state === "held" && holder.holderTargetKey === targetKey && holder.generation === grant.holderGeneration && grant.configurationHash === messagingConfigurationHash(target) && grant.createdAt <= at && at < grant.expiresAt;
-	});
-	if (eligible.length !== 1 || eligible[0]!.clientGeneration !== clientGeneration || eligible[0]!.terminalId !== terminalId) throw new HostedStateConflictError("conflict", "Pi reference namespace is absent, stale or ambiguous.");
-	return eligible[0]!;
+function publishMessagingEvent(state: HostedRuntimeState, operation: HostedMessagingSend): HostedRuntimeState {
+	const grant = state.messaging[operation.namespaceId];
+	if (!grant) throw new HostedStateConflictError("conflict", "Messaging namespace is absent.");
+	assertMessagingHolder(state, grant, operation.at);
+	assertStateId(operation.operationId, "Messaging operation ID");
+	const publishedId = Object.hasOwn(grant.operations, operation.operationId) ? grant.operations[operation.operationId] : undefined;
+	if (publishedId !== undefined) {
+		const published = state.events[publishedId];
+		const repeated = published?.type === "mailbox.message" && messagingSendMatches(published, operation);
+		if (!repeated) throw new HostedStateConflictError("conflict", "Messaging operation ID was reused with different input.");
+		return state;
+	}
+	let read = state;
+	if (operation.inReplyToEventId !== undefined) {
+		const inbound = messagingInboxEvent(state, grant, operation.inReplyToEventId);
+		if (inbound.source.id !== operation.recipientParticipantKey) throw new HostedStateConflictError("conflict", "Reply recipient is not the original sender.");
+		read = reduceHostedState(state, { type: "messaging.read", namespaceId: grant.namespaceId, eventId: inbound.eventId, at: operation.at });
+	}
+	const sendId = messagingSendId(grant.namespaceId, operation.operationId);
+	const next = reduceHostedState(read, { type: "mailbox.send", senderParticipantKey: grant.participantKey, expectedSenderGeneration: grant.holderGeneration, senderTargetKey: grant.targetKey, recipientParticipantKey: operation.recipientParticipantKey, sendId, body: operation.body, eventId: operation.eventId, at: operation.at });
+	const event = next.events[operation.eventId];
+	if (event?.type !== "mailbox.message" || event.sendId !== sendId) throw new HostedStateConflictError("conflict", "Messaging publication collided with an existing event.");
+	const publishedEvent = operation.inReplyToEventId === undefined ? event : { ...event, inReplyToEventId: operation.inReplyToEventId };
+	const current = next.messaging[operation.namespaceId];
+	if (!current) throw new HostedStateConflictError("conflict", "Messaging namespace disappeared during publication.");
+	return {
+		...next,
+		events: { ...next.events, [event.eventId]: publishedEvent },
+		messaging: { ...next.messaging, [grant.namespaceId]: { ...current, operations: { ...current.operations, [operation.operationId]: event.eventId } } },
+	};
 }
 
-function messagingReplyFingerprint(eventId: string, receiptToken: string, body: string): string {
-	return createHash("sha256").update(JSON.stringify(["reply", eventId, receiptToken, body])).digest("hex");
+function messagingSendMatches(published: HostedMailboxMessageEvent, operation: HostedMessagingSend): boolean {
+	return published.recipientParticipantKey === operation.recipientParticipantKey
+		&& published.body === operation.body
+		&& published.inReplyToEventId === operation.inReplyToEventId;
 }
 
 function assertMessagingHolder(state: HostedRuntimeState, grant: HostedMessagingGrant, at: number): void {
@@ -605,7 +572,7 @@ export function messagingConfigurationHash(target: HostedTarget): string {
 }
 
 function validateMessagingGrant<Source>(value: Source, key: string): HostedMessagingGrant {
-	const item = strictObject(value, "messaging namespace", ["namespaceId", "secretDigest", "participantKey", "holderGeneration", "targetKey", "clientGeneration", "terminalId", "configurationHash", "createdAt", "expiresAt", "status", "receipts", "offers", "references"]);
+	const item = strictObject(value, "messaging namespace", ["namespaceId", "secretDigest", "participantKey", "holderGeneration", "targetKey", "clientGeneration", "terminalId", "configurationHash", "createdAt", "expiresAt", "status", "operations"]);
 	const grant: HostedMessagingGrant = {
 		namespaceId: text(item.namespaceId, "messaging namespace", 200), secretDigest: hash(item.secretDigest, "messaging secret digest"),
 		participantKey: text(item.participantKey, "messaging participant", 200), holderGeneration: text(item.holderGeneration, "messaging holder", 200),
@@ -613,34 +580,13 @@ function validateMessagingGrant<Source>(value: Source, key: string): HostedMessa
 		terminalId: text(item.terminalId, "messaging terminal", 200), configurationHash: hash(item.configurationHash, "messaging configuration"),
 		createdAt: nonNegativeNumber(item.createdAt, "messaging creation"), expiresAt: nonNegativeNumber(item.expiresAt, "messaging expiry"),
 		status: enumValue(item.status, ["active", "revoked", "expired"], "invalid messaging state"),
-		receipts: mapValues(item.receipts, "messaging receipts", (value, key) => {
-			const receipt = strictObject(value, "messaging receipt", ["operationId", "fingerprint", "eventId", "recipientParticipantKey", "sequence", "createdAt", "inReplyToEventId", "replyToken"]);
-			const result: HostedMessagingReceipt = { operationId: text(receipt.operationId, "operation ID", 200), fingerprint: hash(receipt.fingerprint, "operation fingerprint"), eventId: text(receipt.eventId, "receipt event", 200), recipientParticipantKey: text(receipt.recipientParticipantKey, "receipt recipient", 200), sequence: integer(receipt.sequence, "receipt sequence"), createdAt: nonNegativeNumber(receipt.createdAt, "receipt creation") };
-			if (receipt.inReplyToEventId !== undefined) {
-				result.inReplyToEventId = text(receipt.inReplyToEventId, "reply event", 200);
-				result.replyToken = text(receipt.replyToken, "reply retrieval token", 200);
-			} else if (receipt.replyToken !== undefined) throw new Error("reply token lacks event correlation");
-			if (result.operationId !== key || result.sequence < 1) throw new Error("messaging receipt identity is invalid");
-			return result;
-		}),
-		references: mapValues(item.references, "messaging references", validateMessagingReference),
-		offers: mapValues(item.offers, "messaging offers", (value, key) => {
-			const offer = strictObject(value, "messaging offer", ["eventId", "receiptToken", "offeredAt", "receivedAt"]);
-			const result: HostedMessagingOffer = { eventId: text(offer.eventId, "offered event", 200), receiptToken: text(offer.receiptToken, "retrieval token", 200), offeredAt: nonNegativeNumber(offer.offeredAt, "offer time") };
-			if (offer.receivedAt !== undefined) result.receivedAt = nonNegativeNumber(offer.receivedAt, "client receipt time");
-			if (result.eventId !== key || result.receivedAt !== undefined && result.receivedAt < result.offeredAt) throw new Error("messaging offer identity or time is invalid");
-			return result;
+		operations: mapValues(item.operations, "messaging operations", (value, operationId) => {
+			if (!operationId.trim() || Buffer.byteLength(operationId) > MAX_ID_BYTES) throw new Error("messaging operation ID is invalid");
+			return text(value, "messaging operation event", 200);
 		}),
 	};
 	if (grant.namespaceId !== key || !/^msg_[0-9a-f-]{36}$/.test(key) || grant.expiresAt !== grant.createdAt + HOSTED_ACK_RETENTION_MS) throw new Error("messaging namespace identity or lifetime is invalid");
 	return grant;
-}
-
-function validateMessagingReference<Source>(value: Source, key: string): HostedMessagingReference {
-	const item = strictObject(value, "messaging reference", ["eventId", "attemptId", "registrationId", "clientGeneration", "offeredAt"]);
-	const result = { eventId: text(item.eventId, "reference event", 200), attemptId: text(item.attemptId, "reference attempt", 200), registrationId: text(item.registrationId, "reference registration", 200), clientGeneration: text(item.clientGeneration, "reference client", 200), offeredAt: nonNegativeNumber(item.offeredAt, "reference time") };
-	if (result.eventId !== key) throw new Error("messaging reference identity is invalid");
-	return result;
 }
 
 function bindAgentTarget(state: HostedRuntimeState, bind: HostedAgentBind): HostedRuntimeState {
@@ -735,10 +681,10 @@ function releaseClaim(state: HostedRuntimeState, targetKey: string, claimId: str
 
 function pruneAcknowledged(state: HostedRuntimeState, before: number): HostedRuntimeState {
 	for (const grant of Object.values(state.messaging)) if (grant.expiresAt <= before) state = reduceHostedState(state, { type: "messaging.close", namespaceId: grant.namespaceId, status: "expired" });
-	const protectedMail = new Set(Object.values(state.messaging).flatMap(grant => [...Object.keys(grant.offers), ...Object.keys(grant.references), ...Object.values(grant.receipts).map(receipt => receipt.eventId)]));
+	const retainedMail = new Set(Object.values(state.messaging).flatMap(grant => Object.values(grant.operations)));
 	const removable = new Set(Object.values(state.events)
 		.filter((event) => event.type === "mailbox.message"
-			? event.createdAt < before && !protectedMail.has(event.eventId) && (event.recipientBinding.kind === "unbound" || state.messaging[event.recipientBinding.namespaceId]?.status === "expired")
+			? event.createdAt < before && !retainedMail.has(event.eventId)
 			: event.delivery.status === "acked" && event.delivery.ackedAt < before)
 		.map((event) => event.eventId));
 	let changed = true;
@@ -1034,50 +980,35 @@ function validateFilesystemEvent(value: PersistedStateValue | undefined, key: st
 }
 
 function validateMailboxEvent(value: PersistedStateValue | undefined, key: string): HostedMailboxMessageEvent {
-	const event = strictObject(value, "hosted mailbox event", ["version", "eventId", "dedupeKey", "source", "recipientParticipantKey", "type", "createdAt", "summary", "payload", "delivery", "recipientBinding", "inReplyToEventId"]);
+	const event = strictObject(value, "hosted mailbox event", ["version", "eventId", "dedupeKey", "source", "recipientParticipantKey", "sendId", "body", "type", "createdAt", "summary", "delivery", "inReplyToEventId", "readAt"]);
 	if (event.version !== 1 || event.type !== "mailbox.message") throw new Error("invalid hosted mailbox event version or type");
 	const source = strictObject(event.source, "mailbox source", ["kind", "id", "generation", "sequence"]);
 	if (source.kind !== "participant") throw new Error("invalid mailbox source kind");
-	const payload = strictObject(event.payload, "mailbox payload", ["sendId", "senderParticipantKey", "recipientParticipantKey", "body", "fingerprint"]);
-	const body = text(payload.body, "mailbox body", HOSTED_MAILBOX_MAX_BODY_BYTES);
-	const recipientParticipantKey = text(event.recipientParticipantKey, "recipient participant key", MAX_ID_BYTES);
 	const result: HostedMailboxMessageEvent = {
 		version: 1,
 		eventId: text(event.eventId, "event id", MAX_ID_BYTES),
 		dedupeKey: text(event.dedupeKey, "event dedupe key", MAX_PATH_BYTES),
+		type: "mailbox.message",
 		source: {
 			kind: "participant",
 			id: text(source.id, "source participant key", MAX_ID_BYTES),
 			generation: text(source.generation, "source generation", MAX_ID_BYTES),
 			sequence: integer(source.sequence, "source sequence"),
 		},
-		recipientParticipantKey,
-		type: "mailbox.message",
-		recipientBinding: validateRecipientBinding(event.recipientBinding),
+		recipientParticipantKey: text(event.recipientParticipantKey, "recipient participant key", MAX_ID_BYTES),
+		sendId: text(event.sendId, "mailbox send id", MAX_ID_BYTES),
+		body: text(event.body, "mailbox body", HOSTED_MAILBOX_MAX_BODY_BYTES),
 		createdAt: nonNegativeNumber(event.createdAt, "event creation time"),
 		summary: stringValue(event.summary, "event summary", MAX_SUMMARY_BYTES),
-		payload: {
-			sendId: text(payload.sendId, "mailbox send id", MAX_ID_BYTES),
-			senderParticipantKey: text(payload.senderParticipantKey, "sender participant key", MAX_ID_BYTES),
-			recipientParticipantKey: text(payload.recipientParticipantKey, "recipient participant key", MAX_ID_BYTES),
-			body,
-			fingerprint: text(payload.fingerprint, "mailbox fingerprint", MAX_ID_BYTES),
-		},
 		delivery: validateDelivery(event.delivery),
 	};
 	if (result.delivery.status !== "pending" || result.delivery.latestClaimId !== undefined) throw new Error("ordinary mail cannot carry native delivery evidence");
 	if (event.inReplyToEventId !== undefined) result.inReplyToEventId = text(event.inReplyToEventId, "reply event", 200);
-	if (result.eventId !== key || result.source.id !== result.payload.senderParticipantKey || recipientParticipantKey !== result.payload.recipientParticipantKey) throw new Error("mailbox event identity is inconsistent");
-	const expectedFingerprint = mailboxFingerprint(recipientParticipantKey, body);
-	if (result.dedupeKey !== mailboxDedupeKey(result.source.id, result.payload.sendId) || result.payload.fingerprint !== expectedFingerprint) throw new Error("mailbox event dedupe or fingerprint is invalid");
+	if (event.readAt !== undefined) result.readAt = nonNegativeNumber(event.readAt, "message read time");
+	if (result.eventId !== key || result.source.sequence < 1) throw new Error("mailbox event identity is inconsistent");
+	if (result.readAt !== undefined && result.readAt < result.createdAt) throw new Error("mailbox event read time precedes publication");
+	if (result.dedupeKey !== mailboxDedupeKey(result.source.id, result.sendId)) throw new Error("mailbox event dedupe key is invalid");
 	return result;
-}
-
-function validateRecipientBinding(value: PersistedStateValue | undefined): HostedMailboxMessageEvent["recipientBinding"] {
-	const binding = strictObject(value, "mailbox recipient binding", ["kind", "namespaceId"]);
-	if (binding.kind === "unbound" && binding.namespaceId === undefined) return { kind: "unbound" };
-	if (binding.kind === "namespace") return { kind: "namespace", namespaceId: text(binding.namespaceId, "recipient namespace", 200) };
-	throw new Error("invalid mailbox recipient binding");
 }
 
 function validateDelivery(value: PersistedStateValue | undefined): HostedEventDelivery {
@@ -1133,41 +1064,17 @@ function validateWake(value: PersistedStateValue | undefined, key: string): Host
 }
 
 function validateReferences(state: HostedRuntimeState): void {
-	for (const event of Object.values(state.events)) {
-		if (event.type !== "mailbox.message" || event.recipientBinding?.kind !== "namespace") continue;
-		const grant = state.messaging[event.recipientBinding.namespaceId];
-		if (!grant || grant.participantKey !== event.recipientParticipantKey || event.createdAt < grant.createdAt || event.createdAt >= grant.expiresAt) throw new Error("mailbox recipient namespace binding is invalid");
-	}
 	let messagingRecords = Object.keys(state.messaging).length;
 	for (const grant of Object.values(state.messaging)) {
 		const sender = state.participants[grant.participantKey];
 		const target = state.targets[grant.targetKey];
 		if (!sender || !target || sender.projectRoot !== target.projectRoot) throw new Error("messaging authority reference is invalid");
-		for (const receipt of Object.values(grant.receipts)) {
+		for (const [operationId, eventId] of Object.entries(grant.operations)) {
 			messagingRecords++;
-			if (receipt.inReplyToEventId !== undefined) {
-				const offer = grant.offers[receipt.inReplyToEventId];
-				if (!offer || offer.receiptToken !== receipt.replyToken || offer.receivedAt === undefined || offer.receivedAt > receipt.createdAt) throw new Error("reply receipt lacks its exact client-receipted offer");
-			}
-			const recipient = state.participants[receipt.recipientParticipantKey];
-			const event = state.events[receipt.eventId];
-			if (!recipient || recipient.projectRoot !== sender.projectRoot || recipient.protocol !== sender.protocol || receipt.createdAt < grant.createdAt || receipt.createdAt >= grant.expiresAt) throw new Error("messaging receipt scope or time is invalid");
-			if (event && (event.type !== "mailbox.message" || event.payload.senderParticipantKey !== grant.participantKey || (receipt.inReplyToEventId === undefined ? event.payload.fingerprint !== receipt.fingerprint : messagingReplyFingerprint(receipt.inReplyToEventId, receipt.replyToken!, event.payload.body) !== receipt.fingerprint) || event.inReplyToEventId !== receipt.inReplyToEventId || event.payload.sendId !== messagingSendId(grant.namespaceId, receipt.operationId) || event.source.sequence !== receipt.sequence || event.createdAt !== receipt.createdAt || event.source.generation !== grant.holderGeneration)) throw new Error("messaging receipt event is inconsistent");
-		}
-		const referenceAttempts = new Set<string>();
-		for (const reference of Object.values(grant.references)) {
-			messagingRecords++;
-			const event = messagingReceivedEvent(state, grant, reference.eventId);
-			if (target.kind !== "pi" || grant.status === "expired" || reference.clientGeneration !== grant.clientGeneration || reference.offeredAt < grant.createdAt || reference.offeredAt < event.createdAt || reference.offeredAt >= grant.expiresAt || referenceAttempts.has(reference.attemptId)) throw new Error("messaging reference authority, lifetime or attempt identity is invalid");
-			referenceAttempts.add(reference.attemptId);
-		}
-		for (const offer of Object.values(grant.offers)) {
-			messagingRecords++;
-			const event = messagingReceivedEvent(state, grant, offer.eventId);
-			if (offer.offeredAt < grant.createdAt || offer.offeredAt < event.createdAt || offer.offeredAt >= grant.expiresAt || offer.receivedAt !== undefined && offer.receivedAt >= grant.expiresAt) throw new Error("messaging offer lifetime is invalid");
+			validateMessagingOperation(state, grant, operationId, eventId);
 		}
 	}
-	if (messagingRecords > MAX_STATE_RECORDS) throw new Error("messaging authority, receipts, offers and references exceed capacity");
+	if (messagingRecords > MAX_STATE_RECORDS) throw new Error("messaging authority and operation records exceed capacity");
 	for (const target of Object.values(state.targets)) {
 		if (target.kind !== "agent") continue;
 		const participant = state.participants[target.participantKey];
@@ -1195,7 +1102,7 @@ function validateReferences(state: HostedRuntimeState): void {
 		if (event.type === "filesystem.created") {
 			if (!state.targets[event.targetKey]) throw new Error("event target is missing");
 		} else {
-			const sender = state.participants[event.payload.senderParticipantKey];
+			const sender = state.participants[event.source.id];
 			const recipient = state.participants[event.recipientParticipantKey];
 			if (!sender || !recipient || sender.projectRoot !== recipient.projectRoot || sender.protocol !== recipient.protocol) throw new Error("mailbox event participant reference is invalid");
 		}
@@ -1356,8 +1263,15 @@ function mailboxDedupeKey(senderParticipantKey: string, sendId: string): string 
 	return `mailbox:${senderParticipantKey}:${sendId}`;
 }
 
-function mailboxFingerprint(recipientParticipantKey: string, body: string): string {
-	return createHash("sha256").update(recipientParticipantKey).update("\0").update(body).digest("hex");
+function validateMessagingOperation(state: HostedRuntimeState, grant: HostedMessagingGrant, operationId: string, eventId: string): void {
+	const event = state.events[eventId];
+	const recipient = event?.type === "mailbox.message" ? state.participants[event.recipientParticipantKey] : undefined;
+	const sender = state.participants[grant.participantKey];
+	if (!event || event.type !== "mailbox.message" || !recipient || !sender) throw new Error("messaging operation event is missing");
+	if (event.source.id !== grant.participantKey || event.source.generation !== grant.holderGeneration) throw new Error("messaging operation event has another publisher");
+	if (event.sendId !== messagingSendId(grant.namespaceId, operationId)) throw new Error("messaging operation event identity is invalid");
+	if (event.createdAt < grant.createdAt || event.createdAt >= grant.expiresAt) throw new Error("messaging operation event lifetime is invalid");
+	if (recipient.projectRoot !== sender.projectRoot || recipient.protocol !== sender.protocol) throw new Error("messaging operation recipient scope is invalid");
 }
 
 function assertParticipantName(value: string, name: string): void {

@@ -9,10 +9,10 @@ import { afterEach, expect, it, vi } from "vitest";
 import { HostedRuntimeClient } from "../extensions/runtime/client.ts";
 import { MessagingMcpClient } from "../extensions/runtime/mcp/client.ts";
 import { messagingDescriptorPath } from "../extensions/runtime/service/messaging.ts";
-import { HOSTED_ACK_RETENTION_MS, type HostedMessagingOffer, type HostedMessagingReceipt } from "../extensions/runtime/hosted-types.ts";
+import { HOSTED_ACK_RETENTION_MS } from "../extensions/runtime/hosted-types.ts";
 import type { HostedLiveAgent, RegisterPiInput } from "../extensions/runtime/service/registration.ts";
 import { startRuntimeServer, type RuntimeServerHandle } from "../extensions/runtime/service/server.ts";
-import { HostedStateStorageError, HostedStateStore, readHostedRuntimeState, reduceHostedState, runtimeStatePaths, validateHostedRuntimeState, writeHostedRuntimeState } from "../extensions/runtime/service/state.ts";
+import { HostedStateStorageError, HostedStateStore, readHostedRuntimeState, runtimeStatePaths, writeHostedRuntimeState } from "../extensions/runtime/service/state.ts";
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -20,7 +20,8 @@ afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) awai
 type Auth = { registrationId: string; registrationKey: string; targetKey: string };
 type Participant = { participantKey: string; generation: string };
 type Call = { name: string; arguments: Record<string, string> };
-type Result = { isError: boolean; content: Array<{ type: string; text: string }>; structuredContent: { namespaceId: string; offer?: HostedMessagingOffer; message?: { eventId: string; body: string; inReplyToEventId?: string }; publication: Omit<HostedMessagingReceipt, "fingerprint">; event?: { eventId: string; payload: { body: string }; delivery: { status: string } }; peers?: Array<{ participantId: string }> } };
+type Message = { eventId: string; from: string; body: string; createdAt: number; inReplyToEventId?: string; readAt?: number };
+type Result = { isError: boolean; content: Array<{ type: string; text: string }>; structuredContent: { namespaceId: string; eventId: string; readAt?: number; message?: Message; event?: { eventId: string; body: string; readAt?: number; inReplyToEventId?: string; delivery: { status: string } }; peers?: Array<{ participantId: string }> } };
 
 async function setup(monitor: { scanIntervalMs?: number; onError?: (error: Error) => void; onEvents?: (targetKey: string) => void; now?: () => number } = {}, recipientReady = true) {
 	const root = mkdtempSync(join(tmpdir(), "messaging-e2e-"));
@@ -159,203 +160,83 @@ const send = (operationId: string, body = "Please inspect."): Call => ({ name: "
 const status = (operationId: string): Call => ({ name: "collaborator_status", arguments: { operationId } });
 
 const receive = (eventId: string): Call => ({ name: "collaborator_receive", arguments: { eventId } });
-const received = (offer: HostedMessagingOffer): Call => ({ name: "collaborator_received", arguments: { eventId: offer.eventId, receiptToken: offer.receiptToken } });
-const reply = (offer: HostedMessagingOffer, operationId = "reply-1", body = "Reply."): Call => ({ name: "collaborator_reply", arguments: { ...received(offer).arguments, operationId, body } });
+const received = (eventId: string): Call => ({ name: "collaborator_received", arguments: { eventId } });
+const reply = (eventId: string, operationId = "reply-1", body = "Reply."): Call => ({ name: "collaborator_reply", arguments: { eventId, operationId, body } });
 
-it("offers exact full mail without consuming native claims and atomically correlates reply and client receipt", async () => {
+it("delivers a full body, records readAt, correlates a reply, and keeps ordinary mail out of native claims", async () => {
 	const test = await setup();
 	const recipient = await test.issue(test.recipientParticipant);
 	const [sent] = await mcp(test.issued.descriptorPath, [send("offer", "\u0000".repeat(16384))]);
-	const eventId = sent!.structuredContent.publication.eventId;
+	const eventId = sent!.structuredContent.eventId;
 	const [offered, repeated] = await mcp(recipient.descriptorPath, [receive(eventId), receive(eventId)]);
 	expect(offered!.isError).toBe(false);
-	expect(offered!.structuredContent.message?.body).toBe("\u0000".repeat(16384));
-	expect(repeated!.structuredContent.offer).toEqual(offered!.structuredContent.offer);
-	const offer = offered!.structuredContent.offer!;
-	expect(Object.keys(test.readState().messaging[recipient.namespaceId]!.offers)).toEqual([eventId]);
+	expect(offered!.structuredContent.message).toEqual({ eventId, from: "sender", body: "\u0000".repeat(16384), createdAt: 1000 });
+	expect(repeated!.structuredContent.message).toEqual(offered!.structuredContent.message);
 	expect(test.readState().events[eventId]!.delivery.status).toBe("pending");
 	const auth = { registrationId: test.recipient.registrationId, registrationKey: test.recipient.registrationKey };
 	await expect(test.client.call("inbox.claim", { ...auth, maxEvents: 1 })).rejects.toMatchObject({ code: "not_found" });
-	const [replied, receipted, exactAgain] = await mcp(recipient.descriptorPath, [reply(offer), received(offer), receive(eventId)]);
+	const [replied, receipted, exactAgain] = await mcp(recipient.descriptorPath, [reply(eventId), received(eventId), receive(eventId)]);
 	expect(replied!.isError).toBe(false);
-	expect(replied!.structuredContent.publication.inReplyToEventId).toBe(eventId);
-	expect(receipted!.structuredContent.offer?.receivedAt).toBe(1000);
-	expect(exactAgain!.structuredContent.message).toEqual(offered!.structuredContent.message);
+	expect(receipted!.structuredContent).toEqual({ namespaceId: recipient.namespaceId, eventId, readAt: 1000 });
+	expect(exactAgain!.structuredContent.message?.readAt).toBe(1000);
 	expect(test.readState().events[eventId]!.delivery.status).toBe("pending");
-	const [seen] = await mcp(test.issued.descriptorPath, [receive(replied!.structuredContent.publication.eventId), status("offer")]);
+	const [seen, lookup] = await mcp(test.issued.descriptorPath, [receive(replied!.structuredContent.eventId), status("offer")]);
 	expect(seen!.structuredContent.message).toMatchObject({ body: "Reply.", inReplyToEventId: eventId });
+	expect(lookup!.structuredContent.event).toMatchObject({ eventId, readAt: 1000 });
 	await test.restart();
-	const [retry] = await mcp(recipient.descriptorPath, [reply(offer)]);
-	expect(retry!.structuredContent.publication).toEqual(replied!.structuredContent.publication);
+	const [retry] = await mcp(recipient.descriptorPath, [reply(eventId)]);
+	expect(retry!.structuredContent.eventId).toBe(replied!.structuredContent.eventId);
 	await test.client.call("participant.stand_down", { registrationId: test.sender.registrationId, registrationKey: test.sender.registrationKey, participantKey: test.senderParticipant.participantKey, expectedGeneration: test.senderParticipant.generation });
-	const [endedRetry, changed, fresh] = await mcp(recipient.descriptorPath, [reply(offer), reply(offer, "reply-1", "changed"), reply(offer, "fresh")]);
-	expect(endedRetry!.structuredContent.publication).toEqual(replied!.structuredContent.publication);
+	const [vacantRetry, changed, queued] = await mcp(recipient.descriptorPath, [reply(eventId), reply(eventId, "reply-1", "changed"), reply(eventId, "fresh")]);
+	expect(vacantRetry!.structuredContent.eventId).toBe(replied!.structuredContent.eventId);
 	expect(changed!.isError).toBe(true);
-	expect(fresh!.isError).toBe(true);
-	expect(Object.keys(test.readState().events)).toHaveLength(2);
+	// A vacant original sender still owns its participant identity, so the reply queues instead of failing.
+	expect(queued!.isError).toBe(false);
+	expect(Object.keys(test.readState().events)).toHaveLength(3);
 });
 
-function referenceParams(test: Awaited<ReturnType<typeof setup>>, attemptId: string) {
-	return { registrationId: test.recipient.registrationId, registrationKey: test.recipient.registrationKey, participantKey: test.recipientParticipant.participantKey, expectedGeneration: test.recipientParticipant.generation, attemptId };
-}
-
-it("persists reference-only offers, binds attempts before selecting another event, and retrieves bodies only through actual MCP", async () => {
+it("hints the oldest unread message on the recipient heartbeat and stops once it is marked read", async () => {
 	const test = await setup();
 	const recipient = await test.issue(test.recipientParticipant);
-	await expect(test.client.call("messaging.reference", referenceParams(test, "empty"))).resolves.toEqual({ acquired: false });
-	await mcp(test.issued.descriptorPath, [send("first"), send("second")]);
-	const first = await test.client.call("messaging.reference", referenceParams(test, "attempt-1")) as { acquired: true; eventId: string; namespaceId: string; attemptId: string };
-	expect(first).toEqual({ acquired: true, namespaceId: recipient.namespaceId, attemptId: "attempt-1", eventId: expect.any(String) });
-	expect(test.readState().messaging[recipient.namespaceId]!.references[first.eventId]).toMatchObject({ attemptId: "attempt-1", registrationId: test.recipient.registrationId, clientGeneration: "client_recipient", offeredAt: 1000 });
-	expect(test.readState().messaging[recipient.namespaceId]!.offers).toEqual({});
-	await expect(test.client.call("messaging.reference", referenceParams(test, "attempt-1"))).resolves.toEqual({ acquired: false });
-	expect(Object.keys(test.readState().messaging[recipient.namespaceId]!.references)).toHaveLength(1);
-	await test.restart();
-	await expect(test.client.call("messaging.reference", referenceParams(test, "attempt-1"))).resolves.toEqual({ acquired: false });
-	const second = await test.client.call("messaging.reference", referenceParams(test, "attempt-2")) as { eventId: string };
-	expect(second.eventId).not.toBe(first.eventId);
-	await expect(test.client.call("messaging.reference", referenceParams(test, "attempt-3"))).resolves.toEqual({ acquired: false });
-	const [body] = await mcp(recipient.descriptorPath, [receive(first.eventId)]);
-	expect(body!.structuredContent.message).toMatchObject({ eventId: first.eventId, body: "Please inspect." });
-	expect(test.readState().events[first.eventId]!.delivery).toEqual({ status: "pending" });
-	expect(test.readState().claims).toEqual({});
-	expect(test.readState().messaging[recipient.namespaceId]!.offers[first.eventId]!.receivedAt).toBeUndefined();
+	const auth = { registrationId: test.recipient.registrationId, registrationKey: test.recipient.registrationKey };
+	await expect(test.client.call("pi.heartbeat", auth)).resolves.not.toHaveProperty("mail");
+	const published = await mcp(test.issued.descriptorPath, [send("hint-1"), send("hint-2")]);
+	// Both land at the same frozen clock, so the hint order falls back to the event ID.
+	const [eventId] = published.map(result => result.structuredContent.eventId).sort();
+	await expect(test.client.call("pi.heartbeat", auth)).resolves.toMatchObject({ mail: { namespaceId: recipient.namespaceId, eventId } });
+	await mcp(recipient.descriptorPath, [receive(eventId)]);
+	await expect(test.client.call("pi.heartbeat", auth)).resolves.toMatchObject({ mail: { eventId } });
+	await mcp(recipient.descriptorPath, [received(eventId)]);
+	const next = await test.client.call("pi.heartbeat", auth) as { mail: { eventId: string } };
+	expect(next.mail.eventId).not.toBe(eventId);
+	await expect(test.client.call("pi.heartbeat", { registrationId: test.sender.registrationId, registrationKey: test.sender.registrationKey })).resolves.not.toHaveProperty("mail");
 });
 
-it("validates reference identity and lifetime without rewriting corrupt stores, and retires references only at expiry", async () => {
-	const test = await setup();
-	const recipient = await test.issue(test.recipientParticipant);
-	await mcp(test.issued.descriptorPath, [send("validation-1"), send("validation-2")]);
-	await test.client.call("messaging.reference", referenceParams(test, "validation-1"));
-	await test.client.call("messaging.reference", referenceParams(test, "validation-2"));
-	const snapshot = test.readState();
-	const grant = snapshot.messaging[recipient.namespaceId]!;
-	const [first, second] = Object.values(grant.references);
-	const root = mkdtempSync(join(tmpdir(), "messaging-reference-validation-"));
-	cleanups.push(async () => { rmSync(root, { recursive: true, force: true }); });
-	for (const patch of [{ clientGeneration: "wrong" }, { eventId: "wrong" }, { registrationId: "" }, { offeredAt: 999 }, { offeredAt: grant.expiresAt }, { attemptId: second!.attemptId }, { body: "must-not-exist" }]) {
-		const invalid = structuredClone(snapshot);
-		Object.assign(invalid.messaging[grant.namespaceId]!.references[first!.eventId]!, patch);
-		const bytes = JSON.stringify(invalid);
-		const file = runtimeStatePaths(root).state;
-		writeFileSync(file, bytes);
-		expect(() => new HostedStateStore(root)).toThrow(HostedStateStorageError);
-		expect(readFileSync(file, "utf8")).toBe(bytes);
-	}
-	const duplicateId = "msg_00000000-0000-0000-0000-000000000000";
-	const ambiguous = structuredClone(snapshot);
-	ambiguous.messaging[duplicateId] = { ...grant, namespaceId: duplicateId, references: {}, offers: {}, receipts: {} };
-	expect(() => reduceHostedState(ambiguous, { type: "messaging.reference", namespaceId: grant.namespaceId, reference: first! })).toThrow("ambiguous");
-	writeHostedRuntimeState(root, snapshot);
-	const store = new HostedStateStore(root);
-	store.apply({ type: "retention.prune", before: 1001 });
-	expect(store.read().messaging[grant.namespaceId]!.references).toEqual(grant.references);
-	store.apply({ type: "retention.prune", before: grant.expiresAt });
-	expect(store.read().messaging[grant.namespaceId]!.references).toEqual({});
-	expect(store.read().events).toEqual({});
-	expect(readHostedRuntimeState(root)).toEqual(store.read());
-	expect(() => store.apply({ type: "messaging.reference", namespaceId: grant.namespaceId, reference: first! })).toThrow("absent, stale or ambiguous");
-});
-
-it("does not notify mail already offered through MCP and gives credentials no reference authority", async () => {
-	const test = await setup();
-	const recipient = await test.issue(test.recipientParticipant);
-	const [sent] = await mcp(test.issued.descriptorPath, [send("manual-retrieval")]);
-	await mcp(recipient.descriptorPath, [receive(sent!.structuredContent.publication.eventId)]);
-	await expect(test.client.call("messaging.reference", referenceParams(test, "already-offered"))).resolves.toEqual({ acquired: false });
-	await expect(test.client.call("messaging.reference", { ...test.descriptor, attemptId: "credential" })).rejects.toMatchObject({ code: "invalid_request" });
-	await expect(test.client.call("messaging.reference", { ...referenceParams(test, "foreign"), participantKey: test.senderParticipant.participantKey })).rejects.toMatchObject({ code: "registration_stale" });
-	expect(test.readState().messaging[recipient.namespaceId]!.references).toEqual({});
-});
-
-it.each(["holder", "registration", "expiry"])("fences reference authority across host verification: %s", async change => {
-	const test = await setup();
-	const recipient = await test.issue(test.recipientParticipant);
-	await mcp(test.issued.descriptorPath, [send("race")]);
-	let entered!: () => void;
-	let release!: () => void;
-	const started = new Promise<void>(resolve => { entered = resolve; });
-	const blocked = new Promise<void>(resolve => { release = resolve; });
-	let first = true;
-	test.setVerificationHook(async () => { if (first) { first = false; entered(); await blocked; } });
-	const result = test.client.call("messaging.reference", referenceParams(test, "raced")).then(value => ({ value }), error => ({ error }));
-	await started;
-	try {
-		if (change === "holder") await test.client.call("participant.stand_down", { registrationId: test.recipient.registrationId, registrationKey: test.recipient.registrationKey, participantKey: test.recipientParticipant.participantKey, expectedGeneration: test.recipientParticipant.generation });
-		else if (change === "registration") { test.inputs.get("recipient")!.clientGeneration = "replacement"; await test.register("recipient"); }
-		else test.setNow(1000 + HOSTED_ACK_RETENTION_MS);
-	} finally { release(); }
-	expect(await result).toHaveProperty("error");
-	expect(test.readState().messaging[recipient.namespaceId]!.references).toEqual({});
-});
-
-it("keeps a lost reference response consumed, and refuses reference commits on persistence failure", async () => {
-	const test = await setup();
-	const recipient = await test.issue(test.recipientParticipant);
-	await mcp(test.issued.descriptorPath, [send("lost-reference")]);
-	const socket = createConnection(test.client.socketPath);
-	await once(socket, "connect");
-	const closed = once(socket, "close");
-	socket.on("data", () => socket.destroy());
-	socket.write(`${JSON.stringify({ v: 1, id: "lost", method: "messaging.reference", params: referenceParams(test, "lost") })}\n`);
-	await closed;
-	await test.restart();
-	await expect(test.client.call("messaging.reference", referenceParams(test, "lost"))).resolves.toEqual({ acquired: false });
-	await expect(test.client.call("messaging.reference", referenceParams(test, "replacement-attempt"))).resolves.toEqual({ acquired: false });
-	await mcp(test.issued.descriptorPath, [send("write-failure")]);
-	const file = runtimeStatePaths(test.runtimeRoot).state;
-	const backup = `${file}.reference-backup`;
-	renameSync(file, backup);
-	mkdirSync(file);
-	try { await expect(test.client.call("messaging.reference", referenceParams(test, "failed"))).rejects.toMatchObject({ code: "storage_error" }); }
-	finally { rmSync(file, { recursive: true }); renameSync(backup, file); }
-	expect(Object.keys(test.readState().messaging[recipient.namespaceId]!.references)).toHaveLength(1);
-	await expect(test.client.call("messaging.reference", referenceParams(test, "failed"))).resolves.toMatchObject({ acquired: true });
-});
-
-it("rejects unconfigured recipients without publishing and fences tokens, namespaces and replacement-client history", async () => {
+it("publishes before the recipient has a namespace, fences other participants' mail, and keeps the sender's retry", async () => {
 	const test = await setup({}, false);
-	const [denied] = await mcp(test.issued.descriptorPath, [send("before-issuance")]);
-	expect(denied!.isError).toBe(true);
-	expect(denied!.content[0]!.text).toContain("Recipient MCP namespace is unavailable or ambiguous");
-	expect(test.readState().events).toEqual({});
-	expect(test.readState().messaging[test.issued.namespaceId]!.receipts).toEqual({});
-	const recipient = await test.issue(test.recipientParticipant);
 	const [sent] = await mcp(test.issued.descriptorPath, [send("before-issuance")]);
 	expect(sent!.isError).toBe(false);
-	const eventId = sent!.structuredContent.publication.eventId;
-	// Inspect a separate current-schema snapshot: prior unbound receipts must still recover,
-	// but ambiguous authority must never allow a fresh publication.
-	const snapshot = test.readState();
-	const oldEvent = snapshot.events[eventId]!;
-	if (oldEvent.type !== "mailbox.message") throw new Error("Expected ordinary mail fixture");
-	oldEvent.recipientBinding = { kind: "unbound" };
-	const duplicateId = "msg_00000000-0000-0000-0000-000000000000";
-	snapshot.messaging[duplicateId] = { ...snapshot.messaging[recipient.namespaceId]!, namespaceId: duplicateId };
-	const ambiguous = validateHostedRuntimeState(snapshot);
-	const retry = { type: "messaging.send" as const, namespaceId: test.issued.namespaceId, operationId: "before-issuance", recipientParticipantKey: test.recipientParticipant.participantKey, body: "Please inspect.", eventId: "evt_retry", at: 1000 };
-	expect(reduceHostedState(ambiguous, retry)).toBe(ambiguous);
-	expect(() => reduceHostedState(ambiguous, { ...retry, operationId: "ambiguous" })).toThrow("Recipient MCP namespace is unavailable or ambiguous");
-	expect(Object.keys(ambiguous.events)).toEqual([eventId]);
-	const [offered] = await mcp(recipient.descriptorPath, [receive(eventId)]);
-	const offer = offered!.structuredContent.offer!;
-	const [wrongToken] = await mcp(recipient.descriptorPath, [received({ ...offer, receiptToken: "wrong" })]);
-	expect(wrongToken!.isError).toBe(true);
+	const eventId = sent!.structuredContent.eventId;
+	expect(test.readState().messaging[test.issued.namespaceId]!.operations).toEqual({ "before-issuance": eventId });
 	const [wrongOwner] = await mcp(test.issued.descriptorPath, [receive(eventId)]);
 	expect(wrongOwner!.isError).toBe(true);
-	expect(test.readState().messaging[recipient.namespaceId]!.offers[eventId]!.receivedAt).toBeUndefined();
+	expect(wrongOwner!.content[0]!.text).toContain("not addressed to this namespace's participant");
+	const recipient = await test.issue(test.recipientParticipant);
+	const [late] = await mcp(recipient.descriptorPath, [receive(eventId)]);
+	expect(late!.structuredContent.message).toMatchObject({ eventId, body: "Please inspect." });
+	// A replacement client of the same holder reads the same participant's mail; a new holder does not.
 	test.inputs.get("recipient")!.clientGeneration = "replacement";
 	Object.assign(test.recipient, await test.register("recipient"));
 	const replacement = await test.issue(test.recipientParticipant);
-	const [stale] = await mcp(recipient.descriptorPath, [received(offer)]);
-	const [notInherited] = await mcp(replacement.descriptorPath, [receive(eventId)]);
+	const [stale] = await mcp(recipient.descriptorPath, [received(eventId)]);
+	const [inherited] = await mcp(replacement.descriptorPath, [received(eventId)]);
 	expect(stale!.isError).toBe(true);
-	expect(notInherited!.isError).toBe(true);
+	expect(inherited!.structuredContent.readAt).toBe(1000);
 	await test.client.call("participant.stand_down", { registrationId: test.recipient.registrationId, registrationKey: test.recipient.registrationKey, participantKey: test.recipientParticipant.participantKey, expectedGeneration: test.recipientParticipant.generation });
-	const [committedRetry, newSend] = await mcp(test.issued.descriptorPath, [send("before-issuance"), send("recipient-no-longer-ready")]);
-	expect(committedRetry!.structuredContent.publication).toEqual(sent!.structuredContent.publication);
-	expect(newSend!.isError).toBe(true);
-	expect(Object.keys(test.readState().events)).toEqual([eventId]);
+	const [committedRetry, queued] = await mcp(test.issued.descriptorPath, [send("before-issuance"), send("recipient-stood-down")]);
+	expect(committedRetry!.structuredContent.eventId).toBe(eventId);
+	expect(queued!.isError).toBe(false);
+	expect(Object.keys(test.readState().events)).toHaveLength(2);
 	expect(test.readState().events[eventId]!.delivery.status).toBe("pending");
 });
 
@@ -378,7 +259,7 @@ it("uses the default Runtime registrar, real registration and private issuance t
 	const sent = await pi.call({ name: "collaborator_send", arguments: args });
 	expect(sent.isError).toBe(false);
 	const lookup = await pi.call({ name: "collaborator_status", arguments: { namespaceId, operationId: "default-runtime" } });
-	expect(lookup.result.details.publication).toEqual(sent.result.details.publication);
+	expect(lookup.result.details.event.eventId).toBe(sent.result.details.eventId);
 	const oldArguments = await pi.call({ name: "collaborator_send", arguments: { messages: [] } } as never);
 	expect(oldArguments.isError).toBe(true);
 	expect(Object.keys(test.readState().events)).toHaveLength(1);
@@ -388,29 +269,30 @@ it("uses the default Runtime registrar, real registration and private issuance t
 	test.setVerificationHook(async () => { verifications++; });
 	await new Promise(resolve => setTimeout(resolve, 2500));
 	expect(verifications).toBeGreaterThan(0);
-	expect(test.readState().messaging[namespaceId]!.references).toEqual({});
+	// RPC mode has no authoritative empty editor, so its heartbeat hint is never delivered.
+	expect(test.readState().events[incoming!.structuredContent.eventId]).toMatchObject({ type: "mailbox.message" });
+	expect(test.readState().events[incoming!.structuredContent.eventId]).not.toHaveProperty("readAt");
 	await pi.close();
 	const transcript = readFileSync(sessionFile, "utf8");
-	expect(transcript).not.toContain("deevs.hosted-runtime.messaging-reference.v1");
+	expect(transcript).not.toContain("deevs.hosted-runtime.messaging-mail.v1");
 	const descriptor = JSON.parse(readFileSync(messagingDescriptorPath(test.runtimeRoot, grant.targetKey, grant.clientGeneration), "utf8"));
 	expect(transcript).not.toContain(descriptor.secret);
 	expect(transcript).toContain('"toolName":"collaborator_send"');
 }, 30_000);
 
-it("persists native Pi receive results while keeping explicit client receipt separate from admission", async () => {
+it("persists native Pi receive results while keeping read receipts separate from native admission", async () => {
 	const test = await setup();
 	const recipient = await test.issue(test.recipientParticipant);
 	const [incoming] = await mcp(recipient.descriptorPath, [{ name: "collaborator_send", arguments: { participantId: "sender", operationId: "incoming", body: "\u0000".repeat(16384) } }]);
-	const eventId = incoming!.structuredContent.publication.eventId;
+	const eventId = incoming!.structuredContent.eventId;
 	const allTools = "collaborator_peers,collaborator_send,collaborator_status,collaborator_receive,collaborator_received,collaborator_reply";
 	const pi = await piSession(test, ["--tools", allTools]);
 	const fetched = await pi.call({ ...receive(eventId), arguments: { namespaceId: test.issued.namespaceId, eventId } });
 	expect(fetched.isError).toBe(false);
 	expect(fetched.result.details.message.body).toBe("\u0000".repeat(16384));
-	const offer = fetched.result.details.offer as HostedMessagingOffer;
-	const acknowledged = await pi.call({ ...received(offer), arguments: { namespaceId: test.issued.namespaceId, ...received(offer).arguments } });
+	const acknowledged = await pi.call({ name: "collaborator_received", arguments: { namespaceId: test.issued.namespaceId, eventId } });
 	expect(acknowledged.isError).toBe(false);
-	const replied = await pi.call({ ...reply(offer), arguments: { namespaceId: test.issued.namespaceId, ...reply(offer).arguments } });
+	const replied = await pi.call({ name: "collaborator_reply", arguments: { namespaceId: test.issued.namespaceId, ...reply(eventId).arguments } });
 	expect(replied.isError).toBe(false);
 	await pi.close();
 	const transcript = readFileSync(test.inputs.get("sender")!.piSessionFile, "utf8");
@@ -422,8 +304,7 @@ it("persists native Pi receive results while keeping explicit client receipt sep
 	const restarted = await piSession(test, ["--tools", allTools]);
 	const recovered = await restarted.call({ ...receive(eventId), arguments: { namespaceId: test.issued.namespaceId, eventId } });
 	expect(recovered.isError).toBe(false);
-	expect(recovered.result.details.offer.receiptToken).toBe(offer.receiptToken);
-	expect(recovered.result.details.offer.receivedAt).toBe(1000);
+	expect(recovered.result.details.message.readAt).toBe(1000);
 }, 30_000);
 
 it("rejects actual Monitor events through MCP while preserving the shared native claim", async () => {
@@ -440,22 +321,22 @@ it("rejects actual Monitor events through MCP while preserving the shared native
 	const monitor = Object.values(test.readState().events).find(event => event.type === "filesystem.created")!;
 	expect(monitor).toBeDefined();
 	const [sent] = await mcp(test.issued.descriptorPath, [send("alongside-monitor")]);
-	const eventId = sent!.structuredContent.publication.eventId;
+	const eventId = sent!.structuredContent.eventId;
 	const [denied, offered] = await mcp(recipient.descriptorPath, [receive(monitor.eventId), receive(eventId)]);
 	expect(denied!.isError).toBe(true);
 	expect(offered!.isError).toBe(false);
 	const claim = await test.client.call("inbox.claim", { ...auth, maxEvents: 12 }) as { events: Array<{ eventId: string }> };
 	expect(claim.events.map(event => event.eventId)).toEqual([monitor.eventId]);
-	await mcp(recipient.descriptorPath, [received(offered!.structuredContent.offer!)]);
+	await mcp(recipient.descriptorPath, [received(eventId)]);
 	expect(test.readState().events[monitor.eventId]!.delivery.status).toBe("claimed");
 	expect(test.readState().events[eventId]!.delivery.status).toBe("pending");
 });
 
-it("does not expose an offer or half a reply on pre-rename storage failure", async () => {
+it("does not record a read receipt or half a reply on pre-rename storage failure", async () => {
 	const test = await setup();
 	const recipient = await test.issue(test.recipientParticipant);
 	const [sent] = await mcp(test.issued.descriptorPath, [send("write-fault")]);
-	const eventId = sent!.structuredContent.publication.eventId;
+	const eventId = sent!.structuredContent.eventId;
 	const file = runtimeStatePaths(test.runtimeRoot).state;
 	const failWrite = async (call: Call) => {
 		renameSync(file, `${file}.saved`);
@@ -463,26 +344,25 @@ it("does not expose an offer or half a reply on pre-rename storage failure", asy
 		try { const [result] = await mcp(recipient.descriptorPath, [call]); expect(result!.isError).toBe(true); }
 		finally { rmSync(file, { recursive: true }); renameSync(`${file}.saved`, file); }
 	};
-	await failWrite(receive(eventId));
-	expect(test.readState().messaging[recipient.namespaceId]!.offers).toEqual({});
-	const [offered] = await mcp(recipient.descriptorPath, [receive(eventId)]);
-	const offer = offered!.structuredContent.offer!;
-	await failWrite(reply(offer));
+	await failWrite(received(eventId));
+	expect(test.readState().events[eventId]).not.toHaveProperty("readAt");
+	await failWrite(reply(eventId));
 	const state = test.readState();
-	expect(state.messaging[recipient.namespaceId]!.offers[eventId]!.receivedAt).toBeUndefined();
-	expect(state.messaging[recipient.namespaceId]!.receipts).toEqual({});
+	expect(state.events[eventId]).not.toHaveProperty("readAt");
+	expect(state.messaging[recipient.namespaceId]!.operations).toEqual({});
 	expect(Object.keys(state.events)).toEqual([eventId]);
-	const [retry] = await mcp(recipient.descriptorPath, [reply(offer)]);
+	const [retry] = await mcp(recipient.descriptorPath, [reply(eventId)]);
 	expect(retry!.isError).toBe(false);
+	expect(test.readState().events[eventId]).toMatchObject({ readAt: 1000 });
 	expect(Object.keys(test.readState().events)).toHaveLength(2);
 });
 
-it("retains a receipt-only body after recipient expiry until its sender retry authority also expires", async () => {
+it("retains a published body until its sender retry authority expires, then prunes it", async () => {
 	const test = await setup();
 	const recipient = await test.issue(test.recipientParticipant);
 	test.setNow(1100);
-	const [sent] = await mcp(test.issued.descriptorPath, [send("receipt-protection")]);
-	const eventId = sent!.structuredContent.publication.eventId;
+	const [sent] = await mcp(test.issued.descriptorPath, [send("retry-protection")]);
+	const eventId = sent!.structuredContent.eventId;
 	const state = test.readState();
 	const receiver = state.messaging[recipient.namespaceId]!;
 	const publisher = state.messaging[test.issued.namespaceId]!;
@@ -499,71 +379,70 @@ it("retains a receipt-only body after recipient expiry until its sender retry au
 	expect(store.read().claims).toEqual({});
 	expect(readHostedRuntimeState(root)).toEqual(store.read());
 	const retained = store.read();
-	expect(store.apply({ type: "messaging.send", namespaceId: test.issued.namespaceId, operationId: "receipt-protection", recipientParticipantKey: test.recipientParticipant.participantKey, body: "Please inspect.", eventId: "must-not-publish", at: receiver.expiresAt + 1 })).toBe(retained);
+	expect(store.apply({ type: "messaging.send", namespaceId: test.issued.namespaceId, operationId: "retry-protection", recipientParticipantKey: test.recipientParticipant.participantKey, body: "Please inspect.", eventId: "must-not-publish", at: receiver.expiresAt + 1 })).toBe(retained);
 	store.apply({ type: "retention.prune", before: publisher.expiresAt + 1 });
 	expect(store.read().events[eventId]).toBeUndefined();
 	expect(Object.values(store.read().dedupe)).not.toContain(eventId);
 	expect(readHostedRuntimeState(root)).toEqual(store.read());
 });
 
-it("reuses offers at capacity, refuses new offers, and retains ordinary bodies until terminal expiry without native ACK", async () => {
+it("refuses new operations at the record cap and retains ordinary bodies until terminal expiry without native ACK", async () => {
 	const test = await setup();
 	const recipient = await test.issue(test.recipientParticipant);
-	const [first, second] = await mcp(test.issued.descriptorPath, [send("capacity-1"), send("capacity-2")]);
-	const eventId = first!.structuredContent.publication.eventId;
-	const [offered] = await mcp(recipient.descriptorPath, [receive(eventId)]);
-	const offer = offered!.structuredContent.offer!;
+	const [first] = await mcp(test.issued.descriptorPath, [send("capacity-1")]);
+	const eventId = first!.structuredContent.eventId;
 	const state = test.readState();
 	expect(state.claims).toEqual({});
+	const publisher = state.messaging[test.issued.namespaceId]!;
 	const grant = state.messaging[recipient.namespaceId]!;
-	for (let i = 0; i < 9995; i++) {
+	for (let i = Object.keys(state.messaging).length + 1; i < 10_000; i++) {
 		const namespaceId = `msg_00000000-0000-0000-0000-${String(i).padStart(12, "0")}`;
-		state.messaging[namespaceId] = { ...grant, namespaceId, status: "expired", receipts: {}, offers: {} };
+		state.messaging[namespaceId] = { ...grant, namespaceId, status: "expired", operations: {} };
 	}
 	// A separate store exercises capacity/retention without introducing a second writer to the live Runtime.
 	const root = mkdtempSync(join(tmpdir(), "messaging-capacity-"));
 	cleanups.push(async () => { rmSync(root, { recursive: true, force: true }); });
 	writeHostedRuntimeState(root, state);
 	const store = new HostedStateStore(root);
-	store.apply({ type: "messaging.receive", namespaceId: grant.namespaceId, eventId, receiptToken: "ignored-repeat", at: 1000 });
-	expect(store.read().messaging[grant.namespaceId]!.offers[eventId]).toEqual(offer);
-	expect(() => store.apply({ type: "messaging.receive", namespaceId: grant.namespaceId, eventId: second!.structuredContent.publication.eventId, receiptToken: "new-offer", at: 1000 })).toThrow("exceed capacity");
-	expect(Object.keys(store.read().messaging[grant.namespaceId]!.offers)).toEqual([eventId]);
-	expect(() => store.apply({ type: "messaging.reference", namespaceId: grant.namespaceId, reference: { eventId: second!.structuredContent.publication.eventId, attemptId: "at-capacity", registrationId: test.recipient.registrationId, clientGeneration: grant.clientGeneration, offeredAt: 1000 } })).toThrow("exceed capacity");
-	expect(store.read().messaging[grant.namespaceId]!.references).toEqual({});
+	const retry = { type: "messaging.send" as const, namespaceId: publisher.namespaceId, operationId: "capacity-1", recipientParticipantKey: test.recipientParticipant.participantKey, body: "Please inspect.", eventId: "evt_ignored", at: 1000 };
+	expect(store.apply(retry)).toBe(store.read());
+	expect(() => store.apply({ ...retry, operationId: "at-capacity", eventId: "evt_at_capacity" })).toThrow("exceed capacity");
+	expect(Object.keys(store.read().messaging[publisher.namespaceId]!.operations)).toEqual(["capacity-1"]);
+	store.apply({ type: "messaging.read", namespaceId: grant.namespaceId, eventId, at: 1000 });
+	expect(store.read().events[eventId]).toMatchObject({ readAt: 1000 });
 	store.apply({ type: "retention.prune", before: 1001 });
 	expect(store.read().events[eventId]).toBeDefined();
-	store.apply({ type: "retention.prune", before: grant.expiresAt + 1 });
+	store.apply({ type: "retention.prune", before: publisher.expiresAt + 1 });
 	expect(store.read().events[eventId]).toBeUndefined();
-	expect(store.read().messaging[grant.namespaceId]!.offers).toEqual({});
-	expect(() => store.apply({ type: "messaging.receive", namespaceId: grant.namespaceId, eventId, receiptToken: offer.receiptToken, at: 1000 })).toThrow("expired");
+	expect(store.read().messaging[publisher.namespaceId]!.operations).toEqual({});
+	expect(() => store.apply({ type: "messaging.read", namespaceId: grant.namespaceId, eventId, at: 1000 })).toThrow("expired");
 });
 
-it("publishes and retrieves only through MCP, rejects native claiming, and recovers the exact receipt after Runtime and MCP restart", async () => {
+it("publishes and retrieves only through MCP, rejects native claiming, and recovers the exact event after Runtime and MCP restart", async () => {
 	const test = await setup();
 	const [peers, sent, firstStatus] = await mcp(test.issued.descriptorPath, [{ name: "collaborator_peers", arguments: {} }, send("op-1"), status("op-1")]);
 	expect(peers!.structuredContent.peers).toEqual([{ participantId: "recipient", state: "held", holderLive: true }]);
 	expect(sent!.isError).toBe(false);
-	const receipt = sent!.structuredContent.publication;
+	const eventId = sent!.structuredContent.eventId;
 	expect(firstStatus!.structuredContent.event?.delivery.status).toBe("pending");
 	const auth = { registrationId: test.recipient.registrationId, registrationKey: test.recipient.registrationKey };
 	await expect(test.client.call("inbox.claim", { ...auth, maxEvents: 1 })).rejects.toMatchObject({ code: "not_found" });
-	await expect(test.client.call("inbox.ack", { ...auth, claimId: "forged_native_claim", eventIds: [receipt.eventId] })).rejects.toMatchObject({ code: "not_found" });
+	await expect(test.client.call("inbox.ack", { ...auth, claimId: "forged_native_claim", eventIds: [eventId] })).rejects.toMatchObject({ code: "not_found" });
 	const recipient = await test.issue(test.recipientParticipant);
-	const [offered] = await mcp(recipient.descriptorPath, [receive(receipt.eventId)]);
-	expect(offered!.structuredContent.message).toMatchObject({ eventId: receipt.eventId, body: "Please inspect." });
-	await mcp(recipient.descriptorPath, [received(offered!.structuredContent.offer!)]);
+	const [offered] = await mcp(recipient.descriptorPath, [receive(eventId)]);
+	expect(offered!.structuredContent.message).toMatchObject({ eventId, body: "Please inspect." });
+	await mcp(recipient.descriptorPath, [received(eventId)]);
 	expect(test.readState().claims).toEqual({});
 	await test.restart();
 	const [retry, recovered] = await mcp(test.issued.descriptorPath, [send("op-1"), status("op-1")]);
-	expect(retry!.structuredContent.publication).toEqual(receipt);
-	expect(recovered!.structuredContent.event?.delivery.status).toBe("pending");
-	expect(Object.keys(test.readState().events)).toEqual([receipt.eventId]);
+	expect(retry!.structuredContent.eventId).toBe(eventId);
+	expect(recovered!.structuredContent.event).toMatchObject({ eventId, readAt: 1000, delivery: { status: "pending" } });
+	expect(Object.keys(test.readState().events)).toEqual([eventId]);
 	expect(statSync(test.issued.descriptorPath).mode & 0o777).toBe(0o600);
 	expect(readFileSync(runtimeStatePaths(test.runtimeRoot).state, "utf8")).not.toContain(test.descriptor.secret);
 });
 
-it("recovers publication, offer and atomic reply when committed Runtime responses are dropped", async () => {
+it("recovers publication, read receipt and reply when committed Runtime responses are dropped", async () => {
 	const test = await setup();
 	const recipient = await test.issue(test.recipientParticipant);
 	const proxyPath = join(test.runtimeRoot, "drop.sock");
@@ -586,24 +465,20 @@ it("recovers publication, offer and atomic reply when committed Runtime response
 		const committed = Object.values(test.readState().events);
 		expect(committed).toHaveLength(1);
 		const [recovered] = await mcp(test.issued.descriptorPath, [send("lost-response")]);
-		expect(recovered!.structuredContent.publication.eventId).toBe(committed[0]!.eventId);
+		expect(recovered!.structuredContent.eventId).toBe(committed[0]!.eventId);
 		expect(Object.keys(test.readState().events)).toHaveLength(1);
 		const receiverDescriptor = join(test.runtimeRoot, "drop-receive.json");
 		writeFileSync(receiverDescriptor, JSON.stringify({ ...JSON.parse(readFileSync(recipient.descriptorPath, "utf8")), socketPath: proxyPath }), { mode: 0o600 });
 		const eventId = committed[0]!.eventId;
-		const [lostOffer] = await mcp(receiverDescriptor, [receive(eventId)]);
-		expect(lostOffer!.isError).toBe(true);
-		const storedOffer = test.readState().messaging[recipient.namespaceId]!.offers[eventId]!;
-		const [retrieved] = await mcp(recipient.descriptorPath, [receive(eventId)]);
-		expect(retrieved!.structuredContent.offer).toEqual(storedOffer);
-		const [lostReply] = await mcp(receiverDescriptor, [reply(storedOffer)]);
+		const [lostRead] = await mcp(receiverDescriptor, [received(eventId)]);
+		expect(lostRead!.isError).toBe(true);
+		expect(test.readState().events[eventId]).toMatchObject({ readAt: 1000 });
+		const [lostReply] = await mcp(receiverDescriptor, [reply(eventId)]);
 		expect(lostReply!.isError).toBe(true);
-		const state = test.readState();
-		expect(state.messaging[recipient.namespaceId]!.offers[eventId]!.receivedAt).toBe(1000);
-		const replyReceipt = state.messaging[recipient.namespaceId]!.receipts["reply-1"]!;
-		expect(state.events[replyReceipt.eventId]).toMatchObject({ type: "mailbox.message", inReplyToEventId: eventId });
-		const [recoveredReply] = await mcp(recipient.descriptorPath, [reply(storedOffer)]);
-		expect(recoveredReply!.structuredContent.publication.eventId).toBe(replyReceipt.eventId);
+		const replyEventId = test.readState().messaging[recipient.namespaceId]!.operations["reply-1"]!;
+		expect(test.readState().events[replyEventId]).toMatchObject({ type: "mailbox.message", inReplyToEventId: eventId });
+		const [recoveredReply] = await mcp(recipient.descriptorPath, [reply(eventId)]);
+		expect(recoveredReply!.structuredContent.eventId).toBe(replyEventId);
 		expect(Object.keys(test.readState().events)).toHaveLength(2);
 	} finally { await new Promise<void>(resolve => proxy.close(() => resolve())); }
 });
@@ -613,12 +488,12 @@ it("transports the real maximum escaped event, recovers an ended-recipient retry
 	const body = "\u0000".repeat(16 * 1024);
 	const [sent, seen] = await mcp(test.issued.descriptorPath, [send("escaped", body), status("escaped")]);
 	expect(seen!.isError).toBe(false);
-	expect(seen!.structuredContent.event?.payload.body).toBe(body);
+	expect(seen!.structuredContent.event?.body).toBe(body);
 	expect(JSON.parse(seen!.content[0]!.text)).toEqual(seen!.structuredContent);
 	await expect(test.client.call("messaging.status", { ...test.descriptor, operationId: "escaped" })).rejects.toMatchObject({ code: "invalid_response" });
 	await test.client.call("participant.release", { registrationId: test.recipient.registrationId, registrationKey: test.recipient.registrationKey, participantKey: test.recipientParticipant.participantKey });
 	const [retry, conflict, fresh] = await mcp(test.issued.descriptorPath, [send("escaped", body), send("escaped", "changed"), send("new")]);
-	expect(retry!.structuredContent.publication).toEqual(sent!.structuredContent.publication);
+	expect(retry!.structuredContent.eventId).toBe(sent!.structuredContent.eventId);
 	expect(conflict!.isError).toBe(true);
 	expect(fresh!.isError).toBe(true);
 	expect(Object.keys(test.readState().events)).toHaveLength(1);
@@ -681,7 +556,7 @@ it("returns no success or receipt on a real persistence failure", async () => {
 	expect(stillAvailable!.isError).toBe(false);
 	await test.restart();
 	expect(Object.keys(test.readState().events)).toHaveLength(0);
-	expect(test.readState().messaging[test.issued.namespaceId]?.receipts).toEqual({});
+	expect(test.readState().messaging[test.issued.namespaceId]?.operations).toEqual({});
 	const [retry] = await mcp(test.issued.descriptorPath, [send("failed-commit")]);
 	expect(retry!.isError).toBe(false);
 });
@@ -768,10 +643,9 @@ it("fences a post-rename directory-sync failure until restart, preserving the or
 	const file = runtimeStatePaths(test.runtimeRoot).state;
 	const snapshot = readFileSync(file, "utf8");
 	const persisted = test.readState();
-	const receipt = persisted.messaging[test.issued.namespaceId]!.receipts.uncertain!;
-	const { fingerprint: _fingerprint, ...publication } = receipt;
+	const publishedId = persisted.messaging[test.issued.namespaceId]!.operations.uncertain!;
 	expect((await monitorFailure)[0]).toMatchObject({ code: "storage_error", uncertain: true });
-	expect(Object.keys(persisted.events)).toEqual([receipt.eventId]);
+	expect(Object.keys(persisted.events)).toEqual([publishedId]);
 	const [retry, other, lookup] = await mcp(test.issued.descriptorPath, [send("uncertain"), send("must-not-overwrite"), status("uncertain")]);
 	for (const result of [retry, other, lookup]) {
 		expect(result!.isError).toBe(true);
@@ -781,9 +655,9 @@ it("fences a post-rename directory-sync failure until restart, preserving the or
 	await test.restart();
 	const [recovered] = await mcp(test.issued.descriptorPath, [send("uncertain")]);
 	expect(recovered!.isError).toBe(false);
-	expect(recovered!.structuredContent.publication).toEqual(publication);
-	expect(test.readState().messaging[test.issued.namespaceId]!.receipts.uncertain).toEqual(receipt);
-	expect(Object.keys(test.readState().events)).toEqual([receipt.eventId]);
+	expect(recovered!.structuredContent.eventId).toBe(publishedId);
+	expect(test.readState().messaging[test.issued.namespaceId]!.operations.uncertain).toBe(publishedId);
+	expect(Object.keys(test.readState().events)).toEqual([publishedId]);
 });
 
 it("persists terminal expiry across clock rollback and restart without republishing", async () => {
@@ -812,7 +686,7 @@ it("negotiates actual MCP before descriptor issuance, transports escaped results
 	expect((await client.callTool("collaborator_send", args)).isError).toBe(false);
 	const result = await client.callTool("collaborator_status", { namespaceId: test.issued.namespaceId, operationId: args.operationId });
 	expect(JSON.parse(result.content[0]!.text)).toEqual(result.structuredContent);
-	expect((result.structuredContent as Result["structuredContent"]).event?.payload.body).toBe(args.body);
+	expect((result.structuredContent as Result["structuredContent"]).event?.body).toBe(args.body);
 	const entered = new EventEmitter();
 	let release!: () => void;
 	const blocked = new Promise<void>(resolve => { release = resolve; });
@@ -833,7 +707,7 @@ it("negotiates actual MCP before descriptor issuance, transports escaped results
 	const committed = await replacement.callTool("collaborator_status", { namespaceId: test.issued.namespaceId, operationId: cancelledArgs.operationId });
 	expect(committed.isError).toBe(false);
 	const recovered = await replacement.callTool("collaborator_send", cancelledArgs);
-	expect(recovered.structuredContent?.publication).toEqual(committed.structuredContent?.publication);
+	expect(recovered.structuredContent?.eventId).toBe((committed.structuredContent as Result["structuredContent"]).event?.eventId);
 	expect(Object.keys(test.readState().events)).toHaveLength(2);
 });
 
@@ -848,7 +722,7 @@ it("runs real Pi tool calls over MCP, preserves errors and full results, and rec
 	expect(sent.isError).toBe(false);
 	const seen = await pi.call({ name: "collaborator_status", arguments: { namespaceId: test.issued.namespaceId, operationId: args.operationId } });
 	expect(seen.isError).toBe(false);
-	expect(seen.result.details.event.payload.body).toBe(args.body);
+	expect(seen.result.details.event.body).toBe(args.body);
 	const conflict = await pi.call({ name: "collaborator_send", arguments: { ...args, body: "changed" } });
 	expect(conflict.isError).toBe(true);
 	expect(JSON.parse(conflict.result.content[0].text).code).toBe("conflict");
@@ -859,12 +733,12 @@ it("runs real Pi tool calls over MCP, preserves errors and full results, and rec
 	expect(transcript).not.toContain(test.descriptor.secret);
 	const persisted = transcript.trim().split("\n").map(line => JSON.parse(line)).filter(entry => entry.message?.role === "toolResult");
 	expect(persisted.map(entry => entry.message.isError)).toEqual([false, false, false, true]);
-	expect(persisted[2].message.details.event.payload.body).toBe(args.body);
+	expect(persisted[2].message.details.event.body).toBe(args.body);
 	const restarted = await piSession(test);
 	const retry = await restarted.call({ name: "collaborator_send", arguments: args });
 	expect(retry.isError).toBe(false);
-	expect(retry.result.details.publication).toEqual(sent.result.details.publication);
-	expect(Object.keys(test.readState().events)).toEqual([sent.result.details.publication.eventId]);
+	expect(retry.result.details.eventId).toBe(sent.result.details.eventId);
+	expect(Object.keys(test.readState().events)).toEqual([sent.result.details.eventId]);
 }, 30_000);
 
 it("blocks a new Pi session using an old descriptor and respects an explicit tool allowlist", async () => {

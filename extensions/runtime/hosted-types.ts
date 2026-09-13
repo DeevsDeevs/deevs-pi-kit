@@ -132,14 +132,6 @@ export interface HostedFilesystemCreatedPayload {
 	mtimeMs: number;
 }
 
-export interface HostedMailboxMessagePayload {
-	sendId: string;
-	senderParticipantKey: string;
-	recipientParticipantKey: string;
-	body: string;
-	fingerprint: string;
-}
-
 export type HostedEventDelivery =
 	| { status: "pending"; latestClaimId?: string }
 	| { status: "claimed"; claimId: string }
@@ -162,13 +154,13 @@ export interface HostedFilesystemCreatedEvent extends HostedEventBase {
 }
 
 export interface HostedMailboxMessageEvent extends HostedEventBase {
-	// An unbound publication never acquires a later holder's authority.
-	recipientBinding: { kind: "namespace"; namespaceId: string } | { kind: "unbound" };
-	inReplyToEventId?: string;
+	type: "mailbox.message";
 	source: HostedParticipantEventSource;
 	recipientParticipantKey: string;
-	type: "mailbox.message";
-	payload: HostedMailboxMessagePayload;
+	sendId: string;
+	body: string;
+	inReplyToEventId?: string;
+	readAt?: number;
 }
 
 export type HostedEvent = HostedFilesystemCreatedEvent | HostedMailboxMessageEvent;
@@ -192,32 +184,6 @@ export interface HostedWake {
 	createdAt: number;
 }
 
-export interface HostedMessagingReference {
-	eventId: string;
-	attemptId: string;
-	registrationId: string;
-	clientGeneration: string;
-	offeredAt: number;
-}
-
-export interface HostedMessagingOffer {
-	eventId: string;
-	receiptToken: string;
-	offeredAt: number;
-	receivedAt?: number;
-}
-
-export interface HostedMessagingReceipt {
-	operationId: string;
-	inReplyToEventId?: string;
-	replyToken?: string;
-	fingerprint: string;
-	eventId: string;
-	recipientParticipantKey: string;
-	sequence: number;
-	createdAt: number;
-}
-
 export interface HostedMessagingGrant {
 	namespaceId: string;
 	secretDigest: string;
@@ -230,13 +196,22 @@ export interface HostedMessagingGrant {
 	createdAt: number;
 	expiresAt: number;
 	status: "active" | "revoked" | "expired";
-	receipts: Record<string, HostedMessagingReceipt>;
-	offers: Record<string, HostedMessagingOffer>;
-	references: Record<string, HostedMessagingReference>;
+	/** Operation ID to published event ID; a repeated operation ID returns its original event. */
+	operations: Record<string, string>;
+}
+
+export interface HostedMessagingSend {
+	namespaceId: string;
+	operationId: string;
+	recipientParticipantKey: string;
+	body: string;
+	inReplyToEventId?: string;
+	eventId: string;
+	at: number;
 }
 
 export interface HostedRuntimeState {
-	version: 16;
+	version: 17;
 	messaging: Record<string, HostedMessagingGrant>;
 	targets: Record<string, HostedTarget>;
 	monitors: Record<string, HostedMonitor>;
@@ -249,12 +224,10 @@ export interface HostedRuntimeState {
 
 export type HostedStateOperation =
 	| { type: "messaging.issue"; grant: HostedMessagingGrant }
-	| { type: "messaging.reference"; namespaceId: string; reference: HostedMessagingReference }
 	| { type: "messaging.close"; namespaceId: string; status: "revoked" | "expired" }
 	| { type: "messaging.invalidate_client"; targetKey: string; clientGeneration: string; terminalId: string }
-	| { type: "messaging.send"; namespaceId: string; operationId: string; recipientParticipantKey: string; body: string; eventId: string; at: number }
-	| { type: "messaging.receive" | "messaging.received"; namespaceId: string; eventId: string; receiptToken: string; at: number }
-	| { type: "messaging.reply"; namespaceId: string; operationId: string; inReplyToEventId: string; receiptToken: string; body: string; eventId: string; at: number }
+	| ({ type: "messaging.send" } & HostedMessagingSend)
+	| { type: "messaging.read"; namespaceId: string; eventId: string; at: number }
 	| { type: "target.ensure"; target: HostedTarget }
 	| { type: "agent.bind"; bind: HostedAgentBind }
 	| { type: "monitor.create"; monitor: HostedMonitor }
