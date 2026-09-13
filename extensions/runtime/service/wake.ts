@@ -28,9 +28,6 @@ export interface HostedClaimResult {
 export interface HostedInboxStatus {
 	pending: number;
 	claimed: number;
-	submitting: number;
-	submitted: number;
-	needsAttention: number;
 	acknowledged: number;
 	wakeId?: string;
 }
@@ -115,37 +112,20 @@ export class HostedWakeCoordinator {
 		this.request(registration.targetKey);
 	}
 
-	submitBegin(registration: HostedLiveRegistration, claimId: string, eventIds: string[], attemptId: string): void {
-		const claim = this.requireClaim(registration, claimId, eventIds);
-		this.store.apply({ type: "inbox.submit_begin", targetKey: registration.targetKey, claimId: claim.claimId, eventIds: claim.eventIds, attemptId, at: this.now() });
-	}
-
-	submitSettle(registration: HostedLiveRegistration, claimId: string, eventIds: string[], attemptId: string, outcome: "submitted" | "pending" | "needs_attention"): void {
-		const claim = this.requireClaim(registration, claimId, eventIds);
-		this.store.apply({ type: "inbox.submit_settle", targetKey: registration.targetKey, claimId: claim.claimId, eventIds: claim.eventIds, attemptId, outcome, at: this.now() });
-		this.request(registration.targetKey);
-	}
-
 	status(registration: HostedLiveRegistration): HostedInboxStatus {
 		this.releaseExpired();
 		let pending = 0;
 		let claimed = 0;
-		let submitting = 0;
-		let submitted = 0;
-		let needsAttention = 0;
 		let acknowledged = 0;
 		const state = this.store.read();
 		for (const event of Object.values(state.events)) {
 			if (!hostedEventRoutesToTarget(state, event, registration.targetKey)) continue;
 			if (event.delivery.status === "pending") pending++;
 			else if (event.delivery.status === "claimed") claimed++;
-			else if (event.delivery.status === "submitting") submitting++;
-			else if (event.delivery.status === "submitted") submitted++;
-			else if (event.delivery.status === "needs_attention") needsAttention++;
 			else acknowledged++;
 		}
 		const wakeId = this.store.read().wakes[registration.targetKey]?.wakeId;
-		const result: HostedInboxStatus = { pending, claimed, submitting, submitted, needsAttention, acknowledged };
+		const result: HostedInboxStatus = { pending, claimed, acknowledged };
 		if (wakeId) result.wakeId = wakeId;
 		return result;
 	}

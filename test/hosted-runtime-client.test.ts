@@ -19,7 +19,7 @@ class FakeHost implements HostedHostVerifier {
 	getBarrier?: Promise<void>;
 	onGet?: () => void;
 	constructor(agent: HostedLiveAgent) { this.agent = agent; }
-	async getPane(): Promise<HostedLiveAgent> { this.onGet?.(); await this.getBarrier; return this.agent; }
+	async getAgent(): Promise<HostedLiveAgent> { this.onGet?.(); await this.getBarrier; return this.agent; }
 	async findTerminal(): Promise<HostedLiveAgent> { return this.agent; }
 	async prompt(): Promise<void> {}
 }

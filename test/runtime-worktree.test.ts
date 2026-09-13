@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { HostedParticipantCoordinator } from "../extensions/runtime/service/participant.ts";
-import { RuntimeRegistrationManager, type HostedHostVerifier, type HostedLiveAgent, type HostedPaneIdentity, type RegisterPiInput } from "../extensions/runtime/service/registration.ts";
+import { RuntimeRegistrationManager, type HostedHostVerifier, type HostedLiveAgent, type RegisterPiInput } from "../extensions/runtime/service/registration.ts";
 import { HostedStateStore } from "../extensions/runtime/service/state.ts";
 import { RuntimeWorktrees } from "../extensions/runtime/service/worktree.ts";
 
@@ -17,10 +17,8 @@ function git(cwd: string, args: string[]): string {
 
 class FakeHost implements HostedHostVerifier {
 	readonly agents = new Map<string, HostedLiveAgent>();
-	readonly panes = new Map<string, HostedPaneIdentity>();
-	async getPane(paneId: string): Promise<HostedLiveAgent> { const value = this.agents.get(paneId); if (!value) throw new Error("missing agent"); return value; }
+	async getAgent(paneId: string): Promise<HostedLiveAgent> { const value = this.agents.get(paneId); if (!value) throw new Error("missing agent"); return value; }
 	async findTerminal(terminalId: string): Promise<HostedLiveAgent> { const values = [...this.agents.values()].filter((agent) => agent.terminalId === terminalId); if (values.length !== 1) throw new Error("missing terminal"); return values[0]!; }
-	async getPaneIdentity(paneId: string): Promise<HostedPaneIdentity> { const value = this.panes.get(paneId); if (!value) throw new Error("missing pane"); return value; }
 }
 
 function setup() {

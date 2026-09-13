@@ -43,7 +43,7 @@ async function setup(monitor: { scanIntervalMs?: number; onError?: (error: Error
 	}
 	// Only Herdr identity is a fixture. MCP is a real child; RPC, authorization,
 	// publication, delivery claims and restart recovery use the actual service/store.
-	const options = { root: runtimeRoot, monitor, host: { async getPane(id: string) { return agents.get(id)!; }, async findTerminal(id: string) { await beforeVerify(); return [...agents.values()].find(a => a.terminalId === id)!; } }, registration: { now: () => now }, participant: { now: () => now }, wake: { now: () => now } };
+	const options = { root: runtimeRoot, monitor, host: { async getAgent(id: string) { return agents.get(id)!; }, async findTerminal(id: string) { await beforeVerify(); return [...agents.values()].find(a => a.terminalId === id)!; } }, registration: { now: () => now }, participant: { now: () => now }, wake: { now: () => now } };
 	let server: RuntimeServerHandle = await startRuntimeServer(options);
 	cleanups.push(async () => { await server.close(); rmSync(root, { recursive: true, force: true }); });
 	const client = new HostedRuntimeClient(server.socketPath);
