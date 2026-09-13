@@ -36,7 +36,7 @@ export class HostedRuntimeClient {
 		this.maxResponseBytes = maxResponseBytes;
 	}
 
-	// oxlint-disable-next-line anti-slop/no-unknown-returns -- RPC callers either decode the result immediately or serialize it unchanged at the tool boundary.
+	// oxlint-disable-next-line anti-slop/no-unknown-returns -- Callers decode the RPC result or serialize it unchanged.
 	call<Params extends object>(method: string, params: Params): Promise<unknown> {
 		const id = `req_${randomUUID()}`;
 		const request = `${JSON.stringify({ v: 1, id, method, params })}\n`;

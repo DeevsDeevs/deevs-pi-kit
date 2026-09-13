@@ -12,83 +12,143 @@ const toolNames = new Set(toolDefinitions.map(tool => tool.name));
 
 type DescriptorResolver = (ctx: ExtensionContext) => Promise<string>;
 
-export function registerMessagingMcp(pi: ExtensionAPI, sourcePath: string, descriptorPath: DescriptorResolver): void {
-	let connection: { path: string; client: MessagingMcpClient; ready: Promise<void> } | undefined;
-	let epoch = 0;
-	let running = false;
+interface McpConnection {
+	path: string;
+	client: MessagingMcpClient;
+	ready: Promise<void>;
+}
 
-	function checkOwnership(): void {
-		const owned = realpathSync(sourcePath);
-		const foreign = pi.getAllTools().some(tool => toolNames.has(tool.name) && realpathSync(tool.sourceInfo.path) !== owned);
+interface MessagingToolOutcome {
+	content: McpToolResult["content"];
+	details: McpToolResult["structuredContent"];
+}
+
+class MessagingSession {
+	private readonly pi: ExtensionAPI;
+	private readonly sourcePath: string;
+	private connection: McpConnection | undefined;
+	private epoch = 0;
+	private running = false;
+
+	constructor(pi: ExtensionAPI, sourcePath: string) {
+		this.pi = pi;
+		this.sourcePath = sourcePath;
+	}
+
+	get currentEpoch(): number {
+		return this.epoch;
+	}
+
+	invalidate(): void {
+		this.epoch++;
+	}
+
+	start(): void {
+		this.epoch++;
+		this.running = true;
+	}
+
+	async shutdown(): Promise<void> {
+		this.epoch++;
+		this.running = false;
+		await this.connection?.client.close();
+	}
+
+	checkOwnership(): void {
+		const owned = realpathSync(this.sourcePath);
+		const foreign = this.pi
+			.getAllTools()
+			.some(tool => toolNames.has(tool.name) && realpathSync(tool.sourceInfo.path) !== owned);
 		if (foreign) throw new Error("Conflicting messaging tools: load only the shared Runtime MCP registrar.");
 	}
 
-	async function transport(path: string, signal?: AbortSignal): Promise<MessagingMcpClient> {
-		const previous = connection;
+	async transport(path: string, signal?: AbortSignal): Promise<MessagingMcpClient> {
+		const previous = this.connection;
 		if (previous?.client.closed) {
 			await previous.client.close();
-			if (connection === previous) connection = undefined;
+			if (this.connection === previous) this.connection = undefined;
 		}
-		if (!running || signal?.aborted) throw new Error("MCP session stopped before dispatch.");
-		if (connection && connection.path !== path) {
+		const stopped = !this.running
+			|| signal?.aborted === true;
+		if (stopped) throw new Error("MCP session stopped before dispatch.");
+		const replacesDescriptor = this.connection !== undefined
+			&& this.connection.path !== path;
+		if (replacesDescriptor) {
 			throw new Error("MCP descriptor changed; preserve uncertain operations in their original namespace before replacing the connection.");
 		}
-		if (!connection) {
+		if (!this.connection) {
 			const client = new MessagingMcpClient(path);
-			connection = { path, client, ready: client.initialize(signal).catch(async error => { await client.close(); throw error; }) };
+			const ready = client.initialize(signal).catch(async error => {
+				await client.close();
+				throw error;
+			});
+			this.connection = { path, client, ready };
 		}
-		await connection.ready;
-		return connection.client;
+		await this.connection.ready;
+		return this.connection.client;
 	}
 
-	function assertCurrent(ctx: ExtensionContext, sessionId: string, started: number, signal?: AbortSignal): void {
-		const current = running && epoch === started && !signal?.aborted && ctx.sessionManager.getSessionId() === sessionId;
+	assertCurrent(ctx: ExtensionContext, sessionId: string, started: number, signal?: AbortSignal): void {
+		const current = this.running
+			&& this.epoch === started
+			&& !signal?.aborted
+			&& ctx.sessionManager.getSessionId() === sessionId;
 		if (!current) throw new Error("MCP session changed; preserve any uncertain operation's original IDs.");
 	}
+}
 
-	function requireSuccess(result: McpToolResult): McpToolResult {
-		// Pi marks thrown tool errors as isError; a returned isError field is not sufficient.
-		if (result.isError) throw new Error(result.content.map(block => block.text).join("\n"));
-		return result;
+function requireSuccess(result: McpToolResult): McpToolResult {
+	// Pi marks thrown tool errors as isError; a returned isError field is not sufficient.
+	if (result.isError) throw new Error(result.content.map(block => block.text).join("\n"));
+	return result;
+}
+
+function assertBoundDescriptor(peers: McpToolResult, ctx: ExtensionContext, sessionId: string, sessionFile: string): void {
+	const binding = peers.structuredContent?.binding;
+	const bound = record(binding)
+		&& binding.kind === "pi"
+		&& binding.sessionId === sessionId
+		&& binding.sessionFile === realpathSync(sessionFile)
+		&& binding.cwd === realpathSync(ctx.cwd);
+	if (!bound) {
+		throw new Error("MCP descriptor does not belong to this exact Pi session and cwd."
+			+ " Request a correctly bound descriptor; do not migrate uncertain operations.");
 	}
+}
 
-	for (const tool of toolDefinitions) pi.registerTool({
-		name: tool.name, label: tool.name, description: tool.description,
-		parameters: Type.Unsafe<Record<string, string>>(tool.inputSchema),
-		async execute(_toolCallId, args, signal, _onUpdate, ctx) {
-			checkOwnership();
-			const started = epoch;
-			const sessionId = ctx.sessionManager.getSessionId();
-			const sessionFile = ctx.sessionManager.getSessionFile();
-			if (!sessionFile) throw new Error("MCP messaging requires a persisted Pi session.");
-			assertCurrent(ctx, sessionId, started, signal);
-			const path = await descriptorPath(ctx);
-			assertCurrent(ctx, sessionId, started, signal);
-			if (!isAbsolute(path)) throw new Error("Runtime returned a non-absolute MCP descriptor path.");
-			const client = await transport(path, signal);
-			assertCurrent(ctx, sessionId, started, signal);
-			const peers = requireSuccess(await client.callTool("collaborator_peers", tool.name === "collaborator_peers" ? args : {}, signal));
-			assertCurrent(ctx, sessionId, started, signal);
-			const binding = peers.structuredContent?.binding;
-			const bound = record(binding)
-				&& binding.kind === "pi"
-				&& binding.sessionId === sessionId
-				&& binding.sessionFile === realpathSync(sessionFile)
-				&& binding.cwd === realpathSync(ctx.cwd);
-			if (!bound) {
-				throw new Error("MCP descriptor does not belong to this exact Pi session and cwd."
-					+ " Request a correctly bound descriptor; do not migrate uncertain operations.");
-			}
-			const result = tool.name === "collaborator_peers" ? peers : requireSuccess(await client.callTool(tool.name, args, signal));
-			assertCurrent(ctx, sessionId, started, signal);
-			return { content: result.content, details: result.structuredContent };
-		},
-	});
+async function executeMessagingTool(
+	session: MessagingSession,
+	descriptorPath: DescriptorResolver,
+	toolName: string,
+	args: Record<string, string>,
+	signal: AbortSignal | undefined,
+	ctx: ExtensionContext,
+): Promise<MessagingToolOutcome> {
+	session.checkOwnership();
+	const started = session.currentEpoch;
+	const sessionId = ctx.sessionManager.getSessionId();
+	const sessionFile = ctx.sessionManager.getSessionFile();
+	if (!sessionFile) throw new Error("MCP messaging requires a persisted Pi session.");
+	session.assertCurrent(ctx, sessionId, started, signal);
+	const path = await descriptorPath(ctx);
+	session.assertCurrent(ctx, sessionId, started, signal);
+	if (!isAbsolute(path)) throw new Error("Runtime returned a non-absolute MCP descriptor path.");
+	const client = await session.transport(path, signal);
+	session.assertCurrent(ctx, sessionId, started, signal);
+	const isPeers = toolName === "collaborator_peers";
+	const peers = requireSuccess(await client.callTool("collaborator_peers", isPeers ? args : {}, signal));
+	session.assertCurrent(ctx, sessionId, started, signal);
+	assertBoundDescriptor(peers, ctx, sessionId, sessionFile);
+	const result = isPeers ? peers : requireSuccess(await client.callTool(toolName, args, signal));
+	session.assertCurrent(ctx, sessionId, started, signal);
+	return { content: result.content, details: result.structuredContent };
+}
 
+function registerMessagingEvents(pi: ExtensionAPI, session: MessagingSession): void {
 	pi.on("tool_call", event => {
 		if (!toolNames.has(event.toolName)) return;
 		try {
-			checkOwnership();
+			session.checkOwnership();
 		} catch (error) {
 			return { block: true, reason: error instanceof Error ? error.message : "MCP configuration unavailable" };
 		}
@@ -97,8 +157,23 @@ export function registerMessagingMcp(pi: ExtensionAPI, sourcePath: string, descr
 		if (!pi.getActiveTools().some(name => toolNames.has(name))) return;
 		return { systemPrompt: `${event.systemPrompt}\n\n${readFileSync(skillPath, "utf8")}` };
 	});
-	pi.on("session_start", () => { epoch++; running = true; });
-	pi.on("session_tree", () => { epoch++; });
-	pi.on("session_compact", () => { epoch++; });
-	pi.on("session_shutdown", async () => { epoch++; running = false; await connection?.client.close(); });
+	pi.on("session_start", () => session.start());
+	pi.on("session_tree", () => session.invalidate());
+	pi.on("session_compact", () => session.invalidate());
+	pi.on("session_shutdown", () => session.shutdown());
+}
+
+export function registerMessagingMcp(pi: ExtensionAPI, sourcePath: string, descriptorPath: DescriptorResolver): void {
+	const session = new MessagingSession(pi, sourcePath);
+	for (const tool of toolDefinitions) {
+		pi.registerTool({
+			name: tool.name,
+			label: tool.name,
+			description: tool.description,
+			parameters: Type.Unsafe<Record<string, string>>(tool.inputSchema),
+			execute: (_toolCallId, args, signal, _onUpdate, ctx) =>
+				executeMessagingTool(session, descriptorPath, tool.name, args, signal, ctx),
+		});
+	}
+	registerMessagingEvents(pi, session);
 }
