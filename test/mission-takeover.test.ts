@@ -2,8 +2,8 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, 
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SessionManager, type ExtensionAPI, type ExtensionContext, type SessionInfo } from "@earendil-works/pi-coding-agent";
-import { MissionState, MISSION_CUSTOM_TYPE } from "../extensions/mission/state.ts";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { MissionState } from "../extensions/mission/state.ts";
 import { readMissionSnapshot, withMissionLock, writeMissionSnapshot } from "../extensions/mission/persistence.ts";
 import { discoverMissionTakeoverCandidates } from "../extensions/mission/takeover.ts";
 import { registerMissionTools } from "../extensions/mission/tools.ts";
@@ -99,29 +99,6 @@ describe("Mission takeover", () => {
 		expect(taken).toMatchObject({ reviewStatus: "clear", reviewCandidateId: "candidate-stable", reviewAdjudicatedCandidateId: "candidate-stable", reviewAdjudicatedVerdict: "clear", completionLatchCandidateId: "candidate-stable", completionLatchReviewStatus: "clear" });
 	});
 
-	it("discovers a pre-upgrade Mission from its exact same-cwd session branch", async () => {
-		const cwd = mkdtempSync(path.join(tmpdir(), "mission-legacy-takeover-"));
-		cleanup.push(cwd);
-		const source = session(cwd, "legacy-session");
-		const legacy = new MissionState();
-		legacy.loadLegacyBranch(source.branch as Array<any>, cwd);
-		const event = await legacy.create({ objective: "Legacy objective", chain: "legacy" }, source.ctx);
-		source.pi.appendEntry(MISSION_CUSTOM_TYPE, event);
-		const replay = new MissionState();
-		replay.loadLegacyBranch(source.branch as Array<any>, cwd);
-
-		const info = { path: source.sessionFile, id: "legacy-session", cwd } as SessionInfo;
-		const manager = { getBranch: () => source.branch };
-		vi.spyOn(SessionManager, "list").mockResolvedValue([info]);
-		vi.spyOn(SessionManager, "open").mockReturnValue(manager as unknown as SessionManager);
-		const current = session(cwd, "current-session");
-		const candidates = await discoverMissionTakeoverCandidates(current.ctx);
-
-		expect(candidates).toHaveLength(1);
-		expect(candidates[0]).toMatchObject({ source: "legacy_session", snapshot: { owner: { sessionId: "legacy-session" }, mission: { objective: "Legacy objective" } } });
-		expect(replay.readAny()?.missionId).toBe(candidates[0]?.snapshot.mission.missionId);
-	});
-
 	it("requires trusted confirmation and resumes immediately through mission_takeover", async () => {
 		const cwd = mkdtempSync(path.join(tmpdir(), "mission-tool-takeover-"));
 		cleanup.push(cwd);
@@ -215,14 +192,13 @@ describe("Mission takeover", () => {
 		const slug = snapshot.mission.slug;
 		const snapshotFile = path.join(cwd, ".missions", ".state", `${slug}.json`);
 		snapshot.mission.reviewStatus = "due";
-		snapshot.mission.reviewLegacyRelaunchAuthorized = true;
 		snapshot.mission.reviewAdjudications = [{ candidateId: "candidate", verdict: "changes_requested" }];
 		snapshot.mission.reviewFindings = [{ index: 0, severity: "major", summary: "Finding", path: "extensions/mission/persistence.ts", line: 1, requirementIndex: 0 }];
 		snapshot.mission.reviewScopeRevisions = [{ root: ".", base: "a".repeat(40), head: "b".repeat(40) }];
 		snapshot.mission.completionAudit = [{ requirementIndex: 0, evidence: "Evidence" }];
 		snapshot.progress[0]!.validation = [{ command: "check", exitCode: 0, objectiveVersion: 1, summary: "Passed", artifact: "result.txt" }];
 		writeMissionSnapshot(cwd, snapshot);
-		expect(readMissionSnapshot(cwd, slug)).toMatchObject({ mission: { artifactDir: snapshot.mission.artifactDir, reviewLegacyRelaunchAuthorized: true }, usage: { totalTokens: snapshot.usage.mainTokens + snapshot.usage.subagentTokens, totalCostUsd: snapshot.usage.mainCostUsd + snapshot.usage.subagentCostUsd } });
+		expect(readMissionSnapshot(cwd, slug)).toMatchObject({ mission: { artifactDir: snapshot.mission.artifactDir }, usage: { totalTokens: snapshot.usage.mainTokens + snapshot.usage.subagentTokens, totalCostUsd: snapshot.usage.mainCostUsd + snapshot.usage.subagentCostUsd } });
 
 		const record = (value: unknown) => value as Record<string, unknown>;
 		const cases: Array<[string, (value: MissionSnapshot) => void]> = [
