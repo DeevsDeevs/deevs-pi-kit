@@ -13,7 +13,7 @@ import {
 } from "./responses.ts";
 import type { HostedReceipt, RuntimeSession } from "./runtime-session.ts";
 
-export const HOSTED_RUNTIME_MESSAGE = "deevs.hosted-runtime.v1";
+const HOSTED_RUNTIME_MESSAGE = "deevs.hosted-runtime.v1";
 const HANDLED_WAKE_LIMIT = 256;
 
 interface HostedReceiptDetails extends HostedReceipt {
@@ -44,7 +44,7 @@ interface HostedClaimMessage extends HostedReceipt {
 }
 
 /** Nothing claimed, the session moved on, or one admitted batch for this turn. */
-export type TurnClaim =
+type TurnClaim =
 	| { status: "none" }
 	| { status: "stale" }
 	| { status: "claimed"; message: HostedClaimCustomMessage };

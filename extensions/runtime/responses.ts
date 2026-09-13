@@ -40,7 +40,7 @@ export interface ClientParticipantStatus {
 	lastTransition: { cause: string };
 }
 
-export interface ParticipantAcquireResult {
+interface ParticipantAcquireResult {
 	participant: ClientParticipantStatus;
 	revived: boolean;
 	transitioned: boolean;
@@ -174,7 +174,7 @@ export function booleanValue(value: SerializedValue | undefined): boolean {
 	return value;
 }
 
-export function isSerializedObject(value: RuntimeResponse): value is SerializedObject {
+function isSerializedObject(value: RuntimeResponse): value is SerializedObject {
 	if (value === null || Array.isArray(value)) return false;
 	try {
 		const prototype = Object.getPrototypeOf(value);
@@ -188,10 +188,10 @@ export function isStringValue(value: RuntimeResponse): value is string {
 	try { return String.prototype.valueOf.call(value) === value; } catch { return false; }
 }
 
-export function isNumberValue(value: RuntimeResponse): value is number {
+function isNumberValue(value: RuntimeResponse): value is number {
 	try { return Number.prototype.valueOf.call(value) === value; } catch { return false; }
 }
 
-export function isBooleanValue(value: RuntimeResponse): value is boolean {
+function isBooleanValue(value: RuntimeResponse): value is boolean {
 	try { return Boolean.prototype.valueOf.call(value) === value; } catch { return false; }
 }

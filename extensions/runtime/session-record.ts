@@ -10,14 +10,12 @@ export const COLLABORATOR_ENV = "PI_RUNTIME_COLLABORATE";
 export const COLLABORATOR_NAME = /^[a-z][a-z0-9_-]{0,63}$/;
 export const COLLABORATOR_MODEL = /^[A-Za-z0-9][A-Za-z0-9._/*:-]{0,199}$/;
 
-export type ParticipantDisposition = "held" | "vacant" | "ended";
-
 export interface ParticipantIdentity {
 	protocol: string;
 	participantId: string;
 	participantKey?: string;
 	generation?: string;
-	disposition: ParticipantDisposition;
+	disposition: "held" | "vacant" | "ended";
 	reviveAuthorized?: true;
 }
 
@@ -34,12 +32,12 @@ export interface CollaboratorLaunch {
 	persona?: CollaboratorPersona;
 }
 
-export interface CollaboratorWorktree {
+interface CollaboratorWorktree {
 	projectRoot: string;
 	worktreePath: string;
 }
 
-export interface ManagedAgentOwner {
+interface ManagedAgentOwner {
 	sessionId: string;
 	sessionFile: string;
 	cwd: string;
