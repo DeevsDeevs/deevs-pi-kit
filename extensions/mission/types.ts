@@ -1,5 +1,7 @@
-export type MissionStatus = "active" | "paused" | "blocked" | "terminal_error" | "budget_limited" | "usage_limited" | "complete" | "ended" | "cleared";
-export type MissionReviewStatus = "not_required" | "due" | "starting" | "running" | "awaiting_adjudication" | "changes_requested" | "clear" | "skipped";
+export type MissionStatus = "active" | "paused" | "blocked" | "terminal_error" | "budget_limited" | "usage_limited"
+	| "complete" | "ended" | "cleared";
+export type MissionReviewStatus = "not_required" | "due" | "starting" | "running" | "awaiting_adjudication"
+	| "changes_requested" | "clear" | "skipped";
 export type MissionConvergedReviewStatus = "not_required" | "clear" | "skipped";
 export type MissionReviewSeverity = "blocker" | "major" | "minor" | "nit";
 export type MissionReviewVerdict = "clear" | "changes_requested";
@@ -86,6 +88,11 @@ export interface MissionReview {
 	completionLatch: MissionCompletionLatch;
 }
 
+export interface MissionRequirementAudit {
+	requirementIndex: number;
+	evidence: string;
+}
+
 export interface MissionValidationInput {
 	command: string;
 	exitCode: number;
@@ -97,7 +104,21 @@ export interface MissionValidationRecord extends MissionValidationInput {
 	objectiveVersion: number;
 }
 
-export type MissionEventKind = "created" | "taken_over" | "status_changed" | "continued" | "completed" | "completion_effects_done" | "completion_latched" | "completion_latch_cleared" | "progress" | "objective_updated" | "review_changed" | "review_policy_updated" | "workspace_fingerprinted" | "settled";
+export type MissionEventKind =
+	| "created"
+	| "taken_over"
+	| "status_changed"
+	| "continued"
+	| "completed"
+	| "completion_effects_done"
+	| "completion_latched"
+	| "completion_latch_cleared"
+	| "progress"
+	| "objective_updated"
+	| "review_changed"
+	| "review_policy_updated"
+	| "workspace_fingerprinted"
+	| "settled";
 
 export interface MissionUsage {
 	mainTokens: number;
@@ -173,7 +194,7 @@ export interface MissionEvent {
 	completionLatchReviewStatus?: MissionConvergedReviewStatus;
 	completionId?: string;
 	completionEffectsStatus?: "pending" | "done";
-	completionAudit?: Array<{ requirementIndex: number; evidence: string }>;
+	completionAudit?: MissionRequirementAudit[];
 	expectedObjectiveVersion?: number;
 	blockerFingerprint?: string;
 	blockerCount?: number;
@@ -223,7 +244,7 @@ export interface MissionCurrent {
 	review: MissionReview;
 	completionId?: string;
 	completionEffectsStatus?: "pending" | "done";
-	completionAudit?: Array<{ requirementIndex: number; evidence: string }>;
+	completionAudit?: MissionRequirementAudit[];
 	blockerFingerprint?: string;
 	blockerCount?: number;
 	turnCount?: number;
@@ -305,7 +326,7 @@ export interface MissionSearchInput {
 
 export interface MissionCompleteInput {
 	summary?: string;
-	audit?: Array<{ requirementIndex: number; evidence: string }>;
+	audit?: MissionRequirementAudit[];
 	userRequested?: boolean;
 	authorizeCompletion?: boolean;
 }
