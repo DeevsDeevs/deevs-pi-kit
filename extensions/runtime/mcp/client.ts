@@ -1,4 +1,7 @@
-/* oxlint-disable anti-slop/no-runtime-typeof, anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns, anti-slop/no-unsafe-dictionary-type -- This private JSON-RPC codec treats external envelopes and arbitrary structured MCP content as untrusted until each public operation validates them. */
+/* oxlint-disable anti-slop/no-runtime-typeof -- JSON-RPC envelopes arrive as untrusted external input. */
+/* oxlint-disable anti-slop/no-unknown-parameters -- Arbitrary MCP content stays unknown until an operation validates it. */
+/* oxlint-disable anti-slop/no-unknown-returns -- Decoded envelopes stay unknown until an operation validates them. */
+/* oxlint-disable anti-slop/no-unsafe-dictionary-type -- Structured MCP content is an open dictionary at the codec boundary. */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
