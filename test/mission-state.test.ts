@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { MISSION_CUSTOM_TYPE, MissionState } from "../extensions/mission/state.ts";
+import { MissionState } from "../extensions/mission/state.ts";
 import type { MissionEvent } from "../extensions/mission/types.ts";
 import { completeMission, registerMissionTools } from "../extensions/mission/tools.ts";
 import { registerMissionCommands } from "../extensions/mission/commands.ts";
@@ -60,32 +60,6 @@ describe("Mission state", () => {
 		expect(mission).toMatchObject({ objectiveVersion: 1, reviewStatus: "clear", reviewAdjudicatedCandidateId: "candidate-stable", completionLatchCandidateId: "candidate-stable", tokenBudget: 50_000 });
 		mission = test.state.append(test.pi, test.state.objectiveUpdateEvent({ objective: "  Implement   runtime ", requirements: [" Works "], paths: ["test", "src"], reason: "normalize equivalent input" }))!;
 		expect(mission).toMatchObject({ objectiveVersion: 1, reviewStatus: "clear", reviewAdjudicatedCandidateId: "candidate-stable", completionLatchCandidateId: "candidate-stable" });
-	});
-
-	it("revokes bounded legacy relaunch authority when the candidate is superseded", async () => {
-		const test = setup();
-		const created = await test.state.create({ objective: "Legacy relaunch", chain: "kit" }, test.ctx);
-		delete created.reviewAdjudicationHistoryComplete;
-		test.state.append(test.pi, created);
-		test.state.append(test.pi, test.state.reviewEvent("due", { legacyRelaunchAuthorized: true }));
-		expect(test.state.read()?.reviewLegacyRelaunchAuthorized).toBe(true);
-		test.state.append(test.pi, test.state.reviewEvent("due", { outcome: "superseded", candidateId: "changed-candidate" }));
-		expect(test.state.read()?.reviewLegacyRelaunchAuthorized).toBeUndefined();
-		expect(() => test.state.reviewEvent("clear", { candidateId: "changed-candidate" })).toThrow("adjudication history is incomplete");
-	});
-
-	it("merges singular legacy adjudications with truncated event arrays without claiming completeness", async () => {
-		const test = setup();
-		const created = await test.state.create({ objective: "Legacy history", chain: "kit" }, test.ctx);
-		delete created.reviewAdjudicationHistoryComplete;
-		const branch = [
-			{ type: "custom", customType: MISSION_CUSTOM_TYPE, data: created },
-			{ type: "custom", customType: MISSION_CUSTOM_TYPE, data: { kind: "review_changed", missionId: created.missionId, generation: created.generation, at: Date.now(), reviewStatus: "clear", reviewAdjudicatedCandidateId: "candidate_a", reviewAdjudicatedVerdict: "clear" } },
-			{ type: "custom", customType: MISSION_CUSTOM_TYPE, data: { kind: "review_changed", missionId: created.missionId, generation: created.generation, at: Date.now(), reviewStatus: "clear", reviewAdjudicatedCandidateId: "candidate_c", reviewAdjudicatedVerdict: "clear", reviewAdjudications: [{ candidateId: "candidate_b", verdict: "clear" }, { candidateId: "candidate_c", verdict: "clear" }] } },
-		];
-		const replay = new MissionState();
-		replay.loadLegacyBranch(branch, test.ctx.cwd);
-		expect(replay.read()).toMatchObject({ reviewAdjudicationHistoryComplete: undefined, reviewAdjudications: [{ candidateId: "candidate_a", verdict: "clear" }, { candidateId: "candidate_b", verdict: "clear" }, { candidateId: "candidate_c", verdict: "clear" }] });
 	});
 
 	it("preserves meaningful leading digits while stripping explicit list markers", async () => {

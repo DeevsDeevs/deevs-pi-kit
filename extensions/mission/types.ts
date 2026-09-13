@@ -90,7 +90,6 @@ export interface MissionEvent {
 	reviewAdjudicatedVerdict?: MissionReviewVerdict;
 	reviewAdjudications?: Array<{ candidateId: string; verdict: MissionReviewVerdict }>;
 	reviewAdjudicationHistoryComplete?: true;
-	reviewLegacyRelaunchAuthorized?: true;
 	reviewHighestSeverity?: MissionReviewSeverity;
 	reviewBlockingFindingCount?: number;
 	reviewBacklogFindingCount?: number;
@@ -172,7 +171,6 @@ export interface MissionCurrent {
 	reviewAdjudicatedVerdict?: MissionReviewVerdict;
 	reviewAdjudications?: Array<{ candidateId: string; verdict: MissionReviewVerdict }>;
 	reviewAdjudicationHistoryComplete?: true;
-	reviewLegacyRelaunchAuthorized?: true;
 	reviewHighestSeverity?: MissionReviewSeverity;
 	reviewBlockingFindingCount?: number;
 	reviewBacklogFindingCount?: number;
@@ -218,7 +216,7 @@ export interface MissionTakeoverInput {
 
 export interface MissionTakeoverCandidate {
 	snapshot: MissionSnapshot;
-	source: "snapshot" | "legacy_session";
+	source: "snapshot";
 }
 
 export interface MissionCreateInput {

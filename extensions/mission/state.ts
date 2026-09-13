@@ -120,17 +120,6 @@ export class MissionState {
 		}
 	}
 
-	loadLegacyBranch(branch: Array<any>, cwd: string): void {
-		this.cwd = cwd;
-		this.owner = undefined;
-		this.snapshotRevision = undefined;
-		this.ownershipConflict = undefined;
-		this.persistenceError = undefined;
-		this.carriedUsage = zeroUsage();
-		this.usageComplete = true;
-		this.loadBranch(branch, cwd);
-	}
-
 	exportSnapshot(owner: MissionOwner, usageComplete = this.usageComplete): MissionSnapshot {
 		if (!this.current) throw new Error("No Mission state is available to persist.");
 		return {
@@ -162,7 +151,7 @@ export class MissionState {
 		const transfer = () => withMissionLock(cwd, source.mission.slug, () => {
 			const stored = readMissionSnapshot(cwd, source.mission.slug);
 			if (stored && (stored.revision !== source.revision || stored.owner.sessionId !== source.owner.sessionId)) throw new Error("Mission ownership changed; inspect the latest controller before retrying takeover.");
-			if (!stored && candidate.source === "snapshot") throw new Error("Mission canonical state disappeared before takeover.");
+			if (!stored) throw new Error("Mission canonical state disappeared before takeover.");
 			const now = Date.now();
 			const preservesReview = source.mission.reviewStatus === "clear" || source.mission.reviewStatus === "skipped" || source.mission.reviewStatus === "changes_requested";
 			const mission: MissionCurrent = {
@@ -194,13 +183,7 @@ export class MissionState {
 			};
 			writeMissionSnapshot(cwd, taken);
 		});
-		if (candidate.source === "legacy_session") {
-			withMissionWorkspaceLock(cwd, () => {
-				const existing = listMissionSnapshots(cwd).filter((snapshot) => !["complete", "ended", "cleared"].includes(snapshot.mission.status));
-				if (existing.length) throw new Error(`A Mission already exists in this workspace: ${existing.map((snapshot) => snapshot.mission.missionId).join(", ")}.`);
-				transfer();
-			});
-		} else transfer();
+		transfer();
 		this.ownershipConflict = undefined;
 		this.persistenceError = undefined;
 		this.restoreSnapshot(taken, branch, cwd);
@@ -229,7 +212,7 @@ export class MissionState {
 		this.clearLoadedState();
 		for (const entry of branch) {
 			if (entry.type === "custom" && entry.customType === MISSION_CUSTOM_TYPE) {
-				// SAFETY: Only this extension writes the matching custom entry; malformed legacy branches remain bounded to takeover migration and are rejected by snapshot validation.
+				// SAFETY: Only this extension writes the matching custom entry; a malformed branch entry is rejected by snapshot validation before it can become canonical state.
 				const rawEvent = entry.data as MissionEvent | undefined;
 				if (!rawEvent?.missionId || rawEvent.kind === "taken_over") continue;
 				const event = rawEvent.kind === "created" && rawEvent.baselineMainTokens === undefined
@@ -444,7 +427,7 @@ export class MissionState {
 		return event;
 	}
 
-	reviewEvent(status: MissionReviewStatus, input: { runId?: string; admissionId?: string; reason?: string; skippedReason?: string; suggestedVerdict?: MissionReviewVerdict | "unknown"; failure?: boolean; outcome?: MissionReviewOutcome; notBeforeAt?: number; worktreeFingerprint?: string; candidateId?: string; highestSeverity?: MissionReviewSeverity; blockingFindingCount?: number; backlogFindingCount?: number; findings?: MissionReviewFinding[]; scopePaths?: string[]; scopeRevisions?: MissionReviewRevision[]; replayAdjudication?: boolean; legacyRelaunchAuthorized?: true } = {}): MissionEvent {
+	reviewEvent(status: MissionReviewStatus, input: { runId?: string; admissionId?: string; reason?: string; skippedReason?: string; suggestedVerdict?: MissionReviewVerdict | "unknown"; failure?: boolean; outcome?: MissionReviewOutcome; notBeforeAt?: number; worktreeFingerprint?: string; candidateId?: string; highestSeverity?: MissionReviewSeverity; blockingFindingCount?: number; backlogFindingCount?: number; findings?: MissionReviewFinding[]; scopePaths?: string[]; scopeRevisions?: MissionReviewRevision[]; replayAdjudication?: boolean } = {}): MissionEvent {
 		const mission = this.requireActive();
 		const adjudicated = status === "clear" || status === "changes_requested";
 		const correctionCount = input.replayAdjudication ? mission.reviewCorrectionCount : status === "changes_requested" ? (mission.reviewCorrectionCount ?? 0) + 1 : status === "clear" ? 0 : undefined;
@@ -462,7 +445,7 @@ export class MissionState {
 			previousAdjudications = [...previousAdjudications.filter((item) => item.candidateId !== mission.reviewAdjudicatedCandidateId), { candidateId: mission.reviewAdjudicatedCandidateId, verdict: mission.reviewAdjudicatedVerdict }];
 		}
 		const candidateKnown = candidateId ? previousAdjudications.some((item) => item.candidateId === candidateId) : false;
-		if (adjudicated && candidateId && mission.reviewAdjudicationHistoryComplete !== true && mission.reviewLegacyRelaunchAuthorized !== true && !candidateKnown) {
+		if (adjudicated && candidateId && mission.reviewAdjudicationHistoryComplete !== true && !candidateKnown) {
 			throw new Error("Mission review adjudication history is incomplete; refusing to adjudicate an unknown candidate.");
 		}
 		if (adjudicated && candidateId && previousAdjudications.length >= MAX_MISSION_REVIEW_ADJUDICATIONS && !candidateKnown) {
@@ -493,7 +476,6 @@ export class MissionState {
 			reviewAdjudicatedCandidateId: adjudicated ? candidateId : undefined,
 			reviewAdjudicatedVerdict: adjudicated ? status : undefined,
 			reviewAdjudications: adjudications,
-			reviewLegacyRelaunchAuthorized: input.legacyRelaunchAuthorized,
 			reviewHighestSeverity: input.highestSeverity,
 			reviewBlockingFindingCount: input.blockingFindingCount,
 			reviewBacklogFindingCount: input.backlogFindingCount,
@@ -634,7 +616,7 @@ export class MissionState {
 				baselineSubagentTokens: event.baselineSubagentTokens ?? 0,
 				baselineMainCostUsd: event.baselineMainCostUsd ?? 0,
 				baselineSubagentCostUsd: event.baselineSubagentCostUsd ?? 0,
-				generation: event.generation ?? `legacy-${event.missionId}`,
+				generation: event.generation,
 				objectiveVersion: event.objectiveVersion ?? 1,
 				turnBudget: event.turnBudget ?? undefined,
 				wallDeadlineAt: event.wallDeadlineAt ?? undefined,
@@ -655,7 +637,6 @@ export class MissionState {
 				reviewAdjudicatedVerdict: event.reviewAdjudicatedVerdict,
 				reviewAdjudications: event.reviewAdjudications?.map((item) => ({ ...item })),
 				reviewAdjudicationHistoryComplete: event.reviewAdjudicationHistoryComplete,
-				reviewLegacyRelaunchAuthorized: event.reviewLegacyRelaunchAuthorized,
 				reviewHighestSeverity: event.reviewHighestSeverity,
 				reviewBlockingFindingCount: event.reviewBlockingFindingCount ?? 0,
 				reviewBacklogFindingCount: event.reviewBacklogFindingCount ?? 0,
@@ -714,7 +695,6 @@ export class MissionState {
 				}
 				this.current.reviewAdjudicatedCandidateId = undefined;
 				this.current.reviewAdjudicatedVerdict = undefined;
-				this.current.reviewLegacyRelaunchAuthorized = undefined;
 				this.current.reviewFindings = undefined;
 				this.current.reviewAcceptedFindings = undefined;
 				this.current.reviewScopePaths = undefined;
@@ -762,8 +742,6 @@ export class MissionState {
 			for (const adjudication of additions) this.current.reviewAdjudications = [...(this.current.reviewAdjudications ?? []).filter((item) => item.candidateId !== adjudication.candidateId), { ...adjudication }];
 		}
 		if (event.reviewAdjudicationHistoryComplete !== undefined) this.current.reviewAdjudicationHistoryComplete = event.reviewAdjudicationHistoryComplete;
-		if (event.kind === "review_changed" && (event.reviewStatus === "clear" || event.reviewOutcome === "superseded")) this.current.reviewLegacyRelaunchAuthorized = undefined;
-		else if (event.reviewLegacyRelaunchAuthorized !== undefined) this.current.reviewLegacyRelaunchAuthorized = event.reviewLegacyRelaunchAuthorized;
 		if (event.kind === "review_changed" && event.reviewStatus === "awaiting_adjudication") this.current.reviewHighestSeverity = event.reviewHighestSeverity;
 		else if (event.reviewHighestSeverity !== undefined) this.current.reviewHighestSeverity = event.reviewHighestSeverity;
 		if (event.reviewBlockingFindingCount !== undefined) this.current.reviewBlockingFindingCount = event.reviewBlockingFindingCount;
