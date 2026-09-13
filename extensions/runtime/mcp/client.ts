@@ -4,14 +4,56 @@ import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
 import { toolDefinitions } from "./tools.ts";
 
-type RequestParams = { protocolVersion: string; capabilities: Record<string, never>; clientInfo: { name: string; version: string } } | { name: string; arguments: Record<string, string> } | Record<string, never>;
+interface InitializeParams {
+	protocolVersion: string;
+	capabilities: Record<string, never>;
+	clientInfo: { name: string; version: string };
+}
+
+interface CallToolParams {
+	name: string;
+	arguments: Record<string, string>;
+}
+
+type RequestParams = InitializeParams | CallToolParams | Record<string, never>;
 const MAX_FRAME = 256 * 1024;
-const failure = () => new Error("MCP transport stopped. Publication may be uncertain; resolve it using the original namespace and operation ID.");
-export const record = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
+const PROTOCOL_VERSION = "2025-11-25";
+const RESPONSE_KEYS = ["jsonrpc", "id", "result", "error"];
+const failure = () => new Error("MCP transport stopped. Publication may be uncertain;"
+	+ " resolve it using the original namespace and operation ID.");
+export const record = (value: unknown): value is Record<string, unknown> =>
+	value !== null && typeof value === "object" && !Array.isArray(value);
 export interface McpToolResult {
 	isError: boolean;
 	content: Array<{ type: "text"; text: string }>;
 	structuredContent?: Record<string, unknown>;
+}
+
+function isMessagingServer(result: unknown): boolean {
+	if (!record(result) || result.protocolVersion !== PROTOCOL_VERSION) return false;
+	if (!record(result.capabilities) || !record(result.capabilities.tools)) return false;
+	return record(result.serverInfo) && result.serverInfo.name === "pi-kit-messaging";
+}
+
+interface McpToolResponse {
+	isError: boolean;
+	content: [{ type: "text"; text: string }];
+	structuredContent?: unknown;
+}
+
+function isToolResult(result: unknown): result is McpToolResponse {
+	if (!record(result) || typeof result.isError !== "boolean") return false;
+	if (!Array.isArray(result.content) || result.content.length !== 1) return false;
+	const block = result.content[0];
+	if (!record(block) || block.type !== "text" || typeof block.text !== "string") return false;
+	return result.isError || record(result.structuredContent);
+}
+
+function isJsonRpcResponse(response: unknown): response is { id: number; result?: unknown; error?: unknown } {
+	if (!record(response) || response.jsonrpc !== "2.0") return false;
+	if (typeof response.id !== "number" || !Number.isSafeInteger(response.id)) return false;
+	if (Object.keys(response).some(key => !RESPONSE_KEYS.includes(key))) return false;
+	return Object.hasOwn(response, "result") !== Object.hasOwn(response, "error");
 }
 
 /** Only the package-owned messaging endpoint, never an arbitrary MCP command. */
@@ -45,8 +87,9 @@ export class MessagingMcpClient {
 	get closed(): boolean { return this.stopped; }
 
 	async initialize(signal?: AbortSignal): Promise<void> {
-		const result = await this.request("initialize", { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "pi-kit-pi", version: "0.1.0" } }, signal);
-		if (!record(result) || result.protocolVersion !== "2025-11-25" || !record(result.capabilities) || !record(result.capabilities.tools) || !record(result.serverInfo) || result.serverInfo.name !== "pi-kit-messaging") {
+		const params = { protocolVersion: PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: "pi-kit-pi", version: "0.1.0" } };
+		const result = await this.request("initialize", params, signal);
+		if (!isMessagingServer(result)) {
 			await this.close();
 			throw failure();
 		}
@@ -60,11 +103,12 @@ export class MessagingMcpClient {
 
 	async callTool(name: string, args: Record<string, string>, signal?: AbortSignal): Promise<McpToolResult> {
 		const result = await this.request("tools/call", { name, arguments: args }, signal);
-		if (!record(result) || typeof result.isError !== "boolean" || !Array.isArray(result.content) || result.content.length !== 1 || !record(result.content[0]) || result.content[0].type !== "text" || typeof result.content[0].text !== "string" || (!result.isError && !record(result.structuredContent))) {
+		if (!isToolResult(result)) {
 			await this.close();
 			throw failure();
 		}
-		return { isError: result.isError, content: [{ type: "text", text: result.content[0].text }], structuredContent: record(result.structuredContent) ? result.structuredContent : undefined };
+		const structured = record(result.structuredContent) ? result.structuredContent : undefined;
+		return { isError: result.isError, content: [{ type: "text", text: result.content[0].text }], structuredContent: structured };
 	}
 
 	private async request(method: string, params: RequestParams, signal?: AbortSignal): Promise<unknown> {
@@ -90,7 +134,8 @@ export class MessagingMcpClient {
 
 	private write(message: { jsonrpc: "2.0"; id?: number; method: string; params?: RequestParams }): void {
 		const line = `${JSON.stringify(message)}\n`;
-		if (this.stopped || Buffer.byteLength(line) > MAX_FRAME || this.child.stdin.writableLength + Buffer.byteLength(line) > 12 * MAX_FRAME) throw failure();
+		const bytes = Buffer.byteLength(line);
+		if (this.stopped || bytes > MAX_FRAME || this.child.stdin.writableLength + bytes > 12 * MAX_FRAME) throw failure();
 		// The bounded pending map and writableLength cap bound backpressure without a second queue.
 		this.child.stdin.write(line);
 	}
@@ -106,7 +151,7 @@ export class MessagingMcpClient {
 			if (newline < 0) break;
 			const response: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(this.buffer));
 			this.buffer = Buffer.alloc(0);
-			if (!record(response) || response.jsonrpc !== "2.0" || typeof response.id !== "number" || !Number.isSafeInteger(response.id) || Object.keys(response).some(key => !["jsonrpc", "id", "result", "error"].includes(key)) || (Object.hasOwn(response, "result") === Object.hasOwn(response, "error"))) throw failure();
+			if (!isJsonRpcResponse(response)) throw failure();
 			const request = this.pending.get(response.id);
 			if (!request) throw failure();
 			this.pending.delete(response.id);

@@ -66,15 +66,11 @@ export class HostedRuntimeClient {
 				try {
 					// SAFETY: The parsed transport envelope remains untrusted until every consumed field is validated below.
 					const response = JSON.parse(buffered.subarray(0, newline).toString("utf8")) as RuntimeResponseEnvelope | null;
-					if (!response || response.v !== 1 || response.id !== id || response.ok !== true && response.ok !== false) throw new Error("Runtime response envelope does not match the request.");
+					if (!matchesRequest(response, id)) throw new Error("Runtime response envelope does not match the request.");
 					if (response.ok) finish(undefined, response);
-					else {
-						const error = response.error;
-						if (!error || !nonEmptyString(error.code) || !nonEmptyString(error.message)) throw new Error("Runtime error fields must be non-empty strings.");
-						finish(new HostedRuntimeClientError(error.code, error.message));
-					}
+					else finish(envelopeError(response.error));
 				} catch (error) {
-					finish(error instanceof HostedRuntimeClientError ? error : new HostedRuntimeClientError("invalid_response", error instanceof Error ? error.message : "Invalid runtime response."));
+					finish(invalidResponse(error));
 				}
 			});
 			socket.once("connect", () => socket.write(request));
@@ -85,6 +81,23 @@ export class HostedRuntimeClient {
 	hello(): Promise<unknown> {
 		return this.call("hello", { minVersion: 1, maxVersion: 1 });
 	}
+}
+
+function matchesRequest(response: RuntimeResponseEnvelope | null, id: string): response is RuntimeResponseEnvelope {
+	if (!response || response.v !== 1 || response.id !== id) return false;
+	return response.ok === true || response.ok === false;
+}
+
+function envelopeError(error: RuntimeErrorEnvelope | null | undefined): HostedRuntimeClientError {
+	if (!error || !nonEmptyString(error.code) || !nonEmptyString(error.message)) {
+		throw new Error("Runtime error fields must be non-empty strings.");
+	}
+	return new HostedRuntimeClientError(error.code, error.message);
+}
+
+function invalidResponse(cause: unknown): Error {
+	if (cause instanceof HostedRuntimeClientError) return cause;
+	return new HostedRuntimeClientError("invalid_response", cause instanceof Error ? cause.message : "Invalid runtime response.");
 }
 
 function nonEmptyString(value: string | undefined): value is string {
