@@ -1,6 +1,6 @@
 # Hosted Runtime protocol
 
-> **Current Runtime contract and release gates.** Universal messaging remains unreleased. Runtime accepts only state schema v12; unsupported stores fail without migration, rewriting or deletion. Interactive collaborators have no legacy headless delivery fallback.
+> **Current Runtime contract and release gates.** Universal messaging remains unreleased. Runtime accepts only state schema v13; unsupported stores fail without migration, rewriting or deletion. Interactive collaborators have no legacy headless delivery fallback.
 
 Runtime provides durable local routing and lifecycle authority for work that must survive Pi and Runtime restarts. Herdr owns live agent panes, terminals, process supervision, and interactive prompt submission. Runtime adds durable participant identity, mailbox state, explicit capabilities, isolated writable workspaces, and recovery.
 
@@ -148,7 +148,6 @@ Public method names remain additive. Exact implementation naming may be introduc
 | Monitor | `monitor.create`, `monitor.get`, `monitor.delete` |
 | Inbox | `inbox.claim`, `inbox.ack`, `inbox.release`, `inbox.submit_begin`, `inbox.submit_settle`, `inbox.status` |
 | Participants | `participant.acquire`, `participant.get`, `participant.list`, `participant.stand_down`, `participant.stop_confirmed`, `participant.release`, `participant.takeover` |
-| Auto capacity | `participant.auto_capacity.list`, `.reserve`, `.release`, `.recover` |
 | Mail | `mailbox.send`, `mailbox.status` |
 | Tasks | `task.send`, `task.result`, `task.status` for connected/durable targets only |
 | Interactive agent launch | reserve, bind, recover, and inspect an exact Herdr-managed agent target |
@@ -187,16 +186,15 @@ A target is live only while `herdr agent get` resolves the exact pane to the sam
 
 A trusted launch is ordered:
 
-1. Resolve participant, driver, model, persona, and profile independently. Normal native `workspace-write` requires fresh interactive confirmation even in Auto; no UI means no launch.
-2. Reserve Auto capacity when applicable.
-3. Persist an exact launch intent before creating Git or Herdr resources.
-4. Provision a Runtime-owned worktree first for `workspace-write`.
-5. Create one empty no-focus Herdr tab at the exact intended cwd.
-6. Call `herdr agent start <name> --kind claude|codex|pi --pane <id>` with driver-owned startup arguments after `--`.
-7. Require Herdr to report readiness and either an agent-session identity or the exact generated agent name within the bounded startup deadline.
-8. Reverify tab/pane/terminal/cwd/agent/managed identity.
-9. Atomically bind the target, workspace, and participant holder generation.
-10. Release launch capacity only after durable bind or exact absence/quiescence is proven.
+1. Resolve participant, driver, model, persona, and profile independently. Normal native `workspace-write` requires fresh interactive confirmation; no UI means no launch.
+2. Persist an exact launch intent before creating Git or Herdr resources.
+3. Provision a Runtime-owned worktree first for `workspace-write`.
+4. Create one empty no-focus Herdr tab at the exact intended cwd.
+5. Call `herdr agent start <name> --kind claude|codex|pi --pane <id>` with driver-owned startup arguments after `--`.
+6. Require Herdr to report readiness and either an agent-session identity or the exact generated agent name within the bounded startup deadline.
+7. Reverify tab/pane/terminal/cwd/agent/managed identity.
+8. Atomically bind the target, workspace, and participant holder generation.
+9. Release launch evidence only after durable bind or exact absence/quiescence is proven.
 
 The participant ID provides the stable Runtime identity. The Herdr agent name is a bounded opaque launch locator, not the participant lease key; when Herdr omits `agent_session`, that exact name is also the authenticated managed-session value.
 
@@ -322,18 +320,6 @@ Pi receives pending work through its in-process heartbeat. Runtime does not prom
 
 Monitor scope remains direct-child creation only; recursive/content/modification/deletion monitoring is deferred.
 
-## Auto mode
-
-Global collaborator mode is typed, persistent state and defaults/fails closed to MANUAL. `Shift+Tab` and `/runtime auto on|off|toggle` are trusted UI operations after explicit shortcut setup.
-
-AUTO may start, stand down, stop, or later restart collaborators within:
-
-- four concurrent starts;
-- twelve held-or-reserved collaborators;
-- `workspace-write` maximum profile.
-
-AUTO never authorizes release, revival, takeover, main-tree integration, destructive discard, or permission escalation from collaborator prose. Capacity is durably reserved before Git or Herdr resources are created. Ambiguous launches retain reservations and recovery evidence.
-
 ## Persistence and security boundary
 
 Runtime state uses strict schema validation and atomic temporary-write/fsync/rename/directory-fsync replacement. Corruption fails closed.
@@ -373,4 +359,4 @@ The redesign is releasable only when isolated and live gates prove:
 11. Monitor and supported task admission remain intact; ordinary Pi mail is reference-notified and retrieved through actual MCP only.
 12. No collaborator tab contains a bridge-runner command or hidden per-message provider process.
 13. Unsupported state is rejected without rewriting or deleting existing mail, authority evidence or workspaces.
-14. Manual and Auto capacity, authority, and zero-focus gates still pass.
+14. Confirmed-start authority and zero-focus gates still pass.

@@ -94,7 +94,7 @@ describe("hosted Runtime collaborator state", () => {
 		} finally { rmSync(root, { recursive: true, force: true }); }
 	});
 
-	it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13])("rejects unsupported state version %i without rewriting it", (version) => {
+	it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14])("rejects unsupported state version %i without rewriting it", (version) => {
 		const unknownVersion = { ...emptyHostedRuntimeState(), version };
 		expect(() => validateHostedRuntimeState(unknownVersion)).toThrow(HostedStateStorageError);
 		const root = mkdtempSync(join(tmpdir(), "hosted-state-unknown-version-"));
@@ -102,21 +102,6 @@ describe("hosted Runtime collaborator state", () => {
 		expect(() => readHostedRuntimeState(root)).toThrow(HostedStateStorageError);
 		expect(JSON.parse(readFileSync(runtimeStatePaths(root).state, "utf8"))).toEqual(unknownVersion);
 		rmSync(root, { recursive: true, force: true });
-	});
-
-	it("atomically reserves Auto capacity across held targets and concurrent acquisitions", () => {
-		const childIds = Array.from({ length: 12 }, (_, index) => `child${index}`);
-		let state = withTargets("target_main", ...childIds.map((id) => `target_${id}`), "target_extra", "target_intruder");
-		state = acquire(state, "main", "target_main", "lease_main", 2);
-		for (const [index, childId] of childIds.entries()) state = acquire(state, childId, `target_${childId}`, `lease_${childId}`, 3 + index);
-		const reservation = { version: 1 as const, operationId: "auto_op_test", projectRoot, callerTargetKey: "target_main", callerParticipantKey: participantKey("main"), expectedCallerGeneration: "lease_main", participantKeys: [participantKey("extra")], createdAt: 20 };
-		expect(() => reduceHostedState(state, { type: "auto_capacity.ensure", reservation })).toThrow("at most 12");
-		state = reduceHostedState(state, { type: "participant.stand_down", participantKey: participantKey("child11"), targetKey: "target_child11", generation: "lease_child11_vacant", at: 21 });
-		state = reduceHostedState(state, { type: "auto_capacity.ensure", reservation: { ...reservation, createdAt: 22 } });
-		expect(() => acquire(state, "intruder", "target_intruder", "lease_intruder", 23)).toThrow("at most 12");
-		state = acquire(state, "extra", "target_extra", "lease_extra", 23);
-		state = reduceHostedState(state, { type: "auto_capacity.release", operationId: reservation.operationId, callerTargetKey: "target_main" });
-		expect(acquire(state, "intruder", "target_intruder", "lease_intruder", 24).participants[participantKey("intruder")]?.state).toBe("held");
 	});
 
 	it("enforces one held participant identity per target and idempotent same-target acquire", () => {

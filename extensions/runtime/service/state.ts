@@ -16,7 +16,6 @@ import {
 import { basename, join } from "node:path";
 import {
 	HOSTED_ACK_RETENTION_MS,
-	HOSTED_AUTO_MAX_COLLABORATORS,
 	HOSTED_BRIDGE_MAX_METADATA_ENTRIES,
 	HOSTED_BRIDGE_MAX_METADATA_VALUE_BYTES,
 	HOSTED_MAILBOX_MAX_BODY_BYTES,
@@ -25,7 +24,6 @@ import {
 	HOSTED_PARTICIPANT_TRANSITION_LIMIT,
 	HOSTED_STATE_MAX_BYTES,
 	type HostedAgentSessionIdentity,
-	type HostedAutoCapacityReservation,
 	type HostedBridgeLaunch,
 	type HostedExternalTarget,
 	type HostedClaim,
@@ -90,7 +88,7 @@ export class HostedStateConflictError extends Error {
 }
 
 export function emptyHostedRuntimeState(): HostedRuntimeState {
-	return { version: 12, messaging: {}, targets: {}, autoCapacityReservations: {}, bridgeLaunches: {}, workspaces: {}, integrations: {}, monitors: {}, participants: {}, events: {}, dedupe: {}, claims: {}, wakes: {} };
+	return { version: 13, messaging: {}, targets: {}, bridgeLaunches: {}, workspaces: {}, integrations: {}, monitors: {}, participants: {}, events: {}, dedupe: {}, claims: {}, wakes: {} };
 }
 
 export class HostedStateStore {
@@ -214,37 +212,6 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 			return state;
 		}
 		return { ...state, targets: { ...state.targets, [operation.target.targetKey]: operation.target } };
-	}
-
-	if (operation.type === "auto_capacity.ensure") {
-		const reservation = operation.reservation;
-		assertStateId(reservation.operationId, "Auto capacity operation ID");
-		assertStateId(reservation.callerTargetKey, "Auto capacity caller target key");
-		assertStateId(reservation.callerParticipantKey, "Auto capacity caller participant key");
-		for (const participantKey of reservation.participantKeys) assertStateId(participantKey, "Auto capacity participant key");
-		assertStateTime(reservation.createdAt, "Auto capacity reservation time");
-		if (reservation.version !== 1 || reservation.participantKeys.length < 1 || reservation.participantKeys.length > HOSTED_AUTO_MAX_COLLABORATORS || new Set(reservation.participantKeys).size !== reservation.participantKeys.length || reservation.participantKeys.includes(reservation.callerParticipantKey)) throw new HostedStateConflictError("conflict", "Auto capacity reservation is invalid.");
-		const existing = state.autoCapacityReservations[reservation.operationId];
-		if (existing) {
-			if (!sameAutoCapacityReservation(existing, reservation)) throw new HostedStateConflictError("conflict", "Auto capacity operation ID was reused with different authority.");
-			return state;
-		}
-		const target = state.targets[reservation.callerTargetKey];
-		if (target?.kind !== "pi" || target.projectRoot !== reservation.projectRoot) throw new HostedStateConflictError("conflict", "Auto capacity caller target is invalid.");
-		const caller = state.participants[reservation.callerParticipantKey];
-		if (caller?.state === "held" ? caller.holderTargetKey !== reservation.callerTargetKey || caller.generation !== reservation.expectedCallerGeneration : caller?.state === "ended" || reservation.expectedCallerGeneration !== undefined || Object.values(state.participants).some((participant) => participant.state === "held" && participant.holderTargetKey === reservation.callerTargetKey)) throw new HostedStateConflictError("conflict", "Auto capacity caller authority changed.");
-		if (Object.values(state.autoCapacityReservations).some((candidate) => candidate.participantKeys.some((key) => reservation.participantKeys.includes(key)))) throw new HostedStateConflictError("conflict", "Auto collaborator already has a capacity reservation.");
-		assertAutoCapacity(state, reservation.projectRoot, reservation.callerParticipantKey, reservation.participantKeys);
-		return { ...state, autoCapacityReservations: { ...state.autoCapacityReservations, [reservation.operationId]: reservation } };
-	}
-
-	if (operation.type === "auto_capacity.release") {
-		const reservation = state.autoCapacityReservations[operation.operationId];
-		if (!reservation) return state;
-		if (reservation.callerTargetKey !== operation.callerTargetKey) throw new HostedStateConflictError("conflict", "Only the exact Auto capacity caller may release its reservation.");
-		const reservations = { ...state.autoCapacityReservations };
-		delete reservations[operation.operationId];
-		return { ...state, autoCapacityReservations: reservations };
 	}
 
 	if (operation.type === "bridge.launch.ensure") {
@@ -423,7 +390,6 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 			if (current.holderTargetKey === operation.targetKey) return state;
 			throw new HostedStateConflictError("conflict", "Participant is held by another target.");
 		}
-		assertAutoCapacity(state, operation.projectRoot, undefined, [operation.participantKey]);
 		assertTargetHasNoParticipant(state, operation.targetKey, operation.participantKey);
 		if (!current) {
 			const participant: HostedParticipant = {
@@ -751,13 +717,12 @@ export function writeHostedRuntimeState(root: string, state: HostedRuntimeState)
 
 export function validateHostedRuntimeState<Source>(value: Source): HostedRuntimeState {
 	try {
-		const state = strictObject(value, "runtime state", ["version", "messaging", "targets", "autoCapacityReservations", "bridgeLaunches", "workspaces", "integrations", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
-		if (state.version !== 12) throw new Error("unsupported runtime state version");
+		const state = strictObject(value, "runtime state", ["version", "messaging", "targets", "bridgeLaunches", "workspaces", "integrations", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
+		if (state.version !== 13) throw new Error("unsupported runtime state version");
 		const result: HostedRuntimeState = {
-			version: 12,
+			version: 13,
 			messaging: mapValues(state.messaging, "messaging namespaces", validateMessagingGrant),
 			targets: mapValues(state.targets, "targets", validateTarget),
-			autoCapacityReservations: mapValues(state.autoCapacityReservations, "Auto capacity reservations", validateAutoCapacityReservation),
 			bridgeLaunches: mapValues(state.bridgeLaunches, "bridge launches", validateBridgeLaunch),
 			workspaces: mapValues(state.workspaces, "workspaces", validateWorkspace),
 			integrations: mapValues(state.integrations, "integrations", validateIntegration),
@@ -1408,23 +1373,6 @@ function validateDelivery(value: PersistedStateValue | undefined): HostedEventDe
 	throw new Error("invalid delivery status");
 }
 
-function validateAutoCapacityReservation(value: PersistedStateValue | undefined, key: string): HostedAutoCapacityReservation {
-	const item = strictObject(value, "Auto capacity reservation", ["version", "operationId", "projectRoot", "callerTargetKey", "callerParticipantKey", "expectedCallerGeneration", "participantKeys", "createdAt"]);
-	const participantKeys = stringArray(item.participantKeys, "Auto capacity participant keys", HOSTED_AUTO_MAX_COLLABORATORS).map((participantKey) => text(participantKey, "Auto capacity participant key", MAX_ID_BYTES));
-	const result: HostedAutoCapacityReservation = {
-		version: 1,
-		operationId: text(item.operationId, "Auto capacity operation ID", MAX_ID_BYTES),
-		projectRoot: text(item.projectRoot, "Auto capacity project root", MAX_PATH_BYTES),
-		callerTargetKey: text(item.callerTargetKey, "Auto capacity caller target key", MAX_ID_BYTES),
-		callerParticipantKey: text(item.callerParticipantKey, "Auto capacity caller participant key", MAX_ID_BYTES),
-		participantKeys,
-		createdAt: nonNegativeNumber(item.createdAt, "Auto capacity reservation time"),
-	};
-	if (item.expectedCallerGeneration !== undefined) result.expectedCallerGeneration = text(item.expectedCallerGeneration, "Auto capacity caller generation", MAX_ID_BYTES);
-	if (item.version !== 1 || result.operationId !== key || participantKeys.length < 1 || new Set(participantKeys).size !== participantKeys.length || participantKeys.includes(result.callerParticipantKey)) throw new Error("invalid Auto capacity reservation");
-	return result;
-}
-
 function validateClaim(value: PersistedStateValue | undefined, key: string): HostedClaim {
 	const claim = strictObject(value, "claim", ["claimId", "targetKey", "registrationId", "clientGeneration", "eventIds", "createdAt", "leaseUntil", "status", "settledAt"]);
 	if (claim.status !== "active" && claim.status !== "released" && claim.status !== "acked") throw new Error("invalid claim status");
@@ -1494,10 +1442,6 @@ function validateReferences(state: HostedRuntimeState): void {
 		}
 	}
 	if (messagingRecords > MAX_STATE_RECORDS) throw new Error("messaging authority, receipts, offers and references exceed capacity");
-	for (const reservation of Object.values(state.autoCapacityReservations)) {
-		const target = state.targets[reservation.callerTargetKey];
-		if (target?.kind !== "pi" || target.projectRoot !== reservation.projectRoot) throw new Error("Auto capacity caller target is missing or invalid");
-	}
 	for (const launch of Object.values(state.bridgeLaunches)) {
 		const callerTarget = state.targets[launch.callerTargetKey];
 		if (callerTarget?.kind !== "pi" || callerTarget.projectRoot !== launch.projectRoot) throw new Error("bridge launch caller target is missing or invalid");
@@ -1751,21 +1695,6 @@ function participantName(value: PersistedStateValue | undefined, name: string): 
 	const result = text(value, name, 64);
 	if (!/^[a-z][a-z0-9_-]{0,63}$/.test(result)) throw new Error(`${name} has invalid syntax`);
 	return result;
-}
-
-function assertAutoCapacity(state: HostedRuntimeState, projectRoot: string, callerParticipantKey: string | undefined, requestedParticipantKeys: string[]): void {
-	const reservations = Object.values(state.autoCapacityReservations).filter((reservation) => reservation.projectRoot === projectRoot);
-	if (reservations.length === 0 && callerParticipantKey === undefined) return;
-	const callers = new Set(reservations.map((reservation) => reservation.callerParticipantKey));
-	if (callerParticipantKey) callers.add(callerParticipantKey);
-	const occupied = new Set(Object.values(state.participants).filter((participant) => participant.projectRoot === projectRoot && participant.state === "held" && !callers.has(participant.participantKey)).map((participant) => participant.participantKey));
-	for (const reservation of reservations) for (const participantKey of reservation.participantKeys) occupied.add(participantKey);
-	for (const participantKey of requestedParticipantKeys) if (!callers.has(participantKey)) occupied.add(participantKey);
-	if (occupied.size > HOSTED_AUTO_MAX_COLLABORATORS) throw new HostedStateConflictError("conflict", `Runtime Auto mode permits at most ${HOSTED_AUTO_MAX_COLLABORATORS} held or reserved collaborators.`);
-}
-
-function sameAutoCapacityReservation(left: HostedAutoCapacityReservation, right: HostedAutoCapacityReservation): boolean {
-	return left.version === right.version && left.operationId === right.operationId && left.projectRoot === right.projectRoot && left.callerTargetKey === right.callerTargetKey && left.callerParticipantKey === right.callerParticipantKey && left.expectedCallerGeneration === right.expectedCallerGeneration && sameOrderedIds(left.participantKeys, right.participantKeys);
 }
 
 function sameTarget(left: HostedTarget, right: HostedTarget): boolean {

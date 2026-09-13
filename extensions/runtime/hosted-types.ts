@@ -8,7 +8,6 @@ export const HOSTED_PARTICIPANT_TRANSITION_LIMIT = 8;
 export const HOSTED_BRIDGE_MAX_METADATA_ENTRIES = 16;
 export const HOSTED_BRIDGE_MAX_METADATA_VALUE_BYTES = 1_024;
 export const HOSTED_BRIDGE_FORBIDDEN_METADATA_KEYS = ["driver", "model", "persona", "profile", "token", "secret", "secrets", "credential", "credentials", "password", "api_key", "auth", "authorization", "launch_token", "reconnect_token"] as const;
-export const HOSTED_AUTO_MAX_COLLABORATORS = 12;
 
 export interface HostedRuntimeInstance {
 	version: 1;
@@ -315,17 +314,6 @@ export interface HostedWake {
 	createdAt: number;
 }
 
-export interface HostedAutoCapacityReservation {
-	version: 1;
-	operationId: string;
-	projectRoot: string;
-	callerTargetKey: string;
-	callerParticipantKey: string;
-	expectedCallerGeneration?: string;
-	participantKeys: string[];
-	createdAt: number;
-}
-
 export interface HostedMessagingReference {
 	eventId: string;
 	attemptId: string;
@@ -370,10 +358,9 @@ export interface HostedMessagingGrant {
 }
 
 export interface HostedRuntimeState {
-	version: 12;
+	version: 13;
 	messaging: Record<string, HostedMessagingGrant>;
 	targets: Record<string, HostedTarget>;
-	autoCapacityReservations: Record<string, HostedAutoCapacityReservation>;
 	bridgeLaunches: Record<string, HostedBridgeLaunch>;
 	workspaces: Record<string, HostedWorkspace>;
 	integrations: Record<string, HostedIntegration>;
@@ -394,8 +381,6 @@ export type HostedStateOperation =
 	| { type: "messaging.receive" | "messaging.received"; namespaceId: string; eventId: string; receiptToken: string; at: number }
 	| { type: "messaging.reply"; namespaceId: string; operationId: string; inReplyToEventId: string; receiptToken: string; body: string; eventId: string; at: number }
 	| { type: "target.ensure"; target: HostedTarget }
-	| { type: "auto_capacity.ensure"; reservation: HostedAutoCapacityReservation }
-	| { type: "auto_capacity.release"; operationId: string; callerTargetKey: string }
 	| { type: "bridge.launch.ensure"; launch: HostedBridgeLaunch }
 	| { type: "bridge.launch.consume"; launchId: string; launchDigest: string; clientGeneration: string; target: HostedExternalTarget; at: number }
 	| { type: "bridge.launch.cancel"; launchId: string; callerTargetKey: string; callerParticipantKey: string; callerGeneration: string; at: number }

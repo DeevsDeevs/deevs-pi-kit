@@ -18,7 +18,6 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { findAgent, loadBuiltinAgents } from "../subagents/agents.ts";
 import type { AgentDefinition } from "../subagents/catalog-types.ts";
 import { HostedRuntimeClient, HostedRuntimeClientError } from "./client.ts";
-import { AUTO_MAX_LIVE_COLLABORATORS, CollaboratorAutoStore, type CollaboratorAutoState } from "./auto-mode.ts";
 import { HOSTED_MAX_DELIVERY_BATCH, type HostedTaskWorkspaceEvidence } from "./hosted-types.ts";
 import { toolDefinitions } from "./mcp/tools.ts";
 import { nativeMessagingLaunch } from "./mcp/native.ts";
@@ -31,7 +30,6 @@ export const HOSTED_RUNTIME_MESSAGE = "deevs.hosted-runtime.v1";
 export const HOSTED_MESSAGING_REFERENCE = "deevs.hosted-runtime.messaging-reference.v1";
 export const HOSTED_PARTICIPANT_ENTRY = "deevs.hosted-runtime.participant.v1";
 export const HOSTED_COLLABORATOR_PROFILE_ENTRY = "deevs.hosted-runtime.collaborator-profile.v1";
-export const HOSTED_AUTO_LIFECYCLE_ENTRY = "deevs.hosted-runtime.auto-lifecycle.v1";
 export const HOSTED_MANAGED_COLLABORATOR_ENTRY = "deevs.hosted-runtime.managed-collaborator.v1";
 export const HOSTED_COLLABORATOR_WORKSPACE_ENTRY = "deevs.hosted-runtime.collaborator-workspace.v1";
 export const HOSTED_WORKSPACE_REQUEST_ENTRY = "deevs.hosted-runtime.workspace-request.v1";
@@ -83,12 +81,6 @@ type SerializedValue = string | number | boolean | null | SerializedObject | Ser
 
 type RuntimeResponse = Awaited<ReturnType<HostedRuntimeClient["call"]>>;
 type RestoredSessionData = CustomEntry["data"];
-
-interface CollaboratorStartControl {
-	auto?: CollaboratorAutoState;
-	capacity: { registration?: LiveClientRegistration; operationId?: string };
-	retainLock: boolean;
-}
 
 interface RecoveredBridgeLaunch {
 	launchId: string;
@@ -271,44 +263,22 @@ export class HostedRuntimeIntegration {
 	private collaboratorWorkspace?: CollaboratorWorkspaceState;
 	private workspaceLaunchToken?: string;
 	private workspaceRegistrationActive = false;
-	private managedCollaborator = false;
 	private collaboratorManageActive = false;
-	private readonly autoStore: CollaboratorAutoStore;
 	private readonly trustClaudeWorkspace: (cwd: string) => void;
-	private autoStateError?: string;
 
 	constructor(pi: ExtensionAPI, root = defaultRuntimeRoot(), trustClaudeWorkspace: (cwd: string) => void = markClaudeWorkspaceTrusted) {
 		this.pi = pi;
 		this.root = root;
 		this.client = new HostedRuntimeClient(join(root, "runtime.sock"));
-		this.autoStore = new CollaboratorAutoStore(root);
 		this.trustClaudeWorkspace = trustClaudeWorkspace;
-	}
-
-	autoShortcutConfigured(): boolean { return this.autoStore.shortcutConfigured(); }
-
-	toggleAutoMode(ctx: ExtensionContext): CollaboratorAutoState {
-		try {
-			const state = this.autoStore.toggle();
-			this.updateAutoStatus(ctx, state);
-			ctx.ui.notify(`Runtime collaborator mode: ${state.enabled ? "AUTO" : "MANUAL"}.`, state.enabled ? "warning" : "info");
-			return state;
-		} catch (error) {
-			const state = this.autoStore.read().state;
-			this.updateAutoStatus(ctx, state);
-			ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
-			return state;
-		}
 	}
 
 	async sessionStart(ctx: ExtensionContext): Promise<void> {
 		this.sessionEpoch++;
 		this.active = true;
 		this.ctx = ctx;
-		this.restoreManagedCollaborator(ctx);
 		this.captureWorkspaceLaunchToken();
 		this.restoreCollaboratorWorkspace(ctx);
-		this.activeAutoState(ctx);
 		this.restoreAdmissions(ctx);
 		this.restoreParticipantIdentity(ctx);
 		this.restoreCollaboratorLaunch(ctx);
@@ -321,9 +291,7 @@ export class HostedRuntimeIntegration {
 	sessionTree(ctx: ExtensionContext): void {
 		this.sessionEpoch++;
 		this.ctx = ctx;
-		this.restoreManagedCollaborator(ctx);
 		this.restoreCollaboratorWorkspace(ctx);
-		this.activeAutoState(ctx);
 		this.restoreAdmissions(ctx);
 		this.restoreParticipantIdentity(ctx);
 		this.restoreCollaboratorLaunch(ctx);
@@ -339,8 +307,6 @@ export class HostedRuntimeIntegration {
 		this.sessionEpoch++;
 		this.active = false;
 		this.workspaceRegistrationActive = false;
-		const ui = this.ctx?.ui;
-		ui?.setStatus?.("runtime-auto", undefined);
 		this.ctx = undefined;
 		this.stopHeartbeat();
 		const registration = this.registration;
@@ -424,35 +390,6 @@ export class HostedRuntimeIntegration {
 	async command(args: string, ctx: ExtensionCommandContext): Promise<void> {
 		const [action = "status", ...rest] = args.trim().split(/\s+/).filter(Boolean);
 		try {
-			if (action === "auto") {
-				const [requested = "status", ...extra] = rest;
-				if (!["status", "on", "off", "toggle", "setup", "recover"].includes(requested) || (requested === "recover" ? extra.length > 1 : extra.length > 0)) throw new HostedRuntimeClientError("invalid_request", "Usage: /runtime auto [status|on|off|toggle|setup|recover [operation-id]]");
-				if (requested === "recover") {
-					if (this.collaboratorManageActive) throw new HostedRuntimeClientError("busy", "A collaborator lifecycle operation is still active.");
-					if (!ctx.hasUI || !ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Auto capacity recovery requires a trusted interactive Pi session.");
-					const registration = await this.requireRegistration(ctx);
-					const listed = strictObject(await this.client.call("participant.auto_capacity.list", auth(registration)), "Auto capacity reservations");
-					const reservations = Array.isArray(listed.reservations) ? listed.reservations.map((item) => strictObject(item, "Auto capacity reservation")) : [];
-					const operationId = extra[0] ?? (reservations.length === 1 ? text(reservations[0]!.operationId) : undefined);
-					if (!operationId && reservations.length > 1) throw new HostedRuntimeClientError("conflict", `Multiple Auto capacity reservations exist; retry with one exact operation ID: ${reservations.map((reservation) => text(reservation.operationId)).join(", ")}.`);
-					if (operationId && reservations.length > 0 && !reservations.some((reservation) => reservation.operationId === operationId)) throw new HostedRuntimeClientError("not_found", "That Auto capacity reservation is not owned by this Pi target.");
-					if (!await ctx.ui.confirm("Recover Runtime Auto capacity?", `Only continue after verifying that every collaborator from ${operationId ?? "the stale start lock"} is durably held or its exact preserved Herdr resource cannot still settle. Release the reservation and remove this Pi target's stale start lock?`)) return;
-					if (operationId) await this.client.call("participant.auto_capacity.recover", { ...auth(registration), operationId, confirmedAbsent: true });
-					const lockRemoved = this.autoStore.recoverStartLock();
-					ctx.ui.notify(`Runtime Auto recovery settled${operationId ? ` ${operationId}` : " no reservation"}; stale start lock ${lockRemoved ? "removed" : "was already absent"}.`, "info");
-					return;
-				}
-				if (requested === "setup") {
-					if (!ctx.hasUI || !await ctx.ui.confirm("Configure Runtime Auto shortcut?", "Move Pi thinking-level cycling from Shift+Tab to Ctrl+Shift+T, bind Shift+Tab to Runtime Auto/Manual mode, then reload Pi?")) return;
-					const result = this.autoStore.configureShortcut();
-					ctx.ui.notify(result.changed ? `Updated ${result.path}; reloading Pi.` : `Runtime Auto shortcut is already configured in ${result.path}.`, "info");
-					if (result.changed) { await ctx.reload(); return; }
-				}
-				const state = requested === "on" ? this.autoStore.set(true) : requested === "off" ? this.autoStore.set(false) : requested === "toggle" ? this.autoStore.toggle() : this.autoStore.read().state;
-				this.updateAutoStatus(ctx, state);
-				ctx.ui.notify(`Runtime collaborator mode: ${state.enabled ? "AUTO" : "MANUAL"}; up to ${state.maxConcurrentStarts} concurrent starts, ${state.maxLiveCollaborators} held or reserved collaborators, profile ceiling ${state.profileCeiling}; Shift+Tab ${this.autoStore.shortcutConfigured() ? "configured" : "requires /runtime auto setup"}.`, state.enabled ? "warning" : "info");
-				return;
-			}
 			if (action === "start") {
 				await this.start(ctx);
 				await this.register(ctx);
@@ -537,7 +474,7 @@ export class HostedRuntimeIntegration {
 				ctx.ui.notify("Runtime Monitor deleted; queued events were retained.", "info");
 				return;
 			}
-			if (action !== "status") throw new HostedRuntimeClientError("invalid_request", "Usage: /runtime [status|auto [status|on|off|toggle|setup]|start|register|monitor <directory>|monitor-delete|collaborate <protocol> <id>|collaborator-start <protocol> <id>|participants|stand-down|leave|takeover <protocol> <id>]");
+			if (action !== "status") throw new HostedRuntimeClientError("invalid_request", "Usage: /runtime [status|start|register|monitor <directory>|monitor-delete|collaborate <protocol> <id>|collaborator-start <protocol> <id>|participants|stand-down|leave|takeover <protocol> <id>]");
 			const hello = strictObject(await this.client.hello(), "Runtime hello");
 			const registration = this.registration;
 			ctx.ui.notify(`Runtime ${String(hello.runtimeId)} (${String(hello.epoch)}); Pi ${registration ? `registered until ${new Date(registration.leaseUntil).toISOString()}` : "not registered"}.`, "info");
@@ -570,10 +507,9 @@ export class HostedRuntimeIntegration {
 	private async changeCollaborators(action: "stand_down" | "stop", requestedProtocol: string | undefined, candidates: CollaboratorCandidate[], ctx: ExtensionContext, signal?: AbortSignal): Promise<CollaboratorManageResult[]> {
 		if (this.collaboratorManageActive) throw new HostedRuntimeClientError("busy", "Another collaborator lifecycle operation is already in progress.");
 		this.collaboratorManageActive = true;
-		const auto = this.activeAutoState(ctx);
 		try {
 			throwIfAborted(signal);
-			if (!ctx.hasUI && !auto) throw new HostedRuntimeClientError("host_unavailable", "Collaborator lifecycle confirmation requires an interactive Pi session or enabled Runtime Auto mode.");
+			if (!ctx.hasUI) throw new HostedRuntimeClientError("host_unavailable", "Collaborator lifecycle confirmation requires an interactive Pi session.");
 			if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Collaborator lifecycle changes require a trusted project.");
 			const protocol = collaboratorName(requestedProtocol ?? this.participantIdentity?.protocol, "protocol");
 			const participantIds = candidates.map((candidate) => collaboratorName(candidate.participantId, "participant ID"));
@@ -592,17 +528,14 @@ export class HostedRuntimeIntegration {
 				if (participant.state === "vacant") results[index] = { participant: `${protocol}/${participant.participantId}`, status: "already_vacant" };
 			});
 			if (actionable.length === 0) return results;
-			const participantNames = targets.map((participant) => `${protocol}/${participant.participantId}`);
-			const operationId = `auto_op_${randomUUID()}`;
 			const summary = actionable.map((participant) => `${protocol}/${participant.participantId}`).join("\n");
 			const detail = action === "stand_down" ? "Vacate these collaborators and preserve their queued messages?" : "Vacate these collaborators, preserve queued messages, and terminate only their exact plugin-managed Herdr tabs?";
-			if (!auto && !await ctx.ui.confirm(`${action === "stand_down" ? "Stand down" : "Stop"} Runtime collaborators?`, `${detail}\n\n${summary}`, { signal })) {
+			if (!await ctx.ui.confirm(`${action === "stand_down" ? "Stand down" : "Stop"} Runtime collaborators?`, `${detail}\n\n${summary}`, { signal })) {
 				targets.forEach((participant, index) => {
 					if (!results[index]) results[index] = { participant: `${protocol}/${participant.participantId}`, status: "declined" };
 				});
 				return results;
 			}
-			if (auto) this.recordAutoLifecycle(auto, action, "authorized", registration, participantNames, operationId);
 			let next = 0;
 			const worker = async (): Promise<void> => {
 				while (next < actionable.length) {
@@ -638,61 +571,40 @@ export class HostedRuntimeIntegration {
 			targets.forEach((participant, index) => {
 				if (!results[index]) results[index] = { participant: `${protocol}/${participant.participantId}`, status: "cancelled" };
 			});
-			if (auto) this.recordAutoLifecycle(auto, action, "settled", registration, participantNames, operationId, results);
 			return results;
 		} finally {
 			this.collaboratorManageActive = false;
 		}
 	}
 
-	private async withCollaboratorStart<T>(ctx: ExtensionContext, useAuto: boolean, operation: (control: CollaboratorStartControl) => Promise<T>): Promise<T> {
+	private async withCollaboratorStart<T>(operation: () => Promise<T>): Promise<T> {
 		if (this.collaboratorManageActive) throw new HostedRuntimeClientError("busy", "Another collaborator lifecycle operation is already in progress.");
 		this.collaboratorManageActive = true;
-		const control: CollaboratorStartControl = { capacity: {}, retainLock: false };
-		let releaseStartLock: (() => void) | undefined;
 		try {
-			control.auto = useAuto ? this.activeAutoState(ctx) : undefined;
-			releaseStartLock = await this.autoStore.acquireStartLock();
-			return await operation(control);
-		} catch (error) {
-			control.retainLock ||= error instanceof HostedCollaboratorStartError && error.childMayBeLive;
-			throw error;
+			return await operation();
 		} finally {
-			try {
-				if (!control.retainLock && control.capacity.registration && control.capacity.operationId) await this.client.call("participant.auto_capacity.release", { ...auth(control.capacity.registration), operationId: control.capacity.operationId });
-			} catch (error) {
-				control.retainLock = true;
-				// oxlint-disable-next-line no-unsafe-finally -- Release ambiguity must replace the prior outcome so recovery remains fail-closed.
-				throw new HostedCollaboratorStartError("unavailable", `Runtime Auto capacity ${control.capacity.operationId} could not be released; its launch lock and reservation were preserved. Recover with /runtime auto recover ${control.capacity.operationId}: ${error instanceof Error ? error.message : String(error)}`, true);
-			} finally {
-				if (!control.retainLock) releaseStartLock?.();
-				this.collaboratorManageActive = false;
-			}
+			this.collaboratorManageActive = false;
 		}
 	}
 
 	private async startCommandCollaborator(ctx: ExtensionContext, protocol: string, participantId: string, candidate: ResolvedCollaboratorCandidate): Promise<void> {
-		await this.withCollaboratorStart(ctx, false, async () => this.launchCollaborator(ctx, protocol, participantId, true, undefined, undefined, candidate));
+		await this.withCollaboratorStart(async () => this.launchCollaborator(ctx, protocol, participantId, true, undefined, undefined, candidate));
 	}
 
 	async startCollaborator(input: { participantId: string; protocol?: string; callerParticipantId?: string; driver?: CollaboratorDriver; model?: string; persona?: string; profile?: CollaboratorProfile }, ctx: ExtensionContext, signal?: AbortSignal): Promise<{ started: boolean; participant: string; paneId?: string }> {
-		return this.withCollaboratorStart(ctx, true, async (control) => this.startCollaboratorConfirmed(input, ctx, signal, control.auto, control.capacity));
+		return this.withCollaboratorStart(async () => this.startCollaboratorConfirmed(input, ctx, signal));
 	}
 
 	async startCollaborators(candidates: CollaboratorCandidate[], ctx: ExtensionContext, signal?: AbortSignal): Promise<CollaboratorManageResult[]> {
-		return this.withCollaboratorStart(ctx, true, async (control) => {
-			const auto = control.auto;
-			const capacity = control.capacity;
+		return this.withCollaboratorStart(async () => {
 			throwIfAborted(signal);
 			if (candidates.length < 1 || candidates.length > 12) throw new HostedRuntimeClientError("invalid_request", "Batch collaborator start requires 1 to 12 candidates.");
-			if (!ctx.hasUI && !auto) throw new HostedRuntimeClientError("host_unavailable", "Collaborator start confirmation requires an interactive Pi session or enabled Runtime Auto mode.");
+			if (!ctx.hasUI) throw new HostedRuntimeClientError("host_unavailable", "Collaborator start confirmation requires an interactive Pi session.");
 			if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Collaborator start requires a trusted project.");
 			if (process.env.HERDR_ENV !== "1" || !process.env.HERDR_WORKSPACE_ID) throw new HostedRuntimeClientError("host_unavailable", "Collaborator start requires this Pi session to run inside Herdr.");
 			const identity = this.requireParticipantIdentity();
 			if (identity.disposition !== "held") throw new HostedRuntimeClientError("conflict", "Batch collaborator start requires this Pi session to hold its collaborator identity.");
-			const normalized = candidates.map((candidate) => resolveCollaboratorCandidate(candidate, auto ? "read-only" : undefined));
-			const nativeConfirmation = normalized.some(usesNativeUserConfiguration);
-			if (nativeConfirmation && !ctx.hasUI) throw new HostedRuntimeClientError("host_unavailable", "Normal native configuration requires explicit interactive confirmation, including in Auto mode.");
+			const normalized = candidates.map((candidate) => resolveCollaboratorCandidate(candidate));
 			if (new Set(normalized.map((candidate) => candidate.participantId)).size !== normalized.length) throw new HostedRuntimeClientError("conflict", "Batch collaborator participant IDs must be unique.");
 			if (normalized.some((candidate) => candidate.participantId === identity.participantId)) throw new HostedRuntimeClientError("conflict", "Caller and child collaborator identities must differ.");
 			const registration = await this.requireRegistration(ctx);
@@ -706,20 +618,11 @@ export class HostedRuntimeIntegration {
 				if (existing?.state === "held") throw new HostedRuntimeClientError("conflict", `Participant ${identity.protocol}/${candidate.participantId} already has a holder.`);
 				if (existing?.state === "ended") throw new HostedRuntimeClientError("conflict", `Ended collaborator ${identity.protocol}/${candidate.participantId} requires explicit revival.`);
 			}
-			if (auto) assertAutoCapacity(participants, normalized.length, caller.participantKey);
-			const participantNames = normalized.map((candidate) => `${identity.protocol}/${candidate.participantId}`);
-			const operationId = `auto_op_${randomUUID()}`;
 			const projectRoot = realpathSync(ctx.cwd);
 			const summary = normalized.map((candidate) => { const prior = participants.find((participant) => participant.protocol === identity.protocol && participant.participantId === candidate.participantId); return `${identity.protocol}/${candidate.participantId} — ${collaboratorConfiguration(candidate)}, project ${projectRoot}, isolated worktree ${candidate.profile === "workspace-write" ? "yes" : "no"}, replace stood-down process ${prior?.state === "vacant" && prior.lastTransition.cause === "stand_down" ? "yes" : "no"}`; }).join("\n");
-			const confirmed = auto && !nativeConfirmation ? true : await ctx.ui.confirm("Start Runtime collaborators?",  `As ${identity.protocol}/${identity.participantId}, start ${normalized.length} collaborators with concurrency up to 4 in no-focus Herdr tabs?\n\n${summary}`, { signal });
+			const confirmed = await ctx.ui.confirm("Start Runtime collaborators?",  `As ${identity.protocol}/${identity.participantId}, start ${normalized.length} collaborators with concurrency up to 4 in no-focus Herdr tabs?\n\n${summary}`, { signal });
 			throwIfAborted(signal);
 			if (!confirmed) return normalized.map((candidate) => ({ participant: `${identity.protocol}/${candidate.participantId}`, status: "declined" }));
-			if (auto) {
-				capacity.registration = registration;
-				capacity.operationId = operationId;
-				await this.client.call("participant.auto_capacity.reserve", { ...auth(registration), operationId, protocol: identity.protocol, callerParticipantId: identity.participantId, expectedCallerGeneration: caller.generation, participantIds: normalized.map((candidate) => candidate.participantId) });
-				this.recordAutoLifecycle(auto, "start", "authorized", registration, participantNames, operationId);
-			}
 			const results = Array<CollaboratorManageResult>(normalized.length);
 			let next = 0;
 			const worker = async (): Promise<void> => {
@@ -728,10 +631,9 @@ export class HostedRuntimeIntegration {
 					const index = next++;
 					const candidate = normalized[index]!;
 					try {
-						const paneId = await this.launchCollaborator(ctx, identity.protocol, candidate.participantId, false, signal, caller, candidate, !!auto && !usesNativeUserConfiguration(candidate));
+						const paneId = await this.launchCollaborator(ctx, identity.protocol, candidate.participantId, false, signal, caller, candidate);
 						results[index] = { participant: `${identity.protocol}/${candidate.participantId}`, status: "started", paneId };
 					} catch (error) {
-						if (error instanceof HostedCollaboratorStartError && error.childMayBeLive) control.retainLock = true;
 						results[index] = { participant: `${identity.protocol}/${candidate.participantId}`, status: signal?.aborted ? "cancelled" : "failed", error: error instanceof Error ? error.message : String(error) };
 					}
 				}
@@ -742,23 +644,22 @@ export class HostedRuntimeIntegration {
 			normalized.forEach((candidate, index) => {
 				if (!results[index]) results[index] = { participant: `${identity.protocol}/${candidate.participantId}`, status: "cancelled" };
 			});
-			if (auto) this.recordAutoLifecycle(auto, "start", "settled", registration, participantNames, operationId, results);
 			return results;
 		});
 	}
 
-	private async startCollaboratorConfirmed(input: { participantId: string; protocol?: string; callerParticipantId?: string; driver?: CollaboratorDriver; model?: string; persona?: string; profile?: CollaboratorProfile }, ctx: ExtensionContext, signal: AbortSignal | undefined, auto: CollaboratorAutoState | undefined, capacity: { registration?: LiveClientRegistration; operationId?: string }): Promise<{ started: boolean; participant: string; paneId?: string }> {
+	private async startCollaboratorConfirmed(input: { participantId: string; protocol?: string; callerParticipantId?: string; driver?: CollaboratorDriver; model?: string; persona?: string; profile?: CollaboratorProfile }, ctx: ExtensionContext, signal: AbortSignal | undefined): Promise<{ started: boolean; participant: string; paneId?: string }> {
 		throwIfAborted(signal);
-		if (!ctx.hasUI && !auto) throw new HostedRuntimeClientError("host_unavailable", "Collaborator start confirmation requires an interactive Pi session or enabled Runtime Auto mode.");
+		if (!ctx.hasUI) throw new HostedRuntimeClientError("host_unavailable", "Collaborator start confirmation requires an interactive Pi session.");
 		if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Collaborator start requires a trusted project.");
 		if (process.env.HERDR_ENV !== "1" || !process.env.HERDR_WORKSPACE_ID) throw new HostedRuntimeClientError("host_unavailable", "Collaborator start requires this Pi session to run inside Herdr.");
 		const identity = this.participantIdentity;
 		if (identity?.disposition === "ended") throw new HostedRuntimeClientError("conflict", "Current collaborator identity has ended; explicit revival is required.");
 		const protocol = collaboratorName(identity?.protocol ?? input.protocol, "protocol");
 		const callerParticipantId = collaboratorName(identity?.participantId ?? input.callerParticipantId, "caller participant ID");
-		const candidate = resolveCollaboratorCandidate(input, auto ? "read-only" : undefined);
+		const candidate = resolveCollaboratorCandidate(input);
 		const nativeConfirmation = usesNativeUserConfiguration(candidate);
-		if (nativeConfirmation && !ctx.hasUI) throw new HostedRuntimeClientError("host_unavailable", "Normal native configuration requires explicit interactive confirmation, including in Auto mode.");
+		if (nativeConfirmation && !ctx.hasUI) throw new HostedRuntimeClientError("host_unavailable", "Normal native configuration requires explicit interactive confirmation.");
 		const participantId = candidate.participantId;
 		if (identity && ((input.protocol && input.protocol !== protocol) || (input.callerParticipantId && input.callerParticipantId !== callerParticipantId))) throw new HostedRuntimeClientError("conflict", `Current collaborator identity is ${protocol}/${callerParticipantId}.`);
 		if (participantId === callerParticipantId) throw new HostedRuntimeClientError("conflict", "Caller and child collaborator identities must differ.");
@@ -791,22 +692,12 @@ export class HostedRuntimeIntegration {
 		if (child?.state === "held") throw new HostedRuntimeClientError("conflict", "Participant already has a holder.");
 		if (child?.state === "ended") throw new HostedRuntimeClientError("conflict", "Ended collaborator identities require explicit /runtime collaborator-start revival.");
 		const callerAction = expectedCaller ? `As ${protocol}/${callerParticipantId}, start` : identity ? `Reacquire ${protocol}/${callerParticipantId} and start` : `Acquire ${protocol}/${callerParticipantId} and start`;
-		if (auto) assertAutoCapacity(participants, 1, caller?.participantKey);
-		const operationId = `auto_op_${randomUUID()}`;
 		const participantName = `${protocol}/${participantId}`;
 		const projectRoot = realpathSync(ctx.cwd);
 		const replacesStoodDown = child?.state === "vacant" && child.lastTransition.cause === "stand_down";
-		const confirmed = auto && !nativeConfirmation ? true : await ctx.ui.confirm("Start Runtime collaborator?",  `${callerAction} ${participantName} using ${collaboratorConfiguration(candidate)}, project ${projectRoot}, isolated worktree ${candidate.profile === "workspace-write" ? "yes" : "no"}${replacesStoodDown ? ", replacing its exact stood-down process" : ""}, in a no-focus Herdr tab?`, { signal });
+		const confirmed = await ctx.ui.confirm("Start Runtime collaborator?",  `${callerAction} ${participantName} using ${collaboratorConfiguration(candidate)}, project ${projectRoot}, isolated worktree ${candidate.profile === "workspace-write" ? "yes" : "no"}${replacesStoodDown ? ", replacing its exact stood-down process" : ""}, in a no-focus Herdr tab?`, { signal });
 		throwIfAborted(signal);
 		if (!confirmed) return { started: false, participant: participantName };
-		if (auto) {
-			capacity.registration = registration;
-			capacity.operationId = operationId;
-			const reservation = { ...auth(registration), operationId, protocol, callerParticipantId, participantIds: [participantId] };
-			if (expectedCaller) Object.assign(reservation, { expectedCallerGeneration: expectedCaller.generation });
-			await this.client.call("participant.auto_capacity.reserve", reservation);
-			this.recordAutoLifecycle(auto, "start", "authorized", registration, [participantName], operationId);
-		}
 		let acquiredCaller: ParticipantIdentity | undefined;
 		let rollbackCaller = false;
 		try {
@@ -819,11 +710,9 @@ export class HostedRuntimeIntegration {
 				this.persistParticipant(acquiredCaller);
 				throwIfAborted(signal);
 			}
-			const paneId = await this.launchCollaborator(ctx, protocol, participantId, false, signal, launchCaller, candidate, !!auto && !usesNativeUserConfiguration(candidate));
-			if (auto) this.recordAutoLifecycle(auto, "start", "settled", registration, [participantName], operationId, [{ participant: participantName, status: "started", paneId }]);
+			const paneId = await this.launchCollaborator(ctx, protocol, participantId, false, signal, launchCaller, candidate);
 			return { started: true, participant: participantName, paneId };
 		} catch (error) {
-			if (auto) this.recordAutoLifecycle(auto, "start", "settled", registration, [participantName], operationId, [{ participant: participantName, status: signal?.aborted ? "cancelled" : "failed" }]);
 			const childMayBeLive = error instanceof HostedCollaboratorStartError && error.childMayBeLive;
 			if (acquiredCaller?.participantKey && rollbackCaller && !childMayBeLive) {
 				try {
@@ -1055,7 +944,7 @@ export class HostedRuntimeIntegration {
 					paneId = undefined;
 					tabCreated = false;
 				} catch (cleanupError) {
-					throw new HostedCollaboratorStartError("host_unavailable", `Ambiguous Auto collaborator startup could not be terminated; its capacity lock and recovery artifacts were preserved: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`, true);
+					throw new HostedCollaboratorStartError("host_unavailable", `Ambiguous collaborator startup could not be terminated; its recovery artifacts were preserved: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`, true);
 				}
 			}
 			if (childMayBeLive) throw new HostedCollaboratorStartError(errorCode(error), error instanceof Error ? error.message : String(error), true);
@@ -1493,7 +1382,6 @@ export class HostedRuntimeIntegration {
 		const registration = this.registration;
 		const current = this.sessionScope(ctx, registration);
 		try {
-			this.updateAutoStatus(ctx);
 			if (!registration) {
 				if (existsSync(this.client.socketPath)) await this.register(ctx);
 				return;
@@ -1633,13 +1521,6 @@ export class HostedRuntimeIntegration {
 				if (workspaceRoot !== realpathSync(ctx.cwd)) continue;
 				this.collaboratorWorkspace = { version: 1, workspaceId: data.workspaceId, projectRoot, workspaceRoot };
 			} catch {}
-		}
-	}
-
-	private restoreManagedCollaborator(ctx: ExtensionContext): void {
-		this.managedCollaborator = parseCollaboratorBootstrap(process.env[COLLABORATOR_ENV]) !== undefined;
-		for (const entry of sessionBranch(ctx)) {
-			if (entry.type === "custom" && entry.customType === HOSTED_MANAGED_COLLABORATOR_ENTRY && asRecord(entry.data)?.version === 1 && asRecord(entry.data)?.managed === true) this.managedCollaborator = true;
 		}
 	}
 
@@ -1790,30 +1671,6 @@ export class HostedRuntimeIntegration {
 			this.admittedClaims.delete(oldest);
 			this.pendingAcks.delete(oldest);
 		}
-	}
-
-	private activeAutoState(ctx: ExtensionContext): CollaboratorAutoState | undefined {
-		if (this.managedCollaborator) { this.updateAutoStatus(ctx); return undefined; }
-		const read = this.autoStore.read();
-		this.updateAutoStatus(ctx, read.state);
-		if (!read.valid && this.autoStateError !== read.error) {
-			this.autoStateError = read.error;
-			ctx.ui.notify(`Runtime Auto state is invalid; enforced MANUAL mode: ${read.error}`, "warning");
-		}
-		if (read.valid) this.autoStateError = undefined;
-		return read.valid && read.state.enabled ? read.state : undefined;
-	}
-
-	private updateAutoStatus(ctx: ExtensionContext, state = this.autoStore.read().state): void {
-		const ui = ctx.ui;
-		const label = this.managedCollaborator ? undefined : state.enabled ? "AUTO" : "MANUAL";
-		ui?.setStatus?.("runtime-auto", label ? (ui.theme?.fg?.(state.enabled ? "warning" : "dim", label) ?? label) : undefined);
-	}
-
-	private recordAutoLifecycle(state: CollaboratorAutoState, action: CollaboratorManageAction, phase: "authorized" | "settled", registration: LiveClientRegistration, participants: string[], operationId: string, results?: CollaboratorManageResult[]): void {
-		const entry = { version: 1, operationId, modeGeneration: state.generation, action, phase, targetKey: registration.targetKey, callerParticipantKey: this.participantIdentity?.participantKey, participants, at: Date.now() };
-		if (results) Object.assign(entry, { results: results.map((result) => ({ participant: result.participant, status: result.status })) });
-		this.pi.appendEntry(HOSTED_AUTO_LIFECYCLE_ENTRY, entry);
 	}
 
 	private rememberWake(wakeId: string): void {
@@ -2111,14 +1968,14 @@ const READ_ONLY_PERSONA_TOOLS = new Set(["safe_read", "safe_list", "safe_search"
 const WORKSPACE_WRITE_PERSONA_TOOLS = new Set([...READ_ONLY_PERSONA_TOOLS, "edit", "write"]);
 const OPTIONAL_COLLABORATOR_PERSONA_TOOLS = new Set(["review_report"]);
 
-function resolveCollaboratorCandidate(candidate: CollaboratorCandidate, defaultProfile?: CollaboratorProfile): ResolvedCollaboratorCandidate {
+function resolveCollaboratorCandidate(candidate: CollaboratorCandidate): ResolvedCollaboratorCandidate {
 	const participantId = collaboratorName(candidate.participantId, "participant ID");
 	const driver = collaboratorDriver(candidate.driver);
 	const requestedModel = collaboratorModel(candidate.model);
 	assertUnambiguousCollaboratorModel(driver, requestedModel);
 	const requestedProfile = collaboratorProfile(candidate.profile);
 	if (!candidate.persona) {
-		const profile = requestedProfile ?? defaultProfile ?? (driver === "pi" ? undefined : "read-only");
+		const profile = requestedProfile ?? (driver === "pi" ? undefined : "read-only");
 		const result: ResolvedCollaboratorCandidate = { participantId, driver };
 		if (requestedModel) result.model = requestedModel;
 		if (profile) result.profile = profile;
@@ -2157,11 +2014,6 @@ function collaboratorConfiguration(candidate: ResolvedCollaboratorCandidate): st
 
 function collaboratorConfigurationHash(candidate: ResolvedCollaboratorCandidate): string {
 	return createHash("sha256").update(JSON.stringify({ driver: candidate.driver, model: candidate.model ?? null, profile: candidate.profile ?? null, persona: candidate.persona ? { name: candidate.persona.name, promptHash: candidate.persona.promptHash } : null })).digest("hex");
-}
-
-function assertAutoCapacity(participants: ClientParticipantStatus[], requested: number, callerParticipantKey: string | undefined): void {
-	const held = participants.filter((participant) => participant.participantKey !== callerParticipantKey && participant.state === "held").length;
-	if (held + requested > AUTO_MAX_LIVE_COLLABORATORS) throw new HostedRuntimeClientError("conflict", `Runtime Auto mode permits at most ${AUTO_MAX_LIVE_COLLABORATORS} held or reserved collaborators; ${held} are already held and ${requested} were requested.`);
 }
 
 function collaboratorPathAllowed(cwd: string, value: CustomToolCallEvent["input"]["path"], allowMissing: boolean): boolean {
