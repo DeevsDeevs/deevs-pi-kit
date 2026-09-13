@@ -35,6 +35,13 @@ export interface HostedMessageStatus {
 	deliveryState: "pending" | "admitted";
 }
 
+export interface MessagingPublication {
+	operationId: string;
+	recipientParticipantKey: string;
+	body: string;
+	inReplyToEventId?: string;
+}
+
 export interface HostedParticipantCoordinatorOptions {
 	now?: () => number;
 	createGeneration?: () => string;
@@ -208,22 +215,22 @@ export class HostedParticipantCoordinator {
 		const recipient = this.requireParticipant(recipientParticipantKey, target.projectRoot);
 		if (recipient.state === "ended") throw new HostedParticipantError("not_found", "Mailbox recipient has ended.");
 		this.store.apply({ type: "mailbox.send", senderParticipantKey: sender.participantKey, expectedSenderGeneration, senderTargetKey: registration.targetKey, recipientParticipantKey, sendId, eventId: this.options.createEventId?.() ?? `evt_${randomUUID()}`, body, at: this.now() });
-		const event = Object.values(this.store.read().events).find((candidate): candidate is HostedMailboxMessageEvent => candidate.type === "mailbox.message" && candidate.payload.senderParticipantKey === sender.participantKey && candidate.payload.sendId === sendId);
+		const event = Object.values(this.store.read().events).find((candidate): candidate is HostedMailboxMessageEvent => candidate.type === "mailbox.message" && candidate.source.id === sender.participantKey && candidate.sendId === sendId);
 		if (!event) throw new HostedParticipantError("conflict", "Mailbox send did not produce a durable event.");
 		const currentRecipient = this.store.read().participants[recipientParticipantKey];
 		if (currentRecipient?.state === "held") this.wakes.request(currentRecipient.holderTargetKey!);
 		return event;
 	}
 
-	sendMessaging(registration: HostedLiveRegistration, namespaceId: string, operationId: string, recipientParticipantKey: string, body: string, reply?: { inReplyToEventId: string; receiptToken: string }): void {
+	sendMessaging(registration: HostedLiveRegistration, namespaceId: string, publication: MessagingPublication): void {
 		const grant = this.store.read().messaging[namespaceId];
 		if (!grant || grant.targetKey !== registration.targetKey || grant.clientGeneration !== registration.clientGeneration) throw new HostedParticipantError("conflict", "Messaging sender binding changed.");
 		this.assertNotStopping(grant.participantKey);
 		this.assertTargetNotStopping(grant.targetKey);
-		const retry = Object.hasOwn(grant.receipts, operationId);
-		this.store.apply({ ...(reply ? { type: "messaging.reply", ...reply } as const : { type: "messaging.send", recipientParticipantKey } as const), namespaceId, operationId, body, eventId: this.options.createEventId?.() ?? `evt_${randomUUID()}`, at: this.now() });
-		const recipient = this.store.read().participants[recipientParticipantKey];
-		if (!retry && recipient?.state === "held") this.wakes.request(recipient.holderTargetKey!);
+		const retry = Object.hasOwn(grant.operations, publication.operationId);
+		this.store.apply({ type: "messaging.send", namespaceId, ...publication, eventId: this.options.createEventId?.() ?? `evt_${randomUUID()}`, at: this.now() });
+		const recipient = this.store.read().participants[publication.recipientParticipantKey];
+		if (!retry && recipient?.state === "held" && recipient.holderTargetKey) this.wakes.request(recipient.holderTargetKey);
 	}
 
 	messageStatus(registration: HostedLiveRegistration, senderParticipantKey: string, expectedSenderGeneration: string, eventId: string): HostedMessageStatus {
@@ -231,7 +238,7 @@ export class HostedParticipantCoordinator {
 		const sender = this.requireParticipant(senderParticipantKey, target.projectRoot);
 		if (sender.state !== "held" || sender.generation !== expectedSenderGeneration || sender.holderTargetKey !== registration.targetKey) throw new HostedParticipantError("conflict", "Message status caller identity or generation changed.");
 		const event = this.store.read().events[eventId];
-		if (!event || event.type !== "mailbox.message" || event.payload.senderParticipantKey !== senderParticipantKey) throw new HostedParticipantError("not_found", "Mailbox message is absent for this sender.");
+		if (!event || event.type !== "mailbox.message" || event.source.id !== senderParticipantKey) throw new HostedParticipantError("not_found", "Mailbox message is absent for this sender.");
 		const deliveryState = event.delivery.status === "acked" ? "admitted" as const : "pending" as const;
 		return { eventId, recipientParticipantKey: event.recipientParticipantKey, deliveryState };
 	}

@@ -1,6 +1,6 @@
 # Hosted Runtime protocol
 
-> **Current Runtime contract and release gates.** Universal messaging remains unreleased. Runtime accepts only state schema v16; unsupported stores fail without migration, rewriting or deletion. Interactive collaborators have no legacy headless delivery fallback.
+> **Current Runtime contract and release gates.** Universal messaging remains unreleased. Runtime accepts only state schema v17; unsupported stores fail without migration, rewriting or deletion. Interactive collaborators have no legacy headless delivery fallback.
 
 Runtime provides durable local routing and lifecycle authority for work that must survive Pi and Runtime restarts. Herdr owns live agent panes, terminals, process supervision, and interactive prompt submission. Runtime adds durable participant identity, mailbox state, explicit capabilities, per-writer Git worktrees, and recovery.
 
@@ -201,9 +201,9 @@ Ordinary mail is retrieved only through the shared MCP interface. It is excluded
 
 Claude/Codex automatic terminal prompt injection is blocked even when idle and unfocused. Herdr's paste/delayed-Enter queue cannot attest editor emptiness, honor cancellation throughout submission, or bind its eventual reader to an exact process incarnation. No `agent.prompt`, keystroke or full-body fallback is used for automatic mail. Direct human interaction and exact lifecycle management remain available.
 
-Pi reference-only notification uses trusted `messaging.reference`, not an additional MCP tool. Its registration, participant/generation and attempt ID are fenced against the same sole active Pi namespace before/after host verification. A separate event-keyed record commits before the response; committed attempt retries return `acquired:false` without selecting another event. Empty polls have no durable attempt receipt. Reference records share the authority-record cap and expire with namespace evidence; no native ACK is fabricated. The single-flight Pi heartbeat checks lifecycle epoch, exact session/registration, held identity, enabled receive tool, idle/no-pending state and a known empty TUI editor before/after the call. Only `ctx.mode === "tui"` qualifies: RPC has UI dialogs but a synthetic empty editor, so RPC, other headless and unknown-editor contexts skip notification. The distinct custom message exposes only namespace/event IDs. A service-offered reference is not submitted, admitted or persisted by Pi merely because a hook or `sendMessage()` ran. Lost or ambiguous references never automatically replay; this is best-effort notification, not reliable delivery.
+Pi mail notification rides the existing `pi.heartbeat` response: when the target has exactly one live namespace, the reply carries `mail` with the `namespaceId` and `eventId` of the oldest message addressed to its participant that has no `readAt`. There is no attempt ID and no durable notification record. The single-flight Pi heartbeat checks lifecycle epoch, exact session/registration, held identity, enabled receive tool, idle/no-pending state and a known empty TUI editor before offering the hint. Only `ctx.mode === "tui"` qualifies: RPC has UI dialogs but a synthetic empty editor, so RPC, other headless and unknown-editor contexts skip notification. The distinct custom message exposes only namespace/event IDs, and Pi offers each event at most once per session. A hint is not submission, admission or a read receipt merely because `sendMessage()` ran; this is best-effort notification, not reliable delivery.
 
-The managed full-body path is removed, not retained as an MCP fallback. Current `collaborator_send` returns a namespace-scoped publication receipt; `collaborator_status` reports retained delivery evidence separately. The old Pi batch-send/status registrar is removed. A caller that requires automatic structural completion must use a bounded Subagent instead.
+The managed full-body path is removed, not retained as an MCP fallback. Current `collaborator_send` returns the published event ID; `collaborator_status` returns that message, including its `readAt`. The old Pi batch-send/status registrar is removed. A caller that requires automatic structural completion must use a bounded Subagent instead.
 
 Direct user prompts typed in the Claude/Codex tab are not themselves Runtime mail. With a configured MCP connection, the agent may intentionally publish mail through its authenticated tools during a human-driven turn; it speaks as that collaborator, never as the human or another participant. This grants no Runtime lifecycle, integration, discard, review verdict, or Mission completion authority.
 
@@ -224,14 +224,16 @@ The adapter must never:
 
 One package-owned stdio endpoint, six schemas and the [shared skill](../../skills/collaborator-messaging/SKILL.md) serve Pi, Claude Code and Codex. Runtime owns routing, authority and persistent mail; Herdr owns interactive processes. There is no second mailbox backend, direct Pi messaging registrar, old batch-argument translation, or MCP lifecycle/task passthrough.
 
+Messaging has exactly two durable records. A **namespace** is one credential per (target, client generation): participant, holder generation, secret digest, creation/expiry and a map of operation ID to published event ID. A **message** is `{eventId, from (participant, generation, sequence), to, body, inReplyToEventId?, createdAt, readAt?}`.
+
 | Tool | Contract |
 |---|---|
 | `collaborator_peers` | Caller namespace/identity/expiry and up to 12 same-project/protocol peers per page. |
-| `collaborator_send` | Explicit recipient, namespace, operation ID and body; atomically publishes mail and its retry receipt. |
-| `collaborator_receive` | One exact event ID in the caller's namespace; persists/reuses an offer before returning the full body. |
-| `collaborator_received` | Exact namespace/event/offer token; idempotently records the first client receipt without deleting the body. |
-| `collaborator_reply` | Exact offer/token, operation ID and body; atomically records receipt and a correlated publication to the original sender. |
-| `collaborator_status` | Original sender operation lookup, retained event and separate retrieval/client-receipt evidence. |
+| `collaborator_send` | Explicit recipient, namespace, operation ID and body; publishes one message and records its operation ID. |
+| `collaborator_receive` | One exact event addressed to the caller's participant; returns the complete body and changes nothing. |
+| `collaborator_received` | Sets `readAt` on one exact message. Idempotent; the body stays retrievable. |
+| `collaborator_reply` | Publishes to the original sender with `inReplyToEventId` set and sets `readAt` on the original, in one commit. |
+| `collaborator_status` | Looks up one of the caller's operations and returns the published message with its `readAt`. |
 
 ### Setup and authority
 
@@ -239,22 +241,22 @@ Pi uses a real MCP child after trusted registration restores an already-held ide
 
 A namespace permanently binds participant, holder generation, target, client, terminal and configuration. Credentials are owner-private, data-plane-only; authorization stores retain their digest. MCP cannot acquire identity, control processes/profiles/worktrees, adjudicate reviews or complete Missions. Exact authority is checked before and after asynchronous host verification. Stop, replacement and stand-down fence old-holder publications.
 
-Fresh send requires exactly one eligible recipient namespace; absent or ambiguous authority rejects publication. The recipient binding is immutable. New holders/clients/namespaces do not inherit old or pre-issuance mail. Fresh reply derives the recipient from the exact inbound publication and rejects an expired/replaced original sender instead of redirecting it.
+Mail is addressed to a participant, not to a namespace: a later namespace of the same held participant reads the same mail, and a message to a vacant participant queues for its next holder. A different participant cannot receive it. A reply derives its recipient from the inbound message's sender and rejects a redirected recipient.
 
-After uncertainty, look up or repeat the original operation with **identical namespace, operation ID and all arguments**. Already-committed retries recover their original receipt before checking current recipient availability; changed input conflicts. A new operation ID creates new mail. Never migrate an uncertain operation to a successor namespace.
+After uncertainty, look up or repeat the original operation with **identical namespace, operation ID and all arguments**. A repeat returns the original event; changed input conflicts. A new operation ID creates new mail. Never migrate an uncertain operation to a successor namespace.
 
 ### Evidence, bounds and recovery
 
-Publication, reference notification, retrieval offer, explicit client receipt, provider commit and task completion are distinct. An offer does not prove the client saw the response. `receivedAt` is client receipt only; ordinary events stay native-delivery `pending` and never enter claims or ACKs. Missing replies or hints are not proof of failure or completion. Pruned status history does not undo an earlier publication.
+Publication, the idle mail hint, `readAt` and native admission are distinct. `readAt` is a client read receipt only; ordinary events stay native-delivery `pending` and never enter claims or ACKs. Missing replies or hints are not proof of failure or completion.
 
-- Bodies are limited to 16 KiB UTF-8; receive returns one complete event, not a truncated body. Runtime requests are bounded at 64 KiB, messaging responses at 128 KiB and MCP frames at 256 KiB. Authority records share a 10,000-record cap; state is capped at 8 MiB.
-- Offers and publication/reference receipts protect retained bodies independently of native ACK. Namespace expiry clears its offers/receipts and retains a terminal tombstone; retention does not transfer history to a new namespace.
+- Bodies are limited to 16 KiB UTF-8; receive returns one complete message, not a truncated body. Runtime requests are bounded at 64 KiB, messaging responses at 128 KiB and MCP frames at 256 KiB. Namespaces and their operation records share a 10,000-record cap; state is capped at 8 MiB.
+- An operation record retains its message until the publishing namespace expires; expiry clears the namespace's operations and leaves a terminal tombstone. Retention does not transfer history to a new namespace.
 - Post-rename storage uncertainty fences reads/mutations until disk recovery and directory sync. Never restore an older snapshot over an uncertain commit. Cancellation is not proof of non-publication.
 - Exact old-process quiescence and unresolved original operation identities must be accounted for before descriptor cleanup or replacement. Malformed authority fails closed; do not recover credentials by scanning arbitrary session history.
 
 ### Unresolved guarantees
 
-Pi reference hints remain best-effort and are not replayed after loss or uncertainty. Automatic Claude/Codex wakes remain blocked without authoritative editor/process-incarnation/human-priority evidence. Explicit human-driven MCP mail does not upgrade native durable-admission capability.
+Pi mail hints remain best-effort and are not replayed after loss, navigation or client replacement; a missing hint is not proof that no mail exists. Automatic Claude/Codex wakes remain blocked without authoritative editor/process-incarnation/human-priority evidence. Explicit human-driven MCP mail does not upgrade native durable-admission capability.
 
 Readable Pi JSONL, SDK hooks, MCP replies and client receipts do not certify fsync-based body admission or exactly-once native input consumption. A controlled daemon restart with fresh authority is not proof of atomic delivery handoff or delivery survival after the initiating Pi exits. Orphaned/expired descriptor repair and general crash/uncertain-operation interleavings remain unproven. Normal native settings/hooks are not confined by worktree cwd, and configuration hashes do not attest ambient settings or a later skill read. Broader rollout requires separate approval; historical validation records remain in Git history.
 
@@ -314,13 +316,13 @@ The redesign is releasable only when isolated and live gates prove:
 2. The user can type directly and receive responses in both tabs.
 3. Native automatic admission proves exact-session ownership, editor safety and human priority without focus mutation; until then it stays blocked.
 4. Busy/blocked/focused/unknown targets retain pending events.
-5. Publication, reference offering, body retrieval and explicit client receipt remain separate evidence.
+5. Publication, the idle mail hint, body retrieval and `readAt` remain separate evidence.
 6. Ambiguous prompt results fail closed without automatic duplicate replay.
 7. Targets reject automatic-reply claims with `capability_unavailable` until structural evidence exists.
 8. Exact model/persona/profile/cwd/session identity is verified after start and restart.
 9. Read-only and worktree workspace-write launches apply the intended driver startup policy.
 10. Stop proves exact Herdr target/process settlement and retains the worktree.
-11. Monitor and supported task admission remain intact; ordinary Pi mail is reference-notified and retrieved through actual MCP only.
+11. Monitor and supported task admission remain intact; ordinary Pi mail is hinted on heartbeat and retrieved through actual MCP only.
 12. No collaborator tab contains a bridge-runner command or hidden per-message provider process.
 13. Unsupported state is rejected without rewriting or deleting existing mail, authority evidence or worktrees.
 14. Confirmed-start authority and zero-focus gates still pass.
