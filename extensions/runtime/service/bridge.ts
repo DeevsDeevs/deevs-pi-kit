@@ -183,7 +183,6 @@ export interface BridgeRegistrationResult {
 	profile: HostedCollaboratorProfile;
 	configurationHash: string;
 	driver?: HostedNativeCollaboratorDriver;
-	capabilityTier?: "managed";
 	agentSession?: HostedAgentSessionIdentity;
 	metadata: Record<string, string>;
 	projectRoot: string;
@@ -196,7 +195,7 @@ function bridgeTarget(launch: HostedBridgeLaunch, clientGeneration: string, crea
 	if (launch.workspaceId) Object.assign(shared, { workspaceId: launch.workspaceId, workspaceRoot: launch.workspaceRoot! });
 	if (!launch.driver) return { kind: "bridge", ...shared };
 	if (!agentSession) throw new HostedBridgeError("invalid_request", "Interactive Herdr agent registration requires its stable session identity.");
-	return { kind: "agent", ...shared, driver: launch.driver, agentSession: validateAgentSession(agentSession), capabilityTier: "managed" };
+	return { kind: "agent", ...shared, driver: launch.driver, agentSession: validateAgentSession(agentSession) };
 }
 
 function bridgeCredentials(targetKey: string, reconnectToken: string) {
@@ -211,7 +210,6 @@ function result(registration: HostedLiveRegistration, target: HostedExternalTarg
 	const value: BridgeRegistrationResult = { registration, participantKey: target.participantKey, holderGeneration: target.holderGeneration, profile: target.profile, configurationHash: target.configurationHash, metadata: target.metadata, projectRoot: target.projectRoot, cwd: target.workspaceRoot ?? target.projectRoot };
 	if (target.kind === "agent") {
 		value.driver = target.driver;
-		value.capabilityTier = target.capabilityTier;
 		value.agentSession = target.agentSession;
 	}
 	if (target.workspaceId) value.workspaceId = target.workspaceId;

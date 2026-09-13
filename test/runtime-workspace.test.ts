@@ -229,16 +229,6 @@ describe("Runtime isolated collaborator workspace", () => {
 		await expect(bridges.reconnect({ targetKey: native.registration.targetKey, reconnectToken: launch.reconnectToken, clientGeneration: "client_native", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_native" } })).rejects.toThrow();
 		git(workspace.workspace.worktreePath, ["checkout", workspace.workspace.branchRef.slice("refs/heads/".length)]);
 		expect(await bridges.reconnect({ targetKey: native.registration.targetKey, reconnectToken: launch.reconnectToken, clientGeneration: "client_native", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_native" } })).toMatchObject({ workspaceId: workspace.workspace.workspaceId });
-		writeFileSync(join(workspace.workspace.worktreePath, "task.txt"), "dirty\n");
-		const evidence = await test.coordinator.taskEvidence(native.registration.targetKey);
-		expect(evidence).toMatchObject({ workspaceId: workspace.workspace.workspaceId, baseCommit: workspace.workspace.baseCommit, headCommit: workspace.workspace.headCommit, dirty: true, artifactRef: workspace.workspace.branchRef });
-		const task = test.participants.sendTask(main, mainParticipant.participantKey, mainParticipant.generation, native.participantKey, "task_native", "Write task.txt.");
-		const taskResult = test.participants.resultTask(native.registration, native.participantKey, native.holderGeneration, task.eventId, "reply_native", "completed", "Done.", "committed", evidence);
-		expect(taskResult.payload.workspace).toEqual(evidence);
-		rmSync(join(workspace.workspace.worktreePath, "task.txt"));
-		expect(await test.coordinator.taskEvidence(native.registration.targetKey)).toMatchObject({ dirty: false, capturedAt: expect.any(Number) });
-		expect(test.participants.recoverTaskResult(native.registration, native.participantKey, native.holderGeneration, task.eventId, "reply_native", "completed", "Done.", "committed")?.payload.workspace).toEqual(evidence);
-		expect(test.participants.taskStatus(main, mainParticipant.participantKey, mainParticipant.generation, task.eventId)).toMatchObject({ status: "completed", workspace: { workspaceId: workspace.workspace.workspaceId, dirty: true } });
 		const authority = { workspaceId: workspace.workspace.workspaceId, callerParticipantKey: mainParticipant.participantKey, expectedCallerGeneration: mainParticipant.generation };
 		const activeWorkspace = test.store.read().workspaces[workspace.workspace.workspaceId]!;
 		test.store.apply({ type: "workspace.replace", workspace: { ...activeWorkspace, state: "needs_attention", updatedAt: activeWorkspace.updatedAt + 1 }, expectedState: "active", expectedUpdatedAt: activeWorkspace.updatedAt });

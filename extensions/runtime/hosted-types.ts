@@ -51,7 +51,6 @@ export interface HostedAgentTarget extends HostedExternalTargetBase {
 	kind: "agent";
 	driver: HostedNativeCollaboratorDriver;
 	agentSession: HostedAgentSessionIdentity;
-	capabilityTier: "managed";
 }
 export type HostedExternalTarget = HostedBridgeTarget | HostedAgentTarget;
 export type HostedTarget = HostedPiTarget | HostedExternalTarget;
@@ -164,25 +163,6 @@ export interface HostedMailboxMessagePayload {
 	fingerprint: string;
 }
 
-export interface HostedTaskWorkspaceEvidence {
-	workspaceId: string;
-	baseCommit: string;
-	headCommit: string;
-	branchRef: string;
-	state: HostedWorkspaceState;
-	dirty: boolean;
-	artifactRef: string;
-	capturedAt: number;
-}
-
-export interface HostedMailboxTaskResultPayload extends HostedMailboxMessagePayload {
-	inReplyToEventId: string;
-	status: "completed" | "failed" | "cancelled";
-	sessionAdvance: "none" | "committed";
-	replyId: string;
-	workspace?: HostedTaskWorkspaceEvidence;
-}
-
 export type HostedEventDelivery =
 	| { status: "pending"; latestClaimId?: string }
 	| { status: "claimed"; claimId: string }
@@ -217,21 +197,7 @@ export interface HostedMailboxMessageEvent extends HostedEventBase {
 	payload: HostedMailboxMessagePayload;
 }
 
-export interface HostedMailboxTaskEvent extends HostedEventBase {
-	source: HostedParticipantEventSource;
-	recipientParticipantKey: string;
-	type: "mailbox.task";
-	payload: HostedMailboxMessagePayload;
-}
-
-export interface HostedMailboxTaskResultEvent extends HostedEventBase {
-	source: HostedParticipantEventSource;
-	recipientParticipantKey: string;
-	type: "mailbox.task_result";
-	payload: HostedMailboxTaskResultPayload;
-}
-
-export type HostedEvent = HostedFilesystemCreatedEvent | HostedMailboxMessageEvent | HostedMailboxTaskEvent | HostedMailboxTaskResultEvent;
+export type HostedEvent = HostedFilesystemCreatedEvent | HostedMailboxMessageEvent;
 
 export type HostedWorkspaceState = "provisioning" | "ready" | "bound" | "active" | "ready_handoff" | "partial" | "retained" | "needs_attention" | "integrated" | "cleaned";
 
@@ -358,7 +324,7 @@ export interface HostedMessagingGrant {
 }
 
 export interface HostedRuntimeState {
-	version: 13;
+	version: 14;
 	messaging: Record<string, HostedMessagingGrant>;
 	targets: Record<string, HostedTarget>;
 	bridgeLaunches: Record<string, HostedBridgeLaunch>;
@@ -398,8 +364,7 @@ export type HostedStateOperation =
 	| { type: "participant.stand_down"; participantKey: string; targetKey: string; generation: string; expectedGeneration?: string; at: number }
 	| { type: "participant.release"; participantKey: string; targetKey: string; generation: string; at: number }
 	| { type: "participant.takeover"; participantKey: string; targetKey: string; generation: string; at: number }
-	| { type: "mailbox.send" | "task.send"; senderParticipantKey: string; expectedSenderGeneration: string; senderTargetKey: string; recipientParticipantKey: string; sendId: string; eventId: string; body: string; at: number }
-	| { type: "task.result"; senderParticipantKey: string; expectedSenderGeneration: string; senderTargetKey: string; sendId: string; eventId: string; inReplyToEventId: string; status: "completed" | "failed" | "cancelled"; body: string; sessionAdvance: "none" | "committed"; workspace?: HostedTaskWorkspaceEvidence; at: number }
+	| { type: "mailbox.send"; senderParticipantKey: string; expectedSenderGeneration: string; senderTargetKey: string; recipientParticipantKey: string; sendId: string; eventId: string; body: string; at: number }
 	| { type: "inbox.claim"; claim: HostedClaim }
 	| { type: "inbox.ack"; targetKey: string; claimId: string; eventIds: string[]; at: number }
 	| { type: "inbox.submit_begin"; targetKey: string; claimId: string; eventIds: string[]; attemptId: string; at: number }
