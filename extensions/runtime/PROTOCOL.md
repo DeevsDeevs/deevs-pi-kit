@@ -1,6 +1,6 @@
 # Hosted Runtime protocol
 
-> **Normative target contract.** This document defines the interactive Herdr-agent redesign that the Runtime implementation must converge on. Until that migration is complete, released state may still contain legacy headless bridge targets. Legacy behavior is described only in [Migration](#migration-from-headless-native-bridges); it is not the intended collaborator UX.
+> **Current Runtime contract and release gates.** Universal messaging remains unreleased. Runtime accepts only state schema v12; unsupported stores fail without migration, rewriting or deletion. Interactive collaborators have no legacy headless delivery fallback.
 
 Runtime provides durable local routing and lifecycle authority for work that must survive Pi and Runtime restarts. Herdr owns live agent panes, terminals, process supervision, and interactive prompt submission. Runtime adds durable participant identity, mailbox state, explicit capabilities, isolated writable workspaces, and recovery.
 
@@ -24,10 +24,10 @@ Subagents remain the structured bounded-review/task data plane. Collaborators re
 Runtime never pretends that every agent kind has identical delivery guarantees. Each target advertises structural capabilities:
 
 1. **managed**
-   - Runtime can launch, verify, prompt, inspect, stand down, and stop the exact Herdr agent.
-   - The user can interact directly in the agent's tab.
-   - Runtime can durably queue a message until Herdr accepts prompt submission.
-   - Herdr prompt acceptance is not a semantic reply and not proof that the provider durably committed the turn.
+   - Runtime can launch, verify, inspect, stand down, and stop the exact Herdr agent.
+   - The user can interact directly in the agent's tab; automatic native prompt injection remains blocked.
+   - Runtime persists ordinary mail for explicit MCP retrieval when that connection is configured.
+   - Neither host readiness nor an MCP client receipt proves a semantic reply or durable provider commit.
 2. **connected**
    - Includes `managed`.
    - The agent has a structured Runtime reply path that does not scrape terminal output.
@@ -44,7 +44,7 @@ Current intended tiers:
 | Claude Code | Herdr Claude agent | managed | yes | no |
 | Codex | Herdr Codex agent | managed | yes | no |
 
-Claude/Codex do **not** require MCP, hooks, or a provider plugin for managed capability. A future connected/durable adapter is additive and must not replace their interactive Herdr process. Until such an adapter exists, replies remain in the Claude/Codex tab and typed bounded tasks are unavailable for those targets.
+Claude/Codex do **not** require MCP, hooks, or a provider plugin for managed lifecycle capability. Configured native writers can explicitly publish ordinary mail through shared MCP without upgrading their task/admission tier. Terminal answers are not automatically forwarded, and typed bounded tasks remain unavailable for managed targets. Stronger connected/durable adapters must not replace the interactive Herdr process.
 
 Capability checks are typed. Runtime must return `capability_unavailable` rather than silently falling back to pane scraping, regex extraction, direct terminal input, or a hidden print-mode process.
 
@@ -162,7 +162,7 @@ All methods except `hello` and initial registration require exact current author
 
 A stable Pi target is derived from canonical project root and Pi session ID. Registration verifies the session file header, Herdr pane/terminal/session identity, canonical cwd, and exclusive live ownership. Pi receives an epoch-scoped registration key and renews it through heartbeat.
 
-Pi remains `durable`: the in-process extension claims pending work, writes a hidden custom message into Pi session history, and acknowledges exact admission at `message_start`. Registration reconciles historical receipts after crashes.
+Pi advertises `durable` for its Monitor/supported-task path: the in-process extension claims pending work, writes a hidden custom message into Pi session history, and acknowledges at `message_start`. Registration reconciles historical receipts after crashes. This path excludes ordinary MCP mail; the tier label and SDK hooks do not certify fsync-based body admission.
 
 ### Interactive Herdr-agent target
 
@@ -235,13 +235,13 @@ Pi reference-only notification uses trusted `messaging.reference`, not an additi
 
 The managed full-body path is removed, not retained as an MCP fallback. Current `collaborator_send` returns a namespace-scoped publication receipt; `collaborator_status` reports retained delivery evidence separately. The old Pi batch-send/status registrar is removed. A caller that requires automatic structural completion must use a task-capable collaborator or a bounded Subagent instead.
 
-Direct user prompts typed in the Claude/Codex tab are not themselves Runtime mail. In a connected target, the agent may intentionally publish mail through its authenticated tools during a human-driven turn; it speaks as that collaborator, never as the human or another participant. This grants no Runtime lifecycle, integration, discard, review verdict, or Mission completion authority.
+Direct user prompts typed in the Claude/Codex tab are not themselves Runtime mail. With a configured MCP connection, the agent may intentionally publish mail through its authenticated tools during a human-driven turn; it speaks as that collaborator, never as the human or another participant. This grants no Runtime lifecycle, integration, discard, review verdict, or Mission completion authority.
 
 ## Connected and durable adapters
 
 Connected adapters add intentional participant messages and typed task publication to the same visible interactive agent. Native turn admission and durable session commit are separate capabilities requiring their own structural evidence; a reply tool call alone proves neither.
 
-The planned primary reply channel for Claude Code and Codex is one package-owned MCP interface over the existing Runtime mailbox/task services. Provider hooks are optional observation channels, not reply extraction. Supported exact same-session attachment or future Herdr turn receipts may supply stronger evidence only after live verification.
+Ordinary replies from Pi, Claude Code and Codex use one package-owned MCP interface over Runtime mail. Typed tasks are separate and are not exposed by MCP. Provider hooks are observation channels, not reply extraction. Supported exact same-session attachment or future Herdr turn receipts may supply stronger evidence only after live verification.
 
 The adapter must never:
 
@@ -250,99 +250,43 @@ The adapter must never:
 - scrape the pane or infer result status from prose;
 - receive lifecycle, integration, or permission authority from an agent message.
 
-### Communication proposal comparison
+## Shared MCP messaging
 
-MCP is a proposed transport, not a prerequisite for collaboration or durability. The requirement for automatic peer messaging is an authenticated, structured publication path from the same visible agent. Herdr already supplies process management, prompt submission, and agent-state observation; Runtime supplies participant authority, routing, and persistence.
+One package-owned stdio endpoint, six schemas and the [shared skill](../../skills/collaborator-messaging/SKILL.md) serve Pi, Claude Code and Codex. Runtime owns routing, authority and persistent mail; Herdr owns interactive processes. There is no second mailbox backend, direct Pi messaging registrar, old batch-argument translation, or MCP lifecycle/task passthrough.
 
-| Proposal | What it covers | Remaining cost or limitation |
-|---|---|---|
-| Existing Herdr API only | Visible interactive agents, prompt delivery, state waits, and operator inspection | Replies remain in the tab; no documented intentional peer publication or exact typed task-result API |
-| MCP over existing Runtime services | Explicit peer discovery, send/reply/status, and separately gated task operations through a shared tool interface | Requires a narrow adapter, launch credentials, permission-safe provider configuration, and live proof in both Claude and Codex |
-| Narrow Runtime CLI or provider-native tool | The same structured publications without MCP | Still requires credentials, schemas, retry handling, and provider integration; current Claude profiles disable shell, so a CLI is not a drop-in replacement |
-| Extend Herdr with structured messaging | Could consolidate the external API used for delivery and replies | Requires upstream implementation and an agent-side publication mechanism; moves the adapter rather than eliminating it |
-| Provider completion hooks or exact-session attachment | May expose structured turn observations or session evidence | Observation is not intentional peer publication; exact binding and supported same-session behavior require separate proof |
+| Tool | Contract |
+|---|---|
+| `collaborator_peers` | Caller namespace/identity/expiry and up to 12 same-project/protocol peers per page. |
+| `collaborator_send` | Explicit recipient, namespace, operation ID and body; atomically publishes mail and its retry receipt. |
+| `collaborator_receive` | One exact event ID in the caller's namespace; persists/reuses an offer before returning the full body. |
+| `collaborator_received` | Exact namespace/event/offer token; idempotently records the first client receipt without deleting the body. |
+| `collaborator_reply` | Exact offer/token, operation ID and body; atomically records receipt and a correlated publication to the original sender. |
+| `collaborator_status` | Original sender operation lookup, retained event and separate retrieval/client-receipt evidence. |
 
-#### Historical evidence and limits
+### Setup and authority
 
-This comparison predates the selected shared-MCP design and current native-wake block. It was checked against installed Herdr 0.8.2 command help, the published [Herdr 0.9.0 socket API reference](https://raw.githubusercontent.com/herdrdev/herdr/v0.9.0/docs/next/website/src/content/docs/socket-api.mdx), and `hosted-integration.ts`. The newer documentation is not evidence that the installed binary implements every newer feature.
+Pi uses a real MCP child after trusted registration restores an already-held identity, or after explicit `/runtime collaborate <protocol> <id>` acquisition. Tools recheck exact session/file/cwd and holder/client authority. Normal native writers receive the endpoint through supported launch configuration and private post-registration descriptor issuance. Their native client reads the supplied skill and calls peers after explicit human input; trust/tool prompts are not automatically accepted. Guarded read-only automatic provisioning remains unavailable.
 
-- Installed `agent prompt --help` explicitly says it does not track turns; when the agent is already working, that active turn's completion may satisfy its wait. A `done` state is not a reply correlated to Runtime event X.
-- `agent read` returns terminal snapshots. These are useful for inspection, but this protocol does not scrape them into authenticated replies or infer task status from their text.
-- The published socket reference documents agent management, state/session reporting, and lifecycle subscriptions, but no intentional recipient-addressed peer publication or exact task-result endpoint. Display metadata is not a substitute for such an endpoint.
-- The then-existing `submitManagedAgentInbox()` called `herdr agent prompt` and recorded submission outcome, not a structured reply. That automatic path is now removed. `interactiveAgentArgs()` restricts Claude to read/search or read/search/edit/write tools, without shell access.
+A namespace permanently binds participant, holder generation, target, client, terminal and configuration. Credentials are owner-private, data-plane-only; authorization stores retain their digest. MCP cannot acquire identity, control processes/profiles/workspaces, settle typed tasks, adjudicate reviews or complete Missions. Exact authority is checked before and after asynchronous host verification. Stop, replacement and stand-down fence old-holder publications.
 
-#### Historical decision boundary
+Fresh send requires exactly one eligible recipient namespace; absent or ambiguous authority rejects publication. The recipient binding is immutable. New holders/clients/namespaces do not inherit old or pre-issuance mail. Fresh reply derives the recipient from the exact inbound publication and rejects an expired/replaced original sender instead of redirecting it.
 
-Keep Herdr for process control and prompt delivery. Existing Herdr-only managed collaboration is sufficient if replies staying in the visible tabs are acceptable. Automatic peer messaging requires an additional structured return path, but does not inherently require MCP.
+After uncertainty, look up or repeat the original operation with **identical namespace, operation ID and all arguments**. Already-committed retries recover their original receipt before checking current recipient availability; changed input conflicts. A new operation ID creates new mail. Never migrate an uncertain operation to a successor namespace.
 
-MCP is the selected shared interface for both providers. Guarded read-only must not silently gain permissions or hooks; explicitly confirmed normal native configuration is a separate policy that preserves the user's hooks and native permissions. Neither policy permits creating another provider conversation as a substitute for exact binding. This comparison alone does not approve rollout or certify live capabilities.
+### Evidence, bounds and recovery
 
-Runtime publication receipts prove durable publication, not native admission, provider commit, or exactly-once execution, regardless of transport. Moving native delivery from the launching Pi into the daemon is a separate lifetime requirement: it is needed for delivery after that Pi exits, not because MCP is selected.
+Publication, reference notification, retrieval offer, explicit client receipt, native admission, provider commit and task completion are distinct. An offer does not prove the client saw the response. `receivedAt` is client receipt only; ordinary events stay native-delivery `pending` and never enter claims or ACKs. Missing replies or hints are not proof of failure or completion. Pruned status history does not undo an earlier publication.
 
-### Planned communication and UX redesign
+- Bodies are limited to 16 KiB UTF-8; receive returns one complete event, not a truncated body. Runtime requests are bounded at 64 KiB, messaging responses at 128 KiB and MCP frames at 256 KiB. Authority records share a 10,000-record cap; state is capped at 8 MiB.
+- Offers and publication/reference receipts protect retained bodies independently of native ACK. Namespace expiry clears its offers/receipts and retains a terminal tombstone; retention does not transfer history to a new namespace.
+- Post-rename storage uncertainty fences reads/mutations until disk recovery and directory sync. Never restore an older snapshot over an uncertain commit. Cancellation is not proof of non-publication.
+- Exact old-process quiescence and unresolved original operation identities must be accounted for before descriptor cleanup or replacement. Malformed authority fails closed; do not recover credentials by scanning arbitrary session history.
 
-**Implementation plan:** [Universal MCP messaging](MCP-PLAN.md) specifies the revised shared Pi/Claude/Codex tool interface, skill, receive/admission semantics, and staged proof/migration gates. It supersedes the earlier native-only MCP and full-body delivery assumptions for the current development implementation; installation of that implementation remains separately gated. Following independent review, the user authorized implementation beginning with the restricted-provider Stage 0 proof. This is not rollout approval or a claim of implemented messaging.
+### Unresolved guarantees
 
-This section replaces the notify-first Codex proposal. It is a target contract, not a claim that connected native targets are implemented. Scope is collaborator communication and UX: preserve Pi's existing durable admission path, participant identity, isolated workspaces, exact lifecycle fencing, and trusted integration operations.
+Pi reference hints remain best-effort and are not replayed after loss or uncertainty. Automatic Claude/Codex wakes remain blocked without authoritative editor/process-incarnation/human-priority evidence. Explicit human-driven MCP mail does not upgrade native task or durable-admission capability.
 
-#### Ownership and transport
-
-The Runtime daemon owns native-target delivery, verification, claim/submission transitions, and recovery. The launching Pi is a client, not the lifetime owner of another collaborator's communications. Delivery must continue when that Pi exits; another authorized Pi can inspect participant-addressed status.
-
-One package-owned MCP interface exposes the same peer discovery, message send/reply/status, and task send/result/status semantics used by Pi. It reuses Runtime routing and persistence rather than creating a second mailbox system. Claude and Codex attach through supported launch configuration in their existing visible Herdr agents. MCP transport processes carry no provider conversation state; they are owned by the provider or Herdr and cannot become detached services.
-
-MCP configuration must preserve the selected explicit policy: guarded read-only remains separate; normal native workspace-write retains user configuration/hooks/permissions after fresh interactive confirmation, even in Auto. Preserve exact cwd and selected model/context. Neither a permission bypass, silently widening a guarded profile, a new production dependency nor a second provider session is implicit in this design. Provider-specific configuration and transport compatibility require proof before implementation rollout.
-
-#### Full peer messaging and authority
-
-A connected collaborator may discover and message existing participants in its exact project and protocol, not merely prior senders. This includes intentional tool calls from human-driven turns in its tab. Discovery exposes only bounded peer identity/status, never credentials. Ordinary terminal answers are not automatically forwarded; only an explicit authenticated publication becomes peer mail.
-
-The MCP credential is data-plane-only, bound to the exact target/client generation, participant/holder generation, and launch configuration. Runtime derives sender identity from that binding; the model cannot supply a different sender. Credentials are kept in owner-private Runtime storage, never prompts, reports, or Pi session-history entries. A runtime-owned descriptor may carry the client credential; authorization records retain its digest. The existing same-UID trust boundary still applies.
-
-These credentials authorize only validated peer discovery, mail, and supported task operations. They cannot acquire identities, launch or stop agents, alter profiles, checkpoint/integrate/discard workspaces, adjudicate reviews, or complete Missions. Stand-down, replacement, and stop fence subsequent publications from the old holder. Descriptor cleanup follows exact process quiescence; durable receipts are retained for recovery.
-
-A reply must reference an exact inbound event and its recorded delivery target/holder generation; Runtime derives its recipient from that event. Changed or unrelated event/generation references fail closed. Proactive mail requires an explicit existing same-project, same-protocol recipient. Mail to vacant participants remains queued; ended recipients follow the existing rejection contract.
-
-#### Publication, delivery, and evidence
-
-Do not compress independent evidence into one misleading completion state:
-
-| Evidence | What it proves | What it does not prove |
-|---|---|---|
-| Herdr submission receipt | Prompt submission to the verified agent | Native admission, reply, or provider commit |
-| Runtime publication receipt | Authenticated peer message or typed result durably stored | Which native turn caused it, native admission, or provider commit |
-| Attempt-bound native turn evidence | The exact observed native turn milestone | Unobserved milestones or durable commit |
-| Provider commit/replay receipt | The specific durable session guarantee validated by that receipt | Unlimited exactly-once execution |
-
-An MCP response reports publication success only after the Runtime event, deduplication receipt, and any task settlement are atomically durable. Wake happens after that commit and is retryable; an offline sender or failed wake cannot undo publication or cause a second message. Connection loss after commit is recovered by retrying the same operation identity, not by inventing success or blindly starting a new operation. If Runtime cannot commit, the tool returns failure/uncertainty rather than an accepted-looking response. A separate MCP spool is not required merely to duplicate Runtime's durable store.
-
-Durable operation IDs are independent of payload and MCP request IDs. Store a separate fingerprint covering all semantic input. Same operation ID and fingerprint returns the original receipt; changed input with that ID conflicts. The single-result task invariant remains enforced by task event ID even if a caller uses another operation ID. New operation IDs for ordinary messages represent new publications; Runtime does not heuristically deduplicate identical prose or claim exactly-once model behavior. Retention bounds and retry behavior after receipt expiry must be explicit and fail closed against accidental replay.
-
-#### Attempts, silence, and human interaction
-
-Before Herdr submission, persist the exact target/client and participant/holder generations, claim/event/sender IDs, a fresh attempt ID, complete prompt digest, and timing/status evidence. Include the fresh attempt ID in a fixed Runtime envelope so operator retries cannot share the same correlation identity. Initially submit one event per prompt. Preserve idle/focus gating, but never assume the preceding idle check prevents a concurrent human turn.
-
-A published reply may arrive before submission settlement; record it independently without claiming native admission or erasing ambiguous submission evidence. No submitted or ambiguous attempt is automatically replayed. Explicit operator retry uses a new attempt ID and retains the prior attempt's evidence; late results never silently settle a different attempt.
-
-Ordinary chat has no mandatory response. Status must expose queued age, last verified delivery state, published reply IDs, and any observed turn outcome. Timeouts or missing tool calls without correlated observation mean `unobserved`/uncertain, not `no_reply`, failure, or cancellation. Only an authoritative, exact-attempt turn-end observation can establish that the observed turn ended without a publication; later explicit publications remain possible. Tasks remain unresolved/overdue until a valid typed result or a separately specified trusted cancellation operation exists. No automatic task result is inferred from elapsed time or prose.
-
-Sender-visible status and incoming mail must work from any authorized current controller, without asking the user to inspect a collaborator tab or creating a writable workspace solely to retrieve a review. Read-only collaborators must be able to publish messages through the data plane without gaining project write permissions.
-
-#### Observation and capabilities
-
-Codex notifications and approved Claude lifecycle hooks may supply observation only. They never turn `last-assistant-message` or transcript text into an intentional reply. Keep their schemas bounded and validate exact launch, provider-session, attempt, and native turn bindings. Do not accept a matching prompt digest, echoed nonce, or first-seen thread ID alone as proof of attachment to the correct live provider session. Missing or ambiguous binding leaves the outcome unobserved; it cannot upgrade authority. Callback loss before durable capture remains possible and must be surfaced honestly.
-
-A supported structured attachment to the exact visible provider session is an alternative worth proving; it is neither assumed available nor presumed to require another session. A successful proof must preserve one conversation, verifiable session/turn identity, direct tab interaction and zero focus mutation. Stronger replay/commit claims require separate evidence. Herdr turn receipts are another possible future source, not a prerequisite for MCP messaging.
-
-Advertise capabilities per target: messaging, typed tasks, turn observation, and commit/replay evidence separately. An authenticated successful MCP handshake/round trip establishes the proven messaging capability, not every capability associated with a provider name. Task capability requires its own schema, authority and live settlement gates. A connected target without task capability still rejects typed tasks. The release tests must cover recovery and deduplication; they are not destructive per-launch probes. Missing or failed runtime capability negotiation leaves the target managed or explicitly degraded, never silently falling back to scraping. MCP messaging alone remains `connected`, not `durable`.
-
-#### Current-schema and proof gates
-
-The user explicitly chose a current-only implementation: no old-state migrations or legacy messaging fallback. Runtime accepts schema v11 and rejects older/unknown stores without rewriting them. Daemon ownership and MCP credentials require explicit current wire authority, not just moving the heartbeat loop. No daemon credential is recovered by scanning arbitrary Pi session history. Fence old Pi-resident delivery and new daemon delivery at the service so they cannot both submit; specify handoff, failure and rollback behavior before migration ships. Malformed persisted authority fails closed and cannot revive an older valid record.
-
-The authoritative implementation sequence and acceptance gates are in [Universal MCP messaging — remaining gates](MCP-PLAN.md#remaining-implementation-gates): restricted-provider echo proof, messaging foundation, isolated three-harness proof, daemon delivery/Pi receive cutover, then messaging release. Typed task migration is a separately approved follow-up, not a prerequisite for messaging. Native observation and durable-tier advancement remain separately gated; hooks cannot fabricate replies or task settlement. Implementation is authorized subject to those gates; rollout still requires explicit approval.
-
-Remove obsolete compatibility code instead of extending it. This does not authorize deleting existing target data, journals or workspaces, or bypassing process-quiescence and workspace-preservation safeguards.
+Readable Pi JSONL, SDK hooks, MCP replies and client receipts do not certify fsync-based body admission or exactly-once native input consumption. A controlled daemon restart with fresh authority is not proof of atomic delivery handoff or delivery survival after the initiating Pi exits. Orphaned/expired descriptor repair and general crash/uncertain-operation interleavings remain unproven. Normal native settings/hooks are not confined by worktree cwd, and configuration hashes do not attest ambient settings or a later skill read. Broader rollout requires separate approval; historical validation records remain in Git history.
 
 ## Typed tasks
 
@@ -404,7 +348,7 @@ Current collaborators use interactive Herdr sessions and the shared MCP interfac
 
 ## Deferred
 
-- Native durable-tier transport beyond the planned MCP connected communication contract.
+- Native durable-tier admission and automatic delivery beyond explicit MCP messaging.
 - Recursive/content/modification/deletion monitoring.
 - Collaborator groups, broadcasts, and attachments.
 - Durable schedules and automatic takeover.
