@@ -99,7 +99,7 @@ export class MissionRuntime {
 			if (input.reviewVerdict !== mission.review.adjudication.suggestedVerdict) throw new Error(`Review adjudication must match the severity-derived verdict: ${mission.review.adjudication.suggestedVerdict ?? "unknown"}.`);
 			const adjudicated = this.state.append(this.pi, this.state.reviewEvent(input.reviewVerdict, { runId: input.reviewRunId, reason: input.reviewReason, candidateId: mission.review.candidate.id }));
 			chainCheckpoints.current?.due(`Mission review adjudicated: ${input.reviewVerdict}`, "mission_milestone");
-			if (adjudicated?.review.admission.status === "changes_requested" && (adjudicated.review.correction.count ?? 0) > (adjudicated.review.correction.limit ?? 3)) {
+			if (adjudicated?.review.admission.status === "changes_requested" && adjudicated.review.correction.count > adjudicated.review.correction.limit) {
 				this.state.append(this.pi, this.state.statusEvent("blocked", "review correction limit reached", `Correction cycle ${adjudicated.review.correction.count} requires explicit user authorization.`));
 			}
 		}
@@ -138,8 +138,8 @@ export class MissionRuntime {
 		this.restore(ctx);
 		const mission = this.state.readAny();
 		if (!mission) throw new Error("No Mission exists on this branch.");
-		const correctionCount = mission.review.correction.count ?? 0;
-		const correctionBlocked = mission.status === "blocked" && correctionCount > (mission.review.correction.limit ?? 3);
+		const correctionCount = mission.review.correction.count;
+		const correctionBlocked = mission.status === "blocked" && correctionCount > mission.review.correction.limit;
 		this.state.append(this.pi, this.state.reviewPolicyEvent(correctionCount));
 		if (correctionBlocked && !this.state.limitExceeded()) this.state.append(this.pi, this.state.statusEvent("active", "explicit user authorization allowed one additional review correction"));
 		chainCheckpoints.current?.due(`Mission review correction cycle ${correctionCount} authorized`, "mission_control");
@@ -431,10 +431,13 @@ export class MissionRuntime {
 		const recentProgress = this.state.readProgressSinceContinuation();
 		const latestProgress = recentProgress.at(-1);
 		const blocker = latestProgress?.blocked ? latestProgress.blockerId : undefined;
-		const madeProgress = this.materialMutationSinceSettle || recentProgress.some((progress) => progress.validation.some((validation) => validation.exitCode === 0 && validation.objectiveVersion === (mission!.objectiveVersion ?? 1)));
+		const objectiveVersion = mission.objectiveVersion ?? 1;
+		const madeProgress = this.materialMutationSinceSettle || recentProgress.some((progress) => progress.validation.some((validation) => validation.exitCode === 0 && validation.objectiveVersion === objectiveVersion));
 		this.state.append(this.pi, this.state.settledEvent({ blockerFingerprint: blocker, madeProgress }));
 		this.materialMutationSinceSettle = false;
-		mission = this.state.read()!;
+		const settled = this.state.read();
+		if (!settled) return;
+		mission = settled;
 		if ((mission.blockerCount ?? 0) >= 3) {
 			this.state.append(this.pi, this.state.statusEvent("blocked", `same blocker recurred ${mission.blockerCount} autonomous turns`, latestProgress?.summary.slice(0, 500)));
 			this.updateStatus();
@@ -591,9 +594,11 @@ export class MissionRuntime {
 		}
 		if (current.review.completionLatch.candidateId && current.review.completionLatch.candidateId !== candidateId) {
 			this.state.append(this.pi, this.state.completionLatchClearedEvent());
-			current = this.state.read()!;
+			const cleared = this.state.read();
+			if (!cleared) return;
+			current = cleared;
 		}
-		const priorAdjudication = current.review.adjudication.history?.find((item) => item.candidateId === candidateId)
+		const priorAdjudication = current.review.adjudication.history.find((item) => item.candidateId === candidateId)
 			?? (current.review.adjudication.adjudicatedCandidateId === candidateId && current.review.adjudication.adjudicatedVerdict ? { candidateId, verdict: current.review.adjudication.adjudicatedVerdict } : undefined);
 		if (priorAdjudication) {
 			this.state.append(this.pi, this.state.reviewEvent(priorAdjudication.verdict, { runId: current.review.admission.runId, reason: "Duplicate review admission suppressed for the unchanged adjudicated candidate.", worktreeFingerprint: reviewWorktreeFingerprint, candidateId, replayAdjudication: true }));
@@ -610,12 +615,13 @@ export class MissionRuntime {
 			this.updateStatus();
 			return;
 		}
-		if ((current.review.adjudication.history?.length ?? 0) >= MAX_MISSION_REVIEW_ADJUDICATIONS) {
+		if (current.review.adjudication.history.length >= MAX_MISSION_REVIEW_ADJUDICATIONS) {
 			this.state.append(this.pi, this.state.statusEvent("blocked", "review adjudication history capacity reached", "A new reviewer was not launched because doing so could require forgetting an already reviewed candidate."));
 			this.updateStatus();
 			return;
 		}
-		const reviewCwd = workspace.length === 1 ? workspace[0]!.root : ctx.cwd;
+		const [soleWorkspace] = workspace;
+		const reviewCwd = workspace.length === 1 && soleWorkspace ? soleWorkspace.root : ctx.cwd;
 		const paths = reviewPaths(reviewCwd, workspace);
 		const scope = `Review only these typed Mission workspace paths: ${paths.join(", ")}.`;
 		const correctionReview = isCorrectionReview(current);
@@ -628,8 +634,8 @@ export class MissionRuntime {
 		}
 		const latestProgress = this.state.readProgress().at(-1);
 		const accepted = current.review.findings.accepted ?? [];
-		const reviewMode = correctionReview
-			? `This is a bounded correction review. Prior adjudicated evidence remains authoritative for untouched areas. Review only these Runtime-enforced changed paths: ${correctionScope!.paths.join(", ")}. Exact revisions: ${correctionScope!.revisions.map((revision) => `${revision.root}:${revision.base}..${revision.head}`).join(", ")}. Accepted findings: ${accepted.length ? accepted.map((finding) => `#${finding.index} requirement=${finding.requirementIndex ?? "none"} criticalImpact=${finding.criticalImpact ?? "none"} path=${finding.path ?? "none"}: ${finding.summary}`).join(" | ") : "legacy correction scope; use only the exact changed paths"}. Latest correction record: ${latestProgress?.summary ?? "none"}.`
+		const reviewMode = correctionScope
+			? `This is a bounded correction review. Prior adjudicated evidence remains authoritative for untouched areas. Review only these Runtime-enforced changed paths: ${correctionScope.paths.join(", ")}. Exact revisions: ${correctionScope.revisions.map((revision) => `${revision.root}:${revision.base}..${revision.head}`).join(", ")}. Accepted findings: ${accepted.length ? accepted.map((finding) => `#${finding.index} requirement=${finding.requirementIndex ?? "none"} criticalImpact=${finding.criticalImpact ?? "none"} path=${finding.path ?? "none"}: ${finding.summary}`).join(" | ") : "legacy correction scope; use only the exact changed paths"}. Latest correction record: ${latestProgress?.summary ?? "none"}.`
 			: "This is the initial full Mission review.";
 		const blockingRule = correctionReview
 			? "A blocker/major finding must name a Runtime-enforced changed path and include either an accepted requirementIndex or a typed criticalImpact of security or data_loss."
@@ -707,25 +713,14 @@ export class MissionRuntime {
 		}
 		const preflightFingerprint = this.ctx ? await worktreeFingerprint(this.pi, this.ctx.cwd, mission) : undefined;
 		const preflight = this.state.read();
-		const samePreflightAttempt = preflight?.status === "active" && preflight.review.admission.status === "running" && preflight.review.admission.runId === mission.review.admission.runId && preflight.review.candidate.id === mission.review.candidate.id && preflight.review.candidate.worktreeFingerprint === mission.review.candidate.worktreeFingerprint && preflight.objectiveVersion === mission.objectiveVersion && preflight.generation === mission.generation;
-		if (!samePreflightAttempt) return true;
+		if (!isSameReviewCandidate(mission, preflight)) return true;
 		if (!preflightFingerprint) {
-			this.failReview(preflight!, "could not fingerprint reviewed worktree before run recovery");
+			this.failReview(preflight, "could not fingerprint reviewed worktree before run recovery");
 			return true;
 		}
-		const preflightCandidateId = reviewCandidateId(preflight!, preflightFingerprint);
-		if (preflightFingerprint !== preflight!.review.candidate.worktreeFingerprint || preflightCandidateId !== preflight!.review.candidate.id) {
-			let priorRun: DelegateRun | undefined;
-			try { priorRun = service.executor.get(preflight!.review.admission.runId!); }
-			catch {
-				if (preflight!.review.admission.admissionId && this.ctx) priorRun = await service.executor.restoreAdmission(this.ctx.cwd, preflight!.review.admission.admissionId);
-			}
-			if (priorRun && ["starting", "running", "stopping"].includes(priorRun.runtime.status)) {
-				if (this.ctx) this.scheduleRecovery(this.ctx, 1_000);
-				return false;
-			}
-			this.supersedeReview("candidate changed after the prior reviewer settled", preflightCandidateId, preflightFingerprint);
-			return true;
+		const preflightCandidateId = reviewCandidateId(preflight, preflightFingerprint);
+		if (preflightFingerprint !== preflight.review.candidate.worktreeFingerprint || preflightCandidateId !== preflight.review.candidate.id) {
+			return this.recoverFromStalePreflight(preflight, service, preflightCandidateId, preflightFingerprint);
 		}
 		let run: DelegateRun;
 		try {
@@ -739,23 +734,41 @@ export class MissionRuntime {
 			return true;
 		}
 		if (["starting", "running", "stopping"].includes(run.runtime.status)) return false;
-		const sameAttempt = (latest: MissionCurrent | undefined) => latest?.status === "active" && latest.review.admission.status === "running" && latest.review.admission.runId === mission.review.admission.runId && latest.review.candidate.id === mission.review.candidate.id && latest.review.candidate.worktreeFingerprint === mission.review.candidate.worktreeFingerprint && latest.objectiveVersion === mission.objectiveVersion && latest.generation === mission.generation;
 		const fingerprint = this.ctx ? await worktreeFingerprint(this.pi, this.ctx.cwd, mission) : undefined;
-		let latest = this.state.read();
-		if (!sameAttempt(latest)) return true;
+		const latest = this.state.read();
+		if (!isSameReviewCandidate(mission, latest)) return true;
 		if (!fingerprint) {
-			this.failReview(latest!, "could not fingerprint reviewed worktree");
+			this.failReview(latest, "could not fingerprint reviewed worktree");
 			return true;
 		}
-		const candidateId = reviewCandidateId(latest!, fingerprint);
-		if (!latest!.review.candidate.worktreeFingerprint || fingerprint !== latest!.review.candidate.worktreeFingerprint || latest!.review.candidate.objectiveVersion !== (latest!.objectiveVersion ?? 1) || latest!.review.candidate.id !== candidateId) {
+		const candidateId = reviewCandidateId(latest, fingerprint);
+		if (!latest.review.candidate.worktreeFingerprint || fingerprint !== latest.review.candidate.worktreeFingerprint || latest.review.candidate.objectiveVersion !== (latest.objectiveVersion ?? 1) || latest.review.candidate.id !== candidateId) {
 			this.supersedeReview("objective, scope, or worktree changed while independent review was running", candidateId, fingerprint);
 			return true;
 		}
 		if (run.runtime.status !== "completed") {
-			this.failReview(latest!, run.runtime.error || "independent review failed");
+			this.failReview(latest, run.runtime.error || "independent review failed");
 			return true;
 		}
+		return this.reconcileReviewReport(mission, run, fingerprint);
+	}
+
+	private async recoverFromStalePreflight(preflight: MissionCurrent, service: ReturnType<typeof getSubagentService>, preflightCandidateId: string, preflightFingerprint: string): Promise<boolean> {
+		let priorRun: DelegateRun | undefined;
+		const runId = preflight.review.admission.runId;
+		try { priorRun = runId ? service.executor.get(runId) : undefined; }
+		catch {
+			if (preflight.review.admission.admissionId && this.ctx) priorRun = await service.executor.restoreAdmission(this.ctx.cwd, preflight.review.admission.admissionId);
+		}
+		if (priorRun && ["starting", "running", "stopping"].includes(priorRun.runtime.status)) {
+			if (this.ctx) this.scheduleRecovery(this.ctx, 1_000);
+			return false;
+		}
+		this.supersedeReview("candidate changed after the prior reviewer settled", preflightCandidateId, preflightFingerprint);
+		return true;
+	}
+
+	private async reconcileReviewReport(mission: MissionCurrent, run: DelegateRun, fingerprint: string): Promise<boolean> {
 		if (!mission.review.candidate.scopePaths?.length) {
 			this.state.append(this.pi, this.state.reviewEvent("due", { reason: "independent review scope evidence is missing; relaunch required" }));
 			if (this.ctx) this.scheduleRecovery(this.ctx);
@@ -764,20 +777,21 @@ export class MissionRuntime {
 		}
 		const report = await readReviewReport(run, mission.requirements.length, mission.review.candidate.scopePaths, mission.review.findings.accepted, isCorrectionReview(mission) ? "exact_paths" : "owned_prefixes");
 		const finalFingerprint = this.ctx ? await worktreeFingerprint(this.pi, this.ctx.cwd, mission) : undefined;
-		latest = this.state.read();
-		if (!sameAttempt(latest)) return true;
+		const latest = this.state.read();
+		if (!isSameReviewCandidate(mission, latest)) return true;
 		if (!finalFingerprint) {
-			this.failReview(latest!, "could not revalidate reviewed worktree after report read");
+			this.failReview(latest, "could not revalidate reviewed worktree after report read");
 			return true;
 		}
 		if (finalFingerprint !== fingerprint) {
-			this.supersedeReview("worktree changed while reading the independent review report", reviewCandidateId(latest!, finalFingerprint), finalFingerprint);
+			this.supersedeReview("worktree changed while reading the independent review report", reviewCandidateId(latest, finalFingerprint), finalFingerprint);
 			return true;
 		}
 		if (!report) {
-			this.failReview(latest!, "independent reviewer did not submit a valid review_report artifact");
+			this.failReview(latest, "independent reviewer did not submit a valid review_report artifact");
 			return true;
 		}
+		const candidateId = reviewCandidateId(latest, finalFingerprint);
 		this.state.append(this.pi, this.state.reviewEvent("awaiting_adjudication", { runId: run.spec.id, reason: "Independent review settled; parent must adjudicate the severity-derived result.", suggestedVerdict: report.verdict, worktreeFingerprint: fingerprint, candidateId, highestSeverity: report.highestSeverity, blockingFindingCount: report.blockingFindingCount, backlogFindingCount: report.backlogFindingCount, findings: report.findings, scopePaths: mission.review.candidate.scopePaths, scopeRevisions: mission.review.candidate.scopeRevisions }));
 		this.updateStatus();
 		return true;
@@ -862,7 +876,7 @@ function continuationMessage(mission: MissionCurrent): string {
 		`Objective: ${mission.objective}`,
 		`Requirements: ${mission.requirements.map((item) => `• ${item}`).join(" ")}`,
 		`Review: ${mission.review.admission.status ?? "not_required"}${mission.review.admission.outcome ? ` (${mission.review.admission.outcome})` : ""}${mission.review.admission.reason ? ` — ${mission.review.admission.reason}` : ""}.`,
-		...(mission.review.admission.status === "awaiting_adjudication" ? [`Review evidence: run=${mission.review.admission.runId ?? "missing"}; derivedVerdict=${mission.review.adjudication.suggestedVerdict ?? "unknown"}; highestSeverity=${mission.review.findings.highestSeverity ?? "none"}; blocking=${mission.review.findings.blockingCount ?? 0}; backlog=${mission.review.findings.backlogCount ?? 0}. Retrieve bounded report evidence with subagent_wait on the exact run ID.`] : []),
+		...(mission.review.admission.status === "awaiting_adjudication" ? [`Review evidence: run=${mission.review.admission.runId ?? "missing"}; derivedVerdict=${mission.review.adjudication.suggestedVerdict ?? "unknown"}; highestSeverity=${mission.review.findings.highestSeverity ?? "none"}; blocking=${mission.review.findings.blockingCount}; backlog=${mission.review.findings.backlogCount}. Retrieve bounded report evidence with subagent_wait on the exact run ID.`] : []),
 		"Choose the highest-leverage next action toward the full objective; do not shrink scope to fit one turn, and work until a natural turn boundary. After starting background work, continue any runnable independent work instead of waiting merely to keep the turn open; terminal delivery wakes idle Pi automatically. Make best judgments without routine questions. Stop for credentials, safety, irreversible operations, explicit approval boundaries, terminal error, or a genuine repeated blocker. Record milestone evidence with mission_progress. Completion requires validation, independent review convergence, child settlement, Chain checkpoint, and a requirement evidence audit.",
 	].join("\n");
 }
@@ -937,7 +951,7 @@ const REVIEW_SEVERITIES: readonly MissionReviewSeverity[] = ["blocker", "major",
 type ReviewScopeKind = "owned_prefixes" | "exact_paths";
 
 function isCorrectionReview(mission: MissionCurrent): boolean {
-	return (mission.review.correction.count ?? 0) > 0 || (mission.review.adjudication.history?.length ?? 0) > 0;
+	return mission.review.correction.count > 0 || mission.review.adjudication.history.length > 0;
 }
 
 async function readReviewReport(run: DelegateRun, requirementCount: number, scopePaths: string[], acceptedFindings: MissionReviewFinding[] | undefined, scopeKind: ReviewScopeKind): Promise<DerivedReviewReport | undefined> {
@@ -1006,6 +1020,17 @@ function normalizeReviewPath(path: string): string | undefined {
 function reviewCandidateId(mission: MissionCurrent, fingerprint: string): string {
 	const input = JSON.stringify({ version: 1, objectiveVersion: mission.objectiveVersion ?? 1, paths: [...mission.paths].sort(), fingerprint });
 	return `candidate_${createHash("sha256").update(input).digest("hex")}`;
+}
+
+/** True when `other` is still the exact review attempt reconcileReview() started from: same run, candidate, objective, and generation as `mission`. */
+function isSameReviewCandidate(mission: MissionCurrent, other: MissionCurrent | undefined): other is MissionCurrent {
+	return other?.status === "active"
+		&& other.review.admission.status === "running"
+		&& other.review.admission.runId === mission.review.admission.runId
+		&& other.review.candidate.id === mission.review.candidate.id
+		&& other.review.candidate.worktreeFingerprint === mission.review.candidate.worktreeFingerprint
+		&& other.objectiveVersion === mission.objectiveVersion
+		&& other.generation === mission.generation;
 }
 
 interface MissionWorkspaceRoot {
@@ -1170,8 +1195,8 @@ async function workspaceFingerprint(pi: ExtensionAPI, cwd: string, workspace: Mi
 			const tracked = new Map<string, string>();
 			for (const record of staged.stdout.split("\0").filter(Boolean)) {
 				const match = /^(\d{6}) [0-9a-f]+ (\d)\t([\s\S]+)$/.exec(record);
-				if (!match || match[2] !== "0" || tracked.has(match[3]!)) return undefined;
-				tracked.set(match[3]!, match[1]!);
+				if (!match || match[2] !== "0" || tracked.has(match[3])) return undefined;
+				tracked.set(match[3], match[1]);
 			}
 			const trackedFlags = new Map<string, string>();
 			for (const record of flags.stdout.split("\0").filter(Boolean)) {

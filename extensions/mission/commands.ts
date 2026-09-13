@@ -65,7 +65,7 @@ export function registerMissionCommands(pi: ExtensionAPI, state: MissionState, s
 			if (command === "complete" || command === "end" || command === "stop") {
 				try {
 					const result = await completeMission(pi, state, ctx, command === "complete" ? { authorizeCompletion: true } : { userRequested: true }, `/mission ${command}`, hooks, true);
-					if (result.alreadyComplete) ctx.ui.notify(`Mission already complete: ${result.mission!.title}`, "info");
+					if (result.alreadyComplete) ctx.ui.notify(`Mission already complete: ${result.mission?.title ?? "unknown"}`, "info");
 					else if (result.blockers?.length) ctx.ui.notify(`Mission completion blocked:\n${result.blockers.map((blocker) => `- ${blocker}`).join("\n")}`, "error");
 					else ctx.ui.notify(`${formatMission(result.mission, result.usage)}\nResume: /mission resume`, "info");
 				} catch (error) {
