@@ -26,6 +26,7 @@ export interface HostedPiTarget extends HostedTargetBase {
 
 export type HostedCollaboratorProfile = "read-only" | "workspace-write";
 export type HostedNativeCollaboratorDriver = "claude-code" | "codex";
+export type HostedCollaboratorDriver = "pi" | HostedNativeCollaboratorDriver;
 export interface HostedAgentSessionIdentity { source: string; agent: string; kind: "id" | "path"; value: string; }
 
 export interface HostedHerdrLocator {

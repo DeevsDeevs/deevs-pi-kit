@@ -19,6 +19,29 @@ import { findAgent, loadBuiltinAgents } from "../subagents/agents.ts";
 import type { AgentDefinition } from "../subagents/catalog-types.ts";
 import { HostedRuntimeClient, HostedRuntimeClientError } from "./client.ts";
 import { HOSTED_MAX_DELIVERY_BATCH } from "./hosted-types.ts";
+import type { HostedCollaboratorDriver, HostedCollaboratorProfile } from "./hosted-types.ts";
+import {
+	asRecord,
+	auth,
+	booleanValue,
+	errorCode,
+	isStringValue,
+	optionalText,
+	parseAcquireResult,
+	parseHeartbeat,
+	parseParticipant,
+	parseRegistration,
+	parseSerializedResponse,
+	strictObject,
+	text,
+	type ClientParticipantStatus,
+	type LiveClientRegistration,
+	type MailHint,
+	type RestoredSessionData,
+	type RuntimeResponse,
+	type SerializedObject,
+	type SerializedValue,
+} from "./responses.ts";
 import { toolDefinitions } from "./mcp/tools.ts";
 import { nativeMessagingLaunch } from "./mcp/native.ts";
 import { messagingDescriptorPath } from "./service/messaging.ts";
@@ -40,15 +63,6 @@ const WORKSPACE_WRITE_COLLABORATOR_TOOLS = [...READ_ONLY_COLLABORATOR_TOOLS, "ed
 const COLLABORATOR_PERSONAS = loadBuiltinAgents();
 const HERDR_AGENT_START_CODES = ["invalid_agent_name", "unsupported_agent_kind", "invalid_agent_argument", "invalid_agent_timeout", "agent_pane_not_found", "agent_pane_busy", "agent_pane_unavailable", "agent_start_input_failed", "agent_name_taken", "agent_start_failed", "agent_name_lost", "timeout"];
 
-interface LiveClientRegistration {
-	targetKey: string;
-	registrationId: string;
-	registrationKey: string;
-	leaseUntil: number;
-	hostStateChangeSeq: number;
-	paneId: string;
-}
-
 interface HostedReceipt {
 	claimId: string;
 	eventIds: string[];
@@ -69,14 +83,6 @@ interface HostedClaimCustomMessage {
 	details: HostedClaimDetails;
 }
 
-interface SerializedObject {
-	[key: string]: SerializedValue | undefined;
-}
-
-type SerializedValue = string | number | boolean | null | SerializedObject | SerializedValue[];
-
-type RuntimeResponse = Awaited<ReturnType<HostedRuntimeClient["call"]>>;
-type RestoredSessionData = CustomEntry["data"];
 
 type HostedClaimEvent = { eventId: string; type: "filesystem.created"; summary: string; path: string };
 
@@ -90,20 +96,6 @@ interface BeforeAgentStartResult {
 	systemPrompt?: string;
 }
 
-interface ClientParticipantStatus {
-	participantKey: string;
-	protocol: string;
-	participantId: string;
-	state: "held" | "vacant" | "ended";
-	generation: string;
-	holderTargetKey?: string;
-	holderLive: boolean;
-	driver?: CollaboratorDriver;
-	profile?: CollaboratorProfile;
-	queued?: { pending: number; claimed: number };
-	lastTransition: { cause: string };
-}
-
 interface ParticipantIdentity {
 	version: 1;
 	protocol: string;
@@ -113,9 +105,6 @@ interface ParticipantIdentity {
 	disposition: "held" | "vacant" | "ended";
 	reviveAuthorized?: true;
 }
-
-type CollaboratorDriver = "pi" | "claude-code" | "codex";
-type CollaboratorProfile = "read-only" | "workspace-write";
 
 interface CollaboratorPersona {
 	name: string;
@@ -136,25 +125,25 @@ interface ManagedCollaboratorState {
 
 interface CollaboratorLaunchState {
 	version: 2;
-	driver: CollaboratorDriver;
+	driver: HostedCollaboratorDriver;
 	model?: string;
-	profile?: CollaboratorProfile;
+	profile?: HostedCollaboratorProfile;
 	persona?: CollaboratorPersona;
 }
 
 interface CollaboratorCandidate {
 	participantId: string;
-	driver?: CollaboratorDriver;
+	driver?: HostedCollaboratorDriver;
 	model?: string;
 	persona?: string;
-	profile?: CollaboratorProfile;
+	profile?: HostedCollaboratorProfile;
 }
 
 interface ResolvedCollaboratorCandidate {
 	participantId: string;
-	driver: CollaboratorDriver;
+	driver: HostedCollaboratorDriver;
 	model?: string;
-	profile?: CollaboratorProfile;
+	profile?: HostedCollaboratorProfile;
 	persona?: CollaboratorPersona;
 }
 
@@ -179,7 +168,7 @@ interface ManagedAgentControl {
 	agentName: string;
 	targetKey: string;
 	driver: "claude-code" | "codex";
-	profile: CollaboratorProfile;
+	profile: HostedCollaboratorProfile;
 	protocol: string;
 	participantId: string;
 	clientGeneration: string;
@@ -200,7 +189,7 @@ interface ManagedAgentLaunch {
 	cwd: string;
 	clientGeneration: string;
 	driver: "claude-code" | "codex";
-	profile: CollaboratorProfile;
+	profile: HostedCollaboratorProfile;
 	tab: CollaboratorTab;
 	agentSession: ManagedAgentControl["agentSession"];
 	messagingConfigured: boolean;
@@ -215,7 +204,7 @@ interface CollaboratorTab {
 interface AgentBindRequest {
 	agentName: string;
 	driver: "claude-code" | "codex";
-	profile: CollaboratorProfile;
+	profile: HostedCollaboratorProfile;
 	clientGeneration: string;
 	protocol: string;
 	participantId: string;
@@ -229,7 +218,7 @@ interface BoundAgent {
 	participantKey: string;
 	holderGeneration: string;
 	driver: "claude-code" | "codex";
-	profile: CollaboratorProfile;
+	profile: HostedCollaboratorProfile;
 	projectRoot: string;
 	cwd: string;
 	agentSession: ManagedAgentControl["agentSession"];
@@ -604,7 +593,7 @@ export class HostedRuntimeIntegration {
 		await this.withCollaboratorStart(async () => this.launchCollaborator(ctx, protocol, participantId, true, undefined, undefined, candidate));
 	}
 
-	async startCollaborator(input: { participantId: string; protocol?: string; callerParticipantId?: string; driver?: CollaboratorDriver; model?: string; persona?: string; profile?: CollaboratorProfile }, ctx: ExtensionContext, signal?: AbortSignal): Promise<{ started: boolean; participant: string; paneId?: string }> {
+	async startCollaborator(input: { participantId: string; protocol?: string; callerParticipantId?: string; driver?: HostedCollaboratorDriver; model?: string; persona?: string; profile?: HostedCollaboratorProfile }, ctx: ExtensionContext, signal?: AbortSignal): Promise<{ started: boolean; participant: string; paneId?: string }> {
 		return this.withCollaboratorStart(async () => this.startCollaboratorConfirmed(input, ctx, signal));
 	}
 
@@ -661,7 +650,7 @@ export class HostedRuntimeIntegration {
 		});
 	}
 
-	private async startCollaboratorConfirmed(input: { participantId: string; protocol?: string; callerParticipantId?: string; driver?: CollaboratorDriver; model?: string; persona?: string; profile?: CollaboratorProfile }, ctx: ExtensionContext, signal: AbortSignal | undefined): Promise<{ started: boolean; participant: string; paneId?: string }> {
+	private async startCollaboratorConfirmed(input: { participantId: string; protocol?: string; callerParticipantId?: string; driver?: HostedCollaboratorDriver; model?: string; persona?: string; profile?: HostedCollaboratorProfile }, ctx: ExtensionContext, signal: AbortSignal | undefined): Promise<{ started: boolean; participant: string; paneId?: string }> {
 		throwIfAborted(signal);
 		if (!ctx.hasUI) throw new HostedRuntimeClientError("host_unavailable", "Collaborator start confirmation requires an interactive Pi session.");
 		if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Collaborator start requires a trusted project.");
@@ -1760,68 +1749,6 @@ function sessionBranch(ctx: ExtensionContext): readonly SessionEntry[] {
 	return ctx.sessionManager.getBranch();
 }
 
-function asRecord(value: RestoredSessionData | MessageStartEvent["message"] | SerializedValue): SerializedObject | undefined {
-	return isSerializedObject(value) ? value : undefined;
-}
-
-function parseRegistration(value: RuntimeResponse): LiveClientRegistration {
-	const result = strictObject(value, "Runtime registration");
-	return {
-		targetKey: text(result.targetKey),
-		registrationId: text(result.registrationId),
-		registrationKey: text(result.registrationKey),
-		leaseUntil: integer(result.leaseUntil),
-		hostStateChangeSeq: integer(result.hostStateChangeSeq),
-		paneId: text(result.paneId),
-	};
-}
-
-interface MailHint {
-	namespaceId: string;
-	eventId: string;
-}
-
-function parseHeartbeat(value: RuntimeResponse) {
-	const result = strictObject(value, "Runtime heartbeat");
-	if (result.inboxReady !== undefined && !isBooleanValue(result.inboxReady)) throw new HostedRuntimeClientError("invalid_response", "Runtime heartbeat inbox readiness is invalid.");
-	return { registration: parseRegistration(result), inboxReady: result.inboxReady === true, mail: parseMailHint(result.mail) };
-}
-
-function parseMailHint(value: RuntimeResponse | undefined): MailHint | undefined {
-	if (value === undefined) return undefined;
-	const hint = strictObject(value, "Runtime mail hint");
-	return { namespaceId: text(hint.namespaceId), eventId: text(hint.eventId) };
-}
-
-function auth(registration: LiveClientRegistration) {
-	return { registrationId: registration.registrationId, registrationKey: registration.registrationKey };
-}
-
-function parseAcquireResult(value: RuntimeResponse) {
-	const result = strictObject(value, "Participant acquire result");
-	return { participant: parseParticipant(result.participant), revived: booleanValue(result.revived), transitioned: booleanValue(result.transitioned) };
-}
-
-function parseParticipant(value: RuntimeResponse): ClientParticipantStatus {
-	const participant = strictObject(value, "Runtime participant");
-	if (participant.state !== "held" && participant.state !== "vacant" && participant.state !== "ended") throw new HostedRuntimeClientError("invalid_response", "Participant state is invalid.");
-	const queued = asRecord(participant.queued);
-	const result: ClientParticipantStatus = {
-		participantKey: text(participant.participantKey),
-		protocol: text(participant.protocol),
-		participantId: text(participant.participantId),
-		state: participant.state,
-		generation: text(participant.generation),
-		holderLive: booleanValue(participant.holderLive),
-		lastTransition: { cause: text(strictObject(participant.lastTransition, "Participant transition").cause) },
-	};
-	if (participant.holderTargetKey !== undefined) result.holderTargetKey = text(participant.holderTargetKey);
-	if (participant.driver === "pi" || participant.driver === "claude-code" || participant.driver === "codex") result.driver = participant.driver;
-	if (participant.profile === "read-only" || participant.profile === "workspace-write") result.profile = participant.profile;
-	if (queued) result.queued = { pending: integer(queued.pending), claimed: integer(queued.claimed) };
-	return result;
-}
-
 function parseParticipantIdentity(value: RestoredSessionData): ParticipantIdentity | undefined {
 	const record = asRecord(value);
 	if (record?.version !== 1 || (record.disposition !== "held" && record.disposition !== "vacant" && record.disposition !== "ended")) return undefined;
@@ -1898,7 +1825,7 @@ function resolveCollaboratorCandidate(candidate: CollaboratorCandidate): Resolve
 	return result;
 }
 
-function assertPersonaCompatible(persona: AgentDefinition, profile: CollaboratorProfile, driver: CollaboratorDriver): void {
+function assertPersonaCompatible(persona: AgentDefinition, profile: HostedCollaboratorProfile, driver: HostedCollaboratorDriver): void {
 	if (driver !== "pi" && persona.tools.includes("safe_diff")) throw new HostedRuntimeClientError("conflict", `Native collaborator persona ${persona.name} requires unsupported safe_diff tooling.`);
 	const supported = profile === "read-only" ? READ_ONLY_PERSONA_TOOLS : WORKSPACE_WRITE_PERSONA_TOOLS;
 	const incompatible = persona.tools.filter((tool) => !supported.has(tool) && !OPTIONAL_COLLABORATOR_PERSONA_TOOLS.has(tool));
@@ -1939,7 +1866,7 @@ function collaboratorName(value: string | undefined, name: string): string {
 	return value;
 }
 
-function collaboratorDriver(value: CollaboratorDriver | undefined): CollaboratorDriver {
+function collaboratorDriver(value: HostedCollaboratorDriver | undefined): HostedCollaboratorDriver {
 	if (value === undefined || value === "pi") return "pi";
 	if (value === "claude-code" || value === "codex") return value;
 	throw new HostedRuntimeClientError("invalid_request", "driver must be pi, claude-code, or codex.");
@@ -1950,11 +1877,11 @@ function collaboratorModel(value: string | undefined): string | undefined {
 	return value;
 }
 
-function assertUnambiguousCollaboratorModel(driver: CollaboratorDriver, model: string | undefined): void {
+function assertUnambiguousCollaboratorModel(driver: HostedCollaboratorDriver, model: string | undefined): void {
 	if (driver === "pi" && model !== undefined && !PI_COLLABORATOR_MODEL.test(model)) throw new HostedRuntimeClientError("invalid_request", "Explicit Pi collaborator models must be provider-qualified, for example openai-codex/gpt-5.6-sol.");
 }
 
-function collaboratorProfile(value: CollaboratorProfile | undefined): CollaboratorProfile | undefined {
+function collaboratorProfile(value: HostedCollaboratorProfile | undefined): HostedCollaboratorProfile | undefined {
 	if (value !== undefined && value !== "read-only" && value !== "workspace-write") throw new HostedRuntimeClientError("invalid_request", "profile must be read-only or workspace-write.");
 	return value;
 }
@@ -1981,73 +1908,6 @@ function monitorIdFromStatus(value: RuntimeResponse): string | undefined {
 
 function throwIfAborted(signal?: AbortSignal): void {
 	if (signal?.aborted) throw new HostedRuntimeClientError("cancelled", "Collaborator start was cancelled.");
-}
-
-function errorCode(cause: unknown): string {
-	if (cause instanceof HostedRuntimeClientError) return cause.code;
-	return cause instanceof Error && "code" in cause && isStringValue(cause.code) ? cause.code : "internal";
-}
-
-function strictObject(value: RuntimeResponse, name: string): SerializedObject {
-	if (!isSerializedObject(value)) throw new HostedRuntimeClientError("invalid_response", `${name} must be an object.`);
-	return value;
-}
-
-function parseSerializedResponse(value: RuntimeResponse, name: string): SerializedValue {
-	if (value === null || isStringValue(value) || isBooleanValue(value)) return value;
-	if (isNumberValue(value)) {
-		if (!Number.isFinite(value)) throw new HostedRuntimeClientError("invalid_response", `${name} contains a non-finite number.`);
-		return value;
-	}
-	if (Array.isArray(value)) return value.map((item) => parseSerializedResponse(item, name));
-	const source = strictObject(value, name);
-	const result: SerializedObject = {};
-	for (const [key, item] of Object.entries(source)) {
-		if (item === undefined) throw new HostedRuntimeClientError("invalid_response", `${name} contains an unserializable field.`);
-		result[key] = parseSerializedResponse(item, name);
-	}
-	return result;
-}
-
-function text(value: SerializedValue | undefined): string {
-	if (!isStringValue(value) || value.length === 0) throw new HostedRuntimeClientError("invalid_response", "Expected non-empty text.");
-	return value;
-}
-
-function optionalText(value: SerializedValue | undefined): string | undefined {
-	return isStringValue(value) ? value : undefined;
-}
-
-function integer(value: SerializedValue | undefined): number {
-	if (!isNumberValue(value) || !Number.isSafeInteger(value) || value < 0) throw new HostedRuntimeClientError("invalid_response", "Expected a non-negative integer.");
-	return value;
-}
-
-function booleanValue(value: SerializedValue | undefined): boolean {
-	if (!isBooleanValue(value)) throw new HostedRuntimeClientError("invalid_response", "Expected a boolean.");
-	return value;
-}
-
-function isSerializedObject(value: RuntimeResponse): value is SerializedObject {
-	if (value === null || Array.isArray(value)) return false;
-	try {
-		const prototype = Object.getPrototypeOf(value);
-		return prototype === Object.prototype || prototype === null;
-	} catch {
-		return false;
-	}
-}
-
-function isStringValue(value: RuntimeResponse): value is string {
-	try { return String.prototype.valueOf.call(value) === value; } catch { return false; }
-}
-
-function isNumberValue(value: RuntimeResponse): value is number {
-	try { return Number.prototype.valueOf.call(value) === value; } catch { return false; }
-}
-
-function isBooleanValue(value: RuntimeResponse): value is boolean {
-	try { return Boolean.prototype.valueOf.call(value) === value; } catch { return false; }
 }
 
 function isHerdrError(result: { stdout: string; stderr: string }, expectedCode: string): boolean {
