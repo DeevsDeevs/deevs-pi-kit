@@ -631,7 +631,7 @@ it("never grants lifecycle authority to the messaging secret and fences client r
 		["inbox.claim", { maxEvents: 1 }],
 		["participant.acquire", { protocol: "proof", participantId: "forged" }],
 		["participant.stop_confirmed", { participantKey: test.recipientParticipant.participantKey, expectedGeneration: test.recipientParticipant.generation, confirmed: true }],
-		["workspace.integration.finalize", { callerParticipantKey: test.senderParticipant.participantKey, expectedCallerGeneration: test.senderParticipant.generation, integrationId: "missing" }],
+		["worktree.remove", { callerParticipantKey: test.senderParticipant.participantKey, expectedCallerGeneration: test.senderParticipant.generation, protocol: "proof", participantId: "recipient", discardConfirmed: true }],
 	];
 	for (const [method, params] of forbidden) {
 		await expect(test.client.call(method, { ...params, registrationId: test.descriptor.namespaceId, registrationKey: test.descriptor.secret })).rejects.toMatchObject({ code: "registration_stale" });

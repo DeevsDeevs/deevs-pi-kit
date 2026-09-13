@@ -23,6 +23,7 @@ import { toolDefinitions } from "./mcp/tools.ts";
 import { nativeMessagingLaunch } from "./mcp/native.ts";
 import { persistManagedAgentCredentials, readManagedAgentCredentials, type ManagedAgentBinding } from "./managed-agent-credentials.ts";
 import { messagingDescriptorPath } from "./service/messaging.ts";
+import { deriveBridgeTargetKey } from "./service/state.ts";
 
 // ponytail: two-second host verification is fine for small teams; add Runtime subscriptions if concurrent Pi count makes it measurable.
 const HEARTBEAT_MS = 2_000;
@@ -31,12 +32,10 @@ export const HOSTED_MESSAGING_REFERENCE = "deevs.hosted-runtime.messaging-refere
 export const HOSTED_PARTICIPANT_ENTRY = "deevs.hosted-runtime.participant.v1";
 export const HOSTED_COLLABORATOR_PROFILE_ENTRY = "deevs.hosted-runtime.collaborator-profile.v1";
 export const HOSTED_MANAGED_COLLABORATOR_ENTRY = "deevs.hosted-runtime.managed-collaborator.v1";
-export const HOSTED_COLLABORATOR_WORKSPACE_ENTRY = "deevs.hosted-runtime.collaborator-workspace.v1";
-export const HOSTED_WORKSPACE_REQUEST_ENTRY = "deevs.hosted-runtime.workspace-request.v1";
+export const HOSTED_COLLABORATOR_WORKTREE_ENTRY = "deevs.hosted-runtime.collaborator-worktree.v1";
 export const HOSTED_BRIDGE_REQUEST_ENTRY = "deevs.hosted-runtime.bridge-request.v1";
 export const HOSTED_MANAGED_AGENT_CONTROL_ENTRY = "deevs.hosted-runtime.managed-agent-control.v1";
 const COLLABORATOR_ENV = "PI_RUNTIME_COLLABORATE";
-const COLLABORATOR_WORKSPACE_ENV = "PI_RUNTIME_WORKSPACE_LAUNCH";
 const COLLABORATOR_METADATA_TOOLS = ["collaborator_list", ...toolDefinitions.map(tool => tool.name), "chain_save", "chain_load", "chain_context"] as const;
 const READ_ONLY_COLLABORATOR_TOOLS = ["read", "grep", "find", "ls", "safe_diff", ...COLLABORATOR_METADATA_TOOLS] as const;
 const WORKSPACE_WRITE_COLLABORATOR_TOOLS = [...READ_ONLY_COLLABORATOR_TOOLS, "edit", "write"] as const;
@@ -138,11 +137,10 @@ interface CollaboratorPersona {
 	promptHash: string;
 }
 
-interface CollaboratorWorkspaceState {
+interface CollaboratorWorktreeState {
 	version: 1;
-	workspaceId: string;
 	projectRoot: string;
-	workspaceRoot: string;
+	worktreePath: string;
 }
 
 interface ManagedCollaboratorState {
@@ -183,10 +181,9 @@ interface CollaboratorManageResult {
 	error?: string;
 }
 
-type CollaboratorWorkspaceInput =
-	| { action: "inspect" | "retain" | "reconcile" | "checkpoint" | "prepare_integration" | "cleanup_workspace"; workspaceId: string; taskStatus?: "completed" | "failed" | "cancelled" }
-	| { action: "inspect_integration" | "reconcile_integration" | "finalize_integration" | "cleanup_integration"; integrationId: string }
-	| { action: "recover_launch"; requestId: string };
+type CollaboratorWorktreeInput =
+	| { action: "list" }
+	| { action: "cleanup"; participantId: string };
 
 interface ManagedAgentControl extends Omit<ManagedAgentBinding, "messagingConfigured"> {
 	version: 2;
@@ -203,18 +200,6 @@ interface ManagedAgentStatus {
 	status: "idle" | "working" | "blocked" | "done" | "unknown";
 	focused: boolean;
 	agentSession: ManagedAgentControl["agentSession"];
-}
-
-interface WorkspaceRegistrationStatus {
-	workspaceId: string;
-	projectRoot: string;
-	workspaceRoot: string;
-	participantKey: string;
-	holderGeneration: string;
-	participantGeneration: string;
-	participantState: "held" | "vacant";
-	protocol: string;
-	participantId: string;
 }
 
 class HostedCollaboratorStartError extends HostedRuntimeClientError {
@@ -249,9 +234,7 @@ export class HostedRuntimeIntegration {
 	private managedAgentHeartbeatActive = false;
 	private participantIdentity?: ParticipantIdentity;
 	private collaboratorLaunch?: CollaboratorLaunchState;
-	private collaboratorWorkspace?: CollaboratorWorkspaceState;
-	private workspaceLaunchToken?: string;
-	private workspaceRegistrationActive = false;
+	private collaboratorWorktree?: CollaboratorWorktreeState;
 	private collaboratorManageActive = false;
 	private readonly trustClaudeWorkspace: (cwd: string) => void;
 
@@ -266,8 +249,7 @@ export class HostedRuntimeIntegration {
 		this.sessionEpoch++;
 		this.active = true;
 		this.ctx = ctx;
-		this.captureWorkspaceLaunchToken();
-		this.restoreCollaboratorWorkspace(ctx);
+		this.restoreCollaboratorWorktree(ctx);
 		this.restoreAdmissions(ctx);
 		this.restoreParticipantIdentity(ctx);
 		this.restoreCollaboratorLaunch(ctx);
@@ -280,7 +262,7 @@ export class HostedRuntimeIntegration {
 	sessionTree(ctx: ExtensionContext): void {
 		this.sessionEpoch++;
 		this.ctx = ctx;
-		this.restoreCollaboratorWorkspace(ctx);
+		this.restoreCollaboratorWorktree(ctx);
 		this.restoreAdmissions(ctx);
 		this.restoreParticipantIdentity(ctx);
 		this.restoreCollaboratorLaunch(ctx);
@@ -295,7 +277,6 @@ export class HostedRuntimeIntegration {
 	async sessionShutdown(): Promise<void> {
 		this.sessionEpoch++;
 		this.active = false;
-		this.workspaceRegistrationActive = false;
 		this.ctx = undefined;
 		this.stopHeartbeat();
 		const registration = this.registration;
@@ -328,7 +309,7 @@ export class HostedRuntimeIntegration {
 	guardCollaboratorTool(toolName: string, input: ToolCallEvent["input"] | undefined, cwd: string): { block: true; reason: string } | undefined {
 		const configuredProfile = this.collaboratorLaunch?.profile;
 		if (!configuredProfile) return;
-		const profile = configuredProfile === "workspace-write" && (!this.collaboratorWorkspace || !this.workspaceRegistrationActive) ? "read-only" : configuredProfile;
+		const profile = configuredProfile === "workspace-write" && (!this.collaboratorWorktree || this.participantIdentity?.disposition !== "held") ? "read-only" : configuredProfile;
 		const allowed: readonly string[] = profile === "read-only" ? READ_ONLY_COLLABORATOR_TOOLS : WORKSPACE_WRITE_COLLABORATOR_TOOLS;
 		if (!allowed.includes(toolName)) return { block: true, reason: `Collaborator profile ${profile} does not permit ${toolName}.` };
 		const path = input && "path" in input ? input.path : undefined;
@@ -715,49 +696,18 @@ export class HostedRuntimeIntegration {
 		}
 	}
 
-	async manageWorkspace(input: CollaboratorWorkspaceInput, ctx: ExtensionContext, signal?: AbortSignal): Promise<SerializedValue> {
+	async manageWorktrees(input: CollaboratorWorktreeInput, ctx: ExtensionContext, signal?: AbortSignal): Promise<SerializedValue> {
 		throwIfAborted(signal);
 		const identity = this.requireParticipantIdentity();
 		if (identity.disposition !== "held" || !identity.participantKey || !identity.generation) throw new HostedRuntimeClientError("conflict", "Current collaborator identity is not authoritatively held.");
 		const registration = await this.requireRegistration(ctx);
-		const authority = { ...auth(registration), callerParticipantKey: identity.participantKey, expectedCallerGeneration: identity.generation };
-		if (input.action === "recover_launch") return parseSerializedResponse(await this.client.call("workspace.launch.recover", { ...authority, requestId: input.requestId }), "Workspace launch recovery");
-		if (input.action === "inspect") return parseSerializedResponse(await this.client.call("workspace.inspect", { ...auth(registration), workspaceId: input.workspaceId }), "Workspace inspection");
-		if (input.action === "inspect_integration") return parseSerializedResponse(await this.client.call("workspace.integration.inspect", { ...auth(registration), integrationId: input.integrationId }), "Integration inspection");
-		if (input.action === "reconcile_integration") return parseSerializedResponse(await this.client.call("workspace.integration.reconcile", { ...authority, integrationId: input.integrationId }), "Integration reconciliation");
-		if (input.action === "retain") return parseSerializedResponse(await this.client.call("workspace.retain", { ...authority, workspaceId: input.workspaceId }), "Workspace retention");
-		if (input.action === "reconcile") return parseSerializedResponse(await this.client.call("workspace.reconcile", { ...authority, workspaceId: input.workspaceId }), "Workspace reconciliation");
-		if (input.action === "checkpoint") {
-			const params = { ...authority, workspaceId: input.workspaceId };
-			if (input.taskStatus) Object.assign(params, { taskStatus: input.taskStatus });
-			return parseSerializedResponse(await this.client.call("workspace.checkpoint", params), "Workspace checkpoint");
-		}
-		if (!ctx.hasUI) throw new HostedRuntimeClientError("host_unavailable", "Workspace integration and cleanup require an interactive trusted Pi session.");
-		if (input.action === "prepare_integration") {
-			if (!await ctx.ui.confirm("Prepare collaborator integration?", `Create an isolated integration worktree for exact workspace ${input.workspaceId}? Main remains untouched.`, { signal })) return { declined: true };
-			return parseSerializedResponse(await this.client.call("workspace.integration.prepare", { ...authority, workspaceId: input.workspaceId }), "Integration preparation");
-		}
-		if (input.action === "finalize_integration") {
-			const inspected = strictObject(await this.client.call("workspace.integration.inspect", { ...auth(registration), integrationId: input.integrationId }), "Integration inspection");
-			const integration = strictObject(inspected.integration, "Integration");
-			if (!await ctx.ui.confirm("Finalize collaborator integration?", `Fast-forward the clean main worktree from exact head ${text(integration.mainHead)} to prepared head ${text(integration.preparedHead)} for integration ${input.integrationId}?`, { signal })) return { declined: true };
-			return parseSerializedResponse(await this.client.call("workspace.integration.finalize", { ...authority, integrationId: input.integrationId }), "Integration finalization");
-		}
-		if (input.action === "cleanup_workspace") {
-			const inspected = strictObject(await this.client.call("workspace.inspect", { ...auth(registration), workspaceId: input.workspaceId }), "Workspace inspection");
-			const workspace = strictObject(inspected.workspace, "Workspace");
-			const unintegrated = workspace.state !== "integrated";
-			const detail = unintegrated ? `Discard checkpointed or dirty unintegrated workspace ${input.workspaceId}? This cannot be undone.` : `Remove exact integrated workspace ${input.workspaceId}?`;
-			if (!await ctx.ui.confirm(unintegrated ? "Discard collaborator workspace?" : "Clean integrated workspace?", detail, { signal })) return { declined: true };
-			return parseSerializedResponse(await this.client.call("workspace.cleanup", { ...authority, workspaceId: input.workspaceId, discardConfirmed: unintegrated }), "Workspace cleanup");
-		}
-		if (input.action !== "cleanup_integration") throw new HostedRuntimeClientError("invalid_request", "Unsupported workspace action.");
-		const integrationId = input.integrationId;
-		const inspected = strictObject(await this.client.call("workspace.integration.inspect", { ...auth(registration), integrationId }), "Integration inspection");
-		const integration = strictObject(inspected.integration, "Integration");
-		const unfinalized = integration.state !== "finalized";
-		if (!await ctx.ui.confirm(unfinalized ? "Discard unfinalized integration workspace?" : "Clean finalized integration workspace?", `Remove exact integration ${integrationId} at prepared head ${text(integration.preparedHead)}${unfinalized ? " without changing main" : ""}?`, { signal })) return { declined: true };
-		return parseSerializedResponse(await this.client.call("workspace.integration.cleanup", { ...authority, integrationId, discardConfirmed: unfinalized }), "Integration cleanup");
+		if (input.action === "list") return parseSerializedResponse(await this.client.call("worktree.list", auth(registration)), "Worktree listing");
+		if (!ctx.hasUI) throw new HostedRuntimeClientError("host_unavailable", "Worktree cleanup requires an interactive trusted Pi session.");
+		const participantId = collaboratorName(input.participantId, "participant ID");
+		const detail = `Force-remove the worktree of ${identity.protocol}/${participantId} and delete branch runtime/collab/${participantId}? Uncommitted or unmerged work in it is lost.`;
+		if (!await ctx.ui.confirm("Remove collaborator worktree?", detail, { signal })) return { declined: true };
+		const params = { ...auth(registration), callerParticipantKey: identity.participantKey, expectedCallerGeneration: identity.generation, protocol: identity.protocol, participantId, discardConfirmed: true };
+		return parseSerializedResponse(await this.client.call("worktree.remove", params), "Worktree removal");
 	}
 
 	async messagingDescriptor(ctx: ExtensionContext): Promise<string> {
@@ -808,51 +758,17 @@ export class HostedRuntimeIntegration {
 		const sessionId = randomUUID();
 		const timestamp = new Date().toISOString();
 		const projectRoot = realpathSync(ctx.cwd);
-		let workspace: { workspaceId: string; projectRoot: string; workspaceRoot: string; targetKey: string; launchToken: string } | undefined;
-		if (candidate.profile === "workspace-write") {
-			if (!expectedCaller) throw new HostedRuntimeClientError("conflict", "Workspace-write launch requires an authoritatively held caller generation.");
-			const requestId = `workspace_request_${randomUUID()}`;
-			this.pi.appendEntry(HOSTED_WORKSPACE_REQUEST_ENTRY, { version: 1, requestId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, status: "pending" });
-			const createParams = { ...auth(registration), requestId, callerParticipantKey: expectedCaller.participantKey, expectedCallerGeneration: expectedCaller.generation, protocol, participantId, piSessionId: sessionId };
-			if (existing) Object.assign(createParams, { expectedParticipantGeneration: existing.generation });
-			let provisioned: SerializedObject | undefined;
-			let createError: unknown;
-			try { provisioned = strictObject(await this.client.call("workspace.launch.create", createParams), "Workspace provision result"); }
-			catch (error) {
-				createError = error;
-				const recoverable = !(error instanceof HostedRuntimeClientError) || ["unavailable", "host_unavailable", "internal"].includes(error.code);
-				if (recoverable) for (let attempt = 0; attempt < 310 && !provisioned; attempt++) {
-					try { provisioned = strictObject(await this.client.call("workspace.launch.create", createParams), "Workspace provision retry"); }
-					catch { if (attempt < 309) await delay(100); }
-				}
-			}
-			if (!provisioned || provisioned.recoveryRequired === true || !isStringValue(provisioned.launchToken)) {
-				const recovered = await this.recoverWorkspaceRequest(registration, expectedCaller, requestId);
-				this.pi.appendEntry(HOSTED_WORKSPACE_REQUEST_ENTRY, { version: 1, requestId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, status: recovered ? "recovered" : "needs_attention" });
-				throw createError ?? new HostedRuntimeClientError("conflict", "Workspace launch retry requires explicit recovery.");
-			}
-			const record = strictObject(provisioned.workspace, "Workspace provision");
-			workspace = { workspaceId: text(record.workspaceId), projectRoot: text(record.projectRoot), workspaceRoot: text(record.worktreePath), targetKey: text(record.targetKey), launchToken: text(provisioned.launchToken) };
-			this.pi.appendEntry(HOSTED_WORKSPACE_REQUEST_ENTRY, { version: 1, requestId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, workspaceId: workspace.workspaceId, status: "provisioned" });
-			if (workspace.projectRoot !== projectRoot) throw new HostedRuntimeClientError("identity_mismatch", "Runtime workspace belongs to another project.");
-		}
-		const launchCwd = workspace?.workspaceRoot ?? projectRoot;
-		const targetKey = workspace?.targetKey ?? `pi_${createHash("sha256").update(projectRoot).update("\0").update(sessionId).digest("hex")}`;
-		let sessionFile: string;
-		try {
-			sessionFile = this.createCollaboratorSession(projectRoot, launchCwd, sessionId, timestamp, candidate, workspace);
-		} catch (error) {
-			if (workspace && expectedCaller) await this.client.call("workspace.cleanup", { ...auth(registration), callerParticipantKey: expectedCaller.participantKey, expectedCallerGeneration: expectedCaller.generation, workspaceId: workspace.workspaceId, discardConfirmed: true });
-			throw error;
-		}
+		const worktreePath = candidate.profile === "workspace-write" ? await this.ensureWorktree(registration, protocol, participantId, expectedCaller) : undefined;
+		const launchCwd = worktreePath ?? projectRoot;
+		const targetKey = `pi_${createHash("sha256").update(projectRoot).update("\0").update(sessionId).digest("hex")}`;
+		const sessionFile = this.createCollaboratorSession(projectRoot, launchCwd, sessionId, timestamp, candidate);
 		let tabId: string | undefined;
 		let paneId: string | undefined;
 		let tabCreated = false;
 		let childMayBeLive = false;
-		let preservedAmbiguousWorkspace = false;
 		try {
 			throwIfAborted(signal);
-			const createArgs = ["tab", "create", "--workspace", process.env.HERDR_WORKSPACE_ID, "--cwd", launchCwd, "--label", `collaborator:${participantId}`, "--env", `${COLLABORATOR_ENV}=${bootstrap}`, ...(workspace ? ["--env", `${COLLABORATOR_WORKSPACE_ENV}=${workspace.launchToken}`] : []), "--no-focus"];
+			const createArgs = ["tab", "create", "--workspace", process.env.HERDR_WORKSPACE_ID, "--cwd", launchCwd, "--label", `collaborator:${participantId}`, "--env", `${COLLABORATOR_ENV}=${bootstrap}`, "--no-focus"];
 			const created = await this.pi.exec("herdr", createArgs, { timeout: 5_000 });
 			if (created.code !== 0) throw new HostedRuntimeClientError("host_unavailable", "Herdr could not create the collaborator tab.");
 			tabCreated = true;
@@ -861,16 +777,6 @@ export class HostedRuntimeIntegration {
 			try { paneId = text(rootPane.pane_id); } catch {}
 			try { tabId = text(strictObject(result.tab, "Herdr tab").tab_id); } catch {}
 			if (!paneId || !tabId) throw new HostedRuntimeClientError("invalid_response", "Herdr did not return the created collaborator tab and root pane IDs.");
-			if (workspace) {
-				let terminalId = optionalText(rootPane.terminal_id);
-				if (!terminalId) {
-					const pane = await this.pi.exec("herdr", ["pane", "get", paneId], { timeout: 2_000 });
-					if (pane.code === 0) terminalId = text(strictObject(strictObject(strictObject(JSON.parse(pane.stdout), "Herdr response").result, "Herdr result").pane, "Herdr pane").terminal_id);
-				}
-				if (!terminalId || !expectedCaller) throw new HostedRuntimeClientError("invalid_response", "Herdr did not return the workspace terminal identity.");
-				await this.waitForHerdrPaneCwd(paneId, terminalId, launchCwd, signal);
-				await this.client.call("workspace.launch.bind", { ...auth(registration), callerParticipantKey: expectedCaller.participantKey, expectedCallerGeneration: expectedCaller.generation, workspaceId: workspace.workspaceId, herdr: { paneId, terminalId } });
-			}
 			throwIfAborted(signal);
 			childMayBeLive = true;
 			const profileTools = candidate.profile === "read-only" ? READ_ONLY_COLLABORATOR_TOOLS : candidate.profile === "workspace-write" ? WORKSPACE_WRITE_COLLABORATOR_TOOLS : undefined;
@@ -896,8 +802,7 @@ export class HostedRuntimeIntegration {
 		} catch (error) {
 			if (childMayBeLive && terminateAmbiguous) {
 				try {
-					await this.cleanupFailedCollaborator(tabId, paneId, sessionFile, workspace, registration, expectedCaller, workspace ? "retain" : "discard");
-					preservedAmbiguousWorkspace = Boolean(workspace);
+					await this.cleanupFailedCollaborator(tabId, paneId, sessionFile);
 					childMayBeLive = false;
 					tabId = undefined;
 					paneId = undefined;
@@ -910,7 +815,7 @@ export class HostedRuntimeIntegration {
 			if (tabCreated && !tabId && !paneId) throw new HostedCollaboratorStartError("invalid_response", `Herdr created collaborator resources without returning an authoritative tab or pane ID; session ${sessionFile} was preserved for recovery.`, false);
 			throw error;
 		} finally {
-			if (!childMayBeLive && !preservedAmbiguousWorkspace && (tabId || paneId || !tabCreated)) await this.cleanupFailedCollaborator(tabId, paneId, sessionFile, workspace, registration, expectedCaller);
+			if (!childMayBeLive && (tabId || paneId || !tabCreated)) await this.cleanupFailedCollaborator(tabId, paneId, sessionFile);
 		}
 	}
 
@@ -926,7 +831,6 @@ export class HostedRuntimeIntegration {
 		const current = () => scope() && this.participantIdentity === identity;
 		let messaging: ReturnType<typeof nativeMessagingLaunch> | undefined;
 		const authority = { ...auth(registration), callerParticipantKey: expectedCaller.participantKey, expectedCallerGeneration: expectedCaller.generation };
-		let workspace: { workspaceId: string; projectRoot: string; workspaceRoot: string; targetKey: string } | undefined;
 		let tabId: string | undefined;
 		let paneId: string | undefined;
 		let tabCreated = false;
@@ -936,31 +840,9 @@ export class HostedRuntimeIntegration {
 		let preserved = false;
 		this.pi.appendEntry(HOSTED_BRIDGE_REQUEST_ENTRY, { version: 2, requestId: bridgeRequestId, bridgeId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, driver: candidate.driver, profile: candidate.profile, configurationHash, status: "intent" });
 		try {
-			if (candidate.profile === "workspace-write") {
-				const requestId = `workspace_request_${randomUUID()}`;
-				this.pi.appendEntry(HOSTED_WORKSPACE_REQUEST_ENTRY, { version: 1, requestId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, bridgeId, status: "pending" });
-				const params = { ...authority, requestId, protocol, participantId, bridgeId };
-				if (existing) Object.assign(params, { expectedParticipantGeneration: existing.generation });
-				let created: SerializedObject | undefined;
-				let createError: unknown;
-				try { created = strictObject(await this.client.call("workspace.bridge.create", params), "Bridge workspace result"); }
-				catch (error) {
-					createError = error;
-					try { created = strictObject(await this.client.call("workspace.bridge.create", params), "Bridge workspace retry"); } catch {}
-				}
-				if (!created || created.recoveryRequired === true) {
-					const recovered = await this.recoverWorkspaceRequest(registration, expectedCaller, requestId);
-					this.pi.appendEntry(HOSTED_WORKSPACE_REQUEST_ENTRY, { version: 1, requestId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, bridgeId, status: recovered ? "recovered" : "needs_attention" });
-					if (!recovered) throw new HostedCollaboratorStartError("unavailable", "Bridge workspace response and recovery are uncertain; capacity and durable evidence were preserved.", true);
-					throw createError ?? new HostedRuntimeClientError("conflict", "Bridge workspace response was uncertain and has been safely recovered; retry start.");
-				}
-				const record = strictObject(created.workspace, "Bridge workspace");
-				workspace = { workspaceId: text(record.workspaceId), projectRoot: text(record.projectRoot), workspaceRoot: text(record.worktreePath), targetKey: text(record.targetKey) };
-				if (workspace.projectRoot !== projectRoot) throw new HostedRuntimeClientError("identity_mismatch", "Runtime bridge workspace belongs to another project.");
-				this.pi.appendEntry(HOSTED_WORKSPACE_REQUEST_ENTRY, { version: 1, requestId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, bridgeId, workspaceId: workspace.workspaceId, status: "provisioned" });
-			}
+			const worktreePath = candidate.profile === "workspace-write" ? await this.ensureWorktree(registration, protocol, participantId, expectedCaller) : undefined;
 			throwIfAborted(signal);
-			const launchCwd = workspace?.workspaceRoot ?? projectRoot;
+			const launchCwd = worktreePath ?? projectRoot;
 			const created = await this.pi.exec("herdr", ["tab", "create", "--workspace", process.env.HERDR_WORKSPACE_ID!, "--cwd", launchCwd, "--label", `collaborator:${participantId}`, "--no-focus"], { timeout: 5_000 });
 			if (created.code !== 0) throw new HostedRuntimeClientError("host_unavailable", "Herdr could not create the native collaborator tab.");
 			tabCreated = true;
@@ -974,21 +856,19 @@ export class HostedRuntimeIntegration {
 				if (pane.code === 0) terminalId = text(strictObject(strictObject(strictObject(JSON.parse(pane.stdout), "Herdr response").result, "Herdr result").pane, "Herdr pane").terminal_id);
 			}
 			if (!terminalId) throw new HostedRuntimeClientError("invalid_response", "Herdr did not return the native collaborator terminal identity.");
-			if (workspace) {
+			const expectedTargetKey = deriveBridgeTargetKey(projectRoot, bridgeId);
+			if (worktreePath) {
 				await this.waitForHerdrPaneCwd(paneId, terminalId, launchCwd, signal);
-				await this.client.call("workspace.launch.bind", { ...authority, workspaceId: workspace.workspaceId, herdr: { paneId, terminalId } });
-			}
-			this.requireCurrentScope(current);
-			if (workspace) {
+				this.requireCurrentScope(current);
 				const node = await this.pi.exec("node", ["--print", "process.execPath"], { timeout: 3_000 });
 				this.requireCurrentScope(current);
 				if (node.code !== 0) throw new HostedRuntimeClientError("capability_unavailable", "Native messaging requires an available Node executable.");
-				messaging = nativeMessagingLaunch({ driver: candidate.driver, root: this.root, targetKey: workspace.targetKey, clientGeneration, nodeExecutable: node.stdout.trim(), model: candidate.model, personaPrompt: candidate.persona?.prompt });
+				messaging = nativeMessagingLaunch({ driver: candidate.driver, root: this.root, targetKey: expectedTargetKey, clientGeneration, nodeExecutable: node.stdout.trim(), model: candidate.model, personaPrompt: candidate.persona?.prompt });
 				configurationHash = messaging.configurationHash;
 			}
-			this.pi.appendEntry(HOSTED_BRIDGE_REQUEST_ENTRY, { version: 2, requestId: bridgeRequestId, bridgeId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, driver: candidate.driver, profile: candidate.profile, configurationHash, clientGeneration, workspaceId: workspace?.workspaceId, paneId, terminalId, status: "pending" });
+			this.requireCurrentScope(current);
+			this.pi.appendEntry(HOSTED_BRIDGE_REQUEST_ENTRY, { version: 2, requestId: bridgeRequestId, bridgeId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, driver: candidate.driver, profile: candidate.profile, configurationHash, clientGeneration, worktreePath, paneId, terminalId, status: "pending" });
 			const launchParams = { ...authority, requestId: bridgeRequestId, launchId: bridgeId, protocol, participantId, profile: candidate.profile, configurationHash, driver: candidate.driver, herdr: { paneId, terminalId }, metadata: { adapter: "herdr-agent-v1" } };
-			if (workspace) Object.assign(launchParams, { workspaceId: workspace.workspaceId });
 			if (existing) Object.assign(launchParams, { expectedParticipantGeneration: existing.generation });
 			let launch: SerializedObject | undefined;
 			let launchError: unknown;
@@ -1000,7 +880,7 @@ export class HostedRuntimeIntegration {
 			}
 			if (!launch) {
 				const recovered = await this.recoverBridgeRequest(registration, expectedCaller, bridgeRequestId, { bridgeId, protocol, participantId });
-				this.pi.appendEntry(HOSTED_BRIDGE_REQUEST_ENTRY, { version: 2, requestId: bridgeRequestId, bridgeId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, driver: candidate.driver, workspaceId: workspace?.workspaceId, status: recovered ? "recovered" : "needs_attention" });
+				this.pi.appendEntry(HOSTED_BRIDGE_REQUEST_ENTRY, { version: 2, requestId: bridgeRequestId, bridgeId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, driver: candidate.driver, worktreePath, status: recovered ? "recovered" : "needs_attention" });
 				if (!recovered) throw new HostedCollaboratorStartError("unavailable", "Bridge launch response and recovery are uncertain; capacity and durable evidence were preserved.", true);
 				if (recovered.status === "consumed") childMayBeLive = true;
 				throw launchError ?? new HostedRuntimeClientError("conflict", "Bridge launch response was uncertain and has been safely recovered; retry start.");
@@ -1009,8 +889,8 @@ export class HostedRuntimeIntegration {
 			const reconnectToken = text(launch.reconnectToken);
 			const targetKey = text(launch.targetKey);
 			this.requireCurrentScope(current);
-			if (messaging && targetKey !== workspace?.targetKey) throw new HostedRuntimeClientError("identity_mismatch", "Native messaging target differs from its authorized workspace.");
-			this.pi.appendEntry(HOSTED_BRIDGE_REQUEST_ENTRY, { version: 2, requestId: bridgeRequestId, bridgeId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, driver: candidate.driver, clientGeneration, configurationHash, workspaceId: workspace?.workspaceId, targetKey, status: "authorized" });
+			if (targetKey !== expectedTargetKey) throw new HostedRuntimeClientError("identity_mismatch", "Native launch target differs from its authorized bridge identity.");
+			this.pi.appendEntry(HOSTED_BRIDGE_REQUEST_ENTRY, { version: 2, requestId: bridgeRequestId, bridgeId, protocol, participantId, callerParticipantKey: expectedCaller.participantKey, callerGeneration: expectedCaller.generation, driver: candidate.driver, clientGeneration, configurationHash, worktreePath, targetKey, status: "authorized" });
 			throwIfAborted(signal);
 			childMayBeLive = true;
 			const kind = candidate.driver === "claude-code" ? "claude" : "codex";
@@ -1063,7 +943,6 @@ export class HostedRuntimeIntegration {
 						if (!isHerdrError(stillLive, tabId ? "tab_not_found" : "pane_not_found")) throw new HostedCollaboratorStartError("host_unavailable", "Ambiguous native collaborator startup could not be terminated; its capacity lock and recovery artifacts were preserved.", true);
 					}
 				}
-				if (workspace) await this.client.call("workspace.retain", { ...authority, workspaceId: workspace.workspaceId });
 				preserved = true;
 				childMayBeLive = false;
 			}
@@ -1079,7 +958,6 @@ export class HostedRuntimeIntegration {
 				}
 				if (recovered?.status === "consumed") {
 					await this.stopRecoveredBridge(registration, recovered);
-					if (workspace) await this.client.call("workspace.retain", { ...authority, workspaceId: workspace.workspaceId });
 				} else {
 					if (tabId || paneId) {
 						const resource = tabId ? ["tab", "close", tabId] : ["pane", "close", paneId!];
@@ -1087,27 +965,26 @@ export class HostedRuntimeIntegration {
 						// oxlint-disable-next-line no-unsafe-finally -- Cleanup failure must replace the original launch result instead of claiming quiescence.
 						if (closed.code !== 0) throw new HostedRuntimeClientError("host_unavailable", "Herdr could not clean up failed native collaborator resources.");
 					}
-					if (workspace) await this.client.call("workspace.cleanup", { ...authority, workspaceId: workspace.workspaceId, discardConfirmed: true });
 				}
 			}
 		}
 		throw new HostedRuntimeClientError("internal", "Native collaborator launch did not settle.");
 	}
 
-	private createCollaboratorSession(projectRoot: string, cwd: string, sessionId: string, timestamp: string, candidate: ResolvedCollaboratorCandidate, workspace?: { workspaceId: string; projectRoot: string; workspaceRoot: string }): string {
+	private createCollaboratorSession(projectRoot: string, cwd: string, sessionId: string, timestamp: string, candidate: ResolvedCollaboratorCandidate): string {
 		const sessionCwd = realpathSync(cwd);
 		const directory = join(this.root, "collaborator-sessions");
 		mkdirSync(directory, { recursive: true, mode: 0o700 });
 		const sessionFile = join(directory, `${timestamp.replace(/[:.]/g, "-")}_${sessionId}.jsonl`);
 		const managedEntryId = randomUUID();
-		const entries: Array<SessionHeader | CustomEntry<ManagedCollaboratorState | CollaboratorWorkspaceState | CollaboratorLaunchState>> = [
+		const entries: Array<SessionHeader | CustomEntry<ManagedCollaboratorState | CollaboratorWorktreeState | CollaboratorLaunchState>> = [
 			{ type: "session", version: CURRENT_SESSION_VERSION, id: sessionId, timestamp, cwd: sessionCwd },
 			{ type: "custom", customType: HOSTED_MANAGED_COLLABORATOR_ENTRY, data: { version: 1, managed: true }, id: managedEntryId, parentId: null, timestamp },
 		];
 		let profileParentId = managedEntryId;
-		if (workspace) {
+		if (sessionCwd !== projectRoot) {
 			profileParentId = randomUUID();
-			entries.push({ type: "custom", customType: HOSTED_COLLABORATOR_WORKSPACE_ENTRY, data: { version: 1, workspaceId: workspace.workspaceId, projectRoot, workspaceRoot: sessionCwd }, id: profileParentId, parentId: managedEntryId, timestamp });
+			entries.push({ type: "custom", customType: HOSTED_COLLABORATOR_WORKTREE_ENTRY, data: { version: 1, projectRoot, worktreePath: sessionCwd }, id: profileParentId, parentId: managedEntryId, timestamp });
 		}
 		const profile: CollaboratorLaunchState = { version: 2, driver: candidate.driver };
 		if (candidate.model) profile.model = candidate.model;
@@ -1125,14 +1002,10 @@ export class HostedRuntimeIntegration {
 		return sessionFile;
 	}
 
-	private async recoverWorkspaceRequest(registration: LiveClientRegistration, caller: ClientParticipantStatus, requestId: string): Promise<boolean> {
-		for (let attempt = 0; attempt < 310; attempt++) {
-			try {
-				await this.client.call("workspace.launch.recover", { ...auth(registration), requestId, callerParticipantKey: caller.participantKey, expectedCallerGeneration: caller.generation });
-				return true;
-			} catch { if (attempt < 309) await delay(100); }
-		}
-		return false;
+	private async ensureWorktree(registration: LiveClientRegistration, protocol: string, participantId: string, caller: ClientParticipantStatus | undefined): Promise<string> {
+		if (!caller) throw new HostedRuntimeClientError("conflict", "Workspace-write launch requires an authoritatively held caller generation.");
+		const params = { ...auth(registration), callerParticipantKey: caller.participantKey, expectedCallerGeneration: caller.generation, protocol, participantId };
+		return text(strictObject(await this.client.call("worktree.ensure", params), "Collaborator worktree").path);
 	}
 
 	private async waitForHerdrPaneCwd(paneId: string, terminalId: string, cwd: string, signal?: AbortSignal): Promise<void> {
@@ -1175,18 +1048,13 @@ export class HostedRuntimeIntegration {
 		catch (error) { throw new HostedCollaboratorStartError(errorCode(error), `Consumed native launch ${launch.launchId} could not be stopped with exact target quiescence; its capacity evidence was preserved: ${error instanceof Error ? error.message : String(error)}`, true); }
 	}
 
-	private async cleanupFailedCollaborator(tabId: string | undefined, paneId: string | undefined, sessionFile: string, workspace?: { workspaceId: string }, registration?: LiveClientRegistration, caller?: ClientParticipantStatus, mode: "discard" | "retain" = "discard"): Promise<void> {
+	private async cleanupFailedCollaborator(tabId: string | undefined, paneId: string | undefined, sessionFile: string): Promise<void> {
 		const resource = tabId ? { type: "tab", id: tabId } : paneId ? { type: "pane", id: paneId } : undefined;
 		if (resource) {
 			const closed = await this.pi.exec("herdr", [resource.type, "close", resource.id], { timeout: 5_000 });
 			if (closed.code !== 0) throw new HostedRuntimeClientError("host_unavailable", `Herdr could not clean up failed collaborator ${resource.type} ${resource.id}.`);
 		}
-		if (workspace && registration && caller && mode === "retain") {
-			await this.client.call("workspace.retain", { ...auth(registration), callerParticipantKey: caller.participantKey, expectedCallerGeneration: caller.generation, workspaceId: workspace.workspaceId });
-			return;
-		}
 		rmSync(sessionFile, { force: true });
-		if (workspace && registration && caller) await this.client.call("workspace.cleanup", { ...auth(registration), callerParticipantKey: caller.participantKey, expectedCallerGeneration: caller.generation, workspaceId: workspace.workspaceId, discardConfirmed: true });
 	}
 
 	private async listParticipants(registration: LiveClientRegistration): Promise<ClientParticipantStatus[]> {
@@ -1279,29 +1147,13 @@ export class HostedRuntimeIntegration {
 		const host = await this.currentHerdrPane();
 		this.requireCurrentScope(current);
 		const admittedClaims = [...this.admittedClaims].slice(-HOSTED_MAX_DELIVERY_BATCH).map(([claimId, eventIds]) => ({ claimId, eventIds }));
-		const workspace = this.collaboratorWorkspace;
-		const workspaceRegistration = workspace ? { workspaceId: workspace.workspaceId, piSessionId: sessionId, piSessionFile: realpathSync(sessionFile), clientGeneration: this.clientGeneration, admittedClaims, herdr: { paneId: host.paneId, terminalId: host.terminalId } } : undefined;
-		let result: RuntimeResponse;
-		if (this.workspaceLaunchToken && workspaceRegistration) {
-			try { result = await this.client.call("workspace.pi.register", { ...workspaceRegistration, launchToken: this.workspaceLaunchToken }); }
-			catch (error) {
-				this.requireCurrentScope(current);
-				try { result = await this.client.call("workspace.pi.reconnect", workspaceRegistration); }
-				catch { throw error; }
-			}
-		} else if (workspaceRegistration) result = await this.client.call("workspace.pi.reconnect", workspaceRegistration);
-		else result = await this.client.call("pi.register", { projectRoot: realpathSync(ctx.cwd), piSessionId: sessionId, piSessionFile: realpathSync(sessionFile), clientGeneration: this.clientGeneration, admittedClaims, herdr: { paneId: host.paneId, terminalId: host.terminalId } });
-		const registration = parseRegistration(result);
+		const worktree = this.collaboratorWorktree;
+		const params = { projectRoot: worktree?.projectRoot ?? realpathSync(ctx.cwd), piSessionId: sessionId, piSessionFile: realpathSync(sessionFile), clientGeneration: this.clientGeneration, admittedClaims, herdr: { paneId: host.paneId, terminalId: host.terminalId } };
+		if (worktree) Object.assign(params, { worktreePath: worktree.worktreePath });
+		const registration = parseRegistration(await this.client.call("pi.register", params));
 		if (!current()) {
 			try { await this.client.call("pi.unregister", auth(registration)); } catch {}
 			this.requireCurrentScope(current);
-		}
-		if (workspace) {
-			const binding = parseWorkspaceRegistration(result);
-			if (binding.workspaceId !== workspace.workspaceId || realpathSync(binding.projectRoot) !== workspace.projectRoot || realpathSync(binding.workspaceRoot) !== workspace.workspaceRoot) throw new HostedRuntimeClientError("identity_mismatch", "Runtime workspace registration does not match persisted child workspace identity.");
-			this.persistParticipant({ version: 1, protocol: binding.protocol, participantId: binding.participantId, participantKey: binding.participantKey, generation: binding.participantGeneration, disposition: binding.participantState });
-			this.workspaceLaunchToken = undefined;
-			this.workspaceRegistrationActive = binding.participantState === "held";
 		}
 		this.pendingAcks.clear();
 		this.registration = registration;
@@ -1351,17 +1203,13 @@ export class HostedRuntimeIntegration {
 			this.registration = heartbeat.registration;
 			if (this.participantIdentity?.participantKey) await this.restoreHeldParticipant(this.registration, ctx);
 			this.requireCurrentScope(current);
-			if (this.collaboratorWorkspace) this.workspaceRegistrationActive = this.participantIdentity?.disposition === "held";
 			await this.retryAdmissions(this.registration);
 			this.requireCurrentScope(current);
 			if (heartbeat.inboxReady) await this.admitHeartbeatInbox(this.registration, ctx);
 			this.requireCurrentScope(current);
 			await this.offerMessagingReference(this.registration, ctx);
 		} catch {
-			if (current()) {
-				this.registration = undefined;
-				this.workspaceRegistrationActive = false;
-			}
+			if (current()) this.registration = undefined;
 		} finally {
 			try { if (current()) await this.heartbeatManagedAgents(); }
 			finally { this.heartbeatActive = false; }
@@ -1461,24 +1309,17 @@ export class HostedRuntimeIntegration {
 		}
 	}
 
-	private captureWorkspaceLaunchToken(): void {
-		const token = process.env[COLLABORATOR_WORKSPACE_ENV];
-		delete process.env[COLLABORATOR_WORKSPACE_ENV];
-		if (token && /^workspace_launch_[A-Za-z0-9_-]{1,200}\.[A-Za-z0-9_-]{43}$/.test(token)) this.workspaceLaunchToken = token;
-	}
-
-	private restoreCollaboratorWorkspace(ctx: ExtensionContext): void {
-		this.collaboratorWorkspace = undefined;
-		this.workspaceRegistrationActive = false;
+	private restoreCollaboratorWorktree(ctx: ExtensionContext): void {
+		this.collaboratorWorktree = undefined;
 		for (const entry of sessionBranch(ctx)) {
-			if (entry.type !== "custom" || entry.customType !== HOSTED_COLLABORATOR_WORKSPACE_ENTRY) continue;
-			const data = parseCollaboratorWorkspaceState(entry.data);
+			if (entry.type !== "custom" || entry.customType !== HOSTED_COLLABORATOR_WORKTREE_ENTRY) continue;
+			const data = parseCollaboratorWorktreeState(entry.data);
 			if (!data) continue;
 			try {
-				const workspaceRoot = realpathSync(data.workspaceRoot);
+				const worktreePath = realpathSync(data.worktreePath);
 				const projectRoot = realpathSync(data.projectRoot);
-				if (workspaceRoot !== realpathSync(ctx.cwd)) continue;
-				this.collaboratorWorkspace = { version: 1, workspaceId: data.workspaceId, projectRoot, workspaceRoot };
+				if (worktreePath !== realpathSync(ctx.cwd) || worktreePath === projectRoot) continue;
+				this.collaboratorWorktree = { version: 1, projectRoot, worktreePath };
 			} catch {}
 		}
 	}
@@ -1800,12 +1641,6 @@ function parseRegistration(value: RuntimeResponse): LiveClientRegistration {
 	};
 }
 
-function parseWorkspaceRegistration(value: RuntimeResponse): WorkspaceRegistrationStatus {
-	const result = strictObject(value, "Runtime workspace registration");
-	if (result.participantState !== "held" && result.participantState !== "vacant") throw new HostedRuntimeClientError("invalid_response", "Runtime workspace participant state is invalid.");
-	return { workspaceId: text(result.workspaceId), projectRoot: text(result.projectRoot), workspaceRoot: text(result.workspaceRoot), participantKey: text(result.participantKey), holderGeneration: text(result.holderGeneration), participantGeneration: text(result.participantGeneration), participantState: result.participantState, protocol: collaboratorName(text(result.protocol), "protocol"), participantId: collaboratorName(text(result.participantId), "participant ID") };
-}
-
 function parseHeartbeat(value: RuntimeResponse) {
 	const result = strictObject(value, "Runtime heartbeat");
 	if (result.inboxReady !== undefined && !isBooleanValue(result.inboxReady)) throw new HostedRuntimeClientError("invalid_response", "Runtime heartbeat inbox readiness is invalid.");
@@ -1875,10 +1710,10 @@ function parseCollaboratorLaunchState(value: RestoredSessionData): CollaboratorL
 	return state;
 }
 
-function parseCollaboratorWorkspaceState(value: RestoredSessionData): CollaboratorWorkspaceState | undefined {
+function parseCollaboratorWorktreeState(value: RestoredSessionData): CollaboratorWorktreeState | undefined {
 	const record = asRecord(value);
-	if (record?.version !== 1 || !isStringValue(record.workspaceId) || !isStringValue(record.projectRoot) || !isStringValue(record.workspaceRoot)) return undefined;
-	return { version: 1, workspaceId: record.workspaceId, projectRoot: record.projectRoot, workspaceRoot: record.workspaceRoot };
+	if (record?.version !== 1 || !isStringValue(record.projectRoot) || !isStringValue(record.worktreePath)) return undefined;
+	return { version: 1, projectRoot: record.projectRoot, worktreePath: record.worktreePath };
 }
 
 const COLLABORATOR_NAME = /^[a-z][a-z0-9_-]{0,63}$/;

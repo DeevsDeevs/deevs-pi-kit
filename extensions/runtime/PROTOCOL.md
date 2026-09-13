@@ -2,7 +2,7 @@
 
 > **Current Runtime contract and release gates.** Universal messaging remains unreleased. Runtime accepts only state schema v13; unsupported stores fail without migration, rewriting or deletion. Interactive collaborators have no legacy headless delivery fallback.
 
-Runtime provides durable local routing and lifecycle authority for work that must survive Pi and Runtime restarts. Herdr owns live agent panes, terminals, process supervision, and interactive prompt submission. Runtime adds durable participant identity, mailbox state, explicit capabilities, isolated writable workspaces, and recovery.
+Runtime provides durable local routing and lifecycle authority for work that must survive Pi and Runtime restarts. Herdr owns live agent panes, terminals, process supervision, and interactive prompt submission. Runtime adds durable participant identity, mailbox state, explicit capabilities, per-writer Git worktrees, and recovery.
 
 A **collaborator is a real interactive Herdr-managed coding agent**. Pi, Claude Code, and Codex collaborators remain visible and usable in their Herdr tabs. A service process or per-message print-mode CLI is not itself a collaborator.
 
@@ -35,15 +35,15 @@ Capability checks are typed. Runtime must return `capability_unavailable` rather
 
 ## Core guarantees
 
-- Monitor events, mailbox messages, participant state, and workspace ownership are persisted before delivery or host mutation.
+- Monitor events, mailbox messages, and participant state are persisted before delivery or host mutation.
 - A live target is bound to exact project, Herdr workspace/tab/pane/terminal, agent kind, and stable agent-session identity.
 - Routing and authorization consume validated IDs, generations, keys, capabilities, statuses, receipts, and confirmation booleans. Prose is display-only.
 - Busy, blocked, offline, or unverifiable agents retain pending Runtime events.
 - Runtime and collaborator lifecycle operations never focus a pane, tab, or workspace.
 - Runtime never scrapes a pane or parses model prose to derive acknowledgement, task status, verdict, permission, or lifecycle authority.
 - Direct human interaction in a collaborator tab is first-class but is not a Runtime control-plane operation.
-- Runtime restart preserves durable monitors, messages, participants, launch intents, and workspaces while invalidating live registration leases.
-- Stop preserves unintegrated work. Integration and destructive cleanup remain separate trusted operations.
+- Runtime restart preserves durable monitors, messages, participants, and launch intents while invalidating live registration leases.
+- Stop preserves the collaborator worktree. Removing one is a separate confirmed operation; integration is the user's own Git work.
 
 ## Explicit non-guarantees
 
@@ -103,7 +103,7 @@ The wire version may remain v1 while methods are added compatibly. `runtimeId` p
   "capabilities": {
     "maxDeliveryBatch": 12,
     "targets": ["pi", "claude-code", "codex"],
-    "workspace": {"isolatedWrite":true,"stagedIntegration":true}
+    "worktree": {"isolatedWrite":true}
   }
 }
 ```
@@ -131,7 +131,7 @@ Public method names remain additive. Exact implementation naming may be introduc
 | Participants | `participant.acquire`, `participant.get`, `participant.list`, `participant.stand_down`, `participant.stop_confirmed`, `participant.release`, `participant.takeover` |
 | Mail | `mailbox.send`, `mailbox.status` |
 | Interactive agent launch | reserve, bind, recover, and inspect an exact Herdr-managed agent target |
-| Workspaces | create, reconcile, checkpoint, prepare/finalize integration, cleanup |
+| Worktrees | `worktree.ensure`, `worktree.list`, `worktree.remove` |
 
 All methods except `hello` and initial registration require exact current authority. Mutations are idempotent on typed durable keys. Changed retries conflict.
 
@@ -154,7 +154,7 @@ A Claude/Codex target stores:
 - exact Herdr agent kind: `claude | codex`;
 - stable managed-agent identity: Herdr session source/kind/value when exposed, otherwise Herdr agent kind plus the Runtime-generated opaque Herdr agent name;
 - participant key and holder generation;
-- optional Runtime workspace ID;
+- optional Runtime worktree path;
 - target generation and lifecycle state.
 
 Display labels and terminal titles are never authoritative.
@@ -167,12 +167,12 @@ A trusted launch is ordered:
 
 1. Resolve participant, driver, model, persona, and profile independently. Normal native `workspace-write` requires fresh interactive confirmation; no UI means no launch.
 2. Persist an exact launch intent before creating Git or Herdr resources.
-3. Provision a Runtime-owned worktree first for `workspace-write`.
+3. Provision the Runtime-owned worktree first for `workspace-write`: `git worktree add -b runtime/collab/<participantId> <runtimeRoot>/workspaces/<participantId> HEAD`, reusing the existing one when it is already checked out.
 4. Create one empty no-focus Herdr tab at the exact intended cwd.
 5. Call `herdr agent start <name> --kind claude|codex|pi --pane <id>` with driver-owned startup arguments after `--`.
 6. Require Herdr to report readiness and either an agent-session identity or the exact generated agent name within the bounded startup deadline.
 7. Reverify tab/pane/terminal/cwd/agent/managed identity.
-8. Atomically bind the target, workspace, and participant holder generation.
+8. Atomically bind the target and participant holder generation; the worktree path travels on the verified target.
 9. Release launch evidence only after durable bind or exact absence/quiescence is proven.
 
 The participant ID provides the stable Runtime identity. The Herdr agent name is a bounded opaque launch locator, not the participant lease key; when Herdr omits `agent_session`, that exact name is also the authenticated managed-session value.
@@ -185,9 +185,9 @@ Native control metadata is current-only version 2: session history stores an all
 
 A consumed-register conflict may recover through one exact reconnect using the original private capability; it does not create a replacement client or namespace. Human prompts remain subject to the existing 30-second launch lease/start deadline. Timeout and hook-created worktree changes are preserved for explicit recovery, not bypassed or reset. Safe indefinite prompt continuation and broader crash/repair recovery remain unproven.
 
-## Profiles and workspaces
+## Profiles and worktrees
 
-`read-only` is the default. `workspace-write` requires typed launch authority and uses one Runtime-owned isolated Git worktree. No collaborator writer receives the main checkout as cwd.
+`read-only` is the default. `workspace-write` requires typed launch authority and one Runtime-owned Git worktree at `<runtimeRoot>/workspaces/<participantId>` on branch `runtime/collab/<participantId>`. No collaborator writer receives the main checkout as cwd. A writer registers with the main project root as its identity namespace and the worktree as its cwd; Runtime verifies that cwd is a separate worktree of the same repository.
 
 Driver startup policy:
 
@@ -198,7 +198,7 @@ Driver startup policy:
 
 The profile is Runtime launch authority, not an OS security boundary against the trusted human operating the interactive agent. Worktree cwd alone does not confine normal native hooks/tools or attest that they cannot affect other paths. A user may deliberately alter an agent's interactive settings; Runtime must not silently continue claiming the original profile after a detectable restart or identity/configuration change. Model prose cannot change profile.
 
-Workspace ownership, checkpointing, staged integration, and cleanup follow [`WORKSPACES.md`](WORKSPACES.md). Stop retains work; finalization requires clean unchanged main and separate trusted confirmation.
+Runtime owns only worktree creation, listing, and confirmed removal. It never commits, checkpoints, merges, or stages integration: reviewing a writer's branch and merging it is ordinary user Git work. Stop retains the worktree; `worktree.remove` force-removes it and deletes its branch after a trusted confirmation.
 
 ## Managed mailbox delivery
 
@@ -244,7 +244,7 @@ One package-owned stdio endpoint, six schemas and the [shared skill](../../skill
 
 Pi uses a real MCP child after trusted registration restores an already-held identity, or after explicit `/runtime collaborate <protocol> <id>` acquisition. Tools recheck exact session/file/cwd and holder/client authority. Normal native writers receive the endpoint through supported launch configuration and private post-registration descriptor issuance. Their native client reads the supplied skill and calls peers after explicit human input; trust/tool prompts are not automatically accepted. Guarded read-only automatic provisioning remains unavailable.
 
-A namespace permanently binds participant, holder generation, target, client, terminal and configuration. Credentials are owner-private, data-plane-only; authorization stores retain their digest. MCP cannot acquire identity, control processes/profiles/workspaces, adjudicate reviews or complete Missions. Exact authority is checked before and after asynchronous host verification. Stop, replacement and stand-down fence old-holder publications.
+A namespace permanently binds participant, holder generation, target, client, terminal and configuration. Credentials are owner-private, data-plane-only; authorization stores retain their digest. MCP cannot acquire identity, control processes/profiles/worktrees, adjudicate reviews or complete Missions. Exact authority is checked before and after asynchronous host verification. Stop, replacement and stand-down fence old-holder publications.
 
 Fresh send requires exactly one eligible recipient namespace; absent or ambiguous authority rejects publication. The recipient binding is immutable. New holders/clients/namespaces do not inherit old or pre-issuance mail. Fresh reply derives the recipient from the exact inbound publication and rejects an expired/replaced original sender instead of redirecting it.
 
@@ -267,12 +267,12 @@ Readable Pi JSONL, SDK hooks, MCP replies and client receipts do not certify fsy
 
 ## Stop, stand-down, and recovery
 
-- Stand-down vacates participant availability while preserving the exact interactive agent and workspace for later controlled replacement or recovery.
+- Stand-down vacates participant availability while preserving the exact interactive agent and its worktree for later controlled replacement or recovery.
 - Stop targets only the exact Runtime-managed Herdr agent/tab generation.
 - Runtime requests Herdr closure and waits for exact agent/tab absence and process-tree settlement before vacating the participant.
 - Missing or mismatched identities, ambiguous closure, or surviving owned processes become `needs_attention`.
-- Stop never deletes a workspace or unintegrated changes.
-- Release, revival, takeover, integration, and destructive cleanup remain separate trusted operations.
+- Stop never deletes a worktree or uncommitted changes.
+- Release, revival, takeover, and worktree removal remain separate trusted operations.
 
 No model prose can request or confirm these transitions.
 
@@ -325,9 +325,9 @@ The redesign is releasable only when isolated and live gates prove:
 6. Ambiguous prompt results fail closed without automatic duplicate replay.
 7. Targets reject automatic-reply claims with `capability_unavailable` until structural evidence exists.
 8. Exact model/persona/profile/cwd/session identity is verified after start and restart.
-9. Read-only and isolated workspace-write launches apply the intended driver startup policy.
-10. Stop proves exact Herdr target/process settlement and retains workspace state.
+9. Read-only and worktree workspace-write launches apply the intended driver startup policy.
+10. Stop proves exact Herdr target/process settlement and retains the worktree.
 11. Monitor and supported task admission remain intact; ordinary Pi mail is reference-notified and retrieved through actual MCP only.
 12. No collaborator tab contains a bridge-runner command or hidden per-message provider process.
-13. Unsupported state is rejected without rewriting or deleting existing mail, authority evidence or workspaces.
+13. Unsupported state is rejected without rewriting or deleting existing mail, authority evidence or worktrees.
 14. Confirmed-start authority and zero-focus gates still pass.
