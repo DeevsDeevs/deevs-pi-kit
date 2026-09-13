@@ -6,8 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadBuiltinAgents } from "../extensions/subagents/agents.ts";
 import { HostedRuntimeClientError } from "../extensions/runtime/client.ts";
-import { CollaboratorAutoStore } from "../extensions/runtime/auto-mode.ts";
-import { HOSTED_AUTO_LIFECYCLE_ENTRY, HOSTED_BRIDGE_REQUEST_ENTRY, HOSTED_COLLABORATOR_PROFILE_ENTRY, HOSTED_COLLABORATOR_WORKSPACE_ENTRY, HOSTED_MANAGED_AGENT_CONTROL_ENTRY, HOSTED_MANAGED_COLLABORATOR_ENTRY, HOSTED_MESSAGING_REFERENCE, HOSTED_PARTICIPANT_ENTRY, HOSTED_WORKSPACE_REQUEST_ENTRY, HostedRuntimeIntegration, markClaudeWorkspaceTrusted } from "../extensions/runtime/hosted-integration.ts";
+import { HOSTED_BRIDGE_REQUEST_ENTRY, HOSTED_COLLABORATOR_PROFILE_ENTRY, HOSTED_COLLABORATOR_WORKSPACE_ENTRY, HOSTED_MANAGED_AGENT_CONTROL_ENTRY, HOSTED_MANAGED_COLLABORATOR_ENTRY, HOSTED_MESSAGING_REFERENCE, HOSTED_PARTICIPANT_ENTRY, HOSTED_WORKSPACE_REQUEST_ENTRY, HostedRuntimeIntegration, markClaudeWorkspaceTrusted } from "../extensions/runtime/hosted-integration.ts";
 import { deriveTargetKey } from "../extensions/runtime/service/registration.ts";
 import { messagingDescriptorPath } from "../extensions/runtime/service/messaging.ts";
 import { persistManagedAgentCredentials, type ManagedAgentBinding } from "../extensions/runtime/managed-agent-credentials.ts";
@@ -107,12 +106,10 @@ function baseResponse(request: Request): unknown {
 	if (request.method === "pi.register" || request.method === "pi.heartbeat") return registration;
 	if (request.method === "pi.unregister") return { unregistered: true };
 	if (request.method === "messaging.issue") return { descriptorPath: "/private/descriptor.json" };
-	if (request.method === "participant.auto_capacity.reserve") return { reservation: { operationId: request.params.operationId } };
-	if (request.method === "participant.auto_capacity.release") return { released: true };
 	throw new Error(`unexpected ${request.method}`);
 }
 
-async function nativeWriterSetup(driver: "claude-code" | "codex", fault: "none" | "registration_hash" | "descriptor_path" | "shutdown_after_register" | "lost_register_response" | "lost_issue_response" = "none", auto = false) {
+async function nativeWriterSetup(driver: "claude-code" | "codex", fault: "none" | "registration_hash" | "descriptor_path" | "shutdown_after_register" | "lost_register_response" | "lost_issue_response" = "none") {
 	let registered = false;
 	let launch: Request;
 	let clientGeneration = "";
@@ -145,8 +142,7 @@ async function nativeWriterSetup(driver: "claude-code" | "codex", fault: "none" 
 		}
 		if (request.method === "bridge.unregister") return { unregistered: true };
 		return baseResponse(request);
-	}, auto ? [{ type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } }] : []);
-	if (auto) new CollaboratorAutoStore(test.runtimeRoot).set(true);
+	});
 	mkdirSync(join(test.root, "worktree"));
 	test.setExec(async (command, args) => {
 		if (command === "node") return { code: 0, stdout: `${process.execPath}\n`, stderr: "", killed: false };
@@ -654,88 +650,6 @@ describe("hosted collaborator Pi integration", () => {
 		await test.integration.sessionShutdown();
 	});
 
-	it("lets typed global Auto mode start and stop without confirmations and records an audit", async () => {
-		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
-		let childTargetKey = "";
-		let stopped = false;
-		let workspaceRoot = "";
-		let projectRoot = "";
-		const child = { ...fableParticipant, holderTargetKey: "", holderLive: true };
-		const test = await setup((request) => {
-			if (request.method === "participant.get") return mainParticipant;
-			if (request.method === "participant.list") return { participants: childTargetKey && !stopped ? [mainParticipant, { ...child, holderTargetKey: childTargetKey }] : stopped ? [mainParticipant, { ...child, state: "vacant", generation: "lease_stopped", holderLive: false, holderTargetKey: undefined }] : [mainParticipant] };
-			if (request.method === "participant.stop_confirmed") {
-				stopped = true;
-				return { participant: { ...child, state: "vacant", generation: "lease_stopped", holderLive: false, holderTargetKey: undefined }, outcome: "stopped" };
-			}
-			if (request.method === "workspace.launch.create") {
-				childTargetKey = deriveTargetKey(projectRoot, String(request.params.piSessionId));
-				return { workspace: { workspaceId: "workspace_fable", projectRoot, worktreePath: workspaceRoot, targetKey: childTargetKey }, launchToken: `workspace_launch_workspace_fable.${"x".repeat(43)}` };
-			}
-			if (request.method === "workspace.launch.bind") return { state: "bound" };
-			if (request.method === "workspace.cleanup") return { workspace: { state: "cleaned" } };
-			return baseResponse(request);
-		}, [identity]);
-		projectRoot = test.projectRoot;
-		workspaceRoot = join(test.root, "workspace-fable");
-		mkdirSync(workspaceRoot);
-		new CollaboratorAutoStore(test.runtimeRoot).set(true);
-		let confirmations = 0;
-		test.ctx.hasUI = false;
-		test.ctx.ui.confirm = async () => { confirmations++; return false; };
-		test.setExec(async (_command, args) => {
-			if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
-			if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9", terminal_id: "term_9" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
-			if (args[0] === "pane" && args[1] === "get") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p9", terminal_id: "term_9", cwd: workspaceRoot } } }), stderr: "", killed: false };
-			return { code: 0, stdout: "{}", stderr: "", killed: false };
-		});
-		await test.integration.sessionStart(test.ctx as never);
-		expect(test.statuses.at(-1)).toEqual({ key: "runtime-auto", value: "AUTO" });
-		expect(await test.integration.manageCollaborators({ action: "start", protocol: "review", participants: [{ participantId: "fable", persona: "architect", profile: "workspace-write" }] }, test.ctx as never)).toEqual([expect.objectContaining({ participant: "review/fable", status: "started" })]);
-		const tabCreate = test.execCalls.find((call) => call.args[0] === "tab" && call.args[1] === "create")!;
-		expect(tabCreate.args[tabCreate.args.indexOf("--cwd") + 1]).toBe(workspaceRoot);
-		expect(tabCreate.args).toContain(`PI_RUNTIME_WORKSPACE_LAUNCH=workspace_launch_workspace_fable.${"x".repeat(43)}`);
-		const launched = test.execCalls.find((call) => call.args[0] === "pane" && call.args[1] === "run")!;
-		const sessionEntries = readFileSync(paneRunSessionFile(launched.args), "utf8").trim().split("\n").map((line) => JSON.parse(line));
-		const workspaceEntry = sessionEntries.find((entry) => entry.customType === HOSTED_COLLABORATOR_WORKSPACE_ENTRY);
-		const profileEntry = sessionEntries.find((entry) => entry.customType === HOSTED_COLLABORATOR_PROFILE_ENTRY);
-		expect(workspaceEntry?.data).toEqual({ version: 1, workspaceId: "workspace_fable", projectRoot, workspaceRoot });
-		expect(workspaceEntry?.parentId).toBe(sessionEntries[1]?.id);
-		expect(profileEntry?.parentId).toBe(workspaceEntry?.id);
-		expect(await test.integration.manageCollaborators({ action: "stop", protocol: "review", participants: [{ participantId: "fable" }] }, test.ctx as never)).toEqual([{ participant: "review/fable", status: "stopped" }]);
-		expect(confirmations).toBe(0);
-		expect(test.entries.filter((entry) => entry.customType === HOSTED_AUTO_LIFECYCLE_ENTRY).map((entry) => (entry.data as { phase: string }).phase)).toEqual(["authorized", "settled", "authorized", "settled"]);
-		await test.integration.sessionShutdown();
-		expect(test.statuses.at(-1)).toEqual({ key: "runtime-auto", value: undefined });
-	});
-
-	it("defaults an omitted Auto launch profile to enforced read-only", async () => {
-		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
-		let childTargetKey = "";
-		const child = { ...fableParticipant, participantId: "bounded", participantKey: "participant_bounded" };
-		const test = await setup((request) => {
-			if (request.method === "participant.get") return mainParticipant;
-			if (request.method === "participant.list") return { participants: childTargetKey ? [mainParticipant, { ...child, holderTargetKey: childTargetKey }] : [mainParticipant] };
-			return baseResponse(request);
-		}, [identity]);
-		new CollaboratorAutoStore(test.runtimeRoot).set(true);
-		test.ctx.hasUI = false;
-		test.setExec(async (_command, args) => {
-			if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
-			if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
-			if (args[0] === "pane" && args[1] === "run") childTargetKey = deriveTargetKey(test.projectRoot, sessionHeader(paneRunSessionFile(args)).id);
-			return { code: 0, stdout: "{}", stderr: "", killed: false };
-		});
-		await test.integration.sessionStart(test.ctx as never);
-		await expect(test.integration.startCollaborator({ participantId: "bounded" }, test.ctx as never)).resolves.toMatchObject({ started: true });
-		const launch = test.execCalls.find((call) => call.args[0] === "pane" && call.args[1] === "run")!;
-		expect(launch.args[3]).toContain("--tools 'read,grep,find,ls,safe_diff,collaborator_list,collaborator_peers,collaborator_send,collaborator_status,collaborator_receive,collaborator_received,collaborator_reply,collaborator_task,chain_save,chain_load,chain_context'");
-		expect(launch.args[3]).not.toContain(",edit,write");
-		const profile = readFileSync(paneRunSessionFile(launch.args), "utf8").trim().split("\n").map((line) => JSON.parse(line)).find((entry) => entry.customType === HOSTED_COLLABORATOR_PROFILE_ENTRY)?.data;
-		expect(profile).toEqual({ version: 2, driver: "pi", profile: "read-only" });
-		await test.integration.sessionShutdown();
-	});
-
 	it("launches native drivers as interactive Herdr agents after one confirmation", async () => {
 		const holders = new Map<string, string>();
 		let lastTargetKey = "";
@@ -776,31 +690,6 @@ describe("hosted collaborator Pi integration", () => {
 		expect(starts.every((call) => /^[a-z][a-z0-9_-]{0,31}$/.test(call.args[2]!))).toBe(true);
 		expect(starts.every((call) => call.args.includes("--pane") && call.args.includes("w1:p9") && !call.args.join(" ").includes("bridge-runner"))).toBe(true);
 		expect(test.requests.filter((request) => request.method === "bridge.register").every((request) => (request.params.agentSession as { source: string }).source.startsWith("herdr:"))).toBe(true);
-		await test.integration.sessionShutdown();
-	});
-
-	it.each([false, true])("requires fresh confirmation for normal native Auto launches (batch: %s)", async batch => {
-		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
-		const test = await setup(request => {
-			if (request.method === "participant.get") return mainParticipant;
-			if (request.method === "participant.list") return { participants: [mainParticipant] };
-			if (request.method === "participant.acquire") return { participant: mainParticipant, revived: false, transitioned: false };
-			return baseResponse(request);
-		}, [identity]);
-		new CollaboratorAutoStore(test.runtimeRoot).set(true);
-		await test.integration.sessionStart(test.ctx as never);
-		let confirmations = 0;
-		test.ctx.ui.confirm = async () => { confirmations++; return false; };
-		const candidate = { participantId: "native", driver: "codex" as const, profile: "workspace-write" as const };
-		const start = () => batch ? test.integration.startCollaborators([candidate], test.ctx as never) : test.integration.startCollaborator(candidate, test.ctx as never);
-		test.ctx.hasUI = false;
-		await expect(start()).rejects.toThrow("explicit interactive confirmation");
-		expect(confirmations).toBe(0);
-		test.ctx.hasUI = true;
-		await start();
-		expect(confirmations).toBe(1);
-		expect(test.requests.some(request => request.method === "participant.auto_capacity.reserve" || request.method === "workspace.bridge.create")).toBe(false);
-		expect(test.execCalls.some(call => call.args[0] === "agent" && call.args[1] === "start")).toBe(false);
 		await test.integration.sessionShutdown();
 	});
 
@@ -926,21 +815,6 @@ describe("hosted collaborator Pi integration", () => {
 		expect(starts).toBe(1);
 		expect(test.execCalls.some(call => call.args[0] === "tab" && call.args[1] === "close")).toBe(false);
 		expect(test.requests.some(request => request.method === "bridge.register" || request.method === "bridge.launch.recover")).toBe(false);
-		await test.integration.sessionShutdown();
-	});
-
-	it.each([false, true])("preserves explicitly confirmed normal-native Auto ambiguity (batch: %s)", async batch => {
-		const test = await nativeWriterSetup("codex", "lost_register_response", true);
-		await test.integration.sessionStart(test.ctx as never);
-		let confirmations = 0;
-		test.ctx.ui.confirm = async () => { confirmations++; return true; };
-		const candidate = { participantId: "native", driver: "codex" as const, profile: "workspace-write" as const };
-		if (batch) expect(await test.integration.startCollaborators([candidate], test.ctx as never)).toMatchObject([{ status: "failed" }]);
-		else await expect(test.integration.startCollaborator(candidate, test.ctx as never)).rejects.toThrow();
-		expect(confirmations).toBe(1);
-		expect(test.execCalls.some(call => call.args[0] === "agent" && call.args[1] === "start")).toBe(true);
-		expect(test.execCalls.some(call => call.args[0] === "tab" && call.args[1] === "close")).toBe(false);
-		expect(test.requests.some(request => request.method === "bridge.launch.recover")).toBe(false);
 		await test.integration.sessionShutdown();
 	});
 
@@ -1091,69 +965,6 @@ describe("hosted collaborator Pi integration", () => {
 		expect(recoveryAttempts).toBe(3);
 		expect(test.execCalls.some((call) => call.args[0] === "tab" && call.args[1] === "create")).toBe(false);
 		expect(test.entries.filter((entry) => entry.customType === HOSTED_WORKSPACE_REQUEST_ENTRY).map((entry) => (entry.data as { status: string }).status)).toEqual(["pending", "recovered"]);
-		await test.integration.sessionShutdown();
-	});
-
-	it("does not delegate global Auto authority to a Runtime-managed child", async () => {
-		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "child", participantKey: "participant_child", generation: "lease_child", disposition: "held" } };
-		const managed = { type: "custom", customType: HOSTED_MANAGED_COLLABORATOR_ENTRY, data: { version: 1, managed: true } };
-		const childParticipant = { ...mainParticipant, participantId: "child", participantKey: "participant_child", generation: "lease_child" };
-		const test = await setup((request) => request.method === "participant.get" ? childParticipant : request.method === "participant.list" ? { participants: [childParticipant] } : baseResponse(request), [managed, identity]);
-		new CollaboratorAutoStore(test.runtimeRoot).set(true);
-		test.ctx.hasUI = false;
-		await test.integration.sessionStart(test.ctx as never);
-		expect(test.statuses.at(-1)).toEqual({ key: "runtime-auto", value: undefined });
-		await expect(test.integration.startCollaborator({ participantId: "other" }, test.ctx as never)).rejects.toThrow("interactive Pi session or enabled Runtime Auto mode");
-		await test.integration.sessionShutdown();
-	});
-
-	it("fails closed on corrupt Auto state and counts held collaborators through registration loss", async () => {
-		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
-		const corrupt = await setup((request) => request.method === "participant.get" ? mainParticipant : request.method === "participant.list" ? { participants: [mainParticipant] } : baseResponse(request), [identity]);
-		writeFileSync(join(corrupt.runtimeRoot, "auto-mode.v1.json"), "{broken");
-		corrupt.ctx.hasUI = false;
-		await corrupt.integration.sessionStart(corrupt.ctx as never);
-		expect(corrupt.integration.toggleAutoMode(corrupt.ctx as never).enabled).toBe(false);
-		await expect(corrupt.integration.startCollaborator({ participantId: "fable" }, corrupt.ctx as never)).rejects.toThrow("interactive Pi session or enabled Runtime Auto mode");
-		expect(corrupt.notifications.some((notice) => notice.message.includes("enforced MANUAL"))).toBe(true);
-		expect(corrupt.notifications.some((notice) => notice.message.includes("recover explicitly"))).toBe(true);
-		expect(corrupt.statuses.at(-1)).toEqual({ key: "runtime-auto", value: "MANUAL" });
-		await corrupt.integration.sessionShutdown();
-
-		const live = Array.from({ length: 12 }, (_, index) => ({ ...fableParticipant, participantKey: `participant_${index}`, participantId: `live-${index}`, holderTargetKey: `target_${index}`, holderLive: false }));
-		const capped = await setup((request) => request.method === "participant.get" ? mainParticipant : request.method === "participant.list" ? { participants: [mainParticipant, ...live] } : baseResponse(request), [identity]);
-		new CollaboratorAutoStore(capped.runtimeRoot).set(true);
-		capped.ctx.hasUI = false;
-		await capped.integration.sessionStart(capped.ctx as never);
-		await expect(capped.integration.startCollaborator({ participantId: "extra" }, capped.ctx as never)).rejects.toThrow("at most 12 held or reserved collaborators");
-		expect(capped.execCalls.some((call) => call.args[0] === "tab" && call.args[1] === "create")).toBe(false);
-		await capped.integration.sessionShutdown();
-	});
-
-	it("configures the trusted Shift+Tab Auto shortcut and requests reload", async () => {
-		const test = await setup(baseResponse);
-		let reloaded = false;
-		(test.ctx as typeof test.ctx & { reload(): Promise<void> }).reload = async () => { reloaded = true; };
-		await test.integration.command("auto setup", test.ctx as never);
-		expect(reloaded).toBe(true);
-		expect(new CollaboratorAutoStore(test.runtimeRoot).shortcutConfigured()).toBe(true);
-		expect(JSON.parse(readFileSync(join(test.root, "keybindings.json"), "utf8"))["app.thinking.cycle"]).toEqual(["ctrl+shift+t"]);
-	});
-
-	it("recovers one exact retained Auto reservation and stale same-process lock after trusted verification", async () => {
-		const test = await setup((request) => {
-			if (request.method === "participant.auto_capacity.list") return { reservations: [{ operationId: "auto_op_recovery", participantKeys: ["participant_child"], createdAt: 1 }] };
-			if (request.method === "participant.auto_capacity.recover") return { released: true, confirmedAbsent: true };
-			return baseResponse(request);
-		});
-		writeFileSync(join(test.runtimeRoot, "auto-start.lock"), `${JSON.stringify({ token: "lock_00000000-0000-4000-8000-000000000005", pid: process.pid })}\n`);
-		let confirmation = "";
-		test.ctx.ui.confirm = async (...args: unknown[]) => { confirmation = String(args[1]); return true; };
-		await test.integration.sessionStart(test.ctx as never);
-		await test.integration.command("auto recover auto_op_recovery", test.ctx as never);
-		expect(confirmation).toContain("exact preserved Herdr resource cannot still settle");
-		expect(test.requests.find((request) => request.method === "participant.auto_capacity.recover")?.params).toMatchObject({ operationId: "auto_op_recovery", confirmedAbsent: true });
-		expect(existsSync(join(test.runtimeRoot, "auto-start.lock"))).toBe(false);
 		await test.integration.sessionShutdown();
 	});
 
@@ -1434,26 +1245,7 @@ describe("hosted collaborator Pi integration", () => {
 		await test.integration.sessionShutdown();
 	});
 
-	it("serializes the trusted collaborator-start command through the cross-session lock", async () => {
-		const test = await setup(baseResponse);
-		let releaseLaunch!: () => void;
-		const held = new Promise<void>((resolve) => { releaseLaunch = resolve; });
-		let launchEntered!: () => void;
-		const entered = new Promise<void>((resolve) => { launchEntered = resolve; });
-		const internal = test.integration as unknown as { launchCollaborator(...args: unknown[]): Promise<string> };
-		internal.launchCollaborator = async () => { launchEntered(); await held; return "w1:p9"; };
-		await test.integration.sessionStart(test.ctx as never);
-		const command = test.integration.command("collaborator-start review fable", test.ctx as never);
-		await entered;
-		expect(existsSync(join(test.runtimeRoot, "auto-start.lock"))).toBe(true);
-		await expect(new CollaboratorAutoStore(test.runtimeRoot).acquireStartLock()).rejects.toThrow("already in progress");
-		releaseLaunch();
-		await command;
-		expect(existsSync(join(test.runtimeRoot, "auto-start.lock"))).toBe(false);
-		await test.integration.sessionShutdown();
-	});
-
-	it("retains the command start lock and evidence when dispatch is ambiguous", async () => {
+	it("retains recovery evidence when command dispatch is ambiguous", async () => {
 		const test = await setup((request) => request.method === "participant.list" ? { participants: [mainParticipant] } : baseResponse(request));
 		let childSessionFile = "";
 		test.setExec(async (_command, args) => {
@@ -1468,7 +1260,6 @@ describe("hosted collaborator Pi integration", () => {
 		await test.integration.sessionStart(test.ctx as never);
 		await test.integration.command("collaborator-start review fable", test.ctx as never);
 		expect(existsSync(childSessionFile)).toBe(true);
-		expect(existsSync(join(test.runtimeRoot, "auto-start.lock"))).toBe(true);
 		expect(test.execCalls.some((call) => call.args[0] === "tab" && call.args[1] === "close")).toBe(false);
 		expect(test.notifications.some((notice) => notice.message.includes("tab and session were preserved"))).toBe(true);
 		await test.integration.sessionShutdown();
@@ -1498,103 +1289,6 @@ describe("hosted collaborator Pi integration", () => {
 		expect(test.execCalls.some((call) => call.args[0] === "tab" && call.args[1] === "close")).toBe(false);
 		expect(existsSync(childSessionFile)).toBe(true);
 		await test.integration.sessionShutdown();
-	});
-
-	it("terminates an ambiguous Auto start before releasing capacity", async () => {
-		const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
-		const timeline: string[] = [];
-		const test = await setup((request) => {
-			if (request.method === "participant.get") return mainParticipant;
-			if (request.method === "participant.list") return { participants: [mainParticipant] };
-			if (request.method === "participant.auto_capacity.reserve") timeline.push("reserve");
-			if (request.method === "participant.auto_capacity.release") timeline.push("release");
-			return baseResponse(request);
-		}, [identity]);
-		new CollaboratorAutoStore(test.runtimeRoot).set(true);
-		test.ctx.hasUI = false;
-		let childSessionFile = "";
-		test.setExec(async (_command, args) => {
-			if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
-			if (args[0] === "tab" && args[1] === "create") { timeline.push("create"); return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false }; }
-			if (args[0] === "pane" && args[1] === "run") {
-				childSessionFile = paneRunSessionFile(args);
-				return { code: 1, stdout: "", stderr: "reply lost", killed: false };
-			}
-			if (args[0] === "tab" && args[1] === "close") timeline.push("close");
-			return { code: 0, stdout: "{}", stderr: "", killed: false };
-		});
-		await test.integration.sessionStart(test.ctx as never);
-		await expect(test.integration.startCollaborator({ participantId: "fable" }, test.ctx as never)).rejects.toThrow("dispatch Pi collaborator startup");
-		expect(test.execCalls).toContainEqual({ command: "herdr", args: ["tab", "close", "w1:t9"] });
-		expect(timeline).toEqual(["reserve", "create", "close", "release"]);
-		expect(existsSync(childSessionFile)).toBe(false);
-		expect(existsSync(join(test.runtimeRoot, "auto-start.lock"))).toBe(false);
-		await test.integration.sessionShutdown();
-	});
-
-	it.each(["stdout", "stderr"] as const)("releases native Auto capacity only after typed exact host absence on %s", async stream => {
-		for (const [hostCode, releases] of [["tab_not_found", true], ["host_unavailable", false]] as const) {
-			const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
-			let launchRequest: Request | undefined;
-			const test = await setup((request) => {
-				if (request.method === "participant.get") return mainParticipant;
-				if (request.method === "participant.list") return { participants: [mainParticipant] };
-				if (request.method === "bridge.launch.create") { launchRequest = request; return { launchId: request.params.launchId, targetKey: "target_native", holderGeneration: "lease_native", expiresAt: Date.now() + 30_000, launchToken: `bridge_launch_${request.params.launchId}.${"x".repeat(43)}`, reconnectToken: "y".repeat(43), herdr: { paneId: "w1:p9", terminalId: "term_9", tabId: "w1:t9", workspaceId: "w1" } }; }
-				if (request.method === "bridge.launch.recover") return recoveredBridge(launchRequest!, "cancelled");
-				return baseResponse(request);
-			}, [identity]);
-			new CollaboratorAutoStore(test.runtimeRoot).set(true);
-			test.ctx.hasUI = false;
-			test.setExec(async (_command, args) => {
-				if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
-				if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9", terminal_id: "term_9" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
-				if (args[0] === "agent" && args[1] === "start") return { code: 1, stdout: "", stderr: "dispatch uncertain", killed: false };
-				if (args[0] === "tab" && args[1] === "close") return { code: 1, stdout: "", stderr: "close uncertain", killed: false };
-				if (args[0] === "tab" && args[1] === "get") {
-					const output = JSON.stringify({ error: { code: hostCode, message: "typed" } });
-					return { code: 1, stdout: stream === "stdout" ? output : "", stderr: stream === "stderr" ? output : "", killed: false };
-				}
-				return { code: 0, stdout: "{}", stderr: "", killed: false };
-			});
-			await test.integration.sessionStart(test.ctx as never);
-			await expect(test.integration.startCollaborator({ participantId: "native", driver: "codex" }, test.ctx as never)).rejects.toThrow(releases ? "could not start the interactive codex collaborator" : "could not be terminated");
-			expect(existsSync(join(test.runtimeRoot, "auto-start.lock"))).toBe(!releases);
-			expect(test.requests.filter((request) => request.method === "participant.auto_capacity.release")).toHaveLength(releases ? 1 : 0);
-			await test.integration.sessionShutdown();
-		}
-	});
-
-	it("stops a consumed native Auto launch through Runtime quiescence before releasing capacity", async () => {
-		for (const stopFails of [false, true]) {
-			const identity = { type: "custom", customType: HOSTED_PARTICIPANT_ENTRY, data: { version: 1, protocol: "review", participantId: "main", participantKey: "participant_main", generation: "lease_main", disposition: "held" } };
-			const timeline: string[] = [];
-			let launchRequest: Request | undefined;
-			const test = await setup((request) => {
-				if (request.method === "participant.get") return mainParticipant;
-				if (request.method === "participant.list") return { participants: [mainParticipant] };
-				if (request.method === "participant.auto_capacity.reserve") { timeline.push("reserve"); return baseResponse(request); }
-				if (request.method === "bridge.launch.create") { launchRequest = request; timeline.push("authorize"); return { launchId: request.params.launchId, targetKey: `target_${request.params.launchId}`, holderGeneration: "lease_native", expiresAt: Date.now() + 30_000, launchToken: `bridge_launch_${request.params.launchId}.${"x".repeat(43)}`, reconnectToken: "y".repeat(43), herdr: { paneId: "w1:p9", terminalId: "term_9", tabId: "w1:t9", workspaceId: "w1" } }; }
-				if (request.method === "bridge.launch.recover") { timeline.push("recover_consumed"); return recoveredBridge(launchRequest!, "consumed"); }
-				if (request.method === "participant.stop_confirmed") { timeline.push("stop_quiesced"); if (stopFails) throw new HostedRuntimeClientError("identity_mismatch", "worker group uncertain"); return { outcome: "stopped" }; }
-				if (request.method === "participant.auto_capacity.release") { timeline.push("release"); return baseResponse(request); }
-				return baseResponse(request);
-			}, [identity]);
-			new CollaboratorAutoStore(test.runtimeRoot).set(true);
-			test.ctx.hasUI = false;
-			test.setExec(async (_command, args) => {
-				if (args[0] === "pane" && args[1] === "current") return { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false };
-				if (args[0] === "tab" && args[1] === "create") return { code: 0, stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9", terminal_id: "term_9" }, tab: { tab_id: "w1:t9" } } }), stderr: "", killed: false };
-				if (args[0] === "agent" && args[1] === "start") return { code: 1, stdout: "", stderr: "dispatch response lost", killed: false };
-				return { code: 0, stdout: "{}", stderr: "", killed: false };
-			});
-			await test.integration.sessionStart(test.ctx as never);
-			await expect(test.integration.startCollaborator({ participantId: "native", driver: "codex" }, test.ctx as never)).rejects.toThrow(stopFails ? "exact target quiescence" : "could not start the interactive codex collaborator");
-			expect(test.requests.find((request) => request.method === "participant.stop_confirmed")?.params).toMatchObject({ participantKey: "participant_native", expectedGeneration: "lease_native", confirmed: true });
-			expect(test.execCalls.some((call) => call.args[0] === "tab" && call.args[1] === "close")).toBe(false);
-			expect(timeline).toEqual(stopFails ? ["reserve", "authorize", "recover_consumed", "stop_quiesced"] : ["reserve", "authorize", "recover_consumed", "stop_quiesced", "release"]);
-			expect(existsSync(join(test.runtimeRoot, "auto-start.lock"))).toBe(stopFails);
-			await test.integration.sessionShutdown();
-		}
 	});
 
 	it("preserves a started child and caller when identity observation becomes ambiguous", async () => {
