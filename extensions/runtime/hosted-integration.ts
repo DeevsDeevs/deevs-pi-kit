@@ -1,7 +1,6 @@
 import {
 	CURRENT_SESSION_VERSION,
 	type CustomEntry,
-	type CustomToolCallEvent,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
 	type ExtensionContext,
@@ -10,18 +9,38 @@ import {
 	type ToolCallEvent,
 } from "@earendil-works/pi-coding-agent";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { findAgent, loadBuiltinAgents } from "../subagents/agents.ts";
-import type { AgentDefinition } from "../subagents/catalog-types.ts";
+import { join, resolve } from "node:path";
 import { HostedRuntimeClient, HostedRuntimeClientError } from "./client.ts";
+import { markClaudeWorkspaceTrusted } from "./claude-trust.ts";
+import {
+	collaboratorConfiguration,
+	collaboratorName,
+	collaboratorToolBlock,
+	READ_ONLY_COLLABORATOR_TOOLS,
+	resolveCollaboratorCandidate,
+	usesNativeUserConfiguration,
+	WORKSPACE_WRITE_COLLABORATOR_TOOLS,
+	type CollaboratorCandidate,
+	type CollaboratorToolBlock,
+	type ResolvedCollaboratorCandidate,
+} from "./collaborator-policy.ts";
+import {
+	createCollaboratorTab,
+	currentHerdrPane,
+	delay,
+	HERDR_AGENT_START_CODES,
+	isHerdrError,
+	shellQuote,
+	throwIfAborted,
+	waitForHerdrPaneCwd,
+	type CollaboratorTab,
+} from "./herdr.ts";
 import { HOSTED_MAX_DELIVERY_BATCH } from "./hosted-types.ts";
 import {
 	COLLABORATOR_ENV,
-	COLLABORATOR_MODEL,
-	COLLABORATOR_NAME,
 	HOSTED_SESSION_ENTRY,
 	HostedSessionStore,
 	sameAgentSession,
@@ -39,7 +58,6 @@ import {
 	booleanValue,
 	errorCode,
 	isStringValue,
-	optionalText,
 	parseAcquireResult,
 	parseHeartbeat,
 	parseParticipant,
@@ -55,7 +73,6 @@ import {
 	type SerializedObject,
 	type SerializedValue,
 } from "./responses.ts";
-import { toolDefinitions } from "./mcp/tools.ts";
 import { nativeMessagingLaunch } from "./mcp/native.ts";
 import { messagingDescriptorPath } from "./service/messaging.ts";
 import { deriveAgentTargetKey } from "./service/state.ts";
@@ -64,11 +81,6 @@ import { deriveAgentTargetKey } from "./service/state.ts";
 const HEARTBEAT_MS = 2_000;
 export const HOSTED_RUNTIME_MESSAGE = "deevs.hosted-runtime.v1";
 const HOSTED_MESSAGING_MAIL = "deevs.hosted-runtime.messaging-mail.v1";
-const COLLABORATOR_METADATA_TOOLS = ["collaborator_list", ...toolDefinitions.map(tool => tool.name), "chain_save", "chain_load", "chain_context"] as const;
-const READ_ONLY_COLLABORATOR_TOOLS = ["read", "grep", "find", "ls", "safe_diff", ...COLLABORATOR_METADATA_TOOLS] as const;
-const WORKSPACE_WRITE_COLLABORATOR_TOOLS = [...READ_ONLY_COLLABORATOR_TOOLS, "edit", "write"] as const;
-const COLLABORATOR_PERSONAS = loadBuiltinAgents();
-const HERDR_AGENT_START_CODES = ["invalid_agent_name", "unsupported_agent_kind", "invalid_agent_argument", "invalid_agent_timeout", "agent_pane_not_found", "agent_pane_busy", "agent_pane_unavailable", "agent_start_input_failed", "agent_name_taken", "agent_start_failed", "agent_name_lost", "timeout"];
 
 interface HostedReceipt {
 	claimId: string;
@@ -103,22 +115,6 @@ interface BeforeAgentStartResult {
 	systemPrompt?: string;
 }
 
-interface CollaboratorCandidate {
-	participantId: string;
-	driver?: HostedCollaboratorDriver;
-	model?: string;
-	persona?: string;
-	profile?: HostedCollaboratorProfile;
-}
-
-interface ResolvedCollaboratorCandidate {
-	participantId: string;
-	driver: HostedCollaboratorDriver;
-	model?: string;
-	profile?: HostedCollaboratorProfile;
-	persona?: CollaboratorPersona;
-}
-
 type CollaboratorManageAction = "start" | "stand_down" | "stop";
 
 interface CollaboratorManageResult {
@@ -145,12 +141,6 @@ interface ManagedAgentLaunch {
 	tab: CollaboratorTab;
 	agentSession: ManagedAgentSession;
 	messagingConfigured: boolean;
-}
-
-interface CollaboratorTab {
-	tabId: string;
-	paneId: string;
-	terminalId: string;
 }
 
 interface AgentBindRequest {
@@ -280,15 +270,18 @@ export class HostedRuntimeIntegration {
 		return result;
 	}
 
-	guardCollaboratorTool(toolName: string, input: ToolCallEvent["input"] | undefined, cwd: string): { block: true; reason: string } | undefined {
+	guardCollaboratorTool(toolName: string, input: ToolCallEvent["input"] | undefined, cwd: string): CollaboratorToolBlock | undefined {
 		const configuredProfile = this.store.launch?.profile;
-		if (!configuredProfile) return;
-		const profile = configuredProfile === "workspace-write" && (!this.store.worktree || this.store.identity?.disposition !== "held") ? "read-only" : configuredProfile;
-		const allowed: readonly string[] = profile === "read-only" ? READ_ONLY_COLLABORATOR_TOOLS : WORKSPACE_WRITE_COLLABORATOR_TOOLS;
-		if (!allowed.includes(toolName)) return { block: true, reason: `Collaborator profile ${profile} does not permit ${toolName}.` };
+		if (!configuredProfile) return undefined;
 		const path = input && "path" in input ? input.path : undefined;
-		if (FILE_TOOLS.has(toolName) && !collaboratorPathAllowed(cwd, path, toolName === "write")) return { block: true, reason: `Collaborator profile ${profile} confines ${toolName} to the project workspace.` };
-		return;
+		return collaboratorToolBlock(this.effectiveCollaboratorProfile(configuredProfile), toolName, path, cwd);
+	}
+
+	/** A workspace-write collaborator falls back to read-only until its worktree and held identity are both proven. */
+	private effectiveCollaboratorProfile(configured: HostedCollaboratorProfile): HostedCollaboratorProfile {
+		if (configured !== "workspace-write") return configured;
+		if (!this.store.worktree) return "read-only";
+		return this.store.identity?.disposition === "held" ? "workspace-write" : "read-only";
 	}
 
 	async acceptWake(args: string, ctx: ExtensionCommandContext): Promise<void> {
@@ -824,11 +817,11 @@ export class HostedRuntimeIntegration {
 			const worktreePath = candidate.profile === "workspace-write" ? await this.ensureWorktree(registration, protocol, participantId, expectedCaller) : undefined;
 			throwIfAborted(signal);
 			const launchCwd = worktreePath ?? projectRoot;
-			const tab = await this.createCollaboratorTab(launchCwd, participantId);
+			const tab = await createCollaboratorTab(this.pi, launchCwd, participantId);
 			paneId = tab.paneId;
 			tabId = tab.tabId;
 			if (worktreePath) {
-				await this.waitForHerdrPaneCwd(tab.paneId, tab.terminalId, launchCwd, signal);
+				await waitForHerdrPaneCwd(this.pi, tab, launchCwd, signal);
 				this.requireCurrentScope(current);
 				messaging = await this.configureNativeMessaging(candidate, targetKey, clientGeneration);
 			}
@@ -913,26 +906,6 @@ export class HostedRuntimeIntegration {
 		if (launch.messagingConfigured) await this.provisionManagedMessaging(ctx, registration, control);
 	}
 
-	private async createCollaboratorTab(launchCwd: string, participantId: string): Promise<CollaboratorTab> {
-		const workspaceId = process.env.HERDR_WORKSPACE_ID;
-		if (!workspaceId) throw new HostedRuntimeClientError("host_unavailable", "Collaborator start requires a Herdr workspace.");
-		const args = ["tab", "create", "--workspace", workspaceId, "--cwd", launchCwd, "--label", `collaborator:${participantId}`, "--no-focus"];
-		const created = await this.pi.exec("herdr", args, { timeout: 5_000 });
-		if (created.code !== 0) throw new HostedRuntimeClientError("host_unavailable", "Herdr could not create the native collaborator tab.");
-		const result = strictObject(strictObject(JSON.parse(created.stdout), "Herdr response").result, "Herdr result");
-		const rootPane = strictObject(result.root_pane, "Herdr root pane");
-		const paneId = text(rootPane.pane_id);
-		const tabId = text(strictObject(result.tab, "Herdr tab").tab_id);
-		let terminalId = optionalText(rootPane.terminal_id);
-		if (!terminalId) {
-			const pane = await this.pi.exec("herdr", ["pane", "get", paneId], { timeout: 2_000 });
-			const response = pane.code === 0 ? strictObject(JSON.parse(pane.stdout), "Herdr response") : undefined;
-			if (response) terminalId = text(strictObject(strictObject(response.result, "Herdr result").pane, "Herdr pane").terminal_id);
-		}
-		if (!terminalId) throw new HostedRuntimeClientError("invalid_response", "Herdr did not return the native collaborator terminal identity.");
-		return { tabId, paneId, terminalId };
-	}
-
 	private async configureNativeMessaging(candidate: ResolvedCollaboratorCandidate, targetKey: string, clientGeneration: string) {
 		if (candidate.driver === "pi") throw new HostedRuntimeClientError("conflict", "Native messaging requires an interactive driver.");
 		const node = await this.pi.exec("node", ["--print", "process.execPath"], { timeout: 3_000 });
@@ -987,23 +960,6 @@ export class HostedRuntimeIntegration {
 		if (!caller) throw new HostedRuntimeClientError("conflict", "Workspace-write launch requires an authoritatively held caller generation.");
 		const params = { ...auth(registration), callerParticipantKey: caller.participantKey, expectedCallerGeneration: caller.generation, protocol, participantId };
 		return text(strictObject(await this.client.call("worktree.ensure", params), "Collaborator worktree").path);
-	}
-
-	private async waitForHerdrPaneCwd(paneId: string, terminalId: string, cwd: string, signal?: AbortSignal): Promise<void> {
-		const expectedCwd = realpathSync(cwd);
-		let consecutiveMatches = 0;
-		for (let attempt = 0; attempt < 50; attempt++) {
-			throwIfAborted(signal);
-			const response = await this.pi.exec("herdr", ["pane", "get", paneId], { timeout: 2_000 });
-			if (response.code === 0) try {
-				const pane = strictObject(strictObject(strictObject(JSON.parse(response.stdout), "Herdr response").result, "Herdr result").pane, "Herdr pane");
-				if (pane.pane_id === paneId && pane.terminal_id === terminalId && realpathSync(text(pane.cwd)) === expectedCwd) {
-					if (++consecutiveMatches >= 3) return;
-				} else consecutiveMatches = 0;
-			} catch { consecutiveMatches = 0; }
-			await delay(100);
-		}
-		throw new HostedRuntimeClientError("host_unavailable", `Herdr pane ${paneId} did not settle at its authorized cwd.`);
 	}
 
 	private async cleanupFailedCollaborator(tabId: string | undefined, paneId: string | undefined, sessionFile: string): Promise<void> {
@@ -1097,7 +1053,7 @@ export class HostedRuntimeIntegration {
 		const sessionFile = ctx.sessionManager.getSessionFile();
 		if (!sessionFile) throw new HostedRuntimeClientError("invalid_request", "Runtime requires a persisted Pi session.");
 		const sessionId = ctx.sessionManager.getSessionId();
-		const host = await this.currentHerdrPane();
+		const host = await currentHerdrPane(this.pi);
 		this.requireCurrentScope(current);
 		const admittedClaims = [...this.admittedClaims].slice(-HOSTED_MAX_DELIVERY_BATCH).map(([claimId, eventIds]) => ({ claimId, eventIds }));
 		const worktree = this.store.worktree;
@@ -1118,14 +1074,6 @@ export class HostedRuntimeIntegration {
 		} catch (error) { if (current()) ctx.ui.notify(`Collaborator identity or messaging unavailable: ${error instanceof Error ? error.message : String(error)}`, "warning"); }
 		this.requireCurrentScope(current);
 		return registration;
-	}
-
-	private async currentHerdrPane(): Promise<{ paneId: string; terminalId: string }> {
-		const current = await this.pi.exec("herdr", ["pane", "current", "--current"], { timeout: 2_000 });
-		if (current.code !== 0) throw new HostedRuntimeClientError("host_unavailable", "Herdr could not resolve this Pi pane.");
-		const pane = strictObject(strictObject(JSON.parse(current.stdout), "Herdr response").result, "Herdr result").pane;
-		const value = strictObject(pane, "Herdr pane");
-		return { paneId: text(value.pane_id), terminalId: text(value.terminal_id) };
 	}
 
 	private startHeartbeat(): void {
@@ -1514,40 +1462,6 @@ function managedAgentName(protocol: string, participantId: string): string {
 	return `collab-${createHash("sha256").update(`${protocol}\0${participantId}\0${randomUUID()}`).digest("hex").slice(0, 25)}`;
 }
 
-export function markClaudeWorkspaceTrusted(cwd: string, configPath = join(homedir(), ".claude.json")): void {
-	mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
-	for (let attempt = 0; attempt < 3; attempt++) {
-		const original = existsSync(configPath) ? readClaudeTrustStore(configPath) : undefined;
-		let config: SerializedObject = {};
-		if (original !== undefined) try {
-			config = strictObject(JSON.parse(original), "Claude workspace trust store");
-		} catch {
-			throw new HostedRuntimeClientError("host_unavailable", "Claude workspace trust store is malformed.");
-		}
-		const projects = config.projects === undefined ? {} : strictObject(config.projects, "Claude workspace trust projects");
-		const existing = projects[cwd] === undefined ? undefined : strictObject(projects[cwd], "Claude workspace trust entry");
-		if (existing?.hasTrustDialogAccepted === true) return;
-		const next = { ...config, projects: { ...projects, [cwd]: { ...existing, hasTrustDialogAccepted: true } } };
-		const temporary = join(dirname(configPath), `.${basename(configPath)}.${process.pid}.${randomUUID()}.tmp`);
-		try {
-			writeFileSync(temporary, `${JSON.stringify(next, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
-			const current = existsSync(configPath) ? readClaudeTrustStore(configPath) : undefined;
-			if (current !== original) continue;
-			renameSync(temporary, configPath);
-			return;
-		} finally {
-			if (existsSync(temporary)) rmSync(temporary, { force: true });
-		}
-	}
-	throw new HostedRuntimeClientError("conflict", "Claude workspace trust store changed concurrently; retry launch.");
-}
-
-function readClaudeTrustStore(configPath: string): string {
-	const metadata = lstatSync(configPath);
-	if (!metadata.isFile() || metadata.size > 8 * 1024 * 1024) throw new HostedRuntimeClientError("host_unavailable", "Claude workspace trust store is unavailable.");
-	return readFileSync(configPath, "utf8");
-}
-
 function guardedNativeArgs(candidate: ResolvedCollaboratorCandidate, launchCwd: string): string[] {
 	if (candidate.profile !== "read-only" || candidate.driver === "pi") throw new HostedRuntimeClientError("capability_unavailable", "Guarded native startup requires a read-only profile.");
 	if (candidate.driver === "claude-code") return ["--safe-mode", "--permission-mode", "dontAsk", "--tools", "Read,Glob,Grep", ...(candidate.model ? ["--model", candidate.model] : []), ...(candidate.persona ? ["--append-system-prompt", candidate.persona.prompt] : [])];
@@ -1562,101 +1476,6 @@ function hostedContent(events: HostedClaimMessage["events"]): string {
 	return lines.join("\n");
 }
 
-const PI_COLLABORATOR_MODEL = /^[a-z0-9][a-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._/:-]*$/;
-const FILE_TOOLS = new Set(["read", "grep", "find", "ls", "edit", "write"]);
-const READ_ONLY_PERSONA_TOOLS = new Set(["safe_read", "safe_list", "safe_search", "safe_diff"]);
-const WORKSPACE_WRITE_PERSONA_TOOLS = new Set([...READ_ONLY_PERSONA_TOOLS, "edit", "write"]);
-const OPTIONAL_COLLABORATOR_PERSONA_TOOLS = new Set(["review_report"]);
-
-function resolveCollaboratorCandidate(candidate: CollaboratorCandidate): ResolvedCollaboratorCandidate {
-	const participantId = collaboratorName(candidate.participantId, "participant ID");
-	const driver = collaboratorDriver(candidate.driver);
-	const requestedModel = collaboratorModel(candidate.model);
-	assertUnambiguousCollaboratorModel(driver, requestedModel);
-	const requestedProfile = collaboratorProfile(candidate.profile);
-	if (!candidate.persona) {
-		const profile = requestedProfile ?? (driver === "pi" ? undefined : "read-only");
-		const result: ResolvedCollaboratorCandidate = { participantId, driver };
-		if (requestedModel) result.model = requestedModel;
-		if (profile) result.profile = profile;
-		return result;
-	}
-	const personaName = collaboratorName(candidate.persona, "persona");
-	const definition = findAgent(COLLABORATOR_PERSONAS, personaName);
-	if (!definition || definition.disabled) throw new HostedRuntimeClientError("not_found", `Unknown or disabled collaborator persona ${personaName}.`);
-	const profile = requestedProfile ?? "read-only";
-	assertPersonaCompatible(definition, profile, driver);
-	const prompt = definition.body.trim();
-	if (!prompt || Buffer.byteLength(prompt) > 32 * 1024) throw new HostedRuntimeClientError("invalid_request", `Collaborator persona ${personaName} has an invalid prompt.`);
-	const persona: CollaboratorPersona = { name: definition.name, prompt, promptHash: createHash("sha256").update(prompt).digest("hex") };
-	const model = requestedModel ?? (driver === "pi" ? collaboratorModel(definition.model) : undefined);
-	assertUnambiguousCollaboratorModel(driver, model);
-	const result: ResolvedCollaboratorCandidate = { participantId, driver, profile, persona };
-	if (model) result.model = model;
-	return result;
-}
-
-function assertPersonaCompatible(persona: AgentDefinition, profile: HostedCollaboratorProfile, driver: HostedCollaboratorDriver): void {
-	if (driver !== "pi" && persona.tools.includes("safe_diff")) throw new HostedRuntimeClientError("conflict", `Native collaborator persona ${persona.name} requires unsupported safe_diff tooling.`);
-	const supported = profile === "read-only" ? READ_ONLY_PERSONA_TOOLS : WORKSPACE_WRITE_PERSONA_TOOLS;
-	const incompatible = persona.tools.filter((tool) => !supported.has(tool) && !OPTIONAL_COLLABORATOR_PERSONA_TOOLS.has(tool));
-	if (incompatible.length > 0) throw new HostedRuntimeClientError("conflict", `Collaborator persona ${persona.name} requires unsupported ${incompatible.join(", ")} tooling.`);
-}
-
-function usesNativeUserConfiguration(candidate: ResolvedCollaboratorCandidate): boolean {
-	return candidate.driver !== "pi" && candidate.profile === "workspace-write";
-}
-
-function collaboratorConfiguration(candidate: ResolvedCollaboratorCandidate): string {
-	const configuration = [`driver ${candidate.driver}`, candidate.model ? `model ${candidate.model}` : `model ${candidate.driver} default`, candidate.persona ? `persona ${candidate.persona.name}` : "persona none", candidate.profile ? `profile ${candidate.profile}` : "profile none"].join(", ");
-	return usesNativeUserConfiguration(candidate) ? `${configuration}, normal native configuration/hooks/permissions (not an edit-only tool boundary)` : configuration;
-}
-
-function collaboratorPathAllowed(cwd: string, value: CustomToolCallEvent["input"]["path"], allowMissing: boolean): boolean {
-	if (value !== undefined && !isStringValue(value)) return false;
-	try {
-		const root = realpathSync(cwd);
-		const requested = resolve(root, value ?? ".");
-		let target: string;
-		try { target = realpathSync(requested); }
-		catch {
-			if (!allowMissing) return false;
-			try { lstatSync(requested); return false; }
-			catch (error) { if (!isNodeError(error) || error.code !== "ENOENT") return false; }
-			target = join(realpathSync(dirname(requested)), basename(requested));
-		}
-		const path = relative(root, target);
-		return path === "" || (!isAbsolute(path) && path !== ".." && !path.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`));
-	} catch {
-		return false;
-	}
-}
-
-function collaboratorName(value: string | undefined, name: string): string {
-	if (!value || !COLLABORATOR_NAME.test(value)) throw new HostedRuntimeClientError("invalid_request", `${name} must match ${COLLABORATOR_NAME}.`);
-	return value;
-}
-
-function collaboratorDriver(value: HostedCollaboratorDriver | undefined): HostedCollaboratorDriver {
-	if (value === undefined || value === "pi") return "pi";
-	if (value === "claude-code" || value === "codex") return value;
-	throw new HostedRuntimeClientError("invalid_request", "driver must be pi, claude-code, or codex.");
-}
-
-function collaboratorModel(value: string | undefined): string | undefined {
-	if (value !== undefined && !COLLABORATOR_MODEL.test(value)) throw new HostedRuntimeClientError("invalid_request", `model must match ${COLLABORATOR_MODEL}.`);
-	return value;
-}
-
-function assertUnambiguousCollaboratorModel(driver: HostedCollaboratorDriver, model: string | undefined): void {
-	if (driver === "pi" && model !== undefined && !PI_COLLABORATOR_MODEL.test(model)) throw new HostedRuntimeClientError("invalid_request", "Explicit Pi collaborator models must be provider-qualified, for example openai-codex/gpt-5.6-sol.");
-}
-
-function collaboratorProfile(value: HostedCollaboratorProfile | undefined): HostedCollaboratorProfile | undefined {
-	if (value !== undefined && value !== "read-only" && value !== "workspace-write") throw new HostedRuntimeClientError("invalid_request", "profile must be read-only or workspace-write.");
-	return value;
-}
-
 function monitorSummary(value: RuntimeResponse): string {
 	const monitor = strictObject(value, "Runtime Monitor");
 	return `${text(monitor.monitorId)} (${text(monitor.status)})`;
@@ -1668,25 +1487,3 @@ function monitorIdFromStatus(value: RuntimeResponse): string | undefined {
 	return text(strictObject(status.monitor, "Runtime Monitor").monitorId);
 }
 
-function throwIfAborted(signal?: AbortSignal): void {
-	if (signal?.aborted) throw new HostedRuntimeClientError("cancelled", "Collaborator start was cancelled.");
-}
-
-function isHerdrError(result: { stdout: string; stderr: string }, expectedCode: string): boolean {
-	return [result.stdout, result.stderr].some(output => {
-		if (output.length > 8192) return false;
-		try { return strictObject(strictObject(JSON.parse(output), "Herdr response").error, "Herdr error").code === expectedCode; } catch { return false; }
-	});
-}
-
-function shellQuote(value: string): string {
-	return `'${value.replaceAll("'", `'"'"'`)}'`;
-}
-
-function isNodeError(cause: unknown): cause is NodeJS.ErrnoException {
-	return cause instanceof Error && "code" in cause;
-}
-
-function delay(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
-}
