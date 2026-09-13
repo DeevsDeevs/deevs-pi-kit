@@ -24,8 +24,7 @@ export interface HostedPiTarget extends HostedTargetBase {
 	kind: "pi";
 	piSessionId: string;
 	piSessionFile: string;
-	workspaceId?: string;
-	workspaceRoot?: string;
+	worktreePath?: string;
 }
 
 export type HostedCollaboratorProfile = "read-only" | "workspace-write";
@@ -41,8 +40,7 @@ interface HostedExternalTargetBase extends HostedTargetBase {
 	clientGeneration: string;
 	reconnectDigest: string;
 	herdr: { paneId: string; terminalId: string; tabId: string; workspaceId: string };
-	workspaceId?: string;
-	workspaceRoot?: string;
+	worktreePath?: string;
 	metadata: Record<string, string>;
 }
 
@@ -75,8 +73,7 @@ export interface HostedBridgeLaunch {
 	configurationHash: string;
 	driver?: HostedNativeCollaboratorDriver;
 	herdr: { paneId: string; terminalId: string; tabId: string; workspaceId: string };
-	workspaceId?: string;
-	workspaceRoot?: string;
+	worktreePath?: string;
 	metadata: Record<string, string>;
 	createdAt: number;
 	expiresAt: number;
@@ -127,6 +124,7 @@ export interface HostedParticipant {
 	state: HostedParticipantState;
 	generation: string;
 	holderTargetKey?: string;
+	worktreePath?: string;
 	outSeq: Record<string, number>;
 	transitions: HostedParticipantTransition[];
 	createdAt: number;
@@ -199,68 +197,6 @@ export interface HostedMailboxMessageEvent extends HostedEventBase {
 
 export type HostedEvent = HostedFilesystemCreatedEvent | HostedMailboxMessageEvent;
 
-export type HostedWorkspaceState = "provisioning" | "ready" | "bound" | "active" | "ready_handoff" | "partial" | "retained" | "needs_attention" | "integrated" | "cleaned";
-
-interface HostedWorkspaceBase {
-	version: 1;
-	workspaceId: string;
-	requestId: string;
-	projectRoot: string;
-	gitCommonDir: string;
-	worktreePath: string;
-	branchRef: string;
-	participantKey: string;
-	protocol: string;
-	participantId: string;
-	expectedParticipantGeneration?: string;
-	holderGeneration: string;
-	targetKey: string;
-	profile: "workspace-write";
-	callerParticipantKey: string;
-	callerGeneration: string;
-	callerTargetKey: string;
-	baseCommit: string;
-	headCommit: string;
-	herdr?: { paneId: string; terminalId: string; tabId: string; workspaceId: string };
-	state: HostedWorkspaceState;
-	taskStatus?: "completed" | "failed" | "cancelled";
-	commits?: string[];
-	changedFiles?: number;
-	additions?: number;
-	deletions?: number;
-	integratedHead?: string;
-	createdAt: number;
-	expiresAt: number;
-	updatedAt: number;
-}
-
-export type HostedWorkspace = HostedWorkspaceBase & (
-	| { ownerKind: "pi"; piSessionId: string; bridgeId?: never; launchDigest: string }
-	| { ownerKind: "bridge"; bridgeId: string; piSessionId?: never; launchDigest?: never }
-);
-
-export type HostedIntegrationState = "preparing" | "prepared" | "conflicted" | "needs_attention" | "finalized" | "cleaned";
-
-export interface HostedIntegration {
-	version: 1;
-	integrationId: string;
-	workspaceId: string;
-	projectRoot: string;
-	gitCommonDir: string;
-	worktreePath: string;
-	branchRef: string;
-	mainBranchRef: string;
-	mainHead: string;
-	sourceHead: string;
-	sourceCommits: string[];
-	state: HostedIntegrationState;
-	preparedHead?: string;
-	conflictPaths?: string[];
-	createdAt: number;
-	updatedAt: number;
-	finalizedAt?: number;
-}
-
 export interface HostedClaim {
 	claimId: string;
 	targetKey: string;
@@ -324,12 +260,10 @@ export interface HostedMessagingGrant {
 }
 
 export interface HostedRuntimeState {
-	version: 14;
+	version: 15;
 	messaging: Record<string, HostedMessagingGrant>;
 	targets: Record<string, HostedTarget>;
 	bridgeLaunches: Record<string, HostedBridgeLaunch>;
-	workspaces: Record<string, HostedWorkspace>;
-	integrations: Record<string, HostedIntegration>;
 	monitors: Record<string, HostedMonitor>;
 	participants: Record<string, HostedParticipant>;
 	events: Record<string, HostedEvent>;
@@ -351,18 +285,13 @@ export type HostedStateOperation =
 	| { type: "bridge.launch.consume"; launchId: string; launchDigest: string; clientGeneration: string; target: HostedExternalTarget; at: number }
 	| { type: "bridge.launch.cancel"; launchId: string; callerTargetKey: string; callerParticipantKey: string; callerGeneration: string; at: number }
 	| { type: "bridge.launch.expire"; launchId: string; at: number }
-	| { type: "workspace.ensure"; workspace: HostedWorkspace }
-	| { type: "workspace.replace"; workspace: HostedWorkspace; expectedState: HostedWorkspaceState; expectedUpdatedAt: number }
-	| { type: "workspace.bind"; workspaceId: string; callerTargetKey: string; callerParticipantKey: string; callerGeneration: string; herdr: { paneId: string; terminalId: string; tabId: string; workspaceId: string }; at: number }
-	| { type: "workspace.consume"; workspaceId: string; launchDigest: string; target: HostedPiTarget; at: number }
-	| { type: "integration.ensure"; integration: HostedIntegration }
-	| { type: "integration.replace"; integration: HostedIntegration; expectedState: HostedIntegrationState; expectedUpdatedAt: number }
 	| { type: "monitor.create"; monitor: HostedMonitor }
 	| { type: "monitor.delete"; targetKey: string; monitorId: string }
 	| { type: "monitor.commit"; monitor: HostedMonitor; events: HostedFilesystemCreatedEvent[] }
 	| { type: "participant.acquire"; participantKey: string; projectRoot: string; protocol: string; participantId: string; targetKey: string; generation: string; at: number }
 	| { type: "participant.stand_down"; participantKey: string; targetKey: string; generation: string; expectedGeneration?: string; at: number }
 	| { type: "participant.release"; participantKey: string; targetKey: string; generation: string; at: number }
+	| { type: "participant.worktree.clear"; participantKey: string }
 	| { type: "participant.takeover"; participantKey: string; targetKey: string; generation: string; at: number }
 	| { type: "mailbox.send"; senderParticipantKey: string; expectedSenderGeneration: string; senderTargetKey: string; recipientParticipantKey: string; sendId: string; eventId: string; body: string; at: number }
 	| { type: "inbox.claim"; claim: HostedClaim }

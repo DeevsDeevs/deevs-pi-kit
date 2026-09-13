@@ -19,4 +19,4 @@ Publication, reference notification, retrieval offers, explicit client receipts 
 
 `collaborator_status` looks up your publication operation. Ordinary mail never enters native claims or ACKs; its retained event's `delivery.status` stays `pending` even after a client receipt. Use the separate retrieval evidence, not that field, to determine whether a body was offered or receipted. Null event/history `pruned` means history retention ended, not failed publication. Ordinary terminal answers are never automatically sent. Claude/Codex automatic terminal wakes are blocked; never fall back to prompt or keystroke injection.
 
-Runtime owns routing and authority. Never request or print credentials, acquire ownership, claim/ack native inbox events, or perform lifecycle/workspace actions through MCP. Respect human turns and denials; do not enable shell/hooks or bypass permissions to repair messaging.
+Runtime owns routing and authority. Never request or print credentials, acquire ownership, claim/ack native inbox events, or perform lifecycle/worktree actions through MCP. Respect human turns and denials; do not enable shell/hooks or bypass permissions to repair messaging.

@@ -3,6 +3,7 @@ import { realpathSync } from "node:fs";
 import { HOSTED_BRIDGE_MAX_METADATA_ENTRIES, HOSTED_BRIDGE_MAX_METADATA_VALUE_BYTES, type HostedAgentSessionIdentity, type HostedBridgeLaunch, type HostedExternalTarget, type HostedCollaboratorProfile, type HostedNativeCollaboratorDriver } from "../hosted-types.ts";
 import { RuntimeRegistrationManager, type HostedHostVerifier, type HostedLiveRegistration, type RegisterBridgeInput } from "./registration.ts";
 import { deriveBridgeTargetKey, deriveParticipantKey, HostedStateStore } from "./state.ts";
+import { isProjectWorktree } from "./worktree.ts";
 
 const DEFAULT_LAUNCH_LEASE_MS = 30_000;
 const TOKEN = /^bridge_launch_([A-Za-z0-9_-]{1,200})\.([A-Za-z0-9_-]{43})$/;
@@ -23,7 +24,6 @@ export class HostedBridgeError extends Error {
 export interface CreateBridgeLaunchInput {
 	requestId: string;
 	launchId?: string;
-	workspaceId?: string;
 	callerParticipantKey: string;
 	expectedCallerGeneration: string;
 	protocol: string;
@@ -47,17 +47,12 @@ export interface BridgeReconnectInput extends RegisterBridgeInput {
 	reconnectToken: string;
 }
 
-export interface BridgeWorkspaceAuthority {
-	withVerifiedBridgeWorkspace<T>(workspaceId: string, targetKey: string, expectedState: "bound" | "active", operation: () => Promise<T>): Promise<T>;
-}
-
 export interface BridgeCoordinatorOptions {
 	now?: () => number;
 	leaseMs?: number;
 	createId?: () => string;
 	createGeneration?: () => string;
 	createSecret?: () => string;
-	workspaceAuthority?: BridgeWorkspaceAuthority;
 }
 
 export class RuntimeBridgeCoordinator {
@@ -89,38 +84,32 @@ export class RuntimeBridgeCoordinator {
 		if (input.driver !== undefined && input.driver !== "claude-code" && input.driver !== "codex") throw new HostedBridgeError("invalid_request", "Interactive bridge driver must be claude-code or codex.");
 		const metadata = bridgeMetadata(input.metadata ?? {});
 		const requestedLaunchId = input.launchId === undefined ? undefined : bounded(input.launchId, "launch ID", 200);
-		const requestedWorkspaceId = input.workspaceId === undefined ? undefined : bounded(input.workspaceId, "workspace ID", 200);
 		const prior = Object.values(state.bridgeLaunches).find((candidate) => candidate.callerTargetKey === caller.targetKey && candidate.requestId === requestId);
 		if (prior) {
-			if (prior.callerParticipantKey !== callerParticipantKey || prior.callerGeneration !== callerGeneration || prior.protocol !== protocol || prior.participantId !== participantId || prior.expectedParticipantGeneration !== expectedParticipantGeneration || prior.profile !== input.profile || prior.configurationHash !== configurationHash || prior.driver !== input.driver || prior.workspaceId !== requestedWorkspaceId || requestedLaunchId !== undefined && prior.launchId !== requestedLaunchId || JSON.stringify(prior.metadata) !== JSON.stringify(metadata)) throw new HostedBridgeError("conflict", "Bridge request ID was reused with different authority.");
+			if (prior.callerParticipantKey !== callerParticipantKey || prior.callerGeneration !== callerGeneration || prior.protocol !== protocol || prior.participantId !== participantId || prior.expectedParticipantGeneration !== expectedParticipantGeneration || prior.profile !== input.profile || prior.configurationHash !== configurationHash || prior.driver !== input.driver || requestedLaunchId !== undefined && prior.launchId !== requestedLaunchId || JSON.stringify(prior.metadata) !== JSON.stringify(metadata)) throw new HostedBridgeError("conflict", "Bridge request ID was reused with different authority.");
 			throw new HostedBridgeError("conflict", `Bridge request ${requestId} already exists and requires explicit recovery.`);
 		}
-		const workspace = requestedWorkspaceId ? state.workspaces[requestedWorkspaceId] : undefined;
-		if (input.profile === "workspace-write" ? !workspace || workspace.ownerKind !== "bridge" || workspace.bridgeId !== requestedLaunchId || workspace.state !== "bound" || workspace.projectRoot !== projectRoot || workspace.callerTargetKey !== caller.targetKey || workspace.callerParticipantKey !== callerParticipantKey || workspace.callerGeneration !== callerGeneration || workspace.protocol !== protocol || workspace.participantId !== participantId || workspace.expectedParticipantGeneration !== expectedParticipantGeneration : requestedWorkspaceId !== undefined) throw new HostedBridgeError("conflict", "Bridge workspace authority is absent or does not match the launch.");
 		if (!this.host.getPaneIdentity) throw new HostedBridgeError("capability_unavailable", "Herdr pane identity verification is unavailable.");
 		const pane = await this.host.getPaneIdentity(input.herdr.paneId);
 		if (pane.paneId !== input.herdr.paneId || pane.terminalId !== input.herdr.terminalId || pane.paneCount !== 1 || pane.agent !== undefined) throw new HostedBridgeError("identity_mismatch", "Bridge launch pane is not the exact empty single-pane Herdr target.");
 		let paneRoot: string;
 		try { paneRoot = realpathSync(pane.cwd); } catch { throw new HostedBridgeError("identity_mismatch", "Bridge pane cwd is unavailable."); }
-		const expectedCwd = workspace?.worktreePath ?? projectRoot;
-		if (paneRoot !== expectedCwd || workspace?.herdr && JSON.stringify(workspace.herdr) !== JSON.stringify({ paneId: pane.paneId, terminalId: pane.terminalId, tabId: pane.tabId, workspaceId: pane.workspaceId })) throw new HostedBridgeError("identity_mismatch", "Bridge pane cwd or host identity does not match its authority.");
+		const worktreePath = paneRoot === projectRoot ? undefined : paneRoot;
+		if (worktreePath !== undefined && (input.profile !== "workspace-write" || !await isProjectWorktree(worktreePath, projectRoot))) throw new HostedBridgeError("identity_mismatch", "Bridge pane cwd is neither the project root nor a workspace-write Git worktree of it.");
 		const launchId = requestedLaunchId ?? this.options.createId?.() ?? `launch_${randomUUID()}`;
 		if (!/^[A-Za-z0-9_-]{1,200}$/.test(launchId)) throw new HostedBridgeError("invalid_request", "Bridge launch ID has invalid syntax.");
-		const holderGeneration = workspace?.holderGeneration ?? this.options.createGeneration?.() ?? `lease_${randomUUID()}`;
+		const holderGeneration = this.options.createGeneration?.() ?? `lease_${randomUUID()}`;
 		const launchSecret = secret(this.options.createSecret?.() ?? randomBytes(32).toString("base64url"));
 		const reconnectSecret = secret(this.options.createSecret?.() ?? randomBytes(32).toString("base64url"));
 		const launchToken = `bridge_launch_${launchId}.${launchSecret}`;
-		const targetKey = workspace?.targetKey ?? deriveBridgeTargetKey(projectRoot, launchId);
+		const targetKey = deriveBridgeTargetKey(projectRoot, launchId);
 		const now = this.now();
 		const launch: HostedBridgeLaunch = {
 			version: 1, launchId, requestId, launchDigest: sha256(launchToken), reconnectDigest: sha256(reconnectSecret), callerParticipantKey, callerGeneration, callerTargetKey: caller.targetKey, participantKey: deriveParticipantKey(projectRoot, protocol, participantId), protocol, participantId, holderGeneration, targetKey, projectRoot, profile: input.profile, configurationHash, herdr: { paneId: pane.paneId, terminalId: pane.terminalId, tabId: pane.tabId, workspaceId: pane.workspaceId }, metadata, createdAt: now, expiresAt: now + (this.options.leaseMs ?? DEFAULT_LAUNCH_LEASE_MS), status: "pending",
 		};
 		if (expectedParticipantGeneration) launch.expectedParticipantGeneration = expectedParticipantGeneration;
 		if (input.driver) launch.driver = input.driver;
-		if (workspace) {
-			launch.workspaceId = workspace.workspaceId;
-			launch.workspaceRoot = workspace.worktreePath;
-		}
+		if (worktreePath) launch.worktreePath = worktreePath;
 		this.store.apply({ type: "bridge.launch.ensure", launch });
 		return { launchId, targetKey, holderGeneration, expiresAt: launch.expiresAt, launchToken, reconnectToken: reconnectSecret, herdr: launch.herdr };
 	}
@@ -136,13 +125,8 @@ export class RuntimeBridgeCoordinator {
 		}
 		if (launch.status !== "pending") throw new HostedBridgeError("conflict", "Bridge launch capability is no longer pending; reconnect with the separate credential.");
 		const target = bridgeTarget(launch, input.clientGeneration, now, input.agentSession);
-		const register = async () => {
-			const registration = await this.registrations.registerBridge(input, target, bridgeCredentials(target.targetKey, input.reconnectToken), () => this.store.apply({ type: "bridge.launch.consume", launchId: launch.launchId, launchDigest: launch.launchDigest, clientGeneration: input.clientGeneration, target, at: now }));
-			return result(registration, target);
-		};
-		if (!launch.workspaceId) return register();
-		if (!this.options.workspaceAuthority) throw new HostedBridgeError("capability_unavailable", "Bridge workspace verification is unavailable.");
-		return this.options.workspaceAuthority.withVerifiedBridgeWorkspace(launch.workspaceId, launch.targetKey, "bound", register);
+		const registration = await this.registrations.registerBridge(input, target, bridgeCredentials(target.targetKey, input.reconnectToken), () => this.store.apply({ type: "bridge.launch.consume", launchId: launch.launchId, launchDigest: launch.launchDigest, clientGeneration: input.clientGeneration, target, at: now }));
+		return result(registration, target);
 	}
 
 	async reconnect(input: BridgeReconnectInput): Promise<BridgeRegistrationResult> {
@@ -151,13 +135,8 @@ export class RuntimeBridgeCoordinator {
 		if (input.clientGeneration !== target.clientGeneration || !equalDigest(sha256(secret(input.reconnectToken)), target.reconnectDigest)) throw new HostedBridgeError("conflict", "Bridge reconnect authority does not match its target generation.");
 		const participant = this.store.read().participants[target.participantKey];
 		if (!participant || participant.state !== "held" || participant.holderTargetKey !== target.targetKey || participant.generation !== target.holderGeneration) throw new HostedBridgeError("conflict", "Bridge participant generation is no longer held.");
-		const reconnect = async () => {
-			const registration = await this.registrations.registerBridge(input, target, bridgeCredentials(target.targetKey, input.reconnectToken));
-			return result(registration, target);
-		};
-		if (!target.workspaceId) return reconnect();
-		if (!this.options.workspaceAuthority) throw new HostedBridgeError("capability_unavailable", "Bridge workspace verification is unavailable.");
-		return this.options.workspaceAuthority.withVerifiedBridgeWorkspace(target.workspaceId, target.targetKey, "active", reconnect);
+		const registration = await this.registrations.registerBridge(input, target, bridgeCredentials(target.targetKey, input.reconnectToken));
+		return result(registration, target);
 	}
 
 	recoverLaunch(caller: HostedLiveRegistration, input: { requestId: string; callerParticipantKey: string; expectedCallerGeneration: string }): HostedBridgeLaunch {
@@ -187,12 +166,11 @@ export interface BridgeRegistrationResult {
 	metadata: Record<string, string>;
 	projectRoot: string;
 	cwd: string;
-	workspaceId?: string;
 }
 
 function bridgeTarget(launch: HostedBridgeLaunch, clientGeneration: string, createdAt: number, agentSession?: HostedAgentSessionIdentity): HostedExternalTarget {
 	const shared = { targetKey: launch.targetKey, projectRoot: launch.projectRoot, bridgeId: launch.launchId, participantKey: launch.participantKey, holderGeneration: launch.holderGeneration, profile: launch.profile, configurationHash: launch.configurationHash, clientGeneration: bounded(clientGeneration, "client generation", 200), reconnectDigest: launch.reconnectDigest, herdr: launch.herdr, metadata: launch.metadata, createdAt };
-	if (launch.workspaceId) Object.assign(shared, { workspaceId: launch.workspaceId, workspaceRoot: launch.workspaceRoot! });
+	if (launch.worktreePath) Object.assign(shared, { worktreePath: launch.worktreePath });
 	if (!launch.driver) return { kind: "bridge", ...shared };
 	if (!agentSession) throw new HostedBridgeError("invalid_request", "Interactive Herdr agent registration requires its stable session identity.");
 	return { kind: "agent", ...shared, driver: launch.driver, agentSession: validateAgentSession(agentSession) };
@@ -207,12 +185,11 @@ function bridgeCredentials(targetKey: string, reconnectToken: string) {
 }
 
 function result(registration: HostedLiveRegistration, target: HostedExternalTarget): BridgeRegistrationResult {
-	const value: BridgeRegistrationResult = { registration, participantKey: target.participantKey, holderGeneration: target.holderGeneration, profile: target.profile, configurationHash: target.configurationHash, metadata: target.metadata, projectRoot: target.projectRoot, cwd: target.workspaceRoot ?? target.projectRoot };
+	const value: BridgeRegistrationResult = { registration, participantKey: target.participantKey, holderGeneration: target.holderGeneration, profile: target.profile, configurationHash: target.configurationHash, metadata: target.metadata, projectRoot: target.projectRoot, cwd: target.worktreePath ?? target.projectRoot };
 	if (target.kind === "agent") {
 		value.driver = target.driver;
 		value.agentSession = target.agentSession;
 	}
-	if (target.workspaceId) value.workspaceId = target.workspaceId;
 	return value;
 }
 

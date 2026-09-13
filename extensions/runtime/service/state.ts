@@ -36,7 +36,6 @@ import {
 	type HostedMessagingReference,
 	type HostedMessagingOffer,
 	type HostedMessagingReceipt,
-	type HostedIntegration,
 	type HostedMonitor,
 	type HostedParticipant,
 	type HostedParticipantTransition,
@@ -45,7 +44,6 @@ import {
 	type HostedStateOperation,
 	type HostedTarget,
 	type HostedWake,
-	type HostedWorkspace,
 } from "../hosted-types.ts";
 
 const MAX_ID_BYTES = 200;
@@ -53,9 +51,6 @@ const MAX_PATH_BYTES = 8 * 1024;
 const MAX_SUMMARY_BYTES = 2 * 1024;
 const MAX_STATE_RECORDS = 10_000;
 const HASH = /^[0-9a-f]{64}$/;
-const GIT_OID = /^[0-9a-f]{40,64}$/;
-const WORKSPACE_BRANCH = /^refs\/heads\/runtime\/collab\/[A-Za-z0-9._-]+$/;
-const INTEGRATION_BRANCH = /^refs\/heads\/runtime\/integrate\/[A-Za-z0-9._-]+$/;
 const INSTANCE_MAX_BYTES = 4 * 1024;
 
 type PersistedStateValue = null | boolean | number | string | PersistedStateValue[] | PersistedStateFields;
@@ -85,7 +80,7 @@ export class HostedStateConflictError extends Error {
 }
 
 export function emptyHostedRuntimeState(): HostedRuntimeState {
-	return { version: 14, messaging: {}, targets: {}, bridgeLaunches: {}, workspaces: {}, integrations: {}, monitors: {}, participants: {}, events: {}, dedupe: {}, claims: {}, wakes: {} };
+	return { version: 15, messaging: {}, targets: {}, bridgeLaunches: {}, monitors: {}, participants: {}, events: {}, dedupe: {}, claims: {}, wakes: {} };
 }
 
 export class HostedStateStore {
@@ -221,8 +216,7 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 		const callerTarget = state.targets[launch.callerTargetKey];
 		if (!caller || caller.state !== "held" || caller.generation !== launch.callerGeneration || caller.holderTargetKey !== launch.callerTargetKey || callerTarget?.kind !== "pi" || caller.projectRoot !== launch.projectRoot) throw new HostedStateConflictError("conflict", "Bridge launch caller authority changed.");
 		if (launch.participantKey !== deriveParticipantKey(launch.projectRoot, launch.protocol, launch.participantId) || launch.participantKey === launch.callerParticipantKey || state.targets[launch.targetKey]) throw new HostedStateConflictError("conflict", "Bridge launch participant or target identity is invalid.");
-		const workspace = launch.workspaceId ? state.workspaces[launch.workspaceId] : undefined;
-		if (launch.profile === "workspace-write" ? !workspace || workspace.ownerKind !== "bridge" || workspace.bridgeId !== launch.launchId || workspace.state !== "bound" || workspace.projectRoot !== launch.projectRoot || workspace.worktreePath !== launch.workspaceRoot || workspace.targetKey !== launch.targetKey || workspace.participantKey !== launch.participantKey || workspace.holderGeneration !== launch.holderGeneration || workspace.callerTargetKey !== launch.callerTargetKey || workspace.callerParticipantKey !== launch.callerParticipantKey || workspace.callerGeneration !== launch.callerGeneration || workspace.expectedParticipantGeneration !== launch.expectedParticipantGeneration || JSON.stringify(workspace.herdr) !== JSON.stringify(launch.herdr) : launch.workspaceId !== undefined || launch.workspaceRoot !== undefined) throw new HostedStateConflictError("conflict", "Bridge launch workspace authority is invalid.");
+		if (launch.profile === "read-only" && launch.worktreePath !== undefined) throw new HostedStateConflictError("conflict", "Read-only bridge launches never carry a worktree.");
 		const participant = state.participants[launch.participantKey];
 		if (participant ? participant.state !== "vacant" || participant.generation !== launch.expectedParticipantGeneration : launch.expectedParticipantGeneration !== undefined) throw new HostedStateConflictError("conflict", "Bridge launch participant generation is unavailable.");
 		const retry = Object.values(state.bridgeLaunches).find((candidate) => candidate.callerTargetKey === launch.callerTargetKey && candidate.requestId === launch.requestId);
@@ -230,7 +224,7 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 			if (!sameBridgeLaunch(retry, launch)) throw new HostedStateConflictError("conflict", "Bridge launch request ID was reused with different authority.");
 			return state;
 		}
-		if (Object.values(state.bridgeLaunches).some((candidate) => candidate.participantKey === launch.participantKey && candidate.status === "pending" && candidate.expiresAt > launch.createdAt) || Object.values(state.workspaces).some((candidate) => candidate.participantKey === launch.participantKey && ["provisioning", "ready", "bound", "active"].includes(candidate.state) && candidate.workspaceId !== launch.workspaceId)) throw new HostedStateConflictError("conflict", "Participant already has a pending collaborator reservation.");
+		if (Object.values(state.bridgeLaunches).some((candidate) => candidate.participantKey === launch.participantKey && candidate.status === "pending" && candidate.expiresAt > launch.createdAt)) throw new HostedStateConflictError("conflict", "Participant already has a pending collaborator reservation.");
 		return { ...state, bridgeLaunches: { ...state.bridgeLaunches, [launch.launchId]: launch } };
 	}
 
@@ -247,11 +241,6 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 		const consumed: HostedBridgeLaunch = { ...launch, status: "consumed", consumedAt: operation.at, clientGeneration: operation.clientGeneration };
 		let next: HostedRuntimeState = { ...state, bridgeLaunches: { ...state.bridgeLaunches, [launch.launchId]: consumed } };
 		next = reduceHostedState(next, { type: "target.ensure", target: operation.target });
-		if (launch.workspaceId) {
-			const workspace = next.workspaces[launch.workspaceId];
-			if (!workspace || workspace.ownerKind !== "bridge" || workspace.state !== "bound" || !workspaceTargetMatches(operation.target, workspace)) throw new HostedStateConflictError("conflict", "Bridge workspace changed before launch consumption.");
-			next = reduceHostedState(next, { type: "workspace.replace", workspace: { ...workspace, state: "active", updatedAt: operation.at }, expectedState: "bound", expectedUpdatedAt: workspace.updatedAt });
-		}
 		next = reduceHostedState(next, { type: "participant.acquire", participantKey: launch.participantKey, projectRoot: launch.projectRoot, protocol: launch.protocol, participantId: launch.participantId, targetKey: launch.targetKey, generation: launch.holderGeneration, at: operation.at });
 		return next;
 	}
@@ -265,65 +254,6 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 			if (launch.callerTargetKey !== operation.callerTargetKey || launch.callerParticipantKey !== operation.callerParticipantKey || launch.callerGeneration !== operation.callerGeneration) throw new HostedStateConflictError("conflict", "Only the exact launch caller may cancel bridge authority.");
 		} else if (operation.at < launch.expiresAt) throw new HostedStateConflictError("conflict", "Bridge launch authority has not expired.");
 		return { ...state, bridgeLaunches: { ...state.bridgeLaunches, [launch.launchId]: { ...launch, status: operation.type === "bridge.launch.cancel" ? "cancelled" : "expired" } } };
-	}
-
-	if (operation.type === "workspace.ensure") {
-		const workspace = operation.workspace;
-		if (workspace.state !== "provisioning" || workspace.profile !== "workspace-write" || workspace.headCommit !== workspace.baseCommit || workspace.herdr || workspace.commits || (workspace.ownerKind === "pi" ? !HASH.test(workspace.launchDigest) : workspace.targetKey !== deriveBridgeTargetKey(workspace.projectRoot, workspace.bridgeId))) throw new HostedStateConflictError("conflict", "Workspace launch reservation is invalid.");
-		const caller = state.participants[workspace.callerParticipantKey];
-		const callerTarget = state.targets[workspace.callerTargetKey];
-		if (!caller || caller.state !== "held" || caller.generation !== workspace.callerGeneration || caller.holderTargetKey !== workspace.callerTargetKey || callerTarget?.kind !== "pi" || caller.projectRoot !== workspace.projectRoot) throw new HostedStateConflictError("conflict", "Workspace launch caller authority changed.");
-		if (workspace.participantKey !== deriveParticipantKey(workspace.projectRoot, workspace.protocol, workspace.participantId) || workspace.participantKey === workspace.callerParticipantKey || state.targets[workspace.targetKey]) throw new HostedStateConflictError("conflict", "Workspace participant or target identity is invalid.");
-		const participant = state.participants[workspace.participantKey];
-		if (participant ? participant.state !== "vacant" || participant.generation !== workspace.expectedParticipantGeneration : workspace.expectedParticipantGeneration !== undefined) throw new HostedStateConflictError("conflict", "Workspace participant generation is unavailable.");
-		const retry = Object.values(state.workspaces).find((candidate) => candidate.callerTargetKey === workspace.callerTargetKey && candidate.requestId === workspace.requestId);
-		if (retry) {
-			if (!sameWorkspace(retry, workspace)) throw new HostedStateConflictError("conflict", "Workspace request ID was reused with different authority.");
-			return state;
-		}
-		if (state.workspaces[workspace.workspaceId] || Object.values(state.workspaces).some((candidate) => candidate.participantKey === workspace.participantKey && ["provisioning", "ready", "bound", "active"].includes(candidate.state)) || Object.values(state.bridgeLaunches).some((candidate) => candidate.participantKey === workspace.participantKey && candidate.status === "pending" && candidate.expiresAt > workspace.createdAt)) throw new HostedStateConflictError("conflict", "Participant already owns an active collaborator reservation.");
-		return { ...state, workspaces: { ...state.workspaces, [workspace.workspaceId]: workspace } };
-	}
-
-	if (operation.type === "workspace.replace") {
-		const current = state.workspaces[operation.workspace.workspaceId];
-		if (!current || current.state !== operation.expectedState || current.updatedAt !== operation.expectedUpdatedAt || !sameWorkspaceIdentity(current, operation.workspace) || operation.workspace.updatedAt <= current.updatedAt || !workspaceTransitionAllowed(current.state, operation.workspace.state)) throw new HostedStateConflictError("conflict", "Workspace state changed before replacement.");
-		return { ...state, workspaces: { ...state.workspaces, [current.workspaceId]: operation.workspace } };
-	}
-
-	if (operation.type === "workspace.bind") {
-		const current = state.workspaces[operation.workspaceId];
-		if (!current || current.state !== "ready" || current.callerTargetKey !== operation.callerTargetKey || current.callerParticipantKey !== operation.callerParticipantKey || current.callerGeneration !== operation.callerGeneration || current.updatedAt >= operation.at || operation.at > current.expiresAt) throw new HostedStateConflictError("conflict", "Workspace is not bindable by this caller generation.");
-		const caller = state.participants[current.callerParticipantKey];
-		if (!caller || caller.state !== "held" || caller.generation !== current.callerGeneration || caller.holderTargetKey !== current.callerTargetKey) throw new HostedStateConflictError("conflict", "Workspace caller authority changed before host binding.");
-		return { ...state, workspaces: { ...state.workspaces, [current.workspaceId]: { ...current, herdr: operation.herdr, state: "bound", updatedAt: operation.at } } };
-	}
-
-	if (operation.type === "workspace.consume") {
-		const workspace = state.workspaces[operation.workspaceId];
-		if (!workspace || workspace.ownerKind !== "pi" || workspace.state !== "bound" || workspace.launchDigest !== operation.launchDigest || operation.at <= workspace.updatedAt || operation.at > workspace.expiresAt) throw new HostedStateConflictError("conflict", "Workspace Pi launch capability is not consumable.");
-		const caller = state.participants[workspace.callerParticipantKey];
-		if (!caller || caller.state !== "held" || caller.generation !== workspace.callerGeneration || caller.holderTargetKey !== workspace.callerTargetKey) throw new HostedStateConflictError("conflict", "Workspace caller authority changed before consumption.");
-		const participant = state.participants[workspace.participantKey];
-		if (participant ? participant.state !== "vacant" || participant.generation !== workspace.expectedParticipantGeneration : workspace.expectedParticipantGeneration !== undefined) throw new HostedStateConflictError("conflict", "Workspace participant generation changed before consumption.");
-		if (!workspaceTargetMatches(operation.target, workspace)) throw new HostedStateConflictError("conflict", "Pi workspace target does not match its launch reservation.");
-		let next: HostedRuntimeState = { ...state, workspaces: { ...state.workspaces, [workspace.workspaceId]: { ...workspace, state: "active", updatedAt: operation.at } } };
-		next = reduceHostedState(next, { type: "target.ensure", target: operation.target });
-		next = reduceHostedState(next, { type: "participant.acquire", participantKey: workspace.participantKey, projectRoot: workspace.projectRoot, protocol: workspace.protocol, participantId: workspace.participantId, targetKey: workspace.targetKey, generation: workspace.holderGeneration, at: operation.at });
-		return next;
-	}
-
-	if (operation.type === "integration.ensure") {
-		const integration = operation.integration;
-		const active = Object.values(state.integrations).some((candidate) => candidate.workspaceId === integration.workspaceId && candidate.state !== "cleaned");
-		if (integration.state !== "preparing" || state.integrations[integration.integrationId] || active || !state.workspaces[integration.workspaceId]) throw new HostedStateConflictError("conflict", "Integration reservation is invalid.");
-		return { ...state, integrations: { ...state.integrations, [integration.integrationId]: integration } };
-	}
-
-	if (operation.type === "integration.replace") {
-		const current = state.integrations[operation.integration.integrationId];
-		if (!current || current.state !== operation.expectedState || current.updatedAt !== operation.expectedUpdatedAt || !sameIntegrationIdentity(current, operation.integration) || operation.integration.updatedAt <= current.updatedAt || !integrationTransitionAllowed(current.state, operation.integration.state)) throw new HostedStateConflictError("conflict", "Integration state changed before replacement.");
-		return { ...state, integrations: { ...state.integrations, [current.integrationId]: operation.integration } };
 	}
 
 	if (operation.type === "monitor.create") {
@@ -381,7 +311,6 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 		assertParticipantName(operation.protocol, "protocol");
 		assertParticipantName(operation.participantId, "participant ID");
 		if (Object.values(state.bridgeLaunches).some((launch) => launch.participantKey === operation.participantKey && launch.status === "pending" && launch.expiresAt > operation.at)) throw new HostedStateConflictError("conflict", "Participant is reserved for a pending bridge launch.");
-		if (Object.values(state.workspaces).some((workspace) => workspace.participantKey === operation.participantKey && ["provisioning", "ready", "bound"].includes(workspace.state))) throw new HostedStateConflictError("conflict", "Participant is reserved for a pending workspace launch.");
 		const current = state.participants[operation.participantKey];
 		if (current?.state === "held") {
 			if (current.holderTargetKey === operation.targetKey) return state;
@@ -402,22 +331,30 @@ export function reduceHostedState(state: HostedRuntimeState, operation: HostedSt
 				createdAt: operation.at,
 				updatedAt: operation.at,
 			};
+			if (target.worktreePath) participant.worktreePath = target.worktreePath;
 			return { ...state, participants: { ...state.participants, [participant.participantKey]: participant } };
 		}
 		if (current.projectRoot !== operation.projectRoot || current.protocol !== operation.protocol || current.participantId !== operation.participantId || current.generation === operation.generation || operation.at < current.updatedAt) {
 			throw new HostedStateConflictError("conflict", "Participant acquire does not match its durable identity or generation.");
 		}
 		const cause = current.state === "vacant" ? "reacquire" : "revive";
-		const acquired = replaceParticipant(state, transitionParticipant(current, {
+		return replaceParticipant(state, withTargetWorktree(transitionParticipant(current, {
 			cause,
 			generation: operation.generation,
 			holderTargetKey: operation.targetKey,
 			previousGeneration: current.generation,
 			previousHolderTargetKey: latestHolderTargetKey(current),
 			at: operation.at,
-		}, "held", operation.targetKey));
-		const workspace = target.kind === "pi" && target.workspaceId ? acquired.workspaces[target.workspaceId] : undefined;
-		return workspace ? { ...acquired, workspaces: { ...acquired.workspaces, [workspace.workspaceId]: { ...workspace, holderGeneration: operation.generation, state: "active", updatedAt: Math.max(operation.at, workspace.updatedAt + 1) } } } : acquired;
+		}, "held", operation.targetKey), target));
+	}
+
+	if (operation.type === "participant.worktree.clear") {
+		const current = state.participants[operation.participantKey];
+		if (!current) throw new HostedStateConflictError("conflict", "Participant is absent.");
+		if (current.state === "held") throw new HostedStateConflictError("conflict", "A held participant keeps its worktree until it stands down.");
+		if (!current.worktreePath) return state;
+		const { worktreePath: _cleared, ...participant } = current;
+		return replaceParticipant(state, participant);
 	}
 
 	if (operation.type === "participant.stand_down" || operation.type === "participant.release") {
@@ -681,15 +618,13 @@ export function writeHostedRuntimeState(root: string, state: HostedRuntimeState)
 
 export function validateHostedRuntimeState<Source>(value: Source): HostedRuntimeState {
 	try {
-		const state = strictObject(value, "runtime state", ["version", "messaging", "targets", "bridgeLaunches", "workspaces", "integrations", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
-		if (state.version !== 14) throw new Error("unsupported runtime state version");
+		const state = strictObject(value, "runtime state", ["version", "messaging", "targets", "bridgeLaunches", "monitors", "participants", "events", "dedupe", "claims", "wakes"]);
+		if (state.version !== 15) throw new Error("unsupported runtime state version");
 		const result: HostedRuntimeState = {
-			version: 14,
+			version: 15,
 			messaging: mapValues(state.messaging, "messaging namespaces", validateMessagingGrant),
 			targets: mapValues(state.targets, "targets", validateTarget),
 			bridgeLaunches: mapValues(state.bridgeLaunches, "bridge launches", validateBridgeLaunch),
-			workspaces: mapValues(state.workspaces, "workspaces", validateWorkspace),
-			integrations: mapValues(state.integrations, "integrations", validateIntegration),
 			monitors: mapValues(state.monitors, "monitors", validateMonitor),
 			participants: mapValues(state.participants, "participants", validateParticipant),
 			events: mapValues(state.events, "events", validateEvent),
@@ -736,7 +671,7 @@ function assertMessagingHolder(state: HostedRuntimeState, grant: HostedMessaging
 }
 
 export function messagingConfigurationHash(target: HostedTarget): string {
-	return target.kind === "pi" ? createHash("sha256").update(JSON.stringify([target.projectRoot, target.piSessionId, target.piSessionFile, target.workspaceId ?? null, target.workspaceRoot ?? null])).digest("hex") : target.configurationHash;
+	return target.kind === "pi" ? createHash("sha256").update(JSON.stringify([target.projectRoot, target.piSessionId, target.piSessionFile, target.worktreePath ?? null])).digest("hex") : target.configurationHash;
 }
 
 function validateMessagingGrant<Source>(value: Source, key: string): HostedMessagingGrant {
@@ -916,24 +851,20 @@ function validateInstance(value: PersistedStateValue): HostedRuntimeInstance {
 function validateTarget(value: PersistedStateValue | undefined, key: string): HostedTarget {
 	const candidate = strictObject(value, "target");
 	if (candidate.kind === "pi") {
-		const target = strictObject(value, "Pi target", ["kind", "targetKey", "projectRoot", "piSessionId", "piSessionFile", "workspaceId", "workspaceRoot", "createdAt"]);
-		if ((target.workspaceId === undefined) !== (target.workspaceRoot === undefined)) throw new Error("Pi target workspace identity is incomplete");
+		const target = strictObject(value, "Pi target", ["kind", "targetKey", "projectRoot", "piSessionId", "piSessionFile", "worktreePath", "createdAt"]);
 		const result: HostedTarget = { kind: "pi", targetKey: text(target.targetKey, "target key", MAX_ID_BYTES), projectRoot: text(target.projectRoot, "project root", MAX_PATH_BYTES), piSessionId: text(target.piSessionId, "Pi session id", MAX_ID_BYTES), piSessionFile: text(target.piSessionFile, "Pi session file", MAX_PATH_BYTES), createdAt: nonNegativeNumber(target.createdAt, "target creation time") };
-		if (target.workspaceId !== undefined) {
-			result.workspaceId = text(target.workspaceId, "workspace ID", MAX_ID_BYTES);
-			result.workspaceRoot = text(target.workspaceRoot, "workspace root", MAX_PATH_BYTES);
-		}
+		if (target.worktreePath !== undefined) result.worktreePath = text(target.worktreePath, "worktree path", MAX_PATH_BYTES);
 		if (result.targetKey !== key) throw new Error("target key does not match map key");
 		return result;
 	}
 	if (candidate.kind === "bridge" || candidate.kind === "agent") {
-		const target = strictObject(value, `${candidate.kind} target`, ["kind", "targetKey", "projectRoot", "bridgeId", "driver", "agentSession", "participantKey", "holderGeneration", "profile", "configurationHash", "clientGeneration", "reconnectDigest", "herdr", "workspaceId", "workspaceRoot", "metadata", "createdAt"]);
+		const target = strictObject(value, `${candidate.kind} target`, ["kind", "targetKey", "projectRoot", "bridgeId", "driver", "agentSession", "participantKey", "holderGeneration", "profile", "configurationHash", "clientGeneration", "reconnectDigest", "herdr", "worktreePath", "metadata", "createdAt"]);
 		const interactive = candidate.kind === "agent";
-		if ((target.profile !== "read-only" && target.profile !== "workspace-write") || (target.workspaceId === undefined) !== (target.workspaceRoot === undefined) || ((target.profile === "workspace-write") !== (target.workspaceId !== undefined)) || (interactive ? target.driver === undefined || target.agentSession === undefined : target.driver !== undefined || target.agentSession !== undefined)) throw new Error("invalid external target profile, workspace, or interactive-agent authority");
+		if ((target.profile !== "read-only" && target.profile !== "workspace-write") || (target.profile === "read-only" && target.worktreePath !== undefined) || (interactive ? target.driver === undefined || target.agentSession === undefined : target.driver !== undefined || target.agentSession !== undefined)) throw new Error("invalid external target profile, worktree, or interactive-agent authority");
 		const shared = {
 			targetKey: text(target.targetKey, "target key", MAX_ID_BYTES), projectRoot: text(target.projectRoot, "project root", MAX_PATH_BYTES), bridgeId: text(target.bridgeId, "launch ID", MAX_ID_BYTES), participantKey: text(target.participantKey, "participant key", MAX_ID_BYTES), holderGeneration: text(target.holderGeneration, "holder generation", MAX_ID_BYTES), profile: target.profile === "read-only" ? "read-only" as const : "workspace-write" as const, configurationHash: hash(target.configurationHash, "configuration hash"), clientGeneration: text(target.clientGeneration, "client generation", MAX_ID_BYTES), reconnectDigest: hash(target.reconnectDigest, "reconnect digest"), herdr: validateBridgeHerdr(target.herdr), metadata: validateBridgeMetadata(target.metadata), createdAt: nonNegativeNumber(target.createdAt, "target creation time"),
 		};
-		if (target.workspaceId !== undefined) Object.assign(shared, { workspaceId: text(target.workspaceId, "workspace ID", MAX_ID_BYTES), workspaceRoot: text(target.workspaceRoot, "workspace root", MAX_PATH_BYTES) });
+		if (target.worktreePath !== undefined) Object.assign(shared, { worktreePath: text(target.worktreePath, "worktree path", MAX_PATH_BYTES) });
 		const result: HostedExternalTarget = interactive ? { kind: "agent", ...shared, driver: nativeDriver(target.driver), agentSession: validateAgentSession(target.agentSession) } : { kind: "bridge", ...shared };
 		if (result.targetKey !== key) throw new Error("target key does not match map key");
 		return result;
@@ -942,9 +873,9 @@ function validateTarget(value: PersistedStateValue | undefined, key: string): Ho
 }
 
 function validateBridgeLaunch(value: PersistedStateValue | undefined, key: string): HostedBridgeLaunch {
-	const launch = strictObject(value, "bridge launch", ["version", "launchId", "requestId", "launchDigest", "reconnectDigest", "callerParticipantKey", "callerGeneration", "callerTargetKey", "participantKey", "protocol", "participantId", "expectedParticipantGeneration", "holderGeneration", "targetKey", "projectRoot", "profile", "configurationHash", "driver", "herdr", "workspaceId", "workspaceRoot", "metadata", "createdAt", "expiresAt", "status", "consumedAt", "clientGeneration"]);
+	const launch = strictObject(value, "bridge launch", ["version", "launchId", "requestId", "launchDigest", "reconnectDigest", "callerParticipantKey", "callerGeneration", "callerTargetKey", "participantKey", "protocol", "participantId", "expectedParticipantGeneration", "holderGeneration", "targetKey", "projectRoot", "profile", "configurationHash", "driver", "herdr", "worktreePath", "metadata", "createdAt", "expiresAt", "status", "consumedAt", "clientGeneration"]);
 	const status = enumValue(launch.status, ["pending", "consumed", "cancelled", "expired"], "invalid bridge launch status");
-	if (launch.version !== 1 || (launch.profile !== "read-only" && launch.profile !== "workspace-write") || (launch.workspaceId === undefined) !== (launch.workspaceRoot === undefined) || ((launch.profile === "workspace-write") !== (launch.workspaceId !== undefined))) throw new Error("invalid bridge launch version, status, profile, or workspace authority");
+	if (launch.version !== 1 || (launch.profile !== "read-only" && launch.profile !== "workspace-write") || (launch.profile === "read-only" && launch.worktreePath !== undefined)) throw new Error("invalid bridge launch version, status, profile, or worktree authority");
 	const result: HostedBridgeLaunch = {
 		version: 1,
 		launchId: text(launch.launchId, "bridge launch ID", MAX_ID_BYTES),
@@ -970,95 +901,11 @@ function validateBridgeLaunch(value: PersistedStateValue | undefined, key: strin
 	};
 	if (launch.expectedParticipantGeneration !== undefined) result.expectedParticipantGeneration = text(launch.expectedParticipantGeneration, "expected bridge participant generation", MAX_ID_BYTES);
 	if (launch.driver !== undefined) result.driver = nativeDriver(launch.driver);
-	if (launch.workspaceId !== undefined) {
-		result.workspaceId = text(launch.workspaceId, "bridge workspace ID", MAX_ID_BYTES);
-		result.workspaceRoot = text(launch.workspaceRoot, "bridge workspace root", MAX_PATH_BYTES);
-	}
+	if (launch.worktreePath !== undefined) result.worktreePath = text(launch.worktreePath, "bridge worktree path", MAX_PATH_BYTES);
 	if (launch.consumedAt !== undefined) result.consumedAt = nonNegativeNumber(launch.consumedAt, "bridge consumption time");
 	if (launch.clientGeneration !== undefined) result.clientGeneration = text(launch.clientGeneration, "bridge client generation", MAX_ID_BYTES);
 	if (result.launchId !== key || result.expiresAt <= result.createdAt || result.participantKey !== deriveParticipantKey(result.projectRoot, result.protocol, result.participantId)) throw new Error("bridge launch identity or time is invalid");
 	if (result.status === "consumed" ? result.consumedAt === undefined || result.clientGeneration === undefined : result.consumedAt !== undefined || result.clientGeneration !== undefined) throw new Error("bridge launch settlement is inconsistent");
-	return result;
-}
-
-function validateWorkspace(value: PersistedStateValue | undefined, key: string): HostedWorkspace {
-	const item = strictObject(value, "workspace", ["version", "workspaceId", "requestId", "projectRoot", "gitCommonDir", "worktreePath", "branchRef", "participantKey", "protocol", "participantId", "expectedParticipantGeneration", "holderGeneration", "targetKey", "ownerKind", "piSessionId", "bridgeId", "profile", "launchDigest", "callerParticipantKey", "callerGeneration", "callerTargetKey", "baseCommit", "headCommit", "herdr", "state", "taskStatus", "commits", "changedFiles", "additions", "deletions", "integratedHead", "createdAt", "expiresAt", "updatedAt"]);
-	const ownerKind = item.ownerKind;
-	const state = enumValue(item.state, ["provisioning", "ready", "bound", "active", "ready_handoff", "partial", "retained", "needs_attention", "integrated", "cleaned"], "invalid workspace state");
-	if (item.version !== 1 || item.profile !== "workspace-write" || (ownerKind !== "pi" && ownerKind !== "bridge")) throw new Error("invalid workspace version, owner, profile, or state");
-	if (ownerKind === "pi" ? !isPersistedString(item.piSessionId) || !isPersistedString(item.launchDigest) || item.bridgeId !== undefined : !isPersistedString(item.bridgeId) || item.piSessionId !== undefined || item.launchDigest !== undefined) throw new Error("workspace owner authority is inconsistent");
-	const taskStatus = item.taskStatus === undefined ? undefined : enumValue(item.taskStatus, ["completed", "failed", "cancelled"], "invalid workspace task status");
-	const protocol = participantName(item.protocol, "workspace protocol");
-	const participantId = participantName(item.participantId, "workspace participant ID");
-	const projectRoot = text(item.projectRoot, "workspace project root", MAX_PATH_BYTES);
-	const commits = item.commits === undefined ? undefined : stringArray(item.commits, "workspace commits", 1_000).map((value) => gitOid(value, "workspace commit"));
-	const common = {
-		version: 1 as const,
-		workspaceId: text(item.workspaceId, "workspace ID", MAX_ID_BYTES),
-		requestId: text(item.requestId, "workspace request ID", MAX_ID_BYTES),
-		projectRoot,
-		gitCommonDir: text(item.gitCommonDir, "workspace Git common directory", MAX_PATH_BYTES),
-		worktreePath: text(item.worktreePath, "workspace path", MAX_PATH_BYTES),
-		branchRef: text(item.branchRef, "workspace branch", MAX_PATH_BYTES),
-		participantKey: text(item.participantKey, "workspace participant key", MAX_ID_BYTES),
-		protocol,
-		participantId,
-		holderGeneration: text(item.holderGeneration, "workspace holder generation", MAX_ID_BYTES),
-		targetKey: text(item.targetKey, "workspace target key", MAX_ID_BYTES),
-		profile: "workspace-write" as const,
-		callerParticipantKey: text(item.callerParticipantKey, "workspace caller participant key", MAX_ID_BYTES),
-		callerGeneration: text(item.callerGeneration, "workspace caller generation", MAX_ID_BYTES),
-		callerTargetKey: text(item.callerTargetKey, "workspace caller target key", MAX_ID_BYTES),
-		baseCommit: gitOid(item.baseCommit, "workspace base commit"),
-		headCommit: gitOid(item.headCommit, "workspace head commit"),
-		state,
-		createdAt: nonNegativeNumber(item.createdAt, "workspace creation time"),
-		expiresAt: nonNegativeNumber(item.expiresAt, "workspace launch expiry"),
-		updatedAt: nonNegativeNumber(item.updatedAt, "workspace update time"),
-	};
-	if (item.expectedParticipantGeneration !== undefined) Object.assign(common, { expectedParticipantGeneration: text(item.expectedParticipantGeneration, "expected participant generation", MAX_ID_BYTES) });
-	if (item.herdr !== undefined) Object.assign(common, { herdr: validateBridgeHerdr(item.herdr) });
-	if (taskStatus !== undefined) Object.assign(common, { taskStatus });
-	if (commits) Object.assign(common, { commits });
-	if (item.changedFiles !== undefined) Object.assign(common, { changedFiles: integer(item.changedFiles, "workspace changed files") });
-	if (item.additions !== undefined) Object.assign(common, { additions: integer(item.additions, "workspace additions") });
-	if (item.deletions !== undefined) Object.assign(common, { deletions: integer(item.deletions, "workspace deletions") });
-	if (item.integratedHead !== undefined) Object.assign(common, { integratedHead: gitOid(item.integratedHead, "workspace integrated head") });
-	const result: HostedWorkspace = ownerKind === "pi" ? { ...common, ownerKind: "pi", piSessionId: text(item.piSessionId, "workspace Pi session ID", MAX_ID_BYTES), launchDigest: hash(item.launchDigest, "workspace launch digest") } : { ...common, ownerKind: "bridge", bridgeId: text(item.bridgeId, "workspace bridge ID", MAX_ID_BYTES) };
-	if (result.workspaceId !== key || result.participantKey !== deriveParticipantKey(projectRoot, protocol, participantId) || !WORKSPACE_BRANCH.test(result.branchRef) || result.expiresAt <= result.createdAt || result.updatedAt < result.createdAt) throw new Error("workspace identity, branch, or time is invalid");
-	if (["bound", "active", "ready_handoff", "partial", "retained", "integrated"].includes(result.state) && !result.herdr || ["provisioning", "ready"].includes(result.state) && result.herdr) throw new Error("workspace Herdr binding is inconsistent");
-	if (result.commits && result.commits.length > 0 && (!result.changedFiles || result.headCommit === result.baseCommit)) throw new Error("workspace handoff fields are inconsistent");
-	return result;
-}
-
-function validateIntegration(value: PersistedStateValue | undefined, key: string): HostedIntegration {
-	const item = strictObject(value, "integration", ["version", "integrationId", "workspaceId", "projectRoot", "gitCommonDir", "worktreePath", "branchRef", "mainBranchRef", "mainHead", "sourceHead", "sourceCommits", "state", "preparedHead", "conflictPaths", "createdAt", "updatedAt", "finalizedAt"]);
-	const state = enumValue(item.state, ["preparing", "prepared", "conflicted", "needs_attention", "finalized", "cleaned"], "invalid integration state");
-	if (item.version !== 1) throw new Error("invalid integration version or state");
-	const sourceCommits = stringArray(item.sourceCommits, "integration source commits", 1_000).map((value) => gitOid(value, "integration source commit"));
-	if (sourceCommits.length < 1) throw new Error("integration requires source commits");
-	const result: HostedIntegration = {
-		version: 1,
-		integrationId: text(item.integrationId, "integration ID", MAX_ID_BYTES),
-		workspaceId: text(item.workspaceId, "integration workspace ID", MAX_ID_BYTES),
-		projectRoot: text(item.projectRoot, "integration project root", MAX_PATH_BYTES),
-		gitCommonDir: text(item.gitCommonDir, "integration Git common directory", MAX_PATH_BYTES),
-		worktreePath: text(item.worktreePath, "integration worktree path", MAX_PATH_BYTES),
-		branchRef: text(item.branchRef, "integration branch", MAX_PATH_BYTES),
-		mainBranchRef: text(item.mainBranchRef, "main branch", MAX_PATH_BYTES),
-		mainHead: gitOid(item.mainHead, "integration main head"),
-		sourceHead: gitOid(item.sourceHead, "integration source head"),
-		sourceCommits,
-		state,
-		createdAt: nonNegativeNumber(item.createdAt, "integration creation time"),
-		updatedAt: nonNegativeNumber(item.updatedAt, "integration update time"),
-	};
-	if (item.preparedHead !== undefined) result.preparedHead = gitOid(item.preparedHead, "prepared integration head");
-	if (item.conflictPaths !== undefined) result.conflictPaths = stringArray(item.conflictPaths, "integration conflict paths", 10_000);
-	if (item.finalizedAt !== undefined) result.finalizedAt = nonNegativeNumber(item.finalizedAt, "integration finalized time");
-	const requiresPreparedHead = result.state === "prepared" || result.state === "conflicted" || result.state === "finalized" || result.state === "cleaned";
-	const finalizedTimeInvalid = result.state === "finalized" ? !result.finalizedAt : result.state !== "cleaned" && result.finalizedAt !== undefined;
-	if (result.integrationId !== key || !INTEGRATION_BRANCH.test(result.branchRef) || result.updatedAt < result.createdAt || requiresPreparedHead !== Boolean(result.preparedHead) || finalizedTimeInvalid) throw new Error("integration identity, branch, state, or time is inconsistent");
 	return result;
 }
 
@@ -1122,7 +969,7 @@ function validateObservation(value: PersistedStateValue | undefined, key: string
 }
 
 function validateParticipant(value: PersistedStateValue | undefined, key: string): HostedParticipant {
-	const participant = strictObject(value, "participant", ["participantKey", "projectRoot", "protocol", "participantId", "state", "generation", "holderTargetKey", "outSeq", "transitions", "createdAt", "updatedAt"]);
+	const participant = strictObject(value, "participant", ["participantKey", "projectRoot", "protocol", "participantId", "state", "generation", "holderTargetKey", "worktreePath", "outSeq", "transitions", "createdAt", "updatedAt"]);
 	if (participant.state !== "held" && participant.state !== "vacant" && participant.state !== "ended") throw new Error("invalid participant state");
 	const protocol = participantName(participant.protocol, "participant protocol");
 	const participantId = participantName(participant.participantId, "participant ID");
@@ -1145,6 +992,7 @@ function validateParticipant(value: PersistedStateValue | undefined, key: string
 		updatedAt: nonNegativeNumber(participant.updatedAt, "participant update time"),
 	};
 	if (participant.holderTargetKey !== undefined) result.holderTargetKey = text(participant.holderTargetKey, "participant holder target key", MAX_ID_BYTES);
+	if (participant.worktreePath !== undefined) result.worktreePath = text(participant.worktreePath, "participant worktree path", MAX_PATH_BYTES);
 	if (result.participantKey !== key || result.participantKey !== deriveParticipantKey(projectRoot, protocol, participantId)) throw new Error("participant key does not match its identity");
 	const latest = result.transitions.at(-1)!;
 	if ((result.state === "held") !== Boolean(result.holderTargetKey) || latest.generation !== result.generation || result.updatedAt < latest.at || latest.at < result.createdAt) throw new Error("participant state, holder, generation, or time is inconsistent");
@@ -1369,24 +1217,6 @@ function validateReferences(state: HostedRuntimeState): void {
 		if (target.kind === "bridge" || target.kind === "agent") {
 			const launch = state.bridgeLaunches[target.bridgeId];
 			if (!launch || launch.status !== "consumed" || !bridgeTargetMatchesLaunch(target, launch, target.clientGeneration)) throw new Error("bridge target authority is inconsistent");
-		} else if (target.workspaceId) {
-			const workspace = state.workspaces[target.workspaceId];
-			if (!workspace || !workspaceTargetMatches(target, workspace)) throw new Error("Pi workspace target authority is inconsistent");
-		}
-	}
-	for (const workspace of Object.values(state.workspaces)) {
-		const callerTarget = state.targets[workspace.callerTargetKey];
-		const target = state.targets[workspace.targetKey];
-		if (callerTarget?.kind !== "pi" || callerTarget.projectRoot !== workspace.projectRoot) throw new Error("workspace caller target is missing or invalid");
-		if (["active", "ready_handoff", "partial", "retained", "integrated"].includes(workspace.state) ? !target || !workspaceTargetMatches(target, workspace) : ["provisioning", "ready", "bound"].includes(workspace.state) && target !== undefined) throw new Error("workspace target settlement is inconsistent");
-	}
-	const activeIntegrationWorkspaces = new Set<string>();
-	for (const integration of Object.values(state.integrations)) {
-		const workspace = state.workspaces[integration.workspaceId];
-		if (!workspace || workspace.projectRoot !== integration.projectRoot || workspace.gitCommonDir !== integration.gitCommonDir) throw new Error("integration workspace reference is invalid");
-		if (integration.state !== "cleaned") {
-			if (activeIntegrationWorkspaces.has(integration.workspaceId)) throw new Error("workspace has multiple non-cleaned integrations");
-			activeIntegrationWorkspaces.add(integration.workspaceId);
 		}
 	}
 	for (const monitor of Object.values(state.monitors)) if (!state.targets[monitor.targetKey]) throw new Error("monitor target is missing");
@@ -1471,12 +1301,6 @@ function stringValue(value: PersistedStateValue | undefined, name: string, maxBy
 	return value;
 }
 
-function gitOid(value: PersistedStateValue | undefined, name: string): string {
-	const result = text(value, name, 64);
-	if (!GIT_OID.test(result)) throw new Error(`${name} must be a Git object ID`);
-	return result;
-}
-
 function hash(value: PersistedStateValue | undefined, name: string): string {
 	const result = text(value, name, 64);
 	if (!HASH.test(result)) throw new Error(`${name} must be a lowercase SHA-256 digest`);
@@ -1526,6 +1350,15 @@ function transitionParticipant(
 	if (holderTargetKey) result.holderTargetKey = holderTargetKey;
 	else if (participant.holderTargetKey) result.holderTargetKey = undefined;
 	return result;
+}
+
+function withTargetWorktree(participant: HostedParticipant, target: HostedTarget): HostedParticipant {
+	if (participant.worktreePath === target.worktreePath) return participant;
+	if (!target.worktreePath) {
+		const { worktreePath: _cleared, ...cleared } = participant;
+		return cleared;
+	}
+	return { ...participant, worktreePath: target.worktreePath };
 }
 
 function latestHolderTargetKey(participant: HostedParticipant): string | undefined {
@@ -1593,38 +1426,9 @@ function participantName(value: PersistedStateValue | undefined, name: string): 
 
 function sameTarget(left: HostedTarget, right: HostedTarget): boolean {
 	if (left.kind !== right.kind || left.targetKey !== right.targetKey || left.projectRoot !== right.projectRoot) return false;
-	if (left.kind === "pi" && right.kind === "pi") return left.piSessionId === right.piSessionId && left.piSessionFile === right.piSessionFile && left.workspaceId === right.workspaceId && left.workspaceRoot === right.workspaceRoot;
-	if ((left.kind === "bridge" || left.kind === "agent") && (right.kind === "bridge" || right.kind === "agent")) return left.kind === right.kind && left.bridgeId === right.bridgeId && (left.kind !== "agent" || right.kind !== "agent" || left.driver === right.driver && JSON.stringify(left.agentSession) === JSON.stringify(right.agentSession)) && left.participantKey === right.participantKey && left.holderGeneration === right.holderGeneration && left.profile === right.profile && left.configurationHash === right.configurationHash && left.clientGeneration === right.clientGeneration && left.reconnectDigest === right.reconnectDigest && left.workspaceId === right.workspaceId && left.workspaceRoot === right.workspaceRoot && JSON.stringify(left.herdr) === JSON.stringify(right.herdr) && JSON.stringify(left.metadata) === JSON.stringify(right.metadata);
+	if (left.kind === "pi" && right.kind === "pi") return left.piSessionId === right.piSessionId && left.piSessionFile === right.piSessionFile && left.worktreePath === right.worktreePath;
+	if ((left.kind === "bridge" || left.kind === "agent") && (right.kind === "bridge" || right.kind === "agent")) return left.kind === right.kind && left.bridgeId === right.bridgeId && (left.kind !== "agent" || right.kind !== "agent" || left.driver === right.driver && JSON.stringify(left.agentSession) === JSON.stringify(right.agentSession)) && left.participantKey === right.participantKey && left.holderGeneration === right.holderGeneration && left.profile === right.profile && left.configurationHash === right.configurationHash && left.clientGeneration === right.clientGeneration && left.reconnectDigest === right.reconnectDigest && left.worktreePath === right.worktreePath && JSON.stringify(left.herdr) === JSON.stringify(right.herdr) && JSON.stringify(left.metadata) === JSON.stringify(right.metadata);
 	return false;
-}
-
-function sameWorkspace(left: HostedWorkspace, right: HostedWorkspace): boolean { return JSON.stringify(left) === JSON.stringify(right); }
-
-function sameWorkspaceIdentity(left: HostedWorkspace, right: HostedWorkspace): boolean {
-	return left.workspaceId === right.workspaceId && left.requestId === right.requestId && left.projectRoot === right.projectRoot && left.gitCommonDir === right.gitCommonDir && left.worktreePath === right.worktreePath && left.branchRef === right.branchRef && left.participantKey === right.participantKey && left.holderGeneration === right.holderGeneration && left.targetKey === right.targetKey && left.ownerKind === right.ownerKind && left.piSessionId === right.piSessionId && left.bridgeId === right.bridgeId && left.baseCommit === right.baseCommit && left.launchDigest === right.launchDigest && left.expiresAt === right.expiresAt;
-}
-
-function workspaceTargetMatches(target: HostedTarget, workspace: HostedWorkspace): boolean {
-	if (workspace.ownerKind === "pi") return target.kind === "pi" && target.targetKey === workspace.targetKey && target.projectRoot === workspace.projectRoot && target.piSessionId === workspace.piSessionId && target.workspaceId === workspace.workspaceId && target.workspaceRoot === workspace.worktreePath;
-	return (target.kind === "bridge" || target.kind === "agent") && target.targetKey === workspace.targetKey && target.projectRoot === workspace.projectRoot && target.bridgeId === workspace.bridgeId && target.workspaceId === workspace.workspaceId && target.workspaceRoot === workspace.worktreePath && target.profile === "workspace-write" && target.participantKey === workspace.participantKey && target.holderGeneration === workspace.holderGeneration && JSON.stringify(target.herdr) === JSON.stringify(workspace.herdr);
-}
-
-function workspaceTransitionAllowed(from: HostedWorkspace["state"], to: HostedWorkspace["state"]): boolean {
-	const transitions = {
-		provisioning: ["ready", "cleaned", "needs_attention"], ready: ["bound", "retained", "needs_attention", "cleaned"], bound: ["active", "retained", "needs_attention", "cleaned"], active: ["ready_handoff", "partial", "retained", "needs_attention"], ready_handoff: ["ready_handoff", "partial", "retained", "integrated", "cleaned", "needs_attention"], partial: ["ready_handoff", "partial", "retained", "integrated", "cleaned", "needs_attention"], retained: ["ready_handoff", "partial", "integrated", "cleaned", "needs_attention"], needs_attention: ["needs_attention", "retained", "cleaned"], integrated: ["cleaned", "needs_attention"], cleaned: [],
-	} satisfies Record<HostedWorkspace["state"], readonly HostedWorkspace["state"][]>;
-	const allowed: readonly HostedWorkspace["state"][] = transitions[from];
-	return allowed.includes(to);
-}
-
-function sameIntegrationIdentity(left: HostedIntegration, right: HostedIntegration): boolean {
-	return left.integrationId === right.integrationId && left.workspaceId === right.workspaceId && left.projectRoot === right.projectRoot && left.gitCommonDir === right.gitCommonDir && left.worktreePath === right.worktreePath && left.branchRef === right.branchRef && left.mainBranchRef === right.mainBranchRef && left.mainHead === right.mainHead && left.sourceHead === right.sourceHead && sameOrderedIds(left.sourceCommits, right.sourceCommits);
-}
-
-function integrationTransitionAllowed(from: HostedIntegration["state"], to: HostedIntegration["state"]): boolean {
-	const transitions = { preparing: ["prepared", "conflicted", "needs_attention"], prepared: ["finalized", "needs_attention", "cleaned"], conflicted: ["conflicted", "cleaned", "needs_attention"], needs_attention: ["needs_attention", "cleaned"], finalized: ["cleaned", "needs_attention"], cleaned: [] } satisfies Record<HostedIntegration["state"], readonly HostedIntegration["state"][]>;
-	const allowed: readonly HostedIntegration["state"][] = transitions[from];
-	return allowed.includes(to);
 }
 
 function sameBridgeLaunch(left: HostedBridgeLaunch, right: HostedBridgeLaunch): boolean {
@@ -1632,7 +1436,7 @@ function sameBridgeLaunch(left: HostedBridgeLaunch, right: HostedBridgeLaunch): 
 }
 
 function bridgeTargetMatchesLaunch(target: HostedExternalTarget, launch: HostedBridgeLaunch, clientGeneration: string): boolean {
-	return target.kind === (launch.driver ? "agent" : "bridge") && target.targetKey === launch.targetKey && target.projectRoot === launch.projectRoot && target.bridgeId === launch.launchId && (target.kind !== "agent" || target.driver === launch.driver) && target.participantKey === launch.participantKey && target.holderGeneration === launch.holderGeneration && target.profile === launch.profile && target.configurationHash === launch.configurationHash && target.clientGeneration === clientGeneration && target.reconnectDigest === launch.reconnectDigest && target.workspaceId === launch.workspaceId && target.workspaceRoot === launch.workspaceRoot && JSON.stringify(target.herdr) === JSON.stringify(launch.herdr) && JSON.stringify(target.metadata) === JSON.stringify(launch.metadata);
+	return target.kind === (launch.driver ? "agent" : "bridge") && target.targetKey === launch.targetKey && target.projectRoot === launch.projectRoot && target.bridgeId === launch.launchId && (target.kind !== "agent" || target.driver === launch.driver) && target.participantKey === launch.participantKey && target.holderGeneration === launch.holderGeneration && target.profile === launch.profile && target.configurationHash === launch.configurationHash && target.clientGeneration === clientGeneration && target.reconnectDigest === launch.reconnectDigest && target.worktreePath === launch.worktreePath && JSON.stringify(target.herdr) === JSON.stringify(launch.herdr) && JSON.stringify(target.metadata) === JSON.stringify(launch.metadata);
 }
 
 function sameMonitorIdentity(left: HostedMonitor, right: HostedMonitor): boolean {
