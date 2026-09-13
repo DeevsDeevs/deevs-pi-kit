@@ -48,6 +48,14 @@ export interface BoundAgentResult {
 	cwd: string;
 }
 
+/** The validated identifiers a bind request carries, parsed once before any target is built. */
+interface BoundAgentNames {
+	agentName: string;
+	protocol: string;
+	participantId: string;
+	clientGeneration: string;
+}
+
 export interface AgentBinderOptions {
 	now?: () => number;
 	createGeneration?: () => string;
@@ -78,53 +86,19 @@ export class RuntimeAgentBinder {
 			throw new AgentBindError("conflict", "Only an authenticated Pi target may bind a Herdr agent collaborator.");
 		}
 		const projectRoot = realpathSync(callerTarget.projectRoot);
-		const agentName = boundedName(input.agentName, AGENT_NAME, "Herdr agent name");
-		const protocol = boundedName(input.protocol, NAME, "protocol");
-		const participantId = boundedName(input.participantId, NAME, "participant ID");
-		const clientGeneration = bounded(input.clientGeneration, "client generation", 200);
-		const verified = await this.host.getAgent(agentName);
+		const names = boundAgentNames(input);
+		const verified = await this.host.getAgent(names.agentName);
 		const cwd = agentCwd(verified);
 		const worktreePath = cwd === projectRoot ? undefined : cwd;
 		if (worktreePath !== undefined && !await isWritableWorktree(worktreePath, projectRoot, input.profile)) {
 			throw new AgentBindError("identity_mismatch", "Herdr agent cwd is neither the project root nor a workspace-write worktree of it.");
 		}
-		const herdr = startedAgentLocator(verified, agentName, input.driver);
-		const targetKey = deriveAgentTargetKey(projectRoot, agentName);
-		const existing = this.store.read().targets[targetKey];
-		if (existing !== undefined && existing.kind !== "agent") {
-			throw new AgentBindError("conflict", "Herdr agent target key already belongs to another target kind.");
-		}
-		const target: HostedAgentTarget = {
-			kind: "agent",
-			targetKey,
-			projectRoot,
-			agentName,
-			driver: input.driver,
-			agentSession: verified.agentSession,
-			participantKey: deriveParticipantKey(projectRoot, protocol, participantId),
-			holderGeneration: existing?.holderGeneration ?? this.options.createGeneration?.() ?? `lease_${randomUUID()}`,
-			profile: input.profile,
-			clientGeneration,
-			herdr,
-			createdAt: existing?.createdAt ?? this.now(),
-		};
-		if (worktreePath) target.worktreePath = worktreePath;
-		const bind: HostedAgentBind = {
-			target,
-			protocol,
-			participantId,
-			callerTargetKey: caller.targetKey,
-			callerParticipantKey: bounded(input.callerParticipantKey, "caller participant key", 200),
-			callerGeneration: bounded(input.expectedCallerGeneration, "caller generation", 200),
-			at: this.now(),
-		};
-		const expected = input.expectedParticipantGeneration;
-		if (expected !== undefined) bind.expectedParticipantGeneration = bounded(expected, "expected participant generation", 200);
-		this.store.apply({ type: "agent.bind", bind });
+		const target = this.agentTarget(projectRoot, names, input, verified, worktreePath);
+		this.store.apply({ type: "agent.bind", bind: this.bindRecord(caller, input, names, target) });
 		const registration = this.registrations.registerAgent(target, verified);
 		return {
 			registration,
-			targetKey,
+			targetKey: target.targetKey,
 			participantKey: target.participantKey,
 			holderGeneration: target.holderGeneration,
 			driver: target.driver,
@@ -135,9 +109,69 @@ export class RuntimeAgentBinder {
 		};
 	}
 
+	private agentTarget(
+		projectRoot: string,
+		names: BoundAgentNames,
+		input: BindAgentInput,
+		verified: HostedLiveAgent,
+		worktreePath: string | undefined,
+	): HostedAgentTarget {
+		const herdr = startedAgentLocator(verified, names.agentName, input.driver);
+		const targetKey = deriveAgentTargetKey(projectRoot, names.agentName);
+		const existing = this.store.read().targets[targetKey];
+		if (existing !== undefined && existing.kind !== "agent") {
+			throw new AgentBindError("conflict", "Herdr agent target key already belongs to another target kind.");
+		}
+		const target: HostedAgentTarget = {
+			kind: "agent",
+			targetKey,
+			projectRoot,
+			agentName: names.agentName,
+			driver: input.driver,
+			agentSession: verified.agentSession,
+			participantKey: deriveParticipantKey(projectRoot, names.protocol, names.participantId),
+			holderGeneration: existing?.holderGeneration ?? this.options.createGeneration?.() ?? `lease_${randomUUID()}`,
+			profile: input.profile,
+			clientGeneration: names.clientGeneration,
+			herdr,
+			createdAt: existing?.createdAt ?? this.now(),
+		};
+		if (worktreePath) target.worktreePath = worktreePath;
+		return target;
+	}
+
+	private bindRecord(
+		caller: HostedLiveRegistration,
+		input: BindAgentInput,
+		names: BoundAgentNames,
+		target: HostedAgentTarget,
+	): HostedAgentBind {
+		const bind: HostedAgentBind = {
+			target,
+			protocol: names.protocol,
+			participantId: names.participantId,
+			callerTargetKey: caller.targetKey,
+			callerParticipantKey: bounded(input.callerParticipantKey, "caller participant key", 200),
+			callerGeneration: bounded(input.expectedCallerGeneration, "caller generation", 200),
+			at: this.now(),
+		};
+		const expected = input.expectedParticipantGeneration;
+		if (expected !== undefined) bind.expectedParticipantGeneration = bounded(expected, "expected participant generation", 200);
+		return bind;
+	}
+
 	private now(): number {
 		return this.options.now?.() ?? Date.now();
 	}
+}
+
+function boundAgentNames(input: BindAgentInput): BoundAgentNames {
+	return {
+		agentName: boundedName(input.agentName, AGENT_NAME, "Herdr agent name"),
+		protocol: boundedName(input.protocol, NAME, "protocol"),
+		participantId: boundedName(input.participantId, NAME, "participant ID"),
+		clientGeneration: bounded(input.clientGeneration, "client generation", 200),
+	};
 }
 
 function startedAgentLocator(agent: HostedLiveAgent, agentName: string, driver: HostedNativeCollaboratorDriver): HostedHerdrLocator {

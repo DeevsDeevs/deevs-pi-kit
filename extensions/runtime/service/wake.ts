@@ -60,7 +60,9 @@ export class HostedWakeCoordinator {
 		}
 		if (this.hasActiveClaim(registration.targetKey)) throw new HostedInboxError("busy", "Target already has an active delivery claim.");
 		const wake = state.wakes[registration.targetKey];
-		if (!wake || wake.wakeId !== wakeId || wake.registrationId !== registration.registrationId) throw new HostedInboxError("not_found", "Wake is absent or does not match this registration.");
+		if (!wake || wake.wakeId !== wakeId || wake.registrationId !== registration.registrationId) {
+			throw new HostedInboxError("not_found", "Wake is absent or does not match this registration.");
+		}
 		const events = pendingHostedEvents(state, registration.targetKey).slice(0, HOSTED_MAX_DELIVERY_BATCH);
 		if (events.length === 0) throw new HostedInboxError("not_found", "Wake has no pending events.");
 		const now = this.now();
@@ -75,12 +77,14 @@ export class HostedWakeCoordinator {
 			status: "active",
 		};
 		this.store.apply({ type: "wake.accept", wakeId, claim });
-		return { claim: this.store.read().claims[claimId]!, events };
+		return { claim: this.recordedClaim(claimId), events };
 	}
 
 	claim(registration: HostedLiveRegistration, maxEvents = HOSTED_MAX_DELIVERY_BATCH): HostedClaimResult {
 		this.releaseExpired();
-		if (!Number.isSafeInteger(maxEvents) || maxEvents < 1 || maxEvents > HOSTED_MAX_DELIVERY_BATCH) throw new HostedInboxError("claim_conflict", "Claim batch limit is invalid.");
+		if (!Number.isSafeInteger(maxEvents) || maxEvents < 1 || maxEvents > HOSTED_MAX_DELIVERY_BATCH) {
+			throw new HostedInboxError("claim_conflict", "Claim batch limit is invalid.");
+		}
 		if (this.hasActiveClaim(registration.targetKey)) throw new HostedInboxError("busy", "Target already has an active delivery claim.");
 		const events = pendingHostedEvents(this.store.read(), registration.targetKey).slice(0, maxEvents);
 		if (events.length === 0) throw new HostedInboxError("not_found", "Inbox has no pending events.");
@@ -96,19 +100,33 @@ export class HostedWakeCoordinator {
 			status: "active",
 		};
 		this.store.apply({ type: "inbox.claim", claim });
-		return { claim: this.store.read().claims[claim.claimId]!, events };
+		return { claim: this.recordedClaim(claim.claimId), events };
 	}
 
 	ack(registration: HostedLiveRegistration, claimId: string, eventIds: string[]): void {
 		const claim = this.requireClaim(registration, claimId, eventIds);
-		this.store.apply({ type: "inbox.ack", targetKey: registration.targetKey, claimId: claim.claimId, eventIds: claim.eventIds, at: this.now() });
-		if (this.store.read().claims[claimId]?.status !== "acked") throw new HostedInboxError("claim_conflict", "Claim no longer owns its delivery events.");
+		this.store.apply({
+			type: "inbox.ack",
+			targetKey: registration.targetKey,
+			claimId: claim.claimId,
+			eventIds: claim.eventIds,
+			at: this.now(),
+		});
+		if (this.store.read().claims[claimId]?.status !== "acked") {
+			throw new HostedInboxError("claim_conflict", "Claim no longer owns its delivery events.");
+		}
 		this.request(registration.targetKey);
 	}
 
 	release(registration: HostedLiveRegistration, claimId: string, eventIds: string[]): void {
 		const claim = this.requireClaim(registration, claimId, eventIds);
-		this.store.apply({ type: "inbox.release", targetKey: registration.targetKey, claimId: claim.claimId, eventIds: claim.eventIds, at: this.now() });
+		this.store.apply({
+			type: "inbox.release",
+			targetKey: registration.targetKey,
+			claimId: claim.claimId,
+			eventIds: claim.eventIds,
+			at: this.now(),
+		});
 		this.request(registration.targetKey);
 	}
 
@@ -150,9 +168,16 @@ export class HostedWakeCoordinator {
 	}
 
 	private verifyClaimOwner(claim: HostedClaim, registration: HostedLiveRegistration): void {
-		if (claim.targetKey !== registration.targetKey || claim.registrationId !== registration.registrationId || claim.clientGeneration !== registration.clientGeneration) {
-			throw new HostedInboxError("claim_conflict", "Claim belongs to another registration generation.");
-		}
+		const owned = claim.targetKey === registration.targetKey
+			&& claim.registrationId === registration.registrationId
+			&& claim.clientGeneration === registration.clientGeneration;
+		if (!owned) throw new HostedInboxError("claim_conflict", "Claim belongs to another registration generation.");
+	}
+
+	private recordedClaim(claimId: string): HostedClaim {
+		const claim = this.store.read().claims[claimId];
+		if (!claim) throw new HostedInboxError("claim_conflict", "Claim was not recorded in durable state.");
+		return claim;
 	}
 
 	private releaseExpired(): void {
@@ -174,7 +199,9 @@ function claimIdForWake(wakeId: string): string {
 
 function claimEvents(events: Record<string, HostedEvent>, claim: HostedClaim): HostedEvent[] {
 	const result = claim.eventIds.map((eventId) => events[eventId]);
-	if (!result.every((event): event is HostedEvent => event !== undefined && event.type !== "mailbox.message")) throw new HostedInboxError("claim_conflict", "Native claim event is missing or belongs to ordinary MCP mail.");
+	if (!result.every((event): event is HostedEvent => event !== undefined && event.type !== "mailbox.message")) {
+		throw new HostedInboxError("claim_conflict", "Native claim event is missing or belongs to ordinary MCP mail.");
+	}
 	return result;
 }
 
