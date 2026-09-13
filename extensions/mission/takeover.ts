@@ -14,14 +14,10 @@ export function listSnapshotTakeoverCandidates(ctx: ExtensionContext): MissionTa
 
 export async function discoverMissionTakeoverCandidates(ctx: ExtensionContext): Promise<MissionTakeoverCandidate[]> {
 	const currentSessionId = ctx.sessionManager.getSessionId();
-	const currentSessionFile = ctx.sessionManager.getSessionFile();
 	const sessions = (await SessionManager.list(ctx.cwd)).filter((session) => session.cwd === ctx.cwd);
 	const sessionsByPath = new Map(sessions.map((session) => [session.path, session]));
-	const allSnapshots = listMissionSnapshots(ctx.cwd);
-	const snapshots = allSnapshots.filter((snapshot) => snapshot.owner.sessionId !== currentSessionId && !["complete", "ended", "cleared"].includes(snapshot.mission.status));
+	const snapshots = listMissionSnapshots(ctx.cwd).filter((snapshot) => snapshot.owner.sessionId !== currentSessionId && !["complete", "ended", "cleared"].includes(snapshot.mission.status));
 	const candidates: MissionTakeoverCandidate[] = [];
-	const canonicalMissionIds = new Set(allSnapshots.map((snapshot) => snapshot.mission.missionId));
-	const canonicalSessionFiles = new Set(allSnapshots.map((snapshot) => snapshot.owner.sessionFile));
 
 	for (const snapshot of snapshots) {
 		let current = { ...snapshot, usageComplete: false };
@@ -38,21 +34,6 @@ export async function discoverMissionTakeoverCandidates(ctx: ExtensionContext): 
 			// The canonical checkpoint remains usable, but bounded usage may be incomplete.
 		}
 		candidates.push({ snapshot: current, source: "snapshot" });
-	}
-
-	for (const info of sessions) {
-		if (info.path === currentSessionFile || canonicalSessionFiles.has(info.path)) continue;
-		try {
-			const manager = SessionManager.open(info.path);
-			const state = new MissionState();
-			// SAFETY: This widens SDK session entries only for the legacy reader; the surrounding catch rejects malformed candidate state.
-			state.loadLegacyBranch(manager.getBranch() as Array<any>, ctx.cwd);
-			const mission = state.read();
-			if (!mission || canonicalMissionIds.has(mission.missionId)) continue;
-			candidates.push({ snapshot: state.exportSnapshot({ sessionId: info.id, sessionFile: info.path }, true), source: "legacy_session" });
-		} catch {
-			// Corrupt or unreadable legacy sessions are not takeover authority.
-		}
 	}
 	return candidates.sort((a, b) => b.snapshot.mission.updatedAt - a.snapshot.mission.updatedAt);
 }

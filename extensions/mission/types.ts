@@ -17,6 +17,75 @@ export interface MissionReviewFinding {
 export interface MissionReviewRevision { root: string; base: string; head: string }
 export const MAX_MISSION_REVIEW_ADJUDICATIONS = 256;
 
+export interface MissionReviewAdjudicationEntry {
+	candidateId: string;
+	verdict: MissionReviewVerdict;
+}
+
+/** Current review lifecycle status plus reviewer admission bookkeeping. */
+export interface MissionReviewAdmission {
+	status: MissionReviewStatus;
+	initialBaselinePending: boolean;
+	supersessionCount: number;
+	updatedAt?: number;
+	runId?: string;
+	admissionId?: string;
+	reason?: string;
+	skippedReason?: string;
+	failure?: boolean;
+	outcome?: MissionReviewOutcome;
+	notBeforeAt?: number;
+}
+
+/** The exact objective/scope/workspace candidate the current review admission targets. */
+export interface MissionReviewCandidate {
+	id?: string;
+	objectiveVersion?: number;
+	worktreeFingerprint?: string;
+	admittedWorktreeFingerprint?: string;
+	scopePaths?: string[];
+	scopeRevisions?: MissionReviewRevision[];
+}
+
+/** The parent's adjudication of the latest reviewer run, and the durable candidate history. */
+export interface MissionReviewAdjudication {
+	history: MissionReviewAdjudicationEntry[];
+	suggestedVerdict?: MissionReviewVerdict | "unknown";
+	adjudicatedCandidateId?: string;
+	adjudicatedVerdict?: MissionReviewVerdict;
+	historyComplete?: true;
+}
+
+export interface MissionReviewFindings {
+	blockingCount: number;
+	backlogCount: number;
+	highestSeverity?: MissionReviewSeverity;
+	items?: MissionReviewFinding[];
+	accepted?: MissionReviewFinding[];
+}
+
+/** Bounded correction-cycle policy and the revision baseline corrections diff against. */
+export interface MissionReviewCorrection {
+	count: number;
+	limit: number;
+	acceptedRevisions?: MissionReviewRevision[];
+}
+
+/** User authorization to complete one exact candidate once its review disposition converges. */
+export interface MissionCompletionLatch {
+	candidateId?: string;
+	reviewStatus?: MissionConvergedReviewStatus;
+}
+
+export interface MissionReview {
+	admission: MissionReviewAdmission;
+	candidate: MissionReviewCandidate;
+	adjudication: MissionReviewAdjudication;
+	findings: MissionReviewFindings;
+	correction: MissionReviewCorrection;
+	completionLatch: MissionCompletionLatch;
+}
+
 export interface MissionValidationInput {
 	command: string;
 	exitCode: number;
@@ -90,7 +159,6 @@ export interface MissionEvent {
 	reviewAdjudicatedVerdict?: MissionReviewVerdict;
 	reviewAdjudications?: Array<{ candidateId: string; verdict: MissionReviewVerdict }>;
 	reviewAdjudicationHistoryComplete?: true;
-	reviewLegacyRelaunchAuthorized?: true;
 	reviewHighestSeverity?: MissionReviewSeverity;
 	reviewBlockingFindingCount?: number;
 	reviewBacklogFindingCount?: number;
@@ -152,39 +220,7 @@ export interface MissionCurrent {
 	objectiveVersion?: number;
 	turnBudget?: number;
 	wallDeadlineAt?: number;
-	reviewStatus?: MissionReviewStatus;
-	initialBaselinePending?: boolean;
-	reviewUpdatedAt?: number;
-	reviewRunId?: string;
-	reviewAdmissionId?: string;
-	reviewReason?: string;
-	reviewSkippedReason?: string;
-	reviewSuggestedVerdict?: MissionReviewVerdict | "unknown";
-	reviewFailure?: boolean;
-	reviewOutcome?: MissionReviewOutcome;
-	reviewNotBeforeAt?: number;
-	reviewSupersessionCount?: number;
-	reviewWorktreeFingerprint?: string;
-	admittedWorktreeFingerprint?: string;
-	reviewCandidateId?: string;
-	reviewCandidateObjectiveVersion?: number;
-	reviewAdjudicatedCandidateId?: string;
-	reviewAdjudicatedVerdict?: MissionReviewVerdict;
-	reviewAdjudications?: Array<{ candidateId: string; verdict: MissionReviewVerdict }>;
-	reviewAdjudicationHistoryComplete?: true;
-	reviewLegacyRelaunchAuthorized?: true;
-	reviewHighestSeverity?: MissionReviewSeverity;
-	reviewBlockingFindingCount?: number;
-	reviewBacklogFindingCount?: number;
-	reviewFindings?: MissionReviewFinding[];
-	reviewAcceptedFindings?: MissionReviewFinding[];
-	reviewScopePaths?: string[];
-	reviewScopeRevisions?: MissionReviewRevision[];
-	reviewAcceptedRevisions?: MissionReviewRevision[];
-	reviewCorrectionCount?: number;
-	reviewCorrectionLimit?: number;
-	completionLatchCandidateId?: string;
-	completionLatchReviewStatus?: MissionConvergedReviewStatus;
+	review: MissionReview;
 	completionId?: string;
 	completionEffectsStatus?: "pending" | "done";
 	completionAudit?: Array<{ requirementIndex: number; evidence: string }>;
@@ -199,7 +235,7 @@ export interface MissionOwner {
 }
 
 export interface MissionSnapshot {
-	version: 1;
+	version: 2;
 	revision: number;
 	owner: MissionOwner;
 	mission: MissionCurrent;
@@ -218,7 +254,7 @@ export interface MissionTakeoverInput {
 
 export interface MissionTakeoverCandidate {
 	snapshot: MissionSnapshot;
-	source: "snapshot" | "legacy_session";
+	source: "snapshot";
 }
 
 export interface MissionCreateInput {

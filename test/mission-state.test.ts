@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { MISSION_CUSTOM_TYPE, MissionState } from "../extensions/mission/state.ts";
+import { MissionState } from "../extensions/mission/state.ts";
 import type { MissionEvent } from "../extensions/mission/types.ts";
 import { completeMission, registerMissionTools } from "../extensions/mission/tools.ts";
 import { registerMissionCommands } from "../extensions/mission/commands.ts";
@@ -27,18 +27,18 @@ describe("Mission state", () => {
 
 		expect(mission.generation).toBeTruthy();
 		expect(mission.objectiveVersion).toBe(1);
-		expect(mission.reviewStatus).toBe("due");
+		expect(mission.review.admission.status).toBe("due");
 		expect(mission.turnBudget).toBe(2);
 		expect(mission.wallDeadlineAt).toBeGreaterThan(Date.now());
 
 		mission = test.state.append(test.pi, test.state.objectiveUpdateEvent({ objective: "Implement and migrate", requirements: ["Migrated"], reason: "Scope changed" }))!;
 		expect(mission.objective).toBe("Implement and migrate");
 		expect(mission.objectiveVersion).toBe(2);
-		expect(mission.reviewStatus).toBe("due");
+		expect(mission.review.admission.status).toBe("due");
 
 		mission = test.state.append(test.pi, test.state.reviewEvent("skipped", { skippedReason: "Documentation-only change" }))!;
-		expect(mission.reviewStatus).toBe("skipped");
-		expect(mission.reviewSkippedReason).toBe("Documentation-only change");
+		expect(mission.review.admission.status).toBe("skipped");
+		expect(mission.review.admission.skippedReason).toBe("Documentation-only change");
 	});
 
 	it("persists reviewed head anchors across clear adjudication and later review due", async () => {
@@ -48,7 +48,7 @@ describe("Mission state", () => {
 		test.state.append(test.pi, test.state.reviewEvent("awaiting_adjudication", { runId: "review-1", candidateId: "candidate-1", suggestedVerdict: "clear", scopeRevisions: [{ root: ".", base: head, head }] }));
 		test.state.append(test.pi, test.state.reviewEvent("clear", { runId: "review-1", candidateId: "candidate-1" }));
 		test.state.append(test.pi, test.state.reviewEvent("due", { reason: "candidate changed" }));
-		expect(test.state.read()).toMatchObject({ reviewAcceptedFindings: [], reviewAcceptedRevisions: [{ root: ".", base: head, head }] });
+		expect(test.state.read()).toMatchObject({ review: { findings: { accepted: [] }, correction: { acceptedRevisions: [{ root: ".", base: head, head }] } } });
 	});
 
 	it("preserves candidate identity for limit-only and normalized no-op updates", async () => {
@@ -57,35 +57,9 @@ describe("Mission state", () => {
 		test.state.append(test.pi, test.state.reviewEvent("clear", { candidateId: "candidate-stable", worktreeFingerprint: "fingerprint-stable" }));
 		test.state.append(test.pi, test.state.completionLatchEvent("candidate-stable", "clear"));
 		let mission = test.state.append(test.pi, test.state.objectiveUpdateEvent({ tokenBudget: 50_000, reason: "raise limit" }))!;
-		expect(mission).toMatchObject({ objectiveVersion: 1, reviewStatus: "clear", reviewAdjudicatedCandidateId: "candidate-stable", completionLatchCandidateId: "candidate-stable", tokenBudget: 50_000 });
+		expect(mission).toMatchObject({ objectiveVersion: 1, tokenBudget: 50_000, review: { admission: { status: "clear" }, adjudication: { adjudicatedCandidateId: "candidate-stable" }, completionLatch: { candidateId: "candidate-stable" } } });
 		mission = test.state.append(test.pi, test.state.objectiveUpdateEvent({ objective: "  Implement   runtime ", requirements: [" Works "], paths: ["test", "src"], reason: "normalize equivalent input" }))!;
-		expect(mission).toMatchObject({ objectiveVersion: 1, reviewStatus: "clear", reviewAdjudicatedCandidateId: "candidate-stable", completionLatchCandidateId: "candidate-stable" });
-	});
-
-	it("revokes bounded legacy relaunch authority when the candidate is superseded", async () => {
-		const test = setup();
-		const created = await test.state.create({ objective: "Legacy relaunch", chain: "kit" }, test.ctx);
-		delete created.reviewAdjudicationHistoryComplete;
-		test.state.append(test.pi, created);
-		test.state.append(test.pi, test.state.reviewEvent("due", { legacyRelaunchAuthorized: true }));
-		expect(test.state.read()?.reviewLegacyRelaunchAuthorized).toBe(true);
-		test.state.append(test.pi, test.state.reviewEvent("due", { outcome: "superseded", candidateId: "changed-candidate" }));
-		expect(test.state.read()?.reviewLegacyRelaunchAuthorized).toBeUndefined();
-		expect(() => test.state.reviewEvent("clear", { candidateId: "changed-candidate" })).toThrow("adjudication history is incomplete");
-	});
-
-	it("merges singular legacy adjudications with truncated event arrays without claiming completeness", async () => {
-		const test = setup();
-		const created = await test.state.create({ objective: "Legacy history", chain: "kit" }, test.ctx);
-		delete created.reviewAdjudicationHistoryComplete;
-		const branch = [
-			{ type: "custom", customType: MISSION_CUSTOM_TYPE, data: created },
-			{ type: "custom", customType: MISSION_CUSTOM_TYPE, data: { kind: "review_changed", missionId: created.missionId, generation: created.generation, at: Date.now(), reviewStatus: "clear", reviewAdjudicatedCandidateId: "candidate_a", reviewAdjudicatedVerdict: "clear" } },
-			{ type: "custom", customType: MISSION_CUSTOM_TYPE, data: { kind: "review_changed", missionId: created.missionId, generation: created.generation, at: Date.now(), reviewStatus: "clear", reviewAdjudicatedCandidateId: "candidate_c", reviewAdjudicatedVerdict: "clear", reviewAdjudications: [{ candidateId: "candidate_b", verdict: "clear" }, { candidateId: "candidate_c", verdict: "clear" }] } },
-		];
-		const replay = new MissionState();
-		replay.loadLegacyBranch(branch, test.ctx.cwd);
-		expect(replay.read()).toMatchObject({ reviewAdjudicationHistoryComplete: undefined, reviewAdjudications: [{ candidateId: "candidate_a", verdict: "clear" }, { candidateId: "candidate_b", verdict: "clear" }, { candidateId: "candidate_c", verdict: "clear" }] });
+		expect(mission).toMatchObject({ objectiveVersion: 1, review: { admission: { status: "clear" }, adjudication: { adjudicatedCandidateId: "candidate-stable" }, completionLatch: { candidateId: "candidate-stable" } } });
 	});
 
 	it("preserves meaningful leading digits while stripping explicit list markers", async () => {
@@ -143,7 +117,7 @@ describe("Mission state", () => {
 		let mission = test.state.append(test.pi, created)!;
 		const stale: MissionEvent = { kind: "review_changed", missionId: mission.missionId, generation: "stale", at: Date.now(), reviewStatus: "clear" };
 		mission = test.state.append(test.pi, stale)!;
-		expect(mission.reviewStatus).toBe("due");
+		expect(mission.review.admission.status).toBe("due");
 
 		for (let index = 0; index < 3; index++) {
 			mission = test.state.append(test.pi, test.state.settledEvent({ blockerFingerprint: "need credentials", madeProgress: false }))!;
@@ -284,7 +258,7 @@ describe("Mission state", () => {
 		expect(test.state.read()?.objective).toBe("Changed");
 		await expect(tools.get("mission_progress")!.execute("call", { summary: "waive", reviewSkip: true }, undefined, undefined, approved)).rejects.toThrow("non-empty reviewSkipReason");
 		await tools.get("mission_progress")!.execute("call", { summary: "waived", reviewSkip: true, reviewSkipReason: "trusted waiver" }, undefined, undefined, approved);
-		expect(test.state.read()).toMatchObject({ reviewStatus: "skipped", reviewWorktreeFingerprint: "waiver-fingerprint", admittedWorktreeFingerprint: "waiver-fingerprint" });
+		expect(test.state.read()).toMatchObject({ review: { admission: { status: "skipped" }, candidate: { worktreeFingerprint: "waiver-fingerprint", admittedWorktreeFingerprint: "waiver-fingerprint" } } });
 	});
 
 	it("refuses clear adjudication without a structured reviewer verdict", async () => {
@@ -309,21 +283,21 @@ describe("Mission state", () => {
 		expect(test.state.readReviewFailureCount()).toBe(1);
 		test.state.append(test.pi, test.state.reviewEvent("due", { reason: "candidate changed", outcome: "superseded" }));
 		expect(test.state.readReviewFailureCount()).toBe(1);
-		expect(test.state.read()).toMatchObject({ reviewStatus: "due", reviewOutcome: "superseded" });
+		expect(test.state.read()).toMatchObject({ review: { admission: { status: "due", outcome: "superseded" } } });
 	});
 
 	it("clears stale highest severity when a later report has no findings", async () => {
 		const test = setup();
 		test.state.append(test.pi, await test.state.create({ objective: "Do work", chain: "kit" }, test.ctx));
 		test.state.append(test.pi, test.state.reviewEvent("awaiting_adjudication", { runId: "review-major", suggestedVerdict: "changes_requested", highestSeverity: "major", blockingFindingCount: 1 }));
-		expect(test.state.read()?.reviewHighestSeverity).toBe("major");
+		expect(test.state.read()?.review.findings.highestSeverity).toBe("major");
 		test.state.append(test.pi, test.state.reviewEvent("awaiting_adjudication", { runId: "review-clear", suggestedVerdict: "clear", blockingFindingCount: 0, backlogFindingCount: 0 }));
-		expect(test.state.read()?.reviewHighestSeverity).toBeUndefined();
+		expect(test.state.read()?.review.findings.highestSeverity).toBeUndefined();
 	});
 
 	it("rejects ownerless tool creation before reporting success", async () => {
 		const test = setup();
-		let createTool: { execute: (...args: unknown[]) => Promise<{ details?: { mission?: { reviewStatus?: string } } }> } | undefined;
+		let createTool: { execute: (...args: unknown[]) => Promise<{ details?: { mission?: { review?: { admission?: { status?: string } } } } }> } | undefined;
 		const pi = { ...test.pi, registerTool(tool: unknown) { const value = tool as typeof createTool & { name?: string }; if (value?.name === "mission_create") createTool = value; } } as unknown as ExtensionAPI;
 		registerMissionTools(pi, test.state, () => undefined, { onCreated: async () => { throw new Error("baseline persistence failed"); } });
 		const ctx = { ...test.ctx, sessionManager: { ...test.ctx.sessionManager, getSessionId: () => "test-session", getSessionFile: () => undefined } } as unknown as ExtensionContext;
@@ -335,11 +309,11 @@ describe("Mission state", () => {
 		const test = setup();
 		test.state.append(test.pi, await test.state.create({ objective: "Do work", chain: "kit" }, test.ctx));
 		test.state.append(test.pi, test.state.reviewEvent("awaiting_adjudication", { runId: "review-clear", suggestedVerdict: "clear" }));
-		let progressTool: { execute: (...args: unknown[]) => Promise<{ details?: { mission?: { reviewStatus?: string } } }> } | undefined;
+		let progressTool: { execute: (...args: unknown[]) => Promise<{ details?: { mission?: { review?: { admission?: { status?: string } } } } }> } | undefined;
 		const pi = { ...test.pi, registerTool(tool: unknown) { const value = tool as typeof progressTool & { name?: string }; if (value?.name === "mission_progress") progressTool = value; } } as unknown as ExtensionAPI;
 		registerMissionTools(pi, test.state, () => undefined, { onProgress: (input) => { if (input.reviewVerdict) test.state.append(test.pi, test.state.reviewEvent(input.reviewVerdict, { runId: input.reviewRunId, reason: input.reviewReason })); } });
 		const result = await progressTool!.execute("call", { summary: "Adjudicated", reviewVerdict: "clear", reviewRunId: "review-clear", reviewReason: "structured report clear" }, undefined, undefined, test.ctx);
-		expect(result.details?.mission?.reviewStatus).toBe("clear");
+		expect(result.details?.mission?.review?.admission?.status).toBe("clear");
 	});
 
 	it("commits completion before best-effort side effects so a failing terminal event cannot leak", async () => {

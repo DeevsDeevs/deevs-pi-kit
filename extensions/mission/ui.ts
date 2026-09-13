@@ -46,7 +46,7 @@ export class MissionDashboard implements Component {
 		const costBar = progressBar(Math.round(usage.totalCostUsd * 100), mission.costBudgetUsd ? Math.round(mission.costBudgetUsd * 100) : undefined, Math.min(14, Math.max(6, Math.floor(width / 8))));
 		const body = [
 			` ${statusIcon(mission.status)} ${this.theme.fg(mission.status === "complete" ? "success" : mission.status === "active" ? "warning" : "muted", mission.status.toUpperCase())}  ${this.theme.fg("accent", mission.title)}`,
-			` ${tabs(["Overview", `Requirements ${mission.requirements.length}`, `Progress ${progress.length}`, `Review ${mission.reviewStatus}`], this.tab, this.theme)}`,
+			` ${tabs(["Overview", `Requirements ${mission.requirements.length}`, `Progress ${progress.length}`, `Review ${mission.review.admission.status}`], this.tab, this.theme)}`,
 			` tokens ${tokenBar}  cost ${costBar}`,
 			"",
 			...visible.map((line) => ` ${line}`),
@@ -75,10 +75,10 @@ export class MissionDashboard implements Component {
 			return [...progress].reverse().flatMap((item) => detailLines(`${new Date(item.at).toLocaleTimeString()}  ${item.summary}\n  evidence ${item.evidence.length} · validation ${item.validation.length} · remaining ${item.remaining.length}`, width, 12));
 		}
 		return detailLines([
-			`Status: ${mission.reviewStatus}`,
-			`Run: ${mission.reviewRunId ?? "none"}`,
-			`Reason: ${mission.reviewReason ?? "—"}`,
-			`Skipped: ${mission.reviewSkippedReason ?? "no"}`,
+			`Status: ${mission.review.admission.status}`,
+			`Run: ${mission.review.admission.runId ?? "none"}`,
+			`Reason: ${mission.review.admission.reason ?? "—"}`,
+			`Skipped: ${mission.review.admission.skippedReason ?? "no"}`,
 		].join("\n"), width, 100);
 	}
 }

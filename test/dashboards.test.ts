@@ -61,7 +61,7 @@ describe("bespoke dashboards", () => {
 
 	it("renders Mission sections and budget bars instead of a text dump", () => {
 		const state = {
-			readAny: () => ({ missionId: "m_test", status: "paused", title: "UI Mission", objective: "Make status readable", objectiveVersion: 2, requirements: ["Readable requirements"], chain: "kit", chainBranch: "main", slug: "ui", reviewStatus: "changes_requested", tokenBudget: 1000, costBudgetUsd: 5, lastReason: "/pause" }),
+			readAny: () => ({ missionId: "m_test", status: "paused", title: "UI Mission", objective: "Make status readable", objectiveVersion: 2, requirements: ["Readable requirements"], chain: "kit", chainBranch: "main", slug: "ui", review: { admission: { status: "changes_requested" } }, tokenBudget: 1000, costBudgetUsd: 5, lastReason: "/pause" }),
 			readUsage: () => ({ totalTokens: 500, totalCostUsd: 2, mainTokens: 0, subagentTokens: 0, mainCostUsd: 0, subagentCostUsd: 0 }),
 			readProgress: () => [],
 		} as unknown as MissionState;
