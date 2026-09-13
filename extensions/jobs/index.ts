@@ -5,7 +5,6 @@ import type { JobReadInput, JobReadResult, JobRecord, JobStartInput } from "./ty
 import { formatDuration } from "../shared/runtime-ui.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
 import { claimJobManager, releaseJobManager } from "./registry.ts";
-import { legacyProcessStateFiles } from "./legacy.ts";
 import { FULL_SCREEN_OVERLAY } from "../shared/dashboard.ts";
 import { JobsDashboard } from "./ui.ts";
 
@@ -29,7 +28,6 @@ const StopSchema = Type.Object({ id: Type.String() });
 export default function jobsExtension(pi: ExtensionAPI): void {
 	const { manager, owner } = claimJobManager(pi);
 	let ctx: ExtensionContext | undefined;
-	let legacyWarningShown = false;
 	const updateStatus = (): void => {
 		if (!ctx) return;
 		const active = manager.list().filter((job) => ["starting", "running", "stopping"].includes(job.runtime.status)).length;
@@ -155,11 +153,6 @@ export default function jobsExtension(pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event, context) => {
 		ctx = context;
 		await manager.restore(context);
-		if (!legacyWarningShown) {
-			const legacy = legacyProcessStateFiles();
-			if (legacy.length) context.ui.notify(`Found ${legacy.length} legacy Process state file(s). Pi Kit will not kill or adopt them. Inspect old tmux sessions and hand persistent work to Herdr, then remove ~/.pi/agent/process-state when resolved.`, "warning");
-			legacyWarningShown = true;
-		}
 		updateStatus();
 	});
 	pi.on("session_tree", async (_event, context) => {
