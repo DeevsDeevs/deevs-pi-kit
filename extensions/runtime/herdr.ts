@@ -40,7 +40,11 @@ export function throwIfAborted(signal?: AbortSignal): void {
 export function isHerdrError(result: HerdrExecResult, expectedCode: string): boolean {
 	return [result.stdout, result.stderr].some(output => {
 		if (output.length > 8192) return false;
-		try { return strictObject(strictObject(JSON.parse(output), "Herdr response").error, "Herdr error").code === expectedCode; } catch { return false; }
+		try {
+			return strictObject(strictObject(JSON.parse(output), "Herdr response").error, "Herdr error").code === expectedCode;
+		} catch {
+			return false;
+		}
 	});
 }
 

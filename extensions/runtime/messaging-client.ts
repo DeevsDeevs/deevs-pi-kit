@@ -60,7 +60,12 @@ export class MessagingClient {
 		if (!participant || !managedParticipantConfigured(control, participant)) {
 			throw new HostedRuntimeClientError("identity_mismatch", "Native messaging requires its exact live configured participant.");
 		}
-		const params = { ...auth(registration), participantKey: participant.participantKey, expectedGeneration: participant.generation, confirmed: true };
+		const params = {
+			...auth(registration),
+			participantKey: participant.participantKey,
+			expectedGeneration: participant.generation,
+			confirmed: true,
+		};
 		const issued = strictObject(await this.session.client.call("messaging.issue", params), "Native messaging descriptor");
 		this.session.requireCurrentScope(current);
 		if (issued.descriptorPath !== messagingDescriptorPath(this.session.root, control.targetKey, control.clientGeneration)) {
@@ -75,7 +80,8 @@ export class MessagingClient {
 		if (!this.hintReady(registration, ctx)) return;
 		// One hint per message per session; the set stays as small as this session's mail.
 		this.hintedMail.add(mail.eventId);
-		const content = `Runtime mail waiting: ${JSON.stringify(mail)}\nUse collaborator_receive with this namespaceId and eventId to read its body through the shared MCP interface.`;
+		const content = `Runtime mail waiting: ${JSON.stringify(mail)}\n`
+			+ "Use collaborator_receive with this namespaceId and eventId to read its body through the shared MCP interface.";
 		this.session.pi.sendMessage(
 			{ customType: HOSTED_MESSAGING_MAIL, content, display: false, details: mail },
 			{ triggerTurn: true, deliverAs: "followUp" },

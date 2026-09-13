@@ -213,7 +213,9 @@ export class NativeAgentService {
 		if (scope.driver === "claude-code" && scope.profile === "read-only") this.trustClaudeWorkspace(launchCwd);
 		const nativeArgs = messaging?.args ?? guardedNativeArgs(candidate, launchCwd);
 		if (messaging) {
-			ctx.ui.notify(`Complete any native trust or permission prompt in ${tab.paneId}. Runtime will not accept it for you; startup has a bounded timeout.`, "info");
+			const prompt = `Complete any native trust or permission prompt in ${tab.paneId}.`
+				+ " Runtime will not accept it for you; startup has a bounded timeout.";
+			ctx.ui.notify(prompt, "info");
 		}
 		const launch: ManagedAgentLaunch = {
 			protocol: request.protocol,
@@ -238,7 +240,12 @@ export class NativeAgentService {
 	}
 
 	/** Records one verified bound agent and proves its participant lease settled before provisioning messaging. */
-	private async settleBoundAgent(ctx: ExtensionContext, registration: LiveClientRegistration, launch: ManagedAgentLaunch, bound: BoundAgent): Promise<void> {
+	private async settleBoundAgent(
+		ctx: ExtensionContext,
+		registration: LiveClientRegistration,
+		launch: ManagedAgentLaunch,
+		bound: BoundAgent,
+	): Promise<void> {
 		if (!boundAgentMatchesLaunch(bound, launch)) {
 			throw new HostedRuntimeClientError("identity_mismatch", "Runtime bound another Herdr agent identity than the one this launch started.");
 		}
@@ -268,7 +275,8 @@ export class NativeAgentService {
 			&& participant.holderTargetKey === launch.targetKey
 			&& participant.generation === bound.holderGeneration;
 		if (!settled) {
-			throw new HostedRuntimeClientError("unavailable", `Collaborator started in ${launch.tab.paneId}, but its Runtime identity did not settle; its tab was preserved.`);
+			const detail = `Collaborator started in ${launch.tab.paneId}, but its Runtime identity did not settle; its tab was preserved.`;
+			throw new HostedRuntimeClientError("unavailable", detail);
 		}
 		if (launch.messagingConfigured) await this.messaging.provisionManaged(ctx, registration, control);
 	}
@@ -280,7 +288,9 @@ export class NativeAgentService {
 	): Promise<NativeMessagingConfiguration> {
 		if (candidate.driver === "pi") throw new HostedRuntimeClientError("conflict", "Native messaging requires an interactive driver.");
 		const node = await this.pi.exec("node", ["--print", "process.execPath"], { timeout: 3_000 });
-		if (node.code !== 0) throw new HostedRuntimeClientError("capability_unavailable", "Native messaging requires an available Node executable.");
+		if (node.code !== 0) {
+			throw new HostedRuntimeClientError("capability_unavailable", "Native messaging requires an available Node executable.");
+		}
 		return nativeMessagingLaunch({
 			driver: candidate.driver,
 			root: this.session.root,
@@ -292,12 +302,19 @@ export class NativeAgentService {
 		});
 	}
 
-	private async startManagedAgent(agentName: string, kind: "claude" | "codex", tab: CollaboratorTab, nativeArgs: string[]): Promise<ManagedAgentSession> {
-		const args = ["agent", "start", agentName, "--kind", kind, "--pane", tab.paneId, "--timeout", "30000", ...(nativeArgs.length ? ["--", ...nativeArgs] : [])];
+	private async startManagedAgent(
+		agentName: string,
+		kind: "claude" | "codex",
+		tab: CollaboratorTab,
+		nativeArgs: string[],
+	): Promise<ManagedAgentSession> {
+		const separated = nativeArgs.length ? ["--", ...nativeArgs] : [];
+		const args = ["agent", "start", agentName, "--kind", kind, "--pane", tab.paneId, "--timeout", "30000", ...separated];
 		const started = await this.pi.exec("herdr", args, { timeout: 35_000 });
 		if (started.code !== 0) {
 			const diagnostic = HERDR_AGENT_START_CODES.find(code => isHerdrError(started, code)) ?? "unclassified";
-			throw new HostedRuntimeClientError("host_unavailable", `Herdr could not start ${kind} in ${tab.paneId} (exit ${started.code}; Herdr ${diagnostic}); its tab was preserved.`);
+			const detail = `Herdr could not start ${kind} in ${tab.paneId} (exit ${started.code}; Herdr ${diagnostic}); its tab was preserved.`;
+			throw new HostedRuntimeClientError("host_unavailable", detail);
 		}
 		return parseStartedAgent(started.stdout, tab.paneId, tab.terminalId, kind, agentName);
 	}
@@ -341,7 +358,8 @@ export class NativeAgentService {
 			const active = this.session.store.agent(targetKey);
 			const live = this.session.liveRegistration;
 			// Native automatic input is blocked until the provider can attest editor ownership and exact-session admission.
-			if (active?.messagingConfigured && !this.messaging.isManagedIssued(targetKey) && live) await this.messaging.provisionManaged(ctx, live, active);
+			const needsMessaging = active?.messagingConfigured === true && !this.messaging.isManagedIssued(targetKey);
+			if (needsMessaging && live && active) await this.messaging.provisionManaged(ctx, live, active);
 			return true;
 		} catch (error) {
 			if (!current() || this.session.store.agent(targetKey) !== control) return false;
@@ -434,7 +452,11 @@ function guardedNativeArgs(candidate: ResolvedCollaboratorCandidate, launchCwd: 
 	return ["--ask-for-approval", "never", "--sandbox", "read-only", "--disable", "hooks", "--config", trustedProject, ...model, ...persona];
 }
 
-function bindRequestFor(launch: ManagedAgentLaunch, caller: ClientParticipantStatus, existing: ClientParticipantStatus | undefined): AgentBindRequest {
+function bindRequestFor(
+	launch: ManagedAgentLaunch,
+	caller: ClientParticipantStatus,
+	existing: ClientParticipantStatus | undefined,
+): AgentBindRequest {
 	const request: AgentBindRequest = {
 		agentName: launch.agentName,
 		driver: launch.driver,
@@ -482,7 +504,13 @@ function parseBoundAgent(value: RuntimeResponse): BoundAgent {
 	};
 }
 
-function parseStartedAgent(value: string, paneId: string, terminalId: string, kind: "claude" | "codex", agentName: string): ManagedAgentSession {
+function parseStartedAgent(
+	value: string,
+	paneId: string,
+	terminalId: string,
+	kind: "claude" | "codex",
+	agentName: string,
+): ManagedAgentSession {
 	const agent = parseManagedAgent(value);
 	const matches = agent.paneId === paneId
 		&& agent.terminalId === terminalId
@@ -490,20 +518,27 @@ function parseStartedAgent(value: string, paneId: string, terminalId: string, ki
 		&& agent.agentSession.agent === kind
 		&& agent.name === agentName;
 	if (!matches) {
-		throw new HostedRuntimeClientError("identity_mismatch", "Herdr started agent identity does not match the authorized collaborator target.");
+		const detail = "Herdr started agent identity does not match the authorized collaborator target.";
+		throw new HostedRuntimeClientError("identity_mismatch", detail);
 	}
 	return agent.agentSession;
 }
 
 function parseManagedAgent(value: string): ManagedAgentStatus {
 	let response: SerializedObject;
-	try { response = strictObject(JSON.parse(value), "Herdr response"); } catch { throw new HostedRuntimeClientError("invalid_response", "Herdr returned malformed agent JSON."); }
+	try {
+		response = strictObject(JSON.parse(value), "Herdr response");
+	} catch {
+		throw new HostedRuntimeClientError("invalid_response", "Herdr returned malformed agent JSON.");
+	}
 	const agent = strictObject(strictObject(response.result, "Herdr result").agent, "Herdr agent");
 	const agentKind = text(agent.agent);
 	const session = agent.agent_session === undefined
 		? { source: `herdr:${agentKind}`, agent: agentKind, kind: "id", value: text(agent.name) }
 		: strictObject(agent.agent_session, "Herdr agent session");
-	if (session.kind !== "id" && session.kind !== "path") throw new HostedRuntimeClientError("invalid_response", "Herdr agent session kind is invalid.");
+	if (session.kind !== "id" && session.kind !== "path") {
+		throw new HostedRuntimeClientError("invalid_response", "Herdr agent session kind is invalid.");
+	}
 	if (session.agent !== agentKind || session.source !== `herdr:${agentKind}`) {
 		throw new HostedRuntimeClientError("identity_mismatch", "Herdr agent session does not match its reported driver.");
 	}
