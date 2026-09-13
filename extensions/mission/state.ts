@@ -6,9 +6,58 @@ import { slugify } from "../chains/parser.ts";
 import { missionDir } from "./artifacts.ts";
 import { currentMissionOwner, listMissionSnapshots, readMissionSnapshot, withMissionLock, withMissionWorkspaceLock, writeMissionSnapshot } from "./persistence.ts";
 import { MAX_MISSION_REVIEW_ADJUDICATIONS } from "./types.ts";
-import type { MissionCreateInput, MissionCurrent, MissionEvent, MissionOwner, MissionProgressInput, MissionProgressRecord, MissionConvergedReviewStatus, MissionReviewFinding, MissionReviewOutcome, MissionReviewRevision, MissionReviewSeverity, MissionReviewStatus, MissionReviewVerdict, MissionSnapshot, MissionStatus, MissionTakeoverCandidate, MissionUpdateInput, MissionUsage, MissionValidationInput, MissionValidationRecord } from "./types.ts";
+import type {
+	MissionCompletionLatch,
+	MissionConvergedReviewStatus,
+	MissionCreateInput,
+	MissionCurrent,
+	MissionEvent,
+	MissionOwner,
+	MissionProgressInput,
+	MissionProgressRecord,
+	MissionReview,
+	MissionReviewAdjudication,
+	MissionReviewAdmission,
+	MissionReviewCandidate,
+	MissionReviewCorrection,
+	MissionReviewFindings,
+	MissionReviewFinding,
+	MissionReviewOutcome,
+	MissionReviewRevision,
+	MissionReviewSeverity,
+	MissionReviewStatus,
+	MissionReviewVerdict,
+	MissionSnapshot,
+	MissionStatus,
+	MissionTakeoverCandidate,
+	MissionUpdateInput,
+	MissionUsage,
+	MissionValidationInput,
+	MissionValidationRecord,
+} from "./types.ts";
 
 export const MISSION_CUSTOM_TYPE = "deevs-mission-state";
+
+interface MissionReviewEventInput {
+	runId?: string;
+	admissionId?: string;
+	reason?: string;
+	skippedReason?: string;
+	suggestedVerdict?: MissionReviewVerdict | "unknown";
+	failure?: boolean;
+	outcome?: MissionReviewOutcome;
+	notBeforeAt?: number;
+	worktreeFingerprint?: string;
+	candidateId?: string;
+	highestSeverity?: MissionReviewSeverity;
+	blockingFindingCount?: number;
+	backlogFindingCount?: number;
+	findings?: MissionReviewFinding[];
+	scopePaths?: string[];
+	scopeRevisions?: MissionReviewRevision[];
+	replayAdjudication?: boolean;
+}
+
 const DEFAULT_CHAIN_BRANCH = "main";
 const MAX_REQUIREMENTS = 12;
 const MAX_PATHS = 100;
@@ -123,7 +172,7 @@ export class MissionState {
 	exportSnapshot(owner: MissionOwner, usageComplete = this.usageComplete): MissionSnapshot {
 		if (!this.current) throw new Error("No Mission state is available to persist.");
 		return {
-			version: 1,
+			version: 2,
 			revision: this.snapshotRevision ?? 0,
 			owner: { ...owner },
 			mission: { ...this.current },
@@ -153,7 +202,8 @@ export class MissionState {
 			if (stored && (stored.revision !== source.revision || stored.owner.sessionId !== source.owner.sessionId)) throw new Error("Mission ownership changed; inspect the latest controller before retrying takeover.");
 			if (!stored) throw new Error("Mission canonical state disappeared before takeover.");
 			const now = Date.now();
-			const preservesReview = source.mission.reviewStatus === "clear" || source.mission.reviewStatus === "skipped" || source.mission.reviewStatus === "changes_requested";
+			const sourceAdmission = source.mission.review.admission;
+			const preservesReview = sourceAdmission.status === "clear" || sourceAdmission.status === "skipped" || sourceAdmission.status === "changes_requested";
 			const mission: MissionCurrent = {
 				...source.mission,
 				status: takeoverStatus(source),
@@ -165,10 +215,16 @@ export class MissionState {
 				baselineSubagentTokens: currentAggregate.subagentTokens,
 				baselineMainCostUsd: currentAggregate.mainCostUsd,
 				baselineSubagentCostUsd: currentAggregate.subagentCostUsd,
-				reviewStatus: preservesReview ? source.mission.reviewStatus : "due",
-				reviewReason: preservesReview ? source.mission.reviewReason : "Mission ownership changed; unresolved review requires recovery.",
-				reviewRunId: source.mission.reviewStatus === "changes_requested" ? source.mission.reviewRunId : undefined,
-				reviewFailure: undefined,
+				review: {
+					...source.mission.review,
+					admission: {
+						...sourceAdmission,
+						status: preservesReview ? sourceAdmission.status : "due",
+						reason: preservesReview ? sourceAdmission.reason : "Mission ownership changed; unresolved review requires recovery.",
+						runId: sourceAdmission.status === "changes_requested" ? sourceAdmission.runId : undefined,
+						failure: undefined,
+					},
+				},
 			};
 			taken = {
 				...source,
@@ -427,25 +483,26 @@ export class MissionState {
 		return event;
 	}
 
-	reviewEvent(status: MissionReviewStatus, input: { runId?: string; admissionId?: string; reason?: string; skippedReason?: string; suggestedVerdict?: MissionReviewVerdict | "unknown"; failure?: boolean; outcome?: MissionReviewOutcome; notBeforeAt?: number; worktreeFingerprint?: string; candidateId?: string; highestSeverity?: MissionReviewSeverity; blockingFindingCount?: number; backlogFindingCount?: number; findings?: MissionReviewFinding[]; scopePaths?: string[]; scopeRevisions?: MissionReviewRevision[]; replayAdjudication?: boolean } = {}): MissionEvent {
+	reviewEvent(status: MissionReviewStatus, input: MissionReviewEventInput = {}): MissionEvent {
 		const mission = this.requireActive();
+		const review = mission.review;
 		const adjudicated = status === "clear" || status === "changes_requested";
-		const correctionCount = input.replayAdjudication ? mission.reviewCorrectionCount : status === "changes_requested" ? (mission.reviewCorrectionCount ?? 0) + 1 : status === "clear" ? 0 : undefined;
-		const supersessionCount = input.outcome === "superseded" ? (mission.reviewSupersessionCount ?? 0) + 1 : (status === "clear" || status === "changes_requested") ? 0 : undefined;
-		const candidateId = input.candidateId ?? (status === "due" ? undefined : mission.reviewCandidateId);
+		const correctionCount = input.replayAdjudication ? review.correction.count : status === "changes_requested" ? review.correction.count + 1 : status === "clear" ? 0 : undefined;
+		const supersessionCount = input.outcome === "superseded" ? review.admission.supersessionCount + 1 : (status === "clear" || status === "changes_requested") ? 0 : undefined;
+		const candidateId = input.candidateId ?? (status === "due" ? undefined : review.candidate.id);
 		const findings = input.findings?.map((finding) => ({ ...finding }));
 		const acceptedFindings = status === "changes_requested"
-			? (mission.reviewFindings ?? []).filter((finding) => finding.severity === "blocker" || finding.severity === "major").map((finding) => ({ ...finding }))
+			? (review.findings.items ?? []).filter((finding) => finding.severity === "blocker" || finding.severity === "major").map((finding) => ({ ...finding }))
 			: status === "clear" ? [] : undefined;
 		const acceptedRevisions = status === "changes_requested" || status === "clear"
-			? mission.reviewScopeRevisions?.map((revision) => ({ root: revision.root, base: revision.head, head: revision.head }))
+			? review.candidate.scopeRevisions?.map((revision) => ({ root: revision.root, base: revision.head, head: revision.head }))
 			: undefined;
-		let previousAdjudications = [...(mission.reviewAdjudications ?? [])];
-		if (mission.reviewAdjudicatedCandidateId && mission.reviewAdjudicatedVerdict) {
-			previousAdjudications = [...previousAdjudications.filter((item) => item.candidateId !== mission.reviewAdjudicatedCandidateId), { candidateId: mission.reviewAdjudicatedCandidateId, verdict: mission.reviewAdjudicatedVerdict }];
+		let previousAdjudications = [...review.adjudication.history];
+		if (review.adjudication.adjudicatedCandidateId && review.adjudication.adjudicatedVerdict) {
+			previousAdjudications = [...previousAdjudications.filter((item) => item.candidateId !== review.adjudication.adjudicatedCandidateId), { candidateId: review.adjudication.adjudicatedCandidateId, verdict: review.adjudication.adjudicatedVerdict }];
 		}
 		const candidateKnown = candidateId ? previousAdjudications.some((item) => item.candidateId === candidateId) : false;
-		if (adjudicated && candidateId && mission.reviewAdjudicationHistoryComplete !== true && !candidateKnown) {
+		if (adjudicated && candidateId && review.adjudication.historyComplete !== true && !candidateKnown) {
 			throw new Error("Mission review adjudication history is incomplete; refusing to adjudicate an unknown candidate.");
 		}
 		if (adjudicated && candidateId && previousAdjudications.length >= MAX_MISSION_REVIEW_ADJUDICATIONS && !candidateKnown) {
@@ -490,8 +547,9 @@ export class MissionState {
 
 	reviewPolicyEvent(reviewCorrectionLimit: number): MissionEvent {
 		const mission = this.requireCurrent();
-		if (mission.status !== "blocked" || (mission.reviewCorrectionCount ?? 0) <= (mission.reviewCorrectionLimit ?? DEFAULT_REVIEW_CORRECTION_LIMIT)) throw new Error("Mission review correction authorization is not required.");
-		if (!Number.isSafeInteger(reviewCorrectionLimit) || reviewCorrectionLimit < (mission.reviewCorrectionCount ?? 0)) throw new Error("Review correction limit must cover the pending correction cycle.");
+		const correction = mission.review.correction;
+		if (mission.status !== "blocked" || correction.count <= correction.limit) throw new Error("Mission review correction authorization is not required.");
+		if (!Number.isSafeInteger(reviewCorrectionLimit) || reviewCorrectionLimit < correction.count) throw new Error("Review correction limit must cover the pending correction cycle.");
 		return { kind: "review_policy_updated", missionId: mission.missionId, generation: mission.generation, at: Date.now(), reviewCorrectionLimit };
 	}
 
@@ -508,8 +566,8 @@ export class MissionState {
 
 	completionEvent(candidateId: string, completionId: string, audit: Array<{ requirementIndex: number; evidence: string }> | undefined, reason?: string, summary?: string): MissionEvent {
 		const mission = this.requireActive();
-		if (mission.completionLatchCandidateId !== candidateId) throw new Error("Mission completion is not authorized for this candidate.");
-		if (mission.completionLatchReviewStatus !== (mission.reviewStatus ?? "not_required")) throw new Error("Mission completion authorization does not match the current review disposition.");
+		if (mission.review.completionLatch.candidateId !== candidateId) throw new Error("Mission completion is not authorized for this candidate.");
+		if (mission.review.completionLatch.reviewStatus !== mission.review.admission.status) throw new Error("Mission completion authorization does not match the current review disposition.");
 		return { kind: "completed", missionId: mission.missionId, generation: mission.generation, at: Date.now(), status: "complete", reason, summary, reviewCandidateId: candidateId, expectedObjectiveVersion: mission.objectiveVersion ?? 1, completionId, completionEffectsStatus: "pending", completionAudit: audit };
 	}
 
@@ -620,35 +678,7 @@ export class MissionState {
 				objectiveVersion: event.objectiveVersion ?? 1,
 				turnBudget: event.turnBudget ?? undefined,
 				wallDeadlineAt: event.wallDeadlineAt ?? undefined,
-				reviewStatus: event.reviewStatus ?? "not_required",
-				initialBaselinePending: event.initialBaselinePending ?? false,
-				reviewUpdatedAt: event.reviewUpdatedAt ?? event.at,
-				reviewRunId: event.reviewRunId,
-				reviewOutcome: event.reviewOutcome,
-				reviewNotBeforeAt: event.reviewNotBeforeAt,
-				reviewSupersessionCount: event.reviewSupersessionCount ?? 0,
-				reviewAdmissionId: event.reviewAdmissionId,
-				reviewReason: event.reviewReason,
-				reviewSkippedReason: event.reviewSkippedReason,
-				admittedWorktreeFingerprint: event.admittedWorktreeFingerprint,
-				reviewCandidateId: event.reviewCandidateId,
-				reviewCandidateObjectiveVersion: event.reviewCandidateObjectiveVersion,
-				reviewAdjudicatedCandidateId: event.reviewAdjudicatedCandidateId,
-				reviewAdjudicatedVerdict: event.reviewAdjudicatedVerdict,
-				reviewAdjudications: event.reviewAdjudications?.map((item) => ({ ...item })),
-				reviewAdjudicationHistoryComplete: event.reviewAdjudicationHistoryComplete,
-				reviewHighestSeverity: event.reviewHighestSeverity,
-				reviewBlockingFindingCount: event.reviewBlockingFindingCount ?? 0,
-				reviewBacklogFindingCount: event.reviewBacklogFindingCount ?? 0,
-				reviewFindings: event.reviewFindings?.map((finding) => ({ ...finding })),
-				reviewAcceptedFindings: event.reviewAcceptedFindings?.map((finding) => ({ ...finding })),
-				reviewScopePaths: event.reviewScopePaths ? [...event.reviewScopePaths] : undefined,
-				reviewScopeRevisions: event.reviewScopeRevisions?.map((revision) => ({ ...revision })),
-				reviewAcceptedRevisions: event.reviewAcceptedRevisions?.map((revision) => ({ ...revision })),
-				reviewCorrectionCount: event.reviewCorrectionCount ?? 0,
-				reviewCorrectionLimit: event.reviewCorrectionLimit ?? DEFAULT_REVIEW_CORRECTION_LIMIT,
-				completionLatchCandidateId: event.completionLatchCandidateId,
-				completionLatchReviewStatus: event.completionLatchReviewStatus,
+				review: buildInitialReview(event),
 				completionId: event.completionId,
 				completionEffectsStatus: event.completionEffectsStatus,
 				blockerFingerprint: event.blockerFingerprint,
@@ -661,7 +691,7 @@ export class MissionState {
 		if (event.generation && this.current.generation && event.generation !== this.current.generation) return;
 		if (event.kind === "completed" && event.completionId) {
 			if (this.current.status !== "active") throw new Error("Mission completion was already committed or the Mission is no longer active.");
-			if (this.current.objectiveVersion !== event.expectedObjectiveVersion || this.current.completionLatchCandidateId !== event.reviewCandidateId) throw new Error("Mission completion candidate changed before terminal commit.");
+			if (this.current.objectiveVersion !== event.expectedObjectiveVersion || this.current.review.completionLatch.candidateId !== event.reviewCandidateId) throw new Error("Mission completion candidate changed before terminal commit.");
 		}
 		if (event.kind === "completion_effects_done" && (this.current.status !== "complete" || this.current.completionId !== event.completionId)) throw new Error("Mission completion effects do not match the terminal operation.");
 		this.current.updatedAt = event.at;
@@ -684,88 +714,16 @@ export class MissionState {
 			if (event.turnBudget !== undefined) this.current.turnBudget = event.turnBudget ?? undefined;
 			if (event.wallDeadlineAt !== undefined) this.current.wallDeadlineAt = event.wallDeadlineAt ?? undefined;
 			this.current.objectiveVersion = event.objectiveVersion ?? (this.current.objectiveVersion ?? 1) + 1;
-			if (identityChanged) {
-				this.current.reviewOutcome = "superseded";
-				this.current.reviewSupersessionCount = (this.current.reviewSupersessionCount ?? 0) + 1;
-				this.current.reviewNotBeforeAt = undefined;
-				if (!this.current.reviewRunId || !this.current.reviewAdmissionId) {
-					this.current.reviewCandidateId = undefined;
-					this.current.reviewCandidateObjectiveVersion = undefined;
-					this.current.reviewWorktreeFingerprint = undefined;
-				}
-				this.current.reviewAdjudicatedCandidateId = undefined;
-				this.current.reviewAdjudicatedVerdict = undefined;
-				this.current.reviewFindings = undefined;
-				this.current.reviewAcceptedFindings = undefined;
-				this.current.reviewScopePaths = undefined;
-				this.current.reviewScopeRevisions = undefined;
-				this.current.reviewAcceptedRevisions = undefined;
-				this.current.reviewCorrectionCount = 0;
-				this.current.completionLatchCandidateId = undefined;
-				this.current.completionLatchReviewStatus = undefined;
-			}
+			if (identityChanged) resetReviewForNewIdentity(this.current.review);
 		}
-		if (event.reviewStatus) this.current.reviewStatus = event.reviewStatus;
-		if (event.kind === "review_changed") this.current.reviewUpdatedAt = event.at;
-		if (event.kind === "review_changed" && event.reviewStatus === "not_required") this.current.initialBaselinePending = false;
 		// A review that reaches the reviewer or clears wipes the transient failure streak, so weeks-apart intermittent reviewer failures cannot accumulate into a permanent three-strike block.
 		if (event.reviewStatus === "awaiting_adjudication" || event.reviewStatus === "clear") this.reviewFailureCount = 0;
-		if (event.kind === "review_changed") {
-			this.current.reviewRunId = event.reviewRunId;
-			this.current.reviewAdmissionId = event.reviewAdmissionId;
-		} else {
-			if (event.reviewRunId !== undefined) this.current.reviewRunId = event.reviewRunId;
-			if (event.reviewAdmissionId !== undefined) this.current.reviewAdmissionId = event.reviewAdmissionId;
-		}
-		if (event.reviewReason !== undefined) this.current.reviewReason = event.reviewReason;
-		if (event.reviewSkippedReason !== undefined) this.current.reviewSkippedReason = event.reviewSkippedReason;
-		if (event.reviewSuggestedVerdict !== undefined) this.current.reviewSuggestedVerdict = event.reviewSuggestedVerdict;
-		if (event.kind === "review_changed") {
-			this.current.reviewFailure = event.reviewFailure;
-			this.current.reviewOutcome = event.reviewOutcome;
-		}
-		if (event.reviewStatus && event.reviewStatus !== "due") this.current.reviewNotBeforeAt = undefined;
-		else if (event.reviewNotBeforeAt !== undefined) this.current.reviewNotBeforeAt = event.reviewNotBeforeAt;
-		if (event.reviewWorktreeFingerprint !== undefined) this.current.reviewWorktreeFingerprint = event.reviewWorktreeFingerprint;
-		if (event.admittedWorktreeFingerprint !== undefined) this.current.admittedWorktreeFingerprint = event.admittedWorktreeFingerprint;
-		if (event.kind === "review_changed" && event.reviewStatus === "due" && event.reviewCandidateId === undefined) {
-			this.current.reviewCandidateId = undefined;
-			this.current.reviewCandidateObjectiveVersion = undefined;
-			this.current.reviewWorktreeFingerprint = undefined;
-		} else if (event.reviewCandidateId !== undefined) this.current.reviewCandidateId = event.reviewCandidateId;
-		if (event.reviewCandidateObjectiveVersion !== undefined) this.current.reviewCandidateObjectiveVersion = event.reviewCandidateObjectiveVersion;
-		if (event.reviewAdjudicatedCandidateId !== undefined) this.current.reviewAdjudicatedCandidateId = event.reviewAdjudicatedCandidateId;
-		if (event.reviewAdjudicatedVerdict !== undefined) this.current.reviewAdjudicatedVerdict = event.reviewAdjudicatedVerdict;
-		if (event.reviewAdjudications !== undefined || (event.reviewAdjudicatedCandidateId && event.reviewAdjudicatedVerdict)) {
-			const additions = [...(event.reviewAdjudications ?? [])];
-			if (event.reviewAdjudicatedCandidateId && event.reviewAdjudicatedVerdict) additions.push({ candidateId: event.reviewAdjudicatedCandidateId, verdict: event.reviewAdjudicatedVerdict });
-			for (const adjudication of additions) this.current.reviewAdjudications = [...(this.current.reviewAdjudications ?? []).filter((item) => item.candidateId !== adjudication.candidateId), { ...adjudication }];
-		}
-		if (event.reviewAdjudicationHistoryComplete !== undefined) this.current.reviewAdjudicationHistoryComplete = event.reviewAdjudicationHistoryComplete;
-		if (event.kind === "review_changed" && event.reviewStatus === "awaiting_adjudication") this.current.reviewHighestSeverity = event.reviewHighestSeverity;
-		else if (event.reviewHighestSeverity !== undefined) this.current.reviewHighestSeverity = event.reviewHighestSeverity;
-		if (event.reviewBlockingFindingCount !== undefined) this.current.reviewBlockingFindingCount = event.reviewBlockingFindingCount;
-		if (event.reviewBacklogFindingCount !== undefined) this.current.reviewBacklogFindingCount = event.reviewBacklogFindingCount;
-		if (event.kind === "review_changed" && event.reviewStatus === "due") {
-			this.current.reviewFindings = undefined;
-			this.current.reviewScopePaths = undefined;
-			this.current.reviewScopeRevisions = undefined;
-		}
-		if (event.reviewFindings !== undefined) this.current.reviewFindings = event.reviewFindings.map((finding) => ({ ...finding }));
-		if (event.reviewAcceptedFindings !== undefined) this.current.reviewAcceptedFindings = event.reviewAcceptedFindings.map((finding) => ({ ...finding }));
-		if (event.reviewScopePaths !== undefined) this.current.reviewScopePaths = [...event.reviewScopePaths];
-		if (event.reviewScopeRevisions !== undefined) this.current.reviewScopeRevisions = event.reviewScopeRevisions.map((revision) => ({ ...revision }));
-		if (event.reviewAcceptedRevisions !== undefined) this.current.reviewAcceptedRevisions = event.reviewAcceptedRevisions.map((revision) => ({ ...revision }));
-		if (event.reviewCorrectionCount !== undefined) this.current.reviewCorrectionCount = event.reviewCorrectionCount;
-		if (event.reviewSupersessionCount !== undefined) this.current.reviewSupersessionCount = event.reviewSupersessionCount;
-		if (event.reviewCorrectionLimit !== undefined) this.current.reviewCorrectionLimit = event.reviewCorrectionLimit;
-		if (event.kind === "completion_latch_cleared") {
-			this.current.completionLatchCandidateId = undefined;
-			this.current.completionLatchReviewStatus = undefined;
-		} else if (event.completionLatchCandidateId !== undefined) {
-			this.current.completionLatchCandidateId = event.completionLatchCandidateId;
-			this.current.completionLatchReviewStatus = event.completionLatchReviewStatus;
-		}
+		applyReviewAdmissionFields(this.current.review.admission, event);
+		applyReviewCandidateFields(this.current.review.candidate, event);
+		applyReviewAdjudicationFields(this.current.review.adjudication, event);
+		applyReviewFindingsFields(this.current.review.findings, event);
+		applyReviewCorrectionFields(this.current.review.correction, event);
+		applyCompletionLatchFields(this.current.review.completionLatch, event);
 		if (event.completionId !== undefined) this.current.completionId = event.completionId;
 		if (event.completionEffectsStatus !== undefined) this.current.completionEffectsStatus = event.completionEffectsStatus;
 		if (event.completionAudit !== undefined) this.current.completionAudit = event.completionAudit.map((item) => ({ ...item }));
@@ -789,9 +747,152 @@ export class MissionState {
 	}
 }
 
+function buildInitialReview(event: MissionEvent): MissionReview {
+	return {
+		admission: {
+			status: event.reviewStatus ?? "not_required",
+			initialBaselinePending: event.initialBaselinePending ?? false,
+			supersessionCount: event.reviewSupersessionCount ?? 0,
+			updatedAt: event.reviewUpdatedAt ?? event.at,
+			runId: event.reviewRunId,
+			admissionId: event.reviewAdmissionId,
+			reason: event.reviewReason,
+			skippedReason: event.reviewSkippedReason,
+			outcome: event.reviewOutcome,
+			notBeforeAt: event.reviewNotBeforeAt,
+		},
+		candidate: {
+			id: event.reviewCandidateId,
+			objectiveVersion: event.reviewCandidateObjectiveVersion,
+			admittedWorktreeFingerprint: event.admittedWorktreeFingerprint,
+			scopePaths: event.reviewScopePaths ? [...event.reviewScopePaths] : undefined,
+			scopeRevisions: event.reviewScopeRevisions?.map((revision) => ({ ...revision })),
+		},
+		adjudication: {
+			history: event.reviewAdjudications?.map((item) => ({ ...item })) ?? [],
+			adjudicatedCandidateId: event.reviewAdjudicatedCandidateId,
+			adjudicatedVerdict: event.reviewAdjudicatedVerdict,
+			historyComplete: event.reviewAdjudicationHistoryComplete,
+		},
+		findings: {
+			blockingCount: event.reviewBlockingFindingCount ?? 0,
+			backlogCount: event.reviewBacklogFindingCount ?? 0,
+			highestSeverity: event.reviewHighestSeverity,
+			items: event.reviewFindings?.map((finding) => ({ ...finding })),
+			accepted: event.reviewAcceptedFindings?.map((finding) => ({ ...finding })),
+		},
+		correction: {
+			count: event.reviewCorrectionCount ?? 0,
+			limit: event.reviewCorrectionLimit ?? DEFAULT_REVIEW_CORRECTION_LIMIT,
+			acceptedRevisions: event.reviewAcceptedRevisions?.map((revision) => ({ ...revision })),
+		},
+		completionLatch: {
+			candidateId: event.completionLatchCandidateId,
+			reviewStatus: event.completionLatchReviewStatus,
+		},
+	};
+}
+
+/** An identity change (objective/requirements/paths) invalidates every prior review candidate and its completion authorization. */
+function resetReviewForNewIdentity(review: MissionReview): void {
+	review.admission.outcome = "superseded";
+	review.admission.supersessionCount += 1;
+	review.admission.notBeforeAt = undefined;
+	if (!review.admission.runId || !review.admission.admissionId) {
+		review.candidate.id = undefined;
+		review.candidate.objectiveVersion = undefined;
+		review.candidate.worktreeFingerprint = undefined;
+	}
+	review.adjudication.adjudicatedCandidateId = undefined;
+	review.adjudication.adjudicatedVerdict = undefined;
+	review.findings.items = undefined;
+	review.findings.accepted = undefined;
+	review.candidate.scopePaths = undefined;
+	review.candidate.scopeRevisions = undefined;
+	review.correction.acceptedRevisions = undefined;
+	review.correction.count = 0;
+	review.completionLatch.candidateId = undefined;
+	review.completionLatch.reviewStatus = undefined;
+}
+
+function applyReviewAdmissionFields(admission: MissionReviewAdmission, event: MissionEvent): void {
+	if (event.reviewStatus) admission.status = event.reviewStatus;
+	if (event.kind === "review_changed") {
+		admission.updatedAt = event.at;
+		admission.runId = event.reviewRunId;
+		admission.admissionId = event.reviewAdmissionId;
+		admission.failure = event.reviewFailure;
+		admission.outcome = event.reviewOutcome;
+		if (event.reviewStatus === "not_required") admission.initialBaselinePending = false;
+	} else {
+		if (event.reviewRunId !== undefined) admission.runId = event.reviewRunId;
+		if (event.reviewAdmissionId !== undefined) admission.admissionId = event.reviewAdmissionId;
+	}
+	if (event.reviewReason !== undefined) admission.reason = event.reviewReason;
+	if (event.reviewSkippedReason !== undefined) admission.skippedReason = event.reviewSkippedReason;
+	if (event.reviewStatus && event.reviewStatus !== "due") admission.notBeforeAt = undefined;
+	else if (event.reviewNotBeforeAt !== undefined) admission.notBeforeAt = event.reviewNotBeforeAt;
+	if (event.reviewSupersessionCount !== undefined) admission.supersessionCount = event.reviewSupersessionCount;
+}
+
+function applyReviewCandidateFields(candidate: MissionReviewCandidate, event: MissionEvent): void {
+	if (event.reviewWorktreeFingerprint !== undefined) candidate.worktreeFingerprint = event.reviewWorktreeFingerprint;
+	if (event.admittedWorktreeFingerprint !== undefined) candidate.admittedWorktreeFingerprint = event.admittedWorktreeFingerprint;
+	if (event.kind === "review_changed" && event.reviewStatus === "due" && event.reviewCandidateId === undefined) {
+		candidate.id = undefined;
+		candidate.objectiveVersion = undefined;
+		candidate.worktreeFingerprint = undefined;
+	} else if (event.reviewCandidateId !== undefined) candidate.id = event.reviewCandidateId;
+	if (event.reviewCandidateObjectiveVersion !== undefined) candidate.objectiveVersion = event.reviewCandidateObjectiveVersion;
+	if (event.kind === "review_changed" && event.reviewStatus === "due") {
+		candidate.scopePaths = undefined;
+		candidate.scopeRevisions = undefined;
+	}
+	if (event.reviewScopePaths !== undefined) candidate.scopePaths = [...event.reviewScopePaths];
+	if (event.reviewScopeRevisions !== undefined) candidate.scopeRevisions = event.reviewScopeRevisions.map((revision) => ({ ...revision }));
+}
+
+function applyReviewAdjudicationFields(adjudication: MissionReviewAdjudication, event: MissionEvent): void {
+	if (event.reviewSuggestedVerdict !== undefined) adjudication.suggestedVerdict = event.reviewSuggestedVerdict;
+	if (event.reviewAdjudicatedCandidateId !== undefined) adjudication.adjudicatedCandidateId = event.reviewAdjudicatedCandidateId;
+	if (event.reviewAdjudicatedVerdict !== undefined) adjudication.adjudicatedVerdict = event.reviewAdjudicatedVerdict;
+	if (event.reviewAdjudications !== undefined || (event.reviewAdjudicatedCandidateId && event.reviewAdjudicatedVerdict)) {
+		const additions = [...(event.reviewAdjudications ?? [])];
+		if (event.reviewAdjudicatedCandidateId && event.reviewAdjudicatedVerdict) additions.push({ candidateId: event.reviewAdjudicatedCandidateId, verdict: event.reviewAdjudicatedVerdict });
+		for (const item of additions) adjudication.history = [...adjudication.history.filter((existing) => existing.candidateId !== item.candidateId), { ...item }];
+	}
+	if (event.reviewAdjudicationHistoryComplete !== undefined) adjudication.historyComplete = event.reviewAdjudicationHistoryComplete;
+}
+
+function applyReviewFindingsFields(findings: MissionReviewFindings, event: MissionEvent): void {
+	if (event.kind === "review_changed" && event.reviewStatus === "awaiting_adjudication") findings.highestSeverity = event.reviewHighestSeverity;
+	else if (event.reviewHighestSeverity !== undefined) findings.highestSeverity = event.reviewHighestSeverity;
+	if (event.reviewBlockingFindingCount !== undefined) findings.blockingCount = event.reviewBlockingFindingCount;
+	if (event.reviewBacklogFindingCount !== undefined) findings.backlogCount = event.reviewBacklogFindingCount;
+	if (event.kind === "review_changed" && event.reviewStatus === "due") findings.items = undefined;
+	if (event.reviewFindings !== undefined) findings.items = event.reviewFindings.map((finding) => ({ ...finding }));
+	if (event.reviewAcceptedFindings !== undefined) findings.accepted = event.reviewAcceptedFindings.map((finding) => ({ ...finding }));
+}
+
+function applyReviewCorrectionFields(correction: MissionReviewCorrection, event: MissionEvent): void {
+	if (event.reviewAcceptedRevisions !== undefined) correction.acceptedRevisions = event.reviewAcceptedRevisions.map((revision) => ({ ...revision }));
+	if (event.reviewCorrectionCount !== undefined) correction.count = event.reviewCorrectionCount;
+	if (event.reviewCorrectionLimit !== undefined) correction.limit = event.reviewCorrectionLimit;
+}
+
+function applyCompletionLatchFields(latch: MissionCompletionLatch, event: MissionEvent): void {
+	if (event.kind === "completion_latch_cleared") {
+		latch.candidateId = undefined;
+		latch.reviewStatus = undefined;
+	} else if (event.completionLatchCandidateId !== undefined) {
+		latch.candidateId = event.completionLatchCandidateId;
+		latch.reviewStatus = event.completionLatchReviewStatus;
+	}
+}
+
 function takeoverStatus(snapshot: MissionSnapshot): MissionStatus {
 	const mission = snapshot.mission;
-	if ((mission.reviewCorrectionCount ?? 0) > (mission.reviewCorrectionLimit ?? DEFAULT_REVIEW_CORRECTION_LIMIT)) return "blocked";
+	if (mission.review.correction.count > mission.review.correction.limit) return "blocked";
 	if ((mission.tokenBudget !== undefined && snapshot.usage.totalTokens >= mission.tokenBudget) || (mission.costBudgetUsd !== undefined && snapshot.usage.totalCostUsd >= mission.costBudgetUsd)) return "budget_limited";
 	if ((mission.turnBudget !== undefined && (mission.turnCount ?? 0) >= mission.turnBudget) || (mission.wallDeadlineAt !== undefined && Date.now() >= mission.wallDeadlineAt)) return "usage_limited";
 	return "active";

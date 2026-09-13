@@ -119,7 +119,7 @@ export async function resumeMission(pi: ExtensionAPI, state: MissionState, reaso
 	if (!explanation) throw new Error("Resuming a Mission requires a reason.");
 	const current = state.readAny();
 	if (!current) throw new Error("No Mission exists on this branch.");
-	if (current.status === "blocked" && (current.reviewCorrectionCount ?? 0) > (current.reviewCorrectionLimit ?? 3)) throw new Error("Mission cannot resume past the review correction limit; use trusted mission_progress reviewContinue authorization first.");
+	if (current.status === "blocked" && (current.review.correction.count ?? 0) > (current.review.correction.limit ?? 3)) throw new Error("Mission cannot resume past the review correction limit; use trusted mission_progress reviewContinue authorization first.");
 	const remainingLimit = state.limitExceeded();
 	if (remainingLimit) throw new Error(`Mission cannot resume while its ${remainingLimit} limit is exhausted; raise it with mission_update (or "/mission update --${remainingLimit === "token" ? "budget" : remainingLimit === "cost" ? "cost" : remainingLimit === "turn" ? "turns" : "deadline"} ..." when headless) first.`);
 	if (current.status === "active") return current;
@@ -242,7 +242,7 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 			}
 			const explanation = params.reason.trim();
 			if (!explanation) throw new Error("Resuming a Mission requires a reason.");
-			if (current.status === "blocked" && (current.reviewCorrectionCount ?? 0) > (current.reviewCorrectionLimit ?? 3)) throw new Error("Mission cannot resume past the review correction limit; use trusted mission_progress reviewContinue authorization first.");
+			if (current.status === "blocked" && (current.review.correction.count ?? 0) > (current.review.correction.limit ?? 3)) throw new Error("Mission cannot resume past the review correction limit; use trusted mission_progress reviewContinue authorization first.");
 			const remainingLimit = state.limitExceeded();
 			if (remainingLimit) throw new Error(`Mission cannot resume while its ${remainingLimit} limit is exhausted; revise that limit with mission_update first.`);
 			if (!["paused", "blocked", "terminal_error", "budget_limited", "usage_limited", "ended"].includes(current.status)) throw new Error(`Mission cannot resume from ${current.status}.`);
@@ -312,13 +312,13 @@ export function registerMissionTools(pi: ExtensionAPI, state: MissionState, setC
 			if (params.reviewContinue !== true && params.reviewContinueReason) throw new Error("reviewContinueReason requires reviewContinue=true.");
 			if (params.reviewContinue && (params.reviewSkip || params.reviewVerdict)) throw new Error("Review continuation authorization cannot be combined with waiver or adjudication.");
 			if (params.reviewContinue && !params.reviewContinueReason?.trim()) throw new Error("Review continuation authorization requires a reason.");
-			if (params.reviewContinue && (!currentMission || currentMission.status !== "blocked" || (currentMission.reviewCorrectionCount ?? 0) <= (currentMission.reviewCorrectionLimit ?? 3))) throw new Error("Mission is not blocked on the review correction limit.");
-			if (params.reviewSkip && (currentMission?.reviewStatus === "starting" || currentMission?.reviewStatus === "running")) throw new Error("Cannot skip review while reviewer admission/execution is active; settle it first.");
+			if (params.reviewContinue && (!currentMission || currentMission.status !== "blocked" || (currentMission.review.correction.count ?? 0) <= (currentMission.review.correction.limit ?? 3))) throw new Error("Mission is not blocked on the review correction limit.");
+			if (params.reviewSkip && (currentMission?.review.admission.status === "starting" || currentMission?.review.admission.status === "running")) throw new Error("Cannot skip review while reviewer admission/execution is active; settle it first.");
 			if (params.reviewVerdict) {
 				const current = currentMission;
-				if (!current || current.reviewStatus !== "awaiting_adjudication" || !params.reviewRunId || params.reviewRunId !== current.reviewRunId) throw new Error("Review adjudication requires the exact awaiting reviewer run id.");
+				if (!current || current.review.admission.status !== "awaiting_adjudication" || !params.reviewRunId || params.reviewRunId !== current.review.admission.runId) throw new Error("Review adjudication requires the exact awaiting reviewer run id.");
 				if (!params.reviewReason?.trim()) throw new Error("Review adjudication requires an evidence-based reason.");
-				if (params.reviewVerdict !== current.reviewSuggestedVerdict) throw new Error(`Adjudication must match the severity-derived reviewer verdict: ${current.reviewSuggestedVerdict ?? "unknown"}.`);
+				if (params.reviewVerdict !== current.review.adjudication.suggestedVerdict) throw new Error(`Adjudication must match the severity-derived reviewer verdict: ${current.review.adjudication.suggestedVerdict ?? "unknown"}.`);
 			}
 			if (params.reviewContinue && !ctx.hasUI) throw new Error("Headless sessions cannot authorize additional review correction cycles; use the trusted Mission command in an interactive session.");
 			if (params.reviewContinue && !await ctx.ui.confirm("Continue Mission review corrections?", `Authorize one additional correction cycle? ${params.reviewContinueReason!.trim()}`)) throw new Error("An additional review correction cycle was not authorized by the user.");
@@ -499,7 +499,7 @@ function missionResult(details: MissionResultDetails | undefined, expanded: bool
 		const mission = value.mission;
 		const color = isError ? "error" : mission.status === "complete" ? "success" : mission.status === "active" ? "warning" : "muted";
 		let text = `${theme.fg(color, value.alreadyComplete ? "already complete" : mission.status)} ${theme.fg("accent", mission.title)} ${theme.fg("muted", mission.missionId)}`;
-		if (mission.reviewStatus && mission.reviewStatus !== "not_required") text += ` · review ${mission.reviewStatus}${mission.reviewOutcome ? ` (${mission.reviewOutcome})` : ""}`;
+		if (mission.review.admission.status && mission.review.admission.status !== "not_required") text += ` · review ${mission.review.admission.status}${mission.review.admission.outcome ? ` (${mission.review.admission.outcome})` : ""}`;
 		if (value.usage) text += ` · ${value.usage.totalTokens} tokens`;
 		if (expanded) text += `\n${mission.objective}`;
 		return new Text(text, 0, 0);
@@ -565,7 +565,7 @@ export function formatMission(mission: ReturnType<MissionState["readAny"]>, usag
 		objective,
 		requirements ? `Req: ${requirements}` : undefined,
 		`Usage: ${budget}`,
-		mission.reviewStatus === "awaiting_adjudication" ? `Review: run ${mission.reviewRunId ?? "missing"}; derived ${mission.reviewSuggestedVerdict ?? "unknown"}; severity ${mission.reviewHighestSeverity ?? "none"}; blocking ${mission.reviewBlockingFindingCount ?? 0}; backlog ${mission.reviewBacklogFindingCount ?? 0}; evidence via subagent_wait.` : undefined,
+		mission.review.admission.status === "awaiting_adjudication" ? `Review: run ${mission.review.admission.runId ?? "missing"}; derived ${mission.review.adjudication.suggestedVerdict ?? "unknown"}; severity ${mission.review.findings.highestSeverity ?? "none"}; blocking ${mission.review.findings.blockingCount ?? 0}; backlog ${mission.review.findings.backlogCount ?? 0}; evidence via subagent_wait.` : undefined,
 		formatMissionLocation(mission),
 		mission.lastReason ? `Reason: ${compactMissionText(mission.lastReason, 160)}` : undefined,
 	].filter(Boolean).join("\n");

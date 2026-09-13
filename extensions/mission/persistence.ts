@@ -3,7 +3,30 @@ import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openS
 import { join } from "node:path";
 import { missionDir, missionRoot } from "./artifacts.ts";
 import { MAX_MISSION_REVIEW_ADJUDICATIONS } from "./types.ts";
-import type { MissionCurrent, MissionOwner, MissionProgressRecord, MissionReviewCriticalImpact, MissionReviewFinding, MissionReviewRevision, MissionReviewSeverity, MissionReviewStatus, MissionSnapshot, MissionStatus, MissionUsage, MissionValidationRecord } from "./types.ts";
+import type {
+	MissionCompletionLatch,
+	MissionConvergedReviewStatus,
+	MissionCurrent,
+	MissionOwner,
+	MissionProgressRecord,
+	MissionReview,
+	MissionReviewAdjudication,
+	MissionReviewAdmission,
+	MissionReviewCandidate,
+	MissionReviewCorrection,
+	MissionReviewCriticalImpact,
+	MissionReviewFindings,
+	MissionReviewFinding,
+	MissionReviewOutcome,
+	MissionReviewRevision,
+	MissionReviewSeverity,
+	MissionReviewStatus,
+	MissionReviewVerdict,
+	MissionSnapshot,
+	MissionStatus,
+	MissionUsage,
+	MissionValidationRecord,
+} from "./types.ts";
 
 interface PersistedObject {
 	[field: string]: PersistedValue;
@@ -14,17 +37,27 @@ type PersistedInput = PersistedValue | undefined;
 type PersistedObjectInput = PersistedInput | MissionSnapshot;
 type PersistedFields<Fields extends readonly string[]> = PersistedObject & Partial<Record<Fields[number], PersistedValue>>;
 
-const SNAPSHOT_VERSION = 1;
+const SNAPSHOT_VERSION = 2;
 // Lock holds are synchronous sub-second operations, so a lock older than this — or one whose owner pid is gone — is a crashed holder, not live contention.
 const STATUSES = new Set<MissionStatus>(["active", "paused", "blocked", "terminal_error", "budget_limited", "usage_limited", "complete", "ended", "cleared"]);
 const REVIEW_STATUSES = new Set<MissionReviewStatus>(["not_required", "due", "starting", "running", "awaiting_adjudication", "changes_requested", "clear", "skipped"]);
+const CONVERGED_REVIEW_STATUSES = new Set<MissionConvergedReviewStatus>(["not_required", "clear", "skipped"]);
+const REVIEW_VERDICTS = new Set<MissionReviewVerdict>(["clear", "changes_requested"]);
+const REVIEW_OUTCOMES = new Set<MissionReviewOutcome>(["superseded", "failed"]);
 const REVIEW_SEVERITIES = new Set<MissionReviewSeverity>(["blocker", "major", "minor", "nit"]);
 const REVIEW_CRITICAL_IMPACTS = new Set<MissionReviewCriticalImpact>(["security", "data_loss"]);
 const SNAPSHOT_FIELDS = ["version", "revision", "owner", "mission", "progress", "continuationProgressIndex", "carriedUsage", "usage", "reviewFailureCount", "usageComplete"] satisfies readonly (keyof MissionSnapshot)[];
 const OWNER_FIELDS = ["sessionId", "sessionFile"] satisfies readonly (keyof MissionOwner)[];
 const MISSION_FIELDS = [
-	"missionId", "objective", "title", "requirements", "status", "createdAt", "updatedAt", "slug", "chain", "chainBranch", "artifactDir", "paths", "tokenBudget", "costBudgetUsd", "baselineMainTokens", "baselineSubagentTokens", "baselineMainCostUsd", "baselineSubagentCostUsd", "lastReason", "lastSummary", "lastContinuationAt", "generation", "objectiveVersion", "turnBudget", "wallDeadlineAt", "reviewStatus", "initialBaselinePending", "reviewUpdatedAt", "reviewRunId", "reviewAdmissionId", "reviewReason", "reviewSkippedReason", "reviewSuggestedVerdict", "reviewFailure", "reviewOutcome", "reviewNotBeforeAt", "reviewSupersessionCount", "reviewWorktreeFingerprint", "admittedWorktreeFingerprint", "reviewCandidateId", "reviewCandidateObjectiveVersion", "reviewAdjudicatedCandidateId", "reviewAdjudicatedVerdict", "reviewAdjudications", "reviewAdjudicationHistoryComplete", "reviewHighestSeverity", "reviewBlockingFindingCount", "reviewBacklogFindingCount", "reviewFindings", "reviewAcceptedFindings", "reviewScopePaths", "reviewScopeRevisions", "reviewAcceptedRevisions", "reviewCorrectionCount", "reviewCorrectionLimit", "completionLatchCandidateId", "completionLatchReviewStatus", "completionId", "completionEffectsStatus", "completionAudit", "blockerFingerprint", "blockerCount", "turnCount",
+	"missionId", "objective", "title", "requirements", "status", "createdAt", "updatedAt", "slug", "chain", "chainBranch", "artifactDir", "paths", "tokenBudget", "costBudgetUsd", "baselineMainTokens", "baselineSubagentTokens", "baselineMainCostUsd", "baselineSubagentCostUsd", "lastReason", "lastSummary", "lastContinuationAt", "generation", "objectiveVersion", "turnBudget", "wallDeadlineAt", "review", "completionId", "completionEffectsStatus", "completionAudit", "blockerFingerprint", "blockerCount", "turnCount",
 ] satisfies readonly (keyof MissionCurrent)[];
+const REVIEW_FIELDS = ["admission", "candidate", "adjudication", "findings", "correction", "completionLatch"] satisfies readonly (keyof MissionReview)[];
+const REVIEW_ADMISSION_FIELDS = ["status", "initialBaselinePending", "supersessionCount", "updatedAt", "runId", "admissionId", "reason", "skippedReason", "failure", "outcome", "notBeforeAt"] satisfies readonly (keyof MissionReviewAdmission)[];
+const REVIEW_CANDIDATE_FIELDS = ["id", "objectiveVersion", "worktreeFingerprint", "admittedWorktreeFingerprint", "scopePaths", "scopeRevisions"] satisfies readonly (keyof MissionReviewCandidate)[];
+const REVIEW_ADJUDICATION_FIELDS = ["history", "suggestedVerdict", "adjudicatedCandidateId", "adjudicatedVerdict", "historyComplete"] satisfies readonly (keyof MissionReviewAdjudication)[];
+const REVIEW_FINDINGS_FIELDS = ["blockingCount", "backlogCount", "highestSeverity", "items", "accepted"] satisfies readonly (keyof MissionReviewFindings)[];
+const REVIEW_CORRECTION_FIELDS = ["count", "limit", "acceptedRevisions"] satisfies readonly (keyof MissionReviewCorrection)[];
+const COMPLETION_LATCH_FIELDS = ["candidateId", "reviewStatus"] satisfies readonly (keyof MissionCompletionLatch)[];
 const PROGRESS_FIELDS = ["missionId", "at", "summary", "evidence", "remaining", "validation", "checkpoint", "blocked", "blockerId"] satisfies readonly (keyof MissionProgressRecord)[];
 const VALIDATION_FIELDS = ["command", "exitCode", "objectiveVersion", "summary", "artifact"] as const;
 const USAGE_FIELDS = ["mainTokens", "subagentTokens", "totalTokens", "mainCostUsd", "subagentCostUsd", "totalCostUsd"] satisfies readonly (keyof MissionUsage)[];
@@ -226,7 +259,7 @@ function validateSnapshot(value: PersistedObjectInput, cwd: string, expectedSlug
 	const continuationProgressIndex = number(record.continuationProgressIndex, "continuation progress index");
 	if (!Number.isInteger(continuationProgressIndex) || continuationProgressIndex < 0 || continuationProgressIndex > progress.length) throw new Error("Invalid Mission continuation progress index.");
 	return {
-		version: 1,
+		version: SNAPSHOT_VERSION,
 		revision,
 		owner,
 		mission,
@@ -241,7 +274,6 @@ function validateSnapshot(value: PersistedObjectInput, cwd: string, expectedSlug
 
 function validateMission(value: PersistedFields<typeof MISSION_FIELDS>, cwd: string, slug: string): MissionCurrent {
 	const status = enumValue(value.status, STATUSES, "Mission status");
-	const reviewStatus = value.reviewStatus === undefined ? undefined : enumValue(value.reviewStatus, REVIEW_STATUSES, "Mission review status");
 	const mission: MissionCurrent = {
 		missionId: text(value.missionId, "Mission id", 200),
 		objective: text(value.objective, "Mission objective", 20_000),
@@ -259,6 +291,7 @@ function validateMission(value: PersistedFields<typeof MISSION_FIELDS>, cwd: str
 		baselineSubagentTokens: nonnegative(value.baselineSubagentTokens, "baseline Subagent tokens"),
 		baselineMainCostUsd: nonnegative(value.baselineMainCostUsd, "baseline main cost"),
 		baselineSubagentCostUsd: nonnegative(value.baselineSubagentCostUsd, "baseline Subagent cost"),
+		review: validateMissionReview(value.review),
 	};
 	if (value.tokenBudget !== undefined) mission.tokenBudget = boundedInteger(value.tokenBudget, "tokenBudget", 0, Number.MAX_SAFE_INTEGER);
 	if (value.costBudgetUsd !== undefined) mission.costBudgetUsd = nonnegative(value.costBudgetUsd, "costBudgetUsd");
@@ -267,51 +300,9 @@ function validateMission(value: PersistedFields<typeof MISSION_FIELDS>, cwd: str
 	if (value.objectiveVersion !== undefined) mission.objectiveVersion = boundedInteger(value.objectiveVersion, "objectiveVersion", 0, Number.MAX_SAFE_INTEGER);
 	if (value.blockerCount !== undefined) mission.blockerCount = boundedInteger(value.blockerCount, "blockerCount", 0, Number.MAX_SAFE_INTEGER);
 	if (value.turnCount !== undefined) mission.turnCount = boundedInteger(value.turnCount, "turnCount", 0, Number.MAX_SAFE_INTEGER);
-	if (value.reviewCandidateObjectiveVersion !== undefined) mission.reviewCandidateObjectiveVersion = boundedInteger(value.reviewCandidateObjectiveVersion, "reviewCandidateObjectiveVersion", 0, Number.MAX_SAFE_INTEGER);
-	if (value.reviewUpdatedAt !== undefined) mission.reviewUpdatedAt = boundedInteger(value.reviewUpdatedAt, "reviewUpdatedAt", 0, Number.MAX_SAFE_INTEGER);
-	if (value.reviewNotBeforeAt !== undefined) mission.reviewNotBeforeAt = boundedInteger(value.reviewNotBeforeAt, "reviewNotBeforeAt", 0, Number.MAX_SAFE_INTEGER);
-	if (value.reviewSupersessionCount !== undefined) mission.reviewSupersessionCount = boundedInteger(value.reviewSupersessionCount, "reviewSupersessionCount", 0, Number.MAX_SAFE_INTEGER);
-	if (value.reviewBlockingFindingCount !== undefined) mission.reviewBlockingFindingCount = boundedInteger(value.reviewBlockingFindingCount, "reviewBlockingFindingCount", 0, Number.MAX_SAFE_INTEGER);
-	if (value.reviewBacklogFindingCount !== undefined) mission.reviewBacklogFindingCount = boundedInteger(value.reviewBacklogFindingCount, "reviewBacklogFindingCount", 0, Number.MAX_SAFE_INTEGER);
-	if (value.reviewCorrectionCount !== undefined) mission.reviewCorrectionCount = boundedInteger(value.reviewCorrectionCount, "reviewCorrectionCount", 0, Number.MAX_SAFE_INTEGER);
-	if (value.reviewCorrectionLimit !== undefined) mission.reviewCorrectionLimit = boundedInteger(value.reviewCorrectionLimit, "reviewCorrectionLimit", 0, Number.MAX_SAFE_INTEGER);
 	if (value.lastReason !== undefined) mission.lastReason = text(value.lastReason, "lastReason", 20_000);
 	if (value.lastSummary !== undefined) mission.lastSummary = text(value.lastSummary, "lastSummary", 20_000);
 	if (value.generation !== undefined) mission.generation = text(value.generation, "generation", 20_000);
-	if (value.reviewRunId !== undefined) mission.reviewRunId = text(value.reviewRunId, "reviewRunId", 20_000);
-	if (value.reviewAdmissionId !== undefined) mission.reviewAdmissionId = text(value.reviewAdmissionId, "reviewAdmissionId", 20_000);
-	if (value.reviewReason !== undefined) mission.reviewReason = text(value.reviewReason, "reviewReason", 20_000);
-	if (value.reviewSkippedReason !== undefined) mission.reviewSkippedReason = text(value.reviewSkippedReason, "reviewSkippedReason", 20_000);
-	if (value.reviewSuggestedVerdict !== undefined) {
-		const verdict = text(value.reviewSuggestedVerdict, "reviewSuggestedVerdict", 20_000);
-		if (verdict !== "clear" && verdict !== "changes_requested" && verdict !== "unknown") throw new Error("Invalid Mission suggested review verdict.");
-		mission.reviewSuggestedVerdict = verdict;
-	}
-	if (value.reviewOutcome !== undefined) {
-		const outcome = text(value.reviewOutcome, "reviewOutcome", 20_000);
-		if (outcome !== "superseded" && outcome !== "failed") throw new Error("Invalid Mission review outcome.");
-		mission.reviewOutcome = outcome;
-	}
-	if (value.reviewWorktreeFingerprint !== undefined) mission.reviewWorktreeFingerprint = text(value.reviewWorktreeFingerprint, "reviewWorktreeFingerprint", 20_000);
-	if (value.admittedWorktreeFingerprint !== undefined) mission.admittedWorktreeFingerprint = text(value.admittedWorktreeFingerprint, "admittedWorktreeFingerprint", 20_000);
-	if (value.reviewCandidateId !== undefined) mission.reviewCandidateId = text(value.reviewCandidateId, "reviewCandidateId", 20_000);
-	if (value.reviewAdjudicatedCandidateId !== undefined) mission.reviewAdjudicatedCandidateId = text(value.reviewAdjudicatedCandidateId, "reviewAdjudicatedCandidateId", 20_000);
-	if (value.reviewAdjudicatedVerdict !== undefined) {
-		const verdict = text(value.reviewAdjudicatedVerdict, "reviewAdjudicatedVerdict", 20_000);
-		if (verdict !== "clear" && verdict !== "changes_requested") throw new Error("Invalid Mission adjudicated review verdict.");
-		mission.reviewAdjudicatedVerdict = verdict;
-	}
-	if (value.reviewHighestSeverity !== undefined) {
-		const severity = text(value.reviewHighestSeverity, "reviewHighestSeverity", 20_000);
-		if (severity !== "blocker" && severity !== "major" && severity !== "minor" && severity !== "nit") throw new Error("Invalid Mission review severity.");
-		mission.reviewHighestSeverity = severity;
-	}
-	if (value.completionLatchCandidateId !== undefined) mission.completionLatchCandidateId = text(value.completionLatchCandidateId, "completionLatchCandidateId", 20_000);
-	if (value.completionLatchReviewStatus !== undefined) {
-		const latchStatus = text(value.completionLatchReviewStatus, "completionLatchReviewStatus", 20_000);
-		if (latchStatus !== "not_required" && latchStatus !== "clear" && latchStatus !== "skipped") throw new Error("Invalid Mission completion latch review status.");
-		mission.completionLatchReviewStatus = latchStatus;
-	}
 	if (value.completionId !== undefined) mission.completionId = text(value.completionId, "completionId", 20_000);
 	if (value.completionEffectsStatus !== undefined) {
 		const effectsStatus = text(value.completionEffectsStatus, "completionEffectsStatus", 20_000);
@@ -319,41 +310,117 @@ function validateMission(value: PersistedFields<typeof MISSION_FIELDS>, cwd: str
 		mission.completionEffectsStatus = effectsStatus;
 	}
 	if (value.blockerFingerprint !== undefined) mission.blockerFingerprint = text(value.blockerFingerprint, "blockerFingerprint", 20_000);
-	if (value.reviewAdjudications !== undefined) mission.reviewAdjudications = array(value.reviewAdjudications, "Mission review adjudications", MAX_MISSION_REVIEW_ADJUDICATIONS).map((item) => {
-		const adjudication = object(item, "Mission review adjudication", ADJUDICATION_FIELDS);
-		const verdict = text(adjudication.verdict, "Mission review adjudication verdict", 40);
-		if (verdict !== "clear" && verdict !== "changes_requested") throw new Error("Invalid Mission review adjudication verdict.");
-		return { candidateId: text(adjudication.candidateId, "Mission review adjudication candidate", 200), verdict };
-	});
-	if (mission.reviewAdjudicatedCandidateId && mission.reviewAdjudicatedVerdict) {
-		const candidateKnown = mission.reviewAdjudications?.some((item) => item.candidateId === mission.reviewAdjudicatedCandidateId) ?? false;
-		if (!candidateKnown && (mission.reviewAdjudications?.length ?? 0) >= MAX_MISSION_REVIEW_ADJUDICATIONS) throw new Error("Mission review adjudication history cannot include the latest adjudicated candidate without exceeding capacity.");
-		mission.reviewAdjudications = [...(mission.reviewAdjudications ?? []).filter((item) => item.candidateId !== mission.reviewAdjudicatedCandidateId), { candidateId: mission.reviewAdjudicatedCandidateId, verdict: mission.reviewAdjudicatedVerdict }];
-	}
-	if (value.reviewFindings !== undefined) mission.reviewFindings = reviewFindings(value.reviewFindings, "Mission review findings");
-	if (value.reviewAcceptedFindings !== undefined) mission.reviewAcceptedFindings = reviewFindings(value.reviewAcceptedFindings, "Mission accepted review findings");
-	if (value.reviewScopePaths !== undefined) {
-		mission.reviewScopePaths = stringArray(value.reviewScopePaths, "Mission review scope paths", 1_000, 2_000);
-		if (mission.reviewScopePaths.some((path) => !reviewPath(path))) throw new Error("Invalid Mission review scope path.");
-	}
-	if (value.reviewScopeRevisions !== undefined) mission.reviewScopeRevisions = reviewRevisions(value.reviewScopeRevisions, "Mission review scope revisions");
-	if (value.reviewAcceptedRevisions !== undefined) mission.reviewAcceptedRevisions = reviewRevisions(value.reviewAcceptedRevisions, "Mission accepted review revisions");
 	if (value.completionAudit !== undefined) mission.completionAudit = array(value.completionAudit, "Mission completion audit", 12).map((item) => {
 		const audit = object(item, "Mission completion audit item", COMPLETION_AUDIT_FIELDS);
 		return { requirementIndex: boundedInteger(audit.requirementIndex, "requirement index", 0, 11), evidence: text(audit.evidence, "requirement evidence", 2_000) };
 	});
 	if (value.lastContinuationAt !== undefined) mission.lastContinuationAt = number(value.lastContinuationAt, "lastContinuationAt");
-	if (reviewStatus) mission.reviewStatus = reviewStatus;
-	if (value.reviewFailure !== undefined) mission.reviewFailure = value.reviewFailure === true;
-	if (value.initialBaselinePending !== undefined) {
-		if (!isBoolean(value.initialBaselinePending)) throw new Error("Invalid Mission initial baseline pending marker.");
-		mission.initialBaselinePending = value.initialBaselinePending;
-	}
-	if (value.reviewAdjudicationHistoryComplete !== undefined) {
-		if (value.reviewAdjudicationHistoryComplete !== true) throw new Error("Invalid Mission review adjudication history completeness marker.");
-		mission.reviewAdjudicationHistoryComplete = true;
-	}
 	return mission;
+}
+
+function validateMissionReview(value: PersistedInput): MissionReview {
+	const record = object(value, "Mission review", REVIEW_FIELDS);
+	return {
+		admission: validateReviewAdmission(record.admission),
+		candidate: validateReviewCandidate(record.candidate),
+		adjudication: validateReviewAdjudication(record.adjudication),
+		findings: validateReviewFindingsSection(record.findings),
+		correction: validateReviewCorrection(record.correction),
+		completionLatch: validateCompletionLatch(record.completionLatch),
+	};
+}
+
+function validateReviewAdmission(value: PersistedInput): MissionReviewAdmission {
+	const record = object(value, "Mission review admission", REVIEW_ADMISSION_FIELDS);
+	const admission: MissionReviewAdmission = {
+		status: enumValue(record.status, REVIEW_STATUSES, "Mission review status"),
+		initialBaselinePending: boolean(record.initialBaselinePending, "Mission initial baseline pending marker"),
+		supersessionCount: boundedInteger(record.supersessionCount, "reviewSupersessionCount", 0, Number.MAX_SAFE_INTEGER),
+	};
+	if (record.updatedAt !== undefined) admission.updatedAt = boundedInteger(record.updatedAt, "reviewUpdatedAt", 0, Number.MAX_SAFE_INTEGER);
+	if (record.runId !== undefined) admission.runId = text(record.runId, "reviewRunId", 20_000);
+	if (record.admissionId !== undefined) admission.admissionId = text(record.admissionId, "reviewAdmissionId", 20_000);
+	if (record.reason !== undefined) admission.reason = text(record.reason, "reviewReason", 20_000);
+	if (record.skippedReason !== undefined) admission.skippedReason = text(record.skippedReason, "reviewSkippedReason", 20_000);
+	if (record.failure !== undefined) admission.failure = record.failure === true;
+	if (record.outcome !== undefined) admission.outcome = enumValue(record.outcome, REVIEW_OUTCOMES, "reviewOutcome");
+	if (record.notBeforeAt !== undefined) admission.notBeforeAt = boundedInteger(record.notBeforeAt, "reviewNotBeforeAt", 0, Number.MAX_SAFE_INTEGER);
+	return admission;
+}
+
+function validateReviewCandidate(value: PersistedInput): MissionReviewCandidate {
+	const record = object(value, "Mission review candidate", REVIEW_CANDIDATE_FIELDS);
+	const candidate: MissionReviewCandidate = {};
+	if (record.id !== undefined) candidate.id = text(record.id, "reviewCandidateId", 20_000);
+	if (record.objectiveVersion !== undefined) candidate.objectiveVersion = boundedInteger(record.objectiveVersion, "reviewCandidateObjectiveVersion", 0, Number.MAX_SAFE_INTEGER);
+	if (record.worktreeFingerprint !== undefined) candidate.worktreeFingerprint = text(record.worktreeFingerprint, "reviewWorktreeFingerprint", 20_000);
+	if (record.admittedWorktreeFingerprint !== undefined) candidate.admittedWorktreeFingerprint = text(record.admittedWorktreeFingerprint, "admittedWorktreeFingerprint", 20_000);
+	if (record.scopePaths !== undefined) {
+		candidate.scopePaths = stringArray(record.scopePaths, "Mission review scope paths", 1_000, 2_000);
+		if (candidate.scopePaths.some((path) => !reviewPath(path))) throw new Error("Invalid Mission review scope path.");
+	}
+	if (record.scopeRevisions !== undefined) candidate.scopeRevisions = reviewRevisions(record.scopeRevisions, "Mission review scope revisions");
+	return candidate;
+}
+
+function validateReviewAdjudication(value: PersistedInput): MissionReviewAdjudication {
+	const record = object(value, "Mission review adjudication state", REVIEW_ADJUDICATION_FIELDS);
+	const adjudication: MissionReviewAdjudication = { history: reviewAdjudicationHistory(record.history) };
+	if (record.suggestedVerdict !== undefined) {
+		const verdict = text(record.suggestedVerdict, "reviewSuggestedVerdict", 20_000);
+		if (verdict !== "clear" && verdict !== "changes_requested" && verdict !== "unknown") throw new Error("Invalid Mission suggested review verdict.");
+		adjudication.suggestedVerdict = verdict;
+	}
+	if (record.adjudicatedCandidateId !== undefined) adjudication.adjudicatedCandidateId = text(record.adjudicatedCandidateId, "reviewAdjudicatedCandidateId", 20_000);
+	if (record.adjudicatedVerdict !== undefined) adjudication.adjudicatedVerdict = enumValue(record.adjudicatedVerdict, REVIEW_VERDICTS, "reviewAdjudicatedVerdict");
+	if (record.historyComplete !== undefined) {
+		if (record.historyComplete !== true) throw new Error("Invalid Mission review adjudication history completeness marker.");
+		adjudication.historyComplete = true;
+	}
+	if (adjudication.adjudicatedCandidateId && adjudication.adjudicatedVerdict) {
+		const candidateKnown = adjudication.history.some((item) => item.candidateId === adjudication.adjudicatedCandidateId);
+		if (!candidateKnown && adjudication.history.length >= MAX_MISSION_REVIEW_ADJUDICATIONS) throw new Error("Mission review adjudication history cannot include the latest adjudicated candidate without exceeding capacity.");
+		adjudication.history = [...adjudication.history.filter((item) => item.candidateId !== adjudication.adjudicatedCandidateId), { candidateId: adjudication.adjudicatedCandidateId, verdict: adjudication.adjudicatedVerdict }];
+	}
+	return adjudication;
+}
+
+function reviewAdjudicationHistory(value: PersistedInput): MissionReviewAdjudication["history"] {
+	if (value === undefined) return [];
+	return array(value, "Mission review adjudications", MAX_MISSION_REVIEW_ADJUDICATIONS).map((item) => {
+		const adjudication = object(item, "Mission review adjudication", ADJUDICATION_FIELDS);
+		return { candidateId: text(adjudication.candidateId, "Mission review adjudication candidate", 200), verdict: enumValue(adjudication.verdict, REVIEW_VERDICTS, "Mission review adjudication verdict") };
+	});
+}
+
+function validateReviewFindingsSection(value: PersistedInput): MissionReviewFindings {
+	const record = object(value, "Mission review findings state", REVIEW_FINDINGS_FIELDS);
+	const findings: MissionReviewFindings = {
+		blockingCount: boundedInteger(record.blockingCount, "reviewBlockingFindingCount", 0, Number.MAX_SAFE_INTEGER),
+		backlogCount: boundedInteger(record.backlogCount, "reviewBacklogFindingCount", 0, Number.MAX_SAFE_INTEGER),
+	};
+	if (record.highestSeverity !== undefined) findings.highestSeverity = enumValue(record.highestSeverity, REVIEW_SEVERITIES, "reviewHighestSeverity");
+	if (record.items !== undefined) findings.items = reviewFindings(record.items, "Mission review findings");
+	if (record.accepted !== undefined) findings.accepted = reviewFindings(record.accepted, "Mission accepted review findings");
+	return findings;
+}
+
+function validateReviewCorrection(value: PersistedInput): MissionReviewCorrection {
+	const record = object(value, "Mission review correction state", REVIEW_CORRECTION_FIELDS);
+	const correction: MissionReviewCorrection = {
+		count: boundedInteger(record.count, "reviewCorrectionCount", 0, Number.MAX_SAFE_INTEGER),
+		limit: boundedInteger(record.limit, "reviewCorrectionLimit", 0, Number.MAX_SAFE_INTEGER),
+	};
+	if (record.acceptedRevisions !== undefined) correction.acceptedRevisions = reviewRevisions(record.acceptedRevisions, "Mission accepted review revisions");
+	return correction;
+}
+
+function validateCompletionLatch(value: PersistedInput): MissionCompletionLatch {
+	const record = object(value, "Mission completion latch", COMPLETION_LATCH_FIELDS);
+	const latch: MissionCompletionLatch = {};
+	if (record.candidateId !== undefined) latch.candidateId = text(record.candidateId, "completionLatchCandidateId", 20_000);
+	if (record.reviewStatus !== undefined) latch.reviewStatus = enumValue(record.reviewStatus, CONVERGED_REVIEW_STATUSES, "completionLatchReviewStatus");
+	return latch;
 }
 
 function reviewRevisions(value: PersistedInput, label: string): MissionReviewRevision[] {
@@ -468,6 +535,11 @@ function text(value: PersistedInput, name: string, max: number): string {
 
 function number(value: PersistedInput, name: string): number {
 	if (!isFiniteNumber(value)) throw new Error(`${name} must be finite.`);
+	return value;
+}
+
+function boolean(value: PersistedInput, name: string): boolean {
+	if (!isBoolean(value)) throw new Error(`${name} must be a boolean.`);
 	return value;
 }
 
