@@ -502,7 +502,7 @@ export function validateHostedRuntimeState<Source>(value: Source): HostedRuntime
 			claims: mapValues(state.claims, "claims", validateClaim),
 			wakes: mapValues(state.wakes, "wakes", validateWake),
 		};
-		validateReferences(result);
+		validateStateIntegrity(result);
 		return result;
 	} catch (error) {
 		throw storageError("Runtime state is malformed", error);
@@ -1063,7 +1063,7 @@ function validateWake(value: PersistedStateValue | undefined, key: string): Host
 	return result;
 }
 
-function validateReferences(state: HostedRuntimeState): void {
+function validateStateIntegrity(state: HostedRuntimeState): void {
 	let messagingRecords = Object.keys(state.messaging).length;
 	for (const grant of Object.values(state.messaging)) {
 		const sender = state.participants[grant.participantKey];
