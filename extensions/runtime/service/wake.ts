@@ -119,7 +119,7 @@ export class HostedWakeCoordinator {
 		let acknowledged = 0;
 		const state = this.store.read();
 		for (const event of Object.values(state.events)) {
-			if (!hostedEventRoutesToTarget(state, event, registration.targetKey)) continue;
+			if (!hostedEventRoutesToTarget(event, registration.targetKey)) continue;
 			if (event.delivery.status === "pending") pending++;
 			else if (event.delivery.status === "claimed") claimed++;
 			else acknowledged++;
