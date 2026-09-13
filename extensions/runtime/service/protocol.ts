@@ -357,7 +357,7 @@ function hello(id: string, value: JsonValue | undefined, context: HostedProtocol
 	};
 	if (context.degradedReason) Object.assign(capabilities, { degradedReason: context.degradedReason });
 	if (context.participants) Object.assign(capabilities, { mailbox: { maxBodyBytes: HOSTED_MAILBOX_MAX_BODY_BYTES }, task: { typedResults: true, maxBodyBytes: HOSTED_MAILBOX_MAX_BODY_BYTES } });
-	if (context.bridges) Object.assign(capabilities, { interactiveAgent: { launch: "single_use", reconnect: true, managedDelivery: ["pending", "submitting", "submitted", "needs_attention"] }, legacyBridge: { stopOnly: true } });
+	if (context.bridges) Object.assign(capabilities, { interactiveAgent: { launch: "single_use", reconnect: true, managedDelivery: ["pending", "submitting", "submitted", "needs_attention"] } });
 	if (context.workspaces) Object.assign(capabilities, { workspace: { isolatedWrite: true, stagedIntegration: true } });
 	return success(id, { version: 1, runtimeId: context.runtimeId, epoch: context.epoch, capabilities });
 }

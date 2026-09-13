@@ -2,7 +2,6 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { closeSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { quiesceBridgeRunner } from "../legacy-bridge/stop.ts";
 import type { HostedExternalTarget, HostedParticipant, HostedPiTarget, HostedTarget } from "../hosted-types.ts";
 import { HostedStateStore } from "./state.ts";
 
@@ -346,7 +345,7 @@ export class HerdrCliHostVerifier implements HostedHostVerifier {
 	}
 
 	async closeTarget(target: HostedTarget, runtimeRoot: string): Promise<"closed" | "already_absent" | "unmanaged"> {
-		if (target.kind === "bridge" || target.kind === "agent") return this.closeBridgeTarget(target, runtimeRoot);
+		if (target.kind === "bridge" || target.kind === "agent") return this.closeBridgeTarget(target);
 		let sessionFile: string;
 		try {
 			sessionFile = canonicalFile(target.piSessionFile, "collaborator session file");
@@ -375,7 +374,7 @@ export class HerdrCliHostVerifier implements HostedHostVerifier {
 		}
 	}
 
-	private async closeBridgeTarget(target: HostedExternalTarget, runtimeRoot: string): Promise<"closed" | "already_absent"> {
+	private async closeBridgeTarget(target: HostedExternalTarget): Promise<"closed" | "already_absent"> {
 		const find = async () => (await this.listAgents()).filter((agent) => target.kind === "agent" ? sameAgentSession(agent.agentSession, target.agentSession) : agent.agentSession.source === "pi-kit-bridge" && agent.agentSession.agent === "bridge" && agent.agentSession.kind === "id" && agent.agentSession.value === target.bridgeId);
 		const matches = await find();
 		if (matches.length > 1) throw new RegistrationError("identity_mismatch", "Bridge identity is not unique in Herdr.");
@@ -388,11 +387,6 @@ export class HerdrCliHostVerifier implements HostedHostVerifier {
 			if (tab.tab_id !== target.herdr.tabId || tab.workspace_id !== target.herdr.workspaceId || tab.pane_count !== 1) throw new RegistrationError("identity_mismatch", "Bridge tab identity changed before stop.");
 			try { await runHerdr(["tab", "close", target.herdr.tabId]); outcome = "closed"; }
 			catch (error) { if ((await find()).length !== 0) throw error; }
-		}
-		if (target.kind === "bridge") try {
-			await quiesceBridgeRunner(join(realpathSync(runtimeRoot), "bridges", target.bridgeId), target);
-		} catch (error) {
-			throw new RegistrationError("identity_mismatch", `Bridge stop could not prove worker quiescence: ${error instanceof Error ? error.message : String(error)}`);
 		}
 		return outcome;
 	}

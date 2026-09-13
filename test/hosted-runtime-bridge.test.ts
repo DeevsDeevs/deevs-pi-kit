@@ -186,7 +186,7 @@ describe("authoritative Runtime bridge launch", () => {
 		const wakes = new HostedWakeCoordinator(test.store);
 		const context: HostedProtocolContext = { runtimeId: "rt_test", epoch: "epoch_test", agentWake: "none", registrations: test.registrations, monitors, wakes, participants: test.participants, bridges: test.bridges };
 		const call = (method: string, params: unknown) => dispatchHostedLine(JSON.stringify({ v: 1, id: method, method, params }), context);
-		expect(await call("hello", { minVersion: 1, maxVersion: 1 })).toMatchObject({ ok: true, result: { capabilities: { interactiveAgent: { launch: "single_use", reconnect: true }, legacyBridge: { stopOnly: true } } } });
+		expect(await call("hello", { minVersion: 1, maxVersion: 1 })).toMatchObject({ ok: true, result: { capabilities: { interactiveAgent: { launch: "single_use", reconnect: true } } } });
 		const auth = { registrationId: main.registrationId, registrationKey: main.registrationKey };
 		const createParams = { ...auth, requestId: "rpc_1", callerParticipantKey: mainParticipant.participantKey, expectedCallerGeneration: mainParticipant.generation, protocol: "review", participantId: "fable", profile: "read-only", configurationHash: "c".repeat(64), herdr: { paneId: "w1:p9", terminalId: "term_bridge" } };
 		expect(await call("bridge.launch.create", { ...createParams, metadata: { secret: "no" } })).toMatchObject({ ok: false, error: { code: "invalid_request" } });

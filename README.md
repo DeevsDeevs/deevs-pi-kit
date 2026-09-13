@@ -176,7 +176,6 @@ npm run smoke:runtime-release       # isolated Monitor release gate; requires He
 npm run smoke:collaborator-release       # Manual production collaborator + Mission completion-once gate
 npm run smoke:collaborator-auto-release  # Auto launch with effective read-only profile + the same recovery gate
 npm run smoke:native-release             # deterministic interactive-target + isolated Git integration gate
-# smoke:native-live is a historical automatic-prompt gate; do not use it for the current no-injection workflow.
 ```
 
-`npm run check` runs typechecking, tests, RPC/print/JSON mode smokes, the lockfile audit, and a package dry run. The isolated Runtime/Collaborator gates are separate because they start real Herdr and Pi processes. The deterministic native gate exercises Runtime's interactive-target and workspace boundary. The historical `smoke:native-live` script directly submits native prompts and tests the former guarded-writer policy; it is not the current normal-configuration/MCP acceptance gate and must not be used to bypass the no-injection requirement. Its recorded Herdr 0.8.2 / Claude Code 2.1.251 / Codex 0.151.0 results do not certify the current three-harness workflow.
+`npm run check` runs typechecking, tests, RPC/print/JSON mode smokes, the lockfile audit, and a package dry run. The isolated Runtime/Collaborator gates are separate because they start real Herdr and Pi processes. The deterministic native gate exercises Runtime's interactive-target and workspace boundary.
