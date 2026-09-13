@@ -1,5 +1,11 @@
-import { HOSTED_BRIDGE_MAX_METADATA_ENTRIES, HOSTED_BRIDGE_MAX_METADATA_VALUE_BYTES, HOSTED_MAILBOX_MAX_BODY_BYTES, HOSTED_MAX_DELIVERY_BATCH, HOSTED_MONITOR_MAX_ENTRIES, HOSTED_PROTOCOL_VERSION, type HostedAgentSessionIdentity, type HostedMonitor } from "../hosted-types.ts";
-import { RuntimeBridgeCoordinator, type BridgeReconnectInput, type BridgeRegisterInput, type CreateBridgeLaunchInput } from "./bridge.ts";
+import {
+	HOSTED_MAILBOX_MAX_BODY_BYTES,
+	HOSTED_MAX_DELIVERY_BATCH,
+	HOSTED_MONITOR_MAX_ENTRIES,
+	HOSTED_PROTOCOL_VERSION,
+	type HostedMonitor,
+} from "../hosted-types.ts";
+import { RuntimeAgentBinder, type BindAgentInput, type BoundAgentResult } from "./bridge.ts";
 import { DirectoryMonitorManager } from "./monitor.ts";
 import { RuntimeMessaging, type MessagingInput } from "./messaging.ts";
 import { HostedParticipantCoordinator } from "./participant.ts";
@@ -39,7 +45,7 @@ export interface HostedProtocolContext {
 	monitors?: DirectoryMonitorManager;
 	wakes?: HostedWakeCoordinator;
 	participants?: HostedParticipantCoordinator;
-	bridges?: RuntimeBridgeCoordinator;
+	bridges?: RuntimeAgentBinder;
 	worktrees?: RuntimeWorktrees;
 }
 
@@ -118,29 +124,11 @@ export async function dispatchHostedLine(line: string, context: HostedProtocolCo
 			if (parsed.method === "worktree.ensure") return success(id, await worktrees.ensure(caller, parsed.input));
 			return success(id, await worktrees.remove(caller, parsed.input));
 		}
-		if (method === "bridge.register" || method === "bridge.reconnect") {
-			if (!bridges) return failure(id, "capability_unavailable", "Runtime bridge registration is unavailable in this process.");
-			const result = method === "bridge.register" ? await bridges.register(bridgeRegisterParams(params)) : await bridges.reconnect(bridgeReconnectParams(params));
-			return success(id, bridgeRegistrationResult(result));
-		}
-		if (method === "bridge.launch.create") {
-			if (!bridges) return failure(id, "capability_unavailable", "Runtime bridge launch authority is unavailable in this process.");
-			const parsed = bridgeLaunchParams(params);
+		if (method === "bridge.bind") {
+			if (!bridges) return failure(id, "capability_unavailable", "Runtime Herdr agent binding is unavailable in this process.");
+			const parsed = bindAgentParams(params);
 			const caller = registrations.authorize(parsed.registrationId, parsed.registrationKey);
-			return success(id, await bridges.create(caller, parsed.input));
-		}
-		if (method === "bridge.launch.recover") {
-			if (!bridges) return failure(id, "capability_unavailable", "Runtime bridge launch authority is unavailable in this process.");
-			const parsed = bridgeRecoverParams(params);
-			const caller = registrations.authorize(parsed.registrationId, parsed.registrationKey);
-			return success(id, { launch: bridges.recoverLaunch(caller, parsed.input) });
-		}
-		if (method === "bridge.launch.cancel") {
-			if (!bridges) return failure(id, "capability_unavailable", "Runtime bridge launch authority is unavailable in this process.");
-			const parsed = bridgeCancelParams(params);
-			const caller = registrations.authorize(parsed.registrationId, parsed.registrationKey);
-			bridges.cancel(caller, parsed.input);
-			return success(id, { cancelled: true });
+			return success(id, boundAgentResult(await bridges.bind(caller, parsed.input)));
 		}
 		if (method === "bridge.heartbeat") {
 			const auth = authParams(params);
@@ -201,18 +189,6 @@ export async function dispatchHostedLine(line: string, context: HostedProtocolCo
 			const registration = registrations.authorize(input.registrationId, input.registrationKey);
 			if (method === "inbox.ack") wakes.ack(registration, input.claimId, input.eventIds);
 			else wakes.release(registration, input.claimId, input.eventIds);
-			return success(id, { settled: true });
-		}
-		if (method === "inbox.submit_begin" || method === "inbox.submit_settle") {
-			const input = strictObject(params, `${method} params`, ["registrationId", "registrationKey", "claimId", "eventIds", "attemptId", "outcome"]);
-			const registration = registrations.authorize(boundedText(input.registrationId, "registration ID", 200), boundedText(input.registrationKey, "registration key", 200));
-			const eventIds = boundedArray(input.eventIds, "event IDs", HOSTED_MAX_DELIVERY_BATCH).map((eventId) => boundedText(eventId, "event ID", 200));
-			const attemptId = boundedText(input.attemptId, "submission attempt ID", 200);
-			if (method === "inbox.submit_begin") wakes.submitBegin(registration, boundedText(input.claimId, "claim ID", 200), eventIds, attemptId);
-			else {
-				if (input.outcome !== "submitted" && input.outcome !== "pending" && input.outcome !== "needs_attention") throw new Error("managed submission outcome is invalid");
-				wakes.submitSettle(registration, boundedText(input.claimId, "claim ID", 200), eventIds, attemptId, input.outcome);
-			}
 			return success(id, { settled: true });
 		}
 		if (method === "inbox.status") {
@@ -302,7 +278,7 @@ function hello(id: string, value: JsonValue | undefined, context: HostedProtocol
 	};
 	if (context.degradedReason) Object.assign(capabilities, { degradedReason: context.degradedReason });
 	if (context.participants) Object.assign(capabilities, { mailbox: { maxBodyBytes: HOSTED_MAILBOX_MAX_BODY_BYTES } });
-	if (context.bridges) Object.assign(capabilities, { interactiveAgent: { launch: "single_use", reconnect: true, managedDelivery: ["pending", "submitting", "submitted", "needs_attention"] } });
+	if (context.bridges) Object.assign(capabilities, { interactiveAgent: { bind: "herdr_agent_name" } });
 	if (context.worktrees) Object.assign(capabilities, { worktree: { isolatedWrite: true } });
 	return success(id, { version: 1, runtimeId: context.runtimeId, epoch: context.epoch, capabilities });
 }
@@ -346,18 +322,6 @@ interface AuthorizedParams<T> extends RegistrationAuth {
 	input: T;
 }
 
-interface BridgeRecoverInput {
-	callerParticipantKey: string;
-	expectedCallerGeneration: string;
-	requestId: string;
-}
-
-interface BridgeCancelInput {
-	callerParticipantKey: string;
-	expectedCallerGeneration: string;
-	launchId: string;
-}
-
 type WorktreeParams =
 	| { method: "worktree.list" }
 	| ({ method: "worktree.ensure" } & AuthorizedParams<EnsureWorktreeInput>)
@@ -384,80 +348,34 @@ function worktreeParams(value: JsonValue | undefined, method: string): WorktreeP
 	return { method, registrationId, registrationKey, input: { ...input, discardConfirmed: params.discardConfirmed } };
 }
 
-function bridgeLaunchParams(value: JsonValue | undefined): AuthorizedParams<CreateBridgeLaunchInput> {
-	const params = strictObject(value, "bridge.launch.create params", ["registrationId", "registrationKey", "requestId", "launchId", "callerParticipantKey", "expectedCallerGeneration", "protocol", "participantId", "expectedParticipantGeneration", "profile", "configurationHash", "driver", "herdr", "metadata"]);
-	if (params.profile !== "read-only" && params.profile !== "workspace-write") throw new Error("bridge profile must be read-only or workspace-write");
-	const herdr = strictObject(params.herdr, "bridge launch Herdr identity", ["paneId", "terminalId"]);
-	const metadata = strictObject(params.metadata ?? {}, "bridge metadata");
-	const metadataEntries = Object.entries(metadata);
-	if (metadataEntries.length > HOSTED_BRIDGE_MAX_METADATA_ENTRIES) throw new Error(`bridge metadata may contain at most ${HOSTED_BRIDGE_MAX_METADATA_ENTRIES} entries`);
-	const parsedMetadata = Object.fromEntries(metadataEntries.map(([key, item]) => {
-		if (key !== "adapter") throw new Error("bridge metadata key is not allowlisted");
-		if (!isText(item) || Buffer.byteLength(item) > HOSTED_BRIDGE_MAX_METADATA_VALUE_BYTES) throw new Error("bridge metadata value exceeds its byte limit");
-		return [key, item];
-	}));
-	const input: CreateBridgeLaunchInput = {
-		requestId: boundedText(params.requestId, "request ID", 200),
-		callerParticipantKey: boundedText(params.callerParticipantKey, "caller participant key", 200),
-		expectedCallerGeneration: boundedText(params.expectedCallerGeneration, "expected caller generation", 200),
+function bindAgentParams(value: JsonValue | undefined): AuthorizedParams<BindAgentInput> {
+	const allowed = [
+		"registrationId", "registrationKey", "agentName", "driver", "profile", "clientGeneration",
+		"protocol", "participantId", "callerParticipantKey", "expectedCallerGeneration", "expectedParticipantGeneration",
+	];
+	const params = strictObject(value, "bridge.bind params", allowed);
+	if (params.profile !== "read-only" && params.profile !== "workspace-write") {
+		throw new Error("collaborator profile must be read-only or workspace-write");
+	}
+	const input: BindAgentInput = {
+		agentName: boundedText(params.agentName, "Herdr agent name", 64),
+		driver: nativeDriver(params.driver),
+		profile: params.profile,
+		clientGeneration: boundedText(params.clientGeneration, "client generation", 200),
 		protocol: participantName(params.protocol, "protocol"),
 		participantId: participantName(params.participantId, "participant ID"),
-		profile: params.profile,
-		configurationHash: boundedText(params.configurationHash, "configuration hash", 64),
-		herdr: { paneId: boundedText(herdr.paneId, "Herdr pane ID", 200), terminalId: boundedText(herdr.terminalId, "Herdr terminal ID", 200) },
-		metadata: parsedMetadata,
+		callerParticipantKey: boundedText(params.callerParticipantKey, "caller participant key", 200),
+		expectedCallerGeneration: boundedText(params.expectedCallerGeneration, "expected caller generation", 200),
 	};
-	if (params.launchId !== undefined) input.launchId = boundedText(params.launchId, "launch ID", 200);
-	if (params.expectedParticipantGeneration !== undefined) input.expectedParticipantGeneration = boundedText(params.expectedParticipantGeneration, "expected participant generation", 200);
-	if (params.driver !== undefined) input.driver = nativeDriver(params.driver);
+	if (params.expectedParticipantGeneration !== undefined) {
+		input.expectedParticipantGeneration = boundedText(params.expectedParticipantGeneration, "expected participant generation", 200);
+	}
 	return { registrationId: boundedText(params.registrationId, "registration ID", 200), registrationKey: boundedText(params.registrationKey, "registration key", 200), input };
-}
-
-function bridgeRecoverParams(value: JsonValue | undefined): AuthorizedParams<BridgeRecoverInput> {
-	const params = strictObject(value, "bridge.launch.recover params", ["registrationId", "registrationKey", "requestId", "callerParticipantKey", "expectedCallerGeneration"]);
-	return { registrationId: boundedText(params.registrationId, "registration ID", 200), registrationKey: boundedText(params.registrationKey, "registration key", 200), input: { requestId: boundedText(params.requestId, "request ID", 200), callerParticipantKey: boundedText(params.callerParticipantKey, "caller participant key", 200), expectedCallerGeneration: boundedText(params.expectedCallerGeneration, "expected caller generation", 200) } };
-}
-
-function bridgeCancelParams(value: JsonValue | undefined): AuthorizedParams<BridgeCancelInput> {
-	const params = strictObject(value, "bridge.launch.cancel params", ["registrationId", "registrationKey", "launchId", "callerParticipantKey", "expectedCallerGeneration"]);
-	return { registrationId: boundedText(params.registrationId, "registration ID", 200), registrationKey: boundedText(params.registrationKey, "registration key", 200), input: { launchId: boundedText(params.launchId, "launch ID", 200), callerParticipantKey: boundedText(params.callerParticipantKey, "caller participant key", 200), expectedCallerGeneration: boundedText(params.expectedCallerGeneration, "expected caller generation", 200) } };
-}
-
-function bridgeRegisterParams(value: JsonValue | undefined): BridgeRegisterInput {
-	const params = strictObject(value, "bridge.register params", ["launchToken", "reconnectToken", "clientGeneration", "admittedClaims", "herdr", "agentSession"]);
-	const input: BridgeRegisterInput = { launchToken: boundedText(params.launchToken, "bridge launch token", 512), reconnectToken: boundedText(params.reconnectToken, "bridge reconnect token", 200), clientGeneration: boundedText(params.clientGeneration, "client generation", 200), admittedClaims: admittedClaimParams(params.admittedClaims), herdr: bridgeRegistrationHerdr(params.herdr) };
-	if (params.agentSession !== undefined) input.agentSession = agentSession(params.agentSession);
-	return input;
-}
-
-function bridgeReconnectParams(value: JsonValue | undefined): BridgeReconnectInput {
-	const params = strictObject(value, "bridge.reconnect params", ["targetKey", "reconnectToken", "clientGeneration", "admittedClaims", "herdr"]);
-	return { targetKey: boundedText(params.targetKey, "bridge target key", 200), reconnectToken: boundedText(params.reconnectToken, "bridge reconnect token", 200), clientGeneration: boundedText(params.clientGeneration, "client generation", 200), admittedClaims: admittedClaimParams(params.admittedClaims), herdr: bridgeRegistrationHerdr(params.herdr) };
 }
 
 function nativeDriver(value: JsonValue | undefined): "claude-code" | "codex" {
 	if (value !== "claude-code" && value !== "codex") throw new Error("native collaborator driver must be claude-code or codex");
 	return value;
-}
-
-function agentSession(value: JsonValue | undefined): HostedAgentSessionIdentity {
-	const session = strictObject(value, "interactive agent session", ["source", "agent", "kind", "value"]);
-	if (session.kind !== "id" && session.kind !== "path") throw new Error("interactive agent session kind is invalid");
-	return { source: boundedText(session.source, "agent session source", 200), agent: boundedText(session.agent, "agent session agent", 64), kind: session.kind, value: boundedText(session.value, "agent session value", 8 * 1024) };
-}
-
-function bridgeRegistrationHerdr(value: JsonValue | undefined): BridgeRegisterInput["herdr"] {
-	const herdr = strictObject(value, "bridge registration Herdr identity", ["paneId", "terminalId"]);
-	return { paneId: boundedText(herdr.paneId, "Herdr pane ID", 200), terminalId: boundedText(herdr.terminalId, "Herdr terminal ID", 200) };
-}
-
-function admittedClaimParams(value: JsonValue | undefined): Array<{ claimId: string; eventIds: string[] }> {
-	return boundedArray(value, "admittedClaims", 12).map((item, index) => {
-		const receipt = strictObject(item, `admittedClaims[${index}]`, ["claimId", "eventIds"]);
-		const eventIds = boundedArray(receipt.eventIds, `admittedClaims[${index}].eventIds`, HOSTED_MAX_DELIVERY_BATCH).map((eventId) => boundedText(eventId, "event ID", 200));
-		if (new Set(eventIds).size !== eventIds.length) throw new Error("Admitted claim event IDs must be unique.");
-		return { claimId: boundedText(receipt.claimId, "claim ID", 200), eventIds };
-	});
 }
 
 function authParams(value: JsonValue | undefined): RegistrationAuth {
@@ -506,10 +424,17 @@ function registrationResult(registration: Awaited<ReturnType<RuntimeRegistration
 	};
 }
 
-function bridgeRegistrationResult(result: Awaited<ReturnType<RuntimeBridgeCoordinator["register"]>>) {
-	const value = { ...registrationResult(result.registration), participantKey: result.participantKey, holderGeneration: result.holderGeneration, profile: result.profile, configurationHash: result.configurationHash, projectRoot: result.projectRoot, cwd: result.cwd, metadata: result.metadata };
-	if (result.driver) Object.assign(value, { driver: result.driver, agentSession: result.agentSession });
-	return value;
+function boundAgentResult(result: BoundAgentResult) {
+	return {
+		...registrationResult(result.registration),
+		participantKey: result.participantKey,
+		holderGeneration: result.holderGeneration,
+		driver: result.driver,
+		profile: result.profile,
+		agentSession: result.agentSession,
+		projectRoot: result.projectRoot,
+		cwd: result.cwd,
+	};
 }
 
 function monitorResult(monitor: HostedMonitor) {
@@ -543,7 +468,18 @@ function errorCode(cause: unknown): HostedErrorCode {
 	return "internal";
 }
 
-const HOSTED_METHODS = new Set(["messaging.reference", "messaging.issue", "messaging.peers", "messaging.send", "messaging.status", "messaging.receive", "messaging.received", "messaging.reply", "pi.register", "pi.heartbeat", "pi.unregister", "bridge.launch.create", "bridge.launch.recover", "bridge.launch.cancel", "bridge.register", "bridge.reconnect", "bridge.heartbeat", "bridge.unregister", "worktree.ensure", "worktree.list", "worktree.remove", "monitor.create", "monitor.get", "monitor.delete", "wake.accept", "inbox.claim", "inbox.ack", "inbox.release", "inbox.submit_begin", "inbox.submit_settle", "inbox.status", "participant.acquire", "participant.get", "participant.list", "participant.stand_down", "participant.stand_down_confirmed", "participant.stop_confirmed", "participant.release", "participant.takeover", "mailbox.send", "mailbox.status"]);
+const HOSTED_METHODS = new Set([
+	"messaging.reference", "messaging.issue", "messaging.peers", "messaging.send", "messaging.status",
+	"messaging.receive", "messaging.received", "messaging.reply",
+	"pi.register", "pi.heartbeat", "pi.unregister",
+	"bridge.bind", "bridge.heartbeat", "bridge.unregister",
+	"worktree.ensure", "worktree.list", "worktree.remove",
+	"monitor.create", "monitor.get", "monitor.delete",
+	"wake.accept", "inbox.claim", "inbox.ack", "inbox.release", "inbox.status",
+	"participant.acquire", "participant.get", "participant.list", "participant.stand_down",
+	"participant.stand_down_confirmed", "participant.stop_confirmed", "participant.release", "participant.takeover",
+	"mailbox.send", "mailbox.status",
+]);
 
 const ERROR_CODES: ReadonlySet<string> = new Set([
 	"invalid_request", "unsupported_version", "capability_unavailable", "not_found", "conflict", "registration_stale", "identity_mismatch", "claim_conflict", "host_unavailable", "busy", "storage_error", "internal",

@@ -2,12 +2,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { HostedTarget } from "../extensions/runtime/hosted-types.ts";
+import type { HostedAgentTarget, HostedTarget } from "../extensions/runtime/hosted-types.ts";
 import { DirectoryMonitorManager } from "../extensions/runtime/service/monitor.ts";
 import { HostedParticipantCoordinator, HostedParticipantError } from "../extensions/runtime/service/participant.ts";
 import { dispatchHostedLine, type HostedProtocolContext } from "../extensions/runtime/service/protocol.ts";
 import { RuntimeRegistrationManager, type HostedHostVerifier, type HostedLiveAgent, type HostedLiveRegistration, type RegisterPiInput } from "../extensions/runtime/service/registration.ts";
-import { HostedStateStore, pendingHostedEvents } from "../extensions/runtime/service/state.ts";
+import { deriveAgentTargetKey, HostedStateStore, pendingHostedEvents } from "../extensions/runtime/service/state.ts";
 import { HostedWakeCoordinator } from "../extensions/runtime/service/wake.ts";
 
 const roots: string[] = [];
@@ -17,7 +17,7 @@ class MultiHost implements HostedHostVerifier {
 	readonly agents = new Map<string, HostedLiveAgent>();
 	prompts: Array<{ paneId: string; text: string }> = [];
 
-	async getPane(paneId: string): Promise<HostedLiveAgent> {
+	async getAgent(paneId: string): Promise<HostedLiveAgent> {
 		const agent = this.agents.get(paneId);
 		if (!agent) throw Object.assign(new Error("missing pane"), { code: "identity_mismatch" });
 		return agent;
@@ -105,17 +105,29 @@ describe("hosted participant coordinator", () => {
 		expect(() => test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "send_1", "Changed.")).toThrow(expect.objectContaining({ code: "conflict" }));
 	});
 
-	it("excludes ordinary managed mail and preserves Monitor submission", async () => {
+	it("excludes ordinary managed mail from the bound agent inbox and preserves Monitor delivery", async () => {
 		const test = setup();
 		const { main, fable, mainParticipant, fableParticipant } = await acquirePair(test);
 		const vacant = test.participants.standDown(fable, fableParticipant.participantKey);
-		const managedTarget: HostedTarget = {
-			kind: "agent", targetKey: "target_managed", projectRoot: test.projectRoot, bridgeId: "launch_managed", driver: "codex", agentSession: { source: "herdr:codex", agent: "codex", kind: "id", value: "session_managed" }, participantKey: fableParticipant.participantKey, holderGeneration: "lease_4", profile: "read-only", configurationHash: "a".repeat(64), clientGeneration: "agent_client", reconnectDigest: "b".repeat(64), herdr: { paneId: "w1:p9", terminalId: "terminal_managed", tabId: "w1:t9", workspaceId: "w1" }, metadata: { adapter: "herdr-agent-v1" }, createdAt: 1_000,
+		const agentName = "collab-managed";
+		const managedTarget: HostedAgentTarget = {
+			kind: "agent",
+			targetKey: deriveAgentTargetKey(test.projectRoot, agentName),
+			projectRoot: test.projectRoot,
+			agentName,
+			driver: "codex",
+			agentSession: { source: "herdr:codex", agent: "codex", kind: "id", value: "session_managed" },
+			participantKey: fableParticipant.participantKey,
+			holderGeneration: "lease_managed",
+			profile: "read-only",
+			clientGeneration: "agent_client",
+			herdr: { paneId: "w1:p9", terminalId: "terminal_managed", tabId: "w1:t9", workspaceId: "w1" },
+			createdAt: 1_000,
 		};
-		test.store.apply({ type: "bridge.launch.ensure", launch: { version: 1, launchId: "launch_managed", requestId: "request_managed", launchDigest: "c".repeat(64), reconnectDigest: "b".repeat(64), callerParticipantKey: mainParticipant.participantKey, callerGeneration: mainParticipant.generation, callerTargetKey: main.targetKey, participantKey: fableParticipant.participantKey, protocol: "review", participantId: "fable", expectedParticipantGeneration: vacant.generation, holderGeneration: "lease_4", targetKey: managedTarget.targetKey, projectRoot: test.projectRoot, profile: "read-only", configurationHash: "a".repeat(64), driver: "codex", herdr: managedTarget.herdr, metadata: { adapter: "herdr-agent-v1" }, createdAt: 1_000, expiresAt: 31_000, status: "pending" } });
-		test.store.apply({ type: "bridge.launch.consume", launchId: "launch_managed", launchDigest: "c".repeat(64), clientGeneration: "agent_client", target: managedTarget, at: 1_001 });
-		const managedRegistration: HostedLiveRegistration = { targetKey: managedTarget.targetKey, registrationId: "reg_managed", registrationKey: "key_managed", clientGeneration: "agent_client", leaseUntil: 31_000, host: { paneId: "w1:p9", terminalId: "terminal_managed", cwd: test.projectRoot, agentSession: managedTarget.agentSession!, status: "idle", stateChangeSeq: 1 } };
+		test.store.apply({ type: "agent.bind", bind: { target: managedTarget, protocol: "review", participantId: "fable", callerTargetKey: main.targetKey, callerParticipantKey: mainParticipant.participantKey, callerGeneration: mainParticipant.generation, expectedParticipantGeneration: vacant.generation, at: 1_001 } });
+		const managedRegistration: HostedLiveRegistration = { targetKey: managedTarget.targetKey, registrationId: "reg_managed", registrationKey: "key_managed", clientGeneration: "agent_client", leaseUntil: 31_000, host: { paneId: "w1:p9", terminalId: "terminal_managed", cwd: test.projectRoot, agentSession: managedTarget.agentSession, status: "idle", stateChangeSeq: 1 } };
 		const managed = test.participants.get(main, fableParticipant.participantKey);
+		expect(managed).toMatchObject({ state: "held", holderTargetKey: managedTarget.targetKey, generation: "lease_managed" });
 		expect(test.participants.list(main).find((participant) => participant.participantId === "fable")).toMatchObject({ driver: "codex", profile: "read-only" });
 		const ordinary = test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, managed.participantKey, "send_managed", "Please inspect.");
 		let managedClaim = 0;
@@ -130,25 +142,16 @@ describe("hosted participant coordinator", () => {
 			monitors.reconcile(monitor.monitorId);
 			return Object.values(test.store.read().events).find(event => event.type === "filesystem.created" && event.payload.relativePath === name)!;
 		};
-		const message = nativeEvent("submit.txt");
+		const message = nativeEvent("monitored.txt");
 		const claim = wakes.claim(managedRegistration, 1);
 		expect(claim.events.map((event) => event.eventId)).toEqual([message.eventId]);
-		wakes.submitBegin(managedRegistration, claim.claim.claimId, claim.claim.eventIds, "attempt_1");
-		expect(test.store.read().events[message.eventId]?.delivery.status).toBe("submitting");
-		wakes.submitSettle(managedRegistration, claim.claim.claimId, claim.claim.eventIds, "attempt_1", "submitted");
-		expect(test.store.read().events[message.eventId]?.delivery.status).toBe("submitted");
-		expect(wakes.status(managedRegistration).submitted).toBe(1);
-		const ambiguous = nativeEvent("ambiguous.txt");
+		expect(wakes.status(managedRegistration)).toMatchObject({ pending: 0, claimed: 1, acknowledged: 0 });
+		wakes.ack(managedRegistration, claim.claim.claimId, claim.claim.eventIds);
+		expect(test.store.read().events[message.eventId]?.delivery.status).toBe("acked");
+		const released = nativeEvent("released.txt");
 		const second = wakes.claim(managedRegistration, 1);
-		wakes.submitBegin(managedRegistration, second.claim.claimId, second.claim.eventIds, "attempt_2");
-		wakes.submitSettle(managedRegistration, second.claim.claimId, second.claim.eventIds, "attempt_2", "needs_attention");
-		expect(test.store.read().events[ambiguous.eventId]?.delivery.status).toBe("needs_attention");
-		expect(wakes.status(managedRegistration).needsAttention).toBe(1);
-		const rejected = nativeEvent("rejected.txt");
-		const third = wakes.claim(managedRegistration, 1);
-		wakes.submitBegin(managedRegistration, third.claim.claimId, third.claim.eventIds, "attempt_3");
-		wakes.submitSettle(managedRegistration, third.claim.claimId, third.claim.eventIds, "attempt_3", "pending");
-		expect(pendingHostedEvents(test.store.read(), managedTarget.targetKey).map((event) => event.eventId)).toEqual([rejected.eventId]);
+		wakes.release(managedRegistration, second.claim.claimId, second.claim.eventIds);
+		expect(pendingHostedEvents(test.store.read(), managedTarget.targetKey).map((event) => event.eventId)).toEqual([released.eventId]);
 	});
 
 	it("rejects cross-protocol send after a target changes identity", async () => {

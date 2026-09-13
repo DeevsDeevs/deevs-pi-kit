@@ -1,241 +1,174 @@
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { HOSTED_BRIDGE_MAX_METADATA_ENTRIES, HOSTED_BRIDGE_MAX_METADATA_VALUE_BYTES, type HostedAgentSessionIdentity, type HostedBridgeLaunch, type HostedExternalTarget, type HostedCollaboratorProfile, type HostedNativeCollaboratorDriver } from "../hosted-types.ts";
-import { RuntimeRegistrationManager, type HostedHostVerifier, type HostedLiveRegistration, type RegisterBridgeInput } from "./registration.ts";
-import { deriveBridgeTargetKey, deriveParticipantKey, HostedStateStore } from "./state.ts";
+import type {
+	HostedAgentBind,
+	HostedAgentSessionIdentity,
+	HostedAgentTarget,
+	HostedCollaboratorProfile,
+	HostedHerdrLocator,
+	HostedNativeCollaboratorDriver,
+} from "../hosted-types.ts";
+import { RuntimeRegistrationManager, type HostedHostVerifier, type HostedLiveAgent, type HostedLiveRegistration } from "./registration.ts";
+import { deriveAgentTargetKey, deriveParticipantKey, HostedStateStore } from "./state.ts";
 import { isProjectWorktree } from "./worktree.ts";
 
-const DEFAULT_LAUNCH_LEASE_MS = 30_000;
-const TOKEN = /^bridge_launch_([A-Za-z0-9_-]{1,200})\.([A-Za-z0-9_-]{43})$/;
-const SECRET = /^[A-Za-z0-9_-]{43}$/;
-const HASH = /^[0-9a-f]{64}$/;
 const NAME = /^[a-z][a-z0-9_-]{0,63}$/;
-const ALLOWED_METADATA = new Set(["adapter"]);
+const AGENT_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
-export class HostedBridgeError extends Error {
-	readonly code: "invalid_request" | "not_found" | "conflict" | "capability_unavailable" | "identity_mismatch";
+class AgentBindError extends Error {
+	readonly code: "invalid_request" | "conflict" | "identity_mismatch";
 
-	constructor(code: HostedBridgeError["code"], message: string) {
+	constructor(code: AgentBindError["code"], message: string) {
 		super(message);
 		this.code = code;
 	}
 }
 
-export interface CreateBridgeLaunchInput {
-	requestId: string;
-	launchId?: string;
-	callerParticipantKey: string;
-	expectedCallerGeneration: string;
+export interface BindAgentInput {
+	agentName: string;
+	driver: HostedNativeCollaboratorDriver;
+	profile: HostedCollaboratorProfile;
+	clientGeneration: string;
 	protocol: string;
 	participantId: string;
+	callerParticipantKey: string;
+	expectedCallerGeneration: string;
 	expectedParticipantGeneration?: string;
-	profile: HostedCollaboratorProfile;
-	configurationHash: string;
-	driver?: HostedNativeCollaboratorDriver;
-	herdr: { paneId: string; terminalId: string };
-	metadata?: Record<string, string>;
 }
 
-export interface BridgeRegisterInput extends RegisterBridgeInput {
-	launchToken: string;
-	reconnectToken: string;
-	agentSession?: HostedAgentSessionIdentity;
-}
-
-export interface BridgeReconnectInput extends RegisterBridgeInput {
+export interface BoundAgentResult {
+	registration: HostedLiveRegistration;
 	targetKey: string;
-	reconnectToken: string;
+	participantKey: string;
+	holderGeneration: string;
+	driver: HostedNativeCollaboratorDriver;
+	profile: HostedCollaboratorProfile;
+	agentSession: HostedAgentSessionIdentity;
+	projectRoot: string;
+	cwd: string;
 }
 
-export interface BridgeCoordinatorOptions {
+export interface AgentBinderOptions {
 	now?: () => number;
-	leaseMs?: number;
-	createId?: () => string;
 	createGeneration?: () => string;
-	createSecret?: () => string;
 }
 
-export class RuntimeBridgeCoordinator {
+/** Verifies one exact live Herdr agent by name and binds it to a target and participant lease. */
+export class RuntimeAgentBinder {
 	private readonly store: HostedStateStore;
 	private readonly registrations: RuntimeRegistrationManager;
 	private readonly host: HostedHostVerifier;
-	private readonly options: BridgeCoordinatorOptions;
+	private readonly options: AgentBinderOptions;
 
-	constructor(store: HostedStateStore, registrations: RuntimeRegistrationManager, host: HostedHostVerifier, options: BridgeCoordinatorOptions = {}) {
+	constructor(
+		store: HostedStateStore,
+		registrations: RuntimeRegistrationManager,
+		host: HostedHostVerifier,
+		options: AgentBinderOptions = {},
+	) {
 		this.store = store;
 		this.registrations = registrations;
 		this.host = host;
 		this.options = options;
 	}
 
-	async create(caller: HostedLiveRegistration, input: CreateBridgeLaunchInput): Promise<{ launchId: string; targetKey: string; holderGeneration: string; expiresAt: number; launchToken: string; reconnectToken: string; herdr: HostedBridgeLaunch["herdr"] }> {
-		const state = this.store.read();
-		const callerTarget = state.targets[caller.targetKey];
-		if (callerTarget?.kind !== "pi") throw new HostedBridgeError("conflict", "Only an authenticated Pi target may authorize a bridge launch.");
+	async bind(caller: HostedLiveRegistration, input: BindAgentInput): Promise<BoundAgentResult> {
+		const callerTarget = this.store.read().targets[caller.targetKey];
+		if (callerTarget?.kind !== "pi") {
+			throw new AgentBindError("conflict", "Only an authenticated Pi target may bind a Herdr agent collaborator.");
+		}
 		const projectRoot = realpathSync(callerTarget.projectRoot);
-		const protocol = participantName(input.protocol, "protocol");
-		const participantId = participantName(input.participantId, "participant ID");
-		const requestId = bounded(input.requestId, "request ID", 200);
-		const callerParticipantKey = bounded(input.callerParticipantKey, "caller participant key", 200);
-		const callerGeneration = bounded(input.expectedCallerGeneration, "caller generation", 200);
-		const expectedParticipantGeneration = input.expectedParticipantGeneration ? bounded(input.expectedParticipantGeneration, "expected participant generation", 200) : undefined;
-		const configurationHash = digest(input.configurationHash, "configuration hash");
-		if (input.profile !== "read-only" && input.profile !== "workspace-write") throw new HostedBridgeError("invalid_request", "Bridge profile must be read-only or workspace-write.");
-		if (input.driver !== undefined && input.driver !== "claude-code" && input.driver !== "codex") throw new HostedBridgeError("invalid_request", "Interactive bridge driver must be claude-code or codex.");
-		const metadata = bridgeMetadata(input.metadata ?? {});
-		const requestedLaunchId = input.launchId === undefined ? undefined : bounded(input.launchId, "launch ID", 200);
-		const prior = Object.values(state.bridgeLaunches).find((candidate) => candidate.callerTargetKey === caller.targetKey && candidate.requestId === requestId);
-		if (prior) {
-			if (prior.callerParticipantKey !== callerParticipantKey || prior.callerGeneration !== callerGeneration || prior.protocol !== protocol || prior.participantId !== participantId || prior.expectedParticipantGeneration !== expectedParticipantGeneration || prior.profile !== input.profile || prior.configurationHash !== configurationHash || prior.driver !== input.driver || requestedLaunchId !== undefined && prior.launchId !== requestedLaunchId || JSON.stringify(prior.metadata) !== JSON.stringify(metadata)) throw new HostedBridgeError("conflict", "Bridge request ID was reused with different authority.");
-			throw new HostedBridgeError("conflict", `Bridge request ${requestId} already exists and requires explicit recovery.`);
+		const agentName = boundedName(input.agentName, AGENT_NAME, "Herdr agent name");
+		const protocol = boundedName(input.protocol, NAME, "protocol");
+		const participantId = boundedName(input.participantId, NAME, "participant ID");
+		const clientGeneration = bounded(input.clientGeneration, "client generation", 200);
+		const verified = await this.host.getAgent(agentName);
+		const cwd = agentCwd(verified);
+		const worktreePath = cwd === projectRoot ? undefined : cwd;
+		if (worktreePath !== undefined && !await isWritableWorktree(worktreePath, projectRoot, input.profile)) {
+			throw new AgentBindError("identity_mismatch", "Herdr agent cwd is neither the project root nor a workspace-write worktree of it.");
 		}
-		if (!this.host.getPaneIdentity) throw new HostedBridgeError("capability_unavailable", "Herdr pane identity verification is unavailable.");
-		const pane = await this.host.getPaneIdentity(input.herdr.paneId);
-		if (pane.paneId !== input.herdr.paneId || pane.terminalId !== input.herdr.terminalId || pane.paneCount !== 1 || pane.agent !== undefined) throw new HostedBridgeError("identity_mismatch", "Bridge launch pane is not the exact empty single-pane Herdr target.");
-		let paneRoot: string;
-		try { paneRoot = realpathSync(pane.cwd); } catch { throw new HostedBridgeError("identity_mismatch", "Bridge pane cwd is unavailable."); }
-		const worktreePath = paneRoot === projectRoot ? undefined : paneRoot;
-		if (worktreePath !== undefined && (input.profile !== "workspace-write" || !await isProjectWorktree(worktreePath, projectRoot))) throw new HostedBridgeError("identity_mismatch", "Bridge pane cwd is neither the project root nor a workspace-write Git worktree of it.");
-		const launchId = requestedLaunchId ?? this.options.createId?.() ?? `launch_${randomUUID()}`;
-		if (!/^[A-Za-z0-9_-]{1,200}$/.test(launchId)) throw new HostedBridgeError("invalid_request", "Bridge launch ID has invalid syntax.");
-		const holderGeneration = this.options.createGeneration?.() ?? `lease_${randomUUID()}`;
-		const launchSecret = secret(this.options.createSecret?.() ?? randomBytes(32).toString("base64url"));
-		const reconnectSecret = secret(this.options.createSecret?.() ?? randomBytes(32).toString("base64url"));
-		const launchToken = `bridge_launch_${launchId}.${launchSecret}`;
-		const targetKey = deriveBridgeTargetKey(projectRoot, launchId);
-		const now = this.now();
-		const launch: HostedBridgeLaunch = {
-			version: 1, launchId, requestId, launchDigest: sha256(launchToken), reconnectDigest: sha256(reconnectSecret), callerParticipantKey, callerGeneration, callerTargetKey: caller.targetKey, participantKey: deriveParticipantKey(projectRoot, protocol, participantId), protocol, participantId, holderGeneration, targetKey, projectRoot, profile: input.profile, configurationHash, herdr: { paneId: pane.paneId, terminalId: pane.terminalId, tabId: pane.tabId, workspaceId: pane.workspaceId }, metadata, createdAt: now, expiresAt: now + (this.options.leaseMs ?? DEFAULT_LAUNCH_LEASE_MS), status: "pending",
+		const herdr = startedAgentLocator(verified, agentName, input.driver);
+		const targetKey = deriveAgentTargetKey(projectRoot, agentName);
+		const existing = this.store.read().targets[targetKey];
+		if (existing !== undefined && existing.kind !== "agent") {
+			throw new AgentBindError("conflict", "Herdr agent target key already belongs to another target kind.");
+		}
+		const target: HostedAgentTarget = {
+			kind: "agent",
+			targetKey,
+			projectRoot,
+			agentName,
+			driver: input.driver,
+			agentSession: verified.agentSession,
+			participantKey: deriveParticipantKey(projectRoot, protocol, participantId),
+			holderGeneration: existing?.holderGeneration ?? this.options.createGeneration?.() ?? `lease_${randomUUID()}`,
+			profile: input.profile,
+			clientGeneration,
+			herdr,
+			createdAt: existing?.createdAt ?? this.now(),
 		};
-		if (expectedParticipantGeneration) launch.expectedParticipantGeneration = expectedParticipantGeneration;
-		if (input.driver) launch.driver = input.driver;
-		if (worktreePath) launch.worktreePath = worktreePath;
-		this.store.apply({ type: "bridge.launch.ensure", launch });
-		return { launchId, targetKey, holderGeneration, expiresAt: launch.expiresAt, launchToken, reconnectToken: reconnectSecret, herdr: launch.herdr };
+		if (worktreePath) target.worktreePath = worktreePath;
+		const bind: HostedAgentBind = {
+			target,
+			protocol,
+			participantId,
+			callerTargetKey: caller.targetKey,
+			callerParticipantKey: bounded(input.callerParticipantKey, "caller participant key", 200),
+			callerGeneration: bounded(input.expectedCallerGeneration, "caller generation", 200),
+			at: this.now(),
+		};
+		const expected = input.expectedParticipantGeneration;
+		if (expected !== undefined) bind.expectedParticipantGeneration = bounded(expected, "expected participant generation", 200);
+		this.store.apply({ type: "agent.bind", bind });
+		const registration = this.registrations.registerAgent(target, verified);
+		return {
+			registration,
+			targetKey,
+			participantKey: target.participantKey,
+			holderGeneration: target.holderGeneration,
+			driver: target.driver,
+			profile: target.profile,
+			agentSession: target.agentSession,
+			projectRoot,
+			cwd,
+		};
 	}
 
-	async register(input: BridgeRegisterInput): Promise<BridgeRegistrationResult> {
-		const parsed = parseLaunchToken(input.launchToken);
-		const launch = this.store.read().bridgeLaunches[parsed.launchId];
-		if (!launch || !equalDigest(sha256(input.launchToken), launch.launchDigest) || !equalDigest(sha256(secret(input.reconnectToken)), launch.reconnectDigest)) throw new HostedBridgeError("conflict", "Bridge launch capability is absent or does not match.");
-		const now = this.now();
-		if (launch.status === "pending" && now > launch.expiresAt) {
-			this.store.apply({ type: "bridge.launch.expire", launchId: launch.launchId, at: now });
-			throw new HostedBridgeError("conflict", "Bridge launch capability expired.");
-		}
-		if (launch.status !== "pending") throw new HostedBridgeError("conflict", "Bridge launch capability is no longer pending; reconnect with the separate credential.");
-		const target = bridgeTarget(launch, input.clientGeneration, now, input.agentSession);
-		const registration = await this.registrations.registerBridge(input, target, bridgeCredentials(target.targetKey, input.reconnectToken), () => this.store.apply({ type: "bridge.launch.consume", launchId: launch.launchId, launchDigest: launch.launchDigest, clientGeneration: input.clientGeneration, target, at: now }));
-		return result(registration, target);
+	private now(): number {
+		return this.options.now?.() ?? Date.now();
 	}
+}
 
-	async reconnect(input: BridgeReconnectInput): Promise<BridgeRegistrationResult> {
-		const target = this.store.read().targets[input.targetKey];
-		if (!target || (target.kind !== "bridge" && target.kind !== "agent")) throw new HostedBridgeError("not_found", "External collaborator target does not exist.");
-		if (input.clientGeneration !== target.clientGeneration || !equalDigest(sha256(secret(input.reconnectToken)), target.reconnectDigest)) throw new HostedBridgeError("conflict", "Bridge reconnect authority does not match its target generation.");
-		const participant = this.store.read().participants[target.participantKey];
-		if (!participant || participant.state !== "held" || participant.holderTargetKey !== target.targetKey || participant.generation !== target.holderGeneration) throw new HostedBridgeError("conflict", "Bridge participant generation is no longer held.");
-		const registration = await this.registrations.registerBridge(input, target, bridgeCredentials(target.targetKey, input.reconnectToken));
-		return result(registration, target);
+function startedAgentLocator(agent: HostedLiveAgent, agentName: string, driver: HostedNativeCollaboratorDriver): HostedHerdrLocator {
+	if (agent.name !== agentName) throw new AgentBindError("identity_mismatch", "Herdr resolved another agent name.");
+	const expected = driver === "claude-code" ? "claude" : "codex";
+	if (agent.agentSession.agent !== expected || agent.agentSession.source !== `herdr:${expected}`) {
+		throw new AgentBindError("identity_mismatch", "Herdr does not report the requested interactive agent kind.");
 	}
-
-	recoverLaunch(caller: HostedLiveRegistration, input: { requestId: string; callerParticipantKey: string; expectedCallerGeneration: string }): HostedBridgeLaunch {
-		const requestId = bounded(input.requestId, "request ID", 200);
-		const launch = Object.values(this.store.read().bridgeLaunches).find((candidate) => candidate.callerTargetKey === caller.targetKey && candidate.requestId === requestId);
-		if (!launch) throw new HostedBridgeError("not_found", "Bridge launch request does not exist.");
-		if (launch.callerParticipantKey !== bounded(input.callerParticipantKey, "caller participant key", 200) || launch.callerGeneration !== bounded(input.expectedCallerGeneration, "caller generation", 200)) throw new HostedBridgeError("conflict", "Bridge launch recovery authority changed.");
-		if (launch.status === "pending") this.store.apply({ type: "bridge.launch.cancel", launchId: launch.launchId, callerTargetKey: caller.targetKey, callerParticipantKey: launch.callerParticipantKey, callerGeneration: launch.callerGeneration, at: this.now() });
-		return this.store.read().bridgeLaunches[launch.launchId]!;
+	if (!agent.tabId || !agent.workspaceId) {
+		throw new AgentBindError("identity_mismatch", "Herdr agent has no exact tab and workspace identity.");
 	}
-
-	cancel(caller: HostedLiveRegistration, input: { launchId: string; callerParticipantKey: string; expectedCallerGeneration: string }): void {
-		this.store.apply({ type: "bridge.launch.cancel", launchId: bounded(input.launchId, "launch ID", 200), callerTargetKey: caller.targetKey, callerParticipantKey: bounded(input.callerParticipantKey, "caller participant key", 200), callerGeneration: bounded(input.expectedCallerGeneration, "caller generation", 200), at: this.now() });
-	}
-
-	private now(): number { return this.options.now?.() ?? Date.now(); }
+	return { paneId: agent.paneId, terminalId: agent.terminalId, tabId: agent.tabId, workspaceId: agent.workspaceId };
 }
 
-export interface BridgeRegistrationResult {
-	registration: HostedLiveRegistration;
-	participantKey: string;
-	holderGeneration: string;
-	profile: HostedCollaboratorProfile;
-	configurationHash: string;
-	driver?: HostedNativeCollaboratorDriver;
-	agentSession?: HostedAgentSessionIdentity;
-	metadata: Record<string, string>;
-	projectRoot: string;
-	cwd: string;
+async function isWritableWorktree(worktreePath: string, projectRoot: string, profile: HostedCollaboratorProfile): Promise<boolean> {
+	if (profile !== "workspace-write") return false;
+	return isProjectWorktree(worktreePath, projectRoot);
 }
 
-function bridgeTarget(launch: HostedBridgeLaunch, clientGeneration: string, createdAt: number, agentSession?: HostedAgentSessionIdentity): HostedExternalTarget {
-	const shared = { targetKey: launch.targetKey, projectRoot: launch.projectRoot, bridgeId: launch.launchId, participantKey: launch.participantKey, holderGeneration: launch.holderGeneration, profile: launch.profile, configurationHash: launch.configurationHash, clientGeneration: bounded(clientGeneration, "client generation", 200), reconnectDigest: launch.reconnectDigest, herdr: launch.herdr, metadata: launch.metadata, createdAt };
-	if (launch.worktreePath) Object.assign(shared, { worktreePath: launch.worktreePath });
-	if (!launch.driver) return { kind: "bridge", ...shared };
-	if (!agentSession) throw new HostedBridgeError("invalid_request", "Interactive Herdr agent registration requires its stable session identity.");
-	return { kind: "agent", ...shared, driver: launch.driver, agentSession: validateAgentSession(agentSession) };
+function agentCwd(agent: HostedLiveAgent): string {
+	try { return realpathSync(agent.cwd); } catch { throw new AgentBindError("identity_mismatch", "Herdr agent cwd is unavailable."); }
 }
 
-function bridgeCredentials(targetKey: string, reconnectToken: string) {
-	const token = secret(reconnectToken);
-	return {
-		registrationId: `reg_bridge_${createHash("sha256").update("id\0").update(targetKey).update("\0").update(token).digest("hex").slice(0, 40)}`,
-		registrationKey: createHash("sha256").update("key\0").update(targetKey).update("\0").update(token).digest("base64url"),
-	};
-}
-
-function result(registration: HostedLiveRegistration, target: HostedExternalTarget): BridgeRegistrationResult {
-	const value: BridgeRegistrationResult = { registration, participantKey: target.participantKey, holderGeneration: target.holderGeneration, profile: target.profile, configurationHash: target.configurationHash, metadata: target.metadata, projectRoot: target.projectRoot, cwd: target.worktreePath ?? target.projectRoot };
-	if (target.kind === "agent") {
-		value.driver = target.driver;
-		value.agentSession = target.agentSession;
-	}
-	return value;
-}
-
-function parseLaunchToken(value: string) {
-	const match = TOKEN.exec(value);
-	if (!match) throw new HostedBridgeError("invalid_request", "Bridge launch token has invalid syntax.");
-	return { launchId: match[1]! };
-}
-
-function bridgeMetadata(value: Record<string, string>): Record<string, string> {
-	const entries = Object.entries(value).sort(([left], [right]) => left.localeCompare(right));
-	if (entries.length > HOSTED_BRIDGE_MAX_METADATA_ENTRIES) throw new HostedBridgeError("invalid_request", `Bridge metadata may contain at most ${HOSTED_BRIDGE_MAX_METADATA_ENTRIES} entries.`);
-	return Object.fromEntries(entries.map(([key, item]) => {
-		if (!NAME.test(key) || !ALLOWED_METADATA.has(key) || Buffer.byteLength(item) > HOSTED_BRIDGE_MAX_METADATA_VALUE_BYTES) throw new HostedBridgeError("invalid_request", "Bridge metadata is not allowlisted or exceeds its byte limit.");
-		return [key, item];
-	}));
-}
-
-function validateAgentSession(value: HostedAgentSessionIdentity): HostedAgentSessionIdentity {
-	if ((value.kind !== "id" && value.kind !== "path") || !value.source || !value.agent || !value.value || Buffer.byteLength(value.source) > 200 || Buffer.byteLength(value.agent) > 64 || Buffer.byteLength(value.value) > 8 * 1024) throw new HostedBridgeError("invalid_request", "Interactive Herdr agent session identity is invalid.");
-	return value;
-}
-
-function participantName(value: string, name: string): string {
-	if (!NAME.test(value)) throw new HostedBridgeError("invalid_request", `${name} has invalid syntax.`);
+function boundedName(value: string, pattern: RegExp, name: string): string {
+	if (!pattern.test(value)) throw new AgentBindError("invalid_request", `${name} has invalid syntax.`);
 	return value;
 }
 
 function bounded(value: string, name: string, maxBytes: number): string {
-	if (!value.trim() || Buffer.byteLength(value) > maxBytes) throw new HostedBridgeError("invalid_request", `${name} must be a non-empty string of at most ${maxBytes} bytes.`);
+	if (!value.trim() || Buffer.byteLength(value) > maxBytes) {
+		throw new AgentBindError("invalid_request", `${name} must be a non-empty string of at most ${maxBytes} bytes.`);
+	}
 	return value;
-}
-
-function digest(value: string, name: string): string {
-	if (!HASH.test(value)) throw new HostedBridgeError("invalid_request", `${name} must be a lowercase SHA-256 digest.`);
-	return value;
-}
-
-function secret(value: string): string {
-	if (!SECRET.test(value)) throw new HostedBridgeError("invalid_request", "Bridge secret has invalid syntax.");
-	return value;
-}
-
-function sha256(value: string): string { return createHash("sha256").update(value).digest("hex"); }
-
-function equalDigest(left: string, right: string): boolean {
-	if (!HASH.test(left) || !HASH.test(right)) return false;
-	return timingSafeEqual(Buffer.from(left, "hex"), Buffer.from(right, "hex"));
 }

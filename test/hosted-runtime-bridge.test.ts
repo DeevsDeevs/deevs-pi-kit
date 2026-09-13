@@ -1,31 +1,28 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { HostedRuntimeClient } from "../extensions/runtime/client.ts";
 import type { HostedTarget } from "../extensions/runtime/hosted-types.ts";
-import { RuntimeBridgeCoordinator } from "../extensions/runtime/service/bridge.ts";
+import { RuntimeAgentBinder, type BindAgentInput } from "../extensions/runtime/service/bridge.ts";
 import { DirectoryMonitorManager } from "../extensions/runtime/service/monitor.ts";
 import { HostedParticipantCoordinator } from "../extensions/runtime/service/participant.ts";
 import { dispatchHostedLine, type HostedProtocolContext } from "../extensions/runtime/service/protocol.ts";
-import { RuntimeRegistrationManager, type HostedHostVerifier, type HostedLiveAgent, type HostedPaneIdentity, type RegisterPiInput } from "../extensions/runtime/service/registration.ts";
+import { RuntimeRegistrationManager, type HostedHostVerifier, type HostedLiveAgent, type RegisterPiInput } from "../extensions/runtime/service/registration.ts";
 import { startRuntimeServer } from "../extensions/runtime/service/server.ts";
-import { HostedStateStore, runtimeStatePaths } from "../extensions/runtime/service/state.ts";
+import { deriveAgentTargetKey, HostedStateStore } from "../extensions/runtime/service/state.ts";
 import { HostedWakeCoordinator } from "../extensions/runtime/service/wake.ts";
+
+const AGENT_NAME = "collab-fable";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 class FakeHost implements HostedHostVerifier {
 	readonly agents = new Map<string, HostedLiveAgent>();
-	readonly panes = new Map<string, HostedPaneIdentity>();
-	getPaneBarrier?: Promise<void>;
-	onGetPane?: () => void;
 
-	async getPane(paneId: string): Promise<HostedLiveAgent> {
-		this.onGetPane?.();
-		await this.getPaneBarrier;
-		const agent = this.agents.get(paneId);
+	async getAgent(locator: string): Promise<HostedLiveAgent> {
+		const agent = this.agents.get(locator);
 		if (!agent) throw Object.assign(new Error("missing agent"), { code: "identity_mismatch" });
 		return agent;
 	}
@@ -35,12 +32,20 @@ class FakeHost implements HostedHostVerifier {
 		if (matches.length !== 1) throw Object.assign(new Error("missing terminal"), { code: "identity_mismatch" });
 		return matches[0]!;
 	}
+}
 
-	async getPaneIdentity(paneId: string): Promise<HostedPaneIdentity> {
-		const pane = this.panes.get(paneId);
-		if (!pane) throw Object.assign(new Error("missing pane"), { code: "identity_mismatch" });
-		return pane;
-	}
+function codexAgent(cwd: string, name = AGENT_NAME): HostedLiveAgent {
+	return {
+		paneId: "w1:p9",
+		tabId: "w1:t9",
+		workspaceId: "w1",
+		terminalId: "term_agent",
+		cwd,
+		name,
+		agentSession: { source: "herdr:codex", agent: "codex", kind: "id", value: "codex-session" },
+		status: "idle",
+		stateChangeSeq: 2,
+	};
 }
 
 function setup() {
@@ -59,7 +64,6 @@ function setup() {
 		host.agents.set(paneId, { paneId, tabId: `w1:t${index + 1}`, workspaceId: "w1", terminalId, cwd: projectRoot, agentSession: { source: "herdr:pi", agent: "pi", kind: "path", value: sessionFile }, status: "idle", stateChangeSeq: 1 });
 		inputs.set(name, { projectRoot, piSessionId: sessionId, piSessionFile: sessionFile, clientGeneration: `client_${name}`, admittedClaims: [], herdr: { paneId, terminalId } });
 	}
-	host.panes.set("w1:p9", { paneId: "w1:p9", tabId: "w1:t9", workspaceId: "w1", terminalId: "term_bridge", cwd: projectRoot, paneCount: 1, revision: 1 });
 	const store = new HostedStateStore(join(root, "runtime"));
 	let now = 1_000;
 	let registrationNumber = 0;
@@ -67,8 +71,7 @@ function setup() {
 	const registrations = new RuntimeRegistrationManager(store, host, registrationOptions);
 	let generation = 0;
 	const participants = new HostedParticipantCoordinator(store, registrations, { request() {} }, { now: () => now, createGeneration: () => `lease_${++generation}` });
-	const secrets = [Buffer.alloc(32, 1).toString("base64url"), Buffer.alloc(32, 2).toString("base64url")];
-	const bridges = new RuntimeBridgeCoordinator(store, registrations, host, { now: () => now, createId: () => "launch_1", createGeneration: () => "lease_bridge", createSecret: () => secrets.shift()! });
+	const bridges = new RuntimeAgentBinder(store, registrations, host, { now: () => now, createGeneration: () => "lease_agent" });
 	return { root, projectRoot, host, inputs, store, registrations, registrationOptions, participants, bridges, setNow(value: number) { now = value; } };
 }
 
@@ -76,132 +79,119 @@ async function registerPi(test: ReturnType<typeof setup>, name: string, registra
 	return registrations.register(test.inputs.get(name)!);
 }
 
-describe("authoritative Runtime bridge launch", () => {
-	it("reserves, consumes once, reconnects after Runtime restart, and stops the exact bridge target", async () => {
+function bindInput(callerParticipantKey: string, expectedCallerGeneration: string): BindAgentInput {
+	return {
+		agentName: AGENT_NAME,
+		driver: "codex",
+		profile: "read-only",
+		clientGeneration: "agent_client",
+		protocol: "review",
+		participantId: "fable",
+		callerParticipantKey,
+		expectedCallerGeneration,
+	};
+}
+
+describe("authoritative Herdr agent bind", () => {
+	it("binds an exact live agent, rebinds idempotently, and stops the bound target", async () => {
 		const test = setup();
 		const main = await registerPi(test, "main");
-		const successor = await registerPi(test, "successor");
-		const mainParticipant = test.participants.acquire(main, "review", "main").participant;
-		const launch = await test.bridges.create(main, {
-			requestId: "request_1",
-			callerParticipantKey: mainParticipant.participantKey,
-			expectedCallerGeneration: mainParticipant.generation,
-			protocol: "review",
-			participantId: "fable",
+		const caller = test.participants.acquire(main, "review", "main").participant;
+		test.host.agents.set(AGENT_NAME, codexAgent(test.projectRoot));
+		const bound = await test.bridges.bind(main, bindInput(caller.participantKey, caller.generation));
+		expect(bound).toMatchObject({
+			targetKey: deriveAgentTargetKey(test.projectRoot, AGENT_NAME),
+			holderGeneration: "lease_agent",
+			driver: "codex",
 			profile: "read-only",
-			configurationHash: "a".repeat(64),
-			herdr: { paneId: "w1:p9", terminalId: "term_bridge" },
-			metadata: { adapter: "opaque-v1" },
+			cwd: test.projectRoot,
+			agentSession: { agent: "codex", value: "codex-session" },
 		});
-		expect(test.store.read().bridgeLaunches[launch.launchId]).toMatchObject({ status: "pending", holderGeneration: "lease_bridge", herdr: { tabId: "w1:t9" } });
-		expect(JSON.stringify(test.store.read())).not.toContain(launch.launchToken);
-		expect(JSON.stringify(test.store.read())).not.toContain(launch.reconnectToken);
-		expect(() => test.participants.acquire(successor, "review", "fable")).toThrow(/reserved/);
+		expect(test.store.read().targets[bound.targetKey]).toMatchObject({ kind: "agent", agentName: AGENT_NAME, clientGeneration: "agent_client" });
+		expect(test.store.read().participants[bound.participantKey]).toMatchObject({ state: "held", holderTargetKey: bound.targetKey, generation: "lease_agent" });
+		expect(test.registrations.isLiveTarget(bound.targetKey)).toBe(true);
 
-		test.host.agents.set("w1:p9", { paneId: "w1:p9", tabId: "w1:t9", workspaceId: "w1", terminalId: "term_bridge", cwd: test.projectRoot, agentSession: { source: "pi-kit-bridge", agent: "bridge", kind: "id", value: "wrong_bridge" }, status: "idle", stateChangeSeq: 2 });
-		await expect(test.bridges.register({ launchToken: launch.launchToken, reconnectToken: launch.reconnectToken, clientGeneration: "client_bridge", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" } })).rejects.toMatchObject({ code: "identity_mismatch" });
-		expect(test.store.read().bridgeLaunches[launch.launchId]?.status).toBe("pending");
-		test.host.agents.set("w1:p9", { ...test.host.agents.get("w1:p9")!, agentSession: { source: "pi-kit-bridge", agent: "bridge", kind: "id", value: launch.launchId } });
-		await expect(test.bridges.register({ launchToken: launch.launchToken, reconnectToken: "x".repeat(43), clientGeneration: "client_bridge", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" } })).rejects.toMatchObject({ code: "conflict" });
-		let releaseRegistration!: () => void;
-		test.host.getPaneBarrier = new Promise<void>((resolve) => { releaseRegistration = resolve; });
-		const attempts = [test.bridges.register({ launchToken: launch.launchToken, reconnectToken: launch.reconnectToken, clientGeneration: "client_bridge", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" } }), test.bridges.register({ launchToken: launch.launchToken, reconnectToken: launch.reconnectToken, clientGeneration: "client_bridge", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" } })];
-		await Promise.resolve();
-		releaseRegistration();
-		const settled = await Promise.allSettled(attempts);
-		expect(settled.filter((item) => item.status === "fulfilled")).toHaveLength(1);
-		expect(settled.filter((item) => item.status === "rejected")).toHaveLength(1);
-		const first = (settled.find((item): item is PromiseFulfilledResult<Awaited<ReturnType<typeof test.bridges.register>>> => item.status === "fulfilled"))!.value;
-		expect(first).toMatchObject({ participantKey: expect.stringMatching(/^participant_/), holderGeneration: "lease_bridge", profile: "read-only", metadata: { adapter: "opaque-v1" } });
-		expect(test.store.read().bridgeLaunches[launch.launchId]).toMatchObject({ status: "consumed", clientGeneration: "client_bridge" });
-		expect(test.store.read().targets[launch.targetKey]).toMatchObject({ kind: "bridge", bridgeId: launch.launchId, holderGeneration: "lease_bridge" });
-		expect(test.registrations.isLiveTarget(launch.targetKey)).toBe(true);
-		await expect(test.bridges.register({ launchToken: launch.launchToken, reconnectToken: launch.reconnectToken, clientGeneration: "client_bridge", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" } })).rejects.toMatchObject({ code: "conflict" });
+		const rebound = await test.bridges.bind(main, bindInput(caller.participantKey, caller.generation));
+		expect(rebound.registration.registrationId).toBe(bound.registration.registrationId);
+		expect(rebound.registration.registrationKey).toBe(bound.registration.registrationKey);
+		expect(rebound.holderGeneration).toBe("lease_agent");
 
-		test.registrations.close();
-		const restartedRegistrations = new RuntimeRegistrationManager(test.store, test.host, test.registrationOptions);
-		const restartedBridges = new RuntimeBridgeCoordinator(test.store, restartedRegistrations, test.host, { now: () => 1_001 });
-		const reconnected = await restartedBridges.reconnect({ targetKey: launch.targetKey, reconnectToken: launch.reconnectToken, clientGeneration: "client_bridge", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" } });
-		expect(reconnected.registration.registrationId).toBe(first.registration.registrationId);
-		expect(reconnected.registration.registrationKey).toBe(first.registration.registrationKey);
-		const restartedMain = await registerPi(test, "main", restartedRegistrations);
 		const stoppedTargets: HostedTarget[] = [];
-		const restartedParticipants = new HostedParticipantCoordinator(test.store, restartedRegistrations, { request() {} }, { now: () => 1_002, createGeneration: () => "lease_stopped", stopTarget: async (target) => { stoppedTargets.push(target); return "closed"; } });
-		const stopped = await restartedParticipants.stopConfirmed(restartedMain, first.participantKey, first.holderGeneration);
+		const stopping = new HostedParticipantCoordinator(test.store, test.registrations, { request() {} }, { now: () => 1_002, createGeneration: () => "lease_stopped", stopTarget: async (target) => { stoppedTargets.push(target); return "closed"; } });
+		const stopped = await stopping.stopConfirmed(main, bound.participantKey, bound.holderGeneration);
 		expect(stopped).toMatchObject({ outcome: "stopped", participant: { state: "vacant" } });
-		expect(stoppedTargets).toMatchObject([{ kind: "bridge", targetKey: launch.targetKey }]);
-		await expect(restartedBridges.reconnect({ targetKey: launch.targetKey, reconnectToken: launch.reconnectToken, clientGeneration: "client_bridge", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" } })).rejects.toMatchObject({ code: "conflict" });
+		expect(stoppedTargets).toMatchObject([{ kind: "agent", targetKey: bound.targetKey, agentName: AGENT_NAME }]);
 	});
 
-	it("binds an interactive native launch only to its exact Herdr agent session", async () => {
+	it("rejects agents whose name, kind, cwd, or tab identity does not match the request", async () => {
 		const test = setup();
 		const main = await registerPi(test, "main");
 		const caller = test.participants.acquire(main, "review", "main").participant;
-		const launch = await test.bridges.create(main, { requestId: "interactive_1", callerParticipantKey: caller.participantKey, expectedCallerGeneration: caller.generation, protocol: "review", participantId: "native", profile: "read-only", configurationHash: "d".repeat(64), driver: "codex", herdr: { paneId: "w1:p9", terminalId: "term_bridge" }, metadata: { adapter: "herdr-agent-v1" } });
-		const session = { source: "herdr:codex", agent: "codex", kind: "id" as const, value: "codex-session" };
-		test.host.agents.set("w1:p9", { paneId: "w1:p9", tabId: "w1:t9", workspaceId: "w1", terminalId: "term_bridge", cwd: test.projectRoot, agentSession: session, status: "idle", focused: false, stateChangeSeq: 2 });
-		await expect(test.bridges.register({ launchToken: launch.launchToken, reconnectToken: launch.reconnectToken, clientGeneration: "agent_client", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" } })).rejects.toMatchObject({ code: "invalid_request" });
-		await expect(test.bridges.register({ launchToken: launch.launchToken, reconnectToken: launch.reconnectToken, clientGeneration: "agent_client", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" }, agentSession: { ...session, value: "wrong-session" } })).rejects.toMatchObject({ code: "identity_mismatch" });
-		const registered = await test.bridges.register({ launchToken: launch.launchToken, reconnectToken: launch.reconnectToken, clientGeneration: "agent_client", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" }, agentSession: session });
-		expect(registered).toMatchObject({ driver: "codex", agentSession: session });
-		expect(test.store.read().targets[launch.targetKey]).toMatchObject({ kind: "agent", driver: "codex", agentSession: session });
+		const input = bindInput(caller.participantKey, caller.generation);
+		await expect(test.bridges.bind(main, input)).rejects.toMatchObject({ code: "identity_mismatch" });
+		test.host.agents.set(AGENT_NAME, codexAgent(test.projectRoot, "collab-other"));
+		await expect(test.bridges.bind(main, input)).rejects.toMatchObject({ code: "identity_mismatch" });
+		test.host.agents.set(AGENT_NAME, codexAgent(test.projectRoot));
+		await expect(test.bridges.bind(main, { ...input, driver: "claude-code" })).rejects.toMatchObject({ code: "identity_mismatch" });
+		const { tabId: _tabId, ...untabbed } = codexAgent(test.projectRoot);
+		test.host.agents.set(AGENT_NAME, untabbed);
+		await expect(test.bridges.bind(main, input)).rejects.toMatchObject({ code: "identity_mismatch" });
+		test.host.agents.set(AGENT_NAME, codexAgent(test.root));
+		await expect(test.bridges.bind(main, input)).rejects.toMatchObject({ code: "identity_mismatch" });
+		expect(test.store.read().targets[deriveAgentTargetKey(test.projectRoot, AGENT_NAME)]).toBeUndefined();
 	});
 
-	it("recovers an uncertain launch response without regenerating authority", async () => {
+	it("rejects stale caller authority and an unexpected participant generation", async () => {
 		const test = setup();
 		const main = await registerPi(test, "main");
 		const caller = test.participants.acquire(main, "review", "main").participant;
-		const input = { requestId: "response_lost", callerParticipantKey: caller.participantKey, expectedCallerGeneration: caller.generation, protocol: "review", participantId: "fable", profile: "read-only" as const, configurationHash: "f".repeat(64), herdr: { paneId: "w1:p9", terminalId: "term_bridge" } };
-		const launch = await test.bridges.create(main, input);
-		await expect(test.bridges.create(main, input)).rejects.toThrow("explicit recovery");
-		expect(test.bridges.recoverLaunch(main, { requestId: input.requestId, callerParticipantKey: caller.participantKey, expectedCallerGeneration: caller.generation })).toMatchObject({ launchId: launch.launchId, status: "cancelled" });
-		expect(test.bridges.recoverLaunch(main, { requestId: input.requestId, callerParticipantKey: caller.participantKey, expectedCallerGeneration: caller.generation })).toMatchObject({ status: "cancelled" });
-		await expect(test.bridges.register({ launchToken: launch.launchToken, reconnectToken: launch.reconnectToken, clientGeneration: "client_bridge", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" } })).rejects.toThrow("no longer pending");
+		test.host.agents.set(AGENT_NAME, codexAgent(test.projectRoot));
+		await expect(test.bridges.bind(main, bindInput(caller.participantKey, "lease_stale"))).rejects.toMatchObject({ code: "conflict" });
+		await expect(test.bridges.bind(main, { ...bindInput(caller.participantKey, caller.generation), expectedParticipantGeneration: "lease_absent" })).rejects.toMatchObject({ code: "conflict" });
+		const successor = await registerPi(test, "successor");
+		const held = test.participants.acquire(successor, "review", "fable").participant;
+		await expect(test.bridges.bind(main, bindInput(caller.participantKey, caller.generation))).rejects.toMatchObject({ code: "conflict" });
+		test.participants.standDown(successor, held.participantKey);
+		const bound = await test.bridges.bind(main, { ...bindInput(caller.participantKey, caller.generation), expectedParticipantGeneration: test.participants.get(main, held.participantKey).generation });
+		expect(bound.participantKey).toBe(held.participantKey);
 	});
 
-	it("does not reinstall a bridge registration after its holder generation changes during host verification", async () => {
+	it("fails a heartbeat closed when the bound Herdr agent identity changes", async () => {
 		const test = setup();
 		const main = await registerPi(test, "main");
-		const mainParticipant = test.participants.acquire(main, "review", "main").participant;
-		const launch = await test.bridges.create(main, { requestId: "reconnect_race", callerParticipantKey: mainParticipant.participantKey, expectedCallerGeneration: mainParticipant.generation, protocol: "review", participantId: "fable", profile: "read-only", configurationHash: "d".repeat(64), herdr: { paneId: "w1:p9", terminalId: "term_bridge" } });
-		test.host.agents.set("w1:p9", { paneId: "w1:p9", tabId: "w1:t9", workspaceId: "w1", terminalId: "term_bridge", cwd: test.projectRoot, agentSession: { source: "pi-kit-bridge", agent: "bridge", kind: "id", value: launch.launchId }, status: "idle", stateChangeSeq: 2 });
-		const first = await test.bridges.register({ launchToken: launch.launchToken, reconnectToken: launch.reconnectToken, clientGeneration: "client_bridge", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" } });
-		let releaseVerification!: () => void;
-		let verificationStarted!: () => void;
-		test.host.getPaneBarrier = new Promise<void>((resolve) => { releaseVerification = resolve; });
-		const started = new Promise<void>((resolve) => { verificationStarted = resolve; });
-		test.host.onGetPane = verificationStarted;
-		const reconnecting = test.bridges.reconnect({ targetKey: launch.targetKey, reconnectToken: launch.reconnectToken, clientGeneration: "client_bridge", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" } });
-		await started;
-		test.participants.standDownConfirmed(main, first.participantKey, first.holderGeneration);
-		releaseVerification();
-		await expect(reconnecting).rejects.toMatchObject({ code: "registration_stale" });
+		const caller = test.participants.acquire(main, "review", "main").participant;
+		test.host.agents.set(AGENT_NAME, codexAgent(test.projectRoot));
+		const bound = await test.bridges.bind(main, bindInput(caller.participantKey, caller.generation));
+		const live = await test.registrations.heartbeat(bound.registration.registrationId, bound.registration.registrationKey);
+		expect(live.targetKey).toBe(bound.targetKey);
+		const drifted = codexAgent(test.projectRoot);
+		test.host.agents.set(AGENT_NAME, { ...drifted, agentSession: { ...drifted.agentSession, value: "replaced-session" } });
+		await expect(test.registrations.heartbeat(bound.registration.registrationId, bound.registration.registrationKey)).rejects.toMatchObject({ code: "identity_mismatch" });
 	});
 
-	it("exposes strict additive external-target RPC without weakening Pi registration", async () => {
+	it("exposes strict additive bind RPC without weakening Pi registration", async () => {
 		const test = setup();
 		const main = await registerPi(test, "main");
-		const mainParticipant = test.participants.acquire(main, "review", "main").participant;
+		const caller = test.participants.acquire(main, "review", "main").participant;
+		test.host.agents.set(AGENT_NAME, codexAgent(test.projectRoot));
 		const monitors = new DirectoryMonitorManager(test.store, { automatic: false });
 		const wakes = new HostedWakeCoordinator(test.store);
 		const context: HostedProtocolContext = { runtimeId: "rt_test", epoch: "epoch_test", agentWake: "none", registrations: test.registrations, monitors, wakes, participants: test.participants, bridges: test.bridges };
 		const call = (method: string, params: unknown) => dispatchHostedLine(JSON.stringify({ v: 1, id: method, method, params }), context);
-		expect(await call("hello", { minVersion: 1, maxVersion: 1 })).toMatchObject({ ok: true, result: { capabilities: { interactiveAgent: { launch: "single_use", reconnect: true } } } });
+		expect(await call("hello", { minVersion: 1, maxVersion: 1 })).toMatchObject({ ok: true, result: { capabilities: { interactiveAgent: { bind: "herdr_agent_name" } } } });
 		const auth = { registrationId: main.registrationId, registrationKey: main.registrationKey };
-		const createParams = { ...auth, requestId: "rpc_1", callerParticipantKey: mainParticipant.participantKey, expectedCallerGeneration: mainParticipant.generation, protocol: "review", participantId: "fable", profile: "read-only", configurationHash: "c".repeat(64), herdr: { paneId: "w1:p9", terminalId: "term_bridge" } };
-		expect(await call("bridge.launch.create", { ...createParams, metadata: { secret: "no" } })).toMatchObject({ ok: false, error: { code: "invalid_request" } });
-		expect(await call("bridge.launch.create", { ...createParams, metadata: Object.fromEntries(Array.from({ length: 17 }, (_, index) => [`key_${index}`, "x"])) })).toMatchObject({ ok: false, error: { code: "invalid_request" } });
-		const created = await call("bridge.launch.create", { ...createParams, metadata: {} });
-		expect(created).toMatchObject({ ok: true, result: { launchId: "launch_1", targetKey: expect.stringMatching(/^bridge_/), launchToken: expect.stringMatching(/^bridge_launch_/), reconnectToken: expect.any(String) } });
-		const authority = (created as { result: { launchId: string; targetKey: string; launchToken: string; reconnectToken: string } }).result;
-		test.host.agents.set("w1:p9", { paneId: "w1:p9", tabId: "w1:t9", workspaceId: "w1", terminalId: "term_bridge", cwd: test.projectRoot, agentSession: { source: "pi-kit-bridge", agent: "bridge", kind: "id", value: authority.launchId }, status: "idle", stateChangeSeq: 2 });
-		expect(await call("bridge.register", { launchToken: authority.launchToken, reconnectToken: authority.reconnectToken, clientGeneration: "client_bridge", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" } })).toMatchObject({ ok: true, result: { targetKey: authority.targetKey, participantKey: expect.stringMatching(/^participant_/), holderGeneration: "lease_bridge", profile: "read-only" } });
-		expect(await call("bridge.register", { launchToken: authority.launchToken, reconnectToken: authority.reconnectToken, clientGeneration: "client_bridge", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" }, extra: true })).toMatchObject({ ok: false, error: { code: "invalid_request" } });
+		const params = { ...auth, ...bindInput(caller.participantKey, caller.generation) };
+		expect(await call("bridge.register", params)).toMatchObject({ ok: false, error: { code: "not_found" } });
+		expect(await call("bridge.bind", { ...params, extra: true })).toMatchObject({ ok: false, error: { code: "invalid_request" } });
+		expect(await call("bridge.bind", { ...params, driver: "pi" })).toMatchObject({ ok: false, error: { code: "invalid_request" } });
+		const bound = await call("bridge.bind", params);
+		expect(bound).toMatchObject({ ok: true, result: { targetKey: expect.stringMatching(/^agent_/), holderGeneration: "lease_agent", driver: "codex", profile: "read-only" } });
+		expect(await call("inbox.submit_begin", { ...auth, claimId: "claim_1", eventIds: ["event_1"], attemptId: "attempt_1" })).toMatchObject({ ok: false, error: { code: "not_found" } });
 		expect(await call("pi.register", { ...test.inputs.get("successor"), extra: true })).toMatchObject({ ok: false, error: { code: "invalid_request" } });
 		wakes.close();
 	});
 
-	it("crosses the real Unix socket with strict Pi authorization and fake bridge registration", async () => {
+	it("crosses the real Unix socket with strict Pi authorization and an exact agent bind", async () => {
 		const root = mkdtempSync(join(tmpdir(), "pi-kit-runtime-bridge-socket-"));
 		roots.push(root);
 		const runtimeRoot = join(root, "runtime");
@@ -211,41 +201,19 @@ describe("authoritative Runtime bridge launch", () => {
 		writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: "session_main", timestamp: "2026-01-01T00:00:00.000Z", cwd: projectRoot })}\n`);
 		const host = new FakeHost();
 		host.agents.set("w1:p1", { paneId: "w1:p1", tabId: "w1:t1", workspaceId: "w1", terminalId: "term_main", cwd: projectRoot, agentSession: { source: "herdr:pi", agent: "pi", kind: "path", value: sessionFile }, status: "idle", stateChangeSeq: 1 });
-		host.panes.set("w1:p9", { paneId: "w1:p9", tabId: "w1:t9", workspaceId: "w1", terminalId: "term_bridge", cwd: projectRoot, paneCount: 1, revision: 1 });
-		const secrets = [Buffer.alloc(32, 3).toString("base64url"), Buffer.alloc(32, 4).toString("base64url")];
-		const server = await startRuntimeServer({ root: runtimeRoot, host, registration: { createId: () => "reg_main", createKey: () => "key_main" }, participant: { createGeneration: () => "lease_main" }, bridge: { createId: () => "launch_socket", createGeneration: () => "lease_bridge_socket", createSecret: () => secrets.shift()! } });
+		host.agents.set(AGENT_NAME, codexAgent(projectRoot));
+		let registrationNumber = 0;
+		const server = await startRuntimeServer({ root: runtimeRoot, host, registration: { createId: () => `reg_${++registrationNumber}`, createKey: () => `key_${registrationNumber}` }, participant: { createGeneration: () => "lease_main" }, bridge: { createGeneration: () => "lease_agent_socket" } });
 		const client = new HostedRuntimeClient(server.socketPath);
 		try {
 			const registered = await client.call("pi.register", { projectRoot, piSessionId: "session_main", piSessionFile: sessionFile, clientGeneration: "client_main", admittedClaims: [], herdr: { paneId: "w1:p1", terminalId: "term_main" } }) as Record<string, unknown>;
 			const auth = { registrationId: String(registered.registrationId), registrationKey: String(registered.registrationKey) };
 			const acquired = await client.call("participant.acquire", { ...auth, protocol: "review", participantId: "main" }) as { participant: { participantKey: string; generation: string } };
-			const authority = await client.call("bridge.launch.create", { ...auth, requestId: "socket_request", callerParticipantKey: acquired.participant.participantKey, expectedCallerGeneration: acquired.participant.generation, protocol: "review", participantId: "fable", profile: "read-only", configurationHash: "e".repeat(64), herdr: { paneId: "w1:p9", terminalId: "term_bridge" }, metadata: { adapter: "fake-v1" } }) as { launchId: string; targetKey: string; launchToken: string; reconnectToken: string };
-			host.agents.set("w1:p9", { paneId: "w1:p9", tabId: "w1:t9", workspaceId: "w1", terminalId: "term_bridge", cwd: projectRoot, agentSession: { source: "pi-kit-bridge", agent: "bridge", kind: "id", value: authority.launchId }, status: "idle", stateChangeSeq: 2 });
-			const bridge = await client.call("bridge.register", { launchToken: authority.launchToken, reconnectToken: authority.reconnectToken, clientGeneration: "client_bridge", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" } }) as Record<string, unknown>;
-			expect(bridge).toMatchObject({ targetKey: authority.targetKey, holderGeneration: "lease_bridge_socket", profile: "read-only", metadata: { adapter: "fake-v1" } });
-			expect(await client.call("bridge.heartbeat", { registrationId: bridge.registrationId, registrationKey: bridge.registrationKey })).toMatchObject({ targetKey: authority.targetKey, inboxReady: false });
-			const durable = readFileSync(runtimeStatePaths(runtimeRoot).state, "utf8");
-			expect(durable).not.toContain(authority.launchToken);
-			expect(durable).not.toContain(authority.reconnectToken);
+			const bound = await client.call("bridge.bind", { ...auth, ...bindInput(acquired.participant.participantKey, acquired.participant.generation) }) as Record<string, unknown>;
+			expect(bound).toMatchObject({ targetKey: deriveAgentTargetKey(projectRoot, AGENT_NAME), holderGeneration: "lease_agent_socket", profile: "read-only", cwd: projectRoot });
+			expect(await client.call("bridge.heartbeat", { registrationId: bound.registrationId, registrationKey: bound.registrationKey })).toMatchObject({ targetKey: bound.targetKey, inboxReady: false });
 		} finally {
 			await server.close();
 		}
-	});
-
-	it("rejects stale caller authority, occupied panes, and expired launch capabilities", async () => {
-		const test = setup();
-		const main = await registerPi(test, "main");
-		const mainParticipant = test.participants.acquire(main, "review", "main").participant;
-		test.host.panes.set("w1:p9", { ...test.host.panes.get("w1:p9")!, agent: "pi" });
-		await expect(test.bridges.create(main, { requestId: "occupied", callerParticipantKey: mainParticipant.participantKey, expectedCallerGeneration: mainParticipant.generation, protocol: "review", participantId: "fable", profile: "read-only", configurationHash: "b".repeat(64), herdr: { paneId: "w1:p9", terminalId: "term_bridge" } })).rejects.toMatchObject({ code: "identity_mismatch" });
-		test.host.panes.set("w1:p9", { ...test.host.panes.get("w1:p9")!, agent: undefined });
-		await expect(test.bridges.create(main, { requestId: "reserved_metadata", callerParticipantKey: mainParticipant.participantKey, expectedCallerGeneration: mainParticipant.generation, protocol: "review", participantId: "fable", profile: "read-only", configurationHash: "b".repeat(64), herdr: { paneId: "w1:p9", terminalId: "term_bridge" }, metadata: { driver: "codex" } })).rejects.toThrow("allowlisted");
-		const launch = await test.bridges.create(main, { requestId: "expires", callerParticipantKey: mainParticipant.participantKey, expectedCallerGeneration: mainParticipant.generation, protocol: "review", participantId: "fable", profile: "read-only", configurationHash: "b".repeat(64), herdr: { paneId: "w1:p9", terminalId: "term_bridge" } });
-		test.host.agents.set("w1:p9", { paneId: "w1:p9", tabId: "w1:t9", workspaceId: "w1", terminalId: "term_bridge", cwd: test.projectRoot, agentSession: { source: "pi-kit-bridge", agent: "bridge", kind: "id", value: launch.launchId }, status: "idle", stateChangeSeq: 2 });
-		test.participants.standDown(main, mainParticipant.participantKey);
-		await expect(test.bridges.register({ launchToken: launch.launchToken, reconnectToken: launch.reconnectToken, clientGeneration: "client_bridge", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" } })).rejects.toThrow("caller authority changed");
-		test.setNow(31_001);
-		await expect(test.bridges.register({ launchToken: launch.launchToken, reconnectToken: launch.reconnectToken, clientGeneration: "client_bridge", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_bridge" } })).rejects.toThrow("expired");
-		expect(test.store.read().bridgeLaunches[launch.launchId]?.status).toBe("expired");
 	});
 });

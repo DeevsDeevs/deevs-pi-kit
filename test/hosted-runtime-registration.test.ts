@@ -32,7 +32,7 @@ class FakeHost implements HostedHostVerifier {
 	findBarrier?: Promise<void>;
 
 	constructor(agent: HostedLiveAgent) { this.agent = agent; }
-	async getPane(_paneId: string): Promise<HostedLiveAgent> {
+	async getAgent(_paneId: string): Promise<HostedLiveAgent> {
 		if (!this.available) throw new RegistrationError("host_unavailable", "offline");
 		return this.agent;
 	}
@@ -90,7 +90,7 @@ describe("Herdr exact-terminal verification", () => {
 		await expect(new HerdrCliHostVerifier().findTerminal("term_1")).resolves.toMatchObject({ terminalId: "term_1", paneId: "w1:p1", agentSession: own.agent_session });
 		expect(execFile).toHaveBeenCalledWith("herdr", ["agent", "list"], expect.objectContaining({ timeout: 2000 }), expect.any(Function));
 		herdrResult.value = { agent: unrelated };
-		await expect(new HerdrCliHostVerifier().getPane("w2:p1")).rejects.toMatchObject({ code: "host_unavailable" });
+		await expect(new HerdrCliHostVerifier().getAgent("w2:p1")).rejects.toMatchObject({ code: "host_unavailable" });
 	});
 
 	it.each([

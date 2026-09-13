@@ -32,7 +32,7 @@ export interface HostedParticipantStatus {
 export interface HostedMessageStatus {
 	eventId: string;
 	recipientParticipantKey: string;
-	deliveryState: "pending" | "submitting" | "submitted" | "needs_attention" | "admitted";
+	deliveryState: "pending" | "admitted";
 }
 
 export interface HostedParticipantCoordinatorOptions {
@@ -232,7 +232,7 @@ export class HostedParticipantCoordinator {
 		if (sender.state !== "held" || sender.generation !== expectedSenderGeneration || sender.holderTargetKey !== registration.targetKey) throw new HostedParticipantError("conflict", "Message status caller identity or generation changed.");
 		const event = this.store.read().events[eventId];
 		if (!event || event.type !== "mailbox.message" || event.payload.senderParticipantKey !== senderParticipantKey) throw new HostedParticipantError("not_found", "Mailbox message is absent for this sender.");
-		const deliveryState = event.delivery.status === "acked" ? "admitted" : event.delivery.status === "claimed" ? "pending" : event.delivery.status;
+		const deliveryState = event.delivery.status === "acked" ? "admitted" as const : "pending" as const;
 		return { eventId, recipientParticipantKey: event.recipientParticipantKey, deliveryState };
 	}
 

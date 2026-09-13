@@ -11,9 +11,9 @@ const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 class FakeHost implements HostedHostVerifier {
-	getPaneCalls = 0;
+	getAgentCalls = 0;
 	constructor(public agent: HostedLiveAgent) {}
-	async getPane(): Promise<HostedLiveAgent> { this.getPaneCalls++; return this.agent; }
+	async getAgent(): Promise<HostedLiveAgent> { this.getAgentCalls++; return this.agent; }
 	async findTerminal(): Promise<HostedLiveAgent> { return this.agent; }
 }
 
@@ -73,10 +73,10 @@ describe("hosted heartbeat inbox", () => {
 	it("leaves pending events for heartbeat admission without invoking Herdr", async () => {
 		const test = setup();
 		const { registration, event } = await enqueue(test);
-		const verificationCalls = test.host.getPaneCalls;
+		const verificationCalls = test.host.getAgentCalls;
 		test.wakes.request(registration.targetKey);
 		await vi.waitFor(() => expect(test.store.read().events[event.eventId]?.delivery.status).toBe("pending"));
-		expect(test.host.getPaneCalls).toBe(verificationCalls);
+		expect(test.host.getAgentCalls).toBe(verificationCalls);
 		expect(test.store.read().wakes).toEqual({});
 	});
 
