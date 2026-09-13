@@ -4,7 +4,14 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ChainService } from "../chains/service.ts";
 import { slugify } from "../chains/parser.ts";
 import { missionDir } from "./artifacts.ts";
-import { currentMissionOwner, listMissionSnapshots, readMissionSnapshot, withMissionLock, withMissionWorkspaceLock, writeMissionSnapshot } from "./persistence.ts";
+import {
+	currentMissionOwner,
+	listMissionSnapshots,
+	readMissionSnapshot,
+	withMissionLock,
+	withMissionWorkspaceLock,
+	writeMissionSnapshot,
+} from "./persistence.ts";
 import { MAX_MISSION_REVIEW_ADJUDICATIONS } from "./types.ts";
 import type {
 	MissionCompletionLatch,
@@ -18,6 +25,7 @@ import type {
 	MissionProgressRecord,
 	MissionReview,
 	MissionReviewAdjudication,
+	MissionReviewAdjudicationEntry,
 	MissionReviewAdmission,
 	MissionReviewCandidate,
 	MissionReviewCorrection,
@@ -63,6 +71,7 @@ const DEFAULT_CHAIN_BRANCH = "main";
 const MAX_REQUIREMENTS = 12;
 const MAX_PATHS = 100;
 export const DEFAULT_REVIEW_CORRECTION_LIMIT = 3;
+const TERMINAL_STATUSES: readonly MissionStatus[] = ["complete", "ended", "cleared"];
 const STATUS_TRANSITIONS = {
 	active: ["paused", "blocked", "terminal_error", "budget_limited", "usage_limited", "complete", "ended", "cleared"],
 	paused: ["active", "ended", "cleared"],
@@ -75,6 +84,150 @@ const STATUS_TRANSITIONS = {
 	cleared: [],
 } satisfies Record<MissionStatus, readonly MissionStatus[]>;
 
+/** Minimal session-branch writer the Mission state needs; ExtensionAPI satisfies it. */
+interface MissionEntryWriter {
+	appendEntry<T = unknown>(customType: string, data?: T): void;
+}
+
+interface MissionSettledInput {
+	blockerFingerprint?: string;
+	madeProgress: boolean;
+}
+
+interface MissionRequirementAudit {
+	requirementIndex: number;
+	evidence: string;
+}
+
+function isTerminalMissionStatus(status: MissionStatus): boolean {
+	return TERMINAL_STATUSES.includes(status);
+}
+
+function missionEventBase(kind: MissionEventKind, mission: MissionCurrent): MissionEvent {
+	return { kind, missionId: mission.missionId, generation: mission.generation, at: Date.now() };
+}
+
+function isBlockingFinding(finding: MissionReviewFinding): boolean {
+	return finding.severity === "blocker" || finding.severity === "major";
+}
+
+function reviewCorrectionCount(status: MissionReviewStatus, count: number, replayAdjudication: boolean): number | undefined {
+	if (replayAdjudication) return count;
+	if (status === "changes_requested") return count + 1;
+	return status === "clear" ? 0 : undefined;
+}
+
+/** The durable adjudication history, folded with the latest adjudicated candidate the snapshot still carries. */
+function priorAdjudications(adjudication: MissionReviewAdjudication): MissionReviewAdjudicationEntry[] {
+	const history = [...adjudication.history];
+	const candidateId = adjudication.adjudicatedCandidateId;
+	const verdict = adjudication.adjudicatedVerdict;
+	if (!candidateId || !verdict) return history;
+	return [...history.filter((item) => item.candidateId !== candidateId), { candidateId, verdict }];
+}
+
+function assertAdjudicationAllowed(
+	adjudication: MissionReviewAdjudication,
+	history: MissionReviewAdjudicationEntry[],
+	candidateId: string,
+): void {
+	const candidateKnown = history.some((item) => item.candidateId === candidateId);
+	if (candidateKnown) return;
+	if (adjudication.historyComplete !== true) {
+		throw new Error("Mission review adjudication history is incomplete; refusing to adjudicate an unknown candidate.");
+	}
+	if (history.length >= MAX_MISSION_REVIEW_ADJUDICATIONS) {
+		throw new Error("Mission review adjudication history capacity is exhausted; refusing to forget a reviewed candidate.");
+	}
+}
+
+/** The transferred Mission: a fresh generation and usage baseline, with unresolved review state reopened. */
+function takenOverMission(source: MissionSnapshot, cwd: string, reason: string, aggregate: MissionUsage): MissionCurrent {
+	const sourceAdmission = source.mission.review.admission;
+	const preservesReview = sourceAdmission.status === "clear"
+		|| sourceAdmission.status === "skipped"
+		|| sourceAdmission.status === "changes_requested";
+	return {
+		...source.mission,
+		status: takeoverStatus(source),
+		updatedAt: Date.now(),
+		artifactDir: missionDir(cwd, source.mission.slug),
+		generation: randomUUID(),
+		lastReason: reason,
+		baselineMainTokens: aggregate.mainTokens,
+		baselineSubagentTokens: aggregate.subagentTokens,
+		baselineMainCostUsd: aggregate.mainCostUsd,
+		baselineSubagentCostUsd: aggregate.subagentCostUsd,
+		review: {
+			...source.mission.review,
+			admission: {
+				...sourceAdmission,
+				status: preservesReview ? sourceAdmission.status : "due",
+				reason: preservesReview ? sourceAdmission.reason : "Mission ownership changed; unresolved review requires recovery.",
+				runId: sourceAdmission.status === "changes_requested" ? sourceAdmission.runId : undefined,
+				failure: undefined,
+			},
+		},
+	};
+}
+
+function assertSoleWorkspaceMission(cwd: string, selfId: string | undefined): void {
+	const existing = listMissionSnapshots(cwd)
+		.filter((snapshot) => snapshot.mission.missionId !== selfId && !isTerminalMissionStatus(snapshot.mission.status));
+	if (!existing.length) return;
+	const ids = existing.map((snapshot) => snapshot.mission.missionId).join(", ");
+	throw new Error(`A Mission already exists in this workspace: ${ids}.`);
+}
+
+async function createdEvent(input: MissionCreateInput, ctx: ExtensionContext): Promise<MissionEvent> {
+	assertInputLimits(input.requirements, input.paths);
+	const objective = input.objective.trim();
+	if (!objective) throw new Error("Mission objective must not be empty.");
+	const requirements = normalizeRequirements(input.requirements?.length ? input.requirements : inferRequirements(objective));
+	const title = normalizeTitle(input.title) || deriveMissionTitle(objective, requirements);
+	const baseSlug = slugify(title).slice(0, 42) || "mission";
+	const chain = input.chain?.trim() || await chooseDefaultChain(ctx.cwd, title, baseSlug);
+	const now = Date.now();
+	const missionId = `m_${now.toString(36)}_${randomUUID().slice(0, 6)}`;
+	const slug = `${baseSlug}-${missionId.slice(-6)}`;
+	const baseline = aggregateUsage(ctx.sessionManager.getBranch());
+	const wallDeadlineAt = input.wallDeadlineMs === undefined
+		? undefined
+		: now + requirePositive(input.wallDeadlineMs, "wallDeadlineMs");
+	return {
+		kind: "created",
+		missionId,
+		at: now,
+		objective,
+		title,
+		requirements,
+		status: "active",
+		slug,
+		chain,
+		chainBranch: input.chainBranch?.trim() || DEFAULT_CHAIN_BRANCH,
+		artifactDir: missionDir(ctx.cwd, slug),
+		paths: normalizePaths(input.paths),
+		tokenBudget: positiveNumber(input.tokenBudget, "tokenBudget"),
+		costBudgetUsd: positiveNumber(input.costBudgetUsd ?? 1_000, "costBudgetUsd"),
+		baselineMainTokens: baseline.mainTokens,
+		baselineSubagentTokens: baseline.subagentTokens,
+		baselineMainCostUsd: baseline.mainCostUsd,
+		baselineSubagentCostUsd: baseline.subagentCostUsd,
+		generation: randomUUID(),
+		objectiveVersion: 1,
+		turnBudget: positiveInteger(input.turnBudget, "turnBudget"),
+		wallDeadlineAt,
+		reviewStatus: "due",
+		initialBaselinePending: true,
+		reviewUpdatedAt: now,
+		reviewReason: "Mission creation requires a durable initial workspace baseline.",
+		reviewAdjudicationHistoryComplete: true,
+		reviewCorrectionCount: 0,
+		reviewCorrectionLimit: DEFAULT_REVIEW_CORRECTION_LIMIT,
+		blockerCount: 0,
+		turnCount: 0,
+	};
+}
 export class MissionState {
 	private current: MissionCurrent | undefined;
 	private usage: MissionUsage = zeroUsage();
@@ -91,7 +244,7 @@ export class MissionState {
 	private persistenceError?: string;
 
 	read(): MissionCurrent | undefined {
-		if (!this.current || this.current.status === "cleared" || this.current.status === "complete" || this.current.status === "ended") return undefined;
+		if (!this.current || isTerminalMissionStatus(this.current.status)) return undefined;
 		return { ...this.current };
 	}
 
@@ -158,10 +311,15 @@ export class MissionState {
 				return;
 			}
 			if (!anchor && !this.current) {
-				const foreign = snapshots.filter((candidate) => candidate.owner.sessionId !== owner.sessionId && !["complete", "ended", "cleared"].includes(candidate.mission.status));
+				const foreign = snapshots.filter((snapshot) => snapshot.owner.sessionId !== owner.sessionId
+					&& !isTerminalMissionStatus(snapshot.mission.status));
 				const [onlyForeign] = foreign;
-				if (onlyForeign && foreign.length === 1) this.ownershipConflict = { missionId: onlyForeign.mission.missionId, ownerSessionId: onlyForeign.owner.sessionId };
-				else if (foreign.length > 1) this.persistenceError = `Multiple takeover candidates exist: ${foreign.map((candidate) => candidate.mission.missionId).join(", ")}`;
+				if (onlyForeign && foreign.length === 1) {
+					this.ownershipConflict = { missionId: onlyForeign.mission.missionId, ownerSessionId: onlyForeign.owner.sessionId };
+				} else if (foreign.length > 1) {
+					const ids = foreign.map((snapshot) => snapshot.mission.missionId).join(", ");
+					this.persistenceError = `Multiple takeover candidates exist: ${ids}`;
+				}
 				if (foreign.length) return;
 			}
 			if (this.current) this.bootstrapSnapshot(owner);
@@ -187,7 +345,7 @@ export class MissionState {
 		};
 	}
 
-	takeover(pi: { appendEntry<T = unknown>(customType: string, data?: T): void }, candidate: MissionTakeoverCandidate, ctx: ExtensionContext, reason: string): MissionCurrent {
+	takeover(pi: MissionEntryWriter, candidate: MissionTakeoverCandidate, ctx: ExtensionContext, reason: string): MissionCurrent {
 		const owner = currentMissionOwner(ctx);
 		if (!owner) throw new Error("Mission takeover requires a persisted Pi session.");
 		const explanation = reason.trim();
@@ -199,53 +357,41 @@ export class MissionState {
 		const cwd = ctx.cwd;
 		const branch = ctx.sessionManager.getBranch();
 		const currentAggregate = aggregateUsage(branch);
-		let taken!: MissionSnapshot;
-		const transfer = () => withMissionLock(cwd, source.mission.slug, () => {
+		const taken = withMissionLock(cwd, source.mission.slug, () => {
 			const stored = readMissionSnapshot(cwd, source.mission.slug);
-			if (stored && (stored.revision !== source.revision || stored.owner.sessionId !== source.owner.sessionId)) throw new Error("Mission ownership changed; inspect the latest controller before retrying takeover.");
+			if (stored && (stored.revision !== source.revision || stored.owner.sessionId !== source.owner.sessionId)) {
+				throw new Error("Mission ownership changed; inspect the latest controller before retrying takeover.");
+			}
 			if (!stored) throw new Error("Mission canonical state disappeared before takeover.");
-			const now = Date.now();
-			const sourceAdmission = source.mission.review.admission;
-			const preservesReview = sourceAdmission.status === "clear" || sourceAdmission.status === "skipped" || sourceAdmission.status === "changes_requested";
-			const mission: MissionCurrent = {
-				...source.mission,
-				status: takeoverStatus(source),
-				updatedAt: now,
-				artifactDir: missionDir(cwd, source.mission.slug),
-				generation: randomUUID(),
-				lastReason: explanation,
-				baselineMainTokens: currentAggregate.mainTokens,
-				baselineSubagentTokens: currentAggregate.subagentTokens,
-				baselineMainCostUsd: currentAggregate.mainCostUsd,
-				baselineSubagentCostUsd: currentAggregate.subagentCostUsd,
-				review: {
-					...source.mission.review,
-					admission: {
-						...sourceAdmission,
-						status: preservesReview ? sourceAdmission.status : "due",
-						reason: preservesReview ? sourceAdmission.reason : "Mission ownership changed; unresolved review requires recovery.",
-						runId: sourceAdmission.status === "changes_requested" ? sourceAdmission.runId : undefined,
-						failure: undefined,
-					},
-				},
-			};
-			taken = {
+			const transferred: MissionSnapshot = {
 				...source,
-				revision: (stored?.revision ?? source.revision) + 1,
+				revision: stored.revision + 1,
 				owner,
-				mission,
+				mission: takenOverMission(source, cwd, explanation, currentAggregate),
 				continuationProgressIndex: source.progress.length,
 				carriedUsage: { ...source.usage },
 				usage: { ...source.usage },
 				usageComplete: source.usageComplete,
 				reviewFailureCount: 0,
 			};
-			writeMissionSnapshot(cwd, taken);
+			writeMissionSnapshot(cwd, transferred);
+			return transferred;
 		});
-		transfer();
 		this.ownershipConflict = undefined;
 		this.persistenceError = undefined;
 		this.restoreSnapshot(taken, branch, cwd);
+		this.mirrorTakeover(pi, taken, owner, source.owner.sessionId, explanation);
+		return { ...taken.mission, artifactDir: missionDir(cwd, taken.mission.slug) };
+	}
+
+	/** Mirrors the completed canonical transfer into the session branch; a failed mirror is repaired on reload. */
+	private mirrorTakeover(
+		pi: MissionEntryWriter,
+		taken: MissionSnapshot,
+		owner: MissionOwner,
+		previousOwnerSessionId: string,
+		reason: string,
+	): void {
 		try {
 			pi.appendEntry(MISSION_CUSTOM_TYPE, {
 				kind: "taken_over",
@@ -255,13 +401,12 @@ export class MissionState {
 				status: taken.mission.status,
 				slug: taken.mission.slug,
 				ownerSessionId: owner.sessionId,
-				previousOwnerSessionId: source.owner.sessionId,
-				reason: explanation,
+				previousOwnerSessionId,
+				reason,
 			} satisfies MissionEvent);
 		} catch {
 			// Canonical ownership already transferred; the session mirror is repairable on reload.
 		}
-		return { ...taken.mission, artifactDir: missionDir(cwd, taken.mission.slug) };
 	}
 
 	private loadBranch(branch: Array<any>, cwd: string): void {
@@ -271,11 +416,18 @@ export class MissionState {
 		this.clearLoadedState();
 		for (const entry of branch) {
 			if (entry.type === "custom" && entry.customType === MISSION_CUSTOM_TYPE) {
-				// SAFETY: Only this extension writes the matching custom entry; a malformed branch entry is rejected by snapshot validation before it can become canonical state.
+				// SAFETY: Only this extension writes the matching custom entry; a malformed branch entry is
+				// rejected by snapshot validation before it can become canonical state.
 				const rawEvent = entry.data as MissionEvent | undefined;
 				if (!rawEvent?.missionId || rawEvent.kind === "taken_over") continue;
 				const event = rawEvent.kind === "created" && rawEvent.baselineMainTokens === undefined
-					? { ...rawEvent, baselineMainTokens: rolling.mainTokens, baselineSubagentTokens: rolling.subagentTokens, baselineMainCostUsd: rolling.mainCostUsd, baselineSubagentCostUsd: rolling.subagentCostUsd }
+					? {
+						...rawEvent,
+						baselineMainTokens: rolling.mainTokens,
+						baselineSubagentTokens: rolling.subagentTokens,
+						baselineMainCostUsd: rolling.mainCostUsd,
+						baselineSubagentCostUsd: rolling.subagentCostUsd,
+					}
 					: rawEvent;
 				this.applyEvent(event);
 				if (event.reviewOutcome === "failed") this.reviewFailureCount++;
@@ -322,8 +474,12 @@ export class MissionState {
 		const cwd = this.cwd;
 		if (!current || !cwd) return;
 		withMissionWorkspaceLock(cwd, () => {
-			const existing = listMissionSnapshots(cwd).filter((snapshot) => !["complete", "ended", "cleared"].includes(snapshot.mission.status) && snapshot.mission.missionId !== current.missionId);
-			if (existing.length) throw new Error(`A Mission is already controlled in this workspace: ${existing.map((snapshot) => snapshot.mission.missionId).join(", ")}.`);
+			const existing = listMissionSnapshots(cwd)
+				.filter((snapshot) => !isTerminalMissionStatus(snapshot.mission.status) && snapshot.mission.missionId !== current.missionId);
+			if (existing.length) {
+				const ids = existing.map((snapshot) => snapshot.mission.missionId).join(", ");
+				throw new Error(`A Mission is already controlled in this workspace: ${ids}.`);
+			}
 			withMissionLock(cwd, current.slug, () => {
 				const stored = readMissionSnapshot(cwd, current.slug);
 				if (stored) {
@@ -341,62 +497,27 @@ export class MissionState {
 
 	async create(input: MissionCreateInput, ctx: ExtensionContext): Promise<MissionEvent> {
 		if (this.persistenceError) throw new Error(this.persistenceError);
-		if (this.ownershipConflict) throw new Error(`Mission ${this.ownershipConflict.missionId} is controlled by another session; take it over or finish it before creating a replacement.`);
+		const conflict = this.ownershipConflict;
+		if (conflict) {
+			throw new Error(`Mission ${conflict.missionId} is controlled by another session;`
+				+ " take it over or finish it before creating a replacement.");
+		}
 		const existing = this.readAny();
-		if (this.creationPending || (existing && existing.status !== "complete" && existing.status !== "ended")) throw new Error(`Mission already exists${existing ? `: ${existing.title}` : " or is being created"}. End or clear it before creating another.`);
+		const activeMission = existing && existing.status !== "complete" && existing.status !== "ended";
+		if (this.creationPending || activeMission) {
+			const detail = existing ? `: ${existing.title}` : " or is being created";
+			throw new Error(`Mission already exists${detail}. End or clear it before creating another.`);
+		}
 		this.creationPending = true;
 		try {
-			assertInputLimits(input.requirements, input.paths);
-			const objective = input.objective.trim();
-			if (!objective) throw new Error("Mission objective must not be empty.");
-			const requirements = normalizeRequirements(input.requirements?.length ? input.requirements : inferRequirements(objective));
-			const title = normalizeTitle(input.title) || deriveMissionTitle(objective, requirements);
-			const baseSlug = slugify(title).slice(0, 42) || "mission";
-			const chain = input.chain?.trim() || await chooseDefaultChain(ctx.cwd, title, baseSlug);
-			const now = Date.now();
-			const missionId = `m_${now.toString(36)}_${randomUUID().slice(0, 6)}`;
-			const slug = `${baseSlug}-${missionId.slice(-6)}`;
-			const baseline = aggregateUsage(ctx.sessionManager.getBranch());
-			return {
-				kind: "created",
-				missionId,
-				at: now,
-				objective,
-				title,
-				requirements,
-				status: "active",
-				slug,
-				chain,
-				chainBranch: input.chainBranch?.trim() || DEFAULT_CHAIN_BRANCH,
-				artifactDir: missionDir(ctx.cwd, slug),
-				paths: normalizePaths(input.paths),
-				tokenBudget: positiveNumber(input.tokenBudget, "tokenBudget"),
-				costBudgetUsd: positiveNumber(input.costBudgetUsd ?? 1_000, "costBudgetUsd"),
-				baselineMainTokens: baseline.mainTokens,
-				baselineSubagentTokens: baseline.subagentTokens,
-				baselineMainCostUsd: baseline.mainCostUsd,
-				baselineSubagentCostUsd: baseline.subagentCostUsd,
-				generation: randomUUID(),
-				objectiveVersion: 1,
-				turnBudget: positiveInteger(input.turnBudget, "turnBudget"),
-				wallDeadlineAt: input.wallDeadlineMs === undefined ? undefined : now + requirePositive(input.wallDeadlineMs, "wallDeadlineMs"),
-				reviewStatus: "due",
-				initialBaselinePending: true,
-				reviewUpdatedAt: now,
-				reviewReason: "Mission creation requires a durable initial workspace baseline.",
-				reviewAdjudicationHistoryComplete: true,
-				reviewCorrectionCount: 0,
-				reviewCorrectionLimit: DEFAULT_REVIEW_CORRECTION_LIMIT,
-				blockerCount: 0,
-				turnCount: 0,
-			};
+			return await createdEvent(input, ctx);
 		} catch (error) {
 			this.creationPending = false;
 			throw error;
 		}
 	}
 
-	append(pi: { appendEntry<T = unknown>(customType: string, data?: T): void }, event: MissionEvent): MissionCurrent | undefined {
+	append(pi: MissionEntryWriter, event: MissionEvent): MissionCurrent | undefined {
 		try {
 			const cwd = this.cwd;
 			const owner = this.owner;
@@ -406,39 +527,18 @@ export class MissionState {
 				if (event.reviewOutcome === "failed") this.reviewFailureCount++;
 				return this.readAny();
 			}
-			// SAFETY: append() only ever receives a "created" event as the first event for a Mission; every later event kind is only reachable once loadFromSession()/create() has populated this.current, so its slug stands in for the missing event.slug.
-			const persist = () => withMissionLock(cwd, event.slug ?? this.current?.slug ?? "", () => {
-				const stored = readMissionSnapshot(cwd, event.slug ?? this.current!.slug);
-				if (event.kind === "created" && stored) throw new Error(`Mission artifact state already exists: ${event.slug}`);
-				const currentUsage = this.usage;
-				if (event.kind !== "created") {
-					if (!stored || stored.owner.sessionId !== owner.sessionId) throw new Error("Mission is controlled by another Pi session.");
-					if (stored.revision !== this.snapshotRevision) throw new Error("Mission state changed concurrently; reload before retrying.");
-					this.restoreSnapshot(stored, [], cwd, false);
-					this.usage = currentUsage;
-				}
-				if (stored?.revision === Number.MAX_SAFE_INTEGER) throw new Error("Mission state revision space is exhausted.");
-				// Apply to in-memory state, then commit to disk. If the durable write fails, roll the in-memory state back so read()/readAny() never report an event that was never persisted.
-				this.applyEvent(event);
-				if (event.reviewOutcome === "failed") this.reviewFailureCount++;
-				try {
-					const snapshot = this.exportSnapshot(owner);
-					snapshot.revision = (stored?.revision ?? 0) + 1;
-					writeMissionSnapshot(cwd, snapshot);
-					this.snapshotRevision = snapshot.revision;
-				} catch (error) {
-					if (stored) { this.restoreSnapshot(stored, [], cwd, false); this.usage = currentUsage; }
-					else this.clearLoadedState();
-					throw error;
-				}
-			});
-			// Resuming an `ended` Mission re-enters the active set, so it needs the same single-active-Mission admission as creation; `ended` is otherwise filtered out of the workspace exclusivity check.
-			const needsWorkspaceAdmission = event.kind === "created" || (event.kind === "status_changed" && event.status === "active" && this.current?.status === "ended");
-			if (needsWorkspaceAdmission) {
+			// SAFETY: append() only ever receives a "created" event as the first event for a Mission; every later
+			// event kind is only reachable once loadFromSession()/create() has populated this.current, so its slug
+			// stands in for the missing event.slug.
+			const slug = event.slug ?? this.current?.slug ?? "";
+			const persist = () => withMissionLock(cwd, slug, () => this.persistEvent(cwd, owner, slug, event));
+			// Resuming an `ended` Mission re-enters the active set, so it needs the same single-active-Mission
+			// admission as creation; `ended` is otherwise filtered out of the workspace exclusivity check.
+			const resumesEnded = event.kind === "status_changed" && event.status === "active" && this.current?.status === "ended";
+			if (event.kind === "created" || resumesEnded) {
 				const selfId = event.missionId ?? this.current?.missionId;
 				withMissionWorkspaceLock(cwd, () => {
-					const existing = listMissionSnapshots(cwd).filter((snapshot) => snapshot.mission.missionId !== selfId && !["complete", "ended", "cleared"].includes(snapshot.mission.status));
-					if (existing.length) throw new Error(`A Mission already exists in this workspace: ${existing.map((snapshot) => snapshot.mission.missionId).join(", ")}.`);
+					assertSoleWorkspaceMission(cwd, selfId);
 					persist();
 				});
 			} else persist();
@@ -449,16 +549,47 @@ export class MissionState {
 		}
 	}
 
+	/** Commits one event under the Mission lock: revision check, in-memory apply, durable write, rollback on failure. */
+	private persistEvent(cwd: string, owner: MissionOwner, slug: string, event: MissionEvent): void {
+		const stored = readMissionSnapshot(cwd, slug);
+		if (event.kind === "created" && stored) throw new Error(`Mission artifact state already exists: ${event.slug}`);
+		const currentUsage = this.usage;
+		if (event.kind !== "created") {
+			if (!stored || stored.owner.sessionId !== owner.sessionId) throw new Error("Mission is controlled by another Pi session.");
+			if (stored.revision !== this.snapshotRevision) throw new Error("Mission state changed concurrently; reload before retrying.");
+			this.restoreSnapshot(stored, [], cwd, false);
+			this.usage = currentUsage;
+		}
+		if (stored?.revision === Number.MAX_SAFE_INTEGER) throw new Error("Mission state revision space is exhausted.");
+		// Apply to in-memory state, then commit to disk. If the durable write fails, roll the in-memory state back
+		// so read()/readAny() never report an event that was never persisted.
+		this.applyEvent(event);
+		if (event.reviewOutcome === "failed") this.reviewFailureCount++;
+		try {
+			const snapshot = this.exportSnapshot(owner);
+			snapshot.revision = (stored?.revision ?? 0) + 1;
+			writeMissionSnapshot(cwd, snapshot);
+			this.snapshotRevision = snapshot.revision;
+		} catch (error) {
+			if (stored) {
+				this.restoreSnapshot(stored, [], cwd, false);
+				this.usage = currentUsage;
+			} else this.clearLoadedState();
+			throw error;
+		}
+	}
+
 	statusEvent(status: MissionStatus, reason?: string, summary?: string): MissionEvent {
 		const mission = this.requireCurrent();
 		const allowed: readonly MissionStatus[] = STATUS_TRANSITIONS[mission.status];
 		if (!allowed.includes(status)) throw new Error(`Mission cannot transition from ${mission.status} to ${status}.`);
-		return { kind: status === "complete" ? "completed" : "status_changed", missionId: mission.missionId, generation: mission.generation, at: Date.now(), status, reason, summary };
+		const kind = status === "complete" ? "completed" : "status_changed";
+		return { ...missionEventBase(kind, mission), status, reason, summary };
 	}
 
 	continuedEvent(): MissionEvent {
 		const mission = this.requireActive();
-		return { kind: "continued", missionId: mission.missionId, generation: mission.generation, at: Date.now(), status: mission.status, turnCount: (mission.turnCount ?? 0) + 1 };
+		return { ...missionEventBase("continued", mission), status: mission.status, turnCount: (mission.turnCount ?? 0) + 1 };
 	}
 
 	objectiveUpdateEvent(input: MissionUpdateInput): MissionEvent {
@@ -467,23 +598,33 @@ export class MissionState {
 		const objective = input.objective?.trim().replace(/\s+/g, " ") || mission.objective;
 		const requirements = input.requirements?.length ? normalizeRequirements(input.requirements) : mission.requirements;
 		const paths = input.paths !== undefined ? normalizePaths(input.paths) : mission.paths;
-		const identityChanged = objective !== mission.objective.trim().replace(/\s+/g, " ") || !sameOrderedStrings(requirements, mission.requirements) || !sameStringSet(paths, mission.paths);
+		const identityChanged = objective !== mission.objective.trim().replace(/\s+/g, " ")
+			|| !sameOrderedStrings(requirements, mission.requirements)
+			|| !sameStringSet(paths, mission.paths);
 		if (!input.reason.trim()) throw new Error("Mission objective updates require a reason.");
 		const event: MissionEvent = {
-			kind: "objective_updated",
-			missionId: mission.missionId,
-			generation: mission.generation,
-			at: Date.now(),
+			...missionEventBase("objective_updated", mission),
 			objective,
 			requirements,
 			objectiveVersion: identityChanged ? (mission.objectiveVersion ?? 1) + 1 : mission.objectiveVersion ?? 1,
 			reason: input.reason.trim(),
 		};
 		if (input.paths !== undefined) event.paths = paths;
-		if (input.tokenBudget !== undefined) event.tokenBudget = input.tokenBudget === null || input.tokenBudget === 0 ? null : positiveNumber(input.tokenBudget, "tokenBudget");
-		if (input.costBudgetUsd !== undefined) event.costBudgetUsd = input.costBudgetUsd === null || input.costBudgetUsd === 0 ? null : positiveNumber(input.costBudgetUsd, "costBudgetUsd");
-		if (input.turnBudget !== undefined) event.turnBudget = input.turnBudget === null || input.turnBudget === 0 ? null : positiveInteger(input.turnBudget, "turnBudget");
-		if (input.wallDeadlineMs !== undefined) event.wallDeadlineAt = input.wallDeadlineMs === null || input.wallDeadlineMs === 0 ? null : Date.now() + requirePositive(input.wallDeadlineMs, "wallDeadlineMs");
+		if (input.tokenBudget !== undefined) {
+			event.tokenBudget = input.tokenBudget === null || input.tokenBudget === 0 ? null : positiveNumber(input.tokenBudget, "tokenBudget");
+		}
+		if (input.costBudgetUsd !== undefined) {
+			event.costBudgetUsd = input.costBudgetUsd === null || input.costBudgetUsd === 0
+				? null
+				: positiveNumber(input.costBudgetUsd, "costBudgetUsd");
+		}
+		if (input.turnBudget !== undefined) {
+			event.turnBudget = input.turnBudget === null || input.turnBudget === 0 ? null : positiveInteger(input.turnBudget, "turnBudget");
+		}
+		if (input.wallDeadlineMs !== undefined) {
+			const deadline = input.wallDeadlineMs;
+			event.wallDeadlineAt = deadline === null || deadline === 0 ? null : Date.now() + requirePositive(deadline, "wallDeadlineMs");
+		}
 		if (identityChanged) {
 			event.reviewStatus = "due";
 			event.reviewReason = "Mission objective changed";
@@ -495,35 +636,24 @@ export class MissionState {
 		const mission = this.requireActive();
 		const review = mission.review;
 		const adjudicated = status === "clear" || status === "changes_requested";
-		const correctionCount = input.replayAdjudication ? review.correction.count : status === "changes_requested" ? review.correction.count + 1 : status === "clear" ? 0 : undefined;
-		const supersessionCount = input.outcome === "superseded" ? review.admission.supersessionCount + 1 : (status === "clear" || status === "changes_requested") ? 0 : undefined;
+		const correctionCount = reviewCorrectionCount(status, review.correction.count, input.replayAdjudication === true);
+		const supersessionCount = input.outcome === "superseded"
+			? review.admission.supersessionCount + 1
+			: adjudicated ? 0 : undefined;
 		const candidateId = input.candidateId ?? (status === "due" ? undefined : review.candidate.id);
-		const findings = input.findings?.map((finding) => ({ ...finding }));
 		const acceptedFindings = status === "changes_requested"
-			? (review.findings.items ?? []).filter((finding) => finding.severity === "blocker" || finding.severity === "major").map((finding) => ({ ...finding }))
+			? (review.findings.items ?? []).filter(isBlockingFinding).map((finding) => ({ ...finding }))
 			: status === "clear" ? [] : undefined;
-		const acceptedRevisions = status === "changes_requested" || status === "clear"
+		const acceptedRevisions = adjudicated
 			? review.candidate.scopeRevisions?.map((revision) => ({ root: revision.root, base: revision.head, head: revision.head }))
 			: undefined;
-		let previousAdjudications = [...review.adjudication.history];
-		if (review.adjudication.adjudicatedCandidateId && review.adjudication.adjudicatedVerdict) {
-			previousAdjudications = [...previousAdjudications.filter((item) => item.candidateId !== review.adjudication.adjudicatedCandidateId), { candidateId: review.adjudication.adjudicatedCandidateId, verdict: review.adjudication.adjudicatedVerdict }];
-		}
-		const candidateKnown = candidateId ? previousAdjudications.some((item) => item.candidateId === candidateId) : false;
-		if (adjudicated && candidateId && review.adjudication.historyComplete !== true && !candidateKnown) {
-			throw new Error("Mission review adjudication history is incomplete; refusing to adjudicate an unknown candidate.");
-		}
-		if (adjudicated && candidateId && previousAdjudications.length >= MAX_MISSION_REVIEW_ADJUDICATIONS && !candidateKnown) {
-			throw new Error("Mission review adjudication history capacity is exhausted; refusing to forget a reviewed candidate.");
-		}
+		const history = priorAdjudications(review.adjudication);
+		if (adjudicated && candidateId) assertAdjudicationAllowed(review.adjudication, history, candidateId);
 		const adjudications = adjudicated && candidateId
-			? [...previousAdjudications.filter((item) => item.candidateId !== candidateId), { candidateId, verdict: status }]
+			? [...history.filter((item) => item.candidateId !== candidateId), { candidateId, verdict: status }]
 			: undefined;
 		return {
-			kind: "review_changed",
-			missionId: mission.missionId,
-			generation: mission.generation,
-			at: Date.now(),
+			...missionEventBase("review_changed", mission),
 			reviewStatus: status,
 			reviewRunId: input.runId,
 			reviewAdmissionId: input.admissionId,
@@ -544,7 +674,7 @@ export class MissionState {
 			reviewHighestSeverity: input.highestSeverity,
 			reviewBlockingFindingCount: input.blockingFindingCount,
 			reviewBacklogFindingCount: input.backlogFindingCount,
-			reviewFindings: findings,
+			reviewFindings: input.findings?.map((finding) => ({ ...finding })),
 			reviewAcceptedFindings: acceptedFindings,
 			reviewScopePaths: input.scopePaths,
 			reviewScopeRevisions: input.scopeRevisions,
@@ -556,40 +686,68 @@ export class MissionState {
 	reviewPolicyEvent(reviewCorrectionLimit: number): MissionEvent {
 		const mission = this.requireCurrent();
 		const correction = mission.review.correction;
-		if (mission.status !== "blocked" || correction.count <= correction.limit) throw new Error("Mission review correction authorization is not required.");
-		if (!Number.isSafeInteger(reviewCorrectionLimit) || reviewCorrectionLimit < correction.count) throw new Error("Review correction limit must cover the pending correction cycle.");
-		return { kind: "review_policy_updated", missionId: mission.missionId, generation: mission.generation, at: Date.now(), reviewCorrectionLimit };
+		if (mission.status !== "blocked" || correction.count <= correction.limit) {
+			throw new Error("Mission review correction authorization is not required.");
+		}
+		if (!Number.isSafeInteger(reviewCorrectionLimit) || reviewCorrectionLimit < correction.count) {
+			throw new Error("Review correction limit must cover the pending correction cycle.");
+		}
+		return { ...missionEventBase("review_policy_updated", mission), reviewCorrectionLimit };
 	}
 
 	completionLatchEvent(candidateId: string, reviewStatus: MissionConvergedReviewStatus): MissionEvent {
 		const mission = this.requireActive();
 		if (!candidateId) throw new Error("Mission completion authorization requires an exact candidate.");
-		return { kind: "completion_latched", missionId: mission.missionId, generation: mission.generation, at: Date.now(), completionLatchCandidateId: candidateId, completionLatchReviewStatus: reviewStatus };
+		return {
+			...missionEventBase("completion_latched", mission),
+			completionLatchCandidateId: candidateId,
+			completionLatchReviewStatus: reviewStatus,
+		};
 	}
 
 	completionLatchClearedEvent(): MissionEvent {
 		const mission = this.requireActive();
-		return { kind: "completion_latch_cleared", missionId: mission.missionId, generation: mission.generation, at: Date.now() };
+		return missionEventBase("completion_latch_cleared", mission);
 	}
 
-	completionEvent(candidateId: string, completionId: string, audit: Array<{ requirementIndex: number; evidence: string }> | undefined, reason?: string, summary?: string): MissionEvent {
+	completionEvent(
+		candidateId: string,
+		completionId: string,
+		audit: MissionRequirementAudit[] | undefined,
+		reason?: string,
+		summary?: string,
+	): MissionEvent {
 		const mission = this.requireActive();
-		if (mission.review.completionLatch.candidateId !== candidateId) throw new Error("Mission completion is not authorized for this candidate.");
-		if (mission.review.completionLatch.reviewStatus !== mission.review.admission.status) throw new Error("Mission completion authorization does not match the current review disposition.");
-		return { kind: "completed", missionId: mission.missionId, generation: mission.generation, at: Date.now(), status: "complete", reason, summary, reviewCandidateId: candidateId, expectedObjectiveVersion: mission.objectiveVersion ?? 1, completionId, completionEffectsStatus: "pending", completionAudit: audit };
+		if (mission.review.completionLatch.candidateId !== candidateId) {
+			throw new Error("Mission completion is not authorized for this candidate.");
+		}
+		if (mission.review.completionLatch.reviewStatus !== mission.review.admission.status) {
+			throw new Error("Mission completion authorization does not match the current review disposition.");
+		}
+		return {
+			...missionEventBase("completed", mission),
+			status: "complete",
+			reason,
+			summary,
+			reviewCandidateId: candidateId,
+			expectedObjectiveVersion: mission.objectiveVersion ?? 1,
+			completionId,
+			completionEffectsStatus: "pending",
+			completionAudit: audit,
+		};
 	}
 
 	completionEffectsDoneEvent(completionId: string): MissionEvent {
 		const mission = this.requireCurrent();
-		return { kind: "completion_effects_done", missionId: mission.missionId, generation: mission.generation, at: Date.now(), completionId, completionEffectsStatus: "done" };
+		return { ...missionEventBase("completion_effects_done", mission), completionId, completionEffectsStatus: "done" };
 	}
 
 	workspaceFingerprintEvent(fingerprint: string): MissionEvent {
 		const mission = this.requireActive();
-		return { kind: "workspace_fingerprinted", missionId: mission.missionId, generation: mission.generation, at: Date.now(), admittedWorktreeFingerprint: fingerprint };
+		return { ...missionEventBase("workspace_fingerprinted", mission), admittedWorktreeFingerprint: fingerprint };
 	}
 
-	settledEvent(input: { blockerFingerprint?: string; madeProgress: boolean }): MissionEvent {
+	settledEvent(input: MissionSettledInput): MissionEvent {
 		const mission = this.requireActive();
 		const sameBlocker = input.blockerFingerprint && input.blockerFingerprint === mission.blockerFingerprint;
 		return {
@@ -598,7 +756,9 @@ export class MissionState {
 			generation: mission.generation,
 			at: Date.now(),
 			blockerFingerprint: input.madeProgress ? undefined : input.blockerFingerprint ?? mission.blockerFingerprint,
-			blockerCount: input.madeProgress ? 0 : sameBlocker ? (mission.blockerCount ?? 0) + 1 : input.blockerFingerprint ? 1 : mission.blockerCount ?? 0,
+			blockerCount: input.madeProgress
+				? 0
+				: sameBlocker ? (mission.blockerCount ?? 0) + 1 : input.blockerFingerprint ? 1 : mission.blockerCount ?? 0,
 		};
 	}
 
@@ -639,14 +799,20 @@ export class MissionState {
 
 	private requireCurrent(): MissionCurrent {
 		if (this.persistenceError) throw new Error(this.persistenceError);
-		if (this.ownershipConflict) throw new Error(`Mission ${this.ownershipConflict.missionId} is controlled by session ${this.ownershipConflict.ownerSessionId}; use mission_takeover only with explicit user confirmation.`);
+		const conflict = this.ownershipConflict;
+		if (conflict) {
+			throw new Error(`Mission ${conflict.missionId} is controlled by session ${conflict.ownerSessionId};`
+				+ " use mission_takeover only with explicit user confirmation.");
+		}
 		if (!this.current || this.current.status === "cleared") throw new Error("No Mission is controlled by this session.");
 		return this.current;
 	}
 
 	private requireMutable(): MissionCurrent {
 		const mission = this.requireCurrent();
-		if (mission.status === "complete" || mission.status === "ended") throw new Error(`Mission ${mission.status} is terminal and cannot be mutated.`);
+		if (mission.status === "complete" || mission.status === "ended") {
+			throw new Error(`Mission ${mission.status} is terminal and cannot be mutated.`);
+		}
 		return mission;
 	}
 
@@ -688,7 +854,8 @@ export class MissionState {
 		if (event.status) current.status = event.status;
 		if (event.reason) current.lastReason = event.reason;
 		if (event.summary) current.lastSummary = event.summary;
-		// A review that reaches the reviewer or clears wipes the transient failure streak, so weeks-apart intermittent reviewer failures cannot accumulate into a permanent three-strike block.
+		// A review that reaches the reviewer or clears wipes the transient failure streak, so weeks-apart
+		// intermittent reviewer failures cannot accumulate into a permanent three-strike block.
 		if (event.reviewStatus === "awaiting_adjudication" || event.reviewStatus === "clear") this.reviewFailureCount = 0;
 		applyReviewAdmissionFields(current.review.admission, event);
 		applyReviewCandidateFields(current.review.candidate, event);
@@ -782,11 +949,15 @@ export class MissionState {
 	private applyCompleted(current: MissionCurrent, event: MissionEvent): void {
 		if (!event.completionId) return;
 		if (current.status !== "active") throw new Error("Mission completion was already committed or the Mission is no longer active.");
-		if (current.objectiveVersion !== event.expectedObjectiveVersion || current.review.completionLatch.candidateId !== event.reviewCandidateId) throw new Error("Mission completion candidate changed before terminal commit.");
+		const sameCandidate = current.objectiveVersion === event.expectedObjectiveVersion
+			&& current.review.completionLatch.candidateId === event.reviewCandidateId;
+		if (!sameCandidate) throw new Error("Mission completion candidate changed before terminal commit.");
 	}
 
 	private applyCompletionEffectsDone(current: MissionCurrent, event: MissionEvent): void {
-		if (current.status !== "complete" || current.completionId !== event.completionId) throw new Error("Mission completion effects do not match the terminal operation.");
+	if (current.status !== "complete" || current.completionId !== event.completionId) {
+		throw new Error("Mission completion effects do not match the terminal operation.");
+	}
 	}
 }
 
@@ -901,14 +1072,21 @@ function applyReviewAdjudicationFields(adjudication: MissionReviewAdjudication, 
 	if (event.reviewAdjudicatedVerdict !== undefined) adjudication.adjudicatedVerdict = event.reviewAdjudicatedVerdict;
 	if (event.reviewAdjudications !== undefined || (event.reviewAdjudicatedCandidateId && event.reviewAdjudicatedVerdict)) {
 		const additions = [...(event.reviewAdjudications ?? [])];
-		if (event.reviewAdjudicatedCandidateId && event.reviewAdjudicatedVerdict) additions.push({ candidateId: event.reviewAdjudicatedCandidateId, verdict: event.reviewAdjudicatedVerdict });
-		for (const item of additions) adjudication.history = [...adjudication.history.filter((existing) => existing.candidateId !== item.candidateId), { ...item }];
+		if (event.reviewAdjudicatedCandidateId && event.reviewAdjudicatedVerdict) {
+			additions.push({ candidateId: event.reviewAdjudicatedCandidateId, verdict: event.reviewAdjudicatedVerdict });
+		}
+		for (const item of additions) {
+			const others = adjudication.history.filter((existing) => existing.candidateId !== item.candidateId);
+			adjudication.history = [...others, { ...item }];
+		}
 	}
 	if (event.reviewAdjudicationHistoryComplete !== undefined) adjudication.historyComplete = event.reviewAdjudicationHistoryComplete;
 }
 
 function applyReviewFindingsFields(findings: MissionReviewFindings, event: MissionEvent): void {
-	if (event.kind === "review_changed" && event.reviewStatus === "awaiting_adjudication") findings.highestSeverity = event.reviewHighestSeverity;
+	if (event.kind === "review_changed" && event.reviewStatus === "awaiting_adjudication") {
+		findings.highestSeverity = event.reviewHighestSeverity;
+	}
 	else if (event.reviewHighestSeverity !== undefined) findings.highestSeverity = event.reviewHighestSeverity;
 	if (event.reviewBlockingFindingCount !== undefined) findings.blockingCount = event.reviewBlockingFindingCount;
 	if (event.reviewBacklogFindingCount !== undefined) findings.backlogCount = event.reviewBacklogFindingCount;
@@ -918,7 +1096,9 @@ function applyReviewFindingsFields(findings: MissionReviewFindings, event: Missi
 }
 
 function applyReviewCorrectionFields(correction: MissionReviewCorrection, event: MissionEvent): void {
-	if (event.reviewAcceptedRevisions !== undefined) correction.acceptedRevisions = event.reviewAcceptedRevisions.map((revision) => ({ ...revision }));
+	if (event.reviewAcceptedRevisions !== undefined) {
+		correction.acceptedRevisions = event.reviewAcceptedRevisions.map((revision) => ({ ...revision }));
+	}
 	if (event.reviewCorrectionCount !== undefined) correction.count = event.reviewCorrectionCount;
 	if (event.reviewCorrectionLimit !== undefined) correction.limit = event.reviewCorrectionLimit;
 }
@@ -936,8 +1116,12 @@ function applyCompletionLatchFields(latch: MissionCompletionLatch, event: Missio
 function takeoverStatus(snapshot: MissionSnapshot): MissionStatus {
 	const mission = snapshot.mission;
 	if (mission.review.correction.count > mission.review.correction.limit) return "blocked";
-	if ((mission.tokenBudget !== undefined && snapshot.usage.totalTokens >= mission.tokenBudget) || (mission.costBudgetUsd !== undefined && snapshot.usage.totalCostUsd >= mission.costBudgetUsd)) return "budget_limited";
-	if ((mission.turnBudget !== undefined && (mission.turnCount ?? 0) >= mission.turnBudget) || (mission.wallDeadlineAt !== undefined && Date.now() >= mission.wallDeadlineAt)) return "usage_limited";
+	const overBudget = (mission.tokenBudget !== undefined && snapshot.usage.totalTokens >= mission.tokenBudget)
+		|| (mission.costBudgetUsd !== undefined && snapshot.usage.totalCostUsd >= mission.costBudgetUsd);
+	if (overBudget) return "budget_limited";
+	const overUsage = (mission.turnBudget !== undefined && (mission.turnCount ?? 0) >= mission.turnBudget)
+		|| (mission.wallDeadlineAt !== undefined && Date.now() >= mission.wallDeadlineAt);
+	if (overUsage) return "usage_limited";
 	return "active";
 }
 
@@ -946,14 +1130,19 @@ function latestMissionAnchor(branch: Array<any>): { kind: "created" | "taken_ove
 		const entry = branch[index];
 		// SAFETY: The matching custom type is exclusively emitted by this extension; only anchor identity fields are read here.
 		const event = entry?.type === "custom" && entry.customType === MISSION_CUSTOM_TYPE ? entry.data as MissionEvent | undefined : undefined;
-		if ((event?.kind === "created" || event?.kind === "taken_over") && event.missionId && event.slug) return { kind: event.kind, missionId: event.missionId, slug: event.slug };
+		if (event?.kind !== "created" && event?.kind !== "taken_over") continue;
+		if (!event.missionId || !event.slug) continue;
+		return { kind: event.kind, missionId: event.missionId, slug: event.slug };
 	}
 	return undefined;
 }
 
 function onlyOwnedMission(snapshots: MissionSnapshot[], sessionId: string): MissionSnapshot | undefined {
-	const owned = snapshots.filter((snapshot) => snapshot.owner.sessionId === sessionId && !["complete", "cleared"].includes(snapshot.mission.status));
-	if (owned.length > 1) throw new Error(`Session controls multiple nonterminal Missions: ${owned.map((snapshot) => snapshot.mission.missionId).join(", ")}`);
+	const owned = snapshots.filter((snapshot) => snapshot.owner.sessionId === sessionId
+		&& !["complete", "cleared"].includes(snapshot.mission.status));
+	if (owned.length > 1) {
+		throw new Error(`Session controls multiple nonterminal Missions: ${owned.map((snapshot) => snapshot.mission.missionId).join(", ")}`);
+	}
 	return owned[0];
 }
 
@@ -969,13 +1158,19 @@ function addUsage(left: MissionUsage, right: MissionUsage): MissionUsage {
 }
 
 function cloneProgress(progress: MissionProgressRecord[]): MissionProgressRecord[] {
-	return progress.map((item) => ({ ...item, evidence: [...item.evidence], remaining: [...item.remaining], validation: item.validation.map((value) => ({ ...value })) }));
+	return progress.map((item) => ({
+		...item,
+		evidence: [...item.evidence],
+		remaining: [...item.remaining],
+		validation: item.validation.map((value) => ({ ...value })),
+	}));
 }
 
 async function chooseDefaultChain(cwd: string, title: string, slug: string): Promise<string> {
 	const chains = await new ChainService(cwd).list().catch(() => []);
 	const matches = chains.filter((item) => chainMatches(item.chain, title, slug));
-	if (matches.length === 1) return matches[0]!.chain;
+	const [onlyMatch] = matches;
+	if (onlyMatch && matches.length === 1) return onlyMatch.chain;
 	return `mission-${slug}`.slice(0, 60);
 }
 
@@ -1016,7 +1211,8 @@ function normalizePaths(values: string[] | undefined): string[] {
 	const result: string[] = [];
 	for (const value of values ?? []) {
 		const path = normalizePath(value.trim()).replaceAll("\\", "/");
-		if (!path || path === "." || isAbsolute(path) || path === ".." || path.startsWith("../")) throw new Error(`Mission path must stay relative to the project: ${value}`);
+		const unsafe = !path || path === "." || isAbsolute(path) || path === ".." || path.startsWith("../");
+		if (unsafe) throw new Error(`Mission path must stay relative to the project: ${value}`);
 		if (!result.includes(path)) result.push(path);
 	}
 	return result;
@@ -1032,7 +1228,10 @@ function sameStringSet(left: string[], right: string[]): boolean {
 	return [...left].sort().every((value, index) => value === sortedRight[index]);
 }
 
-function normalizeValidation(values: Array<MissionValidationInput | MissionValidationRecord> | undefined, objectiveVersion: number): MissionValidationRecord[] {
+function normalizeValidation(
+	values: Array<MissionValidationInput | MissionValidationRecord> | undefined,
+	objectiveVersion: number,
+): MissionValidationRecord[] {
 	return (values ?? []).slice(0, 20).flatMap((value) => {
 		const command = value.command?.trim().replace(/\s+/g, " ").slice(0, 500);
 		if (!command || !Number.isInteger(value.exitCode)) return [];
@@ -1113,16 +1312,21 @@ function aggregateUsage(branch: Array<any>, cutoffMs?: number): MissionUsage {
 
 function addUsageFromEntry(usage: MissionUsage, entry: any, seenSubagents: Set<string>): void {
 	if (entry.type === "message" && entry.message?.role === "assistant" && entry.message.usage) addMainUsage(usage, entry.message.usage);
-	const runtimeEvent = entry.type === "custom" && entry.customType === "deevs.runtime-event-op.v1" && entry.data?.type === "emit" ? entry.data.event : undefined;
+	const runtimeEmit = entry.type === "custom" && entry.customType === "deevs.runtime-event-op.v1" && entry.data?.type === "emit";
+	const runtimeEvent = runtimeEmit ? entry.data.event : undefined;
 	if (runtimeEvent?.source?.kind === "subagent" && runtimeEvent.usage) {
 		const key = `${runtimeEvent.source.id}:${runtimeEvent.source.generation ?? "legacy"}`;
 		if (!seenSubagents.has(key)) {
 			seenSubagents.add(key);
-			usage.subagentTokens += numberValue(runtimeEvent.usage.inputTokens) + numberValue(runtimeEvent.usage.outputTokens) + numberValue(runtimeEvent.usage.cacheWriteTokens);
+			usage.subagentTokens += numberValue(runtimeEvent.usage.inputTokens)
+				+ numberValue(runtimeEvent.usage.outputTokens)
+				+ numberValue(runtimeEvent.usage.cacheWriteTokens);
 			usage.subagentCostUsd += numberValue(runtimeEvent.usage.costUsd);
 		}
 	}
-	const details = entry.type === "custom_message" && entry.customType === "subagents" ? entry.details : entry.type === "message" && entry.message?.role === "toolResult" ? entry.message.details : undefined;
+	const details = entry.type === "custom_message" && entry.customType === "subagents"
+		? entry.details
+		: entry.type === "message" && entry.message?.role === "toolResult" ? entry.message.details : undefined;
 	addSubagentUsageFromDetails(usage, details, seenSubagents);
 	usage.totalTokens = usage.mainTokens + usage.subagentTokens;
 	usage.totalCostUsd = usage.mainCostUsd + usage.subagentCostUsd;
