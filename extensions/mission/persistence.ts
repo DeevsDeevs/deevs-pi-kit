@@ -1,5 +1,20 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+	closeSync,
+	constants,
+	fstatSync,
+	fsyncSync,
+	lstatSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	readdirSync,
+	renameSync,
+	rmSync,
+	statSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { missionDir, missionRoot } from "./artifacts.ts";
 import { MAX_MISSION_REVIEW_ADJUDICATIONS } from "./types.ts";
@@ -38,29 +53,56 @@ type PersistedObjectInput = PersistedInput | MissionSnapshot;
 type PersistedFields<Fields extends readonly string[]> = PersistedObject & Partial<Record<Fields[number], PersistedValue>>;
 
 const SNAPSHOT_VERSION = 2;
-// Lock holds are synchronous sub-second operations, so a lock older than this — or one whose owner pid is gone — is a crashed holder, not live contention.
-const STATUSES = new Set<MissionStatus>(["active", "paused", "blocked", "terminal_error", "budget_limited", "usage_limited", "complete", "ended", "cleared"]);
-const REVIEW_STATUSES = new Set<MissionReviewStatus>(["not_required", "due", "starting", "running", "awaiting_adjudication", "changes_requested", "clear", "skipped"]);
+// Lock holds are synchronous sub-second operations, so a lock older than this — or one whose owner pid is
+// gone — is a crashed holder, not live contention.
+const STATUSES = new Set<MissionStatus>([
+	"active", "paused", "blocked", "terminal_error", "budget_limited", "usage_limited", "complete", "ended", "cleared",
+]);
+const REVIEW_STATUSES = new Set<MissionReviewStatus>([
+	"not_required", "due", "starting", "running", "awaiting_adjudication", "changes_requested", "clear", "skipped",
+]);
 const CONVERGED_REVIEW_STATUSES = new Set<MissionConvergedReviewStatus>(["not_required", "clear", "skipped"]);
 const REVIEW_VERDICTS = new Set<MissionReviewVerdict>(["clear", "changes_requested"]);
 const REVIEW_OUTCOMES = new Set<MissionReviewOutcome>(["superseded", "failed"]);
 const REVIEW_SEVERITIES = new Set<MissionReviewSeverity>(["blocker", "major", "minor", "nit"]);
 const REVIEW_CRITICAL_IMPACTS = new Set<MissionReviewCriticalImpact>(["security", "data_loss"]);
-const SNAPSHOT_FIELDS = ["version", "revision", "owner", "mission", "progress", "continuationProgressIndex", "carriedUsage", "usage", "reviewFailureCount", "usageComplete"] satisfies readonly (keyof MissionSnapshot)[];
+const SNAPSHOT_FIELDS = [
+	"version", "revision", "owner", "mission", "progress", "continuationProgressIndex", "carriedUsage", "usage",
+	"reviewFailureCount", "usageComplete",
+] satisfies readonly (keyof MissionSnapshot)[];
 const OWNER_FIELDS = ["sessionId", "sessionFile"] satisfies readonly (keyof MissionOwner)[];
 const MISSION_FIELDS = [
-	"missionId", "objective", "title", "requirements", "status", "createdAt", "updatedAt", "slug", "chain", "chainBranch", "artifactDir", "paths", "tokenBudget", "costBudgetUsd", "baselineMainTokens", "baselineSubagentTokens", "baselineMainCostUsd", "baselineSubagentCostUsd", "lastReason", "lastSummary", "lastContinuationAt", "generation", "objectiveVersion", "turnBudget", "wallDeadlineAt", "review", "completionId", "completionEffectsStatus", "completionAudit", "blockerFingerprint", "blockerCount", "turnCount",
+	"missionId", "objective", "title", "requirements", "status", "createdAt", "updatedAt", "slug", "chain",
+	"chainBranch", "artifactDir", "paths", "tokenBudget", "costBudgetUsd", "baselineMainTokens",
+	"baselineSubagentTokens", "baselineMainCostUsd", "baselineSubagentCostUsd", "lastReason", "lastSummary",
+	"lastContinuationAt", "generation", "objectiveVersion", "turnBudget", "wallDeadlineAt", "review", "completionId",
+	"completionEffectsStatus", "completionAudit", "blockerFingerprint", "blockerCount", "turnCount",
 ] satisfies readonly (keyof MissionCurrent)[];
-const REVIEW_FIELDS = ["admission", "candidate", "adjudication", "findings", "correction", "completionLatch"] satisfies readonly (keyof MissionReview)[];
-const REVIEW_ADMISSION_FIELDS = ["status", "initialBaselinePending", "supersessionCount", "updatedAt", "runId", "admissionId", "reason", "skippedReason", "failure", "outcome", "notBeforeAt"] satisfies readonly (keyof MissionReviewAdmission)[];
-const REVIEW_CANDIDATE_FIELDS = ["id", "objectiveVersion", "worktreeFingerprint", "admittedWorktreeFingerprint", "scopePaths", "scopeRevisions"] satisfies readonly (keyof MissionReviewCandidate)[];
-const REVIEW_ADJUDICATION_FIELDS = ["history", "suggestedVerdict", "adjudicatedCandidateId", "adjudicatedVerdict", "historyComplete"] satisfies readonly (keyof MissionReviewAdjudication)[];
-const REVIEW_FINDINGS_FIELDS = ["blockingCount", "backlogCount", "highestSeverity", "items", "accepted"] satisfies readonly (keyof MissionReviewFindings)[];
+const REVIEW_FIELDS = [
+	"admission", "candidate", "adjudication", "findings", "correction", "completionLatch",
+] satisfies readonly (keyof MissionReview)[];
+const REVIEW_ADMISSION_FIELDS = [
+	"status", "initialBaselinePending", "supersessionCount", "updatedAt", "runId", "admissionId", "reason",
+	"skippedReason", "failure", "outcome", "notBeforeAt",
+] satisfies readonly (keyof MissionReviewAdmission)[];
+const REVIEW_CANDIDATE_FIELDS = [
+	"id", "objectiveVersion", "worktreeFingerprint", "admittedWorktreeFingerprint", "scopePaths", "scopeRevisions",
+] satisfies readonly (keyof MissionReviewCandidate)[];
+const REVIEW_ADJUDICATION_FIELDS = [
+	"history", "suggestedVerdict", "adjudicatedCandidateId", "adjudicatedVerdict", "historyComplete",
+] satisfies readonly (keyof MissionReviewAdjudication)[];
+const REVIEW_FINDINGS_FIELDS = [
+	"blockingCount", "backlogCount", "highestSeverity", "items", "accepted",
+] satisfies readonly (keyof MissionReviewFindings)[];
 const REVIEW_CORRECTION_FIELDS = ["count", "limit", "acceptedRevisions"] satisfies readonly (keyof MissionReviewCorrection)[];
 const COMPLETION_LATCH_FIELDS = ["candidateId", "reviewStatus"] satisfies readonly (keyof MissionCompletionLatch)[];
-const PROGRESS_FIELDS = ["missionId", "at", "summary", "evidence", "remaining", "validation", "checkpoint", "blocked", "blockerId"] satisfies readonly (keyof MissionProgressRecord)[];
+const PROGRESS_FIELDS = [
+	"missionId", "at", "summary", "evidence", "remaining", "validation", "checkpoint", "blocked", "blockerId",
+] satisfies readonly (keyof MissionProgressRecord)[];
 const VALIDATION_FIELDS = ["command", "exitCode", "objectiveVersion", "summary", "artifact"] as const;
-const USAGE_FIELDS = ["mainTokens", "subagentTokens", "totalTokens", "mainCostUsd", "subagentCostUsd", "totalCostUsd"] satisfies readonly (keyof MissionUsage)[];
+const USAGE_FIELDS = [
+	"mainTokens", "subagentTokens", "totalTokens", "mainCostUsd", "subagentCostUsd", "totalCostUsd",
+] satisfies readonly (keyof MissionUsage)[];
 const ADJUDICATION_FIELDS = ["candidateId", "verdict"] as const;
 const FINDING_FIELDS = ["index", "severity", "summary", "path", "line", "requirementIndex", "criticalImpact"] as const;
 const REVISION_FIELDS = ["root", "base", "head"] as const;
@@ -85,7 +127,9 @@ export function listMissionSnapshots(cwd: string): MissionSnapshot[] {
 	validateStateDirectories(cwd);
 	const snapshots: MissionSnapshot[] = [];
 	for (const entry of readdirSync(stateDir, { withFileTypes: true })) {
-		if (entry.isSymbolicLink() && entry.name.endsWith(".json")) throw new Error(`Mission state path is not a real file: ${join(stateDir, entry.name)}`);
+		if (entry.isSymbolicLink() && entry.name.endsWith(".json")) {
+			throw new Error(`Mission state path is not a real file: ${join(stateDir, entry.name)}`);
+		}
 		if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
 		const slug = entry.name.slice(0, -5);
 		if (!validSlug(slug)) throw new Error(`Invalid Mission state filename: ${entry.name}`);
@@ -115,7 +159,15 @@ export function writeMissionSnapshot(cwd: string, snapshot: MissionSnapshot): vo
 	try { fsyncDirectory(stateDir); } catch { /* Rename is the commit boundary; durability sync is best-effort on unsupported filesystems. */ }
 }
 
-export function currentMissionOwner(ctx: { sessionManager: { getSessionId?: () => string; getSessionFile?: () => string | undefined } }): MissionOwner | undefined {
+/** The session fields Mission ownership is derived from; an ExtensionContext satisfies it. */
+interface MissionSessionSource {
+	sessionManager: {
+		getSessionId?: () => string;
+		getSessionFile?: () => string | undefined;
+	};
+}
+
+export function currentMissionOwner(ctx: MissionSessionSource): MissionOwner | undefined {
 	const sessionFile = ctx.sessionManager.getSessionFile?.();
 	const sessionId = ctx.sessionManager.getSessionId?.();
 	return sessionFile && sessionId ? { sessionId, sessionFile } : undefined;
@@ -169,7 +221,8 @@ function acquireLock(lock: string, busyMessage: string): void {
 		const candidate = `${lock}.candidate.${process.pid}.${randomUUID()}`;
 		try {
 			mkdirSync(candidate, { mode: 0o700 });
-			writeFileSync(join(candidate, "owner.json"), JSON.stringify({ pid: process.pid, startedAt: Date.now() }), { encoding: "utf8", mode: 0o600 });
+			const ownerRecord = JSON.stringify({ pid: process.pid, startedAt: Date.now() });
+			writeFileSync(join(candidate, "owner.json"), ownerRecord, { encoding: "utf8", mode: 0o600 });
 			renameSync(candidate, lock);
 			return;
 		} catch (error) {
@@ -187,7 +240,7 @@ function reclaimIfStale(lock: string): boolean {
 	try {
 		const owner = object(parsePersistedJson(readFileSync(join(lock, "owner.json"), "utf8")), "Mission lock owner", LOCK_OWNER_FIELDS);
 		const pid = boundedInteger(owner.pid, "Mission lock owner pid", 1, Number.MAX_SAFE_INTEGER);
-		if (owner.startedAt !== undefined) boundedInteger(owner.startedAt, "Mission lock owner start time", 0, Number.MAX_SAFE_INTEGER);
+		if (owner.startedAt !== undefined) nonnegativeInteger(owner.startedAt, "Mission lock owner start time");
 		stale = !isPidAlive(pid);
 	} catch {
 		// Owner metadata is published atomically with the lock directory; unknown/corrupt ownership fails closed.
@@ -248,16 +301,26 @@ function parsePersistedJson(source: string): PersistedValue {
 function validateSnapshot(value: PersistedObjectInput, cwd: string, expectedSlug: string): MissionSnapshot {
 	const record = object(value, "Mission snapshot", SNAPSHOT_FIELDS);
 	const revision = record.revision;
-	if (record.version !== SNAPSHOT_VERSION || !isFiniteNumber(revision) || !Number.isSafeInteger(revision) || revision < 0) throw new Error("Unsupported Mission snapshot version or revision.");
+	const unsupported = record.version !== SNAPSHOT_VERSION
+		|| !isFiniteNumber(revision)
+		|| !Number.isSafeInteger(revision)
+		|| revision < 0;
+	if (unsupported) throw new Error("Unsupported Mission snapshot version or revision.");
 	const ownerValue = object(record.owner, "Mission owner", OWNER_FIELDS);
-	const owner: MissionOwner = { sessionId: text(ownerValue.sessionId, "owner session id", 200), sessionFile: text(ownerValue.sessionFile, "owner session file", 2_000) };
+	const owner: MissionOwner = {
+		sessionId: text(ownerValue.sessionId, "owner session id", 200),
+		sessionFile: text(ownerValue.sessionFile, "owner session file", 2_000),
+	};
 	const rawMission = object(record.mission, "Mission", MISSION_FIELDS);
 	const slug = text(rawMission.slug, "Mission slug", 120);
 	if (slug !== expectedSlug || !validSlug(slug)) throw new Error("Mission snapshot slug does not match its directory.");
 	const mission = validateMission(rawMission, cwd, slug);
 	const progress = array(record.progress, "Mission progress", 10_000).map(validateProgress);
 	const continuationProgressIndex = number(record.continuationProgressIndex, "continuation progress index");
-	if (!Number.isInteger(continuationProgressIndex) || continuationProgressIndex < 0 || continuationProgressIndex > progress.length) throw new Error("Invalid Mission continuation progress index.");
+	const indexOutOfRange = !Number.isInteger(continuationProgressIndex)
+		|| continuationProgressIndex < 0
+		|| continuationProgressIndex > progress.length;
+	if (indexOutOfRange) throw new Error("Invalid Mission continuation progress index.");
 	return {
 		version: SNAPSHOT_VERSION,
 		revision,
@@ -293,13 +356,13 @@ function validateMission(value: PersistedFields<typeof MISSION_FIELDS>, cwd: str
 		baselineSubagentCostUsd: nonnegative(value.baselineSubagentCostUsd, "baseline Subagent cost"),
 		review: validateMissionReview(value.review),
 	};
-	if (value.tokenBudget !== undefined) mission.tokenBudget = boundedInteger(value.tokenBudget, "tokenBudget", 0, Number.MAX_SAFE_INTEGER);
+	if (value.tokenBudget !== undefined) mission.tokenBudget = nonnegativeInteger(value.tokenBudget, "tokenBudget");
 	if (value.costBudgetUsd !== undefined) mission.costBudgetUsd = nonnegative(value.costBudgetUsd, "costBudgetUsd");
-	if (value.turnBudget !== undefined) mission.turnBudget = boundedInteger(value.turnBudget, "turnBudget", 0, Number.MAX_SAFE_INTEGER);
-	if (value.wallDeadlineAt !== undefined) mission.wallDeadlineAt = boundedInteger(value.wallDeadlineAt, "wallDeadlineAt", 0, Number.MAX_SAFE_INTEGER);
-	if (value.objectiveVersion !== undefined) mission.objectiveVersion = boundedInteger(value.objectiveVersion, "objectiveVersion", 0, Number.MAX_SAFE_INTEGER);
-	if (value.blockerCount !== undefined) mission.blockerCount = boundedInteger(value.blockerCount, "blockerCount", 0, Number.MAX_SAFE_INTEGER);
-	if (value.turnCount !== undefined) mission.turnCount = boundedInteger(value.turnCount, "turnCount", 0, Number.MAX_SAFE_INTEGER);
+	if (value.turnBudget !== undefined) mission.turnBudget = nonnegativeInteger(value.turnBudget, "turnBudget");
+	if (value.wallDeadlineAt !== undefined) mission.wallDeadlineAt = nonnegativeInteger(value.wallDeadlineAt, "wallDeadlineAt");
+	if (value.objectiveVersion !== undefined) mission.objectiveVersion = nonnegativeInteger(value.objectiveVersion, "objectiveVersion");
+	if (value.blockerCount !== undefined) mission.blockerCount = nonnegativeInteger(value.blockerCount, "blockerCount");
+	if (value.turnCount !== undefined) mission.turnCount = nonnegativeInteger(value.turnCount, "turnCount");
 	if (value.lastReason !== undefined) mission.lastReason = text(value.lastReason, "lastReason", 20_000);
 	if (value.lastSummary !== undefined) mission.lastSummary = text(value.lastSummary, "lastSummary", 20_000);
 	if (value.generation !== undefined) mission.generation = text(value.generation, "generation", 20_000);
@@ -310,10 +373,15 @@ function validateMission(value: PersistedFields<typeof MISSION_FIELDS>, cwd: str
 		mission.completionEffectsStatus = effectsStatus;
 	}
 	if (value.blockerFingerprint !== undefined) mission.blockerFingerprint = text(value.blockerFingerprint, "blockerFingerprint", 20_000);
-	if (value.completionAudit !== undefined) mission.completionAudit = array(value.completionAudit, "Mission completion audit", 12).map((item) => {
-		const audit = object(item, "Mission completion audit item", COMPLETION_AUDIT_FIELDS);
-		return { requirementIndex: boundedInteger(audit.requirementIndex, "requirement index", 0, 11), evidence: text(audit.evidence, "requirement evidence", 2_000) };
-	});
+	if (value.completionAudit !== undefined) {
+		mission.completionAudit = array(value.completionAudit, "Mission completion audit", 12).map((item) => {
+			const audit = object(item, "Mission completion audit item", COMPLETION_AUDIT_FIELDS);
+			return {
+				requirementIndex: boundedInteger(audit.requirementIndex, "requirement index", 0, 11),
+				evidence: text(audit.evidence, "requirement evidence", 2_000),
+			};
+		});
+	}
 	if (value.lastContinuationAt !== undefined) mission.lastContinuationAt = number(value.lastContinuationAt, "lastContinuationAt");
 	return mission;
 }
@@ -335,16 +403,16 @@ function validateReviewAdmission(value: PersistedInput): MissionReviewAdmission 
 	const admission: MissionReviewAdmission = {
 		status: enumValue(record.status, REVIEW_STATUSES, "Mission review status"),
 		initialBaselinePending: boolean(record.initialBaselinePending, "Mission initial baseline pending marker"),
-		supersessionCount: boundedInteger(record.supersessionCount, "reviewSupersessionCount", 0, Number.MAX_SAFE_INTEGER),
+		supersessionCount: nonnegativeInteger(record.supersessionCount, "reviewSupersessionCount"),
 	};
-	if (record.updatedAt !== undefined) admission.updatedAt = boundedInteger(record.updatedAt, "reviewUpdatedAt", 0, Number.MAX_SAFE_INTEGER);
+	if (record.updatedAt !== undefined) admission.updatedAt = nonnegativeInteger(record.updatedAt, "reviewUpdatedAt");
 	if (record.runId !== undefined) admission.runId = text(record.runId, "reviewRunId", 20_000);
 	if (record.admissionId !== undefined) admission.admissionId = text(record.admissionId, "reviewAdmissionId", 20_000);
 	if (record.reason !== undefined) admission.reason = text(record.reason, "reviewReason", 20_000);
 	if (record.skippedReason !== undefined) admission.skippedReason = text(record.skippedReason, "reviewSkippedReason", 20_000);
 	if (record.failure !== undefined) admission.failure = record.failure === true;
 	if (record.outcome !== undefined) admission.outcome = enumValue(record.outcome, REVIEW_OUTCOMES, "reviewOutcome");
-	if (record.notBeforeAt !== undefined) admission.notBeforeAt = boundedInteger(record.notBeforeAt, "reviewNotBeforeAt", 0, Number.MAX_SAFE_INTEGER);
+	if (record.notBeforeAt !== undefined) admission.notBeforeAt = nonnegativeInteger(record.notBeforeAt, "reviewNotBeforeAt");
 	return admission;
 }
 
@@ -352,14 +420,22 @@ function validateReviewCandidate(value: PersistedInput): MissionReviewCandidate 
 	const record = object(value, "Mission review candidate", REVIEW_CANDIDATE_FIELDS);
 	const candidate: MissionReviewCandidate = {};
 	if (record.id !== undefined) candidate.id = text(record.id, "reviewCandidateId", 20_000);
-	if (record.objectiveVersion !== undefined) candidate.objectiveVersion = boundedInteger(record.objectiveVersion, "reviewCandidateObjectiveVersion", 0, Number.MAX_SAFE_INTEGER);
-	if (record.worktreeFingerprint !== undefined) candidate.worktreeFingerprint = text(record.worktreeFingerprint, "reviewWorktreeFingerprint", 20_000);
-	if (record.admittedWorktreeFingerprint !== undefined) candidate.admittedWorktreeFingerprint = text(record.admittedWorktreeFingerprint, "admittedWorktreeFingerprint", 20_000);
+	if (record.objectiveVersion !== undefined) {
+		candidate.objectiveVersion = nonnegativeInteger(record.objectiveVersion, "reviewCandidateObjectiveVersion");
+	}
+	if (record.worktreeFingerprint !== undefined) {
+		candidate.worktreeFingerprint = text(record.worktreeFingerprint, "reviewWorktreeFingerprint", 20_000);
+	}
+	if (record.admittedWorktreeFingerprint !== undefined) {
+		candidate.admittedWorktreeFingerprint = text(record.admittedWorktreeFingerprint, "admittedWorktreeFingerprint", 20_000);
+	}
 	if (record.scopePaths !== undefined) {
 		candidate.scopePaths = stringArray(record.scopePaths, "Mission review scope paths", 1_000, 2_000);
 		if (candidate.scopePaths.some((path) => !reviewPath(path))) throw new Error("Invalid Mission review scope path.");
 	}
-	if (record.scopeRevisions !== undefined) candidate.scopeRevisions = reviewRevisions(record.scopeRevisions, "Mission review scope revisions");
+	if (record.scopeRevisions !== undefined) {
+		candidate.scopeRevisions = reviewRevisions(record.scopeRevisions, "Mission review scope revisions");
+	}
 	return candidate;
 }
 
@@ -368,19 +444,28 @@ function validateReviewAdjudication(value: PersistedInput): MissionReviewAdjudic
 	const adjudication: MissionReviewAdjudication = { history: reviewAdjudicationHistory(record.history) };
 	if (record.suggestedVerdict !== undefined) {
 		const verdict = text(record.suggestedVerdict, "reviewSuggestedVerdict", 20_000);
-		if (verdict !== "clear" && verdict !== "changes_requested" && verdict !== "unknown") throw new Error("Invalid Mission suggested review verdict.");
+		if (verdict !== "clear" && verdict !== "changes_requested" && verdict !== "unknown") {
+			throw new Error("Invalid Mission suggested review verdict.");
+		}
 		adjudication.suggestedVerdict = verdict;
 	}
-	if (record.adjudicatedCandidateId !== undefined) adjudication.adjudicatedCandidateId = text(record.adjudicatedCandidateId, "reviewAdjudicatedCandidateId", 20_000);
-	if (record.adjudicatedVerdict !== undefined) adjudication.adjudicatedVerdict = enumValue(record.adjudicatedVerdict, REVIEW_VERDICTS, "reviewAdjudicatedVerdict");
+	if (record.adjudicatedCandidateId !== undefined) {
+		adjudication.adjudicatedCandidateId = text(record.adjudicatedCandidateId, "reviewAdjudicatedCandidateId", 20_000);
+	}
+	if (record.adjudicatedVerdict !== undefined) {
+		adjudication.adjudicatedVerdict = enumValue(record.adjudicatedVerdict, REVIEW_VERDICTS, "reviewAdjudicatedVerdict");
+	}
 	if (record.historyComplete !== undefined) {
 		if (record.historyComplete !== true) throw new Error("Invalid Mission review adjudication history completeness marker.");
 		adjudication.historyComplete = true;
 	}
 	if (adjudication.adjudicatedCandidateId && adjudication.adjudicatedVerdict) {
 		const candidateKnown = adjudication.history.some((item) => item.candidateId === adjudication.adjudicatedCandidateId);
-		if (!candidateKnown && adjudication.history.length >= MAX_MISSION_REVIEW_ADJUDICATIONS) throw new Error("Mission review adjudication history cannot include the latest adjudicated candidate without exceeding capacity.");
-		adjudication.history = [...adjudication.history.filter((item) => item.candidateId !== adjudication.adjudicatedCandidateId), { candidateId: adjudication.adjudicatedCandidateId, verdict: adjudication.adjudicatedVerdict }];
+		if (!candidateKnown && adjudication.history.length >= MAX_MISSION_REVIEW_ADJUDICATIONS) {
+			throw new Error("Mission review adjudication history cannot include the latest adjudicated candidate without exceeding capacity.");
+		}
+		const others = adjudication.history.filter((item) => item.candidateId !== adjudication.adjudicatedCandidateId);
+		adjudication.history = [...others, { candidateId: adjudication.adjudicatedCandidateId, verdict: adjudication.adjudicatedVerdict }];
 	}
 	return adjudication;
 }
@@ -389,17 +474,22 @@ function reviewAdjudicationHistory(value: PersistedInput): MissionReviewAdjudica
 	if (value === undefined) return [];
 	return array(value, "Mission review adjudications", MAX_MISSION_REVIEW_ADJUDICATIONS).map((item) => {
 		const adjudication = object(item, "Mission review adjudication", ADJUDICATION_FIELDS);
-		return { candidateId: text(adjudication.candidateId, "Mission review adjudication candidate", 200), verdict: enumValue(adjudication.verdict, REVIEW_VERDICTS, "Mission review adjudication verdict") };
+		return {
+			candidateId: text(adjudication.candidateId, "Mission review adjudication candidate", 200),
+			verdict: enumValue(adjudication.verdict, REVIEW_VERDICTS, "Mission review adjudication verdict"),
+		};
 	});
 }
 
 function validateReviewFindingsSection(value: PersistedInput): MissionReviewFindings {
 	const record = object(value, "Mission review findings state", REVIEW_FINDINGS_FIELDS);
 	const findings: MissionReviewFindings = {
-		blockingCount: boundedInteger(record.blockingCount, "reviewBlockingFindingCount", 0, Number.MAX_SAFE_INTEGER),
-		backlogCount: boundedInteger(record.backlogCount, "reviewBacklogFindingCount", 0, Number.MAX_SAFE_INTEGER),
+		blockingCount: nonnegativeInteger(record.blockingCount, "reviewBlockingFindingCount"),
+		backlogCount: nonnegativeInteger(record.backlogCount, "reviewBacklogFindingCount"),
 	};
-	if (record.highestSeverity !== undefined) findings.highestSeverity = enumValue(record.highestSeverity, REVIEW_SEVERITIES, "reviewHighestSeverity");
+	if (record.highestSeverity !== undefined) {
+		findings.highestSeverity = enumValue(record.highestSeverity, REVIEW_SEVERITIES, "reviewHighestSeverity");
+	}
 	if (record.items !== undefined) findings.items = reviewFindings(record.items, "Mission review findings");
 	if (record.accepted !== undefined) findings.accepted = reviewFindings(record.accepted, "Mission accepted review findings");
 	return findings;
@@ -408,10 +498,12 @@ function validateReviewFindingsSection(value: PersistedInput): MissionReviewFind
 function validateReviewCorrection(value: PersistedInput): MissionReviewCorrection {
 	const record = object(value, "Mission review correction state", REVIEW_CORRECTION_FIELDS);
 	const correction: MissionReviewCorrection = {
-		count: boundedInteger(record.count, "reviewCorrectionCount", 0, Number.MAX_SAFE_INTEGER),
-		limit: boundedInteger(record.limit, "reviewCorrectionLimit", 0, Number.MAX_SAFE_INTEGER),
+		count: nonnegativeInteger(record.count, "reviewCorrectionCount"),
+		limit: nonnegativeInteger(record.limit, "reviewCorrectionLimit"),
 	};
-	if (record.acceptedRevisions !== undefined) correction.acceptedRevisions = reviewRevisions(record.acceptedRevisions, "Mission accepted review revisions");
+	if (record.acceptedRevisions !== undefined) {
+		correction.acceptedRevisions = reviewRevisions(record.acceptedRevisions, "Mission accepted review revisions");
+	}
 	return correction;
 }
 
@@ -419,7 +511,9 @@ function validateCompletionLatch(value: PersistedInput): MissionCompletionLatch 
 	const record = object(value, "Mission completion latch", COMPLETION_LATCH_FIELDS);
 	const latch: MissionCompletionLatch = {};
 	if (record.candidateId !== undefined) latch.candidateId = text(record.candidateId, "completionLatchCandidateId", 20_000);
-	if (record.reviewStatus !== undefined) latch.reviewStatus = enumValue(record.reviewStatus, CONVERGED_REVIEW_STATUSES, "completionLatchReviewStatus");
+	if (record.reviewStatus !== undefined) {
+		latch.reviewStatus = enumValue(record.reviewStatus, CONVERGED_REVIEW_STATUSES, "completionLatchReviewStatus");
+	}
 	return latch;
 }
 
@@ -429,7 +523,10 @@ function reviewRevisions(value: PersistedInput, label: string): MissionReviewRev
 		const root = text(revision.root, "Mission review revision root", 2_000);
 		const base = text(revision.base, "Mission review revision base", 64);
 		const head = text(revision.head, "Mission review revision head", 64);
-		if (!reviewPath(root) || !/^[0-9a-f]{40,64}$/.test(base) || !/^[0-9a-f]{40,64}$/.test(head)) throw new Error("Invalid Mission review revision.");
+		const validRevision = reviewPath(root)
+			&& /^[0-9a-f]{40,64}$/.test(base)
+			&& /^[0-9a-f]{40,64}$/.test(head);
+		if (!validRevision) throw new Error("Invalid Mission review revision.");
 		return { root, base, head };
 	});
 }
@@ -438,7 +535,9 @@ function reviewFindings(value: PersistedInput, label: string): MissionReviewFind
 	return array(value, label, 1_000).map((item) => {
 		const finding = object(item, "Mission review finding", FINDING_FIELDS);
 		const severity = enumValue(finding.severity, REVIEW_SEVERITIES, "Mission review finding severity");
-		const criticalImpact = finding.criticalImpact === undefined ? undefined : enumValue(finding.criticalImpact, REVIEW_CRITICAL_IMPACTS, "Mission review critical impact");
+		const criticalImpact = finding.criticalImpact === undefined
+			? undefined
+			: enumValue(finding.criticalImpact, REVIEW_CRITICAL_IMPACTS, "Mission review critical impact");
 		const path = finding.path === undefined ? undefined : text(finding.path, "Mission review finding path", 2_000);
 		if (path !== undefined && !reviewPath(path)) throw new Error("Invalid Mission review finding path.");
 		const result: MissionReviewFinding = {
@@ -448,7 +547,9 @@ function reviewFindings(value: PersistedInput, label: string): MissionReviewFind
 		};
 		if (path !== undefined) result.path = path;
 		if (finding.line !== undefined) result.line = boundedInteger(finding.line, "Mission review finding line", 1, Number.MAX_SAFE_INTEGER);
-		if (finding.requirementIndex !== undefined) result.requirementIndex = boundedInteger(finding.requirementIndex, "Mission review finding requirement", 0, 11);
+		if (finding.requirementIndex !== undefined) {
+			result.requirementIndex = boundedInteger(finding.requirementIndex, "Mission review finding requirement", 0, 11);
+		}
 		if (criticalImpact !== undefined) result.criticalImpact = criticalImpact;
 		return result;
 	});
@@ -505,7 +606,11 @@ function validSlug(value: string): boolean {
 	return !!value && value !== "." && value !== ".." && !/[\\/]/.test(value);
 }
 
-function object<const Fields extends readonly string[]>(value: PersistedObjectInput, name: string, allowedFields: Fields): PersistedFields<Fields> {
+function object<const Fields extends readonly string[]>(
+	value: PersistedObjectInput,
+	name: string,
+	allowedFields: Fields,
+): PersistedFields<Fields> {
 	if (!isPersistedObject(value)) throw new Error(`${name} must be an object.`);
 	if (!hasOnlyFields(value, allowedFields)) {
 		const unknownField = Object.keys(value).find((key) => !includesField(allowedFields, key));
@@ -549,6 +654,11 @@ function nonnegative(value: PersistedInput, name: string): number {
 	return result;
 }
 
+/** A persisted nonnegative counter or timestamp: an integer from 0 to Number.MAX_SAFE_INTEGER. */
+function nonnegativeInteger(value: PersistedInput, name: string): number {
+	return boundedInteger(value, name, 0, Number.MAX_SAFE_INTEGER);
+}
+
 function boundedInteger(value: PersistedInput, name: string, min: number, max: number): number {
 	const result = number(value, name);
 	if (!Number.isInteger(result) || result < min || result > max) throw new Error(`${name} must be an integer from ${min} to ${max}.`);
@@ -563,7 +673,10 @@ function isPersistedObject(value: PersistedObjectInput): value is PersistedObjec
 	return value !== undefined && value !== null && !Array.isArray(value) && Object.prototype.toString.call(value) === "[object Object]";
 }
 
-function hasOnlyFields<const Fields extends readonly string[]>(value: PersistedObject, allowedFields: Fields): value is PersistedFields<Fields> {
+function hasOnlyFields<const Fields extends readonly string[]>(
+	value: PersistedObject,
+	allowedFields: Fields,
+): value is PersistedFields<Fields> {
 	return Object.keys(value).every((key) => includesField(allowedFields, key));
 }
 

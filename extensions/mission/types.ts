@@ -1,5 +1,7 @@
-export type MissionStatus = "active" | "paused" | "blocked" | "terminal_error" | "budget_limited" | "usage_limited" | "complete" | "ended" | "cleared";
-export type MissionReviewStatus = "not_required" | "due" | "starting" | "running" | "awaiting_adjudication" | "changes_requested" | "clear" | "skipped";
+export type MissionStatus = "active" | "paused" | "blocked" | "terminal_error" | "budget_limited" | "usage_limited"
+	| "complete" | "ended" | "cleared";
+export type MissionReviewStatus = "not_required" | "due" | "starting" | "running" | "awaiting_adjudication"
+	| "changes_requested" | "clear" | "skipped";
 export type MissionConvergedReviewStatus = "not_required" | "clear" | "skipped";
 export type MissionReviewSeverity = "blocker" | "major" | "minor" | "nit";
 export type MissionReviewVerdict = "clear" | "changes_requested";
@@ -97,7 +99,21 @@ export interface MissionValidationRecord extends MissionValidationInput {
 	objectiveVersion: number;
 }
 
-export type MissionEventKind = "created" | "taken_over" | "status_changed" | "continued" | "completed" | "completion_effects_done" | "completion_latched" | "completion_latch_cleared" | "progress" | "objective_updated" | "review_changed" | "review_policy_updated" | "workspace_fingerprinted" | "settled";
+export type MissionEventKind =
+	| "created"
+	| "taken_over"
+	| "status_changed"
+	| "continued"
+	| "completed"
+	| "completion_effects_done"
+	| "completion_latched"
+	| "completion_latch_cleared"
+	| "progress"
+	| "objective_updated"
+	| "review_changed"
+	| "review_policy_updated"
+	| "workspace_fingerprinted"
+	| "settled";
 
 export interface MissionUsage {
 	mainTokens: number;
