@@ -385,6 +385,9 @@ const HOSTED_METHODS = new Map<string, HostedMethodHandler>([
 	["mailbox.send", method(MailboxSendParams, sendMailbox)],
 ]);
 
+/** Every dispatchable method except `hello`, which the dispatcher answers before the handler map. */
+export const HOSTED_METHOD_NAMES: readonly string[] = [...HOSTED_METHODS.keys()];
+
 function requireMessaging(call: HostedMethodCall): RuntimeMessaging {
 	const messaging = call.context.messaging;
 	if (!messaging) throw new HostedCapabilityError("Messaging authority is unavailable.");
