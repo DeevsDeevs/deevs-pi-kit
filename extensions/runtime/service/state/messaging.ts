@@ -41,9 +41,12 @@ export function markMessagingEventRead(state: HostedRuntimeState, operation: Rea
 	const grant = state.messaging[operation.namespaceId];
 	if (!grant) throw new RuntimeError("conflict", "Messaging namespace is absent.");
 	assertMessagingHolder(state, grant, operation.at);
-	const event = messagingInboxEvent(state, grant, operation.eventId);
-	if (event.readAt !== undefined) return state;
-	return { ...state, events: { ...state.events, [event.eventId]: { ...event, readAt: operation.at } } };
+	const events = { ...state.events };
+	for (const eventId of operation.eventIds) {
+		const event = messagingInboxEvent(state, grant, eventId);
+		if (event.readAt === undefined) events[eventId] = { ...event, readAt: operation.at };
+	}
+	return { ...state, events };
 }
 
 export function publishMessagingEvent(state: HostedRuntimeState, operation: HostedMessagingSend): HostedRuntimeState {
@@ -99,7 +102,7 @@ function markReplyRead(state: HostedRuntimeState, grant: HostedMessagingGrant, o
 	return markMessagingEventRead(state, {
 		type: "messaging.read",
 		namespaceId: grant.namespaceId,
-		eventId: inbound.eventId,
+		eventIds: [inbound.eventId],
 		at: operation.at,
 	});
 }

@@ -9,13 +9,10 @@ import {
 	HostedRequestSchema,
 	HostedRequestVersionSchema,
 	MailboxSendParams,
-	MessagingEventParams,
-	MessagingInboxParams,
 	MessagingIssueParams,
-	MessagingPeersParams,
+	MessagingNamespaceParams,
 	MessagingReplyParams,
 	MessagingSendParams,
-	MessagingStatusParams,
 	ParticipantAcquireParams,
 	ParticipantAuthParams,
 	ParticipantConfirmedParams,
@@ -167,27 +164,13 @@ const HOSTED_METHODS = new Map<string, HostedMethodHandler>([
 		call.id,
 		await call.context.messaging.issue(authorize(call, params), params.participantKey, params.expectedGeneration),
 	))],
-	["messaging.peers", method(MessagingPeersParams, (call, params) => callMessaging(call, params, params.cursor === undefined
-		? { method: "peers" }
-		: { method: "peers", cursor: params.cursor }))],
-	["messaging.inbox", method(MessagingInboxParams, (call, params) => callMessaging(call, params, { method: "inbox" }))],
+	["messaging.peers", method(MessagingNamespaceParams, (call, params) => callMessaging(call, params, { method: "peers" }))],
+	["messaging.inbox", method(MessagingNamespaceParams, (call, params) => callMessaging(call, params, { method: "inbox" }))],
 	["messaging.send", method(MessagingSendParams, (call, params) => callMessaging(call, params, {
 		method: "send",
 		operationId: params.operationId,
 		participantId: params.participantId,
 		body: decodeMessagingBody(params.bodyBase64),
-	}))],
-	["messaging.status", method(MessagingStatusParams, (call, params) => callMessaging(call, params, {
-		method: "status",
-		operationId: params.operationId,
-	}))],
-	["messaging.receive", method(MessagingEventParams, (call, params) => callMessaging(call, params, {
-		method: "receive",
-		eventId: params.eventId,
-	}))],
-	["messaging.received", method(MessagingEventParams, (call, params) => callMessaging(call, params, {
-		method: "received",
-		eventId: params.eventId,
 	}))],
 	["messaging.reply", method(MessagingReplyParams, (call, params) => callMessaging(call, params, {
 		method: "reply",

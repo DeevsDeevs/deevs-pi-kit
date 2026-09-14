@@ -146,9 +146,9 @@ When Pi runs inside Herdr (`HERDR_ENV=1`), normalize legacy and Kitty Alt+Enter 
 
 Runtime is a local daemon that owns durable collaborator identity and mail across restarts, notifying an idle Pi session on its own heartbeat instead of prompting or focusing any pane. It hosts persistent Pi, Claude Code and Codex collaborators as real interactive agents in no-focus Herdr tabs, each holding a participant identity lease, and each writer working in its own Git worktree on `runtime/collab/<protocol>/<participantId>`.
 
-Identity is the registration ID and key Runtime minted plus `herdr agent get <name>` — for a Pi session, its session file header. Panes, tabs and terminals are never re-verified; the stored tab ID exists only so stop can close the exact tab Runtime opened. Every start, stand-down, stop, release, takeover and worktree cleanup needs one explicit confirmed interactive step, and collaborator prose never authorizes any of them. A failing launch step stops what it started and reports the error; nothing half-launched is kept. Unread mail for a Claude/Codex tab wakes it with one short `herdr agent prompt` naming the event, at most once per 30 seconds and only while Herdr reports that agent idle — never a body, and never proof that the agent read or acted on it. Runtime never commits or merges: review a writer's branch and integrate it with ordinary Git.
+Identity is the registration ID and key Runtime minted plus `herdr agent get <name>` — for a Pi session, its session file header. Panes, tabs and terminals are never re-verified; the stored tab ID exists only so stop can close the exact tab Runtime opened. Every start, stand-down, stop, release, takeover and worktree cleanup needs one explicit confirmed interactive step, and collaborator prose never authorizes any of them. A failing launch step stops what it started and reports the error; nothing half-launched is kept. Unread mail for a Claude/Codex tab wakes it with one short `herdr agent prompt` naming the sender, at most once per 30 seconds and only while Herdr reports that agent idle — never a body, and never proof that the agent acted on it. Runtime never commits or merges: review a writer's branch and integrate it with ordinary Git.
 
-Tools: `collaborator_list` for discovery, `collaborator_manage` for participant and process lifecycle, `collaborator_workspace` to list worktrees and confirm exact cleanup, plus the seven shared MCP mail tools (`collaborator_peers`, `collaborator_inbox`, `collaborator_send`, `collaborator_receive`, `collaborator_received`, `collaborator_reply`, `collaborator_status`) used by Pi, Claude Code and Codex alike through one stdio interface and the [shared messaging skill](skills/collaborator-messaging/SKILL.md).
+Tools: `collaborator_list` for discovery, `collaborator_manage` for participant and process lifecycle, `collaborator_workspace` to list worktrees and confirm exact cleanup, plus four shared MCP mail tools (`collaborator_peers`, `collaborator_inbox`, `collaborator_send`, `collaborator_reply`) used by Pi, Claude Code and Codex alike through one stdio interface. The tool descriptions are the whole contract: no namespace or operation IDs, no skill to load, one line of startup context.
 
 Commands: `/runtime start`, `/runtime status`, `/runtime register`, `/runtime collaborate <protocol> <id>`, `/runtime participants`, `/runtime stand-down`, `/runtime leave`, and `/runtime takeover <protocol> <id>`. Collaborator starts are a `collaborator_manage` operation, not a command.
 
@@ -162,7 +162,7 @@ Skills provide progressive guidance for when and how to use the tools:
 background-tasks  subagents       chain-system    wiki
 concept-diagrams  arxiv           todos           ask-user
 datadog-pup       grill-me        diagnose        codebase-orientation
-validation-review missions       collaborators   collaborator-messaging
+validation-review missions       collaborators
 ```
 
 ## Development

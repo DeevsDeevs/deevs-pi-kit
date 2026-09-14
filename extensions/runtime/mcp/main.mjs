@@ -1,4 +1,5 @@
 /* oxlint-disable anti-slop/no-runtime-typeof -- This executable is the descriptor and JSON-RPC input boundary. */
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -80,15 +81,13 @@ function connect(path, authority) {
 	return { credentials, client: new HostedRuntimeClient(credentials.socketPath, 5000, 128 * 1024) };
 }
 
+/** The model never sees namespace or operation IDs: the descriptor owns the namespace and every send is a fresh operation. */
 async function callTool(authority, tool, args) {
-	if (tool.name !== "collaborator_peers" && args.namespaceId !== authority.credentials.namespaceId) {
-		throw new Error("Namespace changed; never move an uncertain operation to a new namespace");
-	}
 	const method = `messaging.${tool.name.slice("collaborator_".length)}`;
 	const { body, ...otherArgs } = args;
-	const encoded = method === "messaging.send" || method === "messaging.reply"
-		? { ...otherArgs, bodyBase64: Buffer.from(body).toString("base64") }
-		: args;
+	const encoded = body === undefined
+		? args
+		: { ...otherArgs, operationId: randomUUID(), bodyBase64: Buffer.from(body).toString("base64") };
 	const { namespaceId, secret } = authority.credentials;
 	return await authority.client.call(method, { ...encoded, namespaceId, secret });
 }

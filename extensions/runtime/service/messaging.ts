@@ -6,7 +6,6 @@ import {
 	type HostedMailboxMessageEvent,
 	type HostedMessagingGrant,
 	type HostedParticipant,
-	type HostedParticipantState,
 	type HostedRuntimeState,
 	type HostedTarget,
 	isHeld,
@@ -26,16 +25,12 @@ import {
 } from "./state.ts";
 
 const MAX_IN_FLIGHT = 12;
-const PEER_PAGE = 12;
 const INBOX_PAGE = 50;
 
 export type MessagingInput =
-	| { method: "peers"; cursor?: string }
+	| { method: "peers" }
 	| { method: "inbox" }
 	| { method: "send"; participantId: string; operationId: string; body: string }
-	| { method: "status"; operationId: string }
-	| { method: "receive"; eventId: string }
-	| { method: "received"; eventId: string }
 	| { method: "reply"; operationId: string; eventId: string; body: string };
 
 interface VerifiedNamespace {
@@ -56,56 +51,25 @@ interface MessagingIssued {
 
 interface MessagingPeer {
 	participantId: string;
-	state: HostedParticipantState;
-	holderLive: boolean;
+	live: boolean;
 }
 
 type MessagingBinding =
 	| { kind: "pi"; sessionId: string; sessionFile: string; cwd: string }
 	| { kind: "agent" };
 
+/** `binding` exists for the Pi bridge's descriptor check; the bridge strips it before the model sees the result. */
 interface MessagingPeersResult {
-	namespaceId: string;
-	caller: string;
-	protocol: string;
+	me: string;
 	binding: MessagingBinding;
-	expiresAt: number;
 	peers: MessagingPeer[];
-	nextCursor: string | null;
 }
 
-interface MessagingMessage {
-	eventId: string;
-	from: string;
-	body: string;
-	createdAt: number;
-	inReplyToEventId?: string;
-	readAt?: number;
-}
-
-interface MessagingMessageResult {
-	namespaceId: string;
-	message: MessagingMessage;
-}
-
-/** One published or retrieved event: a read receipt adds the time it was recorded. */
 interface MessagingEventResult {
-	namespaceId: string;
 	eventId: string;
-	readAt?: number;
 }
 
-interface MessagingStatusResult {
-	namespaceId: string;
-	event: HostedMailboxMessageEvent;
-}
-
-type MessagingResult =
-	| MessagingInboxView
-	| MessagingPeersResult
-	| MessagingMessageResult
-	| MessagingEventResult
-	| MessagingStatusResult;
+type MessagingResult = MessagingInboxView | MessagingPeersResult | MessagingEventResult;
 
 export class RuntimeMessaging {
 	private inFlight = 0;
@@ -218,11 +182,8 @@ export class RuntimeMessaging {
 		try {
 			const { grant, registration } = await this.verify(namespaceId, secret);
 			switch (input.method) {
-				case "peers": return this.peers(grant, input.cursor);
+				case "peers": return this.peers(grant);
 				case "inbox": return this.inbox(grant);
-				case "receive": return this.receive(grant, input.eventId);
-				case "received": return this.markRead(grant, input.eventId);
-				case "status": return this.status(grant, input.operationId);
 				case "send": return this.publish(registration, grant, input.operationId, this.recipientKey(grant, input.participantId), input.body);
 				case "reply": return this.publishReply(registration, grant, input.operationId, input.eventId, input.body);
 				default: {
@@ -235,73 +196,34 @@ export class RuntimeMessaging {
 		}
 	}
 
-	/** Unread headers only, oldest first: the caller then receives each body by its exact event ID. */
+	/** Delivery is the read: whatever this page returns is marked read in the same state write. */
 	private inbox(grant: HostedMessagingGrant): MessagingInboxView {
 		const unread = unreadMailEvents(this.store.read(), grant.participantKey);
-		return { messages: unread.slice(0, INBOX_PAGE).map((event) => this.inboxMessage(event)), truncated: unread.length > INBOX_PAGE };
-	}
-
-	private inboxMessage(event: HostedMailboxMessageEvent): MessagingInboxMessageView {
-		const message: MessagingInboxMessageView = {
+		const messages = unread.slice(0, INBOX_PAGE).map((event): MessagingInboxMessageView => ({
 			eventId: event.eventId,
 			from: this.requireParticipant(event.source.id).participantId,
-			createdAt: event.createdAt,
-		};
-		if (event.inReplyToEventId !== undefined) message.inReplyToEventId = event.inReplyToEventId;
-		return message;
+			body: event.body,
+		}));
+		if (messages.length > 0) {
+			this.store.apply({ type: "messaging.read", namespaceId: grant.namespaceId, eventIds: messages.map((message) => message.eventId), at: this.now() });
+		}
+		return { messages, truncated: unread.length > INBOX_PAGE };
 	}
 
-	private peers(grant: HostedMessagingGrant, cursor?: string): MessagingPeersResult {
+	private peers(grant: HostedMessagingGrant): MessagingPeersResult {
 		const state = this.store.read();
 		const sender = this.requireParticipant(grant.participantKey);
-		const peers = Object.values(state.participants)
-			.filter((candidate) => isPeerOf(sender, candidate))
-			.sort((left, right) => left.participantId.localeCompare(right.participantId));
-		const offset = cursor === undefined ? 0 : peerCursorOffset(peers, grant.namespaceId, cursor);
-		const page = peers.slice(offset, offset + PEER_PAGE).map((peer) => this.peerView(peer));
-		const last = peers[offset + page.length - 1];
 		const target = state.targets[grant.targetKey];
 		if (!target) throw new RuntimeError("registration_stale", "Messaging target is absent.");
-		const more = offset + page.length < peers.length && last !== undefined;
-		return {
-			namespaceId: grant.namespaceId,
-			caller: sender.participantId,
-			protocol: sender.protocol,
-			binding: messagingBinding(target),
-			expiresAt: grant.expiresAt,
-			peers: page,
-			nextCursor: more && last ? Buffer.from(`${grant.namespaceId}:${last.participantKey}`).toString("base64url") : null,
-		};
+		const peers = Object.values(state.participants)
+			.filter((candidate) => isPeerOf(sender, candidate))
+			.sort((left, right) => left.participantId.localeCompare(right.participantId))
+			.map((peer) => ({ participantId: peer.participantId, live: this.peerLive(peer) }));
+		return { me: sender.participantId, binding: messagingBinding(target), peers };
 	}
 
-	private peerView(peer: HostedParticipant): MessagingPeer {
-		const holderTargetKey = peer.holderTargetKey;
-		const holderLive = isHeld(peer.state) && holderTargetKey !== undefined && this.registrations.hasLiveTarget(holderTargetKey);
-		return { participantId: peer.participantId, state: peer.state, holderLive };
-	}
-
-	private receive(grant: HostedMessagingGrant, eventId: string): MessagingMessageResult {
-		const state = this.store.read();
-		const event = messagingInboxEvent(state, grant, eventId);
-		const sender = this.requireParticipant(event.source.id);
-		const message: MessagingMessage = { eventId, from: sender.participantId, body: event.body, createdAt: event.createdAt };
-		if (event.inReplyToEventId !== undefined) message.inReplyToEventId = event.inReplyToEventId;
-		if (event.readAt !== undefined) message.readAt = event.readAt;
-		return { namespaceId: grant.namespaceId, message };
-	}
-
-	private markRead(grant: HostedMessagingGrant, eventId: string): MessagingEventResult {
-		this.store.apply({ type: "messaging.read", namespaceId: grant.namespaceId, eventId, at: this.now() });
-		const event = messagingInboxEvent(this.store.read(), grant, eventId);
-		if (event.readAt === undefined) throw new RuntimeError("conflict", "Message read time was not recorded.");
-		return { namespaceId: grant.namespaceId, eventId, readAt: event.readAt };
-	}
-
-	private status(grant: HostedMessagingGrant, operationId: string): MessagingStatusResult {
-		const eventId = Object.hasOwn(grant.operations, operationId) ? grant.operations[operationId] : undefined;
-		const event = eventId === undefined ? undefined : this.store.read().events[eventId];
-		if (!event) throw new RuntimeError("not_found", "Operation has no publication in this namespace.");
-		return { namespaceId: grant.namespaceId, event };
+	private peerLive(peer: HostedParticipant): boolean {
+		return isHeld(peer.state) && peer.holderTargetKey !== undefined && this.registrations.hasLiveTarget(peer.holderTargetKey);
 	}
 
 	private publishReply(
@@ -328,7 +250,7 @@ export class RuntimeMessaging {
 		const eventId = Object.hasOwn(current.operations, operationId) ? current.operations[operationId] : undefined;
 		if (eventId === undefined) throw new RuntimeError("not_found", "Operation has no publication in this namespace.");
 		this.onPublished();
-		return { namespaceId: grant.namespaceId, eventId };
+		return { eventId };
 	}
 
 	private recipientKey(grant: HostedMessagingGrant, participantId: string): string {
@@ -439,15 +361,6 @@ function liveTargetNamespace(
 	const eligible = Object.values(state.messaging)
 		.filter(grant => grant.targetKey === registration.targetKey && messagingGrantIsLive(state, grant, at));
 	return eligible.length === 1 ? eligible[0] : undefined;
-}
-
-function peerCursorOffset(peers: HostedParticipant[], namespaceId: string, cursor: string): number {
-	const decoded = Buffer.from(cursor, "base64url").toString("utf8");
-	const index = peers.findIndex((peer) => decoded === `${namespaceId}:${peer.participantKey}`);
-	if (index < 0 || Buffer.from(decoded).toString("base64url") !== cursor) {
-		throw new RuntimeError("invalid_request", "Messaging cursor is absent or outside this namespace.");
-	}
-	return index + 1;
 }
 
 function digest(value: string): string {
