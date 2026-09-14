@@ -2,21 +2,24 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HOSTED_ACK_RETENTION_MS, HOSTED_MONITOR_MAX_ENTRIES, HOSTED_STATE_MAX_BYTES, type HostedFilesystemCreatedEvent, type HostedMonitor, type HostedTarget } from "../extensions/runtime/hosted-types.ts";
+import { HOSTED_ACK_RETENTION_MS, HOSTED_STATE_MAX_BYTES, type HostedRuntimeState, type HostedTarget } from "../extensions/runtime/hosted-types.ts";
 import {
 	HostedStateConflictError,
 	HostedStateStorageError,
+	deriveParticipantKey,
 	emptyHostedRuntimeState,
 	loadOrCreateRuntimeInstance,
 	readHostedRuntimeState,
 	reduceHostedState,
 	runtimeStatePaths,
-	undeliveredHostedEvents,
 	validateHostedRuntimeState,
 	writeHostedRuntimeState,
 } from "../extensions/runtime/service/state.ts";
 
 const roots: string[] = [];
+const PROJECT_ROOT = "/tmp/project";
+const SENDER = deriveParticipantKey(PROJECT_ROOT, "review", "main");
+const RECIPIENT = deriveParticipantKey(PROJECT_ROOT, "review", "peer");
 
 afterEach(() => {
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -28,156 +31,96 @@ function temporaryRoot(): string {
 	return root;
 }
 
-function target(): HostedTarget {
+function target(sessionId = "session-1"): HostedTarget {
 	return {
 		kind: "pi",
-		targetKey: "pi_session-1",
-		projectRoot: "/tmp/project",
-		piSessionId: "session-1",
-		piSessionFile: "/tmp/session.jsonl",
+		targetKey: `pi_${sessionId}`,
+		projectRoot: PROJECT_ROOT,
+		piSessionId: sessionId,
+		piSessionFile: `/tmp/${sessionId}.jsonl`,
 		createdAt: 100,
 	};
 }
 
-function monitor(overrides: Partial<HostedMonitor> = {}): HostedMonitor {
-	return {
-		monitorId: "mon_1",
-		targetKey: "pi_session-1",
-		directory: "/tmp/project/reviews",
-		settleMs: 250,
-		status: "watching",
-		entries: {},
-		createdAt: 100,
-		updatedAt: 100,
-		...overrides,
-	};
-}
-
-function event(id = "evt_1", sequence = 1): HostedFilesystemCreatedEvent {
-	const relativePath = sequence === 1 ? "review.md" : `review-${sequence}.md`;
-	return {
-		version: 1,
-		eventId: id,
-		dedupeKey: `mon_1:${relativePath}`,
-		source: { kind: "monitor", id: "mon_1" },
-		targetKey: "pi_session-1",
-		type: "filesystem.created",
-		createdAt: 200 + sequence,
-		summary: `new file: ${relativePath}`,
-		payload: {
-			relativePath,
-			path: `/tmp/project/reviews/${relativePath}`,
-			fileType: "regular",
-			size: 42,
-			mtimeMs: 200,
-		},
-	};
-}
-
-function populatedState(): ReturnType<typeof emptyHostedRuntimeState> {
+/** One held sender, one vacant recipient, and one mail event addressed from the first to the second. */
+function populatedState(): HostedRuntimeState {
 	let state = reduceHostedState(emptyHostedRuntimeState(), { type: "target.ensure", target: target() });
-	state = reduceHostedState(state, { type: "monitor.create", monitor: monitor() });
+	state = reduceHostedState(state, { type: "target.ensure", target: target("session-2") });
+	state = reduceHostedState(state, {
+		type: "participant.acquire",
+		participantKey: SENDER,
+		projectRoot: PROJECT_ROOT,
+		protocol: "review",
+		participantId: "main",
+		targetKey: "pi_session-1",
+		generation: "lease_sender",
+		at: 100,
+	});
+	state = reduceHostedState(state, {
+		type: "participant.acquire",
+		participantKey: RECIPIENT,
+		projectRoot: PROJECT_ROOT,
+		protocol: "review",
+		participantId: "peer",
+		targetKey: "pi_session-2",
+		generation: "lease_peer",
+		at: 100,
+	});
+	state = reduceHostedState(state, {
+		type: "participant.stand_down",
+		participantKey: RECIPIENT,
+		targetKey: "pi_session-2",
+		generation: "lease_peer_2",
+		at: 150,
+	});
 	return reduceHostedState(state, {
-		type: "monitor.commit",
-		monitor: monitor({
-			updatedAt: 200,
-			entries: {
-				"review.md": { relativePath: "review.md", size: 42, mtimeMs: 200, stableSince: 200, present: true, emitted: true },
-			},
-		}),
-		events: [event()],
+		type: "mailbox.send",
+		senderParticipantKey: SENDER,
+		expectedSenderGeneration: "lease_sender",
+		senderTargetKey: "pi_session-1",
+		recipientParticipantKey: RECIPIENT,
+		sendId: "send_1",
+		eventId: "evt_1",
+		body: "Please inspect.",
+		at: 200,
 	});
 }
 
 describe("hosted runtime state reducer", () => {
-	it("commits a monitor cursor and event together while deduplicating repeats", () => {
-		const state = populatedState();
-		expect(state.monitors.mon_1?.updatedAt).toBe(200);
-		expect(state.events.evt_1?.type === "filesystem.created" ? state.events.evt_1.payload.relativePath : undefined).toBe("review.md");
-		expect(undeliveredHostedEvents(state, "pi_session-1").map((candidate) => candidate.eventId)).toEqual(["evt_1"]);
-
-		const duplicate = { ...event("evt_duplicate"), dedupeKey: event().dedupeKey };
-		const replayed = reduceHostedState(state, { type: "monitor.commit", monitor: state.monitors.mon_1!, events: [duplicate] });
-		expect(Object.keys(replayed.events)).toEqual(["evt_1"]);
-	});
-
-	it("orders events from different sources by Runtime creation time", () => {
-		const older: HostedFilesystemCreatedEvent = { ...event("evt_older", 12), createdAt: 100, source: { kind: "monitor", id: "source_fable" } };
-		const newer: HostedFilesystemCreatedEvent = { ...event("evt_newer", 2), createdAt: 200, source: { kind: "monitor", id: "source_release_gate" } };
-		const state = { ...populatedState(), events: { evt_newer: newer, evt_older: older } };
-		expect(undeliveredHostedEvents(state, "pi_session-1").map((candidate) => candidate.eventId)).toEqual(["evt_older", "evt_newer"]);
-	});
-
 	it("distinguishes idempotent natural-key retries from conflicts", () => {
-		let state = reduceHostedState(emptyHostedRuntimeState(), { type: "target.ensure", target: target() });
+		const state = reduceHostedState(emptyHostedRuntimeState(), { type: "target.ensure", target: target() });
 		expect(reduceHostedState(state, { type: "target.ensure", target: target() })).toBe(state);
 		expect(() => reduceHostedState(state, {
 			type: "target.ensure",
 			target: { ...target(), projectRoot: "/tmp/other" },
 		})).toThrow(HostedStateConflictError);
-
-		state = reduceHostedState(state, { type: "monitor.create", monitor: monitor() });
-		expect(reduceHostedState(state, { type: "monitor.create", monitor: monitor({ monitorId: "mon_retry" }) })).toBe(state);
-		expect(() => reduceHostedState(state, {
-			type: "monitor.create",
-			monitor: monitor({ monitorId: "mon_other", directory: "/tmp/project/other" }),
-		})).toThrow(/another monitor/);
 	});
 
-	it("rejects monitor definition changes, cursor rollback, and entry overflow", () => {
+	it("publishes one mail event per send ID and repeats identical input without a second event", () => {
 		const state = populatedState();
-		for (const changed of [
-			monitor({ settleMs: 500, updatedAt: 300 }),
-			monitor({ updatedAt: 100 }),
-			monitor({
-				updatedAt: 300,
-				entries: Object.fromEntries(Array.from({ length: HOSTED_MONITOR_MAX_ENTRIES + 1 }, (_, index) => {
-					const relativePath = `file-${index}`;
-					return [relativePath, { relativePath, size: 1, mtimeMs: 1, stableSince: 1, present: true, emitted: false }];
-				})),
-			}),
-		]) {
-			expect(reduceHostedState(state, { type: "monitor.commit", monitor: changed, events: [] })).toBe(state);
-		}
+		expect(state.events.evt_1).toMatchObject({ type: "mailbox.message", recipientParticipantKey: RECIPIENT, body: "Please inspect." });
+		expect(state.dedupe[`mailbox:${SENDER}:send_1`]).toBe("evt_1");
+		const repeated = reduceHostedState(state, {
+			type: "mailbox.send",
+			senderParticipantKey: SENDER,
+			expectedSenderGeneration: "lease_sender",
+			senderTargetKey: "pi_session-1",
+			recipientParticipantKey: RECIPIENT,
+			sendId: "send_1",
+			eventId: "evt_repeat",
+			body: "Please inspect.",
+			at: 300,
+		});
+		expect(repeated).toBe(state);
 	});
 
-	it("holds one claim per target and only for a known target", () => {
+	it("retains mail until its retention window passes, then prunes it with its dedupe key", () => {
 		const state = populatedState();
-		const claimed = reduceHostedState(state, { type: "inbox.claim", targetKey: "pi_session-1", leaseUntil: 1_300 });
-		expect(claimed.claims).toEqual({ "pi_session-1": 1_300 });
-		expect(reduceHostedState(claimed, { type: "inbox.claim", targetKey: "pi_session-1", leaseUntil: 1_900 }).claims)
-			.toEqual({ "pi_session-1": 1_900 });
-		expect(reduceHostedState(state, { type: "inbox.claim", targetKey: "pi_absent", leaseUntil: 1_300 })).toBe(state);
+		expect(reduceHostedState(state, { type: "retention.prune", before: 200 }).events.evt_1).toBeDefined();
+		const pruned = reduceHostedState(state, { type: "retention.prune", before: 201 });
+		expect(pruned.events).toEqual({});
+		expect(pruned.dedupe).toEqual({});
 	});
-
-	it("acknowledges only its own target's events and frees that target's claim", () => {
-		let state = reduceHostedState(populatedState(), { type: "inbox.claim", targetKey: "pi_session-1", leaseUntil: 1_300 });
-		expect(reduceHostedState(state, { type: "inbox.ack", targetKey: "pi_foreign", eventIds: ["evt_1"], at: 400 })).toBe(state);
-		expect(undeliveredHostedEvents(state, "pi_session-1").map((candidate) => candidate.eventId)).toEqual(["evt_1"]);
-
-		state = reduceHostedState(state, { type: "inbox.ack", targetKey: "pi_session-1", eventIds: ["evt_1"], at: 500 });
-		expect(state.events.evt_1?.type === "filesystem.created" ? state.events.evt_1.deliveredAt : undefined).toBe(500);
-		expect(state.claims).toEqual({});
-		expect(undeliveredHostedEvents(state, "pi_session-1")).toEqual([]);
-		expect(reduceHostedState(state, { type: "inbox.ack", targetKey: "pi_session-1", eventIds: ["evt_1"], at: 600 })).toBe(state);
-	});
-
-	it("prunes delivered events once they outlive their retention window", () => {
-		let state = reduceHostedState(populatedState(), { type: "inbox.ack", targetKey: "pi_session-1", eventIds: ["evt_1"], at: 1_000 });
-		state = reduceHostedState(state, { type: "monitor.commit", monitor: { ...state.monitors.mon_1!, updatedAt: 2_000 }, events: [event("evt_2", 2)] });
-		state = reduceHostedState(state, { type: "inbox.ack", targetKey: "pi_session-1", eventIds: ["evt_2"], at: 1_001 + HOSTED_ACK_RETENTION_MS });
-		expect(state.events.evt_1).toBeUndefined();
-		expect(state.events.evt_2?.type === "filesystem.created" ? state.events.evt_2.deliveredAt : undefined).toBeDefined();
-	});
-
-	it("retains a delivered event until its retention window passes", () => {
-		let state = reduceHostedState(populatedState(), { type: "inbox.ack", targetKey: "pi_session-1", eventIds: ["evt_1"], at: 1_000 });
-		expect(reduceHostedState(state, { type: "retention.prune", before: 1_000 }).events.evt_1).toBeDefined();
-		state = reduceHostedState(state, { type: "retention.prune", before: 1_001 });
-		expect(state.events).toEqual({});
-		expect(state.dedupe).toEqual({});
-	});
-
 });
 
 describe("hosted runtime state persistence", () => {
@@ -202,9 +145,9 @@ describe("hosted runtime state persistence", () => {
 		writeFileSync(join(root, ".state.v1.json.crash.tmp"), JSON.stringify(emptyHostedRuntimeState()), { mode: 0o600 });
 		expect(readHostedRuntimeState(root)).toEqual(oldState);
 
-		const claimed = reduceHostedState(oldState, { type: "inbox.claim", targetKey: "pi_session-1", leaseUntil: 1_300 });
-		writeHostedRuntimeState(root, claimed);
-		expect(readHostedRuntimeState(root).claims).toEqual({ "pi_session-1": 1_300 });
+		const pruned = reduceHostedState(oldState, { type: "retention.prune", before: 201 });
+		writeHostedRuntimeState(root, pruned);
+		expect(readHostedRuntimeState(root).events).toEqual({});
 	});
 
 	it("preserves committed state when a replacement fails validation", () => {
@@ -237,11 +180,44 @@ describe("hosted runtime state persistence", () => {
 		expect(() => readHostedRuntimeState(root)).toThrow(/exceeds/);
 	});
 
+	/** State is current-only: a superseded version must start the daemon fresh, never wedge it. */
+	it("discards a state file written by another state version", () => {
+		const root = temporaryRoot();
+		const path = runtimeStatePaths(root).state;
+		writeHostedRuntimeState(root, populatedState());
+		const superseded = { ...populatedState(), version: 1 };
+		writeFileSync(path, JSON.stringify(superseded), { mode: 0o600 });
+		expect(readHostedRuntimeState(root)).toEqual(emptyHostedRuntimeState());
+		expect(readdirSync(root)).toContain("state.v1.json.superseded");
+		expect(readHostedRuntimeState(root)).toEqual(emptyHostedRuntimeState());
+	});
+
 	it("rejects invalid cross-references rather than repairing them", () => {
 		const dangling = structuredClone(populatedState());
 		delete dangling.dedupe[dangling.events.evt_1!.dedupeKey];
 		expect(() => validateHostedRuntimeState(dangling)).toThrow(HostedStateStorageError);
-		const orphanClaim = { ...populatedState(), claims: { pi_absent: 1_300 } };
-		expect(() => validateHostedRuntimeState(orphanClaim)).toThrow(HostedStateStorageError);
+		const orphanMail = structuredClone(populatedState());
+		orphanMail.events.evt_1!.recipientParticipantKey = "participant_absent";
+		expect(() => validateHostedRuntimeState(orphanMail)).toThrow(HostedStateStorageError);
+	});
+
+	it("expires a grant whose window has closed while its published mail is still retained", () => {
+		const state = populatedState();
+		const namespaceId = "msg_00000000-0000-0000-0000-000000000001";
+		state.messaging[namespaceId] = {
+			namespaceId,
+			secretDigest: "a".repeat(64),
+			participantKey: SENDER,
+			holderGeneration: "lease_sender",
+			targetKey: "pi_session-1",
+			configurationHash: "b".repeat(64),
+			createdAt: 100,
+			expiresAt: 100 + HOSTED_ACK_RETENTION_MS,
+			status: "active",
+			operations: { "op-1": "evt_1" },
+		};
+		const pruned = reduceHostedState(state, { type: "retention.prune", before: 101 + HOSTED_ACK_RETENTION_MS });
+		expect(pruned.messaging[namespaceId]?.status).toBe("expired");
+		expect(pruned.events.evt_1).toBeUndefined();
 	});
 });

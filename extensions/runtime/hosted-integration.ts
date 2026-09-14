@@ -8,7 +8,6 @@ import {
 	type CollaboratorManageResult,
 	type CollaboratorWorktreeInput,
 } from "./collaborators.ts";
-import { HostedDelivery } from "./delivery.ts";
 import { isHeld } from "./hosted-types.ts";
 import { MessagingClient } from "./messaging-client.ts";
 import { NativeAgentService } from "./native-agents.ts";
@@ -25,7 +24,6 @@ interface BeforeAgentStartResult {
 export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 	private readonly store: HostedSessionStore;
 	private readonly session: RuntimeSession;
-	private readonly delivery: HostedDelivery;
 	private readonly messaging: MessagingClient;
 	private readonly native: NativeAgentService;
 	private readonly collaborators: CollaboratorService;
@@ -33,7 +31,6 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 	constructor(pi: ExtensionAPI, root = defaultRuntimeRoot()) {
 		this.store = new HostedSessionStore(pi);
 		this.session = new RuntimeSession(pi, root, this.store, this);
-		this.delivery = new HostedDelivery(this.session);
 		this.messaging = new MessagingClient(this.session);
 		this.native = new NativeAgentService(this.session, this.messaging);
 		this.collaborators = new CollaboratorService(this.session, this.native);
@@ -94,23 +91,13 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 		this.store.restore(ctx);
 	}
 
-	canAdmit(ctx: ExtensionContext): boolean {
-		return this.delivery.canAdmit(ctx);
-	}
-
 	async afterRegister(registration: LiveClientRegistration, _ctx: ExtensionContext, current: () => boolean): Promise<void> {
 		if (isHeld(this.store.identity?.disposition)) await this.messaging.provision(registration, current);
 	}
 
-	async afterHeartbeat(
-		registration: LiveClientRegistration,
-		ctx: ExtensionContext,
-		heartbeat: HostedHeartbeat,
-		current: () => boolean,
-	): Promise<void> {
-		await this.delivery.admit(registration, ctx, heartbeat.events);
-		this.session.requireCurrentScope(current);
+	afterHeartbeat(registration: LiveClientRegistration, ctx: ExtensionContext, heartbeat: HostedHeartbeat): Promise<void> {
 		this.messaging.offerMailHint(registration, ctx, heartbeat.mail);
+		return Promise.resolve();
 	}
 
 	afterHeartbeatSettled(): Promise<void> {

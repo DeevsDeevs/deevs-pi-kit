@@ -6,14 +6,12 @@ import { HostedRuntimeClient } from "../extensions/runtime/client.ts";
 import type { HostedTarget } from "../extensions/runtime/hosted-types.ts";
 import type { BindAgentInput } from "../extensions/runtime/service/bind-request.ts";
 import { RuntimeAgentBinder } from "../extensions/runtime/service/bridge.ts";
-import { DirectoryMonitorManager } from "../extensions/runtime/service/monitor.ts";
 import { HostedParticipantCoordinator } from "../extensions/runtime/service/participant.ts";
 import { dispatchHostedLine, type HostedProtocolContext } from "../extensions/runtime/service/protocol.ts";
 import type { HostedHostVerifier, HostedLiveAgent } from "../extensions/runtime/service/identity.ts";
 import { RuntimeRegistrationManager, type RegisterPiInput } from "../extensions/runtime/service/registration.ts";
 import { startRuntimeServer } from "../extensions/runtime/service/server.ts";
 import { deriveAgentTargetKey, HostedStateStore } from "../extensions/runtime/service/state.ts";
-import { RuntimeInbox } from "../extensions/runtime/service/delivery.ts";
 
 const AGENT_NAME = "collab-fable";
 
@@ -155,9 +153,7 @@ describe("authoritative Herdr agent bind", () => {
 		const main = await registerPi(test, "main");
 		const caller = test.participants.acquire(main, "review", "main").participant;
 		test.host.agents.set(AGENT_NAME, codexAgent(test.projectRoot));
-		const monitors = new DirectoryMonitorManager(test.store, { automatic: false });
-		const inbox = new RuntimeInbox(test.store);
-		const context: HostedProtocolContext = { runtimeId: "rt_test", agentWake: "none", registrations: test.registrations, monitors, inbox, participants: test.participants, bridges: test.bridges };
+		const context: HostedProtocolContext = { runtimeId: "rt_test", agentWake: "none", registrations: test.registrations, participants: test.participants, bridges: test.bridges };
 		const call = (method: string, params: unknown) => dispatchHostedLine(JSON.stringify({ v: 1, id: method, method, params }), context);
 		expect(await call("hello", { minVersion: 1, maxVersion: 1 })).toMatchObject({ ok: true, result: { capabilities: { interactiveAgent: { bind: "herdr_agent_name" } } } });
 		const auth = { registrationId: main.registrationId, registrationKey: main.registrationKey };

@@ -22,7 +22,6 @@ const HEARTBEAT_MS = 2_000;
 /** Everything the session lifecycle hands back to the collaborator, delivery and messaging services. */
 export interface RuntimeSessionHooks {
 	restoreSessionState(ctx: ExtensionContext): void;
-	canAdmit(ctx: ExtensionContext): boolean;
 	afterRegister(registration: LiveClientRegistration, ctx: ExtensionContext, current: () => boolean): Promise<void>;
 	afterHeartbeat(
 		registration: LiveClientRegistration,
@@ -238,8 +237,7 @@ export class RuntimeSession {
 	}
 
 	private async heartbeatOnce(registration: LiveClientRegistration, ctx: ExtensionContext, current: () => boolean): Promise<void> {
-		const params = { ...auth(registration), admit: this.hooks.canAdmit(ctx) };
-		const heartbeat = parseHeartbeat(await this.client.call("pi.heartbeat", params));
+		const heartbeat = parseHeartbeat(await this.client.call("pi.heartbeat", auth(registration)));
 		this.requireCurrentScope(current);
 		if (!sameRegistrationIdentity(heartbeat.registration, registration)) {
 			throw new HostedRuntimeClientError("registration_stale", "Heartbeat replaced its registration identity.");

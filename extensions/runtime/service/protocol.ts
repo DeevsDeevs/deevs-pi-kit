@@ -1,13 +1,6 @@
 import { type Static, type TSchema } from "typebox";
 import { Value } from "typebox/value";
-import {
-	HOSTED_MAILBOX_MAX_BODY_BYTES,
-	HOSTED_MAX_DELIVERY_BATCH,
-	HOSTED_MONITOR_MAX_ENTRIES,
-	HOSTED_PROTOCOL_VERSION,
-	type HostedFilesystemCreatedEvent,
-	type HostedMonitor,
-} from "../hosted-types.ts";
+import { HOSTED_MAILBOX_MAX_BODY_BYTES, HOSTED_PROTOCOL_VERSION } from "../hosted-types.ts";
 import { schemaError } from "../schemas/common.ts";
 import {
 	BridgeBindParams,
@@ -15,7 +8,6 @@ import {
 	HostedRequestIdSchema,
 	HostedRequestSchema,
 	HostedRequestVersionSchema,
-	InboxAckParams,
 	MailboxSendParams,
 	MessagingEventParams,
 	MessagingIssueParams,
@@ -23,13 +15,10 @@ import {
 	MessagingReplyParams,
 	MessagingSendParams,
 	MessagingStatusParams,
-	MonitorCreateParams,
-	MonitorDeleteParams,
 	ParticipantAcquireParams,
 	ParticipantAuthParams,
 	ParticipantConfirmedParams,
 	ParticipantStandDownParams,
-	PiHeartbeatParams,
 	PiRegisterParams,
 	RegistrationAuthParams,
 	WorktreeEnsureParams,
@@ -39,11 +28,9 @@ import {
 	type MessagingNamespaceAuth,
 } from "../schemas/rpc.ts";
 import { RuntimeAgentBinder, type BoundAgentResult } from "./bridge.ts";
-import { DirectoryMonitorManager } from "./monitor.ts";
 import { RuntimeMessaging, type MessagingInput } from "./messaging.ts";
 import { HostedParticipantCoordinator } from "./participant.ts";
 import { RuntimeRegistrationManager, type HostedLiveRegistration } from "./registration.ts";
-import { RuntimeInbox } from "./delivery.ts";
 import { RuntimeWorktrees } from "./worktree.ts";
 
 export const HOSTED_MAX_REQUEST_BYTES = 64 * 1024;
@@ -68,8 +55,6 @@ export interface HostedProtocolContext {
 	degradedReason?: "host_unavailable";
 	registrations?: RuntimeRegistrationManager;
 	messaging?: RuntimeMessaging;
-	monitors?: DirectoryMonitorManager;
-	inbox?: RuntimeInbox;
 	participants?: HostedParticipantCoordinator;
 	bridges?: RuntimeAgentBinder;
 	worktrees?: RuntimeWorktrees;
@@ -84,8 +69,6 @@ interface HostedMethodCall {
 	id: string;
 	context: HostedProtocolContext;
 	registrations: RuntimeRegistrationManager;
-	monitors: DirectoryMonitorManager;
-	inbox: RuntimeInbox;
 }
 
 type HostedMethodHandler = (
@@ -140,10 +123,8 @@ export function invalidFrame(message: string): HostedResponse {
 
 function authorizedCall(id: string, context: HostedProtocolContext): HostedMethodCall {
 	const registrations = context.registrations;
-	const monitors = context.monitors;
-	const inbox = context.inbox;
-	if (!registrations || !monitors || !inbox) throw new HostedCapabilityError("Hosted runtime methods are unavailable in this process.");
-	return { id, context, registrations, monitors, inbox };
+	if (!registrations) throw new HostedCapabilityError("Hosted runtime methods are unavailable in this process.");
+	return { id, context, registrations };
 }
 
 function hello(id: string, value: JsonValue | undefined, context: HostedProtocolContext): HostedResponse {
@@ -154,9 +135,7 @@ function hello(id: string, value: JsonValue | undefined, context: HostedProtocol
 	}
 	const capabilities = {
 		agentWake: context.agentWake,
-		maxDeliveryBatch: HOSTED_MAX_DELIVERY_BATCH,
 		targets: ["pi", "claude-code", "codex"],
-		monitor: { maxEntries: HOSTED_MONITOR_MAX_ENTRIES },
 	};
 	if (context.degradedReason) Object.assign(capabilities, { degradedReason: context.degradedReason });
 	if (context.participants) Object.assign(capabilities, { mailbox: { maxBodyBytes: HOSTED_MAILBOX_MAX_BODY_BYTES } });
@@ -242,13 +221,11 @@ async function heartbeatAgent(call: HostedMethodCall, params: Static<typeof Regi
 	return success(call.id, registrationResult(registration));
 }
 
-/** The Pi heartbeat is the only delivery path: it hands out one batch and Pi acks what it admitted. */
-async function heartbeatPi(call: HostedMethodCall, params: Static<typeof PiHeartbeatParams>): Promise<HostedResponse> {
+/** The Pi heartbeat renews the lease and carries the mail hint of the session's sole live namespace. */
+async function heartbeatPi(call: HostedMethodCall, params: Static<typeof RegistrationAuthParams>): Promise<HostedResponse> {
 	const registration = await call.registrations.heartbeat(params.registrationId, params.registrationKey);
 	const mail = call.context.messaging?.unread(registration);
 	const heartbeat: JsonObject = registrationResult(registration);
-	const events = params.admit === true ? call.inbox.deliver(registration) : [];
-	if (events.length > 0) heartbeat.events = events.map(inboxEventResult);
 	if (mail) heartbeat.mail = { namespaceId: mail.namespaceId, eventId: mail.eventId };
 	return success(call.id, heartbeat);
 }
@@ -256,30 +233,6 @@ async function heartbeatPi(call: HostedMethodCall, params: Static<typeof PiHeart
 function unregister(call: HostedMethodCall, params: Static<typeof RegistrationAuthParams>): HostedResponse {
 	call.registrations.unregister(params.registrationId, params.registrationKey);
 	return success(call.id, { unregistered: true });
-}
-
-function createMonitor(call: HostedMethodCall, params: Static<typeof MonitorCreateParams>): HostedResponse {
-	const registration = authorize(call, params);
-	return success(call.id, monitorResult(call.monitors.create(registration.targetKey, params.directory, params.settleMs)));
-}
-
-function getMonitor(call: HostedMethodCall, params: Static<typeof RegistrationAuthParams>): HostedResponse {
-	const monitor = call.monitors.get(authorize(call, params).targetKey);
-	return success(call.id, { monitor: monitor ? monitorResult(monitor) : null });
-}
-
-function deleteMonitor(call: HostedMethodCall, params: Static<typeof MonitorDeleteParams>): HostedResponse {
-	call.monitors.delete(authorize(call, params).targetKey, params.monitorId);
-	return success(call.id, { deleted: true });
-}
-
-function ackInbox(call: HostedMethodCall, params: Static<typeof InboxAckParams>): HostedResponse {
-	call.inbox.ack(authorize(call, params), params.eventIds);
-	return success(call.id, { settled: true });
-}
-
-function inboxStatus(call: HostedMethodCall, params: Static<typeof RegistrationAuthParams>): HostedResponse {
-	return success(call.id, call.inbox.status(authorize(call, params)));
 }
 
 function sendMailbox(call: HostedMethodCall, params: Static<typeof MailboxSendParams>): HostedResponse {
@@ -361,7 +314,7 @@ const HOSTED_METHODS = new Map<string, HostedMethodHandler>([
 	}))],
 	["messaging.reply", method(MessagingReplyParams, replyMessaging)],
 	["pi.register", method(PiRegisterParams, registerPi)],
-	["pi.heartbeat", method(PiHeartbeatParams, heartbeatPi)],
+	["pi.heartbeat", method(RegistrationAuthParams, heartbeatPi)],
 	["pi.unregister", method(RegistrationAuthParams, unregister)],
 	["bridge.bind", method(BridgeBindParams, bindAgent)],
 	["bridge.heartbeat", method(RegistrationAuthParams, heartbeatAgent)],
@@ -369,11 +322,6 @@ const HOSTED_METHODS = new Map<string, HostedMethodHandler>([
 	["worktree.list", method(RegistrationAuthParams, listWorktrees)],
 	["worktree.ensure", method(WorktreeEnsureParams, ensureWorktree)],
 	["worktree.remove", method(WorktreeRemoveParams, removeWorktree)],
-	["monitor.create", method(MonitorCreateParams, createMonitor)],
-	["monitor.get", method(RegistrationAuthParams, getMonitor)],
-	["monitor.delete", method(MonitorDeleteParams, deleteMonitor)],
-	["inbox.ack", method(InboxAckParams, ackInbox)],
-	["inbox.status", method(RegistrationAuthParams, inboxStatus)],
 	["participant.acquire", method(ParticipantAcquireParams, acquireParticipant)],
 	["participant.get", method(ParticipantAuthParams, getParticipant)],
 	["participant.list", method(RegistrationAuthParams, listParticipants)],
@@ -429,19 +377,6 @@ function boundAgentResult(result: BoundAgentResult) {
 		projectRoot: result.projectRoot,
 		cwd: result.cwd,
 	};
-}
-
-function monitorResult(monitor: HostedMonitor) {
-	return {
-		monitorId: monitor.monitorId,
-		directory: monitor.directory,
-		status: monitor.status,
-		settleMs: monitor.settleMs,
-	};
-}
-
-function inboxEventResult(event: HostedFilesystemCreatedEvent) {
-	return { eventId: event.eventId, type: event.type, summary: event.summary, path: event.payload.path };
 }
 
 function success<Result>(id: string, result: Result): HostedResponse {

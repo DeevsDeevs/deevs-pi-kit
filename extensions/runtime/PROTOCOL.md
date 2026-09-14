@@ -1,6 +1,6 @@
 # Runtime protocol
 
-Runtime is a local daemon with three jobs: durable Monitor delivery to one exact Pi session, durable participant identity and mail, and lifecycle authority over persistent collaborators living in real Herdr agent tabs. It accepts only state schema v22; any other store fails closed.
+Runtime is a local daemon with two jobs: durable participant identity and mail, and lifecycle authority over persistent collaborators living in real Herdr agent tabs. It accepts only state schema v23; a store written by another version is discarded and the daemon starts fresh.
 
 ## Primitives
 
@@ -13,7 +13,7 @@ Runtime is a local daemon with three jobs: durable Monitor delivery to one exact
 
 ## Guarantees
 
-**At-least-once delivery, deduped by Pi.** Events, mail and participant state commit before any hand-out or host mutation and survive restart. A Pi that dies between hand-out and ack is handed that batch again once its 30-second claim expires; the bounded durable seen-set in Pi's hidden session entry (1,000 event IDs, oldest pruned) keeps the repeat out of the model. Exactly-once provider execution, durable model admission and semantic completion are not guaranteed.
+**Durable before observable.** Mail and participant state commit to disk before any response or host mutation and survive restart, and every mutation is idempotent on a typed durable key, so an uncertain call is resolved by repeating it rather than by inventing a new identifier. A background sweep expires grants and drops mail past the retention window. Exactly-once provider execution, durable model admission and semantic completion are not guaranteed.
 
 **Identity is the registration key plus `herdr agent get`.** A client is trusted exactly while it presents the registration ID and key Runtime minted for its target; each `pi.register` or `bridge.bind` mints a fresh pair and drops the previous one. A Pi target `pi_<piSessionId>` is live while its session file header still carries that session ID and canonical cwd; a native target `agent_<projectHash>_<agentName>` is live while `herdr agent get <name>` reports that name at that cwd and its participant is still held at the generation the bind recorded. Panes, terminals and labels are never identity — the stored tab ID exists only so stop can close the exact tab Runtime opened — and a mismatch fails closed: registration goes stale, the participant vacates.
 
@@ -32,7 +32,7 @@ Newline-delimited JSON, capped at 64 KiB per request line and 128 KiB per messag
 {"v":1,"id":"req_1","ok":false,"error":{"code":"not_found","message":"diagnostic"}}
 ```
 
-`hello` returns `{version, runtimeId, capabilities}` with `agentWake`, `maxDeliveryBatch`, `targets`, `monitor`, and — when the matching authority is loaded — `mailbox`, `interactiveAgent` and `worktree`; `runtimeId` persists across service starts. Error codes: `invalid_request`, `unsupported_version`, `capability_unavailable`, `not_found`, `conflict`, `busy`, `registration_stale`, `identity_mismatch`, `host_unavailable`, `storage_error`, `internal`.
+`hello` returns `{version, runtimeId, capabilities}` with `agentWake` and `targets`, and — when the matching authority is loaded — `mailbox`, `interactiveAgent` and `worktree`; `runtimeId` persists across service starts. Error codes: `invalid_request`, `unsupported_version`, `capability_unavailable`, `not_found`, `conflict`, `busy`, `registration_stale`, `identity_mismatch`, `host_unavailable`, `storage_error`, `internal`.
 
 ## Methods
 
@@ -41,8 +41,6 @@ Newline-delimited JSON, capped at 64 KiB per request line and 128 KiB per messag
 | Service | `hello` |
 | Pi registration | `pi.register`, `pi.heartbeat`, `pi.unregister` |
 | Interactive agent | `bridge.bind`, `bridge.heartbeat`, `bridge.unregister` |
-| Monitor | `monitor.create`, `monitor.get`, `monitor.delete` |
-| Inbox | `inbox.ack`, `inbox.status` |
 | Participants | `participant.acquire`, `participant.get`, `participant.list`, `participant.stand_down`, `participant.stand_down_confirmed`, `participant.stop_confirmed`, `participant.release`, `participant.takeover` |
 | Mail | `mailbox.send` |
 | Messaging | `messaging.issue`, `messaging.peers`, `messaging.send`, `messaging.status`, `messaging.receive`, `messaging.received`, `messaging.reply` |
@@ -60,11 +58,7 @@ A failing step stops what that launch started and reports the original error, wi
 
 ## Mail
 
-A participant is `(canonicalProjectRoot, protocol, participantId)` in `held`, `vacant` or `ended` state, and mail is addressed to the participant: a later namespace of the same held participant reads it, and mail to a vacant participant queues for its next holder. Two durable records exist: a **namespace** (one credential per target registration — participant, holder generation, secret digest, expiry, operation-ID to event-ID map) and a **message** `{eventId, from, to, body, inReplyToEventId?, createdAt, readAt?}`. Mail is retrieved only through the package-owned stdio MCP endpoint and six tools ([shared skill](../../skills/collaborator-messaging/SKILL.md)): `collaborator_peers`, `collaborator_send`, `collaborator_receive`, `collaborator_received`, `collaborator_reply`, `collaborator_status`. It never enters delivery — only Monitor events are handed to a target. Pi's notification instead rides the `pi.heartbeat` response, which carries the `namespaceId` and `eventId` of the oldest unread message while exactly one live namespace exists; that is notification, not delivery. Bodies are capped at 16 KiB UTF-8, namespaces and operation records share a 10,000-record cap, and state is capped at 8 MiB. After uncertainty, repeat the original operation with identical namespace, operation ID and arguments: a repeat returns the original event, changed input conflicts, a new operation ID creates new mail. MCP cannot acquire identity, control processes or worktrees.
-
-## Monitor
-
-A Monitor observes newly created direct-child regular files under one canonical non-symlink directory; existing files form a non-emitting baseline, `fs.watch` is a latency hint only, and startup, hints and reconciliation use the same authoritative scan. Cursor and event state commit atomically before notification, an event stays undelivered until an ack stamps its `deliveredAt`, and a target owns at most one Monitor whose events dedupe on that Monitor's ID and the file's relative path. Pi's two-second `pi.heartbeat` carries `admit` while the session is idle with no pending messages; the reply then carries up to `maxDeliveryBatch` undelivered events and records one claim, keyed by target key and holding nothing but its expiry, so a second heartbeat hands out nothing until that claim is acked or expires. Pi writes one hidden model-visible custom message, appends those event IDs to its seen-set, and calls `inbox.ack`. Runtime never prompts or focuses a Pi pane.
+A participant is `(canonicalProjectRoot, protocol, participantId)` in `held`, `vacant` or `ended` state, and mail is addressed to the participant: a later namespace of the same held participant reads it, and mail to a vacant participant queues for its next holder. Two durable records exist: a **namespace** (one credential per target registration — participant, holder generation, secret digest, expiry, operation-ID to event-ID map) and a **message** `{eventId, from, to, body, inReplyToEventId?, createdAt, readAt?}`. Mail is retrieved only through the package-owned stdio MCP endpoint and six tools ([shared skill](../../skills/collaborator-messaging/SKILL.md)): `collaborator_peers`, `collaborator_send`, `collaborator_receive`, `collaborator_received`, `collaborator_reply`, `collaborator_status`. Nothing is ever pushed into a target. Pi's notification instead rides the `pi.heartbeat` response, which carries the `namespaceId` and `eventId` of the oldest unread message while exactly one live namespace exists; that is notification, not delivery. Bodies are capped at 16 KiB UTF-8, namespaces and operation records share a 10,000-record cap, and state is capped at 8 MiB. After uncertainty, repeat the original operation with identical namespace, operation ID and arguments: a repeat returns the original event, changed input conflicts, a new operation ID creates new mail. MCP cannot acquire identity, control processes or worktrees.
 
 ## Stop and recovery
 
@@ -77,4 +71,4 @@ A Monitor observes newly created direct-child regular files under one canonical 
 
 - **No automatic native wake.** Claude/Codex mail waits for explicit human input in the tab; `herdr agent prompt`, keystroke injection and pane scraping are not used and must not be worked around.
 - An MCP client receipt is not provider admission: `readAt` proves neither a durable commit nor task completion, and Pi mail hints are not replayed after loss. Guarded native read-only launches get no automatic MCP provisioning.
-- Monitoring stays direct-child creation only — no collaborator groups, broadcasts, attachments or durable schedules. Node Unix sockets expose no peer credentials, so owner-only permissions and random credentials protect against accidental and cross-wired children only.
+- Mail stays point-to-point — no collaborator groups, broadcasts, attachments or durable schedules. Node Unix sockets expose no peer credentials, so owner-only permissions and random credentials protect against accidental and cross-wired children only.

@@ -32,7 +32,7 @@ extensions/ask-user/    Interactive clarification UI (`ask_user`)
 extensions/codex-fast/  OpenAI Codex Fast mode service tier (`/codex-fast`)
 extensions/notifier/    Ready-for-input terminal notifications
 extensions/herdr-compat/ Experimental Shift+Enter compatibility for Pi inside Herdr
-extensions/runtime/     Durable Monitor inbox and exact Pi/Herdr heartbeat delivery
+extensions/runtime/     Durable collaborator identity, mail and Herdr agent lifecycle
 skills/                 Agent behavior guidance
 ```
 
@@ -144,13 +144,13 @@ When Pi runs inside Herdr (`HERDR_ENV=1`), normalize legacy and Kitty Alt+Enter 
 
 ### Hosted runtime
 
-Runtime is a local daemon that watches newly created direct-child files in a monitored directory and delivers them to one exact Pi session across restarts, handing them out on Pi's own heartbeat instead of prompting or focusing any pane. Delivery is at-least-once: a session that dies before acknowledging is handed the same batch again, and a bounded durable seen-set in its session entry keeps the repeat from reaching the model twice. It also hosts persistent Pi, Claude Code and Codex collaborators as real interactive agents in no-focus Herdr tabs, each holding a participant identity lease, and each writer working in its own Git worktree on `runtime/collab/<protocol>/<participantId>`.
+Runtime is a local daemon that owns durable collaborator identity and mail across restarts, notifying an idle Pi session on its own heartbeat instead of prompting or focusing any pane. It hosts persistent Pi, Claude Code and Codex collaborators as real interactive agents in no-focus Herdr tabs, each holding a participant identity lease, and each writer working in its own Git worktree on `runtime/collab/<protocol>/<participantId>`.
 
 Identity is the registration ID and key Runtime minted plus `herdr agent get <name>` — for a Pi session, its session file header. Panes, tabs and terminals are never re-verified; the stored tab ID exists only so stop can close the exact tab Runtime opened. Every start, stand-down, stop, release, takeover and worktree cleanup needs one explicit confirmed interactive step, and collaborator prose never authorizes any of them. A failing launch step stops what it started and reports the error; nothing half-launched is kept. Automatic prompt injection into a Claude/Codex tab is not implemented — their mail waits for human input in the tab. Runtime never commits or merges: review a writer's branch and integrate it with ordinary Git.
 
 Tools: `collaborator_list` for discovery, `collaborator_manage` for participant and process lifecycle, `collaborator_workspace` to list worktrees and confirm exact cleanup, plus the six shared MCP mail tools (`collaborator_peers`, `collaborator_send`, `collaborator_receive`, `collaborator_received`, `collaborator_reply`, `collaborator_status`) used by Pi, Claude Code and Codex alike through one stdio interface and the [shared messaging skill](skills/collaborator-messaging/SKILL.md).
 
-Commands: `/runtime start`, `/runtime status`, `/runtime register`, `/runtime monitor <directory>`, `/runtime monitor-delete`, `/runtime collaborate <protocol> <id>`, `/runtime participants`, `/runtime stand-down`, `/runtime leave`, and `/runtime takeover <protocol> <id>`. Collaborator starts are a `collaborator_manage` operation, not a command.
+Commands: `/runtime start`, `/runtime status`, `/runtime register`, `/runtime collaborate <protocol> <id>`, `/runtime participants`, `/runtime stand-down`, `/runtime leave`, and `/runtime takeover <protocol> <id>`. Collaborator starts are a `collaborator_manage` operation, not a command.
 
 See [`extensions/runtime/PROTOCOL.md`](extensions/runtime/PROTOCOL.md) for the wire protocol, method map, identity rules and limits.
 
@@ -170,7 +170,6 @@ validation-review missions       collaborators   collaborator-messaging
 ```bash
 npm install
 npm run lint:anti-slop && npm run typecheck && npm test
-npm run smoke:runtime-release        # isolated Monitor gate; starts real Herdr + Pi processes
 npm run smoke:collaborator-release   # confirmed collaborator + Mission completion-once gate
 npm run smoke:native-release         # deterministic interactive-target and Git worktree gate
 ```

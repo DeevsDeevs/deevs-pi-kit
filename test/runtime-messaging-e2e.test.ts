@@ -24,7 +24,7 @@ type Call = { name: string; arguments: Record<string, string> };
 type Message = { eventId: string; from: string; body: string; createdAt: number; inReplyToEventId?: string; readAt?: number };
 type Result = { isError: boolean; content: Array<{ type: string; text: string }>; structuredContent: { namespaceId: string; eventId: string; readAt?: number; message?: Message; event?: { eventId: string; body: string; readAt?: number; inReplyToEventId?: string; delivery: { status: string } }; peers?: Array<{ participantId: string }> } };
 
-async function setup(monitor: { scanIntervalMs?: number; onError?: (error: Error) => void; onEvents?: (targetKey: string) => void; now?: () => number } = {}, recipientReady = true) {
+async function setup(recipientReady = true) {
 	const root = mkdtempSync(join(tmpdir(), "messaging-e2e-"));
 	const projectRoot = join(root, "project");
 	mkdirSync(projectRoot);
@@ -43,8 +43,8 @@ async function setup(monitor: { scanIntervalMs?: number; onError?: (error: Error
 		inputs.set(name, { projectRoot: cwd, piSessionId: name, piSessionFile: file });
 	}
 	// Only Herdr identity is a fixture. MCP is a real child; RPC, authorization,
-	// publication, delivery claims and restart recovery use the actual service/store.
-	const options = { root: runtimeRoot, monitor, host: { async getAgent(name: string) { return agents.get(name)!; } }, registration: { now: () => now }, participant: { now: () => now }, delivery: { now: () => now } };
+	// publication, authorization and restart recovery use the actual service/store.
+	const options = { root: runtimeRoot, host: { async getAgent(name: string) { return agents.get(name)!; } }, registration: { now: () => now }, participant: { now: () => now } };
 	let server: RuntimeServerHandle = await startRuntimeServer(options);
 	cleanups.push(async () => { await server.close(); rmSync(root, { recursive: true, force: true }); });
 	const client = new HostedRuntimeClient(server.socketPath);
@@ -170,7 +170,7 @@ const receive = (eventId: string): Call => ({ name: "collaborator_receive", argu
 const received = (eventId: string): Call => ({ name: "collaborator_received", arguments: { eventId } });
 const reply = (eventId: string, operationId = "reply-1", body = "Reply."): Call => ({ name: "collaborator_reply", arguments: { eventId, operationId, body } });
 
-it("delivers a full body, records readAt, correlates a reply, and keeps ordinary mail out of native claims", async () => {
+it("delivers a full body, records readAt, and correlates a reply", async () => {
 	const test = await setup();
 	const recipient = await test.issue(test.recipientParticipant);
 	const [sent] = await mcp(test.issued.descriptorPath, [send("offer", "\u0000".repeat(16384))]);
@@ -179,8 +179,6 @@ it("delivers a full body, records readAt, correlates a reply, and keeps ordinary
 	expect(offered!.isError).toBe(false);
 	expect(offered!.structuredContent.message).toEqual({ eventId, from: "sender", body: "\u0000".repeat(16384), createdAt: 1000 });
 	expect(repeated!.structuredContent.message).toEqual(offered!.structuredContent.message);
-	const auth = { registrationId: test.recipient.registrationId, registrationKey: test.recipient.registrationKey };
-	expect(await test.client.call("pi.heartbeat", { ...auth, admit: true })).not.toHaveProperty("events");
 	const [replied, receipted, exactAgain] = await mcp(recipient.descriptorPath, [reply(eventId), received(eventId), receive(eventId)]);
 	expect(replied!.isError).toBe(false);
 	expect(receipted!.structuredContent).toEqual({ namespaceId: recipient.namespaceId, eventId, readAt: 1000 });
@@ -219,7 +217,7 @@ it("hints the oldest unread message on the recipient heartbeat and stops once it
 });
 
 it("publishes before the recipient has a namespace, fences other participants' mail, and keeps the sender's retry", async () => {
-	const test = await setup({}, false);
+	const test = await setup(false);
 	const [sent] = await mcp(test.issued.descriptorPath, [send("before-issuance")]);
 	expect(sent!.isError).toBe(false);
 	const eventId = sent!.structuredContent.eventId;
@@ -309,31 +307,6 @@ it("persists native Pi receive results while keeping read receipts separate from
 	expect(recovered.result.details.message.readAt).toBe(1000);
 }, 30_000);
 
-it("rejects actual Monitor events through MCP while preserving the shared native claim", async () => {
-	const events = new EventEmitter();
-	const test = await setup({ scanIntervalMs: 10, now: () => 1000, onEvents: () => events.emit("ready") });
-	const recipient = await test.issue(test.recipientParticipant);
-	const directory = join(test.inputs.get("recipient")!.projectRoot, "watched");
-	mkdirSync(directory);
-	const auth = { registrationId: test.recipient.registrationId, registrationKey: test.recipient.registrationKey };
-	await test.client.call("monitor.create", { ...auth, directory, settleMs: 0 });
-	const ready = once(events, "ready");
-	writeFileSync(join(directory, "new.txt"), "monitor");
-	await ready;
-	const monitor = Object.values(test.readState().events).find(event => event.type === "filesystem.created")!;
-	expect(monitor).toBeDefined();
-	const [sent] = await mcp(test.issued.descriptorPath, [send("alongside-monitor")]);
-	const eventId = sent!.structuredContent.eventId;
-	const [denied, offered] = await mcp(recipient.descriptorPath, [receive(monitor.eventId), receive(eventId)]);
-	expect(denied!.isError).toBe(true);
-	expect(offered!.isError).toBe(false);
-	const delivered = await test.client.call("pi.heartbeat", { ...auth, admit: true }) as { events?: Array<{ eventId: string }> };
-	expect(delivered.events?.map(event => event.eventId)).toEqual([monitor.eventId]);
-	await mcp(recipient.descriptorPath, [received(eventId)]);
-	expect(test.readState().claims[test.recipient.targetKey]).toBeDefined();
-	expect(test.readState().events[eventId]).toBeDefined();
-});
-
 it("does not record a read receipt or half a reply on pre-rename storage failure", async () => {
 	const test = await setup();
 	const recipient = await test.issue(test.recipientParticipant);
@@ -378,7 +351,6 @@ it("retains a published body until its sender retry authority expires, then prun
 	expect(store.read().messaging[receiver.namespaceId]!.status).toBe("expired");
 	expect(store.read().events[eventId]).toBeDefined();
 	expect(Object.values(store.read().dedupe)).toContain(eventId);
-	expect(store.read().claims).toEqual({});
 	expect(readHostedRuntimeState(root)).toEqual(store.read());
 	const retained = store.read();
 	expect(store.apply({ type: "messaging.send", namespaceId: test.issued.namespaceId, operationId: "retry-protection", recipientParticipantKey: test.recipientParticipant.participantKey, body: "Please inspect.", eventId: "must-not-publish", at: receiver.expiresAt + 1 })).toBe(retained);
@@ -394,7 +366,6 @@ it("refuses new operations at the record cap and retains ordinary bodies until t
 	const [first] = await mcp(test.issued.descriptorPath, [send("capacity-1")]);
 	const eventId = first!.structuredContent.eventId;
 	const state = test.readState();
-	expect(state.claims).toEqual({});
 	const publisher = state.messaging[test.issued.namespaceId]!;
 	const grant = state.messaging[recipient.namespaceId]!;
 	for (let i = Object.keys(state.messaging).length + 1; i < 10_000; i++) {
@@ -427,16 +398,11 @@ it("publishes and retrieves only through MCP, rejects native claiming, and recov
 	expect(sent!.isError).toBe(false);
 	const eventId = sent!.structuredContent.eventId;
 	expect(firstStatus!.structuredContent.event?.eventId).toBe(eventId);
-	const auth = { registrationId: test.recipient.registrationId, registrationKey: test.recipient.registrationKey };
-	expect(await test.client.call("pi.heartbeat", { ...auth, admit: true })).not.toHaveProperty("events");
-	// Ordinary mail cannot be settled through the native ack path: the body stays readable.
-	await test.client.call("inbox.ack", { ...auth, eventIds: [eventId] });
 	expect(test.readState().events[eventId]).toBeDefined();
 	const recipient = await test.issue(test.recipientParticipant);
 	const [offered] = await mcp(recipient.descriptorPath, [receive(eventId)]);
 	expect(offered!.structuredContent.message).toMatchObject({ eventId, body: "Please inspect." });
 	await mcp(recipient.descriptorPath, [received(eventId)]);
-	expect(test.readState().claims).toEqual({});
 	await test.restart();
 	const [retry, recovered] = await mcp(test.issued.descriptorPath, [send("op-1"), status("op-1")]);
 	expect(retry!.structuredContent.eventId).toBe(eventId);
@@ -507,7 +473,6 @@ it("never grants lifecycle authority to the messaging secret and fences a cross-
 	const test = await setup();
 	const forbidden: Array<[string, Record<string, unknown>]> = [
 		["pi.heartbeat", {}],
-		["inbox.ack", { eventIds: ["evt_forged"] }],
 		["participant.acquire", { protocol: "proof", participantId: "forged" }],
 		["participant.stop_confirmed", { participantKey: test.recipientParticipant.participantKey, expectedGeneration: test.recipientParticipant.generation, confirmed: true }],
 		["worktree.remove", { callerParticipantKey: test.senderParticipant.participantKey, expectedCallerGeneration: test.senderParticipant.generation, protocol: "proof", participantId: "recipient", discardConfirmed: true }],
@@ -556,7 +521,7 @@ it("returns no success or receipt on a real persistence failure", async () => {
 });
 
 it("preserves an issued descriptor after an uncertain state commit", async () => {
-	const test = await setup({}, false);
+	const test = await setup(false);
 	const descriptorPath = messagingDescriptorPath(test.runtimeRoot, test.recipient.targetKey);
 	const originalSync = fs.fsyncSync;
 	let injected = 0;
@@ -606,7 +571,7 @@ it("supersedes a target's previous namespace so one descriptor never serves two 
 });
 
 it("removes an uncommitted descriptor after a definite issuance failure", async () => {
-	const test = await setup({}, false);
+	const test = await setup(false);
 	const descriptorPath = messagingDescriptorPath(test.runtimeRoot, test.recipient.targetKey);
 	const statePath = runtimeStatePaths(test.runtimeRoot).state;
 	const originalRename = fs.renameSync;
@@ -632,9 +597,7 @@ it("removes an uncommitted descriptor after a definite issuance failure", async 
 });
 
 it("fences a post-rename directory-sync failure until restart, preserving the original publication", async () => {
-	const errors = new EventEmitter();
-	const monitorFailure = once(errors, "monitor-error");
-	const test = await setup({ scanIntervalMs: 20, onError: error => errors.emit("monitor-error", error) });
+	const test = await setup();
 	const originalSync = fs.fsyncSync;
 	let injected = 0;
 	const fault = vi.spyOn(fs, "fsyncSync").mockImplementation(fd => {
@@ -657,7 +620,6 @@ it("fences a post-rename directory-sync failure until restart, preserving the or
 	const snapshot = readFileSync(file, "utf8");
 	const persisted = test.readState();
 	const publishedId = persisted.messaging[test.issued.namespaceId]!.operations.uncertain!;
-	expect((await monitorFailure)[0]).toMatchObject({ code: "storage_error", uncertain: true });
 	expect(Object.keys(persisted.events)).toEqual([publishedId]);
 	const [retry, other, lookup] = await mcp(test.issued.descriptorPath, [send("uncertain"), send("must-not-overwrite"), status("uncertain")]);
 	for (const result of [retry, other, lookup]) {
