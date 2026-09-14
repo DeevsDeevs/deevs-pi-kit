@@ -65,7 +65,7 @@ async function runStatus({ services, ctx }: RuntimeCommandInput): Promise<void> 
 	const hello = strictObject(await services.session.client.hello(), "Runtime hello");
 	const registration = services.session.liveRegistration;
 	const lease = registration ? `registered until ${new Date(registration.leaseUntil).toISOString()}` : "not registered";
-	ctx.ui.notify(`Runtime ${String(hello.runtimeId)} (${String(hello.epoch)}); Pi ${lease}.`, "info");
+	ctx.ui.notify(`Runtime ${String(hello.runtimeId)}; Pi ${lease}.`, "info");
 }
 
 async function runStart({ services, ctx }: RuntimeCommandInput): Promise<void> {

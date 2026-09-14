@@ -31,16 +31,7 @@ export const HostedCollaboratorDriverSchema = Type.Union([
 	Type.Literal("codex"),
 ]);
 
-export const HostedAgentSessionIdentitySchema = Type.Object({
-	source: IdText,
-	agent: boundedText(64),
-	kind: Type.Union([Type.Literal("id"), Type.Literal("path")]),
-	value: PathText,
-}, STRICT_OBJECT);
-
 export const HostedHerdrLocatorSchema = Type.Object({
-	paneId: IdText,
-	terminalId: IdText,
 	tabId: IdText,
 	workspaceId: IdText,
 }, STRICT_OBJECT);
@@ -61,11 +52,9 @@ export const HostedAgentTargetSchema = Type.Object({
 	projectRoot: PathText,
 	agentName: AgentNameText,
 	driver: HostedNativeCollaboratorDriverSchema,
-	agentSession: HostedAgentSessionIdentitySchema,
 	participantKey: IdText,
 	holderGeneration: IdText,
 	profile: HostedCollaboratorProfileSchema,
-	clientGeneration: IdText,
 	herdr: HostedHerdrLocatorSchema,
 	worktreePath: Type.Optional(PathText),
 	createdAt: Timestamp,
@@ -189,7 +178,6 @@ export const HostedClaimSchema = Type.Object({
 	claimId: IdText,
 	targetKey: IdText,
 	registrationId: IdText,
-	clientGeneration: IdText,
 	eventIds: Type.Array(IdText, { minItems: 1, maxItems: HOSTED_MAX_DELIVERY_BATCH, uniqueItems: true }),
 	createdAt: Timestamp,
 	leaseUntil: Timestamp,
@@ -210,17 +198,15 @@ export const HostedMessagingGrantSchema = Type.Object({
 	participantKey: IdText,
 	holderGeneration: IdText,
 	targetKey: IdText,
-	clientGeneration: IdText,
-	terminalId: IdText,
 	configurationHash: HashText,
 	createdAt: Timestamp,
 	expiresAt: Timestamp,
-	status: Type.Union([Type.Literal("active"), Type.Literal("revoked"), Type.Literal("expired")]),
+	status: Type.Union([Type.Literal("active"), Type.Literal("expired")]),
 	/** Operation ID to published event ID; a repeated operation ID returns its original event. */
 	operations: keyedRecord(IdText),
 }, STRICT_OBJECT);
 
-export const HOSTED_STATE_VERSION = 17;
+export const HOSTED_STATE_VERSION = 18;
 
 export const HostedRuntimeStateSchema = Type.Object({
 	version: Type.Literal(HOSTED_STATE_VERSION),
@@ -238,7 +224,6 @@ export type HostedRuntimeInstance = Static<typeof HostedRuntimeInstanceSchema>;
 export type HostedCollaboratorProfile = Static<typeof HostedCollaboratorProfileSchema>;
 export type HostedNativeCollaboratorDriver = Static<typeof HostedNativeCollaboratorDriverSchema>;
 export type HostedCollaboratorDriver = Static<typeof HostedCollaboratorDriverSchema>;
-export type HostedAgentSessionIdentity = Static<typeof HostedAgentSessionIdentitySchema>;
 export type HostedHerdrLocator = Static<typeof HostedHerdrLocatorSchema>;
 export type HostedAgentTarget = Static<typeof HostedAgentTargetSchema>;
 export type HostedTarget = Static<typeof HostedTargetSchema>;

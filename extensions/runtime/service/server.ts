@@ -31,7 +31,6 @@ export class RuntimeAlreadyRunningError extends Error {
 export interface RuntimeServerOptions {
 	root: string;
 	socketPath?: string;
-	epoch?: string;
 	probeTimeoutMs?: number;
 	monitor?: DirectoryMonitorOptions;
 	host?: HostedHostVerifier;
@@ -45,7 +44,6 @@ export interface RuntimeServerHandle {
 	root: string;
 	socketPath: string;
 	runtimeId: string;
-	epoch: string;
 	close(): Promise<void>;
 }
 
@@ -93,7 +91,6 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 	const socketPath = options.socketPath ?? join(options.root, "runtime.sock");
 	const context: HostedProtocolContext = {
 		runtimeId: instance.runtimeId,
-		epoch: options.epoch ?? `epoch_${randomUUID()}`,
 		agentWake: "none",
 		registrations,
 		messaging: new RuntimeMessaging(store, registrations, participants, socketPath, options.participant?.now),
@@ -124,7 +121,6 @@ async function serve(
 			root: options.root,
 			socketPath,
 			runtimeId: context.runtimeId,
-			epoch: context.epoch,
 			async close() {
 				if (closed) return;
 				closed = true;

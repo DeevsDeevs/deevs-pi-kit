@@ -60,7 +60,7 @@ export interface HostedParticipantCoordinatorOptions {
 	createGeneration?: () => string;
 	createEventId?: () => string;
 	reconnectGraceMs?: number;
-	epochStartedAt?: number;
+	startedAt?: number;
 	stopTarget?: (target: HostedTarget) => Promise<"closed" | "already_absent" | "unmanaged">;
 	onStopped?: (target: HostedTarget, holderGeneration: string) => Promise<void> | void;
 }
@@ -74,7 +74,7 @@ export class HostedParticipantCoordinator {
 	private readonly registrations: RuntimeRegistrationManager;
 	private readonly wakes: HostedParticipantWakeRequester;
 	private readonly options: HostedParticipantCoordinatorOptions;
-	private readonly epochStartedAt: number;
+	private readonly startedAt: number;
 	private readonly seenTargets = new Set<string>();
 	private readonly stopping = new Set<string>();
 	private readonly stoppingTargets = new Set<string>();
@@ -89,7 +89,7 @@ export class HostedParticipantCoordinator {
 		this.registrations = registrations;
 		this.wakes = wakes;
 		this.options = options;
-		this.epochStartedAt = options.epochStartedAt ?? this.now();
+		this.startedAt = options.startedAt ?? this.now();
 	}
 
 	registrationReady(targetKey: string): void {
@@ -279,7 +279,7 @@ export class HostedParticipantCoordinator {
 			throw new HostedParticipantError("busy", "Participant holder is still live.");
 		}
 		const graceMs = this.options.reconnectGraceMs ?? DEFAULT_RECONNECT_GRACE_MS;
-		if (!this.seenTargets.has(previousHolderTargetKey) && this.now() - this.epochStartedAt < graceMs) {
+		if (!this.seenTargets.has(previousHolderTargetKey) && this.now() - this.startedAt < graceMs) {
 			throw new HostedParticipantError("busy", "Participant holder is inside the Runtime reconnect grace period.");
 		}
 		this.store.apply({
@@ -334,8 +334,8 @@ export class HostedParticipantCoordinator {
 
 	sendMessaging(registration: HostedLiveRegistration, namespaceId: string, publication: MessagingPublication): void {
 		const grant = this.store.read().messaging[namespaceId];
-		if (!grant || grant.targetKey !== registration.targetKey || grant.clientGeneration !== registration.clientGeneration) {
-			throw new HostedParticipantError("conflict", "Messaging sender binding changed.");
+		if (!grant || grant.targetKey !== registration.targetKey) {
+			throw new HostedParticipantError("conflict", "Messaging namespace does not belong to this target.");
 		}
 		this.assertNotStopping(grant.participantKey);
 		this.assertTargetNotStopping(grant.targetKey);

@@ -3,26 +3,10 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { HostedRuntimeClientError } from "./client.ts";
 import { optionalText, strictObject, text } from "./responses.ts";
 
-export const HERDR_AGENT_START_CODES = [
-	"invalid_agent_name", "unsupported_agent_kind", "invalid_agent_argument", "invalid_agent_timeout", "agent_pane_not_found",
-	"agent_pane_busy", "agent_pane_unavailable", "agent_start_input_failed", "agent_name_taken", "agent_start_failed",
-	"agent_name_lost", "timeout",
-];
-
-interface HerdrPane {
-	paneId: string;
-	terminalId: string;
-}
-
 export interface CollaboratorTab {
 	tabId: string;
 	paneId: string;
 	terminalId: string;
-}
-
-interface HerdrExecResult {
-	stdout: string;
-	stderr: string;
 }
 
 export function shellQuote(value: string): string {
@@ -35,25 +19,6 @@ export function delay(ms: number): Promise<void> {
 
 export function throwIfAborted(signal?: AbortSignal): void {
 	if (signal?.aborted) throw new HostedRuntimeClientError("cancelled", "Collaborator start was cancelled.");
-}
-
-export function isHerdrError(result: HerdrExecResult, expectedCode: string): boolean {
-	return [result.stdout, result.stderr].some(output => {
-		if (output.length > 8192) return false;
-		try {
-			return strictObject(strictObject(JSON.parse(output), "Herdr response").error, "Herdr error").code === expectedCode;
-		} catch {
-			return false;
-		}
-	});
-}
-
-export async function currentHerdrPane(pi: ExtensionAPI): Promise<HerdrPane> {
-	const current = await pi.exec("herdr", ["pane", "current", "--current"], { timeout: 2_000 });
-	if (current.code !== 0) throw new HostedRuntimeClientError("host_unavailable", "Herdr could not resolve this Pi pane.");
-	const pane = strictObject(strictObject(JSON.parse(current.stdout), "Herdr response").result, "Herdr result").pane;
-	const value = strictObject(pane, "Herdr pane");
-	return { paneId: text(value.pane_id), terminalId: text(value.terminal_id) };
 }
 
 export async function createCollaboratorTab(pi: ExtensionAPI, launchCwd: string, participantId: string): Promise<CollaboratorTab> {

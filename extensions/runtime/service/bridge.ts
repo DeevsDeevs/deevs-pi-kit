@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import type {
 	HostedAgentBind,
-	HostedAgentSessionIdentity,
 	HostedAgentTarget,
 	HostedCollaboratorProfile,
 	HostedHerdrLocator,
@@ -28,7 +27,6 @@ export interface BindAgentInput {
 	agentName: string;
 	driver: HostedNativeCollaboratorDriver;
 	profile: HostedCollaboratorProfile;
-	clientGeneration: string;
 	protocol: string;
 	participantId: string;
 	callerParticipantKey: string;
@@ -43,7 +41,6 @@ export interface BoundAgentResult {
 	holderGeneration: string;
 	driver: HostedNativeCollaboratorDriver;
 	profile: HostedCollaboratorProfile;
-	agentSession: HostedAgentSessionIdentity;
 	projectRoot: string;
 	cwd: string;
 }
@@ -53,7 +50,6 @@ interface BoundAgentNames {
 	agentName: string;
 	protocol: string;
 	participantId: string;
-	clientGeneration: string;
 }
 
 export interface AgentBinderOptions {
@@ -88,6 +84,7 @@ export class RuntimeAgentBinder {
 		const projectRoot = realpathSync(callerTarget.projectRoot);
 		const names = boundAgentNames(input);
 		const verified = await this.host.getAgent(names.agentName);
+		if (verified.name !== names.agentName) throw new AgentBindError("identity_mismatch", "Herdr resolved another agent name.");
 		const cwd = agentCwd(verified);
 		const worktreePath = cwd === projectRoot ? undefined : cwd;
 		if (worktreePath !== undefined && !await isWritableWorktree(worktreePath, projectRoot, input.profile)) {
@@ -95,15 +92,13 @@ export class RuntimeAgentBinder {
 		}
 		const target = this.agentTarget(projectRoot, names, input, verified, worktreePath);
 		this.store.apply({ type: "agent.bind", bind: this.bindRecord(caller, input, names, target) });
-		const registration = this.registrations.registerAgent(target, verified);
 		return {
-			registration,
+			registration: this.registrations.registerAgent(target),
 			targetKey: target.targetKey,
 			participantKey: target.participantKey,
 			holderGeneration: target.holderGeneration,
 			driver: target.driver,
 			profile: target.profile,
-			agentSession: target.agentSession,
 			projectRoot,
 			cwd,
 		};
@@ -116,7 +111,6 @@ export class RuntimeAgentBinder {
 		verified: HostedLiveAgent,
 		worktreePath: string | undefined,
 	): HostedAgentTarget {
-		const herdr = startedAgentLocator(verified, names.agentName, input.driver);
 		const targetKey = deriveAgentTargetKey(projectRoot, names.agentName);
 		const existing = this.store.read().targets[targetKey];
 		if (existing !== undefined && existing.kind !== "agent") {
@@ -128,12 +122,10 @@ export class RuntimeAgentBinder {
 			projectRoot,
 			agentName: names.agentName,
 			driver: input.driver,
-			agentSession: verified.agentSession,
 			participantKey: deriveParticipantKey(projectRoot, names.protocol, names.participantId),
 			holderGeneration: existing?.holderGeneration ?? this.options.createGeneration?.() ?? `lease_${randomUUID()}`,
 			profile: input.profile,
-			clientGeneration: names.clientGeneration,
-			herdr,
+			herdr: agentTab(verified),
 			createdAt: existing?.createdAt ?? this.now(),
 		};
 		if (worktreePath) target.worktreePath = worktreePath;
@@ -170,20 +162,14 @@ function boundAgentNames(input: BindAgentInput): BoundAgentNames {
 		agentName: boundedName(input.agentName, AGENT_NAME, "Herdr agent name"),
 		protocol: boundedName(input.protocol, NAME, "protocol"),
 		participantId: boundedName(input.participantId, NAME, "participant ID"),
-		clientGeneration: bounded(input.clientGeneration, "client generation", 200),
 	};
 }
 
-function startedAgentLocator(agent: HostedLiveAgent, agentName: string, driver: HostedNativeCollaboratorDriver): HostedHerdrLocator {
-	if (agent.name !== agentName) throw new AgentBindError("identity_mismatch", "Herdr resolved another agent name.");
-	const expected = driver === "claude-code" ? "claude" : "codex";
-	if (agent.agentSession.agent !== expected || agent.agentSession.source !== `herdr:${expected}`) {
-		throw new AgentBindError("identity_mismatch", "Herdr does not report the requested interactive agent kind.");
-	}
-	if (!agent.tabId || !agent.workspaceId) {
-		throw new AgentBindError("identity_mismatch", "Herdr agent has no exact tab and workspace identity.");
-	}
-	return { paneId: agent.paneId, terminalId: agent.terminalId, tabId: agent.tabId, workspaceId: agent.workspaceId };
+/** The tab Runtime later closes to stop this collaborator. */
+function agentTab(agent: HostedLiveAgent): HostedHerdrLocator {
+	const { tabId, workspaceId } = agent;
+	if (!tabId || !workspaceId) throw new AgentBindError("identity_mismatch", "Herdr agent has no exact tab and workspace identity.");
+	return { tabId, workspaceId };
 }
 
 async function isWritableWorktree(worktreePath: string, projectRoot: string, profile: HostedCollaboratorProfile): Promise<boolean> {

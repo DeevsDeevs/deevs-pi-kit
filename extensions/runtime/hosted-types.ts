@@ -1,5 +1,4 @@
 import type {
-	HostedAgentSessionIdentity,
 	HostedAgentTarget,
 	HostedClaim,
 	HostedFilesystemCreatedEvent,
@@ -20,7 +19,6 @@ export {
 } from "./schemas/common.ts";
 
 export type {
-	HostedAgentSessionIdentity,
 	HostedAgentTarget,
 	HostedClaim,
 	HostedCollaboratorDriver,
@@ -42,13 +40,6 @@ export type {
 	HostedTarget,
 	HostedWake,
 } from "./schemas/state.ts";
-
-export function sameAgentSession(left: HostedAgentSessionIdentity, right: HostedAgentSessionIdentity): boolean {
-	return left.source === right.source
-		&& left.agent === right.agent
-		&& left.kind === right.kind
-		&& left.value === right.value;
-}
 
 export interface HostedAgentBind {
 	target: HostedAgentTarget;
@@ -73,8 +64,7 @@ export interface HostedMessagingSend {
 
 export type HostedStateOperation =
 	| { type: "messaging.issue"; grant: HostedMessagingGrant }
-	| { type: "messaging.close"; namespaceId: string; status: "revoked" | "expired" }
-	| { type: "messaging.invalidate_client"; targetKey: string; clientGeneration: string; terminalId: string }
+	| { type: "messaging.expire"; namespaceId: string }
 	| ({ type: "messaging.send" } & HostedMessagingSend)
 	| { type: "messaging.read"; namespaceId: string; eventId: string; at: number }
 	| { type: "target.ensure"; target: HostedTarget }

@@ -68,7 +68,7 @@ export class MessagingClient {
 		};
 		const issued = strictObject(await this.session.client.call("messaging.issue", params), "Native messaging descriptor");
 		this.session.requireCurrentScope(current);
-		if (issued.descriptorPath !== messagingDescriptorPath(this.session.root, control.targetKey, control.clientGeneration)) {
+		if (issued.descriptorPath !== messagingDescriptorPath(this.session.root, control.targetKey)) {
 			throw new HostedRuntimeClientError("identity_mismatch", "Native messaging descriptor differs from its configured client.");
 		}
 		this.managedIssued.add(control.targetKey);

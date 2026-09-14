@@ -3,15 +3,8 @@ import { realpathSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { HostedRuntimeClientError } from "./client.ts";
 import { HostedCollaboratorStartError, type ResolvedCollaboratorCandidate } from "./collaborator-policy.ts";
-import {
-	createCollaboratorTab,
-	HERDR_AGENT_START_CODES,
-	isHerdrError,
-	throwIfAborted,
-	waitForHerdrPaneCwd,
-	type CollaboratorTab,
-} from "./herdr.ts";
-import { sameAgentSession, type HostedCollaboratorProfile, type HostedNativeCollaboratorDriver } from "./hosted-types.ts";
+import { createCollaboratorTab, throwIfAborted, waitForHerdrPaneCwd, type CollaboratorTab } from "./herdr.ts";
+import type { HostedCollaboratorProfile, HostedNativeCollaboratorDriver } from "./hosted-types.ts";
 import { nativeMessagingLaunch } from "./mcp/native.ts";
 import type { MessagingClient } from "./messaging-client.ts";
 import {
@@ -52,7 +45,6 @@ interface ManagedAgentLaunch {
 	targetKey: string;
 	projectRoot: string;
 	cwd: string;
-	clientGeneration: string;
 	driver: HostedNativeCollaboratorDriver;
 	profile: HostedCollaboratorProfile;
 	tab: CollaboratorTab;
@@ -64,7 +56,6 @@ interface AgentBindRequest {
 	agentName: string;
 	driver: HostedNativeCollaboratorDriver;
 	profile: HostedCollaboratorProfile;
-	clientGeneration: string;
 	protocol: string;
 	participantId: string;
 	callerParticipantKey: string;
@@ -80,7 +71,6 @@ interface BoundAgent {
 	profile: HostedCollaboratorProfile;
 	projectRoot: string;
 	cwd: string;
-	agentSession: ManagedAgentSession;
 }
 
 interface ManagedAgentStatus {
@@ -95,7 +85,6 @@ interface ManagedAgentStatus {
 interface NativeLaunchScope {
 	agentName: string;
 	targetKey: string;
-	clientGeneration: string;
 	projectRoot: string;
 	driver: HostedNativeCollaboratorDriver;
 	profile: HostedCollaboratorProfile;
@@ -144,7 +133,6 @@ export class NativeAgentService {
 		const launchScope: NativeLaunchScope = {
 			agentName,
 			targetKey: deriveAgentTargetKey(projectRoot, agentName),
-			clientGeneration: `agent_client_${randomUUID()}`,
 			projectRoot,
 			driver: candidate.driver,
 			profile: candidate.profile,
@@ -198,7 +186,7 @@ export class NativeAgentService {
 		if (!request.worktreePath) return undefined;
 		await waitForHerdrPaneCwd(this.pi, tab, launchCwd, request.signal);
 		this.session.requireCurrentScope(launch.current);
-		return this.configureNativeMessaging(request.candidate, launch.targetKey, launch.clientGeneration);
+		return this.configureNativeMessaging(request.candidate, launch.targetKey);
 	}
 
 	private async startAndBind(
@@ -224,7 +212,6 @@ export class NativeAgentService {
 			targetKey: scope.targetKey,
 			projectRoot: scope.projectRoot,
 			cwd: launchCwd,
-			clientGeneration: scope.clientGeneration,
 			driver: scope.driver,
 			profile: scope.profile,
 			tab,
@@ -259,7 +246,6 @@ export class NativeAgentService {
 			profile: launch.profile,
 			protocol: launch.protocol,
 			participantId: launch.participantId,
-			clientGeneration: launch.clientGeneration,
 			holderGeneration: bound.holderGeneration,
 			paneId: launch.tab.paneId,
 			terminalId: launch.tab.terminalId,
@@ -284,7 +270,6 @@ export class NativeAgentService {
 	private async configureNativeMessaging(
 		candidate: ResolvedCollaboratorCandidate,
 		targetKey: string,
-		clientGeneration: string,
 	): Promise<NativeMessagingConfiguration> {
 		if (candidate.driver === "pi") throw new HostedRuntimeClientError("conflict", "Native messaging requires an interactive driver.");
 		const node = await this.pi.exec("node", ["--print", "process.execPath"], { timeout: 3_000 });
@@ -295,7 +280,6 @@ export class NativeAgentService {
 			driver: candidate.driver,
 			root: this.session.root,
 			targetKey,
-			clientGeneration,
 			nodeExecutable: node.stdout.trim(),
 			model: candidate.model,
 			personaPrompt: candidate.persona?.prompt,
@@ -312,8 +296,7 @@ export class NativeAgentService {
 		const args = ["agent", "start", agentName, "--kind", kind, "--pane", tab.paneId, "--timeout", "30000", ...separated];
 		const started = await this.pi.exec("herdr", args, { timeout: 35_000 });
 		if (started.code !== 0) {
-			const diagnostic = HERDR_AGENT_START_CODES.find(code => isHerdrError(started, code)) ?? "unclassified";
-			const detail = `Herdr could not start ${kind} in ${tab.paneId} (exit ${started.code}; Herdr ${diagnostic}); its tab was preserved.`;
+			const detail = `Herdr could not start ${kind} in ${tab.paneId} (exit ${started.code}); its tab was preserved.`;
 			throw new HostedRuntimeClientError("host_unavailable", detail);
 		}
 		return parseStartedAgent(started.stdout, tab.paneId, tab.terminalId, kind, agentName);
@@ -392,13 +375,13 @@ export class NativeAgentService {
 			registration = bound.registration;
 		}
 		if (!current()) return undefined;
-		if (registration.targetKey !== targetKey || registration.paneId !== control.paneId) {
+		if (registration.targetKey !== targetKey) {
 			throw new HostedRuntimeClientError("identity_mismatch", "Native heartbeat replaced its target identity.");
 		}
 		return registration;
 	}
 
-	/** Re-verifies one managed Herdr agent by name and reinstalls its registration under the same client generation. */
+	/** Re-verifies one managed Herdr agent by name and reinstalls its registration. */
 	private async rebindManagedAgent(control: ManagedAgentControl): Promise<BoundAgent> {
 		const registration = this.session.liveRegistration;
 		const identity = this.session.store.identity;
@@ -410,23 +393,17 @@ export class NativeAgentService {
 			agentName: control.agentName,
 			driver: control.driver,
 			profile: control.profile,
-			clientGeneration: control.clientGeneration,
 			protocol: control.protocol,
 			participantId: control.participantId,
 			callerParticipantKey: identity.participantKey,
 			expectedCallerGeneration: identity.generation,
 		});
 		const sameTarget = bound.registration.targetKey === control.targetKey
-			&& bound.registration.paneId === control.paneId
-			&& bound.holderGeneration === control.holderGeneration;
+			&& bound.holderGeneration === control.holderGeneration
+			&& bound.driver === control.driver
+			&& bound.cwd === control.cwd;
 		if (!sameTarget) {
 			throw new HostedRuntimeClientError("identity_mismatch", "Rebound Herdr agent differs from its persisted managed target.");
-		}
-		const sameIdentity = bound.driver === control.driver
-			&& bound.cwd === control.cwd
-			&& sameAgentSession(bound.agentSession, control.agentSession);
-		if (!sameIdentity) {
-			throw new HostedRuntimeClientError("identity_mismatch", "Rebound Herdr agent identity differs from its persisted managed session.");
 		}
 		return bound;
 	}
@@ -461,7 +438,6 @@ function bindRequestFor(
 		agentName: launch.agentName,
 		driver: launch.driver,
 		profile: launch.profile,
-		clientGeneration: launch.clientGeneration,
 		protocol: launch.protocol,
 		participantId: launch.participantId,
 		callerParticipantKey: caller.participantKey,
@@ -473,24 +449,18 @@ function bindRequestFor(
 
 function boundAgentMatchesLaunch(bound: BoundAgent, launch: ManagedAgentLaunch): boolean {
 	return bound.registration.targetKey === launch.targetKey
-		&& bound.registration.paneId === launch.tab.paneId
 		&& bound.driver === launch.driver
 		&& bound.profile === launch.profile
-		&& bound.cwd === launch.cwd
-		&& sameAgentSession(bound.agentSession, launch.agentSession);
+		&& bound.cwd === launch.cwd;
 }
 
 function parseBoundAgent(value: RuntimeResponse): BoundAgent {
 	const result = strictObject(value, "Herdr agent bind result");
-	const session = strictObject(result.agentSession, "Bound agent session");
 	if (result.driver !== "claude-code" && result.driver !== "codex") {
 		throw new HostedRuntimeClientError("invalid_response", "Runtime returned an invalid bound agent driver.");
 	}
 	if (result.profile !== "read-only" && result.profile !== "workspace-write") {
 		throw new HostedRuntimeClientError("invalid_response", "Runtime returned an invalid bound agent profile.");
-	}
-	if (session.kind !== "id" && session.kind !== "path") {
-		throw new HostedRuntimeClientError("invalid_response", "Runtime returned an invalid bound agent session kind.");
 	}
 	return {
 		registration: parseRegistration(value),
@@ -500,7 +470,6 @@ function parseBoundAgent(value: RuntimeResponse): BoundAgent {
 		profile: result.profile,
 		projectRoot: text(result.projectRoot),
 		cwd: text(result.cwd),
-		agentSession: { source: text(session.source), agent: text(session.agent), kind: session.kind, value: text(session.value) },
 	};
 }
 

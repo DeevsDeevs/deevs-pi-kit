@@ -21,31 +21,15 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 class FakeHost implements HostedHostVerifier {
 	readonly agents = new Map<string, HostedLiveAgent>();
 
-	async getAgent(locator: string): Promise<HostedLiveAgent> {
-		const agent = this.agents.get(locator);
+	async getAgent(agentName: string): Promise<HostedLiveAgent> {
+		const agent = this.agents.get(agentName);
 		if (!agent) throw Object.assign(new Error("missing agent"), { code: "identity_mismatch" });
 		return agent;
-	}
-
-	async findTerminal(terminalId: string): Promise<HostedLiveAgent> {
-		const matches = [...this.agents.values()].filter((agent) => agent.terminalId === terminalId);
-		if (matches.length !== 1) throw Object.assign(new Error("missing terminal"), { code: "identity_mismatch" });
-		return matches[0]!;
 	}
 }
 
 function codexAgent(cwd: string, name = AGENT_NAME): HostedLiveAgent {
-	return {
-		paneId: "w1:p9",
-		tabId: "w1:t9",
-		workspaceId: "w1",
-		terminalId: "term_agent",
-		cwd,
-		name,
-		agentSession: { source: "herdr:codex", agent: "codex", kind: "id", value: "codex-session" },
-		status: "idle",
-		stateChangeSeq: 2,
-	};
+	return { tabId: "w1:t9", workspaceId: "w1", cwd, name };
 }
 
 function setup() {
@@ -55,14 +39,11 @@ function setup() {
 	mkdirSync(projectRoot);
 	const host = new FakeHost();
 	const inputs = new Map<string, RegisterPiInput>();
-	for (const [index, name] of ["main", "successor"].entries()) {
+	for (const name of ["main", "successor"]) {
 		const sessionFile = join(root, `${name}.jsonl`);
 		const sessionId = `session_${name}`;
-		const paneId = `w1:p${index + 1}`;
-		const terminalId = `term_${name}`;
 		writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: sessionId, timestamp: "2026-01-01T00:00:00.000Z", cwd: projectRoot })}\n`);
-		host.agents.set(paneId, { paneId, tabId: `w1:t${index + 1}`, workspaceId: "w1", terminalId, cwd: projectRoot, agentSession: { source: "herdr:pi", agent: "pi", kind: "path", value: sessionFile }, status: "idle", stateChangeSeq: 1 });
-		inputs.set(name, { projectRoot, piSessionId: sessionId, piSessionFile: sessionFile, clientGeneration: `client_${name}`, admittedClaims: [], herdr: { paneId, terminalId } });
+		inputs.set(name, { projectRoot, piSessionId: sessionId, piSessionFile: sessionFile, admittedClaims: [] });
 	}
 	const store = new HostedStateStore(join(root, "runtime"));
 	let now = 1_000;
@@ -84,7 +65,6 @@ function bindInput(callerParticipantKey: string, expectedCallerGeneration: strin
 		agentName: AGENT_NAME,
 		driver: "codex",
 		profile: "read-only",
-		clientGeneration: "agent_client",
 		protocol: "review",
 		participantId: "fable",
 		callerParticipantKey,
@@ -93,7 +73,7 @@ function bindInput(callerParticipantKey: string, expectedCallerGeneration: strin
 }
 
 describe("authoritative Herdr agent bind", () => {
-	it("binds an exact live agent, rebinds idempotently, and stops the bound target", async () => {
+	it("binds an exact live agent, rebinds onto the same lease, and stops the bound target", async () => {
 		const test = setup();
 		const main = await registerPi(test, "main");
 		const caller = test.participants.acquire(main, "review", "main").participant;
@@ -105,16 +85,16 @@ describe("authoritative Herdr agent bind", () => {
 			driver: "codex",
 			profile: "read-only",
 			cwd: test.projectRoot,
-			agentSession: { agent: "codex", value: "codex-session" },
 		});
-		expect(test.store.read().targets[bound.targetKey]).toMatchObject({ kind: "agent", agentName: AGENT_NAME, clientGeneration: "agent_client" });
+		expect(test.store.read().targets[bound.targetKey]).toMatchObject({ kind: "agent", agentName: AGENT_NAME });
 		expect(test.store.read().participants[bound.participantKey]).toMatchObject({ state: "held", holderTargetKey: bound.targetKey, generation: "lease_agent" });
-		expect(test.registrations.isLiveTarget(bound.targetKey)).toBe(true);
+		expect(test.registrations.hasLiveTarget(bound.targetKey)).toBe(true);
 
 		const rebound = await test.bridges.bind(main, bindInput(caller.participantKey, caller.generation));
-		expect(rebound.registration.registrationId).toBe(bound.registration.registrationId);
-		expect(rebound.registration.registrationKey).toBe(bound.registration.registrationKey);
+		expect(rebound.targetKey).toBe(bound.targetKey);
 		expect(rebound.holderGeneration).toBe("lease_agent");
+		expect(rebound.registration.registrationId).not.toBe(bound.registration.registrationId);
+		expect(() => test.registrations.authorize(bound.registration.registrationId, bound.registration.registrationKey)).toThrow();
 
 		const stoppedTargets: HostedTarget[] = [];
 		const stopping = new HostedParticipantCoordinator(test.store, test.registrations, { request() {} }, { now: () => 1_002, createGeneration: () => "lease_stopped", stopTarget: async (target) => { stoppedTargets.push(target); return "closed"; } });
@@ -123,7 +103,7 @@ describe("authoritative Herdr agent bind", () => {
 		expect(stoppedTargets).toMatchObject([{ kind: "agent", targetKey: bound.targetKey, agentName: AGENT_NAME }]);
 	});
 
-	it("rejects agents whose name, kind, cwd, or tab identity does not match the request", async () => {
+	it("rejects an absent agent and one whose name, cwd, or tab identity does not match", async () => {
 		const test = setup();
 		const main = await registerPi(test, "main");
 		const caller = test.participants.acquire(main, "review", "main").participant;
@@ -131,8 +111,6 @@ describe("authoritative Herdr agent bind", () => {
 		await expect(test.bridges.bind(main, input)).rejects.toMatchObject({ code: "identity_mismatch" });
 		test.host.agents.set(AGENT_NAME, codexAgent(test.projectRoot, "collab-other"));
 		await expect(test.bridges.bind(main, input)).rejects.toMatchObject({ code: "identity_mismatch" });
-		test.host.agents.set(AGENT_NAME, codexAgent(test.projectRoot));
-		await expect(test.bridges.bind(main, { ...input, driver: "claude-code" })).rejects.toMatchObject({ code: "identity_mismatch" });
 		const { tabId: _tabId, ...untabbed } = codexAgent(test.projectRoot);
 		test.host.agents.set(AGENT_NAME, untabbed);
 		await expect(test.bridges.bind(main, input)).rejects.toMatchObject({ code: "identity_mismatch" });
@@ -156,7 +134,7 @@ describe("authoritative Herdr agent bind", () => {
 		expect(bound.participantKey).toBe(held.participantKey);
 	});
 
-	it("fails a heartbeat closed when the bound Herdr agent identity changes", async () => {
+	it("fails a heartbeat closed when Herdr no longer reports the agent in its project", async () => {
 		const test = setup();
 		const main = await registerPi(test, "main");
 		const caller = test.participants.acquire(main, "review", "main").participant;
@@ -164,8 +142,9 @@ describe("authoritative Herdr agent bind", () => {
 		const bound = await test.bridges.bind(main, bindInput(caller.participantKey, caller.generation));
 		const live = await test.registrations.heartbeat(bound.registration.registrationId, bound.registration.registrationKey);
 		expect(live.targetKey).toBe(bound.targetKey);
-		const drifted = codexAgent(test.projectRoot);
-		test.host.agents.set(AGENT_NAME, { ...drifted, agentSession: { ...drifted.agentSession, value: "replaced-session" } });
+		test.host.agents.set(AGENT_NAME, codexAgent(test.root));
+		await expect(test.registrations.heartbeat(bound.registration.registrationId, bound.registration.registrationKey)).rejects.toMatchObject({ code: "identity_mismatch" });
+		test.host.agents.delete(AGENT_NAME);
 		await expect(test.registrations.heartbeat(bound.registration.registrationId, bound.registration.registrationKey)).rejects.toMatchObject({ code: "identity_mismatch" });
 	});
 
@@ -176,7 +155,7 @@ describe("authoritative Herdr agent bind", () => {
 		test.host.agents.set(AGENT_NAME, codexAgent(test.projectRoot));
 		const monitors = new DirectoryMonitorManager(test.store, { automatic: false });
 		const wakes = new HostedWakeCoordinator(test.store);
-		const context: HostedProtocolContext = { runtimeId: "rt_test", epoch: "epoch_test", agentWake: "none", registrations: test.registrations, monitors, wakes, participants: test.participants, bridges: test.bridges };
+		const context: HostedProtocolContext = { runtimeId: "rt_test", agentWake: "none", registrations: test.registrations, monitors, wakes, participants: test.participants, bridges: test.bridges };
 		const call = (method: string, params: unknown) => dispatchHostedLine(JSON.stringify({ v: 1, id: method, method, params }), context);
 		expect(await call("hello", { minVersion: 1, maxVersion: 1 })).toMatchObject({ ok: true, result: { capabilities: { interactiveAgent: { bind: "herdr_agent_name" } } } });
 		const auth = { registrationId: main.registrationId, registrationKey: main.registrationKey };
@@ -199,13 +178,12 @@ describe("authoritative Herdr agent bind", () => {
 		const sessionFile = join(root, "main.jsonl");
 		writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: "session_main", timestamp: "2026-01-01T00:00:00.000Z", cwd: projectRoot })}\n`);
 		const host = new FakeHost();
-		host.agents.set("w1:p1", { paneId: "w1:p1", tabId: "w1:t1", workspaceId: "w1", terminalId: "term_main", cwd: projectRoot, agentSession: { source: "herdr:pi", agent: "pi", kind: "path", value: sessionFile }, status: "idle", stateChangeSeq: 1 });
 		host.agents.set(AGENT_NAME, codexAgent(projectRoot));
 		let registrationNumber = 0;
 		const server = await startRuntimeServer({ root: runtimeRoot, host, registration: { createId: () => `reg_${++registrationNumber}`, createKey: () => `key_${registrationNumber}` }, participant: { createGeneration: () => "lease_main" }, bridge: { createGeneration: () => "lease_agent_socket" } });
 		const client = new HostedRuntimeClient(server.socketPath);
 		try {
-			const registered = await client.call("pi.register", { projectRoot, piSessionId: "session_main", piSessionFile: sessionFile, clientGeneration: "client_main", admittedClaims: [], herdr: { paneId: "w1:p1", terminalId: "term_main" } }) as Record<string, unknown>;
+			const registered = await client.call("pi.register", { projectRoot, piSessionId: "session_main", piSessionFile: sessionFile, admittedClaims: [] }) as Record<string, unknown>;
 			const auth = { registrationId: String(registered.registrationId), registrationKey: String(registered.registrationKey) };
 			const acquired = await client.call("participant.acquire", { ...auth, protocol: "review", participantId: "main" }) as { participant: { participantKey: string; generation: string } };
 			const bound = await client.call("bridge.bind", { ...auth, ...bindInput(acquired.participant.participantKey, acquired.participant.generation) }) as Record<string, unknown>;

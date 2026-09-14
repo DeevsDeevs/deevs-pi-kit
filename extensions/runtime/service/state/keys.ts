@@ -6,8 +6,24 @@ export function deriveParticipantKey(projectRoot: string, protocol: string, part
 	return `participant_${digest}`;
 }
 
+/** A Pi session ID is unique on its own; a Herdr agent name is only unique within one project. */
+export function piTargetKey(piSessionId: string): string {
+	return `pi_${piSessionId}`;
+}
+
 export function deriveAgentTargetKey(projectRoot: string, agentName: string): string {
-	return `agent_${createHash("sha256").update(projectRoot).update("\0").update(agentName).digest("hex")}`;
+	return `agent_${createHash("sha256").update(projectRoot).digest("hex").slice(0, 16)}_${agentName}`;
+}
+
+export function targetIdentityKey(target: HostedTarget): string {
+	switch (target.kind) {
+		case "pi": return piTargetKey(target.piSessionId);
+		case "agent": return deriveAgentTargetKey(target.projectRoot, target.agentName);
+		default: {
+			const unreachable: never = target;
+			throw new Error(`Unsupported runtime target ${JSON.stringify(unreachable)}.`);
+		}
+	}
 }
 
 export function mailboxDedupeKey(senderParticipantKey: string, sendId: string): string {
@@ -19,8 +35,16 @@ export function messagingSendId(namespaceId: string, operationId: string): strin
 }
 
 export function messagingConfigurationHash(target: HostedTarget): string {
-	const identity = target.kind === "pi"
-		? [target.projectRoot, target.piSessionId, target.piSessionFile, target.worktreePath ?? null]
-		: [target.projectRoot, target.agentName, target.driver, target.clientGeneration, target.worktreePath ?? null];
-	return createHash("sha256").update(JSON.stringify(identity)).digest("hex");
+	return createHash("sha256").update(JSON.stringify(targetIdentity(target))).digest("hex");
+}
+
+function targetIdentity(target: HostedTarget): Array<string | null> {
+	switch (target.kind) {
+		case "pi": return [target.projectRoot, target.piSessionId, target.piSessionFile, target.worktreePath ?? null];
+		case "agent": return [target.projectRoot, target.agentName, target.driver, target.worktreePath ?? null];
+		default: {
+			const unreachable: never = target;
+			throw new Error(`Unsupported runtime target ${JSON.stringify(unreachable)}.`);
+		}
+	}
 }

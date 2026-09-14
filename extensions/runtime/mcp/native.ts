@@ -9,7 +9,6 @@ interface NativeMessagingInput {
 	driver: "claude-code" | "codex";
 	root: string;
 	targetKey: string;
-	clientGeneration: string;
 	nodeExecutable: string;
 	model?: string;
 	personaPrompt?: string;
@@ -28,9 +27,8 @@ export function nativeMessagingLaunch(input: NativeMessagingInput): NativeMessag
 	if (!isAbsolute(input.nodeExecutable)) throw new Error("Native messaging requires an absolute Node executable.");
 	const nodeExecutable = realpathSync(input.nodeExecutable);
 	const endpoint = fileURLToPath(new URL("./main.mjs", import.meta.url));
-	const descriptorPath = messagingDescriptorPath(input.root, input.targetKey, input.clientGeneration);
-	const clientDigest = createHash("sha256").update(JSON.stringify([input.targetKey, input.clientGeneration])).digest("hex");
-	const serverName = `pi_kit_${clientDigest.slice(0, 24)}`;
+	const descriptorPath = messagingDescriptorPath(input.root, input.targetKey);
+	const serverName = `pi_kit_${createHash("sha256").update(input.targetKey).digest("hex").slice(0, 24)}`;
 	const server = { command: nodeExecutable, args: [endpoint, descriptorPath] };
 	const skillPath = fileURLToPath(new URL("../../../skills/collaborator-messaging/SKILL.md", import.meta.url));
 	const skill = readFileSync(skillPath, "utf8");

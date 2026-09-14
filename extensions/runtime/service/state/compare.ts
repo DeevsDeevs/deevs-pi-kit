@@ -10,13 +10,10 @@ export function sameTarget(left: HostedTarget, right: HostedTarget): boolean {
 	if (left.kind === "agent" && right.kind === "agent") {
 		return left.agentName === right.agentName
 			&& left.driver === right.driver
-			&& JSON.stringify(left.agentSession) === JSON.stringify(right.agentSession)
 			&& left.participantKey === right.participantKey
 			&& left.holderGeneration === right.holderGeneration
 			&& left.profile === right.profile
-			&& left.clientGeneration === right.clientGeneration
-			&& left.worktreePath === right.worktreePath
-			&& JSON.stringify(left.herdr) === JSON.stringify(right.herdr);
+			&& left.worktreePath === right.worktreePath;
 	}
 	return false;
 }
@@ -33,7 +30,6 @@ export function sameClaim(left: HostedClaim, right: HostedClaim): boolean {
 	return left.claimId === right.claimId
 		&& left.targetKey === right.targetKey
 		&& left.registrationId === right.registrationId
-		&& left.clientGeneration === right.clientGeneration
 		&& sameIds(left.eventIds, right.eventIds);
 }
 

@@ -65,7 +65,6 @@ export type HostedErrorCode =
 
 export interface HostedProtocolContext {
 	runtimeId: string;
-	epoch: string;
 	agentWake: "herdr_exact_agent" | "none";
 	degradedReason?: "host_unavailable";
 	registrations?: RuntimeRegistrationManager;
@@ -164,7 +163,7 @@ function hello(id: string, value: JsonValue | undefined, context: HostedProtocol
 	if (context.participants) Object.assign(capabilities, { mailbox: { maxBodyBytes: HOSTED_MAILBOX_MAX_BODY_BYTES } });
 	if (context.bridges) Object.assign(capabilities, { interactiveAgent: { bind: "herdr_agent_name" } });
 	if (context.worktrees) Object.assign(capabilities, { worktree: { isolatedWrite: true } });
-	return success(id, { version: 1, runtimeId: context.runtimeId, epoch: context.epoch, capabilities });
+	return success(id, { version: 1, runtimeId: context.runtimeId, capabilities });
 }
 
 async function issueMessaging(call: HostedMethodCall, params: Static<typeof MessagingIssueParams>): Promise<HostedResponse> {
@@ -429,8 +428,6 @@ function registrationResult(registration: HostedLiveRegistration) {
 		registrationId: registration.registrationId,
 		registrationKey: registration.registrationKey,
 		leaseUntil: registration.leaseUntil,
-		hostStateChangeSeq: registration.host.stateChangeSeq,
-		paneId: registration.host.paneId,
 	};
 }
 
@@ -441,7 +438,6 @@ function boundAgentResult(result: BoundAgentResult) {
 		holderGeneration: result.holderGeneration,
 		driver: result.driver,
 		profile: result.profile,
-		agentSession: result.agentSession,
 		projectRoot: result.projectRoot,
 		cwd: result.cwd,
 	};

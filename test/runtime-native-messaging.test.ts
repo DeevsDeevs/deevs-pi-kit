@@ -11,7 +11,7 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 function input(driver: "claude-code" | "codex") {
 	const root = mkdtempSync(join(tmpdir(), "native-messaging-config-"));
 	roots.push(root);
-	return { driver, root, targetKey: "target_native", clientGeneration: "agent_client_first", nodeExecutable: process.execPath, model: "configured-model", personaPrompt: "Selected persona context." };
+	return { driver, root, targetKey: "target_native", nodeExecutable: process.execPath, model: "configured-model", personaPrompt: "Selected persona context." };
 }
 
 it.each(["claude-code", "codex"] as const)("compiles %s native configuration without processes, credentials or permission overrides", driver => {
@@ -79,14 +79,13 @@ it.each(["claude-code", "codex"] as const)("rejects remaining %s argument contro
 	expect(readdirSync(config.root)).toEqual([]);
 });
 
-it("binds configuration and server identity to the exact planned client", () => {
+it("binds configuration and server identity to the exact planned target", () => {
 	const config = input("codex");
 	const first = nativeMessagingLaunch(config);
 	expect(nativeMessagingLaunch(config)).toEqual(first);
-	const successor = nativeMessagingLaunch({ ...config, clientGeneration: "agent_client_successor" });
+	const successor = nativeMessagingLaunch({ ...config, targetKey: "target_successor" });
 	expect(successor.serverName).not.toBe(first.serverName);
 	expect(successor.descriptorPath).not.toBe(first.descriptorPath);
-	expect(successor.configurationHash).not.toBe(first.configurationHash);
 	expect(nativeMessagingLaunch({ ...config, personaPrompt: "Different context." }).configurationHash).not.toBe(first.configurationHash);
 	expect(nativeMessagingLaunch({ ...config, model: "different-model" }).configurationHash).not.toBe(first.configurationHash);
 	expect(() => nativeMessagingLaunch({ ...config, nodeExecutable: "node" })).toThrow("absolute Node executable");
