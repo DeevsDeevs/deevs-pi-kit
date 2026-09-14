@@ -43,7 +43,6 @@ function monitor(overrides: Partial<HostedMonitor> = {}): HostedMonitor {
 	return {
 		monitorId: "mon_1",
 		targetKey: "pi_session-1",
-		generation: "gen_1",
 		directory: "/tmp/project/reviews",
 		settleMs: 250,
 		status: "watching",
@@ -56,18 +55,19 @@ function monitor(overrides: Partial<HostedMonitor> = {}): HostedMonitor {
 }
 
 function event(id = "evt_1", sequence = 1): HostedFilesystemCreatedEvent {
+	const relativePath = sequence === 1 ? "review.md" : `review-${sequence}.md`;
 	return {
 		version: 1,
 		eventId: id,
-		dedupeKey: `mon_1:gen_1:${sequence}:review.md`,
-		source: { kind: "monitor", id: "mon_1", generation: "gen_1", sequence },
+		dedupeKey: `mon_1:${relativePath}`,
+		source: { kind: "monitor", id: "mon_1", sequence },
 		targetKey: "pi_session-1",
 		type: "filesystem.created",
 		createdAt: 200 + sequence,
-		summary: "new file: review.md",
+		summary: `new file: ${relativePath}`,
 		payload: {
-			relativePath: "review.md",
-			path: "/tmp/project/reviews/review.md",
+			relativePath,
+			path: `/tmp/project/reviews/${relativePath}`,
 			fileType: "regular",
 			size: 42,
 			mtimeMs: 200,
@@ -104,8 +104,8 @@ describe("hosted runtime state reducer", () => {
 	});
 
 	it("orders events from different sources by Runtime creation time", () => {
-		const older: HostedFilesystemCreatedEvent = { ...event("evt_older", 12), createdAt: 100, source: { kind: "monitor", id: "source_fable", generation: "gen_1", sequence: 12 } };
-		const newer: HostedFilesystemCreatedEvent = { ...event("evt_newer", 2), createdAt: 200, source: { kind: "monitor", id: "source_release_gate", generation: "gen_1", sequence: 2 } };
+		const older: HostedFilesystemCreatedEvent = { ...event("evt_older", 12), createdAt: 100, source: { kind: "monitor", id: "source_fable", sequence: 12 } };
+		const newer: HostedFilesystemCreatedEvent = { ...event("evt_newer", 2), createdAt: 200, source: { kind: "monitor", id: "source_release_gate", sequence: 2 } };
 		const state = { ...populatedState(), events: { evt_newer: newer, evt_older: older } };
 		expect(undeliveredHostedEvents(state, "pi_session-1").map((candidate) => candidate.eventId)).toEqual(["evt_older", "evt_newer"]);
 	});

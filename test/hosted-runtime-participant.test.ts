@@ -154,7 +154,7 @@ describe("hosted participant coordinator", () => {
 		expect(test.participants.standDownConfirmed(main, fableParticipant.participantKey, fableParticipant.generation).generation).toBe(vacant.generation);
 	});
 
-	it("stops an exact other target, preserves mail, and converges when retried", async () => {
+	it("stops an exact other target and preserves its queued mail", async () => {
 		const test = setup();
 		const { main, fable, mainParticipant, fableParticipant } = await acquirePair(test);
 		test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "queued", "Keep me.");
@@ -164,11 +164,8 @@ describe("hosted participant coordinator", () => {
 		const stopped = await test.participants.stopConfirmed(main, fableParticipant.participantKey, fableParticipant.generation);
 		expect(stopped).toMatchObject({ outcome: "stopped", participant: { state: "vacant", unreadMail: 1 } });
 		expect(test.stoppedTargets).toEqual([fable.targetKey]);
-		test.setStopOutcome("already_absent");
-		const lostResponseRetry = await test.participants.stopConfirmed(main, fableParticipant.participantKey, fableParticipant.generation);
-		expect(lostResponseRetry).toMatchObject({ outcome: "already_stopped", participant: { state: "vacant", generation: stopped.participant.generation } });
-		const observedRetry = await test.participants.stopConfirmed(main, fableParticipant.participantKey, stopped.participant.generation);
-		expect(observedRetry).toMatchObject({ outcome: "already_stopped", participant: { state: "vacant", generation: stopped.participant.generation } });
+		const retry = test.participants.stopConfirmed(main, fableParticipant.participantKey, stopped.participant.generation);
+		await expect(retry).rejects.toMatchObject({ code: "conflict" });
 	});
 
 	it("refuses to stop a target that now holds another participant", async () => {

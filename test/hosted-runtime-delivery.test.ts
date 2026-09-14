@@ -47,7 +47,7 @@ function setup() {
 	});
 	const input: RegisterPiInput = { projectRoot, piSessionId: "session_1", piSessionFile: sessionFile };
 	const inbox = new RuntimeInbox(store, { now: () => now, claimLeaseMs: 500 });
-	const monitors = new DirectoryMonitorManager(store, { automatic: false, now: () => now, createId: (prefix) => `${prefix}_delivery` });
+	const monitors = new DirectoryMonitorManager(store, { automatic: false, now: () => now, createId: () => "mon_delivery" });
 	return { root, watchRoot, store, registrations, input, inbox, monitors, setNow(value: number) { now = value; } };
 }
 

@@ -139,7 +139,8 @@ changed input conflicts, a new operation ID creates new mail. MCP cannot acquire
 
 A Monitor observes newly created direct-child regular files under one canonical non-symlink directory; existing files form a non-emitting
 baseline. `fs.watch` is a latency hint only — startup, hints, and reconciliation use the same authoritative scan. Cursor and event state
-commit atomically before notification, and an event is undelivered until an ack stamps its `deliveredAt`.
+commit atomically before notification, and an event is undelivered until an ack stamps its `deliveredAt`. A target owns at most one
+Monitor, and its events dedupe on that Monitor's ID and the file's relative path.
 
 Delivery is at-least-once through one path. Pi's two-second `pi.heartbeat` carries `admit` while the session is idle with no pending
 messages; the reply then carries up to `maxDeliveryBatch` undelivered events for that target and records one claim, keyed by target key
@@ -153,7 +154,8 @@ Runtime never prompts or focuses a Pi pane.
 - Stand-down vacates participant availability, preserving the agent, its worktree, and queued mail.
 - Stop targets only the exact Runtime-managed agent/tab generation, waits for agent/tab absence and process-tree settlement before
   vacating the participant, and never deletes a worktree. Missing or mismatched identity, ambiguous closure, or surviving owned
-  processes become `needs_attention`.
+  processes become `needs_attention`. It requires the participant still held at the supplied generation, so a repeat call after the
+  participant has vacated is a conflict, not another success: read current state and stand the successor down instead.
 - Release, revival, takeover, and worktree removal are separate trusted operations; no model prose can request or confirm one.
 
 ## Persistence and security boundary
@@ -163,7 +165,9 @@ worktree, managed native agent controls, and the bounded seen-set of admitted ev
 entry kinds are ignored rather than migrated, and each section of the record is schema-checked on restore: a malformed section is dropped
 or demoted to `needs_attention`, never repaired. Runtime state is validated by one TypeBox schema per persisted record against the root
 state schema, then by a single cross-reference check (held participants resolve to a same-project target, mail resolves to existing
-participants, delivery claims resolve to existing targets) and the messaging record capacity bound. Validation runs on load and before every atomic
+participants, delivery claims resolve to existing targets) and the messaging record capacity bound. Runtime state is current-only: a
+participant carries just its last transition (cause, previous generation, time) rather than a history, and a changed state shape bumps
+the state version instead of being migrated. Validation runs on load and before every atomic
 write/fsync/rename/directory-fsync replacement, and corruption fails closed. Socket and state rely on owner-only permissions, and Node
 Unix sockets expose no peer credentials, so random credentials protect against accidental and cross-wired children only. Herdr is an
 external trusted host capability, not an npm dependency; Runtime validates its responses and never trusts labels.

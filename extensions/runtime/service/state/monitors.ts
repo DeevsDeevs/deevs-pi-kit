@@ -74,6 +74,5 @@ function validMonitorEvent(monitor: HostedMonitor, event: HostedFilesystemCreate
 		&& event.targetKey === monitor.targetKey
 		&& event.source.kind === "monitor"
 		&& event.source.id === monitor.monitorId
-		&& event.source.generation === monitor.generation
 		&& event.deliveredAt === undefined;
 }

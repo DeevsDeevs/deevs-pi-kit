@@ -31,7 +31,7 @@ export interface DirectoryMonitorOptions {
 	automatic?: boolean;
 	scanIntervalMs?: number;
 	watchDebounceMs?: number;
-	createId?: (prefix: "mon" | "gen") => string;
+	createId?: () => string;
 	onEvents?: (targetKey: string) => void;
 	onError?: (error: Error) => void;
 }
@@ -89,9 +89,8 @@ export class DirectoryMonitorManager {
 			entries[relativePath] = { relativePath, ...file, stableSince: now, present: true, emitted: true };
 		}
 		const monitor: HostedMonitor = {
-			monitorId: this.createId("mon"),
+			monitorId: this.createId(),
 			targetKey,
-			generation: this.createId("gen"),
 			directory: canonicalDirectory,
 			settleMs,
 			status: "watching",
@@ -230,8 +229,8 @@ export class DirectoryMonitorManager {
 		return this.options.now?.() ?? Date.now();
 	}
 
-	private createId(prefix: "mon" | "gen"): string {
-		return this.options.createId?.(prefix) ?? `${prefix}_${randomUUID()}`;
+	private createId(): string {
+		return this.options.createId?.() ?? `mon_${randomUUID()}`;
 	}
 }
 
@@ -260,12 +259,12 @@ function scanRegularFiles(directory: string): Map<string, ScannedFile> {
 }
 
 function createdEvent(monitor: HostedMonitor, entry: HostedFileObservation, sequence: number, now: number): HostedFilesystemCreatedEvent {
-	const key = `${monitor.monitorId}\0${monitor.generation}\0${sequence}\0${entry.relativePath}`;
+	const key = `${monitor.monitorId}\0${sequence}\0${entry.relativePath}`;
 	return {
 		version: 1,
 		eventId: `evt_${createHash("sha256").update(key).digest("hex").slice(0, 24)}`,
-		dedupeKey: `${monitor.monitorId}:${monitor.generation}:${entry.relativePath}`,
-		source: { kind: "monitor", id: monitor.monitorId, generation: monitor.generation, sequence },
+		dedupeKey: `${monitor.monitorId}:${entry.relativePath}`,
+		source: { kind: "monitor", id: monitor.monitorId, sequence },
 		targetKey: monitor.targetKey,
 		type: "filesystem.created",
 		createdAt: now,

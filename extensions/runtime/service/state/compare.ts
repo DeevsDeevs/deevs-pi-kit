@@ -26,7 +26,6 @@ export function sameTarget(left: HostedTarget, right: HostedTarget): boolean {
 export function sameMonitorIdentity(left: HostedMonitor, right: HostedMonitor): boolean {
 	return left.monitorId === right.monitorId
 		&& left.targetKey === right.targetKey
-		&& left.generation === right.generation
 		&& left.directory === right.directory
 		&& left.settleMs === right.settleMs;
 }

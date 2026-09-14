@@ -431,7 +431,6 @@ function boundAgentResult(result: BoundAgentResult) {
 function monitorResult(monitor: HostedMonitor) {
 	return {
 		monitorId: monitor.monitorId,
-		generation: monitor.generation,
 		directory: monitor.directory,
 		status: monitor.status,
 		settleMs: monitor.settleMs,
