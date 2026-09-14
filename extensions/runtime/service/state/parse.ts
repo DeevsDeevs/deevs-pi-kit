@@ -32,7 +32,8 @@ export function mapStrings(value: PersistedStateValue | undefined, name: string)
 }
 
 export function strictObject<Source>(value: Source, name: string, allowed?: readonly string[]): PersistedStateFields {
-	if (value === null || value === undefined || Array.isArray(value) || Object(value) !== value) throw new Error(`${name} must be an object`);
+	// Object(value) !== value already rejects null, undefined and every primitive.
+	if (Object(value) !== value || Array.isArray(value)) throw new Error(`${name} must be an object`);
 	const record: PersistedStateFields = Object.fromEntries(Object.entries(Object(value)));
 	if (allowed) for (const key of Object.keys(record)) if (!allowed.includes(key)) throw new Error(`${name} has unknown field ${key}`);
 	return record;

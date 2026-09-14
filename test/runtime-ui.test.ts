@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactLine, formatDuration, formatUsage, statusGlyph } from "../extensions/shared/runtime-ui.ts";
+import { formatDuration, formatUsage, statusGlyph } from "../extensions/shared/runtime-ui.ts";
 
 describe("runtime UI formatting", () => {
 	it("formats bounded duration and usage", () => {
@@ -13,11 +13,5 @@ describe("runtime UI formatting", () => {
 		expect(statusGlyph("completed")).toBe("✓");
 		expect(statusGlyph("failed")).toBe("✗");
 		expect(statusGlyph("blocked")).toBe("!");
-	});
-
-	it("truncates narrow Unicode lines safely", () => {
-		const line = compactLine("interface review completed successfully", 12);
-		expect(line.length).toBeGreaterThan(0);
-		expect(line).not.toContain("\n");
 	});
 });

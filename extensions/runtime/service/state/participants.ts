@@ -78,7 +78,8 @@ export function takeoverParticipant(state: HostedRuntimeState, operation: Takeov
 	assertStateTime(operation.at, "Participant takeover time");
 	const current = state.participants[operation.participantKey];
 	const target = state.targets[operation.targetKey];
-	if (!current || current.state !== "held" || !target || target.projectRoot !== current.projectRoot) {
+	if (!current || !target) throw new HostedStateConflictError("conflict", "Participant or takeover target is absent.");
+	if (current.state !== "held" || target.projectRoot !== current.projectRoot) {
 		throw new HostedStateConflictError("conflict", "Participant is not eligible for takeover.");
 	}
 	if (current.holderTargetKey === operation.targetKey) return state;

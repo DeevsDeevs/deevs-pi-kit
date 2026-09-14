@@ -562,7 +562,10 @@ function reviewFindings(value: PersistedInput, label: string): MissionReviewFind
 }
 
 function reviewPath(path: string): boolean {
-	return path === "." || !path.startsWith("/") && !path.includes("\\") && !path.split("/").includes("..");
+	if (path === ".") return true;
+	return !path.startsWith("/")
+		&& !path.includes("\\")
+		&& !path.split("/").includes("..");
 }
 
 function validateProgress(value: PersistedValue): MissionProgressRecord {
@@ -609,7 +612,8 @@ function validateUsage(value: PersistedInput): MissionUsage {
 }
 
 function validSlug(value: string): boolean {
-	return !!value && value !== "." && value !== ".." && !/[\\/]/.test(value);
+	if (!value || value === "." || value === "..") return false;
+	return !/[\\/]/.test(value);
 }
 
 function object<const Fields extends readonly string[]>(
@@ -680,7 +684,8 @@ function pathExists(path: string): boolean {
 }
 
 function isPersistedObject(value: PersistedObjectInput): value is PersistedObject {
-	return value !== undefined && value !== null && !Array.isArray(value) && Object.prototype.toString.call(value) === "[object Object]";
+	// Object.getPrototypeOf throws on null and undefined, so both are excluded before it runs.
+	return value !== undefined && value !== null && Object.getPrototypeOf(value) === Object.prototype;
 }
 
 function hasOnlyFields<const Fields extends readonly string[]>(

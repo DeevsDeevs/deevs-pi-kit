@@ -5,7 +5,7 @@ import { HostedStateStore, hostedEventRoutesToTarget, pendingHostedEvents } from
 
 const CLAIM_LEASE_MS = 30_000;
 
-export class HostedInboxError extends Error {
+class HostedInboxError extends Error {
 	readonly code: "not_found" | "claim_conflict" | "busy";
 
 	constructor(code: "not_found" | "claim_conflict" | "busy", message: string) {

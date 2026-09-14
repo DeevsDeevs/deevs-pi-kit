@@ -1,4 +1,4 @@
-import { Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { RUNTIME_EVENT_ENTRY, type RuntimeEvent, type RuntimeEventOperation, type RuntimeTerminalStatus } from "./runtime-events.ts";
 
@@ -9,8 +9,9 @@ export function registerRuntimeEventRenderer(pi: ExtensionAPI): void {
 	});
 }
 
-export function formatRuntimeEvent(event: RuntimeEvent, theme: Theme, expanded: boolean): string {
-	const headline = `${statusText(event.status, theme)} ${theme.fg("accent", event.source.kind)} ${theme.fg("muted", event.source.id)} ${event.summary}`;
+function formatRuntimeEvent(event: RuntimeEvent, theme: Theme, expanded: boolean): string {
+	const source = `${theme.fg("accent", event.source.kind)} ${theme.fg("muted", event.source.id)}`;
+	const headline = `${statusText(event.status, theme)} ${source} ${event.summary}`;
 	if (!expanded) return headline;
 	const details = [
 		`generation: ${event.source.generation}`,
@@ -46,10 +47,6 @@ export function formatUsage(tokens: number, costUsd: number): string {
 	const tokenText = Number.isFinite(tokens) ? Math.max(0, Math.round(tokens)).toLocaleString("en-US") : "?";
 	const costText = Number.isFinite(costUsd) ? `$${Math.max(0, costUsd).toFixed(4)}` : "$?";
 	return `${tokenText} tokens · ${costText}`;
-}
-
-export function compactLine(text: string, width: number): string {
-	return truncateToWidth(text.replace(/\s+/g, " ").trim(), Math.max(1, width));
 }
 
 function statusText(status: RuntimeTerminalStatus, theme: Theme): string {

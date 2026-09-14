@@ -240,9 +240,11 @@ function parseLaunch(value: RestoredSessionData): CollaboratorLaunch | undefined
 
 function parsePersona(value: RestoredSessionData): CollaboratorPersona | undefined {
 	const record = asRecord(value);
-	if (!record || !isStringValue(record.name) || !isStringValue(record.prompt) || !isStringValue(record.promptHash)) return undefined;
-	if (createHash("sha256").update(record.prompt).digest("hex") !== record.promptHash) return undefined;
-	return { name: record.name, prompt: record.prompt, promptHash: record.promptHash };
+	if (!record) return undefined;
+	const { name, prompt, promptHash } = record;
+	if (!isStringValue(name) || !isStringValue(prompt) || !isStringValue(promptHash)) return undefined;
+	if (createHash("sha256").update(prompt).digest("hex") !== promptHash) return undefined;
+	return { name, prompt, promptHash };
 }
 
 function parseWorktree(value: RestoredSessionData, ctx: ExtensionContext): CollaboratorWorktree | undefined {
@@ -334,8 +336,4 @@ function parseAgentSession(value: RestoredSessionData): ManagedAgentSession | un
 	if (!isStringValue(session.source) || !isStringValue(session.agent) || !isStringValue(session.value)) return undefined;
 	if (session.kind !== "id" && session.kind !== "path") return undefined;
 	return { source: session.source, agent: session.agent, kind: session.kind, value: session.value };
-}
-
-export function sameAgentSession(left: ManagedAgentSession, right: ManagedAgentSession): boolean {
-	return left.source === right.source && left.agent === right.agent && left.kind === right.kind && left.value === right.value;
 }

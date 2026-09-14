@@ -15,8 +15,15 @@ interface NativeMessagingInput {
 	personaPrompt?: string;
 }
 
+export interface NativeMessagingLaunch {
+	args: string[];
+	descriptorPath: string;
+	serverName: string;
+	configurationHash: string;
+}
+
 /** Native configuration only: no client process, credential creation or input injection. */
-export function nativeMessagingLaunch(input: NativeMessagingInput) {
+export function nativeMessagingLaunch(input: NativeMessagingInput): NativeMessagingLaunch {
 	if (!isAbsolute(input.root)) throw new Error("Native messaging requires an absolute Runtime root.");
 	if (!isAbsolute(input.nodeExecutable)) throw new Error("Native messaging requires an absolute Node executable.");
 	const nodeExecutable = realpathSync(input.nodeExecutable);

@@ -28,7 +28,7 @@ export function claimInboxEvents(state: HostedRuntimeState, operation: ClaimOper
 
 export function ackClaim(state: HostedRuntimeState, operation: AckOperation): HostedRuntimeState {
 	const claim = state.claims[operation.claimId];
-	if (!claim || claim.targetKey !== operation.targetKey || !sameIds(claim.eventIds, operation.eventIds)) return state;
+	if (!claim || !claimMatchesReceipt(claim, operation.targetKey, operation.eventIds)) return state;
 	if (claim.status === "acked") return state;
 	const claimed = claim.eventIds.map((eventId) => state.events[eventId]);
 	if (!claimed.every((event): event is HostedEvent => event !== undefined
@@ -63,7 +63,7 @@ export function reconcileClaims(state: HostedRuntimeState, operation: ReconcileM
 export function reconcileClaim(state: HostedRuntimeState, operation: ReconcileOperation): HostedRuntimeState {
 	const claim = state.claims[operation.claimId];
 	if (!claim || claim.status === "acked") return state;
-	if (claim.targetKey !== operation.targetKey || !sameIds(claim.eventIds, operation.eventIds)) return state;
+	if (!claimMatchesReceipt(claim, operation.targetKey, operation.eventIds)) return state;
 	const admitted = claim.eventIds.map((eventId) => state.events[eventId]);
 	if (!admitted.every((event): event is HostedEvent => event !== undefined
 		&& hostedEventRoutesToTarget(event, claim.targetKey))) return state;
@@ -131,6 +131,11 @@ export function clearWake(state: HostedRuntimeState, operation: WakeClearOperati
 	return { ...state, wakes };
 }
 
+function claimMatchesReceipt(claim: HostedClaim, targetKey: string, eventIds: readonly string[]): boolean {
+	return claim.targetKey === targetKey
+		&& sameIds(claim.eventIds, eventIds);
+}
+
 function claimEvents(state: HostedRuntimeState, claim: HostedClaim): HostedRuntimeState {
 	assertNoOrdinaryMail(state, claim.eventIds);
 	const existing = state.claims[claim.claimId];
@@ -154,7 +159,8 @@ function claimEvents(state: HostedRuntimeState, claim: HostedClaim): HostedRunti
 
 function releaseClaim(state: HostedRuntimeState, targetKey: string, claimId: string, eventIds: string[], at: number): HostedRuntimeState {
 	const claim = state.claims[claimId];
-	if (!claim || claim.targetKey !== targetKey || !sameIds(claim.eventIds, eventIds) || claim.status !== "active") return state;
+	if (!claim || claim.status !== "active") return state;
+	if (!claimMatchesReceipt(claim, targetKey, eventIds)) return state;
 	assertNoOrdinaryMail(state, claim.eventIds);
 	const events = { ...state.events };
 	for (const eventId of claim.eventIds) {

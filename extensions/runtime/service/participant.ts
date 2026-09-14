@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
-import type { HostedCollaboratorDriver, HostedMailboxMessageEvent, HostedParticipant, HostedStateOperation, HostedTarget } from "../hosted-types.ts";
+import type {
+	HostedCollaboratorDriver,
+	HostedMailboxMessageEvent,
+	HostedParticipant,
+	HostedStateOperation,
+	HostedTarget,
+} from "../hosted-types.ts";
 import { RuntimeRegistrationManager, type HostedLiveRegistration } from "./registration.ts";
 import { deriveParticipantKey, HostedStateStore } from "./state.ts";
 
@@ -101,8 +107,10 @@ export class HostedParticipantCoordinator {
 			throw new HostedParticipantError("conflict", "Ended participant requires explicit revival authorization.");
 		}
 		const latest = before?.transitions.at(-1);
-		const revived = before?.state === "ended"
-			|| (before?.state === "held" && before.holderTargetKey === registration.targetKey && latest?.cause === "revive");
+		const revivedOwnHold = before?.state === "held"
+			&& before.holderTargetKey === registration.targetKey
+			&& latest?.cause === "revive";
+		const revived = before?.state === "ended" || revivedOwnHold;
 		this.store.apply({
 			type: "participant.acquire",
 			participantKey,

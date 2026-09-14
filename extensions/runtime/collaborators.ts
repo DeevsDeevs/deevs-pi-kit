@@ -717,7 +717,10 @@ export class CollaboratorService {
 			}
 			throw error;
 		} finally {
-			if (!childMayBeLive && (tabId || paneId || !tabCreated)) await this.cleanupFailedCollaborator(tabId, paneId, sessionFile);
+			const hasAllocatedResources = Boolean(tabId || paneId) || !tabCreated;
+			if (!childMayBeLive && hasAllocatedResources) {
+				await this.cleanupFailedCollaborator(tabId, paneId, sessionFile);
+			}
 		}
 	}
 

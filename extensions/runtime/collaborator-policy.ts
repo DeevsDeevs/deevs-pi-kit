@@ -10,6 +10,7 @@ import { toolDefinitions } from "./mcp/tools.ts";
 import { isStringValue } from "./responses.ts";
 import { COLLABORATOR_MODEL, COLLABORATOR_NAME, type CollaboratorPersona } from "./session-record.ts";
 
+const PATH_SEPARATOR = process.platform === "win32" ? "\\" : "/";
 const MESSAGING_TOOLS = toolDefinitions.map(tool => tool.name);
 const COLLABORATOR_METADATA_TOOLS = ["collaborator_list", ...MESSAGING_TOOLS, "chain_save", "chain_load", "chain_context"] as const;
 export const READ_ONLY_COLLABORATOR_TOOLS = ["read", "grep", "find", "ls", "safe_diff", ...COLLABORATOR_METADATA_TOOLS] as const;
@@ -142,7 +143,10 @@ function collaboratorPathAllowed(cwd: string, value: CustomToolCallEvent["input"
 		const target = resolveExistingTarget(requested, allowMissing);
 		if (target === undefined) return false;
 		const path = relative(root, target);
-		return path === "" || (!isAbsolute(path) && path !== ".." && !path.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`));
+		if (path === "") return true;
+		return !isAbsolute(path)
+			&& path !== ".."
+			&& !path.startsWith(`..${PATH_SEPARATOR}`);
 	} catch {
 		return false;
 	}

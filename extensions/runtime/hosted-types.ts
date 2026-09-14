@@ -29,6 +29,13 @@ export type HostedNativeCollaboratorDriver = "claude-code" | "codex";
 export type HostedCollaboratorDriver = "pi" | HostedNativeCollaboratorDriver;
 export interface HostedAgentSessionIdentity { source: string; agent: string; kind: "id" | "path"; value: string; }
 
+export function sameAgentSession(left: HostedAgentSessionIdentity, right: HostedAgentSessionIdentity): boolean {
+	return left.source === right.source
+		&& left.agent === right.agent
+		&& left.kind === right.kind
+		&& left.value === right.value;
+}
+
 export interface HostedHerdrLocator {
 	paneId: string;
 	terminalId: string;
