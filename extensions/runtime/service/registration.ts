@@ -1,7 +1,8 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { type HostedAgentTarget, type HostedTarget, isAgentTarget } from "../hosted-types.ts";
+import { type HostedAgentTarget, type HostedTarget, isAgentTarget } from "../schemas/state.ts";
 import { assertAgentInProject, canonicalDirectory, canonicalFile, heldByTarget, verifyPiSessionHeader } from "./identity.ts";
-import { RegistrationError, type HostedHostVerifier } from "./identity.ts";
+import { RuntimeError } from "../errors.ts";
+import type { HostedHostVerifier } from "./identity.ts";
 import { HostedStateStore, piTargetKey } from "./state.ts";
 import { isProjectWorktree } from "./worktree.ts";
 
@@ -54,7 +55,7 @@ export class RuntimeRegistrationManager {
 		const piSessionFile = canonicalFile(input.piSessionFile, "Pi session file");
 		const worktreePath = input.worktreePath === undefined ? undefined : canonicalDirectory(input.worktreePath, "collaborator worktree");
 		if (worktreePath !== undefined && (worktreePath === projectRoot || !await isProjectWorktree(worktreePath, projectRoot))) {
-			throw new RegistrationError("identity_mismatch", "Collaborator cwd is not a separate Git worktree of its project.");
+			throw new RuntimeError("identity_mismatch", "Collaborator cwd is not a separate Git worktree of its project.");
 		}
 		verifyPiSessionHeader(piSessionFile, input.piSessionId, worktreePath ?? projectRoot);
 		this.ensureOpen();
@@ -77,10 +78,10 @@ export class RuntimeRegistrationManager {
 		this.ensureOpen();
 		const state = this.store.read();
 		if (!isAgentTarget(state.targets[target.targetKey])) {
-			throw new RegistrationError("registration_stale", "Herdr agent target is absent from durable state.");
+			throw new RuntimeError("registration_stale", "Herdr agent target is absent from durable state.");
 		}
 		if (!heldByTarget(this.store, target)) {
-			throw new RegistrationError("registration_stale", "Herdr agent participant generation is not held by its target.");
+			throw new RuntimeError("registration_stale", "Herdr agent participant generation is not held by its target.");
 		}
 		return this.install(target.targetKey);
 	}
@@ -95,7 +96,7 @@ export class RuntimeRegistrationManager {
 		this.expire();
 		const registrationId = this.byTarget.get(targetKey);
 		const registration = registrationId ? this.registrations.get(registrationId) : undefined;
-		if (!registration) throw new RegistrationError("registration_stale", "Target has no live registration.");
+		if (!registration) throw new RuntimeError("registration_stale", "Target has no live registration.");
 		return this.verify(registration.registrationId, registration.registrationKey, false);
 	}
 
@@ -108,7 +109,7 @@ export class RuntimeRegistrationManager {
 		this.expire();
 		const registration = this.registrations.get(registrationId);
 		if (!registration || registration.registrationKey !== registrationKey) {
-			throw new RegistrationError("registration_stale", "Registration is absent, expired, or does not match its key.");
+			throw new RuntimeError("registration_stale", "Registration is absent, expired, or does not match its key.");
 		}
 		return registration;
 	}
@@ -129,7 +130,7 @@ export class RuntimeRegistrationManager {
 	private install(targetKey: string): HostedLiveRegistration {
 		this.expire();
 		const registrationId = this.options.createId?.() ?? `reg_${randomUUID()}`;
-		if (this.registrations.has(registrationId)) throw new RegistrationError("conflict", "Registration ID is already live.");
+		if (this.registrations.has(registrationId)) throw new RuntimeError("conflict", "Registration ID is already live.");
 		const previous = this.byTarget.get(targetKey);
 		if (previous) this.drop(previous);
 		const registration: HostedLiveRegistration = {
@@ -149,11 +150,11 @@ export class RuntimeRegistrationManager {
 		const verification = prior.catch(() => undefined).then(async () => {
 			const current = this.authorize(registrationId, registrationKey);
 			const target = this.store.read().targets[current.targetKey];
-			if (!target) throw new RegistrationError("not_found", "Runtime target no longer exists.");
+			if (!target) throw new RuntimeError("not_found", "Runtime target no longer exists.");
 			await this.assertTargetLive(target);
 			this.ensureOpen();
 			if (this.registrations.get(registrationId) !== current) {
-				throw new RegistrationError("registration_stale", "Registration changed while its target was being verified.");
+				throw new RuntimeError("registration_stale", "Registration changed while its target was being verified.");
 			}
 			const next = renew ? { ...current, leaseUntil: this.now() + this.leaseMs() } : current;
 			this.registrations.set(registrationId, next);
@@ -174,19 +175,19 @@ export class RuntimeRegistrationManager {
 				const live = await this.host.getAgent(target.agentName);
 				assertAgentInProject(live, target);
 				if (!heldByTarget(this.store, target)) {
-					throw new RegistrationError("registration_stale", "Herdr agent participant generation is no longer held.");
+					throw new RuntimeError("registration_stale", "Herdr agent participant generation is no longer held.");
 				}
 				return;
 			}
 			default: {
 				const unreachable: never = target;
-				throw new RegistrationError("not_found", `Unsupported runtime target ${JSON.stringify(unreachable)}.`);
+				throw new RuntimeError("not_found", `Unsupported runtime target ${JSON.stringify(unreachable)}.`);
 			}
 		}
 	}
 
 	private ensureOpen(): void {
-		if (this.closed) throw new RegistrationError("registration_stale", "Runtime registration service is closing.");
+		if (this.closed) throw new RuntimeError("registration_stale", "Runtime registration service is closing.");
 	}
 
 	private expire(): void {

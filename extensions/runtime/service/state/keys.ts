@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { HostedTarget } from "../../hosted-types.ts";
+import type { HostedTarget } from "../../schemas/state.ts";
 
 export function deriveParticipantKey(projectRoot: string, protocol: string, participantId: string): string {
 	const digest = createHash("sha256").update(projectRoot).update("\0").update(protocol).update("\0").update(participantId).digest("hex");

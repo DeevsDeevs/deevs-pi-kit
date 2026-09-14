@@ -12,17 +12,20 @@ import {
 	type ResolvedCollaboratorCandidate,
 } from "./collaborator-policy.ts";
 import { throwIfAborted } from "./herdr.ts";
-import { type HostedCollaboratorProfile, isEnded, isHeld, isVacant, isWriter } from "./hosted-types.ts";
+import { type HostedCollaboratorProfile, isEnded, isHeld, isVacant, isWriter } from "./schemas/state.ts";
 import type { NativeAgentService } from "./native-agents.ts";
 import {
 	auth,
+	findParticipant,
 	parseAcquireResult,
 	parseParticipant,
-	parseSerializedResponse,
+	parseWorktreeList,
+	parseWorktreeRemoval,
 	strictObject,
 	type ClientParticipantStatus,
+	type ClientWorktreeList,
+	type ClientWorktreeRemoval,
 	type LiveClientRegistration,
-	type SerializedValue,
 } from "./responses.ts";
 import type { RuntimeSession } from "./runtime-session.ts";
 
@@ -48,6 +51,8 @@ export interface CollaboratorManageResult {
 export type CollaboratorWorktreeInput =
 	| { action: "list" }
 	| { action: "cleanup"; participantId: string };
+
+export type CollaboratorWorktreeResult = ClientWorktreeList | ClientWorktreeRemoval | { declined: true };
 
 interface StartConfirmation {
 	ctx: ExtensionContext;
@@ -156,7 +161,7 @@ export class CollaboratorService {
 		participantId: string,
 		registration: LiveClientRegistration,
 	): ClientParticipantStatus | undefined {
-		const caller = findByName(participants, protocol, participantId);
+		const caller = findParticipant(participants, protocol, participantId);
 		if (!caller) return undefined;
 		if (isEnded(caller.state)) {
 			throw new HostedRuntimeClientError("conflict", "Ended caller identities require explicit /runtime collaborate revival.");
@@ -168,15 +173,7 @@ export class CollaboratorService {
 		}
 		const known = this.session.store.identity;
 		const recorded = known?.participantKey === caller.participantKey && known.generation === caller.generation;
-		if (!recorded) {
-			this.session.store.persistIdentity({
-				protocol,
-				participantId,
-				participantKey: caller.participantKey,
-				generation: caller.generation,
-				disposition: "held",
-			});
-		}
+		if (!recorded) this.session.store.persistHeld(protocol, participantId, caller);
 		return caller;
 	}
 
@@ -187,13 +184,7 @@ export class CollaboratorService {
 	): Promise<ClientParticipantStatus> {
 		const params = { ...auth(registration), protocol, participantId, revive: false };
 		const acquired = parseAcquireResult(await this.client.call("participant.acquire", params));
-		this.session.store.persistIdentity({
-			protocol,
-			participantId,
-			participantKey: acquired.participant.participantKey,
-			generation: acquired.participant.generation,
-			disposition: "held",
-		});
+		this.session.store.persistHeld(protocol, participantId, acquired.participant);
 		return acquired.participant;
 	}
 
@@ -208,7 +199,7 @@ export class CollaboratorService {
 			if (!candidate) return;
 			const participant = `${start.protocol}/${candidate.participantId}`;
 			try {
-				const existing = findByName(participants, start.protocol, candidate.participantId);
+				const existing = findParticipant(participants, start.protocol, candidate.participantId);
 				const paneId = await this.launcher.launch(start, candidate, existing);
 				results[index] = { participant, status: "started", paneId };
 			} catch (error) {
@@ -275,7 +266,7 @@ export class CollaboratorService {
 		}
 		const participants = await this.session.listParticipants(registration);
 		return participantIds.map((participantId) => {
-			const participant = participants.find((candidate) => candidate.protocol === protocol && candidate.participantId === participantId);
+			const participant = findParticipant(participants, protocol, participantId);
 			if (!participant) throw new HostedRuntimeClientError("not_found", `No ${protocol}/${participantId} participant exists.`);
 			if (isEnded(participant.state)) throw new HostedRuntimeClientError("conflict", `Participant ${protocol}/${participantId} has ended.`);
 			return participant;
@@ -345,7 +336,7 @@ export class CollaboratorService {
 	}
 
 
-	async manageWorktrees(input: CollaboratorWorktreeInput, ctx: ExtensionContext, signal?: AbortSignal): Promise<SerializedValue> {
+	async manageWorktrees(input: CollaboratorWorktreeInput, ctx: ExtensionContext, signal?: AbortSignal): Promise<CollaboratorWorktreeResult> {
 		throwIfAborted(signal);
 		const identity = this.session.requireParticipantIdentity();
 		if (!isHeld(identity.disposition) || !identity.participantKey || !identity.generation) {
@@ -353,7 +344,7 @@ export class CollaboratorService {
 		}
 		const registration = await this.session.requireRegistration(ctx);
 		if (input.action === "list") {
-			return parseSerializedResponse(await this.client.call("worktree.list", auth(registration)), "Worktree listing");
+			return parseWorktreeList(await this.client.call("worktree.list", auth(registration)));
 		}
 		if (!ctx.hasUI) throw new HostedRuntimeClientError("host_unavailable", "Worktree cleanup requires an interactive trusted Pi session.");
 		const participantId = collaboratorName(input.participantId, "participant ID");
@@ -369,12 +360,8 @@ export class CollaboratorService {
 			participantId,
 			discardConfirmed: true,
 		};
-		return parseSerializedResponse(await this.client.call("worktree.remove", params), "Worktree removal");
+		return parseWorktreeRemoval(await this.client.call("worktree.remove", params));
 	}
-}
-
-function findByName(participants: ClientParticipantStatus[], protocol: string, participantId: string): ClientParticipantStatus | undefined {
-	return participants.find((participant) => participant.protocol === protocol && participant.participantId === participantId);
 }
 
 function requestsOtherIdentity(input: CollaboratorManageInput, protocol: string, callerParticipantId: string): boolean {
@@ -419,7 +406,7 @@ function assertStartableChildren(
 	candidates: ResolvedCollaboratorCandidate[],
 ): void {
 	for (const candidate of candidates) {
-		const existing = findByName(participants, protocol, candidate.participantId);
+		const existing = findParticipant(participants, protocol, candidate.participantId);
 		if (isHeld(existing?.state)) {
 			throw new HostedRuntimeClientError("conflict", `Participant ${protocol}/${candidate.participantId} already has a holder.`);
 		}
@@ -450,7 +437,7 @@ function confirmStart(request: StartConfirmation): Promise<boolean> {
 	const projectRoot = realpathSync(ctx.cwd);
 	const summary = candidates.map((candidate) => {
 		const worktree = isWriter(candidate.profile) ? "yes" : "no";
-		const replaces = standingDown(findByName(request.participants, protocol, candidate.participantId)) ? "yes" : "no";
+		const replaces = standingDown(findParticipant(request.participants, protocol, candidate.participantId)) ? "yes" : "no";
 		return `${protocol}/${candidate.participantId} — ${collaboratorConfiguration(candidate)},`
 			+ ` isolated worktree ${worktree}, replace stood-down process ${replaces}`;
 	}).join("\n");

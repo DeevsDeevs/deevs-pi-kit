@@ -1,15 +1,9 @@
+import { RuntimeError } from "../../errors.ts";
 import { Value } from "typebox/value";
-import {
-	type HostedMailboxMessageEvent,
-	type HostedMessagingGrant,
-	type HostedMessagingSend,
-	type HostedRuntimeState,
-	type HostedStateOperation,
-	isHeld,
-} from "../../hosted-types.ts";
+import { type HostedMailboxMessageEvent, type HostedMessagingGrant, type HostedRuntimeState, isHeld } from "../../schemas/state.ts";
+import type { HostedMessagingSend, HostedStateOperation } from "./operations.ts";
 import { HOSTED_ACK_RETENTION_MS } from "../../schemas/common.ts";
 import { HostedMessagingGrantSchema } from "../../schemas/state.ts";
-import { HostedStateConflictError } from "./errors.ts";
 import { assertStateId } from "./guards.ts";
 import { messagingConfigurationHash, messagingSendId } from "./keys.ts";
 import { sendMailboxMessage } from "./mailbox.ts";
@@ -21,9 +15,9 @@ type ReadOperation = Extract<HostedStateOperation, { type: "messaging.read" }>;
 export function issueMessagingGrant(state: HostedRuntimeState, operation: IssueOperation): HostedRuntimeState {
 	const grant = operation.grant;
 	if (!Value.Check(HostedMessagingGrantSchema, grant) || grant.expiresAt !== grant.createdAt + HOSTED_ACK_RETENTION_MS) {
-		throw new HostedStateConflictError("conflict", "Messaging namespace shape or lifetime is invalid.");
+		throw new RuntimeError("conflict", "Messaging namespace shape or lifetime is invalid.");
 	}
-	if (!newlyIssuedGrant(state, grant)) throw new HostedStateConflictError("conflict", "Messaging namespace must be newly issued.");
+	if (!newlyIssuedGrant(state, grant)) throw new RuntimeError("conflict", "Messaging namespace must be newly issued.");
 	assertMessagingHolder(state, grant, grant.createdAt);
 	// One descriptor file exists per target, so a fresh grant supersedes that target's previous namespace.
 	const superseded = supersedeTargetGrants(state, grant.targetKey);
@@ -45,7 +39,7 @@ export function expireMessagingGrant(state: HostedRuntimeState, operation: Expir
 
 export function markMessagingEventRead(state: HostedRuntimeState, operation: ReadOperation): HostedRuntimeState {
 	const grant = state.messaging[operation.namespaceId];
-	if (!grant) throw new HostedStateConflictError("conflict", "Messaging namespace is absent.");
+	if (!grant) throw new RuntimeError("conflict", "Messaging namespace is absent.");
 	assertMessagingHolder(state, grant, operation.at);
 	const event = messagingInboxEvent(state, grant, operation.eventId);
 	if (event.readAt !== undefined) return state;
@@ -54,7 +48,7 @@ export function markMessagingEventRead(state: HostedRuntimeState, operation: Rea
 
 export function publishMessagingEvent(state: HostedRuntimeState, operation: HostedMessagingSend): HostedRuntimeState {
 	const grant = state.messaging[operation.namespaceId];
-	if (!grant) throw new HostedStateConflictError("conflict", "Messaging namespace is absent.");
+	if (!grant) throw new RuntimeError("conflict", "Messaging namespace is absent.");
 	assertMessagingHolder(state, grant, operation.at);
 	assertStateId(operation.operationId, "Messaging operation ID");
 	const publishedId = Object.hasOwn(grant.operations, operation.operationId) ? grant.operations[operation.operationId] : undefined;
@@ -74,11 +68,11 @@ export function publishMessagingEvent(state: HostedRuntimeState, operation: Host
 	});
 	const event = next.events[operation.eventId];
 	if (event?.type !== "mailbox.message" || event.sendId !== sendId) {
-		throw new HostedStateConflictError("conflict", "Messaging publication collided with an existing event.");
+		throw new RuntimeError("conflict", "Messaging publication collided with an existing event.");
 	}
 	const publishedEvent = operation.inReplyToEventId === undefined ? event : { ...event, inReplyToEventId: operation.inReplyToEventId };
 	const current = next.messaging[operation.namespaceId];
-	if (!current) throw new HostedStateConflictError("conflict", "Messaging namespace disappeared during publication.");
+	if (!current) throw new RuntimeError("conflict", "Messaging namespace disappeared during publication.");
 	const operations = { ...current.operations, [operation.operationId]: event.eventId };
 	return {
 		...next,
@@ -89,9 +83,9 @@ export function publishMessagingEvent(state: HostedRuntimeState, operation: Host
 
 export function messagingInboxEvent(state: HostedRuntimeState, grant: HostedMessagingGrant, eventId: string): HostedMailboxMessageEvent {
 	const event = state.events[eventId];
-	if (event?.type !== "mailbox.message") throw new HostedStateConflictError("conflict", "Event is not ordinary mail.");
+	if (event?.type !== "mailbox.message") throw new RuntimeError("conflict", "Event is not ordinary mail.");
 	if (event.recipientParticipantKey !== grant.participantKey) {
-		throw new HostedStateConflictError("conflict", "Event is not addressed to this namespace's participant.");
+		throw new RuntimeError("conflict", "Event is not addressed to this namespace's participant.");
 	}
 	return event;
 }
@@ -100,7 +94,7 @@ function markReplyRead(state: HostedRuntimeState, grant: HostedMessagingGrant, o
 	if (operation.inReplyToEventId === undefined) return state;
 	const inbound = messagingInboxEvent(state, grant, operation.inReplyToEventId);
 	if (inbound.source.id !== operation.recipientParticipantKey) {
-		throw new HostedStateConflictError("conflict", "Reply recipient is not the original sender.");
+		throw new RuntimeError("conflict", "Reply recipient is not the original sender.");
 	}
 	return markMessagingEventRead(state, {
 		type: "messaging.read",
@@ -113,7 +107,7 @@ function markReplyRead(state: HostedRuntimeState, grant: HostedMessagingGrant, o
 function republishedMessagingState(state: HostedRuntimeState, publishedId: string, operation: HostedMessagingSend): HostedRuntimeState {
 	const published = state.events[publishedId];
 	const repeated = published?.type === "mailbox.message" && messagingSendMatches(published, operation);
-	if (!repeated) throw new HostedStateConflictError("conflict", "Messaging operation ID was reused with different input.");
+	if (!repeated) throw new RuntimeError("conflict", "Messaging operation ID was reused with different input.");
 	return state;
 }
 
@@ -130,7 +124,7 @@ function newlyIssuedGrant(state: HostedRuntimeState, grant: HostedMessagingGrant
 
 function assertMessagingHolder(state: HostedRuntimeState, grant: HostedMessagingGrant, at: number): void {
 	if (!messagingAuthorityIsLive(state, grant, at)) {
-		throw new HostedStateConflictError("conflict", "Messaging authority is expired or no longer bound to this holder.");
+		throw new RuntimeError("conflict", "Messaging authority is expired or no longer bound to this holder.");
 	}
 }
 

@@ -1,24 +1,24 @@
 import { execFile } from "node:child_process";
+import type { Static, TSchema } from "typebox";
 import { realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { HostedAgentTarget, HostedTarget } from "../hosted-types.ts";
+import { RuntimeError } from "../errors.ts";
+import { isJsonObject, type JsonObject } from "../schemas/json.ts";
+import type { HostedAgentTarget, HostedTarget } from "../schemas/state.ts";
 import {
-	canonicalFile,
-	isParsedObject,
-	RegistrationError,
-	strictObject,
-	stringValue,
-	text,
-	verifyPiSessionHeader,
-	type HostedHostVerifier,
-	type HostedLiveAgent,
-	type ParsedValue,
-} from "./identity.ts";
+	decodeHerdr,
+	herdrResult,
+	HerdrLiveAgentListSchema,
+	HerdrLiveAgentResultSchema,
+	HerdrTabResultSchema,
+	type HerdrLiveAgent,
+} from "../schemas/herdr.ts";
+import { canonicalFile, verifyPiSessionHeader, type HostedHostVerifier, type HostedLiveAgent } from "./identity.ts";
 
 export class HerdrCliHostVerifier implements HostedHostVerifier {
 	async getAgent(agentName: string): Promise<HostedLiveAgent> {
-		const response = await runHerdr(["agent", "get", agentName]);
-		return parseLiveAgent(strictObject(strictObject(response, "Herdr response").result, "Herdr result").agent);
+		const result = await runHerdr(["agent", "get", agentName]);
+		return liveAgent(decodeAgents(HerdrLiveAgentResultSchema, result).agent);
 	}
 
 	async closeTarget(target: HostedTarget, runtimeRoot: string): Promise<"closed" | "already_absent" | "unmanaged"> {
@@ -30,7 +30,7 @@ export class HerdrCliHostVerifier implements HostedHostVerifier {
 			}
 			default: {
 				const unreachable: never = target;
-				throw new RegistrationError("not_found", `Unsupported runtime target ${JSON.stringify(unreachable)}.`);
+				throw new RuntimeError("not_found", `Unsupported runtime target ${JSON.stringify(unreachable)}.`);
 			}
 		}
 	}
@@ -54,7 +54,7 @@ export class HerdrCliHostVerifier implements HostedHostVerifier {
 		const matches = await find();
 		const [agent] = matches;
 		if (!agent) return "already_absent";
-		if (matches.length !== 1) throw new RegistrationError("identity_mismatch", "Collaborator session is not unique in Herdr.");
+		if (matches.length !== 1) throw new RuntimeError("identity_mismatch", "Collaborator session is not unique in Herdr.");
 		return this.closeTab(agent.tabId, agent.workspaceId, find);
 	}
 
@@ -70,11 +70,11 @@ export class HerdrCliHostVerifier implements HostedHostVerifier {
 		workspaceId: string | undefined,
 		find: () => Promise<HostedLiveAgent[]>,
 	): Promise<"closed" | "already_absent"> {
-		if (!tabId || !workspaceId) throw new RegistrationError("identity_mismatch", "Collaborator has no exact Herdr tab identity.");
-		const response = await runHerdr(["tab", "get", tabId]);
-		const tab = strictObject(strictObject(strictObject(response, "Herdr response").result, "Herdr result").tab, "Herdr tab");
+		if (!tabId || !workspaceId) throw new RuntimeError("identity_mismatch", "Collaborator has no exact Herdr tab identity.");
+		const result = await runHerdr(["tab", "get", tabId]);
+		const tab = decodeHerdr(HerdrTabResultSchema, result, "Herdr tab").tab;
 		if (tab.tab_id !== tabId || tab.workspace_id !== workspaceId || tab.pane_count !== 1) {
-			throw new RegistrationError("identity_mismatch", "Collaborator tab identity changed before stop.");
+			throw new RuntimeError("identity_mismatch", "Collaborator tab identity changed before stop.");
 		}
 		try {
 			await runHerdr(["tab", "close", tabId]);
@@ -86,58 +86,55 @@ export class HerdrCliHostVerifier implements HostedHostVerifier {
 	}
 
 	private async listAgents(): Promise<HostedLiveAgent[]> {
-		const response = await runHerdr(["agent", "list"]);
-		const agents = strictObject(strictObject(response, "Herdr response").result, "Herdr result").agents;
-		if (!Array.isArray(agents)) throw new RegistrationError("host_unavailable", "Herdr agent list is malformed.");
-		return agents.map(parseLiveAgent);
+		const result = await runHerdr(["agent", "list"]);
+		return decodeAgents(HerdrLiveAgentListSchema, result).agents.map(liveAgent);
 	}
 }
 
-function parseLiveAgent(value: ParsedValue | undefined): HostedLiveAgent {
+/** A Herdr answer Runtime cannot read is an unanswered query, never a proven identity. */
+function decodeAgents<Schema extends TSchema>(schema: Schema, result: JsonObject): Static<Schema> {
 	try {
-		const agent = strictObject(value, "Herdr agent");
-		const session = agent.agent_session === undefined ? undefined : strictObject(agent.agent_session, "Herdr agent session");
-		const result: HostedLiveAgent = { cwd: text(agent.cwd) };
-		const name = stringValue(agent.name);
-		const tabId = stringValue(agent.tab_id);
-		const workspaceId = stringValue(agent.workspace_id);
-		if (name !== undefined) result.name = name;
-		if (tabId !== undefined) result.tabId = tabId;
-		if (workspaceId !== undefined) result.workspaceId = workspaceId;
-		const sessionPath = session?.kind === "path" ? canonicalPath(text(session.value)) : undefined;
-		if (sessionPath !== undefined) result.sessionPath = sessionPath;
-		return result;
-	} catch (error) {
-		if (error instanceof RegistrationError) throw error;
-		throw new RegistrationError("host_unavailable", "Herdr returned malformed agent identity.");
+		return decodeHerdr(schema, result, "Herdr agent");
+	} catch {
+		throw new RuntimeError("host_unavailable", "Herdr returned malformed agent identity.");
 	}
+}
+
+function liveAgent(agent: HerdrLiveAgent): HostedLiveAgent {
+	const result: HostedLiveAgent = { cwd: agent.cwd };
+	if (agent.name !== undefined) result.name = agent.name;
+	if (agent.tab_id !== undefined) result.tabId = agent.tab_id;
+	if (agent.workspace_id !== undefined) result.workspaceId = agent.workspace_id;
+	const sessionPath = agent.agent_session?.kind === "path" ? canonicalPath(agent.agent_session.value) : undefined;
+	if (sessionPath !== undefined) result.sessionPath = sessionPath;
+	return result;
 }
 
 function canonicalPath(path: string): string | undefined {
 	try { return realpathSync(path); } catch { return undefined; }
 }
 
-function runHerdr(args: string[]): Promise<ParsedValue> {
+function runHerdr(args: string[]): Promise<JsonObject> {
 	return new Promise((resolve, reject) => {
 		execFile("herdr", args, { timeout: 2_000, maxBuffer: 1024 * 1024, encoding: "utf8" }, (error, stdout) => {
 			if (error) {
 				reject(herdrQueryFailure(stdout));
 				return;
 			}
-			try { resolve(JSON.parse(stdout)); } catch { reject(new RegistrationError("host_unavailable", "Herdr returned invalid JSON.")); }
+			try { resolve(herdrResult(stdout)); } catch { reject(new RuntimeError("host_unavailable", "Herdr returned invalid JSON.")); }
 		});
 	});
 }
 
 /** A structured Herdr error means Herdr answered and the agent is absent; anything else is an unanswered query. */
-function herdrQueryFailure(stdout: string): RegistrationError {
-	if (stdout.length > 8192) return new RegistrationError("host_unavailable", "Herdr identity query failed.");
+function herdrQueryFailure(stdout: string): RuntimeError {
+	if (stdout.length > 8192) return new RuntimeError("host_unavailable", "Herdr identity query failed.");
 	try {
 		// SAFETY: Herdr CLI output is untrusted JSON, narrowed to an error object before it is trusted.
-		const response = JSON.parse(stdout) as ParsedValue;
-		if (!isParsedObject(response) || !isParsedObject(response.error)) throw new Error("unstructured output");
-		return new RegistrationError("identity_mismatch", "Herdr reports no such agent.");
+		const response = JSON.parse(stdout) as JsonObject | undefined;
+		if (!isJsonObject(response) || !isJsonObject(response.error)) throw new Error("unstructured output");
+		return new RuntimeError("identity_mismatch", "Herdr reports no such agent.");
 	} catch {
-		return new RegistrationError("host_unavailable", "Herdr identity query failed.");
+		return new RuntimeError("host_unavailable", "Herdr identity query failed.");
 	}
 }

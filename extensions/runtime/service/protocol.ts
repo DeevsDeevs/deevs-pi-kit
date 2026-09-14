@@ -1,6 +1,7 @@
 import { type Static, type TSchema } from "typebox";
 import { Value } from "typebox/value";
-import { HOSTED_MAILBOX_MAX_BODY_BYTES, HOSTED_PROTOCOL_VERSION } from "../hosted-types.ts";
+import { RuntimeError, type RuntimeErrorCode } from "../errors.ts";
+import { HOSTED_MAILBOX_MAX_BODY_BYTES, HOSTED_PROTOCOL_VERSION } from "../schemas/common.ts";
 import { schemaError } from "../schemas/common.ts";
 import {
 	BridgeBindParams,
@@ -36,19 +37,6 @@ import { RuntimeWorktrees } from "./worktree.ts";
 export const HOSTED_MAX_REQUEST_BYTES = 64 * 1024;
 const MAX_MESSAGING_RESPONSE_BYTES = 128 * 1024;
 
-export type HostedErrorCode =
-	| "invalid_request"
-	| "unsupported_version"
-	| "capability_unavailable"
-	| "not_found"
-	| "conflict"
-	| "registration_stale"
-	| "identity_mismatch"
-	| "host_unavailable"
-	| "busy"
-	| "storage_error"
-	| "internal";
-
 export interface HostedProtocolContext {
 	runtimeId: string;
 	registrations?: RuntimeRegistrationManager;
@@ -60,7 +48,7 @@ export interface HostedProtocolContext {
 
 export type HostedResponse =
 	| { v: 1; id: string | null; ok: true; result: unknown }
-	| { v: 1; id: string | null; ok: false; error: { code: HostedErrorCode; message: string } };
+	| { v: 1; id: string | null; ok: false; error: { code: RuntimeErrorCode; message: string } };
 
 /** One authorized call: the request id plus the runtime services every hosted method needs. */
 interface HostedMethodCall {
@@ -74,10 +62,6 @@ type HostedMethodHandler = (
 	params: JsonValue | undefined,
 	context: HostedProtocolContext,
 ) => HostedResponse | Promise<HostedResponse>;
-
-class HostedCapabilityError extends Error {
-	readonly code = "capability_unavailable" as const;
-}
 
 /** Validates this method's params once, then hands the handler a typed object it never re-checks. */
 function method<Schema extends TSchema>(
@@ -107,7 +91,8 @@ export async function dispatchHostedLine(line: string, context: HostedProtocolCo
 		if (!handle) return failure(value.id, "not_found", "Unknown runtime method.");
 		return await handle(value.id, value.params, context);
 	} catch (error) {
-		return failure(candidateId, errorCode(error), error instanceof Error ? error.message : "Invalid request.");
+		if (error instanceof RuntimeError) return failure(candidateId, error.code, error.message);
+		return failure(candidateId, "invalid_request", error instanceof Error ? error.message : "Invalid request.");
 	}
 }
 
@@ -121,7 +106,7 @@ export function invalidFrame(message: string): HostedResponse {
 
 function authorizedCall(id: string, context: HostedProtocolContext): HostedMethodCall {
 	const registrations = context.registrations;
-	if (!registrations) throw new HostedCapabilityError("Hosted runtime methods are unavailable in this process.");
+	if (!registrations) throw new RuntimeError("capability_unavailable", "Hosted runtime methods are unavailable in this process.");
 	return { id, context, registrations };
 }
 
@@ -201,7 +186,7 @@ async function removeWorktree(call: HostedMethodCall, params: Static<typeof Work
 
 async function bindAgent(call: HostedMethodCall, params: Static<typeof BridgeBindParams>): Promise<HostedResponse> {
 	const bridges = call.context.bridges;
-	if (!bridges) throw new HostedCapabilityError("Runtime Herdr agent binding is unavailable in this process.");
+	if (!bridges) throw new RuntimeError("capability_unavailable", "Runtime Herdr agent binding is unavailable in this process.");
 	const { registrationId, registrationKey, ...input } = params;
 	return success(call.id, boundAgentResult(await bridges.bind(call.registrations.authorize(registrationId, registrationKey), input)));
 }
@@ -332,19 +317,19 @@ export const HOSTED_METHOD_NAMES: readonly string[] = [...HOSTED_METHODS.keys()]
 
 function requireMessaging(call: HostedMethodCall): RuntimeMessaging {
 	const messaging = call.context.messaging;
-	if (!messaging) throw new HostedCapabilityError("Messaging authority is unavailable.");
+	if (!messaging) throw new RuntimeError("capability_unavailable", "Messaging authority is unavailable.");
 	return messaging;
 }
 
 function requireParticipants(call: HostedMethodCall): HostedParticipantCoordinator {
 	const participants = call.context.participants;
-	if (!participants) throw new HostedCapabilityError("Collaborator mailbox methods are unavailable in this process.");
+	if (!participants) throw new RuntimeError("capability_unavailable", "Collaborator mailbox methods are unavailable in this process.");
 	return participants;
 }
 
 function requireWorktrees(call: HostedMethodCall): RuntimeWorktrees {
 	const worktrees = call.context.worktrees;
-	if (!worktrees) throw new HostedCapabilityError("Runtime worktree authority is unavailable in this process.");
+	if (!worktrees) throw new RuntimeError("capability_unavailable", "Runtime worktree authority is unavailable in this process.");
 	return worktrees;
 }
 
@@ -377,22 +362,7 @@ function success<Result>(id: string, result: Result): HostedResponse {
 	return { v: 1, id, ok: true, result };
 }
 
-function failure(id: string | null, code: HostedErrorCode, message: string): HostedResponse {
+function failure(id: string | null, code: RuntimeErrorCode, message: string): HostedResponse {
 	return { v: 1, id, ok: false, error: { code, message } };
 }
 
-const ERROR_CODES: ReadonlySet<string> = new Set([
-	"invalid_request", "unsupported_version", "capability_unavailable", "not_found", "conflict", "registration_stale",
-	"identity_mismatch", "host_unavailable", "busy", "storage_error", "internal",
-]);
-
-function errorCode(cause: unknown): HostedErrorCode {
-	if (!(cause instanceof Error)) return "internal";
-	const descriptor = Object.getOwnPropertyDescriptor(cause, "code");
-	const code: JsonValue | undefined = descriptor?.value;
-	return isHostedErrorCode(code) ? code : "invalid_request";
-}
-
-function isHostedErrorCode(value: JsonValue | undefined): value is HostedErrorCode {
-	return value !== undefined && value !== null && value.constructor === String && ERROR_CODES.has(String(value));
-}

@@ -1,15 +1,7 @@
-import {
-	type HostedAgentBind,
-	type HostedParticipant,
-	type HostedRuntimeState,
-	type HostedStateOperation,
-	isHeld,
-	isPiTarget,
-	isVacant,
-	isWriter,
-} from "../../hosted-types.ts";
+import { RuntimeError } from "../../errors.ts";
+import { type HostedParticipant, type HostedRuntimeState, isHeld, isPiTarget, isVacant, isWriter } from "../../schemas/state.ts";
+import type { HostedAgentBind, HostedStateOperation } from "./operations.ts";
 import { sameTarget } from "./compare.ts";
-import { HostedStateConflictError } from "./errors.ts";
 import { assertParticipantName, assertStateId, assertStateTime } from "./guards.ts";
 import { deriveAgentTargetKey, deriveParticipantKey } from "./keys.ts";
 import { acquireParticipant } from "./participants.ts";
@@ -21,7 +13,7 @@ export function ensureTarget(state: HostedRuntimeState, operation: EnsureTargetO
 	const existing = state.targets[operation.target.targetKey];
 	if (existing) {
 		if (!sameTarget(existing, operation.target)) {
-			throw new HostedStateConflictError("conflict", "Target identity does not match its durable key.");
+			throw new RuntimeError("conflict", "Target identity does not match its durable key.");
 		}
 		return state;
 	}
@@ -42,7 +34,7 @@ export function bindAgentTarget(state: HostedRuntimeState, operation: BindAgentO
 		&& participant.holderTargetKey === target.targetKey
 		&& participant.generation === target.holderGeneration;
 	if (!alreadyBound && !reservedForBind(participant, bind.expectedParticipantGeneration)) {
-		throw new HostedStateConflictError("conflict", "Agent bind participant generation is unavailable.");
+		throw new RuntimeError("conflict", "Agent bind participant generation is unavailable.");
 	}
 	const next = ensureTarget(state, { type: "target.ensure", target });
 	if (alreadyBound) return next;
@@ -61,16 +53,16 @@ export function bindAgentTarget(state: HostedRuntimeState, operation: BindAgentO
 function assertAgentBindIdentity(bind: HostedAgentBind): void {
 	const target = bind.target;
 	if (target.targetKey !== deriveAgentTargetKey(target.projectRoot, target.agentName)) {
-		throw new HostedStateConflictError("conflict", "Agent target key does not match its Herdr agent name.");
+		throw new RuntimeError("conflict", "Agent target key does not match its Herdr agent name.");
 	}
 	if (target.participantKey !== deriveParticipantKey(target.projectRoot, bind.protocol, bind.participantId)) {
-		throw new HostedStateConflictError("conflict", "Agent bind participant key does not match its durable identity.");
+		throw new RuntimeError("conflict", "Agent bind participant key does not match its durable identity.");
 	}
 	if (target.participantKey === bind.callerParticipantKey) {
-		throw new HostedStateConflictError("conflict", "An agent target may not hold its caller's participant identity.");
+		throw new RuntimeError("conflict", "An agent target may not hold its caller's participant identity.");
 	}
 	if (!isWriter(target.profile) && target.worktreePath !== undefined) {
-		throw new HostedStateConflictError("conflict", "Read-only agent targets never carry a worktree.");
+		throw new RuntimeError("conflict", "Read-only agent targets never carry a worktree.");
 	}
 }
 
@@ -80,9 +72,9 @@ function assertAgentBindCaller(state: HostedRuntimeState, bind: HostedAgentBind)
 	const held = isHeld(caller?.state)
 		&& caller.generation === bind.callerGeneration
 		&& caller.holderTargetKey === bind.callerTargetKey;
-	if (!held) throw new HostedStateConflictError("conflict", "Agent bind caller authority changed.");
+	if (!held) throw new RuntimeError("conflict", "Agent bind caller authority changed.");
 	if (!isPiTarget(callerTarget) || caller.projectRoot !== bind.target.projectRoot) {
-		throw new HostedStateConflictError("conflict", "Agent bind caller is outside its Pi project.");
+		throw new RuntimeError("conflict", "Agent bind caller is outside its Pi project.");
 	}
 }
 

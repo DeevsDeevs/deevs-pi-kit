@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { dispatchHostedLine, type HostedProtocolContext } from "../extensions/runtime/service/protocol.ts";
 import { HerdrCliHostVerifier } from "../extensions/runtime/service/herdr-cli.ts";
-import { RegistrationError, type HostedHostVerifier, type HostedLiveAgent } from "../extensions/runtime/service/identity.ts";
+import { RuntimeError } from "../extensions/runtime/errors.ts";
+import type { HostedHostVerifier, HostedLiveAgent } from "../extensions/runtime/service/identity.ts";
 import { RuntimeRegistrationManager, type RegisterPiInput } from "../extensions/runtime/service/registration.ts";
 import { HostedStateStore, piTargetKey } from "../extensions/runtime/service/state.ts";
 
@@ -27,7 +28,7 @@ class FakeHost implements HostedHostVerifier {
 
 	constructor(agent: HostedLiveAgent) { this.agent = agent; }
 	async getAgent(_agentName: string): Promise<HostedLiveAgent> {
-		if (!this.available) throw new RegistrationError("host_unavailable", "offline");
+		if (!this.available) throw new RuntimeError("host_unavailable", "offline");
 		return this.agent;
 	}
 }
@@ -77,9 +78,9 @@ describe("hosted Pi registration", () => {
 		test.setNow(2_000);
 		const replacement = await test.registrations.register(test.input);
 		expect(replacement).toMatchObject({ targetKey: first.targetKey, registrationId: "reg_2", leaseUntil: 32_000 });
-		expect(() => test.registrations.authorize(first.registrationId, first.registrationKey)).toThrow(RegistrationError);
+		expect(() => test.registrations.authorize(first.registrationId, first.registrationKey)).toThrow(RuntimeError);
 		test.setNow(32_001);
-		expect(() => test.registrations.authorize(replacement.registrationId, replacement.registrationKey)).toThrow(RegistrationError);
+		expect(() => test.registrations.authorize(replacement.registrationId, replacement.registrationKey)).toThrow(RuntimeError);
 	});
 
 	it("rejects a session file that does not carry the registered session identity", async () => {
@@ -96,7 +97,7 @@ describe("hosted Pi registration", () => {
 		const heartbeat = test.registrations.heartbeat(registration.registrationId, registration.registrationKey);
 		test.registrations.unregister(registration.registrationId, registration.registrationKey);
 		await expect(heartbeat).rejects.toMatchObject({ code: "registration_stale" });
-		expect(() => test.registrations.authorize(registration.registrationId, registration.registrationKey)).toThrow(RegistrationError);
+		expect(() => test.registrations.authorize(registration.registrationId, registration.registrationKey)).toThrow(RuntimeError);
 	});
 
 });

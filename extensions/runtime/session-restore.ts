@@ -2,7 +2,9 @@ import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { Value } from "typebox/value";
 import type { CustomEntry, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
-import { asRecord, type RestoredSessionData, type SerializedObject } from "./responses.ts";
+import { asRecord, type RestoredSessionData } from "./responses.ts";
+import { PARTICIPANT_NAME } from "./schemas/common.ts";
+import type { JsonObject } from "./schemas/json.ts";
 import {
 	CollaboratorLaunchSchema,
 	CollaboratorWorktreeSchema,
@@ -14,6 +16,10 @@ import {
 	type ManagedAgentOwner,
 	type ParticipantIdentity,
 } from "./schemas/session.ts";
+
+/** `<protocol>:<participantId>[:revive]`, each name in the package-wide participant syntax. */
+const name = PARTICIPANT_NAME.source.slice(1, -1);
+const BOOTSTRAP_IDENTITY = new RegExp(`^(${name}):(${name})(:revive)?$`);
 
 /** One current-only hidden entry kind; older kinds are ignored rather than migrated. */
 export const HOSTED_SESSION_ENTRY = "deevs.hosted-runtime.v3";
@@ -58,14 +64,14 @@ export function restoreSessionRecord(ctx: ExtensionContext): RestoredRuntimeStat
 	};
 }
 
-function restoreIdentity(record: SerializedObject, ctx: ExtensionContext): ParticipantIdentity | undefined {
+function restoreIdentity(record: JsonObject, ctx: ExtensionContext): ParticipantIdentity | undefined {
 	if (record.participant === undefined) return bootstrapIdentity(process.env[COLLABORATOR_ENV]);
 	const identity = parseIdentity(record.participant);
 	if (!identity) ctx.ui.notify(INVALID_IDENTITY, "warning");
 	return identity;
 }
 
-function restoreLaunch(record: SerializedObject, ctx: ExtensionContext): CollaboratorLaunch | undefined {
+function restoreLaunch(record: JsonObject, ctx: ExtensionContext): CollaboratorLaunch | undefined {
 	if (record.launch === undefined) return undefined;
 	const launch = parseLaunch(record.launch);
 	if (launch) return launch;
@@ -73,7 +79,7 @@ function restoreLaunch(record: SerializedObject, ctx: ExtensionContext): Collabo
 	return RECOVERY_LAUNCH;
 }
 
-function restoreAgents(record: SerializedObject, ctx: ExtensionContext): ManagedAgentControl[] {
+function restoreAgents(record: JsonObject, ctx: ExtensionContext): ManagedAgentControl[] {
 	if (record.agents === undefined) return [];
 	const controls = parseAgents(record.agents, ctx);
 	if (!controls.malformed) return controls.accepted;
@@ -93,7 +99,7 @@ function lastSessionRecord(ctx: ExtensionContext): CustomEntry | undefined {
 
 function bootstrapIdentity(value: string | undefined): ParticipantIdentity | undefined {
 	if (!value) return undefined;
-	const match = /^([a-z][a-z0-9_-]{0,63}):([a-z][a-z0-9_-]{0,63})(:revive)?$/.exec(value);
+	const match = BOOTSTRAP_IDENTITY.exec(value);
 	if (!match) return undefined;
 	const [, protocol, participantId, revive] = match;
 	if (!protocol || !participantId) return undefined;

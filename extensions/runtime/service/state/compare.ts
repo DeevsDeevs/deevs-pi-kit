@@ -1,4 +1,4 @@
-import { type HostedTarget, isAgentTarget, isPiTarget } from "../../hosted-types.ts";
+import { type HostedTarget, isAgentTarget, isPiTarget } from "../../schemas/state.ts";
 
 export function sameTarget(left: HostedTarget, right: HostedTarget): boolean {
 	if (left.kind !== right.kind || left.targetKey !== right.targetKey || left.projectRoot !== right.projectRoot) return false;

@@ -2,7 +2,7 @@ import { expect, it } from "vitest";
 import { findAgent, loadBuiltinAgents } from "../extensions/subagents/agents.ts";
 import { resolveCollaboratorCandidate } from "../extensions/runtime/collaborator-policy.ts";
 import { DRIVERS, driverLaunchArgv } from "../extensions/runtime/drivers.ts";
-import type { HostedCollaboratorDriver } from "../extensions/runtime/hosted-types.ts";
+import type { HostedCollaboratorDriver } from "../extensions/runtime/schemas/state.ts";
 import { nativeMessagingConfiguration } from "../extensions/runtime/mcp/native.ts";
 
 const DRIVER_NAMES: HostedCollaboratorDriver[] = ["pi", "claude-code", "codex"];

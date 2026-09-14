@@ -4,7 +4,8 @@ import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { MessagingMcpClient, record, type McpToolResult } from "./client.ts";
+import { isJsonObject } from "../schemas/json.ts";
+import { MessagingMcpClient, type McpToolResult } from "./client.ts";
 import { toolDefinitions } from "./tools.ts";
 
 const skillPath = fileURLToPath(new URL("../../../skills/collaborator-messaging/SKILL.md", import.meta.url));
@@ -106,7 +107,7 @@ function requireSuccess(result: McpToolResult): McpToolResult {
 function assertBoundDescriptor(peers: McpToolResult, ctx: ExtensionContext, sessionId: string, sessionFile: string): void {
 	const binding = peers.structuredContent?.binding;
 	// binding is unvalidated MCP structuredContent, not a HostedTarget, so the typed isPiTarget() predicate cannot be used here.
-	const bound = record(binding)
+	const bound = isJsonObject(binding)
 		&& binding.kind === "pi"
 		&& binding.sessionId === sessionId
 		&& binding.sessionFile === realpathSync(sessionFile)

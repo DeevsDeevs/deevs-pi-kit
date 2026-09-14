@@ -1,5 +1,5 @@
 import { Type, type Static } from "typebox";
-import { HashText, IdText, ParticipantNameText, PathText, STRICT_OBJECT, boundedText } from "./common.ts";
+import { HashText, IdText, ModelText, ParticipantNameText, PathText, STRICT_OBJECT, boundedText } from "./common.ts";
 import { HostedCollaboratorProfileSchema, HostedNativeCollaboratorDriverSchema, HostedParticipantStateSchema } from "./state.ts";
 
 /** Restored identity never carries revive authorization: that comes from the environment, once. */
@@ -20,7 +20,7 @@ export const CollaboratorPersonaSchema = Type.Object({
 
 export const CollaboratorLaunchSchema = Type.Object({
 	driver: Type.Literal("pi"),
-	model: Type.Optional(Type.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9._/*:-]{0,199}$" })),
+	model: Type.Optional(ModelText),
 	profile: Type.Optional(HostedCollaboratorProfileSchema),
 	persona: Type.Optional(CollaboratorPersonaSchema),
 }, STRICT_OBJECT);

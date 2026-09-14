@@ -8,7 +8,7 @@ import { registerRuntimeEventRenderer } from "../shared/runtime-ui.ts";
 import type { ClientParticipantStatus } from "./responses.ts";
 import type { CollaboratorManageInput, CollaboratorManageResult, CollaboratorWorktreeInput } from "./collaborators.ts";
 import { HostedRuntimeIntegration } from "./hosted-integration.ts";
-import { isHeld } from "./hosted-types.ts";
+import { isHeld } from "./schemas/state.ts";
 
 const DRIVER_LITERALS = [Type.Literal("pi"), Type.Literal("claude-code"), Type.Literal("codex")];
 const PROFILE_LITERALS = [Type.Literal("read-only"), Type.Literal("workspace-write")];

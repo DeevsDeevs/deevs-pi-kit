@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { HOSTED_ACK_RETENTION_MS, type HostedRuntimeState } from "../extensions/runtime/hosted-types.ts";
+import { HOSTED_ACK_RETENTION_MS } from "../extensions/runtime/schemas/common.ts";
+import type { HostedRuntimeState } from "../extensions/runtime/schemas/state.ts";
 import { dispatchHostedLine, type HostedProtocolContext } from "../extensions/runtime/service/protocol.ts";
 import {
 	HostedStateStorageError,

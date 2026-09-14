@@ -16,14 +16,17 @@ import { HostedParticipantCoordinator, type HostedParticipantCoordinatorOptions 
 import { HerdrCliHostVerifier } from "./herdr-cli.ts";
 import type { HostedHostVerifier } from "./identity.ts";
 import { RuntimeRegistrationManager, type RegistrationManagerOptions } from "./registration.ts";
-import { HOSTED_ACK_RETENTION_MS } from "../hosted-types.ts";
+import { isNodeError, RuntimeError } from "../errors.ts";
+import { HOSTED_ACK_RETENTION_MS } from "../schemas/common.ts";
 import { HostedStateStore, loadOrCreateRuntimeInstance } from "./state.ts";
 import { RuntimeWorktrees } from "./worktree.ts";
 
 const RETENTION_SWEEP_MS = 5 * 60_000;
 
-export class RuntimeAlreadyRunningError extends Error {
-	readonly code = "conflict" as const;
+export class RuntimeAlreadyRunningError extends RuntimeError {
+	constructor(message: string) {
+		super("conflict", message);
+	}
 }
 
 export interface RuntimeServerOptions {
@@ -141,7 +144,7 @@ async function listenWithStaleRecovery(server: Server, socketPath: string, probe
 			await listenOnce(server, socketPath);
 			return;
 		} catch (error) {
-			if (!(error instanceof Error) || !("code" in error) || error.code !== "EADDRINUSE") throw error;
+			if (!isNodeError(error) || error.code !== "EADDRINUSE") throw error;
 			if (await probeSocket(socketPath, probeTimeoutMs)) {
 				throw new RuntimeAlreadyRunningError(`Runtime is already listening at ${socketPath}.`);
 			}
@@ -151,7 +154,7 @@ async function listenWithStaleRecovery(server: Server, socketPath: string, probe
 				renameSync(socketPath, stale);
 				try { unlinkSync(stale); } catch {}
 			} catch (renameError) {
-				if (!(renameError instanceof Error) || !("code" in renameError) || renameError.code !== "ENOENT") throw renameError;
+				if (!isNodeError(renameError) || renameError.code !== "ENOENT") throw renameError;
 			}
 		}
 	}

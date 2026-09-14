@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { HostedRuntimeClientError, type HostedRuntimeClient } from "./client.ts";
 import { delay, shellQuote } from "./herdr.ts";
-import { strictObject, text } from "./responses.ts";
+import { decodeHerdr, herdrResult, HerdrWorkspaceCreatedSchema } from "./schemas/herdr.ts";
 
 interface RuntimeServicesWorkspace {
 	workspaceId: string;
@@ -45,12 +45,9 @@ async function createServicesWorkspace(pi: ExtensionAPI, root: string): Promise<
 	const args = ["workspace", "create", "--cwd", root, "--label", "pi-kit-services", "--no-focus"];
 	const created = await pi.exec("herdr", args, { timeout: 5_000 });
 	if (created.code !== 0) throw new HostedRuntimeClientError("host_unavailable", "Herdr could not create the Runtime services workspace.");
-	const result = strictObject(strictObject(JSON.parse(created.stdout), "Herdr response").result, "Herdr result");
-	const workspaceId = text(strictObject(result.workspace, "Herdr workspace").workspace_id);
-	const paneId = text(strictObject(result.root_pane, "Herdr root pane").pane_id);
-	const tabId = text(strictObject(result.tab, "Herdr tab").tab_id);
-	await pi.exec("herdr", ["tab", "rename", tabId, "pi-kit-runtime"], { timeout: 5_000 });
-	return { workspaceId, paneId };
+	const result = decodeHerdr(HerdrWorkspaceCreatedSchema, herdrResult(created.stdout), "Herdr workspace");
+	await pi.exec("herdr", ["tab", "rename", result.tab.tab_id, "pi-kit-runtime"], { timeout: 5_000 });
+	return { workspaceId: result.workspace.workspace_id, paneId: result.root_pane.pane_id };
 }
 
 async function closeServicesWorkspace(pi: ExtensionAPI, workspaceId: string): Promise<void> {
