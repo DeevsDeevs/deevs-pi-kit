@@ -1,16 +1,19 @@
 import { randomUUID } from "node:crypto";
 import {
-	type HostedCollaboratorDriver,
 	type HostedMailboxMessageEvent,
 	type HostedParticipant,
 	type HostedStateOperation,
-	type HostedTarget,
-	isAgentTarget,
 	isEnded,
 	isHeld,
-	isPiTarget,
-	isVacant,
 } from "../hosted-types.ts";
+import {
+	HostedParticipantError,
+	type HostedParticipantStatus,
+	participantStatus,
+	requireParticipant,
+	requireTarget,
+} from "./participant-status.ts";
+import { type CollaboratorStopOptions, CollaboratorStopper, type StoppedParticipant } from "./participant-stop.ts";
 import { RuntimeRegistrationManager, type HostedLiveRegistration } from "./registration.ts";
 import { deriveParticipantKey, HostedStateStore } from "./state.ts";
 
@@ -18,39 +21,10 @@ const DEFAULT_RECONNECT_GRACE_MS = 60_000;
 
 type LeaveOperation = Extract<HostedStateOperation, { type: "participant.stand_down" | "participant.release" }>;
 
-export class HostedParticipantError extends Error {
-	readonly code: "not_found" | "conflict" | "busy" | "capability_unavailable";
-
-	constructor(code: "not_found" | "conflict" | "busy" | "capability_unavailable", message: string) {
-		super(message);
-		this.code = code;
-	}
-}
-
-export interface HostedParticipantStatus {
-	participantKey: string;
-	projectRoot: string;
-	protocol: string;
-	participantId: string;
-	state: HostedParticipant["state"];
-	generation: string;
-	holderTargetKey?: string;
-	holderLive: boolean;
-	driver?: HostedCollaboratorDriver;
-	profile?: "read-only" | "workspace-write";
-	unreadMail?: number;
-	lastTransition: HostedParticipant["transition"];
-}
-
 export interface AcquiredParticipant {
 	participant: HostedParticipantStatus;
 	revived: boolean;
 	transitioned: boolean;
-}
-
-export interface StoppedParticipant {
-	participant: HostedParticipantStatus;
-	outcome: "stopped" | "already_stopped" | "unmanaged";
 }
 
 export interface MessagingPublication {
@@ -60,14 +34,10 @@ export interface MessagingPublication {
 	inReplyToEventId?: string;
 }
 
-export interface HostedParticipantCoordinatorOptions {
-	now?: () => number;
-	createGeneration?: () => string;
+export interface HostedParticipantCoordinatorOptions extends CollaboratorStopOptions {
 	createEventId?: () => string;
 	reconnectGraceMs?: number;
 	startedAt?: number;
-	stopTarget?: (target: HostedTarget) => Promise<"closed" | "already_absent" | "unmanaged">;
-	onStopped?: (target: HostedTarget, holderGeneration: string) => Promise<void> | void;
 }
 
 export class HostedParticipantCoordinator {
@@ -76,8 +46,7 @@ export class HostedParticipantCoordinator {
 	private readonly options: HostedParticipantCoordinatorOptions;
 	private readonly startedAt: number;
 	private readonly seenTargets = new Set<string>();
-	private readonly stopping = new Set<string>();
-	private readonly stoppingTargets = new Set<string>();
+	private readonly stopper: CollaboratorStopper;
 
 	constructor(
 		store: HostedStateStore,
@@ -88,6 +57,7 @@ export class HostedParticipantCoordinator {
 		this.registrations = registrations;
 		this.options = options;
 		this.startedAt = options.startedAt ?? this.now();
+		this.stopper = new CollaboratorStopper(store, registrations, options);
 	}
 
 	registrationReady(targetKey: string): void {
@@ -96,10 +66,10 @@ export class HostedParticipantCoordinator {
 
 	acquire(registration: HostedLiveRegistration, protocol: string, participantId: string, allowRevive = false): AcquiredParticipant {
 		this.seenTargets.add(registration.targetKey);
-		this.assertTargetNotStopping(registration.targetKey);
-		const target = this.requireTarget(registration.targetKey);
+		this.stopper.assertTargetNotStopping(registration.targetKey);
+		const target = requireTarget(this.store, registration.targetKey);
 		const participantKey = deriveParticipantKey(target.projectRoot, protocol, participantId);
-		this.assertNotStopping(participantKey);
+		this.stopper.assertNotStopping(participantKey);
 		const before = this.store.read().participants[participantKey];
 		if (isEnded(before?.state) && !allowRevive) {
 			throw new HostedParticipantError("conflict", "Ended participant requires explicit revival authorization.");
@@ -118,18 +88,18 @@ export class HostedParticipantCoordinator {
 			generation: this.createGeneration(),
 			at: this.now(),
 		});
-		const participant = this.requireParticipant(participantKey, target.projectRoot);
+		const participant = requireParticipant(this.store, participantKey, target.projectRoot);
 		const transitioned = !isHeld(before?.state) || before.holderTargetKey !== registration.targetKey;
 		return { participant: this.status(participant), revived, transitioned };
 	}
 
 	get(registration: HostedLiveRegistration, participantKey: string): HostedParticipantStatus {
-		const target = this.requireTarget(registration.targetKey);
-		return this.status(this.requireParticipant(participantKey, target.projectRoot));
+		const target = requireTarget(this.store, registration.targetKey);
+		return this.status(requireParticipant(this.store, participantKey, target.projectRoot));
 	}
 
 	list(registration: HostedLiveRegistration): HostedParticipantStatus[] {
-		const target = this.requireTarget(registration.targetKey);
+		const target = requireTarget(this.store, registration.targetKey);
 		return Object.values(this.store.read().participants)
 			.filter((participant) => participant.projectRoot === target.projectRoot)
 			.sort((left, right) => left.protocol.localeCompare(right.protocol) || left.participantId.localeCompare(right.participantId))
@@ -141,100 +111,15 @@ export class HostedParticipantCoordinator {
 	}
 
 	standDownConfirmed(registration: HostedLiveRegistration, participantKey: string, expectedGeneration: string): HostedParticipantStatus {
-		this.assertNotStopping(participantKey);
-		const target = this.requireTarget(registration.targetKey);
-		const participant = this.requireParticipant(participantKey, target.projectRoot);
-		if (standDownApplied(participant, expectedGeneration)) {
-			return this.status(participant);
-		}
-		if (!isHeld(participant.state) || participant.generation !== expectedGeneration) {
-			throw new HostedParticipantError("conflict", "Participant state or generation changed before confirmed stand-down.");
-		}
-		const holderTargetKey = participant.holderTargetKey;
-		if (!holderTargetKey) throw new HostedParticipantError("conflict", "Held participant has no holder target.");
-		this.store.apply({
-			type: "participant.stand_down",
-			participantKey,
-			targetKey: holderTargetKey,
-			expectedGeneration,
-			generation: this.createGeneration(),
-			at: this.now(),
-		});
-		return this.status(this.requireParticipant(participantKey, target.projectRoot));
+		return this.stopper.standDownConfirmed(registration, participantKey, expectedGeneration);
 	}
 
-	async stopConfirmed(
+	stopConfirmed(
 		registration: HostedLiveRegistration,
 		participantKey: string,
 		expectedGeneration: string,
 	): Promise<StoppedParticipant> {
-		this.assertNotStopping(participantKey);
-		this.stopping.add(participantKey);
-		let stoppingTargetKey: string | undefined;
-		try {
-			const caller = this.requireTarget(registration.targetKey);
-			const participant = this.requireParticipant(participantKey, caller.projectRoot);
-			const holderTargetKey = this.stoppableHolder(participant, registration, expectedGeneration);
-			this.stoppingTargets.add(holderTargetKey);
-			stoppingTargetKey = holderTargetKey;
-			const target = this.requireTarget(holderTargetKey);
-			if (target.projectRoot !== caller.projectRoot) {
-				throw new HostedParticipantError("conflict", "Collaborator target belongs to another project.");
-			}
-			if (!this.options.stopTarget) return { participant: this.status(participant), outcome: "unmanaged" };
-			const stopped = await this.options.stopTarget(target);
-			if (stopped === "unmanaged") return { participant: this.status(participant), outcome: "unmanaged" };
-			this.settleStopped(participant, holderTargetKey, expectedGeneration);
-			await this.options.onStopped?.(target, expectedGeneration);
-			const current = this.requireParticipant(participantKey, caller.projectRoot);
-			return { participant: this.status(current), outcome: stopped === "closed" ? "stopped" : "already_stopped" };
-		} finally {
-			this.stopping.delete(participantKey);
-			if (stoppingTargetKey) this.stoppingTargets.delete(stoppingTargetKey);
-		}
-	}
-
-	private stoppableHolder(
-		participant: HostedParticipant,
-		registration: HostedLiveRegistration,
-		expectedGeneration: string,
-	): string {
-		if (!isHeld(participant.state) || participant.generation !== expectedGeneration) {
-			throw new HostedParticipantError("conflict", "Participant state or generation changed before confirmed stop.");
-		}
-		const holderTargetKey = participant.holderTargetKey;
-		if (!holderTargetKey) throw new HostedParticipantError("conflict", "Participant has no stoppable collaborator target.");
-		if (holderTargetKey === registration.targetKey) {
-			throw new HostedParticipantError("conflict", "A Pi target cannot stop its own Herdr tab.");
-		}
-		this.assertTargetNotStopping(holderTargetKey);
-		const otherHolder = Object.values(this.store.read().participants)
-			.find((candidate) => candidate.participantKey !== participant.participantKey
-				&& isHeld(candidate.state)
-				&& candidate.holderTargetKey === holderTargetKey);
-		if (otherHolder) {
-			throw new HostedParticipantError("conflict", `Collaborator target now holds ${otherHolder.protocol}/${otherHolder.participantId}.`);
-		}
-		return holderTargetKey;
-	}
-
-	private settleStopped(
-		participant: HostedParticipant,
-		holderTargetKey: string,
-		expectedGeneration: string,
-	): void {
-		const current = this.requireParticipant(participant.participantKey, participant.projectRoot);
-		if (!isHeld(current.state) || current.generation !== expectedGeneration || current.holderTargetKey !== holderTargetKey) {
-			throw new HostedParticipantError("conflict", "Participant changed while its collaborator process was stopping.");
-		}
-		this.store.apply({
-			type: "participant.stand_down",
-			participantKey: participant.participantKey,
-			targetKey: holderTargetKey,
-			expectedGeneration,
-			generation: this.createGeneration(),
-			at: this.now(),
-		});
+		return this.stopper.stopConfirmed(registration, participantKey, expectedGeneration);
 	}
 
 	release(registration: HostedLiveRegistration, participantKey: string): HostedParticipantStatus {
@@ -242,10 +127,10 @@ export class HostedParticipantCoordinator {
 	}
 
 	takeover(registration: HostedLiveRegistration, participantKey: string, expectedGeneration: string): HostedParticipantStatus {
-		this.assertNotStopping(participantKey);
-		this.assertTargetNotStopping(registration.targetKey);
-		const target = this.requireTarget(registration.targetKey);
-		const participant = this.requireParticipant(participantKey, target.projectRoot);
+		this.stopper.assertNotStopping(participantKey);
+		this.stopper.assertTargetNotStopping(registration.targetKey);
+		const target = requireTarget(this.store, registration.targetKey);
+		const participant = requireParticipant(this.store, participantKey, target.projectRoot);
 		if (takeoverAlreadyApplied(participant, registration.targetKey, expectedGeneration)) return this.status(participant);
 		if (!isHeld(participant.state) || participant.generation !== expectedGeneration) {
 			throw new HostedParticipantError("conflict", "Participant state or generation changed before takeover.");
@@ -267,7 +152,7 @@ export class HostedParticipantCoordinator {
 			generation: this.createGeneration(),
 			at: this.now(),
 		});
-		return this.status(this.requireParticipant(participantKey, target.projectRoot));
+		return this.status(requireParticipant(this.store, participantKey, target.projectRoot));
 	}
 
 	send(
@@ -278,13 +163,13 @@ export class HostedParticipantCoordinator {
 		sendId: string,
 		body: string,
 	): HostedMailboxMessageEvent {
-		const target = this.requireTarget(registration.targetKey);
-		this.assertNotStopping(senderParticipantKey);
-		const sender = this.requireParticipant(senderParticipantKey, target.projectRoot);
+		const target = requireTarget(this.store, registration.targetKey);
+		this.stopper.assertNotStopping(senderParticipantKey);
+		const sender = requireParticipant(this.store, senderParticipantKey, target.projectRoot);
 		if (!holdsIdentity(sender, expectedSenderGeneration, registration.targetKey)) {
 			throw new HostedParticipantError("conflict", "Sender identity or generation changed before send.");
 		}
-		const recipient = this.requireParticipant(recipientParticipantKey, target.projectRoot);
+		const recipient = requireParticipant(this.store, recipientParticipantKey, target.projectRoot);
 		if (isEnded(recipient.state)) throw new HostedParticipantError("not_found", "Mailbox recipient has ended.");
 		this.store.apply({
 			type: "mailbox.send",
@@ -310,8 +195,8 @@ export class HostedParticipantCoordinator {
 		if (!grant || grant.targetKey !== registration.targetKey) {
 			throw new HostedParticipantError("conflict", "Messaging namespace does not belong to this target.");
 		}
-		this.assertNotStopping(grant.participantKey);
-		this.assertTargetNotStopping(grant.targetKey);
+		this.stopper.assertNotStopping(grant.participantKey);
+		this.stopper.assertTargetNotStopping(grant.targetKey);
 		this.store.apply({ type: "messaging.send", namespaceId, ...publication, eventId: this.createEventId(), at: this.now() });
 	}
 
@@ -321,9 +206,9 @@ export class HostedParticipantCoordinator {
 		type: "participant.stand_down" | "participant.release",
 		expectedGeneration?: string,
 	): HostedParticipantStatus {
-		this.assertNotStopping(participantKey);
-		const target = this.requireTarget(registration.targetKey);
-		this.requireParticipant(participantKey, target.projectRoot);
+		this.stopper.assertNotStopping(participantKey);
+		const target = requireTarget(this.store, registration.targetKey);
+		requireParticipant(this.store, participantKey, target.projectRoot);
 		const operation: LeaveOperation = {
 			type,
 			participantKey,
@@ -333,61 +218,11 @@ export class HostedParticipantCoordinator {
 		};
 		if (operation.type === "participant.stand_down" && expectedGeneration !== undefined) operation.expectedGeneration = expectedGeneration;
 		this.store.apply(operation);
-		return this.status(this.requireParticipant(participantKey, target.projectRoot));
+		return this.status(requireParticipant(this.store, participantKey, target.projectRoot));
 	}
 
 	private status(participant: HostedParticipant, includeQueue = true): HostedParticipantStatus {
-		const holderTargetKey = participant.holderTargetKey;
-		const holder = holderTargetKey ? this.store.read().targets[holderTargetKey] : undefined;
-		const status: HostedParticipantStatus = {
-			participantKey: participant.participantKey,
-			projectRoot: participant.projectRoot,
-			protocol: participant.protocol,
-			participantId: participant.participantId,
-			state: participant.state,
-			generation: participant.generation,
-			holderLive: isHeld(participant.state) && holderTargetKey !== undefined && this.registrations.hasLiveTarget(holderTargetKey),
-			lastTransition: participant.transition,
-		};
-		if (holderTargetKey) status.holderTargetKey = holderTargetKey;
-		if (isPiTarget(holder)) status.driver = "pi";
-		if (isAgentTarget(holder)) {
-			status.driver = holder.driver;
-			status.profile = holder.profile;
-		}
-		if (includeQueue) status.unreadMail = this.unreadMail(participant.participantKey);
-		return status;
-	}
-
-	/** Mail is read by `messaging.read`, never claimed, so unread depth is the absence of a read time. */
-	private unreadMail(participantKey: string): number {
-		return Object.values(this.store.read().events)
-			.filter((event) => event.type === "mailbox.message"
-				&& event.recipientParticipantKey === participantKey
-				&& event.readAt === undefined)
-			.length;
-	}
-
-	private requireTarget(targetKey: string): HostedTarget {
-		const target = this.store.read().targets[targetKey];
-		if (!target) throw new HostedParticipantError("not_found", "Runtime target is absent.");
-		return target;
-	}
-
-	private requireParticipant(participantKey: string, projectRoot: string): HostedParticipant {
-		const participant = this.store.read().participants[participantKey];
-		if (!participant || participant.projectRoot !== projectRoot) {
-			throw new HostedParticipantError("not_found", "Participant is absent from this project.");
-		}
-		return participant;
-	}
-
-	private assertNotStopping(participantKey: string): void {
-		if (this.stopping.has(participantKey)) throw new HostedParticipantError("busy", "Participant collaborator process is stopping.");
-	}
-
-	private assertTargetNotStopping(targetKey: string): void {
-		if (this.stoppingTargets.has(targetKey)) throw new HostedParticipantError("busy", "Target collaborator process is stopping.");
+		return participantStatus(this.store, this.registrations, participant, includeQueue);
 	}
 
 	private createEventId(): string {
@@ -413,11 +248,5 @@ function takeoverAlreadyApplied(participant: HostedParticipant, targetKey: strin
 	return isHeld(participant.state)
 		&& participant.holderTargetKey === targetKey
 		&& participant.transition.cause === "takeover"
-		&& participant.transition.previousGeneration === expectedGeneration;
-}
-
-function standDownApplied(participant: HostedParticipant, expectedGeneration: string): boolean {
-	return isVacant(participant.state)
-		&& participant.transition.cause === "stand_down"
 		&& participant.transition.previousGeneration === expectedGeneration;
 }

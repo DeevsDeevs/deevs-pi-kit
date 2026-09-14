@@ -145,7 +145,8 @@ function assertReacquirable(current: HostedParticipant, operation: AcquireOperat
 function standDownAlreadyApplied(current: HostedParticipant, operation: StandDownOperation): boolean {
 	return isVacant(current.state)
 		&& current.transition.cause === "stand_down"
-		&& current.transition.previousGeneration === operation.expectedGeneration;
+		&& current.transition.previousGeneration === operation.expectedGeneration
+		&& current.transition.previousHolderTargetKey === operation.targetKey;
 }
 
 function takeoverAdvances(current: HostedParticipant, operation: TakeoverOperation): boolean {
@@ -160,14 +161,30 @@ function applyParticipantTransition(
 	nextState: HostedParticipant["state"],
 ): HostedRuntimeState {
 	if (!isHeld(current.state) || current.holderTargetKey !== operation.targetKey) {
-		if (current.state === nextState && current.transition.cause === cause) return state;
+		if (transitionAlreadyApplied(current, operation, cause, nextState)) return state;
 		throw new HostedStateConflictError("conflict", "Only the current participant holder may change its state.");
 	}
 	if (current.generation === operation.generation || operation.at < current.updatedAt) {
 		throw new HostedStateConflictError("conflict", "Participant transition generation or time does not advance.");
 	}
-	const transition: HostedParticipantTransition = { cause, previousGeneration: current.generation, at: operation.at };
+	const transition: HostedParticipantTransition = {
+		cause,
+		previousGeneration: current.generation,
+		previousHolderTargetKey: operation.targetKey,
+		at: operation.at,
+	};
 	return replaceParticipant(state, transitionParticipant(current, transition, nextState, operation.generation));
+}
+
+function transitionAlreadyApplied(
+	current: HostedParticipant,
+	operation: ParticipantTransitionRequest,
+	cause: HostedParticipantTransition["cause"],
+	nextState: HostedParticipant["state"],
+): boolean {
+	return current.state === nextState
+		&& current.transition.cause === cause
+		&& current.transition.previousHolderTargetKey === operation.targetKey;
 }
 
 function transitionParticipant(

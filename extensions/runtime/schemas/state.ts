@@ -90,6 +90,7 @@ export const HostedParticipantTransitionSchema = Type.Object({
 		Type.Literal("revive"),
 	]),
 	previousGeneration: Type.Optional(IdText),
+	previousHolderTargetKey: Type.Optional(IdText),
 	at: Timestamp,
 }, STRICT_OBJECT);
 
@@ -169,7 +170,7 @@ export const HostedMessagingGrantSchema = Type.Object({
 	operations: keyedRecord(IdText),
 }, STRICT_OBJECT);
 
-export const HOSTED_STATE_VERSION = 21;
+export const HOSTED_STATE_VERSION = 22;
 
 export const HostedRuntimeStateSchema = Type.Object({
 	version: Type.Literal(HOSTED_STATE_VERSION),

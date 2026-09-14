@@ -156,6 +156,8 @@ Runtime never prompts or focuses a Pi pane.
   vacating the participant, and never deletes a worktree. Missing or mismatched identity, ambiguous closure, or surviving owned
   processes become `needs_attention`. It requires the participant still held at the supplied generation, so a repeat call after the
   participant has vacated is a conflict, not another success: read current state and stand the successor down instead.
+- Only the target currently holding a participant may stand it down or release it, and only that same target gets the idempotent
+  success on a repeat; the same call from any other target is a conflict.
 - Release, revival, takeover, and worktree removal are separate trusted operations; no model prose can request or confirm one.
 
 ## Persistence and security boundary
@@ -166,7 +168,7 @@ entry kinds are ignored rather than migrated, and each section of the record is 
 or demoted to `needs_attention`, never repaired. Runtime state is validated by one TypeBox schema per persisted record against the root
 state schema, then by a single cross-reference check (held participants resolve to a same-project target, mail resolves to existing
 participants, delivery claims resolve to existing targets) and the messaging record capacity bound. Runtime state is current-only: a
-participant carries just its last transition (cause, previous generation, time) rather than a history, and a changed state shape bumps
+participant carries just its last transition (cause, previous generation, previous holder target, time) rather than a history, and a changed state shape bumps
 the state version instead of being migrated. Validation runs on load and before every atomic
 write/fsync/rename/directory-fsync replacement, and corruption fails closed. Socket and state rely on owner-only permissions, and Node
 Unix sockets expose no peer credentials, so random credentials protect against accidental and cross-wired children only. Herdr is an

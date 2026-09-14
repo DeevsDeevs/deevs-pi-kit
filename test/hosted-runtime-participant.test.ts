@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { HostedAgentTarget, HostedTarget } from "../extensions/runtime/hosted-types.ts";
 import { DirectoryMonitorManager } from "../extensions/runtime/service/monitor.ts";
-import { HostedParticipantCoordinator, HostedParticipantError } from "../extensions/runtime/service/participant.ts";
+import { HostedParticipantCoordinator } from "../extensions/runtime/service/participant.ts";
+import { HostedParticipantError } from "../extensions/runtime/service/participant-status.ts";
 import { dispatchHostedLine, type HostedProtocolContext } from "../extensions/runtime/service/protocol.ts";
 import type { HostedHostVerifier, HostedLiveAgent } from "../extensions/runtime/service/identity.ts";
 import { RuntimeRegistrationManager, type HostedLiveRegistration, type RegisterPiInput } from "../extensions/runtime/service/registration.ts";
@@ -260,6 +261,17 @@ describe("hosted participant coordinator", () => {
 		const revived = test.participants.acquire(fable, "review", "fable", true);
 		expect(revived).toMatchObject({ revived: true, participant: { state: "held" } });
 		expect(test.participants.acquire(fable, "review", "fable")).toMatchObject({ revived: true, participant: { generation: revived.participant.generation } });
+	});
+
+	it("refuses a stand-down or release from a target that never held the participant", async () => {
+		const test = setup();
+		const { main, fable, mainParticipant, fableParticipant } = await acquirePair(test);
+		test.participants.standDown(fable, fableParticipant.participantKey);
+		expect(() => test.participants.standDown(main, fableParticipant.participantKey)).toThrow(expect.objectContaining({ code: "conflict" }));
+		expect(test.participants.standDown(fable, fableParticipant.participantKey)).toMatchObject({ state: "vacant" });
+		test.participants.release(main, mainParticipant.participantKey);
+		expect(() => test.participants.release(fable, mainParticipant.participantKey)).toThrow(expect.objectContaining({ code: "conflict" }));
+		expect(test.participants.release(main, mainParticipant.participantKey)).toMatchObject({ state: "ended" });
 	});
 
 	it("rejects send when the caller holds no participant identity", async () => {
