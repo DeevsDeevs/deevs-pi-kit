@@ -61,7 +61,7 @@ JSON closes the connection after an error response.
 | Monitor | `monitor.create`, `monitor.get`, `monitor.delete` |
 | Inbox and wake | `inbox.claim`, `inbox.ack`, `inbox.release`, `inbox.status`, `wake.accept` |
 | Participants | `participant.acquire`, `participant.get`, `participant.list`, `participant.stand_down`, `participant.stand_down_confirmed`, `participant.stop_confirmed`, `participant.release`, `participant.takeover` |
-| Mail | `mailbox.send`, `mailbox.status` |
+| Mail | `mailbox.send` |
 | Messaging | `messaging.issue`, `messaging.peers`, `messaging.send`, `messaging.status`, `messaging.receive`, `messaging.received`, `messaging.reply` |
 | Worktrees | `worktree.ensure`, `worktree.list`, `worktree.remove` |
 
