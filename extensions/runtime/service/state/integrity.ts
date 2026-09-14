@@ -1,7 +1,7 @@
 import type { HostedClaim, HostedEvent, HostedEventDelivery, HostedRuntimeState } from "../../hosted-types.ts";
 import { HOSTED_ACK_RETENTION_MS, HOSTED_MAX_STATE_RECORDS } from "../../schemas/common.ts";
 import { hostedEventRoutesToTarget } from "./events.ts";
-import { deriveAgentTargetKey, deriveParticipantKey, mailboxDedupeKey } from "./keys.ts";
+import { deriveParticipantKey, mailboxDedupeKey, targetIdentityKey } from "./keys.ts";
 
 /**
  * The root schema proves every record's shape; this proves the references between them and the
@@ -27,7 +27,7 @@ function checkKeyedRecords(state: HostedRuntimeState): void {
 	}
 	for (const [key, target] of Object.entries(state.targets)) {
 		checkKey(key, target.targetKey, "target");
-		if (target.kind === "agent") checkKey(key, deriveAgentTargetKey(target.projectRoot, target.agentName), "agent target identity");
+		checkKey(key, targetIdentityKey(target), "target identity");
 	}
 	for (const [key, monitor] of Object.entries(state.monitors)) {
 		checkKey(key, monitor.monitorId, "monitor");

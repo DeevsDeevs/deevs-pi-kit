@@ -148,9 +148,9 @@ export class RuntimeMessaging {
 			throw new RegistrationError("registration_stale", "Messaging recipient authority changed during issuance.");
 		}
 		const createdAt = this.now();
-		const descriptorPath = messagingDescriptorPath(this.store.root, target.targetKey, registration.clientGeneration);
+		const descriptorPath = messagingDescriptorPath(this.store.root, target.targetKey);
 		const existing = Object.values(this.store.read().messaging)
-			.find((grant) => reusableGrant(grant, target, registration, expectedGeneration, createdAt));
+			.find((grant) => reusableGrant(grant, target, expectedGeneration, createdAt));
 		if (existing) return { namespaceId: existing.namespaceId, descriptorPath, expiresAt: existing.expiresAt };
 		const secret = randomBytes(32).toString("base64url");
 		const grant: HostedMessagingGrant = {
@@ -159,8 +159,6 @@ export class RuntimeMessaging {
 			participantKey,
 			holderGeneration: expectedGeneration,
 			targetKey: target.targetKey,
-			clientGeneration: registration.clientGeneration,
-			terminalId: registration.host.terminalId,
 			configurationHash: messagingConfigurationHash(target),
 			createdAt,
 			expiresAt: createdAt + HOSTED_ACK_RETENTION_MS,
@@ -172,7 +170,7 @@ export class RuntimeMessaging {
 	}
 
 	private writeDescriptor(descriptorPath: string, grant: HostedMessagingGrant, secret: string): void {
-		const fd = openSync(descriptorPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+		const fd = openSync(descriptorPath, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
 		try {
 			const descriptor = { version: 1, socketPath: this.socketPath, namespaceId: grant.namespaceId, secret };
 			writeFileSync(fd, `${JSON.stringify(descriptor)}\n`);
@@ -314,12 +312,7 @@ export class RuntimeMessaging {
 		const registration = await this.registrations.verifyTarget(this.requireGrant(namespaceId).targetKey);
 		this.authorize(namespaceId, secret);
 		this.registrations.authorize(registration.registrationId, registration.registrationKey);
-		const grant = this.requireGrant(namespaceId);
-		if (registration.clientGeneration !== grant.clientGeneration || registration.host.terminalId !== grant.terminalId) {
-			this.store.apply({ type: "messaging.close", namespaceId, status: "revoked" });
-			throw new RegistrationError("registration_stale", "Messaging client binding changed.");
-		}
-		return { grant, registration };
+		return { grant: this.requireGrant(namespaceId), registration };
 	}
 
 	private requireGrant(namespaceId: string): HostedMessagingGrant {
@@ -341,12 +334,12 @@ export class RuntimeMessaging {
 			throw new RegistrationError("registration_stale", "Messaging credential is absent or invalid.");
 		}
 		if (this.now() >= grant.expiresAt) {
-			this.store.apply({ type: "messaging.close", namespaceId, status: "expired" });
+			this.store.apply({ type: "messaging.expire", namespaceId });
 			const message = "Messaging namespace expired; do not republish an uncertain operation under a new namespace.";
 			throw new RegistrationError("registration_stale", message);
 		}
 		if (!this.grantIsBoundToHolder(grant)) {
-			throw new RegistrationError("registration_stale", "Messaging authority is revoked or no longer bound to this holder.");
+			throw new RegistrationError("registration_stale", "Messaging authority is expired or no longer bound to this holder.");
 		}
 	}
 
@@ -380,13 +373,10 @@ function stillHeldBy(participant: HostedParticipant | undefined, generation: str
 function reusableGrant(
 	grant: HostedMessagingGrant,
 	target: HostedTarget,
-	registration: HostedLiveRegistration,
 	expectedGeneration: string,
 	at: number,
 ): boolean {
 	return grant.targetKey === target.targetKey
-		&& grant.clientGeneration === registration.clientGeneration
-		&& grant.terminalId === registration.host.terminalId
 		&& grant.holderGeneration === expectedGeneration
 		&& grant.configurationHash === messagingConfigurationHash(target)
 		&& grant.status === "active"
@@ -410,8 +400,8 @@ function messagingBinding(target: HostedTarget): MessagingBinding {
 	};
 }
 
-export function messagingDescriptorPath(root: string, targetKey: string, clientGeneration: string): string {
-	return join(root, `messaging-${digest(JSON.stringify([targetKey, clientGeneration]))}.json`);
+export function messagingDescriptorPath(root: string, targetKey: string): string {
+	return join(root, `messaging-${digest(targetKey)}.json`);
 }
 
 function liveTargetNamespace(
@@ -425,8 +415,6 @@ function liveTargetNamespace(
 		const holder = state.participants[grant.participantKey];
 		return grant.targetKey === registration.targetKey
 			&& grant.status === "active"
-			&& grant.clientGeneration === registration.clientGeneration
-			&& grant.terminalId === registration.host.terminalId
 			&& grant.configurationHash === messagingConfigurationHash(target)
 			&& holder?.state === "held"
 			&& holder.holderTargetKey === grant.targetKey

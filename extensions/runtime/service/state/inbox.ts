@@ -9,7 +9,7 @@ import {
 import { sameClaim, sameIds, sameOrderedIds, sameWake } from "./compare.ts";
 import { HostedStateConflictError } from "./errors.ts";
 import { deliveryBelongsToClaim, hostedEventRoutesToTarget, pendingHostedEvents } from "./events.ts";
-import { closeMessagingGrant } from "./messaging.ts";
+import { expireMessagingGrant } from "./messaging.ts";
 
 type ClaimOperation = Extract<HostedStateOperation, { type: "inbox.claim" }>;
 type AckOperation = Extract<HostedStateOperation, { type: "inbox.ack" }>;
@@ -205,7 +205,7 @@ function pruneAcknowledged(state: HostedRuntimeState, before: number): HostedRun
 	let pruned = state;
 	for (const grant of Object.values(state.messaging)) {
 		if (grant.expiresAt > before) continue;
-		pruned = closeMessagingGrant(pruned, { type: "messaging.close", namespaceId: grant.namespaceId, status: "expired" });
+		pruned = expireMessagingGrant(pruned, { type: "messaging.expire", namespaceId: grant.namespaceId });
 	}
 	const removable = removableEventIds(pruned, before);
 	retainClaimedEvents(pruned, removable);

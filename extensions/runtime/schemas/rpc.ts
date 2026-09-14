@@ -54,11 +54,10 @@ export const ParticipantAuthParams = Type.Object({ ...AUTH, participantKey: IdTe
 
 export const PiRegisterParams = Type.Object({
 	projectRoot: PathText,
+	worktreePath: Type.Optional(PathText),
 	piSessionId: IdText,
 	piSessionFile: PathText,
-	clientGeneration: IdText,
 	admittedClaims: Type.Array(Type.Object({ claimId: IdText, eventIds: EventIds }, STRICT_OBJECT), { maxItems: 12 }),
-	herdr: Type.Object({ paneId: IdText, terminalId: IdText, agentName: Type.Optional(IdText) }, STRICT_OBJECT),
 }, STRICT_OBJECT);
 
 export const BridgeBindParams = Type.Object({
@@ -66,7 +65,6 @@ export const BridgeBindParams = Type.Object({
 	agentName: boundedText(64),
 	driver: HostedNativeCollaboratorDriverSchema,
 	profile: HostedCollaboratorProfileSchema,
-	clientGeneration: IdText,
 	protocol: ParticipantNameText,
 	participantId: ParticipantNameText,
 	callerParticipantKey: IdText,
@@ -142,8 +140,6 @@ export const LiveRegistrationResult = Type.Object({
 	registrationId: IdText,
 	registrationKey: IdText,
 	leaseUntil: Count,
-	hostStateChangeSeq: Count,
-	paneId: IdText,
 });
 
 export const MailHintResult = Type.Object({ namespaceId: IdText, eventId: IdText });
@@ -153,8 +149,6 @@ export const HeartbeatResult = Type.Object({
 	registrationId: IdText,
 	registrationKey: IdText,
 	leaseUntil: Count,
-	hostStateChangeSeq: Count,
-	paneId: IdText,
 	inboxReady: Type.Optional(Type.Boolean()),
 	mail: Type.Optional(MailHintResult),
 });

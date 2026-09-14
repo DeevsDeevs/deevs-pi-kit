@@ -14,8 +14,7 @@ import { messagingConfigurationHash, messagingSendId } from "./keys.ts";
 import { sendMailboxMessage } from "./mailbox.ts";
 
 type IssueOperation = Extract<HostedStateOperation, { type: "messaging.issue" }>;
-type CloseOperation = Extract<HostedStateOperation, { type: "messaging.close" }>;
-type InvalidateClientOperation = Extract<HostedStateOperation, { type: "messaging.invalidate_client" }>;
+type ExpireOperation = Extract<HostedStateOperation, { type: "messaging.expire" }>;
 type ReadOperation = Extract<HostedStateOperation, { type: "messaging.read" }>;
 
 export function issueMessagingGrant(state: HostedRuntimeState, operation: IssueOperation): HostedRuntimeState {
@@ -28,26 +27,12 @@ export function issueMessagingGrant(state: HostedRuntimeState, operation: IssueO
 	return { ...state, messaging: { ...state.messaging, [grant.namespaceId]: grant } };
 }
 
-export function closeMessagingGrant(state: HostedRuntimeState, operation: CloseOperation): HostedRuntimeState {
+export function expireMessagingGrant(state: HostedRuntimeState, operation: ExpireOperation): HostedRuntimeState {
 	const grant = state.messaging[operation.namespaceId];
 	if (!grant || grant.status === "expired") return state;
-	if (grant.status === "revoked" && operation.status === "revoked") return state;
-	// ponytail: terminal namespace IDs remain under the 10,000-record cap; prune tombstones if launch volume requires it.
-	const closed: HostedMessagingGrant = {
-		...grant,
-		status: operation.status,
-		operations: operation.status === "expired" ? {} : grant.operations,
-	};
-	return { ...state, messaging: { ...state.messaging, [grant.namespaceId]: closed } };
-}
-
-export function invalidateMessagingClient(state: HostedRuntimeState, operation: InvalidateClientOperation): HostedRuntimeState {
-	let next = state;
-	for (const grant of Object.values(state.messaging)) {
-		if (!grantBelongsToClient(grant, operation)) continue;
-		next = closeMessagingGrant(next, { type: "messaging.close", namespaceId: grant.namespaceId, status: "revoked" });
-	}
-	return next;
+	// ponytail: expired namespace IDs remain under the 10,000-record cap; prune tombstones if launch volume requires it.
+	const expired: HostedMessagingGrant = { ...grant, status: "expired", operations: {} };
+	return { ...state, messaging: { ...state.messaging, [grant.namespaceId]: expired } };
 }
 
 export function markMessagingEventRead(state: HostedRuntimeState, operation: ReadOperation): HostedRuntimeState {
@@ -135,14 +120,9 @@ function newlyIssuedGrant(state: HostedRuntimeState, grant: HostedMessagingGrant
 	return grant.status === "active" && Object.keys(grant.operations).length === 0;
 }
 
-function grantBelongsToClient(grant: HostedMessagingGrant, operation: InvalidateClientOperation): boolean {
-	if (grant.targetKey !== operation.targetKey) return false;
-	return grant.clientGeneration !== operation.clientGeneration || grant.terminalId !== operation.terminalId;
-}
-
 function assertMessagingHolder(state: HostedRuntimeState, grant: HostedMessagingGrant, at: number): void {
 	if (!messagingAuthorityIsLive(state, grant, at)) {
-		throw new HostedStateConflictError("conflict", "Messaging authority is expired, revoked, or no longer bound to this holder.");
+		throw new HostedStateConflictError("conflict", "Messaging authority is expired or no longer bound to this holder.");
 	}
 }
 

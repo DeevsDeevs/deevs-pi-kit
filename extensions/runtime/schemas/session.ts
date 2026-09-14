@@ -57,7 +57,6 @@ export const ManagedAgentControlSchema = Type.Object({
 	profile: HostedCollaboratorProfileSchema,
 	protocol: ParticipantNameText,
 	participantId: ParticipantNameText,
-	clientGeneration: IdText,
 	holderGeneration: IdText,
 	paneId: IdText,
 	terminalId: IdText,

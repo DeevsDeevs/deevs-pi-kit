@@ -17,8 +17,7 @@ function git(cwd: string, args: string[]): string {
 
 class FakeHost implements HostedHostVerifier {
 	readonly agents = new Map<string, HostedLiveAgent>();
-	async getAgent(paneId: string): Promise<HostedLiveAgent> { const value = this.agents.get(paneId); if (!value) throw new Error("missing agent"); return value; }
-	async findTerminal(terminalId: string): Promise<HostedLiveAgent> { const values = [...this.agents.values()].filter((agent) => agent.terminalId === terminalId); if (values.length !== 1) throw new Error("missing terminal"); return values[0]!; }
+	async getAgent(agentName: string): Promise<HostedLiveAgent> { const value = this.agents.get(agentName); if (!value) throw new Error("missing agent"); return value; }
 }
 
 function setup() {
@@ -33,13 +32,12 @@ function setup() {
 	const sessionFile = join(root, "main.jsonl");
 	writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: "session_main", timestamp: "2026-01-01T00:00:00.000Z", cwd: project })}\n`);
 	const host = new FakeHost();
-	host.agents.set("w1:p1", { paneId: "w1:p1", tabId: "w1:t1", workspaceId: "w1", terminalId: "term_main", cwd: project, agentSession: { source: "herdr:pi", agent: "pi", kind: "path", value: sessionFile }, status: "idle", stateChangeSeq: 1 });
 	const runtimeRoot = join(root, "runtime");
 	const store = new HostedStateStore(runtimeRoot);
 	let registrationId = 0;
 	const registrations = new RuntimeRegistrationManager(store, host, { createId: () => `reg_${++registrationId}`, createKey: () => `key_${registrationId}` });
 	const participants = new HostedParticipantCoordinator(store, registrations, { request() {} }, { createGeneration: () => `lease_${Object.keys(store.read().participants).length + 1}` });
-	const input: RegisterPiInput = { projectRoot: project, piSessionId: "session_main", piSessionFile: sessionFile, clientGeneration: "client_main", admittedClaims: [], herdr: { paneId: "w1:p1", terminalId: "term_main" } };
+	const input: RegisterPiInput = { projectRoot: project, piSessionId: "session_main", piSessionFile: sessionFile, admittedClaims: [] };
 	return { root, project, host, store, registrations, participants, input, worktrees: new RuntimeWorktrees(runtimeRoot, store) };
 }
 
@@ -58,8 +56,7 @@ describe("Runtime collaborator worktrees", () => {
 
 		const writerSession = join(test.root, "writer.jsonl");
 		writeFileSync(writerSession, `${JSON.stringify({ type: "session", version: 3, id: "session_writer", timestamp: "2026-01-01T00:00:00.000Z", cwd: worktree.path })}\n`);
-		test.host.agents.set("w1:p9", { paneId: "w1:p9", tabId: "w1:t9", workspaceId: "w1", terminalId: "term_writer", cwd: worktree.path, agentSession: { source: "herdr:pi", agent: "pi", kind: "path", value: writerSession }, status: "idle", stateChangeSeq: 2 });
-		const writer = await test.registrations.register({ projectRoot: test.project, worktreePath: worktree.path, piSessionId: "session_writer", piSessionFile: writerSession, clientGeneration: "client_writer", admittedClaims: [], herdr: { paneId: "w1:p9", terminalId: "term_writer" } });
+		const writer = await test.registrations.register({ projectRoot: test.project, worktreePath: worktree.path, piSessionId: "session_writer", piSessionFile: writerSession, admittedClaims: [] });
 		expect(test.store.read().targets[writer.targetKey]).toMatchObject({ kind: "pi", projectRoot: test.project, worktreePath: worktree.path });
 		const held = test.participants.acquire(writer, "review", "writer").participant;
 		expect(test.store.read().participants[held.participantKey]?.worktreePath).toBe(worktree.path);

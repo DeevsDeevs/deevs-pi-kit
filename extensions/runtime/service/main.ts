@@ -8,7 +8,7 @@ try {
 		process.stdout.write("Usage: node extensions/runtime/service/main.ts [--root PATH]\n");
 	} else {
 		const server = await startRuntimeServer({ root: options.root });
-		const ready = { status: "ready", runtimeId: server.runtimeId, epoch: server.epoch, socket: server.socketPath };
+		const ready = { status: "ready", runtimeId: server.runtimeId, socket: server.socketPath };
 		process.stdout.write(`${JSON.stringify(ready)}\n`);
 		let stopping = false;
 		const stop = async () => {

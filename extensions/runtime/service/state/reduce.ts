@@ -13,8 +13,7 @@ import {
 } from "./inbox.ts";
 import { sendMailboxMessage } from "./mailbox.ts";
 import {
-	closeMessagingGrant,
-	invalidateMessagingClient,
+	expireMessagingGrant,
 	issueMessagingGrant,
 	markMessagingEventRead,
 	publishMessagingEvent,
@@ -37,8 +36,7 @@ type HostedStateReducers = {
 
 const reducers: HostedStateReducers = {
 	"messaging.issue": issueMessagingGrant,
-	"messaging.close": closeMessagingGrant,
-	"messaging.invalidate_client": invalidateMessagingClient,
+	"messaging.expire": expireMessagingGrant,
 	"messaging.send": publishMessagingEvent,
 	"messaging.read": markMessagingEventRead,
 	"target.ensure": ensureTarget,

@@ -12,7 +12,6 @@ const servers: RuntimeServerHandle[] = [];
 
 const context: HostedProtocolContext = {
 	runtimeId: "rt_test",
-	epoch: "epoch_test",
 	agentWake: "none",
 	degradedReason: "host_unavailable",
 };
@@ -43,7 +42,6 @@ describe("hosted runtime protocol", () => {
 			result: {
 				version: 1,
 				runtimeId: "rt_test",
-				epoch: "epoch_test",
 				capabilities: {
 					agentWake: "none",
 					degradedReason: "host_unavailable",
@@ -71,7 +69,7 @@ describe("hosted runtime protocol", () => {
 describe("hosted runtime Unix socket service", () => {
 	it("serves multiple strict request/response exchanges and removes its own socket", async () => {
 		const root = temporaryRoot();
-		const server = await startRuntimeServer({ root, epoch: "epoch_fixed" });
+		const server = await startRuntimeServer({ root });
 		servers.push(server);
 		expect(statSync(root).mode & 0o777).toBe(0o700);
 		expect(statSync(server.socketPath).mode & 0o777).toBe(0o600);
@@ -88,7 +86,7 @@ describe("hosted runtime Unix socket service", () => {
 	});
 
 	it("reassembles fragmented UTF-8 frames and accepts CRLF", async () => {
-		const server = await startRuntimeServer({ root: temporaryRoot(), epoch: "epoch_fragmented" });
+		const server = await startRuntimeServer({ root: temporaryRoot() });
 		servers.push(server);
 		const request = JSON.stringify({ v: 1, id: "fragmented", method: "hello", params: { minVersion: 1, maxVersion: 1 } });
 		const response = await fragmentedExchange(server.socketPath, request.slice(0, 17), `${request.slice(17)}\r\n`);

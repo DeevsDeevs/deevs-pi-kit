@@ -6,7 +6,6 @@ import { join } from "node:path";
 import { DirectoryMonitorManager } from "../extensions/runtime/service/monitor.ts";
 import { dispatchHostedLine, type HostedProtocolContext } from "../extensions/runtime/service/protocol.ts";
 import {
-	deriveTargetKey,
 	HerdrCliHostVerifier,
 	RegistrationError,
 	RuntimeRegistrationManager,
@@ -14,7 +13,7 @@ import {
 	type HostedLiveAgent,
 	type RegisterPiInput,
 } from "../extensions/runtime/service/registration.ts";
-import { HostedStateStore, pendingHostedEvents } from "../extensions/runtime/service/state.ts";
+import { HostedStateStore, pendingHostedEvents, piTargetKey } from "../extensions/runtime/service/state.ts";
 import { HostedWakeCoordinator } from "../extensions/runtime/service/wake.ts";
 
 const herdrResult = vi.hoisted(() => ({ value: {} as unknown, failure: undefined as string | undefined }));
@@ -32,19 +31,12 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 class FakeHost implements HostedHostVerifier {
 	agent: HostedLiveAgent;
 	available = true;
-	findBarrier?: Promise<void>;
 
 	constructor(agent: HostedLiveAgent) { this.agent = agent; }
-	async getAgent(_paneId: string): Promise<HostedLiveAgent> {
+	async getAgent(_agentName: string): Promise<HostedLiveAgent> {
 		if (!this.available) throw new RegistrationError("host_unavailable", "offline");
 		return this.agent;
 	}
-	async findTerminal(_terminalId: string): Promise<HostedLiveAgent> {
-		if (!this.available) throw new RegistrationError("host_unavailable", "offline");
-		await this.findBarrier;
-		return this.agent;
-	}
-	async prompt(): Promise<void> {}
 }
 
 function setup() {
@@ -56,15 +48,7 @@ function setup() {
 	mkdirSync(watchRoot, { recursive: true });
 	writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: "session_1", timestamp: "2026-01-01T00:00:00.000Z", cwd: projectRoot })}\n`);
 	const store = new HostedStateStore(join(root, "runtime"));
-	const agent: HostedLiveAgent = {
-		paneId: "w1:p1",
-		terminalId: "term_1",
-		cwd: projectRoot,
-		agentSession: { source: "herdr:pi", agent: "pi", kind: "path", value: sessionFile },
-		status: "idle",
-		stateChangeSeq: 7,
-	};
-	const host = new FakeHost(agent);
+	const host = new FakeHost({ name: "collab-1", cwd: projectRoot, tabId: "w1:t1", workspaceId: "w1" });
 	let now = 1_000;
 	let nextId = 0;
 	const registrations = new RuntimeRegistrationManager(store, host, {
@@ -73,81 +57,45 @@ function setup() {
 		createId: () => `reg_${++nextId}`,
 		createKey: () => `key_${nextId}`,
 	});
-	const input: RegisterPiInput = {
-		projectRoot,
-		piSessionId: "session_1",
-		piSessionFile: sessionFile,
-		clientGeneration: "client_1",
-		admittedClaims: [],
-		herdr: { paneId: "w1:p1", terminalId: "term_1" },
-	};
+	const input: RegisterPiInput = { projectRoot, piSessionId: "session_1", piSessionFile: sessionFile, admittedClaims: [] };
 	return { root, projectRoot, watchRoot, sessionFile, store, host, registrations, input, setNow: (value: number) => { now = value; } };
 }
 
-describe("Herdr exact-terminal verification", () => {
-	const own = { agent: "pi", pane_id: "w1:p1", terminal_id: "term_1", cwd: "/project", agent_session: { source: "herdr:pi", agent: "pi", kind: "path", value: "/session.jsonl" }, agent_status: "idle", state_change_seq: 1 };
-	const unrelated = { agent: "codex", pane_id: "w2:p1", terminal_id: "term_2", cwd: "/other", agent_status: "idle", state_change_seq: 1 };
-
-	it("does not require session identity from an unrelated terminal", async () => {
-		herdrResult.value = { agents: [unrelated, own] };
-		await expect(new HerdrCliHostVerifier().findTerminal("term_1")).resolves.toMatchObject({ terminalId: "term_1", paneId: "w1:p1", agentSession: own.agent_session });
-		expect(execFile).toHaveBeenCalledWith("herdr", ["agent", "list"], expect.objectContaining({ timeout: 2000 }), expect.any(Function));
-		herdrResult.value = { agent: unrelated };
-		await expect(new HerdrCliHostVerifier().getAgent("w2:p1")).rejects.toMatchObject({ code: "host_unavailable" });
-	});
-
-	it("separates a Herdr refusal from an unanswered query", async () => {
+describe("Herdr agent queries", () => {
+	it("resolves one exact agent and separates a refusal from an unanswered query", async () => {
+		herdrResult.value = { agent: { name: "collab-1", cwd: "/project", tab_id: "w1:t1", workspace_id: "w1" } };
+		await expect(new HerdrCliHostVerifier().getAgent("collab-1")).resolves.toEqual({ name: "collab-1", cwd: "/project", tabId: "w1:t1", workspaceId: "w1" });
+		expect(execFile).toHaveBeenCalledWith("herdr", ["agent", "get", "collab-1"], expect.objectContaining({ timeout: 2000 }), expect.any(Function));
+		herdrResult.value = { agent: { name: "collab-1" } };
+		await expect(new HerdrCliHostVerifier().getAgent("collab-1")).rejects.toMatchObject({ code: "host_unavailable" });
 		herdrResult.failure = JSON.stringify({ error: { code: "agent_not_found" } });
 		await expect(new HerdrCliHostVerifier().getAgent("gone")).rejects.toMatchObject({ code: "identity_mismatch" });
 		herdrResult.failure = "herdr: command not found";
 		await expect(new HerdrCliHostVerifier().getAgent("gone")).rejects.toMatchObject({ code: "host_unavailable" });
 		herdrResult.failure = undefined;
 	});
-
-	it.each([
-		{ name: "malformed matching identity", agents: [{ ...unrelated, terminal_id: "term_1" }], code: "host_unavailable" },
-		{ name: "duplicate with malformed matching identity", agents: [own, { ...unrelated, terminal_id: "term_1" }], code: "identity_mismatch" },
-		{ name: "missing routing identity", agents: [own, {}], code: "host_unavailable" },
-		{ name: "wrong routing identity type", agents: [own, { terminal_id: 42 }], code: "host_unavailable" },
-		{ name: "absent terminal", agents: [unrelated], code: "identity_mismatch" },
-		{ name: "malformed list", agents: null, code: "host_unavailable" },
-	])("fails closed for $name", async ({ agents, code }) => {
-		herdrResult.value = { agents };
-		await expect(new HerdrCliHostVerifier().findTerminal("term_1")).rejects.toMatchObject({ code });
-	});
 });
 
 describe("hosted Pi registration", () => {
-	it("derives a canonical durable target and idempotently renews one client generation", async () => {
+	it("keys a durable target by its Pi session ID and mints fresh credentials for each client", async () => {
 		const test = setup();
 		const first = await test.registrations.register(test.input);
-		expect(first).toMatchObject({ registrationId: "reg_1", registrationKey: "key_1", leaseUntil: 31_000, host: { stateChangeSeq: 7 } });
-		expect(first.targetKey).toBe(deriveTargetKey(test.projectRoot, "session_1"));
+		expect(first).toEqual({ targetKey: piTargetKey("session_1"), registrationId: "reg_1", registrationKey: "key_1", leaseUntil: 31_000 });
 		expect(test.store.read().targets[first.targetKey]).toMatchObject({ projectRoot: test.projectRoot, piSessionFile: test.sessionFile });
 		test.setNow(2_000);
-		const retry = await test.registrations.register(test.input);
-		expect(retry).toMatchObject({ registrationId: "reg_1", registrationKey: "key_1", leaseUntil: 32_000 });
-		test.host.agent = { ...test.host.agent, name: "pi-main", agentSession: { source: "pi-kit-runtime", agent: "pi", kind: "id", value: "session_1" } };
-		expect(await test.registrations.register({ ...test.input, herdr: { ...test.input.herdr, agentName: "pi-main" } })).toMatchObject({ registrationId: "reg_1" });
+		const replacement = await test.registrations.register(test.input);
+		expect(replacement).toMatchObject({ targetKey: first.targetKey, registrationId: "reg_2", leaseUntil: 32_000 });
+		expect(() => test.registrations.authorize(first.registrationId, first.registrationKey)).toThrow(RegistrationError);
+		test.setNow(32_001);
+		expect(() => test.registrations.authorize(replacement.registrationId, replacement.registrationKey)).toThrow(RegistrationError);
 	});
 
-	it("rejects every authoritative identity mismatch and host outage", async () => {
+	it("rejects a session file that does not carry the registered session identity", async () => {
 		const test = setup();
-		const cases: Array<Partial<HostedLiveAgent>> = [
-			{ paneId: "w1:p2" },
-			{ terminalId: "term_2" },
-			{ cwd: test.root },
-			{ agentSession: { source: "other", agent: "pi", kind: "path", value: test.sessionFile } },
-			{ agentSession: { source: "herdr:pi", agent: "pi", kind: "path", value: join(test.root, "missing.jsonl") } },
-		];
-		for (const patch of cases) {
-			test.host.agent = { ...test.host.agent, ...patch };
-			await expect(test.registrations.register(test.input)).rejects.toMatchObject({ code: "identity_mismatch" });
-			test.host.agent = { ...test.host.agent, ...patch, paneId: "w1:p1", terminalId: "term_1", cwd: test.projectRoot, agentSession: { source: "herdr:pi", agent: "pi", kind: "path", value: test.sessionFile } };
-		}
 		await expect(test.registrations.register({ ...test.input, piSessionId: "wrong_session" })).rejects.toMatchObject({ code: "invalid_request" });
-		test.host.available = false;
-		await expect(test.registrations.register(test.input)).rejects.toMatchObject({ code: "host_unavailable" });
+		await expect(test.registrations.register({ ...test.input, projectRoot: test.root })).rejects.toMatchObject({ code: "invalid_request" });
+		await expect(test.registrations.register({ ...test.input, piSessionFile: join(test.root, "missing.jsonl") })).rejects.toMatchObject({ code: "invalid_request" });
+		expect(test.store.read().targets).toEqual({});
 	});
 
 	it("validates admitted claims before persisting a new Pi target", async () => {
@@ -157,31 +105,11 @@ describe("hosted Pi registration", () => {
 		expect(test.store.read().targets).toEqual({});
 	});
 
-	it("rejects a second terminal, rotates a same-terminal generation, follows pane moves, and expires leases", async () => {
-		const test = setup();
-		const first = await test.registrations.register(test.input);
-		test.host.agent = { ...test.host.agent, paneId: "w1:p2", terminalId: "term_2" };
-		await expect(test.registrations.register({ ...test.input, herdr: { paneId: "w1:p2", terminalId: "term_2" } })).rejects.toMatchObject({ code: "conflict" });
-
-		test.host.agent = { ...test.host.agent, paneId: "w1:p9", terminalId: "term_1" };
-		const moved = await test.registrations.heartbeat(first.registrationId, first.registrationKey);
-		expect(moved.host.paneId).toBe("w1:p9");
-		const rotated = await test.registrations.register({ ...test.input, clientGeneration: "client_2", herdr: { paneId: "w1:p9", terminalId: "term_1" } });
-		expect(rotated.registrationId).toBe("reg_2");
-		expect(() => test.registrations.authorize(first.registrationId, first.registrationKey)).toThrow(RegistrationError);
-		test.setNow(31_001);
-		expect(() => test.registrations.authorize(rotated.registrationId, rotated.registrationKey)).toThrow(RegistrationError);
-	});
-
-	it("does not resurrect a registration removed during heartbeat verification", async () => {
+	it("keeps a heartbeat from resurrecting a registration removed while it verified", async () => {
 		const test = setup();
 		const registration = await test.registrations.register(test.input);
-		let release!: () => void;
-		test.host.findBarrier = new Promise<void>((resolve) => { release = resolve; });
 		const heartbeat = test.registrations.heartbeat(registration.registrationId, registration.registrationKey);
-		await Promise.resolve();
 		test.registrations.unregister(registration.registrationId, registration.registrationKey);
-		release();
 		await expect(heartbeat).rejects.toMatchObject({ code: "registration_stale" });
 		expect(() => test.registrations.authorize(registration.registrationId, registration.registrationKey)).toThrow(RegistrationError);
 	});
@@ -196,10 +124,10 @@ describe("hosted Pi registration", () => {
 		const later = new DirectoryMonitorManager(test.store, { automatic: false, now: () => 1_001 });
 		later.reconcile(monitor.monitorId);
 		const event = pendingHostedEvents(test.store.read(), registration.targetKey)[0]!;
-		test.store.apply({ type: "inbox.claim", claim: { claimId: "claim_old", targetKey: registration.targetKey, registrationId: registration.registrationId, clientGeneration: registration.clientGeneration, eventIds: [event.eventId], createdAt: 1_001, leaseUntil: 2_000, status: "active" } });
+		test.store.apply({ type: "inbox.claim", claim: { claimId: "claim_old", targetKey: registration.targetKey, registrationId: registration.registrationId, eventIds: [event.eventId], createdAt: 1_001, leaseUntil: 2_000, status: "active" } });
 		test.registrations.close();
 		const replacement = new RuntimeRegistrationManager(test.store, test.host, { now: () => 3_000, createId: () => "reg_new", createKey: () => "key_new" });
-		await replacement.register({ ...test.input, clientGeneration: "client_new", admittedClaims: [{ claimId: "claim_missing_after_prune", eventIds: ["evt_pruned"] }, { claimId: "claim_old", eventIds: [event.eventId] }] });
+		await replacement.register({ ...test.input, admittedClaims: [{ claimId: "claim_missing_after_prune", eventIds: ["evt_pruned"] }, { claimId: "claim_old", eventIds: [event.eventId] }] });
 		expect(test.store.read().events[event.eventId]?.delivery).toMatchObject({ status: "acked", claimId: "claim_old", ackedAt: 3_000 });
 	});
 });
@@ -209,10 +137,10 @@ describe("registration-authorized Monitor protocol", () => {
 		const test = setup();
 		const monitors = new DirectoryMonitorManager(test.store, { automatic: false, now: () => 1_000, createId: (prefix) => `${prefix}_rpc` });
 		const wakes = new HostedWakeCoordinator(test.store);
-		const context: HostedProtocolContext = { runtimeId: "rt_test", epoch: "epoch_test", agentWake: "none", registrations: test.registrations, monitors, wakes };
+		const context: HostedProtocolContext = { runtimeId: "rt_test", agentWake: "none", registrations: test.registrations, monitors, wakes };
 		const call = (method: string, params: unknown) => dispatchHostedLine(JSON.stringify({ v: 1, id: method, method, params }), context);
 		const registered = await call("pi.register", test.input);
-		expect(registered).toMatchObject({ ok: true, result: { registrationId: "reg_1", registrationKey: "key_1", hostStateChangeSeq: 7 } });
+		expect(registered).toMatchObject({ ok: true, result: { registrationId: "reg_1", registrationKey: "key_1" } });
 		const auth = { registrationId: "reg_1", registrationKey: "key_1" };
 		expect(await call("monitor.create", { ...auth, directory: test.watchRoot, settleMs: 250 })).toMatchObject({ ok: true, result: { monitorId: "mon_rpc", status: "watching" } });
 		expect(await call("monitor.get", auth)).toMatchObject({ ok: true, result: { monitor: { monitorId: "mon_rpc" } } });

@@ -31,7 +31,6 @@ async function setup(monitor: { scanIntervalMs?: number; onError?: (error: Error
 	const sessionRoot = join(root, "proof-sessions");
 	mkdirSync(sessionRoot);
 	let now = 1000;
-	let beforeVerify = async () => {};
 	const agents = new Map<string, HostedLiveAgent>();
 	const inputs = new Map<string, RegisterPiInput>();
 	for (const name of ["sender", "recipient", "outsider"]) {
@@ -39,12 +38,12 @@ async function setup(monitor: { scanIntervalMs?: number; onError?: (error: Error
 		mkdirSync(cwd, { recursive: true });
 		const file = join(sessionRoot, `${name}.jsonl`);
 		writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: name, cwd })}\n`);
-		agents.set(name, { paneId: name, terminalId: `terminal_${name}`, cwd, agentSession: { source: "herdr:pi", agent: "pi", kind: "path", value: file }, status: "idle", stateChangeSeq: 1 });
-		inputs.set(name, { projectRoot: cwd, piSessionId: name, piSessionFile: file, clientGeneration: `client_${name}`, admittedClaims: [], herdr: { paneId: name, terminalId: `terminal_${name}` } });
+		agents.set(name, { name, cwd });
+		inputs.set(name, { projectRoot: cwd, piSessionId: name, piSessionFile: file, admittedClaims: [] });
 	}
 	// Only Herdr identity is a fixture. MCP is a real child; RPC, authorization,
 	// publication, delivery claims and restart recovery use the actual service/store.
-	const options = { root: runtimeRoot, monitor, host: { async getAgent(id: string) { return agents.get(id)!; }, async findTerminal(id: string) { await beforeVerify(); return [...agents.values()].find(a => a.terminalId === id)!; } }, registration: { now: () => now }, participant: { now: () => now }, wake: { now: () => now } };
+	const options = { root: runtimeRoot, monitor, host: { async getAgent(name: string) { return agents.get(name)!; } }, registration: { now: () => now }, participant: { now: () => now }, wake: { now: () => now } };
 	let server: RuntimeServerHandle = await startRuntimeServer(options);
 	cleanups.push(async () => { await server.close(); rmSync(root, { recursive: true, force: true }); });
 	const client = new HostedRuntimeClient(server.socketPath);
@@ -61,7 +60,7 @@ async function setup(monitor: { scanIntervalMs?: number; onError?: (error: Error
 	if (recipientReady) await issue(recipientParticipant);
 	const { namespaceId, secret } = JSON.parse(readFileSync(issued.descriptorPath, "utf8")) as { namespaceId: string; secret: string };
 	const descriptor = { namespaceId, secret };
-	return { root, runtimeRoot, client, sender, recipient, outsider, senderParticipant, recipientParticipant, issued, issue, descriptor, inputs, register, setVerificationHook(hook: () => Promise<void>) { beforeVerify = hook; }, setNow(value: number) { now = value; }, async restart() { await server.close(); server = await startRuntimeServer(options); Object.assign(sender, await register("sender")); Object.assign(recipient, await register("recipient")); }, readState() { return readHostedRuntimeState(runtimeRoot); } };
+	return { root, runtimeRoot, client, sender, recipient, outsider, senderParticipant, recipientParticipant, issued, issue, descriptor, inputs, register, setNow(value: number) { now = value; }, async restart() { await server.close(); server = await startRuntimeServer(options); Object.assign(sender, await register("sender")); Object.assign(recipient, await register("recipient")); }, readState() { return readHostedRuntimeState(runtimeRoot); } };
 }
 
 async function mcp(path: string, calls: Call[]): Promise<Result[]> {
@@ -224,13 +223,11 @@ it("publishes before the recipient has a namespace, fences other participants' m
 	const recipient = await test.issue(test.recipientParticipant);
 	const [late] = await mcp(recipient.descriptorPath, [receive(eventId)]);
 	expect(late!.structuredContent.message).toMatchObject({ eventId, body: "Please inspect." });
-	// A replacement client of the same holder reads the same participant's mail; a new holder does not.
-	test.inputs.get("recipient")!.clientGeneration = "replacement";
+	// A replacement client of the same holder inherits the namespace and reads the same participant's mail.
 	Object.assign(test.recipient, await test.register("recipient"));
 	const replacement = await test.issue(test.recipientParticipant);
-	const [stale] = await mcp(recipient.descriptorPath, [received(eventId)]);
+	expect(replacement.namespaceId).toBe(recipient.namespaceId);
 	const [inherited] = await mcp(replacement.descriptorPath, [received(eventId)]);
-	expect(stale!.isError).toBe(true);
 	expect(inherited!.structuredContent.readAt).toBe(1000);
 	await test.client.call("participant.stand_down", { registrationId: test.recipient.registrationId, registrationKey: test.recipient.registrationKey, participantKey: test.recipientParticipant.participantKey, expectedGeneration: test.recipientParticipant.generation });
 	const [committedRetry, queued] = await mcp(test.issued.descriptorPath, [send("before-issuance"), send("recipient-stood-down")]);
@@ -251,10 +248,11 @@ it("uses the default Runtime registrar, real registration and private issuance t
 	const peers = await pi.call({ name: "collaborator_peers", arguments: {} });
 	expect(peers.isError, JSON.stringify({ content: peers.result.content, errors: pi.frames.filter(frame => frame.type === "extension_error") })).toBe(false);
 	const namespaceId = peers.result.details.namespaceId as string;
-	expect(namespaceId).not.toBe(test.issued.namespaceId);
+	// One namespace per held participant generation: a replacement client of the same holder inherits it.
+	expect(namespaceId).toBe(test.issued.namespaceId);
 	const grant = test.readState().messaging[namespaceId]!;
 	expect(grant.participantKey).toBe(test.senderParticipant.participantKey);
-	expect(grant.clientGeneration).not.toBe("client_sender");
+	expect(grant.holderGeneration).toBe(test.senderParticipant.generation);
 	const args = { ...send("default-runtime").arguments, namespaceId };
 	const sent = await pi.call({ name: "collaborator_send", arguments: args });
 	expect(sent.isError).toBe(false);
@@ -265,17 +263,14 @@ it("uses the default Runtime registrar, real registration and private issuance t
 	expect(Object.keys(test.readState().events)).toHaveLength(1);
 	const [incoming] = await mcp(recipient.descriptorPath, [{ name: "collaborator_send", arguments: { participantId: "sender", operationId: "headless-incoming", body: "No synthetic empty-editor authority." } }]);
 	expect(incoming!.isError).toBe(false);
-	let verifications = 0;
-	test.setVerificationHook(async () => { verifications++; });
 	await new Promise(resolve => setTimeout(resolve, 2500));
-	expect(verifications).toBeGreaterThan(0);
 	// RPC mode has no authoritative empty editor, so its heartbeat hint is never delivered.
 	expect(test.readState().events[incoming!.structuredContent.eventId]).toMatchObject({ type: "mailbox.message" });
 	expect(test.readState().events[incoming!.structuredContent.eventId]).not.toHaveProperty("readAt");
 	await pi.close();
 	const transcript = readFileSync(sessionFile, "utf8");
 	expect(transcript).not.toContain("deevs.hosted-runtime.messaging-mail.v1");
-	const descriptor = JSON.parse(readFileSync(messagingDescriptorPath(test.runtimeRoot, grant.targetKey, grant.clientGeneration), "utf8"));
+	const descriptor = JSON.parse(readFileSync(messagingDescriptorPath(test.runtimeRoot, grant.targetKey), "utf8"));
 	expect(transcript).not.toContain(descriptor.secret);
 	expect(transcript).toContain('"toolName":"collaborator_send"');
 }, 30_000);
@@ -499,7 +494,7 @@ it("transports the real maximum escaped event, recovers an ended-recipient retry
 	expect(Object.keys(test.readState().events)).toHaveLength(1);
 });
 
-it("never grants lifecycle authority to the messaging secret and fences client replacement", async () => {
+it("never grants lifecycle authority to the messaging secret and fences a cross-wired namespace", async () => {
 	const test = await setup();
 	const forbidden: Array<[string, Record<string, unknown>]> = [
 		["pi.heartbeat", {}],
@@ -515,29 +510,19 @@ it("never grants lifecycle authority to the messaging secret and fences client r
 	await expect(test.client.call("messaging.send", { ...test.descriptor, operationId: "forged", participantId: "recipient", bodyBase64: Buffer.from("forged").toString("base64"), senderParticipantKey: test.recipientParticipant.participantKey })).rejects.toMatchObject({ code: "invalid_request" });
 	const [wrongNamespace] = await mcp(test.issued.descriptorPath, [{ ...send("cross-wired"), arguments: { ...send("cross-wired").arguments, namespaceId: "msg_00000000-0000-0000-0000-000000000000" } }]);
 	expect(wrongNamespace!.isError).toBe(true);
-	test.inputs.get("sender")!.clientGeneration = "replacement-client";
-	await test.register("sender");
-	test.inputs.get("sender")!.clientGeneration = "client_sender";
-	await test.register("sender");
-	const [denied] = await mcp(test.issued.descriptorPath, [send("stale")]);
+	Object.assign(test.sender, await test.register("sender"));
+	const [reconnected] = await mcp(test.issued.descriptorPath, [send("after-reconnect")]);
+	expect(reconnected!.isError).toBe(false);
+	await test.client.call("participant.stand_down", { registrationId: test.sender.registrationId, registrationKey: test.sender.registrationKey, participantKey: test.senderParticipant.participantKey, expectedGeneration: test.senderParticipant.generation });
+	const [denied] = await mcp(test.issued.descriptorPath, [send("after-stand-down")]);
 	expect(denied!.isError).toBe(true);
-	expect(test.readState().messaging[test.issued.namespaceId]?.status).toBe("revoked");
-	expect(Object.keys(test.readState().events)).toHaveLength(0);
+	expect(Object.keys(test.readState().events)).toHaveLength(1);
 });
 
-it("rejects a holder change across asynchronous host verification before publication", async () => {
+it("rejects publication once its holder has stood down", async () => {
 	const test = await setup();
-	let entered!: () => void;
-	let release!: () => void;
-	const started = new Promise<void>(resolve => { entered = resolve; });
-	const blocked = new Promise<void>(resolve => { release = resolve; });
-	test.setVerificationHook(async () => { entered(); await blocked; });
-	const sending = mcp(test.issued.descriptorPath, [send("raced")]);
-	await started;
-	try {
-		await test.client.call("participant.stand_down", { registrationId: test.sender.registrationId, registrationKey: test.sender.registrationKey, participantKey: test.senderParticipant.participantKey, expectedGeneration: test.senderParticipant.generation });
-	} finally { release(); }
-	const [result] = await sending;
+	await test.client.call("participant.stand_down", { registrationId: test.sender.registrationId, registrationKey: test.sender.registrationKey, participantKey: test.senderParticipant.participantKey, expectedGeneration: test.senderParticipant.generation });
+	const [result] = await mcp(test.issued.descriptorPath, [send("raced")]);
 	expect(result!.isError).toBe(true);
 	expect(Object.keys(test.readState().events)).toHaveLength(0);
 });
@@ -563,7 +548,7 @@ it("returns no success or receipt on a real persistence failure", async () => {
 
 it("preserves an issued descriptor after an uncertain state commit", async () => {
 	const test = await setup({}, false);
-	const descriptorPath = messagingDescriptorPath(test.runtimeRoot, test.recipient.targetKey, "client_recipient");
+	const descriptorPath = messagingDescriptorPath(test.runtimeRoot, test.recipient.targetKey);
 	const originalSync = fs.fsyncSync;
 	let injected = 0;
 	const fault = vi.spyOn(fs, "fsyncSync").mockImplementation(fd => {
@@ -595,7 +580,7 @@ it("preserves an issued descriptor after an uncertain state commit", async () =>
 
 it("removes an uncommitted descriptor after a definite issuance failure", async () => {
 	const test = await setup({}, false);
-	const descriptorPath = messagingDescriptorPath(test.runtimeRoot, test.recipient.targetKey, "client_recipient");
+	const descriptorPath = messagingDescriptorPath(test.runtimeRoot, test.recipient.targetKey);
 	const statePath = runtimeStatePaths(test.runtimeRoot).state;
 	const originalRename = fs.renameSync;
 	let injected = 0;
@@ -687,26 +672,20 @@ it("negotiates actual MCP before descriptor issuance, transports escaped results
 	const result = await client.callTool("collaborator_status", { namespaceId: test.issued.namespaceId, operationId: args.operationId });
 	expect(JSON.parse(result.content[0]!.text)).toEqual(result.structuredContent);
 	expect((result.structuredContent as Result["structuredContent"]).event?.body).toBe(args.body);
-	const entered = new EventEmitter();
-	let release!: () => void;
-	const blocked = new Promise<void>(resolve => { release = resolve; });
-	test.setVerificationHook(async () => { entered.emit("entered"); await blocked; });
-	const waiting = once(entered, "entered");
 	const abort = new AbortController();
 	const cancelledArgs = { ...args, operationId: "cancelled-send" };
 	const pending = client.callTool("collaborator_send", cancelledArgs, abort.signal);
 	const rejected = expect(pending).rejects.toThrow("MCP transport stopped");
-	await waiting;
 	abort.abort();
-	try { await rejected; await client.close(); expect(client.closed).toBe(true); }
-	finally { release(); }
-	test.setVerificationHook(async () => {});
+	await rejected;
+	await client.close();
+	expect(client.closed).toBe(true);
 	const replacement = new MessagingMcpClient(future);
 	cleanups.push(() => replacement.close());
 	await replacement.initialize();
+	const recovered = await replacement.callTool("collaborator_send", cancelledArgs);
 	const committed = await replacement.callTool("collaborator_status", { namespaceId: test.issued.namespaceId, operationId: cancelledArgs.operationId });
 	expect(committed.isError).toBe(false);
-	const recovered = await replacement.callTool("collaborator_send", cancelledArgs);
 	expect(recovered.structuredContent?.eventId).toBe((committed.structuredContent as Result["structuredContent"]).event?.eventId);
 	expect(Object.keys(test.readState().events)).toHaveLength(2);
 });

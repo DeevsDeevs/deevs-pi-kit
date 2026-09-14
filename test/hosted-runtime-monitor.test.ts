@@ -17,7 +17,7 @@ function setup(automatic = false) {
 	const watchRoot = join(projectRoot, "reviews");
 	mkdirSync(watchRoot, { recursive: true });
 	const store = new HostedStateStore(runtimeRoot);
-	const target: HostedTarget = { kind: "pi", targetKey: "pi_target", projectRoot, piSessionId: "session_1", piSessionFile: join(root, "session.jsonl"), createdAt: 1 };
+	const target: HostedTarget = { kind: "pi", targetKey: "pi_session_1", projectRoot, piSessionId: "session_1", piSessionFile: join(root, "session.jsonl"), createdAt: 1 };
 	store.apply({ type: "target.ensure", target });
 	let now = 1_000;
 	const manager = new DirectoryMonitorManager(store, {
@@ -34,7 +34,7 @@ describe("hosted directory Monitor", () => {
 	it("does not rewrite durable state for an idle authoritative scan", () => {
 		const test = setup();
 		writeFileSync(join(test.watchRoot, "existing.md"), "baseline");
-		const monitor = test.manager.create("pi_target", test.watchRoot, 250);
+		const monitor = test.manager.create("pi_session_1", test.watchRoot, 250);
 		const before = test.store.read();
 		test.setNow(2_000);
 		expect(test.manager.reconcile(monitor.monitorId)).toBe(before.monitors[monitor.monitorId]);
@@ -44,29 +44,29 @@ describe("hosted directory Monitor", () => {
 	it("keeps a non-emitting baseline and emits one event only after a new file settles", () => {
 		const test = setup();
 		writeFileSync(join(test.watchRoot, "existing.md"), "baseline");
-		const monitor = test.manager.create("pi_target", test.watchRoot, 250);
+		const monitor = test.manager.create("pi_session_1", test.watchRoot, 250);
 		expect(monitor.entries["existing.md"]?.emitted).toBe(true);
 		writeFileSync(join(test.watchRoot, "review.md"), "review");
 		test.manager.reconcile(monitor.monitorId);
 		test.setNow(1_249);
 		test.manager.reconcile(monitor.monitorId);
-		expect(pendingHostedEvents(test.store.read(), "pi_target")).toEqual([]);
+		expect(pendingHostedEvents(test.store.read(), "pi_session_1")).toEqual([]);
 		test.setNow(1_250);
 		test.manager.reconcile(monitor.monitorId);
-		expect(pendingHostedEvents(test.store.read(), "pi_target")).toMatchObject([{
+		expect(pendingHostedEvents(test.store.read(), "pi_session_1")).toMatchObject([{
 			source: { id: "mon_fixed", generation: "gen_fixed", sequence: 1 },
 			payload: { relativePath: "review.md", fileType: "regular", size: 6 },
 		}]);
 		test.setNow(2_000);
 		writeFileSync(join(test.watchRoot, "review.md"), "modified after emission");
 		test.manager.reconcile(monitor.monitorId);
-		expect(pendingHostedEvents(test.store.read(), "pi_target")).toHaveLength(1);
+		expect(pendingHostedEvents(test.store.read(), "pi_session_1")).toHaveLength(1);
 	});
 
 	it("resets settling after disappearance but never emits a baseline path", () => {
 		const test = setup();
 		writeFileSync(join(test.watchRoot, "baseline.md"), "base");
-		const monitor = test.manager.create("pi_target", test.watchRoot, 250);
+		const monitor = test.manager.create("pi_session_1", test.watchRoot, 250);
 		rmSync(join(test.watchRoot, "baseline.md"));
 		writeFileSync(join(test.watchRoot, "new.md"), "new");
 		test.manager.reconcile(monitor.monitorId);
@@ -79,10 +79,10 @@ describe("hosted directory Monitor", () => {
 		test.manager.reconcile(monitor.monitorId);
 		test.setNow(1_449);
 		test.manager.reconcile(monitor.monitorId);
-		expect(pendingHostedEvents(test.store.read(), "pi_target")).toEqual([]);
+		expect(pendingHostedEvents(test.store.read(), "pi_session_1")).toEqual([]);
 		test.setNow(1_450);
 		test.manager.reconcile(monitor.monitorId);
-		expect(pendingHostedEvents(test.store.read(), "pi_target").map((event) => event.type === "filesystem.created" ? event.payload.relativePath : "")).toEqual(["new.md"]);
+		expect(pendingHostedEvents(test.store.read(), "pi_session_1").map((event) => event.type === "filesystem.created" ? event.payload.relativePath : "")).toEqual(["new.md"]);
 	});
 
 	it("rejects symlink roots and ignores symlink entries and nested files", () => {
@@ -91,8 +91,8 @@ describe("hosted directory Monitor", () => {
 		mkdirSync(outside);
 		const linkedRoot = join(test.projectRoot, "linked-root");
 		symlinkSync(test.watchRoot, linkedRoot);
-		expect(() => test.manager.create("pi_target", linkedRoot)).toThrow(MonitorInputError);
-		const monitor = test.manager.create("pi_target", test.watchRoot, 0);
+		expect(() => test.manager.create("pi_session_1", linkedRoot)).toThrow(MonitorInputError);
+		const monitor = test.manager.create("pi_session_1", test.watchRoot, 0);
 		writeFileSync(join(outside, "outside.md"), "outside");
 		symlinkSync(join(outside, "outside.md"), join(test.watchRoot, "linked.md"));
 		mkdirSync(join(test.watchRoot, "nested"));
@@ -100,13 +100,13 @@ describe("hosted directory Monitor", () => {
 		test.manager.reconcile(monitor.monitorId);
 		test.setNow(1_001);
 		test.manager.reconcile(monitor.monitorId);
-		expect(pendingHostedEvents(test.store.read(), "pi_target")).toEqual([]);
+		expect(pendingHostedEvents(test.store.read(), "pi_session_1")).toEqual([]);
 	});
 
 	it("degrades without losing its cursor and recovers when the root returns", () => {
 		const test = setup();
 		writeFileSync(join(test.watchRoot, "baseline.md"), "base");
-		const monitor = test.manager.create("pi_target", test.watchRoot);
+		const monitor = test.manager.create("pi_session_1", test.watchRoot);
 		rmSync(test.watchRoot, { recursive: true });
 		test.setNow(2_000);
 		expect(test.manager.reconcile(monitor.monitorId)?.status).toBe("degraded");
@@ -123,7 +123,7 @@ describe("hosted directory Monitor", () => {
 			const relativePath = `old-${index}.md`;
 			return [relativePath, { relativePath, size: 1, mtimeMs: 1, stableSince: 1, present: false, emitted: true }];
 		}));
-		const monitor: HostedMonitor = { monitorId: "mon_cap", targetKey: "pi_target", generation: "gen_cap", directory: test.watchRoot, settleMs: 250, status: "watching", sequence: 0, entries, createdAt: 1, updatedAt: 1 };
+		const monitor: HostedMonitor = { monitorId: "mon_cap", targetKey: "pi_session_1", generation: "gen_cap", directory: test.watchRoot, settleMs: 250, status: "watching", sequence: 0, entries, createdAt: 1, updatedAt: 1 };
 		test.store.apply({ type: "monitor.create", monitor });
 		writeFileSync(join(test.watchRoot, "overflow.md"), "overflow");
 		expect(() => test.manager.reconcile(monitor.monitorId)).toThrow(MonitorLimitError);
@@ -132,7 +132,7 @@ describe("hosted directory Monitor", () => {
 
 	it("discovers files created during downtime from durable state", () => {
 		const test = setup();
-		const monitor = test.manager.create("pi_target", test.watchRoot, 250);
+		const monitor = test.manager.create("pi_session_1", test.watchRoot, 250);
 		writeFileSync(join(test.watchRoot, "offline.md"), "offline");
 		let now = 5_000;
 		const store = new HostedStateStore(test.runtimeRoot);
@@ -140,15 +140,15 @@ describe("hosted directory Monitor", () => {
 		restarted.reconcile(monitor.monitorId);
 		now = 5_250;
 		restarted.reconcile(monitor.monitorId);
-		expect(pendingHostedEvents(store.read(), "pi_target").map((event) => event.type === "filesystem.created" ? event.payload.relativePath : "")).toEqual(["offline.md"]);
+		expect(pendingHostedEvents(store.read(), "pi_session_1").map((event) => event.type === "filesystem.created" ? event.payload.relativePath : "")).toEqual(["offline.md"]);
 	});
 
 	it("uses fs.watch only as a low-latency hint", async () => {
 		const test = setup(true);
-		const monitor = test.manager.create("pi_target", test.watchRoot, 0);
+		const monitor = test.manager.create("pi_session_1", test.watchRoot, 0);
 		test.manager.start();
 		writeFileSync(join(test.watchRoot, "hinted.md"), "hinted");
-		await vi.waitFor(() => expect(pendingHostedEvents(test.store.read(), "pi_target").map((event) => event.type === "filesystem.created" ? event.payload.relativePath : "")).toContain("hinted.md"), { timeout: 1_000, interval: 10 });
+		await vi.waitFor(() => expect(pendingHostedEvents(test.store.read(), "pi_session_1").map((event) => event.type === "filesystem.created" ? event.payload.relativePath : "")).toContain("hinted.md"), { timeout: 1_000, interval: 10 });
 		test.manager.close();
 		expect(test.store.read().monitors[monitor.monitorId]?.status).toBe("watching");
 	});

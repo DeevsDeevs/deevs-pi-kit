@@ -1,10 +1,9 @@
-import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { HostedRuntimeClient, HostedRuntimeClientError } from "./client.ts";
-import { currentHerdrPane, delay, shellQuote } from "./herdr.ts";
+import { delay, shellQuote } from "./herdr.ts";
 import { HOSTED_MAX_DELIVERY_BATCH } from "./hosted-types.ts";
 import {
 	auth,
@@ -49,7 +48,6 @@ export class RuntimeSession {
 	readonly root: string;
 	readonly client: HostedRuntimeClient;
 	readonly store: HostedSessionStore;
-	readonly clientGeneration = `client_${randomUUID()}`;
 	private readonly hooks: RuntimeSessionHooks;
 	private registration?: LiveClientRegistration;
 	private registering?: Promise<LiveClientRegistration>;
@@ -234,9 +232,7 @@ export class RuntimeSession {
 		if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Runtime registration requires a trusted project.");
 		const sessionFile = ctx.sessionManager.getSessionFile();
 		if (!sessionFile) throw new HostedRuntimeClientError("invalid_request", "Runtime requires a persisted Pi session.");
-		const host = await currentHerdrPane(this.pi);
-		this.requireCurrentScope(current);
-		const params = this.registrationParams(ctx, sessionFile, host.paneId, host.terminalId);
+		const params = this.registrationParams(ctx, sessionFile);
 		const registration = parseRegistration(await this.client.call("pi.register", params));
 		if (!current()) {
 			try { await this.client.call("pi.unregister", auth(registration)); } catch {}
@@ -257,15 +253,13 @@ export class RuntimeSession {
 		return registration;
 	}
 
-	private registrationParams(ctx: ExtensionContext, sessionFile: string, paneId: string, terminalId: string): RegisterPiParams {
+	private registrationParams(ctx: ExtensionContext, sessionFile: string): RegisterPiParams {
 		const worktree = this.store.worktree;
 		const params: RegisterPiParams = {
 			projectRoot: worktree?.projectRoot ?? realpathSync(ctx.cwd),
 			piSessionId: ctx.sessionManager.getSessionId(),
 			piSessionFile: realpathSync(sessionFile),
-			clientGeneration: this.clientGeneration,
 			admittedClaims: this.hooks.admittedClaims().slice(-HOSTED_MAX_DELIVERY_BATCH),
-			herdr: { paneId, terminalId },
 		};
 		if (worktree) params.worktreePath = worktree.worktreePath;
 		return params;
@@ -389,9 +383,7 @@ interface RegisterPiParams {
 	projectRoot: string;
 	piSessionId: string;
 	piSessionFile: string;
-	clientGeneration: string;
 	admittedClaims: HostedReceipt[];
-	herdr: { paneId: string; terminalId: string };
 	worktreePath?: string;
 }
 

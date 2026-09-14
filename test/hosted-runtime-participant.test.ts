@@ -17,16 +17,10 @@ class MultiHost implements HostedHostVerifier {
 	readonly agents = new Map<string, HostedLiveAgent>();
 	prompts: Array<{ paneId: string; text: string }> = [];
 
-	async getAgent(paneId: string): Promise<HostedLiveAgent> {
-		const agent = this.agents.get(paneId);
-		if (!agent) throw Object.assign(new Error("missing pane"), { code: "identity_mismatch" });
+	async getAgent(agentName: string): Promise<HostedLiveAgent> {
+		const agent = this.agents.get(agentName);
+		if (!agent) throw Object.assign(new Error("missing agent"), { code: "identity_mismatch" });
 		return agent;
-	}
-
-	async findTerminal(terminalId: string): Promise<HostedLiveAgent> {
-		const matches = [...this.agents.values()].filter((agent) => agent.terminalId === terminalId);
-		if (matches.length !== 1) throw Object.assign(new Error("missing terminal"), { code: "identity_mismatch" });
-		return matches[0]!;
 	}
 
 	async prompt(paneId: string, text: string): Promise<void> { this.prompts.push({ paneId, text }); }
@@ -42,11 +36,8 @@ function setup() {
 	for (const name of ["main", "fable", "successor"]) {
 		const sessionFile = join(root, `${name}.jsonl`);
 		const sessionId = `session_${name}`;
-		const paneId = `w1:p${inputs.size + 1}`;
-		const terminalId = `terminal_${name}`;
 		writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: sessionId, timestamp: "2026-01-01T00:00:00.000Z", cwd: projectRoot })}\n`);
-		host.agents.set(paneId, { paneId, terminalId, cwd: projectRoot, agentSession: { source: "herdr:pi", agent: "pi", kind: "path", value: sessionFile }, status: "idle", stateChangeSeq: 1 });
-		inputs.set(name, { projectRoot, piSessionId: sessionId, piSessionFile: sessionFile, clientGeneration: `client_${name}`, admittedClaims: [], herdr: { paneId, terminalId } });
+		inputs.set(name, { projectRoot, piSessionId: sessionId, piSessionFile: sessionFile, admittedClaims: [] });
 	}
 	const store = new HostedStateStore(join(root, "runtime"));
 	let now = 1_000;
@@ -60,7 +51,7 @@ function setup() {
 	let stopTarget = async (target: HostedTarget) => { stoppedTargets.push(target.targetKey); return stopOutcome; };
 	const participants = new HostedParticipantCoordinator(store, registrations, { request: (targetKey) => requested.push(targetKey) }, {
 		now: () => now,
-		epochStartedAt: 1_000,
+		startedAt: 1_000,
 		createGeneration: () => `lease_${++generationNumber}`,
 		createEventId: () => `event_${++eventNumber}`,
 		stopTarget: (target) => stopTarget(target),
@@ -116,16 +107,14 @@ describe("hosted participant coordinator", () => {
 			projectRoot: test.projectRoot,
 			agentName,
 			driver: "codex",
-			agentSession: { source: "herdr:codex", agent: "codex", kind: "id", value: "session_managed" },
 			participantKey: fableParticipant.participantKey,
 			holderGeneration: "lease_managed",
 			profile: "read-only",
-			clientGeneration: "agent_client",
-			herdr: { paneId: "w1:p9", terminalId: "terminal_managed", tabId: "w1:t9", workspaceId: "w1" },
+			herdr: { tabId: "w1:t9", workspaceId: "w1" },
 			createdAt: 1_000,
 		};
 		test.store.apply({ type: "agent.bind", bind: { target: managedTarget, protocol: "review", participantId: "fable", callerTargetKey: main.targetKey, callerParticipantKey: mainParticipant.participantKey, callerGeneration: mainParticipant.generation, expectedParticipantGeneration: vacant.generation, at: 1_001 } });
-		const managedRegistration: HostedLiveRegistration = { targetKey: managedTarget.targetKey, registrationId: "reg_managed", registrationKey: "key_managed", clientGeneration: "agent_client", leaseUntil: 31_000, host: { paneId: "w1:p9", terminalId: "terminal_managed", cwd: test.projectRoot, agentSession: managedTarget.agentSession, status: "idle", stateChangeSeq: 1 } };
+		const managedRegistration: HostedLiveRegistration = { targetKey: managedTarget.targetKey, registrationId: "reg_managed", registrationKey: "key_managed", leaseUntil: 31_000 };
 		const managed = test.participants.get(main, fableParticipant.participantKey);
 		expect(managed).toMatchObject({ state: "held", holderTargetKey: managedTarget.targetKey, generation: "lease_managed" });
 		expect(test.participants.list(main).find((participant) => participant.participantId === "fable")).toMatchObject({ driver: "codex", profile: "read-only" });
@@ -245,7 +234,7 @@ describe("hosted participant coordinator", () => {
 		expect(test.participants.takeover(successor, fableParticipant.participantKey, fableParticipant.generation).generation).toBe(taken.generation);
 	});
 
-	it("blocks takeover during a fresh Runtime epoch until reconnect grace elapses", async () => {
+	it("blocks takeover after a Runtime restart until reconnect grace elapses", async () => {
 		const test = setup();
 		const { fableParticipant } = await acquirePair(test);
 		test.registrations.close();
@@ -253,7 +242,7 @@ describe("hosted participant coordinator", () => {
 		let id = 0;
 		const registrations = new RuntimeRegistrationManager(test.store, test.host, { now: () => now, createId: () => `restart_reg_${++id}`, createKey: () => `restart_key_${id}` });
 		const successor = await registrations.register(test.inputs.get("successor")!);
-		const participants = new HostedParticipantCoordinator(test.store, registrations, { request() {} }, { now: () => now, epochStartedAt: 2_000, reconnectGraceMs: 60_000, createGeneration: () => "lease_after_restart" });
+		const participants = new HostedParticipantCoordinator(test.store, registrations, { request() {} }, { now: () => now, startedAt: 2_000, reconnectGraceMs: 60_000, createGeneration: () => "lease_after_restart" });
 		participants.registrationReady(successor.targetKey);
 		expect(() => participants.takeover(successor, fableParticipant.participantKey, fableParticipant.generation)).toThrow(expect.objectContaining({ code: "busy" }));
 		now = 62_001;
@@ -270,7 +259,7 @@ describe("hosted participant coordinator", () => {
 		monitors.reconcile(monitor.monitorId);
 		monitors.reconcile(monitor.monitorId);
 		const event = pendingHostedEvents(test.store.read(), fable.targetKey).find((candidate) => candidate.type === "filesystem.created")!;
-		test.store.apply({ type: "inbox.claim", claim: { claimId: "claim_filesystem", targetKey: fable.targetKey, registrationId: fable.registrationId, clientGeneration: fable.clientGeneration, eventIds: [event.eventId], createdAt: 1_000, leaseUntil: 2_000, status: "active" } });
+		test.store.apply({ type: "inbox.claim", claim: { claimId: "claim_filesystem", targetKey: fable.targetKey, registrationId: fable.registrationId, eventIds: [event.eventId], createdAt: 1_000, leaseUntil: 2_000, status: "active" } });
 		test.registrations.unregister(fable.registrationId, fable.registrationKey);
 		expect(test.participants.takeover(successor, fableParticipant.participantKey, fableParticipant.generation)).toMatchObject({ holderTargetKey: successor.targetKey });
 	});
@@ -302,7 +291,7 @@ describe("participant and mailbox RPC", () => {
 		const fable = await register(test, "fable");
 		const monitors = new DirectoryMonitorManager(test.store, { automatic: false });
 		const wakes = new HostedWakeCoordinator(test.store);
-		const context: HostedProtocolContext = { runtimeId: "rt_test", epoch: "epoch_test", agentWake: "none", registrations: test.registrations, monitors, wakes, participants: test.participants };
+		const context: HostedProtocolContext = { runtimeId: "rt_test", agentWake: "none", registrations: test.registrations, monitors, wakes, participants: test.participants };
 		const call = (method: string, params: unknown) => dispatchHostedLine(JSON.stringify({ v: 1, id: method, method, params }), context);
 		expect(await call("hello", { minVersion: 1, maxVersion: 1 })).toMatchObject({ ok: true, result: { capabilities: { mailbox: { maxBodyBytes: 16_384 } } } });
 		let mainAuth = { registrationId: main.registrationId, registrationKey: main.registrationKey };

@@ -14,7 +14,6 @@ class FakeHost implements HostedHostVerifier {
 	getAgentCalls = 0;
 	constructor(public agent: HostedLiveAgent) {}
 	async getAgent(): Promise<HostedLiveAgent> { this.getAgentCalls++; return this.agent; }
-	async findTerminal(): Promise<HostedLiveAgent> { return this.agent; }
 }
 
 function setup() {
@@ -26,15 +25,7 @@ function setup() {
 	mkdirSync(watchRoot, { recursive: true });
 	writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: "session_1", timestamp: "2026-01-01T00:00:00.000Z", cwd: projectRoot })}\n`);
 	const store = new HostedStateStore(join(root, "runtime"));
-	const host = new FakeHost({
-		paneId: "w1:p1",
-		terminalId: "term_1",
-		cwd: projectRoot,
-		agentSession: { source: "herdr:pi", agent: "pi", kind: "path", value: sessionFile },
-		status: "idle",
-		focused: false,
-		stateChangeSeq: 1,
-	});
+	const host = new FakeHost({ name: "pi-main", cwd: projectRoot });
 	let now = 1_000;
 	let registrationNumber = 0;
 	const registrations = new RuntimeRegistrationManager(store, host, {
@@ -42,14 +33,7 @@ function setup() {
 		createId: () => `reg_${++registrationNumber}`,
 		createKey: () => `key_${registrationNumber}`,
 	});
-	const input: RegisterPiInput = {
-		projectRoot,
-		piSessionId: "session_1",
-		piSessionFile: sessionFile,
-		clientGeneration: "client_1",
-		admittedClaims: [],
-		herdr: { paneId: "w1:p1", terminalId: "term_1" },
-	};
+	const input: RegisterPiInput = { projectRoot, piSessionId: "session_1", piSessionFile: sessionFile, admittedClaims: [] };
 	let claimNumber = 0;
 	const wakes = new HostedWakeCoordinator(store, {
 		now: () => now,
@@ -80,15 +64,15 @@ describe("hosted heartbeat inbox", () => {
 		expect(test.store.read().wakes).toEqual({});
 	});
 
-	it("claims, acknowledges, and rejects another registration generation", async () => {
+	it("claims, acknowledges, and rejects another registration", async () => {
 		const test = setup();
 		const { registration, event } = await enqueue(test);
 		const first = test.wakes.claim(registration);
 		expect(first.events.map((candidate) => candidate.eventId)).toEqual([event.eventId]);
 		test.wakes.ack(registration, first.claim.claimId, first.claim.eventIds);
 		expect(test.store.read().events[event.eventId]?.delivery.status).toBe("acked");
-		const replacement = await test.registrations.register({ ...test.input, clientGeneration: "client_2" });
-		expect(() => test.wakes.ack(replacement, first.claim.claimId, first.claim.eventIds)).toThrow(/another registration generation/);
+		const replacement = await test.registrations.register(test.input);
+		expect(() => test.wakes.ack(replacement, first.claim.claimId, first.claim.eventIds)).toThrow(/another registration/);
 	});
 
 	it("releases an exact claim for the next heartbeat", async () => {

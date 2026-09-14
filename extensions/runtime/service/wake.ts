@@ -70,7 +70,6 @@ export class HostedWakeCoordinator {
 			claimId,
 			targetKey: registration.targetKey,
 			registrationId: registration.registrationId,
-			clientGeneration: registration.clientGeneration,
 			eventIds: events.map((event) => event.eventId),
 			createdAt: now,
 			leaseUntil: now + (this.options.claimLeaseMs ?? CLAIM_LEASE_MS),
@@ -93,7 +92,6 @@ export class HostedWakeCoordinator {
 			claimId: this.options.createClaimId?.() ?? `claim_${randomUUID()}`,
 			targetKey: registration.targetKey,
 			registrationId: registration.registrationId,
-			clientGeneration: registration.clientGeneration,
 			eventIds: events.map((event) => event.eventId),
 			createdAt: now,
 			leaseUntil: now + (this.options.claimLeaseMs ?? CLAIM_LEASE_MS),
@@ -168,10 +166,8 @@ export class HostedWakeCoordinator {
 	}
 
 	private verifyClaimOwner(claim: HostedClaim, registration: HostedLiveRegistration): void {
-		const owned = claim.targetKey === registration.targetKey
-			&& claim.registrationId === registration.registrationId
-			&& claim.clientGeneration === registration.clientGeneration;
-		if (!owned) throw new HostedInboxError("claim_conflict", "Claim belongs to another registration generation.");
+		const owned = claim.targetKey === registration.targetKey && claim.registrationId === registration.registrationId;
+		if (!owned) throw new HostedInboxError("claim_conflict", "Claim belongs to another registration.");
 	}
 
 	private recordedClaim(claimId: string): HostedClaim {

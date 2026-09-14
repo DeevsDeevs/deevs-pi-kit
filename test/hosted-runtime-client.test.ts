@@ -16,12 +16,8 @@ afterEach(async () => {
 
 class FakeHost implements HostedHostVerifier {
 	agent: HostedLiveAgent;
-	getBarrier?: Promise<void>;
-	onGet?: () => void;
 	constructor(agent: HostedLiveAgent) { this.agent = agent; }
-	async getAgent(): Promise<HostedLiveAgent> { this.onGet?.(); await this.getBarrier; return this.agent; }
-	async findTerminal(): Promise<HostedLiveAgent> { return this.agent; }
-	async prompt(): Promise<void> {}
+	async getAgent(): Promise<HostedLiveAgent> { return this.agent; }
 }
 
 describe("hosted runtime client vertical", () => {
@@ -35,50 +31,37 @@ describe("hosted runtime client vertical", () => {
 		mkdirSync(watchRoot, { recursive: true });
 		writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: "session_1", timestamp: "2026-01-01T00:00:00.000Z", cwd: projectRoot })}\n`);
 		writeFileSync(fableSessionFile, `${JSON.stringify({ type: "session", version: 3, id: "session_2", timestamp: "2026-01-01T00:00:00.000Z", cwd: projectRoot })}\n`);
-		const host = new FakeHost({
-			paneId: "w1:p1",
-			terminalId: "term_1",
-			cwd: projectRoot,
-			agentSession: { source: "herdr:pi", agent: "pi", kind: "path", value: sessionFile },
-			status: "idle",
-			stateChangeSeq: 4,
-		});
+		const host = new FakeHost({ name: "pi-main", cwd: projectRoot });
 		const registrationIds = ["reg_client", "reg_fable"];
 		const registrationKeys = ["secret_client", "secret_fable"];
 		const server = await startRuntimeServer({
 			root: join(root, "runtime"),
-			epoch: "epoch_client",
 			host,
 			monitor: { automatic: false, now: () => 1_000, createId: (prefix) => `${prefix}_client` },
 			registration: { now: () => 1_000, createId: () => registrationIds.shift()!, createKey: () => registrationKeys.shift()! },
 		});
 		servers.push(server);
 		const client = new HostedRuntimeClient(server.socketPath);
-		expect(await client.hello()).toMatchObject({ epoch: "epoch_client", capabilities: { agentWake: "none", mailbox: { maxBodyBytes: 16_384 } } });
+		expect(await client.hello()).toMatchObject({ capabilities: { agentWake: "none", mailbox: { maxBodyBytes: 16_384 } } });
 		const registration = await client.call("pi.register", {
 			projectRoot,
 			piSessionId: "session_1",
 			piSessionFile: sessionFile,
-			clientGeneration: "client_1",
 			admittedClaims: [],
-			herdr: { paneId: "w1:p1", terminalId: "term_1" },
 		}) as Record<string, unknown>;
-		expect(registration).toMatchObject({ registrationId: "reg_client", registrationKey: "secret_client", hostStateChangeSeq: 4 });
+		expect(registration).toMatchObject({ registrationId: "reg_client", registrationKey: "secret_client" });
 		const auth = { registrationId: "reg_client", registrationKey: "secret_client" };
 		const sender = await client.call("participant.acquire", { ...auth, protocol: "review", participantId: "main" }) as { participant: { participantKey: string; generation: string } };
 		expect(sender).toMatchObject({ participant: { participantId: "main", holderLive: true }, revived: false });
-		const mainAgent = host.agent;
-		host.agent = { paneId: "w1:p2", terminalId: "term_2", cwd: projectRoot, agentSession: { source: "herdr:pi", agent: "pi", kind: "path", value: fableSessionFile }, status: "idle", focused: false, stateChangeSeq: 1 };
-		const fableRegistration = await client.call("pi.register", { projectRoot, piSessionId: "session_2", piSessionFile: fableSessionFile, clientGeneration: "client_2", admittedClaims: [], herdr: { paneId: "w1:p2", terminalId: "term_2" } }) as Record<string, unknown>;
+		const fableRegistration = await client.call("pi.register", { projectRoot, piSessionId: "session_2", piSessionFile: fableSessionFile, admittedClaims: [] }) as Record<string, unknown>;
 		const fableAuth = { registrationId: String(fableRegistration.registrationId), registrationKey: String(fableRegistration.registrationKey) };
 		const recipient = await client.call("participant.acquire", { ...fableAuth, protocol: "review", participantId: "fable" }) as { participant: { participantKey: string } };
 		expect(await client.call("participant.list", auth)).toMatchObject({ participants: [{ participantId: "fable" }, { participantId: "main" }] });
 		expect(await client.call("monitor.create", { ...auth, directory: watchRoot, settleMs: 250 })).toMatchObject({ monitorId: "mon_client", status: "watching" });
 		expect(await client.call("monitor.get", auth)).toMatchObject({ monitor: { monitorId: "mon_client" } });
 		await client.call("mailbox.send", { ...auth, senderParticipantKey: sender.participant.participantKey, expectedSenderGeneration: sender.participant.generation, recipientParticipantKey: recipient.participant.participantKey, sendId: "send_client", body: "Focused mail" });
-		expect(await client.call("pi.heartbeat", fableAuth)).toMatchObject({ paneId: "w1:p2", inboxReady: false });
-		host.agent = { ...mainAgent, paneId: "w1:p9", focused: true, stateChangeSeq: 5 };
-		expect(await client.call("pi.heartbeat", auth)).toMatchObject({ paneId: "w1:p9", hostStateChangeSeq: 5, inboxReady: false });
+		expect(await client.call("pi.heartbeat", fableAuth)).toMatchObject({ registrationId: fableAuth.registrationId, inboxReady: false });
+		expect(await client.call("pi.heartbeat", auth)).toMatchObject({ registrationId: "reg_client", inboxReady: false });
 		await expect(client.call("monitor.get", { ...auth, registrationKey: "wrong" })).rejects.toMatchObject({ code: "registration_stale" });
 		await client.call("monitor.delete", { ...auth, monitorId: "mon_client" });
 		expect(await client.call("monitor.get", auth)).toEqual({ monitor: null });
@@ -91,22 +74,15 @@ describe("hosted runtime client vertical", () => {
 		const sessionFile = join(root, "session.jsonl");
 		mkdirSync(projectRoot);
 		writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: "session_1", timestamp: "2026-01-01T00:00:00.000Z", cwd: projectRoot })}\n`);
-		let release!: () => void;
-		let entered!: () => void;
-		const host = new FakeHost({ paneId: "w1:p1", terminalId: "term_1", cwd: projectRoot, agentSession: { source: "herdr:pi", agent: "pi", kind: "path", value: sessionFile }, status: "idle", stateChangeSeq: 1 });
-		host.getBarrier = new Promise<void>((resolve) => { release = resolve; });
-		const getEntered = new Promise<void>((resolve) => { entered = resolve; });
-		host.onGet = entered;
+		const host = new FakeHost({ name: "pi-main", cwd: projectRoot });
 		const runtimeRoot = join(root, "runtime");
 		const server = await startRuntimeServer({ root: runtimeRoot, host, monitor: { automatic: false }, registration: { createId: () => "reg_race", createKey: () => "key_race" } });
 		servers.push(server);
-		const pi = { exec: async () => ({ code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: "w1:p1", terminal_id: "term_1" } } }), stderr: "", killed: false }) };
+		const pi = { exec: async () => ({ code: 0, stdout: "{}", stderr: "", killed: false }) };
 		const ctx = { cwd: projectRoot, isProjectTrusted: () => true, sessionManager: { getSessionFile: () => sessionFile, getSessionId: () => "session_1", getBranch: () => [] } };
 		const integration = new HostedRuntimeIntegration(pi as never, runtimeRoot);
 		const starting = integration.sessionStart(ctx as never);
-		await getEntered;
 		await integration.sessionShutdown();
-		release();
 		await starting;
 		const client = new HostedRuntimeClient(server.socketPath);
 		await expect(client.call("monitor.get", { registrationId: "reg_race", registrationKey: "key_race" })).rejects.toMatchObject({ code: "registration_stale" });
