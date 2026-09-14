@@ -170,7 +170,8 @@ validation-review missions       collaborators   collaborator-messaging
 ```bash
 npm install
 npm run lint:anti-slop && npm run typecheck && npm test
-npm run smoke:collaborator-release   # confirmed collaborator + Mission completion-once gate
+npm run smoke:runtime-release        # daemon, participant, mail and MCP gate against real Herdr
+npm run smoke:collaborator-release   # confirmed collaborator launch, mail hint, stop and worktree gate
 npm run smoke:native-release         # deterministic interactive-target and Git worktree gate
 ```
 
