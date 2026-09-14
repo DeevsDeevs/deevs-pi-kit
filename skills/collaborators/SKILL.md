@@ -28,6 +28,7 @@ Every lifecycle change is fail-closed: it requires explicit user intent and one 
 - Normal native writers receive the shared MCP connection through native CLI configuration and post-registration descriptor issuance. Guarded native read-only does not receive automatic MCP provisioning. Never infer MCP readiness from a held identity alone.
 - Do not accept native trust or tool prompts automatically. Startup is bounded: preserve timed-out resources/authority for explicit recovery. Preserve startup-hook changes that prevent clean-worktree registration; do not reset them to make the launch pass.
 - Chain checkpoint metadata is the narrow read-only write exception required for context recovery.
+- Persisted collaborator state is schema-checked on restore: a malformed section is dropped and affected reconnection authority becomes `needs_attention`, never silently repaired. Revival authority is never restored from history; it comes from the environment once.
 - Release, revival, and takeover remain explicit user commands.
 - Worktrees are separate from participant state: stop retains the worktree, cleanup is exact, confirmed, and destructive of anything uncommitted or unmerged there.
 - Stand-down keeps the process dormant. A later confirmed start replaces that exact stood-down target before launching, so no unowned Pi/native tab is left behind.

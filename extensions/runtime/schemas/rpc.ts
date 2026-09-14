@@ -17,8 +17,6 @@ import {
 	HostedParticipantStateSchema,
 } from "./state.ts";
 
-const OPEN_OBJECT = { additionalProperties: true } as const;
-
 /** The JSON a request line can carry; method schemas narrow it to a typed params object. */
 export type JsonValue = string | number | boolean | null | JsonObject | JsonValue[];
 
@@ -40,8 +38,8 @@ const ClaimedEventIds = Type.Array(IdText, { minItems: 1, maxItems: HOSTED_MAX_D
 /** Base64 keeps a 16 KiB body under the unchanged 64 KiB RPC request cap. */
 const BodyBase64 = boundedText(24 * 1024);
 
-export const HostedRequestIdSchema = Type.Object({ id: IdText }, OPEN_OBJECT);
-export const HostedRequestVersionSchema = Type.Object({ v: Type.Integer(), id: IdText }, OPEN_OBJECT);
+export const HostedRequestIdSchema = Type.Object({ id: IdText });
+export const HostedRequestVersionSchema = Type.Object({ v: Type.Integer(), id: IdText });
 export const HostedRequestSchema = Type.Object({
 	v: Type.Literal(HOSTED_PROTOCOL_VERSION),
 	id: IdText,
@@ -146,9 +144,9 @@ export const LiveRegistrationResult = Type.Object({
 	leaseUntil: Count,
 	hostStateChangeSeq: Count,
 	paneId: IdText,
-}, OPEN_OBJECT);
+});
 
-export const MailHintResult = Type.Object({ namespaceId: IdText, eventId: IdText }, OPEN_OBJECT);
+export const MailHintResult = Type.Object({ namespaceId: IdText, eventId: IdText });
 
 export const HeartbeatResult = Type.Object({
 	targetKey: IdText,
@@ -159,7 +157,7 @@ export const HeartbeatResult = Type.Object({
 	paneId: IdText,
 	inboxReady: Type.Optional(Type.Boolean()),
 	mail: Type.Optional(MailHintResult),
-}, OPEN_OBJECT);
+});
 
 export const ParticipantStatusResult = Type.Object({
 	participantKey: IdText,
@@ -172,14 +170,14 @@ export const ParticipantStatusResult = Type.Object({
 	driver: Type.Optional(HostedCollaboratorDriverSchema),
 	profile: Type.Optional(HostedCollaboratorProfileSchema),
 	unreadMail: Type.Optional(Count),
-	lastTransition: Type.Object({ cause: IdText }, OPEN_OBJECT),
-}, OPEN_OBJECT);
+	lastTransition: Type.Object({ cause: IdText }),
+});
 
 export const ParticipantAcquireResult = Type.Object({
 	participant: ParticipantStatusResult,
 	revived: Type.Boolean(),
 	transitioned: Type.Boolean(),
-}, OPEN_OBJECT);
+});
 
 /** Every messaging method carries the same namespace credentials, whatever else it takes. */
 export interface MessagingNamespaceAuth {

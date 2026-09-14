@@ -1,7 +1,20 @@
+import type { Static, TSchema } from "typebox";
+import { Value } from "typebox/value";
 import type { CustomEntry, MessageStartEvent } from "@earendil-works/pi-coding-agent";
 import type { HostedRuntimeClient } from "./client.ts";
 import { HostedRuntimeClientError } from "./client.ts";
-import type { HostedCollaboratorDriver, HostedCollaboratorProfile } from "./hosted-types.ts";
+import { schemaError } from "./schemas/common.ts";
+import {
+	HeartbeatResult,
+	LiveRegistrationResult,
+	ParticipantAcquireResult,
+	ParticipantStatusResult,
+	type ClientParticipantStatus,
+	type LiveClientRegistration,
+	type MailHint,
+} from "./schemas/rpc.ts";
+
+export type { ClientParticipantStatus, LiveClientRegistration, MailHint } from "./schemas/rpc.ts";
 
 export type RuntimeResponse = Awaited<ReturnType<HostedRuntimeClient["call"]>>;
 export type RestoredSessionData = CustomEntry["data"];
@@ -12,43 +25,9 @@ export interface SerializedObject {
 
 export type SerializedValue = string | number | boolean | null | SerializedObject | SerializedValue[];
 
-export interface LiveClientRegistration {
-	targetKey: string;
+interface RegistrationAuth {
 	registrationId: string;
 	registrationKey: string;
-	leaseUntil: number;
-	hostStateChangeSeq: number;
-	paneId: string;
-}
-
-export interface RegistrationAuth {
-	registrationId: string;
-	registrationKey: string;
-}
-
-export interface ClientParticipantStatus {
-	participantKey: string;
-	protocol: string;
-	participantId: string;
-	state: "held" | "vacant" | "ended";
-	generation: string;
-	holderTargetKey?: string;
-	holderLive: boolean;
-	driver?: HostedCollaboratorDriver;
-	profile?: HostedCollaboratorProfile;
-	unreadMail?: number;
-	lastTransition: { cause: string };
-}
-
-interface ParticipantAcquireResult {
-	participant: ClientParticipantStatus;
-	revived: boolean;
-	transitioned: boolean;
-}
-
-export interface MailHint {
-	namespaceId: string;
-	eventId: string;
 }
 
 export interface HostedHeartbeat {
@@ -61,65 +40,29 @@ export function auth(registration: LiveClientRegistration): RegistrationAuth {
 	return { registrationId: registration.registrationId, registrationKey: registration.registrationKey };
 }
 
+/** One RPC result decode: the same schema the service answered with, checked before any field is read. */
+function decode<Schema extends TSchema>(schema: Schema, value: RuntimeResponse, name: string): Static<Schema> {
+	if (!Value.Check(schema, value)) throw new HostedRuntimeClientError("invalid_response", schemaError(schema, value, name).message);
+	return value;
+}
+
 export function parseRegistration(value: RuntimeResponse): LiveClientRegistration {
-	const result = strictObject(value, "Runtime registration");
-	return {
-		targetKey: text(result.targetKey),
-		registrationId: text(result.registrationId),
-		registrationKey: text(result.registrationKey),
-		leaseUntil: integer(result.leaseUntil),
-		hostStateChangeSeq: integer(result.hostStateChangeSeq),
-		paneId: text(result.paneId),
-	};
+	return decode(LiveRegistrationResult, value, "Runtime registration");
 }
 
 export function parseHeartbeat(value: RuntimeResponse): HostedHeartbeat {
-	const result = strictObject(value, "Runtime heartbeat");
-	if (result.inboxReady !== undefined && !isBooleanValue(result.inboxReady)) {
-		throw new HostedRuntimeClientError("invalid_response", "Runtime heartbeat inbox readiness is invalid.");
-	}
-	const heartbeat: HostedHeartbeat = { registration: parseRegistration(result), inboxReady: result.inboxReady === true };
-	const mail = parseMailHint(result.mail);
-	if (mail) heartbeat.mail = mail;
+	const result = decode(HeartbeatResult, value, "Runtime heartbeat");
+	const heartbeat: HostedHeartbeat = { registration: result, inboxReady: result.inboxReady === true };
+	if (result.mail) heartbeat.mail = result.mail;
 	return heartbeat;
 }
 
-function parseMailHint(value: SerializedValue | undefined): MailHint | undefined {
-	if (value === undefined) return undefined;
-	const hint = strictObject(value, "Runtime mail hint");
-	return { namespaceId: text(hint.namespaceId), eventId: text(hint.eventId) };
-}
-
-export function parseAcquireResult(value: RuntimeResponse): ParticipantAcquireResult {
-	const result = strictObject(value, "Participant acquire result");
-	return {
-		participant: parseParticipant(result.participant),
-		revived: booleanValue(result.revived),
-		transitioned: booleanValue(result.transitioned),
-	};
+export function parseAcquireResult(value: RuntimeResponse): Static<typeof ParticipantAcquireResult> {
+	return decode(ParticipantAcquireResult, value, "Participant acquire result");
 }
 
 export function parseParticipant(value: RuntimeResponse): ClientParticipantStatus {
-	const participant = strictObject(value, "Runtime participant");
-	if (participant.state !== "held" && participant.state !== "vacant" && participant.state !== "ended") {
-		throw new HostedRuntimeClientError("invalid_response", "Participant state is invalid.");
-	}
-	const result: ClientParticipantStatus = {
-		participantKey: text(participant.participantKey),
-		protocol: text(participant.protocol),
-		participantId: text(participant.participantId),
-		state: participant.state,
-		generation: text(participant.generation),
-		holderLive: booleanValue(participant.holderLive),
-		lastTransition: { cause: text(strictObject(participant.lastTransition, "Participant transition").cause) },
-	};
-	if (participant.holderTargetKey !== undefined) result.holderTargetKey = text(participant.holderTargetKey);
-	if (participant.driver === "pi" || participant.driver === "claude-code" || participant.driver === "codex") {
-		result.driver = participant.driver;
-	}
-	if (participant.profile === "read-only" || participant.profile === "workspace-write") result.profile = participant.profile;
-	if (participant.unreadMail !== undefined) result.unreadMail = integer(participant.unreadMail);
-	return result;
+	return decode(ParticipantStatusResult, value, "Runtime participant");
 }
 
 export function errorCode(cause: unknown): string {
@@ -159,13 +102,6 @@ export function text(value: SerializedValue | undefined): string {
 
 export function optionalText(value: SerializedValue | undefined): string | undefined {
 	return isStringValue(value) ? value : undefined;
-}
-
-export function integer(value: SerializedValue | undefined): number {
-	if (!isNumberValue(value) || !Number.isSafeInteger(value) || value < 0) {
-		throw new HostedRuntimeClientError("invalid_response", "Expected a non-negative integer.");
-	}
-	return value;
 }
 
 export function booleanValue(value: SerializedValue | undefined): boolean {
