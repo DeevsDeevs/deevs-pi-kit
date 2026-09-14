@@ -107,7 +107,7 @@ describe("hosted Pi registration", () => {
 describe("registration-authorized Monitor protocol", () => {
 	it("registers, creates/reads/deletes a Monitor, and rejects a stale key", async () => {
 		const test = setup();
-		const monitors = new DirectoryMonitorManager(test.store, { automatic: false, now: () => 1_000, createId: (prefix) => `${prefix}_rpc` });
+		const monitors = new DirectoryMonitorManager(test.store, { automatic: false, now: () => 1_000, createId: () => "mon_rpc" });
 		const inbox = new RuntimeInbox(test.store);
 		const context: HostedProtocolContext = { runtimeId: "rt_test", agentWake: "none", registrations: test.registrations, monitors, inbox };
 		const call = (method: string, params: unknown) => dispatchHostedLine(JSON.stringify({ v: 1, id: method, method, params }), context);

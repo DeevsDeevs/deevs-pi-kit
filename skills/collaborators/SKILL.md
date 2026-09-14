@@ -33,4 +33,5 @@ Every lifecycle change is fail-closed: it requires explicit user intent and one 
 - Persisted collaborator state is schema-checked on restore: a malformed section is dropped and affected reconnection authority becomes `needs_attention`, never silently repaired. Revival authority is never restored from history; it comes from the environment once.
 - Release, revival, and takeover remain explicit user commands.
 - Worktrees are separate from participant state: stop retains the worktree, cleanup is exact, confirmed, and destructive of anything uncommitted or unmerged there.
+- A confirmed stop needs the participant still held at the generation you pass. Once it has vacated, repeating that stop is a conflict, not a second success — re-read `collaborator_list` rather than retrying blindly.
 - Stand-down keeps the process dormant. A later confirmed start replaces that exact stood-down target before launching, so no unowned Pi/native tab is left behind.

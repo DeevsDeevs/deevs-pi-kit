@@ -9,7 +9,7 @@ import {
 
 const DIGEST = "a".repeat(64);
 const NAMESPACE = "msg_00000000-0000-0000-0000-000000000001";
-const DEDUPE_KEY = "mon_1:gen_1:1:review.md";
+const DEDUPE_KEY = "mon_1:review.md";
 const PROJECT_ROOT = "/tmp/project";
 const PARTICIPANT = deriveParticipantKey(PROJECT_ROOT, "review", "main");
 
@@ -17,7 +17,7 @@ const context: HostedProtocolContext = { runtimeId: "rt_test", agentWake: "none"
 
 function populatedState(): HostedRuntimeState {
 	return {
-		version: 19,
+		version: 20,
 		messaging: {
 			[NAMESPACE]: {
 				namespaceId: NAMESPACE,
@@ -46,7 +46,6 @@ function populatedState(): HostedRuntimeState {
 			mon_1: {
 				monitorId: "mon_1",
 				targetKey: "pi_session-1",
-				generation: "gen_1",
 				directory: "/tmp/project/reviews",
 				settleMs: 250,
 				status: "watching",
@@ -66,7 +65,7 @@ function populatedState(): HostedRuntimeState {
 				generation: "lease_1",
 				holderTargetKey: "pi_session-1",
 				outSeq: {},
-				transitions: [{ cause: "acquire", generation: "lease_1", holderTargetKey: "pi_session-1", at: 100 }],
+				transition: { cause: "acquire", at: 100 },
 				createdAt: 100,
 				updatedAt: 100,
 			},
@@ -76,7 +75,7 @@ function populatedState(): HostedRuntimeState {
 				version: 1,
 				eventId: "evt_1",
 				dedupeKey: DEDUPE_KEY,
-				source: { kind: "monitor", id: "mon_1", generation: "gen_1", sequence: 1 },
+				source: { kind: "monitor", id: "mon_1", sequence: 1 },
 				targetKey: "pi_session-1",
 				type: "filesystem.created",
 				createdAt: 201,
@@ -100,7 +99,7 @@ const MALFORMED: Array<[string, (state: HostedRuntimeState) => void]> = [
 	["messaging", (state) => { record(state.messaging, NAMESPACE).secretDigest = "not-a-digest"; }],
 	["targets", (state) => { Reflect.set(record(state.targets, "pi_session-1"), "kind", "unknown"); }],
 	["monitors", (state) => { Reflect.set(record(state.monitors, "mon_1"), "status", "paused"); }],
-	["participants", (state) => { record(state.participants, PARTICIPANT).transitions = []; }],
+	["participants", (state) => { Reflect.set(record(state.participants, PARTICIPANT).transition, "cause", "paused"); }],
 	["events", (state) => { Reflect.set(record(state.events, "evt_1"), "type", "filesystem.removed"); }],
 	["dedupe", (state) => { Reflect.set(state.dedupe, DEDUPE_KEY, 7); }],
 	["claims", (state) => { Reflect.set(state.claims, "pi_session-1", "not-a-timestamp"); }],

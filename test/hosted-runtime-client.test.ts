@@ -37,7 +37,7 @@ describe("hosted runtime client vertical", () => {
 		const server = await startRuntimeServer({
 			root: join(root, "runtime"),
 			host,
-			monitor: { automatic: false, now: () => 1_000, createId: (prefix) => `${prefix}_client` },
+			monitor: { automatic: false, now: () => 1_000, createId: () => "mon_client" },
 			registration: { now: () => 1_000, createId: () => registrationIds.shift()!, createKey: () => registrationKeys.shift()! },
 		});
 		servers.push(server);

@@ -4,7 +4,6 @@ import {
 	Count,
 	HOSTED_MAILBOX_MAX_BODY_BYTES,
 	HOSTED_MONITOR_MAX_ENTRIES,
-	HOSTED_PARTICIPANT_TRANSITION_LIMIT,
 	HashText,
 	IdText,
 	ParticipantNameText,
@@ -73,7 +72,6 @@ export const HostedFileObservationSchema = Type.Object({
 export const HostedMonitorSchema = Type.Object({
 	monitorId: IdText,
 	targetKey: IdText,
-	generation: IdText,
 	directory: PathText,
 	settleMs: Count,
 	status: Type.Union([Type.Literal("watching"), Type.Literal("degraded")]),
@@ -92,10 +90,7 @@ export const HostedParticipantTransitionSchema = Type.Object({
 		Type.Literal("takeover"),
 		Type.Literal("revive"),
 	]),
-	generation: IdText,
-	holderTargetKey: Type.Optional(IdText),
 	previousGeneration: Type.Optional(IdText),
-	previousHolderTargetKey: Type.Optional(IdText),
 	at: Timestamp,
 }, STRICT_OBJECT);
 
@@ -115,7 +110,7 @@ export const HostedParticipantSchema = Type.Object({
 	holderTargetKey: Type.Optional(IdText),
 	worktreePath: Type.Optional(PathText),
 	outSeq: keyedRecord(Sequence),
-	transitions: Type.Array(HostedParticipantTransitionSchema, { minItems: 1, maxItems: HOSTED_PARTICIPANT_TRANSITION_LIMIT }),
+	transition: HostedParticipantTransitionSchema,
 	createdAt: Timestamp,
 	updatedAt: Timestamp,
 }, STRICT_OBJECT);
@@ -124,12 +119,7 @@ export const HostedFilesystemCreatedEventSchema = Type.Object({
 	version: Type.Literal(1),
 	eventId: IdText,
 	dedupeKey: PathText,
-	source: Type.Object({
-		kind: Type.Literal("monitor"),
-		id: IdText,
-		generation: IdText,
-		sequence: Count,
-	}, STRICT_OBJECT),
+	source: Type.Object({ kind: Type.Literal("monitor"), id: IdText, sequence: Count }, STRICT_OBJECT),
 	targetKey: IdText,
 	type: Type.Literal("filesystem.created"),
 	createdAt: Timestamp,
@@ -180,7 +170,7 @@ export const HostedMessagingGrantSchema = Type.Object({
 	operations: keyedRecord(IdText),
 }, STRICT_OBJECT);
 
-export const HOSTED_STATE_VERSION = 19;
+export const HOSTED_STATE_VERSION = 20;
 
 export const HostedRuntimeStateSchema = Type.Object({
 	version: Type.Literal(HOSTED_STATE_VERSION),

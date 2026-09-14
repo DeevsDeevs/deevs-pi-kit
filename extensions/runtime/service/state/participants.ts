@@ -1,5 +1,4 @@
 import {
-	HOSTED_PARTICIPANT_TRANSITION_LIMIT,
 	type HostedParticipant,
 	type HostedParticipantTransition,
 	type HostedRuntimeState,
@@ -44,14 +43,10 @@ export function acquireParticipant(state: HostedRuntimeState, operation: Acquire
 	assertReacquirable(current, operation);
 	const transition: HostedParticipantTransition = {
 		cause: isVacant(current.state) ? "reacquire" : "revive",
-		generation: operation.generation,
-		holderTargetKey: operation.targetKey,
 		previousGeneration: current.generation,
 		at: operation.at,
 	};
-	const previousHolderTargetKey = latestHolderTargetKey(current);
-	if (previousHolderTargetKey !== undefined) transition.previousHolderTargetKey = previousHolderTargetKey;
-	const held = transitionParticipant(current, transition, "held", operation.targetKey);
+	const held = transitionParticipant(current, transition, "held", operation.generation, operation.targetKey);
 	return replaceParticipant(state, withTargetWorktree(held, target));
 }
 
@@ -89,15 +84,8 @@ export function takeoverParticipant(state: HostedRuntimeState, operation: Takeov
 		throw new HostedStateConflictError("conflict", "Participant takeover is blocked by its current generation or time.");
 	}
 	assertTargetHasNoParticipant(state, operation.targetKey, current.participantKey);
-	const transition: HostedParticipantTransition = {
-		cause: "takeover",
-		generation: operation.generation,
-		holderTargetKey: operation.targetKey,
-		previousGeneration: current.generation,
-		at: operation.at,
-	};
-	if (current.holderTargetKey !== undefined) transition.previousHolderTargetKey = current.holderTargetKey;
-	return replaceParticipant(state, transitionParticipant(current, transition, "held", operation.targetKey));
+	const transition: HostedParticipantTransition = { cause: "takeover", previousGeneration: current.generation, at: operation.at };
+	return replaceParticipant(state, transitionParticipant(current, transition, "held", operation.generation, operation.targetKey));
 }
 
 export function clearParticipantWorktree(state: HostedRuntimeState, operation: ClearWorktreeOperation): HostedRuntimeState {
@@ -137,7 +125,7 @@ function newParticipant(operation: AcquireOperation, target: HostedTarget): Host
 		generation: operation.generation,
 		holderTargetKey: operation.targetKey,
 		outSeq: {},
-		transitions: [{ cause: "acquire", generation: operation.generation, holderTargetKey: operation.targetKey, at: operation.at }],
+		transition: { cause: "acquire", at: operation.at },
 		createdAt: operation.at,
 		updatedAt: operation.at,
 	};
@@ -155,11 +143,9 @@ function assertReacquirable(current: HostedParticipant, operation: AcquireOperat
 }
 
 function standDownAlreadyApplied(current: HostedParticipant, operation: StandDownOperation): boolean {
-	const latest = current.transitions.at(-1);
 	return isVacant(current.state)
-		&& latest?.cause === "stand_down"
-		&& latest.previousGeneration === operation.expectedGeneration
-		&& latest.previousHolderTargetKey === operation.targetKey;
+		&& current.transition.cause === "stand_down"
+		&& current.transition.previousGeneration === operation.expectedGeneration;
 }
 
 function takeoverAdvances(current: HostedParticipant, operation: TakeoverOperation): boolean {
@@ -174,36 +160,24 @@ function applyParticipantTransition(
 	nextState: HostedParticipant["state"],
 ): HostedRuntimeState {
 	if (!isHeld(current.state) || current.holderTargetKey !== operation.targetKey) {
-		const latest = current.transitions.at(-1);
-		if (current.state === nextState && latest?.cause === cause && latest.previousHolderTargetKey === operation.targetKey) return state;
+		if (current.state === nextState && current.transition.cause === cause) return state;
 		throw new HostedStateConflictError("conflict", "Only the current participant holder may change its state.");
 	}
 	if (current.generation === operation.generation || operation.at < current.updatedAt) {
 		throw new HostedStateConflictError("conflict", "Participant transition generation or time does not advance.");
 	}
-	const transition: HostedParticipantTransition = {
-		cause,
-		generation: operation.generation,
-		previousGeneration: current.generation,
-		previousHolderTargetKey: current.holderTargetKey,
-		at: operation.at,
-	};
-	return replaceParticipant(state, transitionParticipant(current, transition, nextState));
+	const transition: HostedParticipantTransition = { cause, previousGeneration: current.generation, at: operation.at };
+	return replaceParticipant(state, transitionParticipant(current, transition, nextState, operation.generation));
 }
 
 function transitionParticipant(
 	participant: HostedParticipant,
 	transition: HostedParticipantTransition,
 	state: HostedParticipant["state"],
+	generation: string,
 	holderTargetKey?: string,
 ): HostedParticipant {
-	const result: HostedParticipant = {
-		...participant,
-		state,
-		generation: transition.generation,
-		transitions: [...participant.transitions, transition].slice(-HOSTED_PARTICIPANT_TRANSITION_LIMIT),
-		updatedAt: transition.at,
-	};
+	const result: HostedParticipant = { ...participant, state, generation, transition, updatedAt: transition.at };
 	if (holderTargetKey) result.holderTargetKey = holderTargetKey;
 	else if (participant.holderTargetKey) result.holderTargetKey = undefined;
 	return result;
@@ -216,12 +190,4 @@ function withTargetWorktree(participant: HostedParticipant, target: HostedTarget
 		return cleared;
 	}
 	return { ...participant, worktreePath: target.worktreePath };
-}
-
-function latestHolderTargetKey(participant: HostedParticipant): string | undefined {
-	for (const transition of [...participant.transitions].reverse()) {
-		if (transition.holderTargetKey) return transition.holderTargetKey;
-		if (transition.previousHolderTargetKey) return transition.previousHolderTargetKey;
-	}
-	return undefined;
 }
