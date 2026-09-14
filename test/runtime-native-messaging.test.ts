@@ -44,10 +44,10 @@ it.each(["claude-code", "codex"] as const)("compiles %s native configuration wit
 	const context = driver === "claude-code" ? compiled.args[compiled.args.indexOf("--append-system-prompt") + 1]! : compiled.args.at(-1)!;
 	expect(context).toContain("Selected persona context.");
 	const skill = readFileSync(resolve("skills/collaborator-messaging/SKILL.md"), "utf8");
-	expect(context).toContain(resolve("skills/collaborator-messaging/SKILL.md"));
+	expect(context).not.toContain(resolve("skills/collaborator-messaging/SKILL.md"));
 	expect(context).not.toContain(skill.replace(/\s+/gu, " ").trim());
 	expect(context).toContain("Wait for explicit operator input");
-	expect(context).toContain("Before using messaging tools, read the shared skill");
+	expect(context).toContain("call collaborator_inbox and collaborator_receive");
 	expect(escapedCommandBytes(compiled.argv)).toBeLessThanOrEqual(4000);
 	expect(launch({ ...config, personaPrompt: "Selected persona context." }).args).toEqual(compiled.args);
 	if (driver === "claude-code") {

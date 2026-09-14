@@ -2,9 +2,10 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI, ExtensionContext, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { isJsonObject } from "../schemas/json.ts";
+import { isJsonObject, type JsonObject, type JsonValue } from "../schemas/json.ts";
 import { MessagingMcpClient, type McpToolResult } from "./client.ts";
 import { toolDefinitions } from "./tools.ts";
 
@@ -173,9 +174,62 @@ export function registerMessagingMcp(pi: ExtensionAPI, sourcePath: string, descr
 			label: tool.name,
 			description: tool.description,
 			parameters: Type.Unsafe<Record<string, string>>(tool.inputSchema),
+			renderCall: (args: Record<string, string>, theme: Theme) => messagingCall(tool.name, args, theme),
+			renderResult: (result: AgentToolResult<McpToolResult["structuredContent"]>, options: ToolRenderResultOptions, theme: Theme) =>
+				messagingResult(tool.name, result.details, options, theme),
 			execute: (_toolCallId, args, signal, _onUpdate, ctx) =>
 				executeMessagingTool(session, descriptorPath, tool.name, args, signal, ctx),
 		});
 	}
 	registerMessagingEvents(pi, session);
+}
+
+const CALL_LABELS = {
+	collaborator_peers: () => "peers",
+	collaborator_inbox: () => "inbox",
+	collaborator_send: (args) => `mail \u2192 ${args.participantId ?? "?"}`,
+	collaborator_reply: (args) => `reply \u21a9 ${shortId(args.eventId)}`,
+	collaborator_receive: (args) => `read ${shortId(args.eventId)}`,
+	collaborator_received: (args) => `mark read ${shortId(args.eventId)}`,
+	collaborator_status: (args) => `status ${shortId(args.operationId)}`,
+} satisfies Record<string, (args: Record<string, string>) => string>;
+
+function callLabel(name: string, args: Record<string, string>): string {
+	const label = Object.entries(CALL_LABELS).find(([tool]) => tool === name)?.[1];
+	return label ? label(args) : name;
+}
+
+/** One line per messaging call: the verb and its target, never the envelope. */
+function messagingCall(name: string, args: Record<string, string>, theme: Theme): Text {
+	return new Text(theme.fg("toolTitle", theme.bold("collab ")) + theme.fg("muted", callLabel(name, args)), 0, 0);
+}
+
+/** One line per messaging result: who said what, or how many, never the JSON. */
+function messagingResult(name: string, details: McpToolResult["structuredContent"], options: ToolRenderResultOptions, theme: Theme): Text {
+	if (options.expanded && details !== undefined) return new Text(theme.fg("muted", JSON.stringify(details, null, 2)), 0, 0);
+	return new Text(theme.fg("muted", resultSummary(name, isJsonObject(details) ? details : undefined)), 0, 0);
+}
+
+function resultSummary(name: string, details: JsonObject | undefined): string {
+	if (!details) return "done";
+	const message = details.message;
+	if (name === "collaborator_receive" && isJsonObject(message)) return `${text(message.from)}: ${excerpt(text(message.body))}`;
+	if (name === "collaborator_inbox") return `${Array.isArray(details.messages) ? details.messages.length : 0} unread`;
+	if (name === "collaborator_peers") return `${Array.isArray(details.peers) ? details.peers.length : 0} peers`;
+	if (name === "collaborator_status") return details.readAt === undefined || details.readAt === null ? "unread" : "read";
+	if (name === "collaborator_received") return "read";
+	return `sent ${shortId(text(details.eventId))}`;
+}
+
+function text(value: JsonValue | undefined): string {
+	return value === undefined || value === null ? "" : String(value);
+}
+
+function excerpt(body: string): string {
+	const flat = body.replace(/\s+/gu, " ").trim();
+	return flat.length > 120 ? `${flat.slice(0, 117)}...` : flat;
+}
+
+function shortId(value: string | undefined): string {
+	return value ? value.slice(0, 12) : "";
 }

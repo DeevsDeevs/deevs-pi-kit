@@ -84,6 +84,7 @@ export class NativeWakeSweeper {
 }
 
 function wakeText(unread: number, eventId: string, participantId: string): string {
-	return `Runtime mail: ${unread} unread message(s), newest event ${eventId} from ${participantId}.`
-		+ " Call collaborator_inbox, then collaborator_receive and collaborator_reply or collaborator_received.";
+	return `Mail from ${participantId} (${unread} unread, newest ${eventId}).`
+		+ " Read it with collaborator_inbox and collaborator_receive, do what it asks, and answer with collaborator_reply."
+		+ " Keep narration to one line.";
 }
