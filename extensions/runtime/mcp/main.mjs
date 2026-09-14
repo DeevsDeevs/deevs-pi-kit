@@ -1,4 +1,4 @@
-/* oxlint-disable anti-slop/no-runtime-typeof -- This executable is the descriptor/JSON-RPC input boundary; type checks reject malformed external data. */
+/* oxlint-disable anti-slop/no-runtime-typeof -- This executable is the descriptor and JSON-RPC input boundary. */
 import { once } from "node:events";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -7,35 +7,101 @@ import { isJsonObject } from "../schemas/json.ts";
 import { tools, toolDefinitions } from "./tools.ts";
 
 const MAX_FRAME = 256 * 1024;
+const PROTOCOL_VERSION = "2025-11-25";
+const DESCRIPTOR_KEYS = "namespaceId,secret,socketPath,version";
+const REQUEST_KEYS = ["jsonrpc", "id", "method", "params"];
+const CALL_KEYS = ["name", "arguments", "_meta"];
 let phase = "new";
 let windowStart = Date.now();
 let requests = 0;
 
+function descriptorIsValid(value) {
+	if (!isJsonObject(value)) return false;
+	if (Object.keys(value).sort().join(",") !== DESCRIPTOR_KEYS || value.version !== 1) return false;
+	if (typeof value.namespaceId !== "string" || !/^msg_[0-9a-f-]{36}$/.test(value.namespaceId)) return false;
+	if (typeof value.secret !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(value.secret)) return false;
+	if (typeof value.socketPath !== "string" || value.socketPath !== resolve(value.socketPath)) return false;
+	return Buffer.byteLength(value.socketPath) <= 8192;
+}
+
 function descriptor(path) {
 	if (!path || realpathSync(path) !== resolve(path)) throw new Error("Expected an exact regular descriptor path");
 	const directory = lstatSync(dirname(path));
-	if (!directory.isDirectory() || directory.uid !== process.getuid?.() || (directory.mode & 0o777) !== 0o700) throw new Error("Descriptor directory must be owner-private");
+	const ownerPrivateDirectory = directory.isDirectory() && directory.uid === process.getuid?.() && (directory.mode & 0o777) === 0o700;
+	if (!ownerPrivateDirectory) throw new Error("Descriptor directory must be owner-private");
 	const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
 	try {
 		const stat = fstatSync(fd);
-		if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.size > 16384) throw new Error("Descriptor must be a bounded owner-private file");
+		const bounded = stat.isFile() && stat.uid === process.getuid?.() && (stat.mode & 0o777) === 0o600 && stat.size <= 16384;
+		if (!bounded) throw new Error("Descriptor must be a bounded owner-private file");
 		const value = JSON.parse(readFileSync(fd, "utf8"));
-		if (!isJsonObject(value) || Object.keys(value).sort().join(",") !== "namespaceId,secret,socketPath,version" || value.version !== 1 || typeof value.namespaceId !== "string" || !/^msg_[0-9a-f-]{36}$/.test(value.namespaceId) || typeof value.secret !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(value.secret) || typeof value.socketPath !== "string" || value.socketPath !== resolve(value.socketPath) || Buffer.byteLength(value.socketPath) > 8192) throw new Error("Invalid messaging descriptor");
+		if (!descriptorIsValid(value)) throw new Error("Invalid messaging descriptor");
 		return value;
 	} finally { closeSync(fd); }
 }
 
-async function serve(path) {
-	let authority;
-	let client;
-	async function handle(request) {
+function validRequestId(id) {
+	return typeof id === "string" ? Buffer.byteLength(id) <= 128 : Number.isSafeInteger(id);
+}
+
+function requestIsWellFormed(request) {
+	if (!isJsonObject(request) || request.jsonrpc !== "2.0" || typeof request.method !== "string") return false;
+	if (Object.keys(request).some(key => !REQUEST_KEYS.includes(key))) return false;
+	return !("id" in request) || validRequestId(request.id);
+}
+
+function initializeIsWellFormed(params) {
+	if (typeof params.protocolVersion !== "string" || params.protocolVersion.length > 64) return false;
+	if (!isJsonObject(params.capabilities) || !isJsonObject(params.clientInfo)) return false;
+	return typeof params.clientInfo.name === "string" && typeof params.clientInfo.version === "string";
+}
+
+function argumentsAreWellFormed(tool, params, args) {
+	if (Object.keys(params).some(key => !CALL_KEYS.includes(key)) || !isJsonObject(args)) return false;
+	if (Object.keys(args).some(key => !Object.hasOwn(tool.properties, key))) return false;
+	return !tool.required.some(key => !Object.hasOwn(args, key));
+}
+
+function argumentIsWellFormed(tool, key, value) {
+	if (typeof value !== "string" || !value.length) return false;
+	return Buffer.byteLength(value) <= tool.properties[key].maxLength && Buffer.from(value).toString("utf8") === value;
+}
+
+/** One connection's authority: the descriptor is read once, on the first tool call that needs it. */
+function connect(path, authority) {
+	if (authority) return authority;
+	// Metadata negotiation may precede host binding; no credential or mail is usable until issuance.
+	let credentials;
+	try {
+		credentials = descriptor(path);
+	} catch {
+		throw new Error("Messaging descriptor unavailable; the controller must bind this target first");
+	}
+	return { credentials, client: new HostedRuntimeClient(credentials.socketPath, 5000, 128 * 1024) };
+}
+
+async function callTool(authority, tool, args) {
+	if (tool.name !== "collaborator_peers" && args.namespaceId !== authority.credentials.namespaceId) {
+		throw new Error("Namespace changed; never move an uncertain operation to a new namespace");
+	}
+	const method = `messaging.${tool.name.slice("collaborator_".length)}`;
+	const { body, ...otherArgs } = args;
+	const encoded = method === "messaging.send" || method === "messaging.reply"
+		? { ...otherArgs, bodyBase64: Buffer.from(body).toString("base64") }
+		: args;
+	const { namespaceId, secret } = authority.credentials;
+	return await authority.client.call(method, { ...encoded, namespaceId, secret });
+}
+
+function dispatch(path, state) {
+	return async function handle(request) {
 		const id = request?.id;
-		const validId = typeof id === "string" ? Buffer.byteLength(id) <= 128 : Number.isSafeInteger(id);
-		const error = (code, message) => ({ jsonrpc: "2.0", id: validId ? id : null, error: { code, message } });
+		const error = (code, message) => ({ jsonrpc: "2.0", id: validRequestId(id) ? id : null, error: { code, message } });
 		const result = value => ({ jsonrpc: "2.0", id, result: value });
-		if (!isJsonObject(request) || request.jsonrpc !== "2.0" || typeof request.method !== "string" || Object.keys(request).some(key => !["jsonrpc", "id", "method", "params"].includes(key)) || ("id" in request && !validId)) return error(-32600, "Invalid request");
+		if (!requestIsWellFormed(request)) return error(-32600, "Invalid request");
 		if (!("id" in request)) {
-			if (request.method === "notifications/initialized" && phase === "initializing" && (request.params === undefined || isJsonObject(request.params))) phase = "ready";
+			const initialized = request.params === undefined || isJsonObject(request.params);
+			if (request.method === "notifications/initialized" && phase === "initializing" && initialized) phase = "ready";
 			return;
 		}
 		if (request.params !== undefined && !isJsonObject(request.params)) return error(-32602, "Expected object params");
@@ -43,9 +109,10 @@ async function serve(path) {
 		if (request.method === "ping") return result({});
 		if (request.method === "initialize") {
 			if (phase !== "new") return error(-32600, "Already initialized");
-			if (typeof params.protocolVersion !== "string" || params.protocolVersion.length > 64 || !isJsonObject(params.capabilities) || !isJsonObject(params.clientInfo) || typeof params.clientInfo.name !== "string" || typeof params.clientInfo.version !== "string") return error(-32602, "Invalid initialization");
+			if (!initializeIsWellFormed(params)) return error(-32602, "Invalid initialization");
 			phase = "initializing";
-			return result({ protocolVersion: "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "pi-kit-messaging", version: "0.1.0" } });
+			const serverInfo = { name: "pi-kit-messaging", version: "0.1.0" };
+			return result({ protocolVersion: PROTOCOL_VERSION, capabilities: { tools: {} }, serverInfo });
 		}
 		if (phase !== "ready") return error(-32600, "Initialize first");
 		if (request.method === "tools/list") {
@@ -53,28 +120,34 @@ async function serve(path) {
 			return result({ tools: toolDefinitions });
 		}
 		if (request.method !== "tools/call") return error(-32601, "Method not found");
-		const tool = tools.find(tool => tool.name === params.name);
+		const tool = tools.find(candidate => candidate.name === params.name);
 		if (!tool) return error(-32602, "Unknown tool");
 		try {
 			const args = params.arguments ?? {};
-			if (Object.keys(params).some(key => !["name", "arguments", "_meta"].includes(key)) || !isJsonObject(args) || Object.keys(args).some(key => !Object.hasOwn(tool.properties, key)) || tool.required.some(key => !Object.hasOwn(args, key))) throw new Error("Unexpected or missing tool arguments");
-			for (const [key, value] of Object.entries(args)) if (typeof value !== "string" || !value.length || Buffer.byteLength(value) > tool.properties[key].maxLength || Buffer.from(value).toString("utf8") !== value) throw new Error("Invalid tool argument type, UTF-8, or byte limit");
-			if (!authority) {
-				// Metadata negotiation may precede host binding; no credential or mail is usable until issuance.
-				try { authority = descriptor(path); } catch { throw new Error("Messaging descriptor unavailable; the controller must bind this target first"); }
-				client = new HostedRuntimeClient(authority.socketPath, 5000, 128 * 1024);
+			if (!argumentsAreWellFormed(tool, params, args)) throw new Error("Unexpected or missing tool arguments");
+			for (const [key, value] of Object.entries(args)) {
+				if (!argumentIsWellFormed(tool, key, value)) throw new Error("Invalid tool argument type, UTF-8, or byte limit");
 			}
-			if (tool.name !== "collaborator_peers" && args.namespaceId !== authority.namespaceId) throw new Error("Namespace changed; never move an uncertain operation to a new namespace");
-			const method = `messaging.${tool.name.slice("collaborator_".length)}`;
-			const { body, ...otherArgs } = args;
-			const input = method === "messaging.send" || method === "messaging.reply" ? { ...otherArgs, bodyBase64: Buffer.from(body).toString("base64") } : args;
-			const value = await client.call(method, { ...input, namespaceId: authority.namespaceId, secret: authority.secret });
+			state.authority = connect(path, state.authority);
+			const value = await callTool(state.authority, tool, args);
 			return result({ isError: false, content: [{ type: "text", text: JSON.stringify(value) }], structuredContent: value });
 		} catch (cause) {
-			return result({ isError: true, content: [{ type: "text", text: JSON.stringify({ code: cause.code ?? "invalid_arguments", message: cause.message }) }] });
+			const failure = { code: cause.code ?? "invalid_arguments", message: cause.message };
+			return result({ isError: true, content: [{ type: "text", text: JSON.stringify(failure) }] });
 		}
-	}
+	};
+}
 
+function frame(response) {
+	const line = `${JSON.stringify(response)}\n`;
+	if (Buffer.byteLength(line) > MAX_FRAME) {
+		throw new Error("MCP output exceeds limit; resolve mutations by their original operation ID");
+	}
+	return line;
+}
+
+async function serve(path) {
+	const handle = dispatch(path, { authority: undefined });
 	let pending = Buffer.alloc(0);
 	for await (const chunk of process.stdin) {
 		let start = 0;
@@ -93,11 +166,7 @@ async function serve(path) {
 			catch { response = { jsonrpc: "2.0", id: null, error: { code: -32700, message: "Invalid UTF-8 JSON" } }; }
 			pending = Buffer.alloc(0);
 			response ??= await handle(request);
-			if (response) {
-				const line = `${JSON.stringify(response)}\n`;
-				if (Buffer.byteLength(line) > MAX_FRAME) throw new Error("MCP output exceeds limit; resolve mutations by their original operation ID");
-				if (!process.stdout.write(line)) await once(process.stdout, "drain");
-			}
+			if (response && !process.stdout.write(frame(response))) await once(process.stdout, "drain");
 		}
 	}
 	if (pending.length) throw new Error("Incomplete MCP frame at EOF");

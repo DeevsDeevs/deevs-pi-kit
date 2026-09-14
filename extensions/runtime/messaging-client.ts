@@ -27,13 +27,12 @@ export class MessagingClient {
 	}
 
 	async descriptor(ctx: ExtensionContext): Promise<string> {
-		const current = this.session.scope(ctx);
-		const registration = await this.session.requireRegistration(ctx);
-		return this.provision(registration, current);
+		return this.provision(await this.session.requireRegistration(ctx), ctx);
 	}
 
 	/** Issues this Pi session's own descriptor for an identity it authoritatively holds. */
-	async provision(registration: LiveClientRegistration, current: () => boolean): Promise<string> {
+	async provision(registration: LiveClientRegistration, ctx: ExtensionContext): Promise<string> {
+		const current = this.session.scope(ctx, registration);
 		this.session.requireCurrentScope(current);
 		const identity = this.session.requireParticipantIdentity();
 		const participantKey = identity.participantKey;
@@ -42,8 +41,7 @@ export class MessagingClient {
 			throw new HostedRuntimeClientError("conflict", "Current collaborator identity is not authoritatively held.");
 		}
 		const params = { ...auth(registration), participantKey, expectedGeneration, confirmed: true };
-		const issued = strictObject(await this.session.client.call("messaging.issue", params), "Messaging issuance");
-		this.session.requireCurrentScope(current);
+		const issued = strictObject(await this.session.scopedCall(current, "messaging.issue", params), "Messaging issuance");
 		if (!this.identityUnchanged(registration, identity)) {
 			throw new HostedRuntimeClientError("registration_stale", "Collaborator changed during messaging provisioning.");
 		}
@@ -67,8 +65,7 @@ export class MessagingClient {
 			expectedGeneration: participant.generation,
 			confirmed: true,
 		};
-		const issued = strictObject(await this.session.client.call("messaging.issue", params), "Native messaging descriptor");
-		this.session.requireCurrentScope(current);
+		const issued = strictObject(await this.session.scopedCall(current, "messaging.issue", params), "Native messaging descriptor");
 		if (issued.descriptorPath !== messagingDescriptorPath(this.session.root, control.targetKey)) {
 			throw new HostedRuntimeClientError("identity_mismatch", "Native messaging descriptor differs from its configured client.");
 		}

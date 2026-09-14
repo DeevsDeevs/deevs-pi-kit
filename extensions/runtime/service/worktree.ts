@@ -11,32 +11,32 @@ const BRANCH_PREFIX = "refs/heads/runtime/collab/";
 const MAX_GIT_BUFFER = 1024 * 1024;
 const GIT_TIMEOUT_MS = 30_000;
 
-export interface RuntimeWorktree {
+interface RuntimeWorktree {
 	protocol: string;
 	participantId: string;
 	path: string;
 	branchRef: string;
 }
 
-export interface WorktreeAuthority {
+interface WorktreeAuthority {
 	callerParticipantKey: string;
 	expectedCallerGeneration: string;
 }
 
-export interface EnsureWorktreeInput extends WorktreeAuthority {
+interface EnsureWorktreeInput extends WorktreeAuthority {
 	protocol: string;
 	participantId: string;
 }
 
-export interface RemoveWorktreeInput extends EnsureWorktreeInput {
+interface RemoveWorktreeInput extends EnsureWorktreeInput {
 	discardConfirmed: boolean;
 }
 
-export interface RemovedWorktree {
+interface RemovedWorktree {
 	removed: true;
 }
 
-export interface WorktreeListing extends RuntimeWorktree {
+interface WorktreeListing extends RuntimeWorktree {
 	participantState?: HostedParticipant["state"];
 	recorded: boolean;
 }
@@ -192,7 +192,7 @@ async function branchExists(projectRoot: string, branch: string): Promise<boolea
 	}
 }
 
-export async function listWorktrees(projectRoot: string): Promise<RuntimeWorktree[]> {
+async function listWorktrees(projectRoot: string): Promise<RuntimeWorktree[]> {
 	const worktrees: RuntimeWorktree[] = [];
 	let path: string | undefined;
 	for (const line of (await git(projectRoot, ["worktree", "list", "--porcelain"])).split("\n")) {

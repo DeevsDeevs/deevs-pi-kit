@@ -3,7 +3,8 @@ import { execFile } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { dispatchHostedLine, type HostedProtocolContext } from "../extensions/runtime/service/protocol.ts";
+import { dispatchHostedLine } from "../extensions/runtime/service/protocol.ts";
+import { protocolContext } from "./fixtures/runtime-protocol.ts";
 import { HerdrCliHostVerifier } from "../extensions/runtime/service/herdr-cli.ts";
 import { RuntimeError } from "../extensions/runtime/errors.ts";
 import type { HostedHostVerifier, HostedLiveAgent } from "../extensions/runtime/service/identity.ts";
@@ -105,7 +106,7 @@ describe("hosted Pi registration", () => {
 describe("registration-authorized protocol", () => {
 	it("registers, renews its lease, and rejects a stale key or an unknown params field", async () => {
 		const test = setup();
-		const context: HostedProtocolContext = { runtimeId: "rt_test", registrations: test.registrations };
+		const context = protocolContext(test.root, test.store, test.host, test.registrations);
 		const call = (method: string, params: unknown) => dispatchHostedLine(JSON.stringify({ v: 1, id: method, method, params }), context);
 		const registered = await call("pi.register", test.input);
 		expect(registered).toMatchObject({ ok: true, result: { registrationId: "reg_1", registrationKey: "key_1" } });

@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { RuntimeError } from "../errors.ts";
-import { type HostedAgentTarget, type HostedCollaboratorProfile, type HostedNativeCollaboratorDriver, isPiTarget } from "../schemas/state.ts";
+import {
+	type HostedAgentTarget,
+	type HostedCollaboratorProfile,
+	type HostedNativeCollaboratorDriver,
+	isPiTarget,
+} from "../schemas/state.ts";
 import { boundAgentNames, draftAgentBind, type BindAgentInput } from "./bind-request.ts";
 import type { HostedHostVerifier } from "./identity.ts";
 import { RuntimeRegistrationManager, type HostedLiveRegistration } from "./registration.ts";

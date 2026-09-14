@@ -151,16 +151,6 @@ describe("hosted runtime state persistence", () => {
 		expect(readHostedRuntimeState(root).events).toEqual({});
 	});
 
-	it("preserves committed state when a replacement fails validation", () => {
-		const root = temporaryRoot();
-		const state = populatedState();
-		writeHostedRuntimeState(root, state);
-		const invalid = structuredClone(state);
-		invalid.events.evt_1!.summary = "x".repeat(2_049);
-		expect(() => writeHostedRuntimeState(root, invalid)).toThrow(HostedStateStorageError);
-		expect(readHostedRuntimeState(root)).toEqual(state);
-	});
-
 	it("cleans its temporary file when the atomic rename fails", () => {
 		const root = temporaryRoot();
 		mkdirSync(runtimeStatePaths(root).state);

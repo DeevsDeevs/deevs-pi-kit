@@ -53,7 +53,9 @@ export function parseManagedAgent(value: string): ManagedAgentStatus {
 	} catch {
 		throw new HostedRuntimeClientError("invalid_response", "Herdr returned malformed agent JSON.");
 	}
-	const session: ManagedAgentSession = agent.agent_session ?? { source: `herdr:${agent.agent}`, agent: agent.agent, kind: "id", value: agent.name };
+	const reported = agent.agent_session;
+	const session: ManagedAgentSession = reported
+		?? { source: `herdr:${agent.agent}`, agent: agent.agent, kind: "id", value: agent.name };
 	if (session.agent !== agent.agent || session.source !== `herdr:${agent.agent}`) {
 		throw new HostedRuntimeClientError("identity_mismatch", "Herdr agent session does not match its reported driver.");
 	}

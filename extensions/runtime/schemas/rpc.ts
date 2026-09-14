@@ -123,7 +123,7 @@ export const LiveRegistrationResult = Type.Object({
 	leaseUntil: Count,
 });
 
-export const MailHintResult = Type.Object({ namespaceId: IdText, eventId: IdText });
+const MailHintResult = Type.Object({ namespaceId: IdText, eventId: IdText });
 
 export const HeartbeatResult = Type.Object({
 	targetKey: IdText,

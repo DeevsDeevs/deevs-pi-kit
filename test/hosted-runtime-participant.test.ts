@@ -5,7 +5,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { HostedAgentTarget, HostedTarget } from "../extensions/runtime/schemas/state.ts";
 import { HostedParticipantCoordinator } from "../extensions/runtime/service/participant.ts";
 import { RuntimeError } from "../extensions/runtime/errors.ts";
-import { dispatchHostedLine, type HostedProtocolContext } from "../extensions/runtime/service/protocol.ts";
+import { dispatchHostedLine } from "../extensions/runtime/service/protocol.ts";
+import { protocolContext } from "./fixtures/runtime-protocol.ts";
 import type { HostedHostVerifier, HostedLiveAgent } from "../extensions/runtime/service/identity.ts";
 import { RuntimeRegistrationManager, type HostedLiveRegistration, type RegisterPiInput } from "../extensions/runtime/service/registration.ts";
 import { deriveAgentTargetKey, HostedStateStore } from "../extensions/runtime/service/state.ts";
@@ -263,7 +264,7 @@ describe("participant and mailbox RPC", () => {
 		const test = setup();
 		const main = await register(test, "main");
 		const fable = await register(test, "fable");
-		const context: HostedProtocolContext = { runtimeId: "rt_test", registrations: test.registrations, participants: test.participants };
+		const context = protocolContext(test.root, test.store, test.host, test.registrations, test.participants);
 		const call = (method: string, params: unknown) => dispatchHostedLine(JSON.stringify({ v: 1, id: method, method, params }), context);
 		expect(await call("hello", { minVersion: 1, maxVersion: 1 })).toMatchObject({ ok: true, result: { capabilities: { mailbox: { maxBodyBytes: 16_384 } } } });
 		let mainAuth = { registrationId: main.registrationId, registrationKey: main.registrationKey };

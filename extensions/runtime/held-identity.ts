@@ -1,15 +1,22 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { HostedRuntimeClientError, type HostedRuntimeClient } from "./client.ts";
+import { HostedRuntimeClientError } from "./client.ts";
 import { isEnded, isHeld } from "./schemas/state.ts";
-import { auth, parseAcquireResult, parseParticipant, type ClientParticipantStatus, type LiveClientRegistration } from "./responses.ts";
+import {
+	auth,
+	parseAcquireResult,
+	parseParticipant,
+	type ClientParticipantStatus,
+	type LiveClientRegistration,
+	type RuntimeResponse,
+} from "./responses.ts";
 import type { HostedSessionStore, ParticipantIdentity } from "./session-record.ts";
 
 /** What re-proving a held identity needs from the Runtime session that owns it. */
 interface HeldIdentitySession {
-	readonly client: HostedRuntimeClient;
 	readonly store: HostedSessionStore;
 	scope(ctx: ExtensionContext, registration?: LiveClientRegistration): () => boolean;
 	requireCurrentScope(current: () => boolean): void;
+	scopedCall<Params extends object>(current: () => boolean, method: string, params: Params): Promise<RuntimeResponse>;
 }
 
 /** Re-proves a persisted held identity against Runtime, demoting it in session history when it no longer holds. */
@@ -24,13 +31,12 @@ export async function restoreHeldParticipant(
 	if (!identity || !isHeld(identity.disposition)) return;
 	session.requireCurrentScope(currentScope);
 	if (identity.participantKey && await verifyHeldParticipant(session, identity, registration, ctx, currentScope)) return;
-	const acquired = parseAcquireResult(await session.client.call("participant.acquire", {
+	const acquired = parseAcquireResult(await session.scopedCall(currentScope, "participant.acquire", {
 		...auth(registration),
 		protocol: identity.protocol,
 		participantId: identity.participantId,
 		revive: identity.reviveAuthorized === true,
 	}));
-	session.requireCurrentScope(currentScope);
 	const restored = acquired.participant;
 	const changed = identity.participantKey !== restored.participantKey || identity.generation !== restored.generation;
 	if (changed) session.store.persistHeld(identity.protocol, identity.participantId, restored);
@@ -49,13 +55,12 @@ async function verifyHeldParticipant(
 	const name = `${identity.protocol}/${identity.participantId}`;
 	let current: ClientParticipantStatus;
 	try {
-		current = parseParticipant(await session.client.call("participant.get", { ...auth(registration), participantKey }));
+		current = parseParticipant(await session.scopedCall(currentScope, "participant.get", { ...auth(registration), participantKey }));
 	} catch (error) {
 		session.requireCurrentScope(currentScope);
 		if (!(error instanceof HostedRuntimeClientError) || error.code !== "not_found") throw error;
 		return vacate(session, identity, ctx, `Collaborator ${name} is absent from Runtime; explicit acquire is required.`);
 	}
-	session.requireCurrentScope(currentScope);
 	if (current.protocol !== identity.protocol || current.participantId !== identity.participantId) {
 		return vacate(session, identity, ctx, `Collaborator identity key does not match ${name}; explicit acquire is required.`);
 	}

@@ -19,7 +19,13 @@ import {
 	type MailHint,
 } from "./schemas/rpc.ts";
 
-export type { ClientParticipantStatus, ClientWorktreeList, ClientWorktreeRemoval, LiveClientRegistration, MailHint } from "./schemas/rpc.ts";
+export type {
+	ClientParticipantStatus,
+	ClientWorktreeList,
+	ClientWorktreeRemoval,
+	LiveClientRegistration,
+	MailHint,
+} from "./schemas/rpc.ts";
 
 export type RuntimeResponse = Awaited<ReturnType<HostedRuntimeClient["call"]>>;
 export type RestoredSessionData = CustomEntry["data"];
@@ -97,10 +103,6 @@ export function asRecord(value: RestoredSessionData): JsonObject | undefined {
 export function text(value: JsonValue | undefined): string {
 	if (!isJsonString(value) || value.length === 0) throw new HostedRuntimeClientError("invalid_response", "Expected non-empty text.");
 	return value;
-}
-
-export function optionalText(value: JsonValue | undefined): string | undefined {
-	return isJsonString(value) ? value : undefined;
 }
 
 export function booleanValue(value: JsonValue | undefined): boolean {

@@ -2,9 +2,8 @@ import { RuntimeError } from "../../errors.ts";
 import { Value } from "typebox/value";
 import { type HostedMailboxMessageEvent, type HostedMessagingGrant, type HostedRuntimeState, isHeld } from "../../schemas/state.ts";
 import type { HostedMessagingSend, HostedStateOperation } from "./operations.ts";
-import { HOSTED_ACK_RETENTION_MS } from "../../schemas/common.ts";
+import { HOSTED_ACK_RETENTION_MS, HOSTED_MAX_STATE_RECORDS } from "../../schemas/common.ts";
 import { HostedMessagingGrantSchema } from "../../schemas/state.ts";
-import { assertStateId } from "./guards.ts";
 import { messagingConfigurationHash, messagingSendId } from "./keys.ts";
 import { sendMailboxMessage } from "./mailbox.ts";
 
@@ -18,6 +17,7 @@ export function issueMessagingGrant(state: HostedRuntimeState, operation: IssueO
 		throw new RuntimeError("conflict", "Messaging namespace shape or lifetime is invalid.");
 	}
 	if (!newlyIssuedGrant(state, grant)) throw new RuntimeError("conflict", "Messaging namespace must be newly issued.");
+	assertMessagingCapacity(state);
 	assertMessagingHolder(state, grant, grant.createdAt);
 	// One descriptor file exists per target, so a fresh grant supersedes that target's previous namespace.
 	const superseded = supersedeTargetGrants(state, grant.targetKey);
@@ -50,9 +50,9 @@ export function publishMessagingEvent(state: HostedRuntimeState, operation: Host
 	const grant = state.messaging[operation.namespaceId];
 	if (!grant) throw new RuntimeError("conflict", "Messaging namespace is absent.");
 	assertMessagingHolder(state, grant, operation.at);
-	assertStateId(operation.operationId, "Messaging operation ID");
 	const publishedId = Object.hasOwn(grant.operations, operation.operationId) ? grant.operations[operation.operationId] : undefined;
 	if (publishedId !== undefined) return republishedMessagingState(state, publishedId, operation);
+	assertMessagingCapacity(state);
 	const read = markReplyRead(state, grant, operation);
 	const sendId = messagingSendId(grant.namespaceId, operation.operationId);
 	const next = sendMailboxMessage(read, {
@@ -67,7 +67,7 @@ export function publishMessagingEvent(state: HostedRuntimeState, operation: Host
 		at: operation.at,
 	});
 	const event = next.events[operation.eventId];
-	if (event?.type !== "mailbox.message" || event.sendId !== sendId) {
+	if (!event || event.sendId !== sendId) {
 		throw new RuntimeError("conflict", "Messaging publication collided with an existing event.");
 	}
 	const publishedEvent = operation.inReplyToEventId === undefined ? event : { ...event, inReplyToEventId: operation.inReplyToEventId };
@@ -83,7 +83,7 @@ export function publishMessagingEvent(state: HostedRuntimeState, operation: Host
 
 export function messagingInboxEvent(state: HostedRuntimeState, grant: HostedMessagingGrant, eventId: string): HostedMailboxMessageEvent {
 	const event = state.events[eventId];
-	if (event?.type !== "mailbox.message") throw new RuntimeError("conflict", "Event is not ordinary mail.");
+	if (!event) throw new RuntimeError("conflict", "Event is absent from this namespace.");
 	if (event.recipientParticipantKey !== grant.participantKey) {
 		throw new RuntimeError("conflict", "Event is not addressed to this namespace's participant.");
 	}
@@ -106,7 +106,7 @@ function markReplyRead(state: HostedRuntimeState, grant: HostedMessagingGrant, o
 
 function republishedMessagingState(state: HostedRuntimeState, publishedId: string, operation: HostedMessagingSend): HostedRuntimeState {
 	const published = state.events[publishedId];
-	const repeated = published?.type === "mailbox.message" && messagingSendMatches(published, operation);
+	const repeated = published !== undefined && messagingSendMatches(published, operation);
 	if (!repeated) throw new RuntimeError("conflict", "Messaging operation ID was reused with different input.");
 	return state;
 }
@@ -117,18 +117,28 @@ function messagingSendMatches(published: HostedMailboxMessageEvent, operation: H
 		&& published.inReplyToEventId === operation.inReplyToEventId;
 }
 
+/** Namespaces and their operation records share one cap; only these two reducers ever add either. */
+function assertMessagingCapacity(state: HostedRuntimeState): void {
+	let records = Object.keys(state.messaging).length;
+	for (const grant of Object.values(state.messaging)) records += Object.keys(grant.operations).length;
+	if (records >= HOSTED_MAX_STATE_RECORDS) {
+		throw new RuntimeError("conflict", "messaging authority and operation records exceed capacity");
+	}
+}
+
 function newlyIssuedGrant(state: HostedRuntimeState, grant: HostedMessagingGrant): boolean {
 	if (state.messaging[grant.namespaceId]) return false;
 	return grant.status === "active" && Object.keys(grant.operations).length === 0;
 }
 
 function assertMessagingHolder(state: HostedRuntimeState, grant: HostedMessagingGrant, at: number): void {
-	if (!messagingAuthorityIsLive(state, grant, at)) {
+	if (!messagingGrantIsLive(state, grant, at)) {
 		throw new RuntimeError("conflict", "Messaging authority is expired or no longer bound to this holder.");
 	}
 }
 
-function messagingAuthorityIsLive(state: HostedRuntimeState, grant: HostedMessagingGrant, at: number): boolean {
+/** The one liveness rule: an active grant, inside its window, still held by its participant on its target. */
+export function messagingGrantIsLive(state: HostedRuntimeState, grant: HostedMessagingGrant, at: number): boolean {
 	const holder = state.participants[grant.participantKey];
 	const target = state.targets[grant.targetKey];
 	if (grant.status !== "active") return false;

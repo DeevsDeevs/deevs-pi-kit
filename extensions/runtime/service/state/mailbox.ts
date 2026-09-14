@@ -2,15 +2,12 @@ import { RuntimeError } from "../../errors.ts";
 import { HOSTED_MAILBOX_MAX_BODY_BYTES } from "../../schemas/common.ts";
 import { type HostedMailboxMessageEvent, type HostedParticipant, type HostedRuntimeState, isEnded, isHeld } from "../../schemas/state.ts";
 import type { HostedStateOperation } from "./operations.ts";
-import { assertStateId, assertStateTime } from "./guards.ts";
 import { mailboxDedupeKey } from "./keys.ts";
 import { MAX_ID_BYTES } from "../../schemas/common.ts";
 
 type MailboxSendOperation = Extract<HostedStateOperation, { type: "mailbox.send" }>;
 
 export function sendMailboxMessage(state: HostedRuntimeState, operation: MailboxSendOperation): HostedRuntimeState {
-	assertStateId(operation.eventId, "Mailbox event ID");
-	assertStateTime(operation.at, "Mailbox send time");
 	const sender = state.participants[operation.senderParticipantKey];
 	const recipient = state.participants[operation.recipientParticipantKey];
 	if (!sender || !senderHoldsIdentity(sender, operation)) {
@@ -72,7 +69,7 @@ function repeatsExistingSend(
 	operation: MailboxSendOperation,
 ): boolean {
 	const existing = state.events[existingId];
-	return existing?.type === "mailbox.message"
+	return existing !== undefined
 		&& existing.source.id === sender.participantKey
 		&& existing.recipientParticipantKey === operation.recipientParticipantKey
 		&& existing.sendId === operation.sendId

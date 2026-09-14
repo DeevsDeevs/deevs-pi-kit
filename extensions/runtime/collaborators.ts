@@ -29,7 +29,6 @@ import {
 } from "./responses.ts";
 import type { RuntimeSession } from "./runtime-session.ts";
 
-const COLLABORATOR_CONCURRENCY = 4;
 const COLLABORATOR_BATCH_LIMIT = 12;
 
 type CollaboratorManageAction = "start" | "stand_down" | "stop";
@@ -139,12 +138,10 @@ export class CollaboratorService {
 			throw new HostedRuntimeClientError("conflict", `Current collaborator identity is ${protocol}/${callerParticipantId}.`);
 		}
 		const candidates = input.participants.map((participant) => resolveCollaboratorCandidate(participant));
-		assertDistinctCandidates(candidates, callerParticipantId);
 		const registration = await this.session.requireRegistration(ctx);
 		const participants = await this.session.listParticipants(registration);
 		throwIfAborted(signal);
 		const held = this.heldCaller(participants, protocol, callerParticipantId, registration);
-		assertStartableChildren(participants, protocol, candidates);
 		const acquires = held === undefined;
 		const confirmed = await confirmStart({ ctx, protocol, callerParticipantId, acquires, candidates, participants, signal });
 		throwIfAborted(signal);
@@ -188,32 +185,21 @@ export class CollaboratorService {
 		return acquired.participant;
 	}
 
-	private async launchAll(
+	/** Twelve launches at most, each already gated by one confirmation and its own Herdr exec. */
+	private launchAll(
 		start: CollaboratorStart,
 		candidates: ResolvedCollaboratorCandidate[],
 		participants: ClientParticipantStatus[],
 	): Promise<CollaboratorManageResult[]> {
-		const results = Array<CollaboratorManageResult>(candidates.length);
-		await runBounded(candidates.length, start.signal, async (index) => {
-			const candidate = candidates[index];
-			if (!candidate) return;
+		return Promise.all(candidates.map(async (candidate) => {
 			const participant = `${start.protocol}/${candidate.participantId}`;
 			try {
 				const existing = findParticipant(participants, start.protocol, candidate.participantId);
-				const paneId = await this.launcher.launch(start, candidate, existing);
-				results[index] = { participant, status: "started", paneId };
+				return { participant, status: "started" as const, paneId: await this.launcher.launch(start, candidate, existing) };
 			} catch (error) {
-				results[index] = {
-					participant,
-					status: start.signal?.aborted ? "cancelled" : "failed",
-					error: error instanceof Error ? error.message : String(error),
-				};
+				return { participant, status: outcome(start.signal), error: error instanceof Error ? error.message : String(error) };
 			}
-		});
-		candidates.forEach((candidate, index) => {
-			if (!results[index]) results[index] = { participant: `${start.protocol}/${candidate.participantId}`, status: "cancelled" };
-		});
-		return results;
+		}));
 	}
 
 	private async changeCollaborators(
@@ -234,24 +220,16 @@ export class CollaboratorService {
 			const protocol = collaboratorName(requestedProtocol ?? this.session.store.identity?.protocol, "protocol");
 			const registration = await this.session.requireRegistration(ctx);
 			const targets = await this.resolveChangeTargets(protocol, candidates, registration);
-			const actionable = action === "stand_down" ? targets.filter((participant) => isHeld(participant.state)) : targets;
-			const results = Array<CollaboratorManageResult>(targets.length);
-			if (action === "stand_down") targets.forEach((participant, index) => {
-				if (!isVacant(participant.state)) return;
-				results[index] = { participant: `${protocol}/${participant.participantId}`, status: "already_vacant" };
-			});
-			if (actionable.length === 0) return results;
+			const skipped = action === "stand_down" ? targets.filter((participant) => !isHeld(participant.state)) : [];
+			const actionable = targets.filter((participant) => !skipped.includes(participant));
+			const vacated = skipped.map((participant) => settled(protocol, participant, "already_vacant"));
+			if (actionable.length === 0) return vacated;
 			if (!await confirmChange(action, protocol, actionable, ctx, signal)) {
-				fillRemaining(results, targets, protocol, "declined");
-				return results;
+				return [...vacated, ...actionable.map((participant) => settled(protocol, participant, "declined"))];
 			}
-			await runBounded(actionable.length, signal, async (index) => {
-				const participant = actionable[index];
-				if (!participant) return;
-				results[targets.indexOf(participant)] = await this.changeParticipant(action, protocol, participant, registration, signal);
-			});
-			fillRemaining(results, targets, protocol, "cancelled");
-			return results;
+			const changed = await Promise.all(actionable.map((participant) =>
+				this.changeParticipant(action, protocol, participant, registration, signal)));
+			return [...vacated, ...changed];
 		});
 	}
 
@@ -261,14 +239,10 @@ export class CollaboratorService {
 		registration: LiveClientRegistration,
 	): Promise<ClientParticipantStatus[]> {
 		const participantIds = candidates.map((candidate) => collaboratorName(candidate.participantId, "participant ID"));
-		if (new Set(participantIds).size !== participantIds.length) {
-			throw new HostedRuntimeClientError("conflict", "Collaborator participant IDs must be unique.");
-		}
 		const participants = await this.session.listParticipants(registration);
 		return participantIds.map((participantId) => {
 			const participant = findParticipant(participants, protocol, participantId);
 			if (!participant) throw new HostedRuntimeClientError("not_found", `No ${protocol}/${participantId} participant exists.`);
-			if (isEnded(participant.state)) throw new HostedRuntimeClientError("conflict", `Participant ${protocol}/${participantId} has ended.`);
 			return participant;
 		});
 	}
@@ -287,11 +261,7 @@ export class CollaboratorService {
 				: await this.stopParticipant(participant, registration);
 			return { participant: name, status };
 		} catch (error) {
-			return {
-				participant: name,
-				status: signal?.aborted ? "cancelled" : "failed",
-				error: error instanceof Error ? error.message : String(error),
-			};
+			return { participant: name, status: outcome(signal), error: error instanceof Error ? error.message : String(error) };
 		}
 	}
 
@@ -364,6 +334,19 @@ export class CollaboratorService {
 	}
 }
 
+function settled(
+	protocol: string,
+	participant: ClientParticipantStatus,
+	status: CollaboratorManageResult["status"],
+): CollaboratorManageResult {
+	return { participant: `${protocol}/${participant.participantId}`, status };
+}
+
+/** A cancelled batch reports cancellation, not failure, for whatever its abort interrupted. */
+function outcome(signal: AbortSignal | undefined): CollaboratorManageResult["status"] {
+	return signal?.aborted ? "cancelled" : "failed";
+}
+
 function requestsOtherIdentity(input: CollaboratorManageInput, protocol: string, callerParticipantId: string): boolean {
 	if (input.protocol && input.protocol !== protocol) return true;
 	return Boolean(input.callerParticipantId) && input.callerParticipantId !== callerParticipantId;
@@ -388,32 +371,6 @@ function assertInteractiveHerdrStart(ctx: ExtensionContext): void {
 	}
 	if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Collaborator start requires a trusted project.");
 	assertHerdrWorkspace();
-}
-
-function assertDistinctCandidates(candidates: ResolvedCollaboratorCandidate[], callerParticipantId: string): void {
-	const participantIds = candidates.map((candidate) => candidate.participantId);
-	if (new Set(participantIds).size !== participantIds.length) {
-		throw new HostedRuntimeClientError("conflict", "Collaborator participant IDs must be unique.");
-	}
-	if (participantIds.includes(callerParticipantId)) {
-		throw new HostedRuntimeClientError("conflict", "Caller and child collaborator identities must differ.");
-	}
-}
-
-function assertStartableChildren(
-	participants: ClientParticipantStatus[],
-	protocol: string,
-	candidates: ResolvedCollaboratorCandidate[],
-): void {
-	for (const candidate of candidates) {
-		const existing = findParticipant(participants, protocol, candidate.participantId);
-		if (isHeld(existing?.state)) {
-			throw new HostedRuntimeClientError("conflict", `Participant ${protocol}/${candidate.participantId} already has a holder.`);
-		}
-		if (isEnded(existing?.state)) {
-			throw new HostedRuntimeClientError("conflict", `Ended collaborator ${protocol}/${candidate.participantId} requires explicit revival.`);
-		}
-	}
 }
 
 function confirmChange(
@@ -445,32 +402,7 @@ function confirmStart(request: StartConfirmation): Promise<boolean> {
 		? `Acquire ${protocol}/${callerParticipantId} and start`
 		: `As ${protocol}/${callerParticipantId}, start`;
 	const title = candidates.length === 1 ? "Start Runtime collaborator?" : "Start Runtime collaborators?";
-	const detail = `${caller} ${candidates.length} collaborator(s) in no-focus Herdr tabs of project ${projectRoot},`
-		+ ` with concurrency up to ${COLLABORATOR_CONCURRENCY}?\n\n${summary}`;
+	const detail = `${caller} ${candidates.length} collaborator(s) in no-focus Herdr tabs of project ${projectRoot}?\n\n${summary}`;
 	return ctx.ui.confirm(title, detail, { signal: request.signal });
 }
 
-function fillRemaining(
-	results: CollaboratorManageResult[],
-	targets: ClientParticipantStatus[],
-	protocol: string,
-	status: CollaboratorManageResult["status"],
-): void {
-	targets.forEach((participant, index) => {
-		if (!results[index]) results[index] = { participant: `${protocol}/${participant.participantId}`, status };
-	});
-}
-
-/** Runs indexed work with bounded concurrency, surfacing the first worker rejection. */
-async function runBounded(total: number, signal: AbortSignal | undefined, task: (index: number) => Promise<void>): Promise<void> {
-	let next = 0;
-	const worker = async (): Promise<void> => {
-		while (next < total) {
-			if (signal?.aborted) return;
-			await task(next++);
-		}
-	};
-	const settled = await Promise.allSettled(Array.from({ length: Math.min(COLLABORATOR_CONCURRENCY, total) }, worker));
-	const rejected = settled.find((result): result is PromiseRejectedResult => result.status === "rejected");
-	if (rejected) throw rejected.reason;
-}

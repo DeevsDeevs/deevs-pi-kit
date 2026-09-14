@@ -1,8 +1,7 @@
 import { type Static, type TSchema } from "typebox";
 import { Value } from "typebox/value";
 import { RuntimeError, type RuntimeErrorCode } from "../errors.ts";
-import { HOSTED_MAILBOX_MAX_BODY_BYTES, HOSTED_PROTOCOL_VERSION } from "../schemas/common.ts";
-import { schemaError } from "../schemas/common.ts";
+import { HOSTED_MAILBOX_MAX_BODY_BYTES, HOSTED_PROTOCOL_VERSION, schemaError } from "../schemas/common.ts";
 import {
 	BridgeBindParams,
 	HelloParams,
@@ -37,24 +36,24 @@ import { RuntimeWorktrees } from "./worktree.ts";
 export const HOSTED_MAX_REQUEST_BYTES = 64 * 1024;
 const MAX_MESSAGING_RESPONSE_BYTES = 128 * 1024;
 
+/** Every authority a started runtime serves; a process that cannot build one cannot dispatch at all. */
 export interface HostedProtocolContext {
 	runtimeId: string;
-	registrations?: RuntimeRegistrationManager;
-	messaging?: RuntimeMessaging;
-	participants?: HostedParticipantCoordinator;
-	bridges?: RuntimeAgentBinder;
-	worktrees?: RuntimeWorktrees;
+	registrations: RuntimeRegistrationManager;
+	messaging: RuntimeMessaging;
+	participants: HostedParticipantCoordinator;
+	bridges: RuntimeAgentBinder;
+	worktrees: RuntimeWorktrees;
 }
 
-export type HostedResponse =
+type HostedResponse =
 	| { v: 1; id: string | null; ok: true; result: unknown }
 	| { v: 1; id: string | null; ok: false; error: { code: RuntimeErrorCode; message: string } };
 
-/** One authorized call: the request id plus the runtime services every hosted method needs. */
-interface HostedMethodCall {
+/** One dispatched call: the request id plus the services its method reaches for. */
+interface HostedCall {
 	id: string;
 	context: HostedProtocolContext;
-	registrations: RuntimeRegistrationManager;
 }
 
 type HostedMethodHandler = (
@@ -66,11 +65,11 @@ type HostedMethodHandler = (
 /** Validates this method's params once, then hands the handler a typed object it never re-checks. */
 function method<Schema extends TSchema>(
 	schema: Schema,
-	handle: (call: HostedMethodCall, params: Static<Schema>) => HostedResponse | Promise<HostedResponse>,
+	handle: (call: HostedCall, params: Static<Schema>) => HostedResponse | Promise<HostedResponse>,
 ): HostedMethodHandler {
 	return (id, params, context) => {
 		if (!Value.Check(schema, params)) throw schemaError(schema, params, "Request params");
-		return handle(authorizedCall(id, context), params);
+		return handle({ id, context }, params);
 	};
 }
 
@@ -104,57 +103,27 @@ export function invalidFrame(message: string): HostedResponse {
 	return failure(null, "invalid_request", message);
 }
 
-function authorizedCall(id: string, context: HostedProtocolContext): HostedMethodCall {
-	const registrations = context.registrations;
-	if (!registrations) throw new RuntimeError("capability_unavailable", "Hosted runtime methods are unavailable in this process.");
-	return { id, context, registrations };
-}
-
 function hello(id: string, value: JsonValue | undefined, context: HostedProtocolContext): HostedResponse {
 	if (!Value.Check(HelloParams, value)) return failure(id, "invalid_request", schemaError(HelloParams, value, "hello params").message);
 	const { minVersion, maxVersion } = value;
 	if (minVersion > HOSTED_PROTOCOL_VERSION || maxVersion < HOSTED_PROTOCOL_VERSION || minVersion > maxVersion) {
 		return failure(id, "unsupported_version", "Requested version range does not include protocol v1.");
 	}
-	const capabilities = { targets: ["pi", "claude-code", "codex"] };
-	if (context.participants) Object.assign(capabilities, { mailbox: { maxBodyBytes: HOSTED_MAILBOX_MAX_BODY_BYTES } });
-	if (context.bridges) Object.assign(capabilities, { interactiveAgent: { bind: "herdr_agent_name" } });
-	if (context.worktrees) Object.assign(capabilities, { worktree: { isolatedWrite: true } });
+	const capabilities = {
+		targets: ["pi", "claude-code", "codex"],
+		mailbox: { maxBodyBytes: HOSTED_MAILBOX_MAX_BODY_BYTES },
+		interactiveAgent: { bind: "herdr_agent_name" },
+		worktree: { isolatedWrite: true },
+	};
 	return success(id, { version: 1, runtimeId: context.runtimeId, capabilities });
 }
 
-async function issueMessaging(call: HostedMethodCall, params: Static<typeof MessagingIssueParams>): Promise<HostedResponse> {
-	const messaging = requireMessaging(call);
-	const caller = authorize(call, params);
-	return success(call.id, await messaging.issue(caller, params.participantKey, params.expectedGeneration));
-}
-
-async function callMessaging(
-	call: HostedMethodCall,
-	namespace: MessagingNamespaceAuth,
-	input: MessagingInput,
-): Promise<HostedResponse> {
-	const messaging = requireMessaging(call);
-	const result = success(call.id, await messaging.call(namespace.namespaceId, namespace.secret, input));
+async function callMessaging(call: HostedCall, namespace: MessagingNamespaceAuth, input: MessagingInput): Promise<HostedResponse> {
+	const result = success(call.id, await call.context.messaging.call(namespace.namespaceId, namespace.secret, input));
 	if (Buffer.byteLength(encodeHostedResponse(result)) > MAX_MESSAGING_RESPONSE_BYTES) {
 		return failure(call.id, "conflict", "Messaging response exceeds its byte limit.");
 	}
 	return result;
-}
-
-function listMessagingPeers(call: HostedMethodCall, params: Static<typeof MessagingPeersParams>): Promise<HostedResponse> {
-	const cursor = params.cursor;
-	return callMessaging(call, params, cursor === undefined ? { method: "peers" } : { method: "peers", cursor });
-}
-
-function sendMessaging(call: HostedMethodCall, params: Static<typeof MessagingSendParams>): Promise<HostedResponse> {
-	const { operationId, participantId, bodyBase64 } = params;
-	return callMessaging(call, params, { method: "send", operationId, participantId, body: decodeMessagingBody(bodyBase64) });
-}
-
-function replyMessaging(call: HostedMethodCall, params: Static<typeof MessagingReplyParams>): Promise<HostedResponse> {
-	const { operationId, eventId, bodyBase64 } = params;
-	return callMessaging(call, params, { method: "reply", operationId, eventId, body: decodeMessagingBody(bodyBase64) });
 }
 
 function decodeMessagingBody(encoded: string): string {
@@ -165,58 +134,23 @@ function decodeMessagingBody(encoded: string): string {
 	return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 }
 
-async function listWorktrees(call: HostedMethodCall, params: Static<typeof RegistrationAuthParams>): Promise<HostedResponse> {
-	const worktrees = requireWorktrees(call);
-	return success(call.id, { worktrees: await worktrees.list(authorize(call, params)) });
-}
-
-async function ensureWorktree(call: HostedMethodCall, params: Static<typeof WorktreeEnsureParams>): Promise<HostedResponse> {
-	const worktrees = requireWorktrees(call);
-	const { callerParticipantKey, expectedCallerGeneration, protocol, participantId } = params;
-	const input = { callerParticipantKey, expectedCallerGeneration, protocol, participantId };
-	return success(call.id, await worktrees.ensure(authorize(call, params), input));
-}
-
-async function removeWorktree(call: HostedMethodCall, params: Static<typeof WorktreeRemoveParams>): Promise<HostedResponse> {
-	const worktrees = requireWorktrees(call);
-	const { callerParticipantKey, expectedCallerGeneration, protocol, participantId, discardConfirmed } = params;
-	const input = { callerParticipantKey, expectedCallerGeneration, protocol, participantId, discardConfirmed };
-	return success(call.id, await worktrees.remove(authorize(call, params), input));
-}
-
-async function bindAgent(call: HostedMethodCall, params: Static<typeof BridgeBindParams>): Promise<HostedResponse> {
-	const bridges = call.context.bridges;
-	if (!bridges) throw new RuntimeError("capability_unavailable", "Runtime Herdr agent binding is unavailable in this process.");
-	const { registrationId, registrationKey, ...input } = params;
-	return success(call.id, boundAgentResult(await bridges.bind(call.registrations.authorize(registrationId, registrationKey), input)));
-}
-
-async function registerPi(call: HostedMethodCall, params: Static<typeof PiRegisterParams>): Promise<HostedResponse> {
-	return success(call.id, registrationResult(await call.registrations.register(params)));
-}
-
-async function heartbeatAgent(call: HostedMethodCall, params: Static<typeof RegistrationAuthParams>): Promise<HostedResponse> {
-	const registration = await call.registrations.heartbeat(params.registrationId, params.registrationKey);
-	return success(call.id, registrationResult(registration));
-}
-
-/** The Pi heartbeat renews the lease and carries the mail hint of the session's sole live namespace. */
-async function heartbeatPi(call: HostedMethodCall, params: Static<typeof RegistrationAuthParams>): Promise<HostedResponse> {
-	const registration = await call.registrations.heartbeat(params.registrationId, params.registrationKey);
-	const mail = call.context.messaging?.unread(registration);
+/** The Pi heartbeat renews the lease and carries the mail hint of this target's sole live namespace. */
+async function heartbeatPi(call: HostedCall, params: Static<typeof RegistrationAuthParams>): Promise<HostedResponse> {
+	const registration = await call.context.registrations.heartbeat(params.registrationId, params.registrationKey);
+	const mail = call.context.messaging.unread(registration);
 	const heartbeat: JsonObject = registrationResult(registration);
 	if (mail) heartbeat.mail = { namespaceId: mail.namespaceId, eventId: mail.eventId };
 	return success(call.id, heartbeat);
 }
 
-function unregister(call: HostedMethodCall, params: Static<typeof RegistrationAuthParams>): HostedResponse {
-	call.registrations.unregister(params.registrationId, params.registrationKey);
-	return success(call.id, { unregistered: true });
+async function bindAgent(call: HostedCall, params: Static<typeof BridgeBindParams>): Promise<HostedResponse> {
+	const { registrationId, registrationKey, ...input } = params;
+	const caller = call.context.registrations.authorize(registrationId, registrationKey);
+	return success(call.id, boundAgentResult(await call.context.bridges.bind(caller, input)));
 }
 
-function sendMailbox(call: HostedMethodCall, params: Static<typeof MailboxSendParams>): HostedResponse {
-	const participants = requireParticipants(call);
-	const event = participants.send(
+function sendMailbox(call: HostedCall, params: Static<typeof MailboxSendParams>): HostedResponse {
+	const event = call.context.participants.send(
 		authorize(call, params),
 		params.senderParticipantKey,
 		params.expectedSenderGeneration,
@@ -227,58 +161,20 @@ function sendMailbox(call: HostedMethodCall, params: Static<typeof MailboxSendPa
 	return success(call.id, { eventId: event.eventId, sequence: event.source.sequence });
 }
 
-function acquireParticipant(call: HostedMethodCall, params: Static<typeof ParticipantAcquireParams>): HostedResponse {
-	const participants = requireParticipants(call);
-	const registration = authorize(call, params);
-	return success(call.id, participants.acquire(registration, params.protocol, params.participantId, params.revive ?? false));
-}
-
-function listParticipants(call: HostedMethodCall, params: Static<typeof RegistrationAuthParams>): HostedResponse {
-	const participants = requireParticipants(call);
-	return success(call.id, { participants: participants.list(authorize(call, params)) });
-}
-
-function getParticipant(call: HostedMethodCall, params: Static<typeof ParticipantAuthParams>): HostedResponse {
-	const participants = requireParticipants(call);
-	return success(call.id, participants.get(authorize(call, params), params.participantKey));
-}
-
-function releaseParticipant(call: HostedMethodCall, params: Static<typeof ParticipantAuthParams>): HostedResponse {
-	const participants = requireParticipants(call);
-	return success(call.id, participants.release(authorize(call, params), params.participantKey));
-}
-
-function standDownParticipant(call: HostedMethodCall, params: Static<typeof ParticipantStandDownParams>): HostedResponse {
-	const participants = requireParticipants(call);
-	const registration = authorize(call, params);
-	return success(call.id, participants.standDown(registration, params.participantKey, params.expectedGeneration));
-}
-
-function standDownParticipantConfirmed(call: HostedMethodCall, params: Static<typeof ParticipantConfirmedParams>): HostedResponse {
-	const participants = requireParticipants(call);
-	const registration = authorize(call, params);
-	return success(call.id, participants.standDownConfirmed(registration, params.participantKey, params.expectedGeneration));
-}
-
-async function stopParticipantConfirmed(
-	call: HostedMethodCall,
-	params: Static<typeof ParticipantConfirmedParams>,
-): Promise<HostedResponse> {
-	const participants = requireParticipants(call);
-	const registration = authorize(call, params);
-	return success(call.id, await participants.stopConfirmed(registration, params.participantKey, params.expectedGeneration));
-}
-
-function takeoverParticipant(call: HostedMethodCall, params: Static<typeof ParticipantConfirmedParams>): HostedResponse {
-	const participants = requireParticipants(call);
-	const registration = authorize(call, params);
-	return success(call.id, participants.takeover(registration, params.participantKey, params.expectedGeneration));
-}
-
 const HOSTED_METHODS = new Map<string, HostedMethodHandler>([
-	["messaging.issue", method(MessagingIssueParams, issueMessaging)],
-	["messaging.peers", method(MessagingPeersParams, listMessagingPeers)],
-	["messaging.send", method(MessagingSendParams, sendMessaging)],
+	["messaging.issue", method(MessagingIssueParams, async (call, params) => success(
+		call.id,
+		await call.context.messaging.issue(authorize(call, params), params.participantKey, params.expectedGeneration),
+	))],
+	["messaging.peers", method(MessagingPeersParams, (call, params) => callMessaging(call, params, params.cursor === undefined
+		? { method: "peers" }
+		: { method: "peers", cursor: params.cursor }))],
+	["messaging.send", method(MessagingSendParams, (call, params) => callMessaging(call, params, {
+		method: "send",
+		operationId: params.operationId,
+		participantId: params.participantId,
+		body: decodeMessagingBody(params.bodyBase64),
+	}))],
 	["messaging.status", method(MessagingStatusParams, (call, params) => callMessaging(call, params, {
 		method: "status",
 		operationId: params.operationId,
@@ -291,50 +187,81 @@ const HOSTED_METHODS = new Map<string, HostedMethodHandler>([
 		method: "received",
 		eventId: params.eventId,
 	}))],
-	["messaging.reply", method(MessagingReplyParams, replyMessaging)],
-	["pi.register", method(PiRegisterParams, registerPi)],
+	["messaging.reply", method(MessagingReplyParams, (call, params) => callMessaging(call, params, {
+		method: "reply",
+		operationId: params.operationId,
+		eventId: params.eventId,
+		body: decodeMessagingBody(params.bodyBase64),
+	}))],
+	["pi.register", method(PiRegisterParams, async (call, params) => success(
+		call.id,
+		registrationResult(await call.context.registrations.register(params)),
+	))],
 	["pi.heartbeat", method(RegistrationAuthParams, heartbeatPi)],
-	["pi.unregister", method(RegistrationAuthParams, unregister)],
+	["pi.unregister", method(RegistrationAuthParams, (call, params) => unregister(call, params))],
 	["bridge.bind", method(BridgeBindParams, bindAgent)],
-	["bridge.heartbeat", method(RegistrationAuthParams, heartbeatAgent)],
-	["bridge.unregister", method(RegistrationAuthParams, unregister)],
-	["worktree.list", method(RegistrationAuthParams, listWorktrees)],
-	["worktree.ensure", method(WorktreeEnsureParams, ensureWorktree)],
-	["worktree.remove", method(WorktreeRemoveParams, removeWorktree)],
-	["participant.acquire", method(ParticipantAcquireParams, acquireParticipant)],
-	["participant.get", method(ParticipantAuthParams, getParticipant)],
-	["participant.list", method(RegistrationAuthParams, listParticipants)],
-	["participant.stand_down", method(ParticipantStandDownParams, standDownParticipant)],
-	["participant.stand_down_confirmed", method(ParticipantConfirmedParams, standDownParticipantConfirmed)],
-	["participant.stop_confirmed", method(ParticipantConfirmedParams, stopParticipantConfirmed)],
-	["participant.release", method(ParticipantAuthParams, releaseParticipant)],
-	["participant.takeover", method(ParticipantConfirmedParams, takeoverParticipant)],
+	["bridge.heartbeat", method(RegistrationAuthParams, async (call, params) => success(
+		call.id,
+		registrationResult(await call.context.registrations.heartbeat(params.registrationId, params.registrationKey)),
+	))],
+	["bridge.unregister", method(RegistrationAuthParams, (call, params) => unregister(call, params))],
+	["worktree.list", method(RegistrationAuthParams, async (call, params) => success(
+		call.id,
+		{ worktrees: await call.context.worktrees.list(authorize(call, params)) },
+	))],
+	["worktree.ensure", method(WorktreeEnsureParams, async (call, params) => success(
+		call.id,
+		await call.context.worktrees.ensure(authorize(call, params), params),
+	))],
+	["worktree.remove", method(WorktreeRemoveParams, async (call, params) => success(
+		call.id,
+		await call.context.worktrees.remove(authorize(call, params), params),
+	))],
+	["participant.acquire", method(ParticipantAcquireParams, (call, params) => success(
+		call.id,
+		call.context.participants.acquire(authorize(call, params), params.protocol, params.participantId, params.revive ?? false),
+	))],
+	["participant.get", method(ParticipantAuthParams, (call, params) => success(
+		call.id,
+		call.context.participants.get(authorize(call, params), params.participantKey),
+	))],
+	["participant.list", method(RegistrationAuthParams, (call, params) => success(
+		call.id,
+		{ participants: call.context.participants.list(authorize(call, params)) },
+	))],
+	["participant.stand_down", method(ParticipantStandDownParams, (call, params) => success(
+		call.id,
+		call.context.participants.standDown(authorize(call, params), params.participantKey, params.expectedGeneration),
+	))],
+	["participant.stand_down_confirmed", method(ParticipantConfirmedParams, (call, params) => success(
+		call.id,
+		call.context.participants.standDownConfirmed(authorize(call, params), params.participantKey, params.expectedGeneration),
+	))],
+	["participant.stop_confirmed", method(ParticipantConfirmedParams, async (call, params) => success(
+		call.id,
+		await call.context.participants.stopConfirmed(authorize(call, params), params.participantKey, params.expectedGeneration),
+	))],
+	["participant.release", method(ParticipantAuthParams, (call, params) => success(
+		call.id,
+		call.context.participants.release(authorize(call, params), params.participantKey),
+	))],
+	["participant.takeover", method(ParticipantConfirmedParams, (call, params) => success(
+		call.id,
+		call.context.participants.takeover(authorize(call, params), params.participantKey, params.expectedGeneration),
+	))],
 	["mailbox.send", method(MailboxSendParams, sendMailbox)],
 ]);
 
 /** Every dispatchable method except `hello`, which the dispatcher answers before the handler map. */
 export const HOSTED_METHOD_NAMES: readonly string[] = [...HOSTED_METHODS.keys()];
 
-function requireMessaging(call: HostedMethodCall): RuntimeMessaging {
-	const messaging = call.context.messaging;
-	if (!messaging) throw new RuntimeError("capability_unavailable", "Messaging authority is unavailable.");
-	return messaging;
+function unregister(call: HostedCall, params: Static<typeof RegistrationAuthParams>): HostedResponse {
+	call.context.registrations.unregister(params.registrationId, params.registrationKey);
+	return success(call.id, { unregistered: true });
 }
 
-function requireParticipants(call: HostedMethodCall): HostedParticipantCoordinator {
-	const participants = call.context.participants;
-	if (!participants) throw new RuntimeError("capability_unavailable", "Collaborator mailbox methods are unavailable in this process.");
-	return participants;
-}
-
-function requireWorktrees(call: HostedMethodCall): RuntimeWorktrees {
-	const worktrees = call.context.worktrees;
-	if (!worktrees) throw new RuntimeError("capability_unavailable", "Runtime worktree authority is unavailable in this process.");
-	return worktrees;
-}
-
-function authorize(call: HostedMethodCall, params: Static<typeof RegistrationAuthParams>): HostedLiveRegistration {
-	return call.registrations.authorize(params.registrationId, params.registrationKey);
+function authorize(call: HostedCall, params: Static<typeof RegistrationAuthParams>): HostedLiveRegistration {
+	return call.context.registrations.authorize(params.registrationId, params.registrationKey);
 }
 
 function registrationResult(registration: HostedLiveRegistration) {
@@ -365,4 +292,3 @@ function success<Result>(id: string, result: Result): HostedResponse {
 function failure(id: string | null, code: RuntimeErrorCode, message: string): HostedResponse {
 	return { v: 1, id, ok: false, error: { code, message } };
 }
-

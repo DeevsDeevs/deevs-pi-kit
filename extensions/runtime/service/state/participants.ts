@@ -1,7 +1,13 @@
 import { RuntimeError } from "../../errors.ts";
-import { type HostedParticipant, type HostedParticipantTransition, type HostedRuntimeState, type HostedTarget, isHeld, isVacant } from "../../schemas/state.ts";
+import {
+	type HostedParticipant,
+	type HostedParticipantTransition,
+	type HostedRuntimeState,
+	type HostedTarget,
+	isHeld,
+	isVacant,
+} from "../../schemas/state.ts";
 import type { HostedStateOperation } from "./operations.ts";
-import { assertParticipantName, assertStateId, assertStateTime } from "./guards.ts";
 import { deriveParticipantKey } from "./keys.ts";
 
 type AcquireOperation = Extract<HostedStateOperation, { type: "participant.acquire" }>;
@@ -18,14 +24,10 @@ interface ParticipantTransitionRequest {
 }
 
 export function acquireParticipant(state: HostedRuntimeState, operation: AcquireOperation): HostedRuntimeState {
-	assertStateId(operation.generation, "Participant generation");
-	assertStateTime(operation.at, "Participant acquisition time");
 	const target = state.targets[operation.targetKey];
 	if (!target || !acquireMatchesTarget(target, operation)) {
 		throw new RuntimeError("conflict", "Participant identity does not match its target or durable key.");
 	}
-	assertParticipantName(operation.protocol, "protocol");
-	assertParticipantName(operation.participantId, "participant ID");
 	const current = state.participants[operation.participantKey];
 	if (isHeld(current?.state)) {
 		if (current.holderTargetKey === operation.targetKey) return state;
@@ -44,8 +46,6 @@ export function acquireParticipant(state: HostedRuntimeState, operation: Acquire
 }
 
 export function standDownParticipant(state: HostedRuntimeState, operation: StandDownOperation): HostedRuntimeState {
-	assertStateId(operation.generation, "Participant generation");
-	assertStateTime(operation.at, "Participant transition time");
 	const current = state.participants[operation.participantKey];
 	if (!current) throw new RuntimeError("conflict", "Participant is absent.");
 	if (operation.expectedGeneration !== undefined && current.generation !== operation.expectedGeneration) {
@@ -56,16 +56,12 @@ export function standDownParticipant(state: HostedRuntimeState, operation: Stand
 }
 
 export function releaseParticipant(state: HostedRuntimeState, operation: ReleaseOperation): HostedRuntimeState {
-	assertStateId(operation.generation, "Participant generation");
-	assertStateTime(operation.at, "Participant transition time");
 	const current = state.participants[operation.participantKey];
 	if (!current) throw new RuntimeError("conflict", "Participant is absent.");
 	return applyParticipantTransition(state, current, operation, "release", "ended");
 }
 
 export function takeoverParticipant(state: HostedRuntimeState, operation: TakeoverOperation): HostedRuntimeState {
-	assertStateId(operation.generation, "Participant generation");
-	assertStateTime(operation.at, "Participant takeover time");
 	const current = state.participants[operation.participantKey];
 	const target = state.targets[operation.targetKey];
 	if (!current || !target) throw new RuntimeError("conflict", "Participant or takeover target is absent.");

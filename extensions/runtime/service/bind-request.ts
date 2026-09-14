@@ -1,7 +1,14 @@
 import { realpathSync } from "node:fs";
 import { RuntimeError } from "../errors.ts";
 import { AGENT_NAME, PARTICIPANT_NAME } from "../schemas/common.ts";
-import { type HostedAgentTarget, type HostedCollaboratorProfile, type HostedHerdrLocator, type HostedNativeCollaboratorDriver, isAgentTarget, isWriter } from "../schemas/state.ts";
+import {
+	type HostedAgentTarget,
+	type HostedCollaboratorProfile,
+	type HostedHerdrLocator,
+	type HostedNativeCollaboratorDriver,
+	isAgentTarget,
+	isWriter,
+} from "../schemas/state.ts";
 import type { HostedAgentBind } from "./state/operations.ts";
 import type { HostedLiveAgent } from "./identity.ts";
 import type { HostedLiveRegistration } from "./registration.ts";
