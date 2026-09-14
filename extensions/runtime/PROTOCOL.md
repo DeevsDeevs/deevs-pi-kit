@@ -81,16 +81,23 @@ and its participant generation is still held. Mismatch fails closed — registra
 
 ## Collaborator launch
 
-1. Resolve participant, driver, model, persona, and profile independently (`workspace-write` requires fresh interactive confirmation),
-   and read the child participant's generation as the expected reservation: absent, or `vacant` at that generation.
-2. Provision the `workspace-write` worktree, reusing an existing checkout, then create one empty no-focus Herdr tab at the intended cwd.
-3. Run `herdr agent start <collab-hash> --kind pi|claude|codex --pane <id>` with driver-owned startup arguments after `--`.
-4. Call `bridge.bind` with held participant authority, agent name, driver, profile, and client and expected participant generations; it is
-   idempotent for that exact tuple, so an uncertain response is retried.
-5. Runtime re-verifies `herdr agent get`, binds the target and acquires the participant in one state operation, then hands the
-   registration back to the launching Pi.
+One confirmation, then one path for every driver — a driver table supplies each driver's agent kind, startup argv, started-agent check and
+profile tool policy, and nothing else branches on the driver.
 
-A failure before `herdr agent start` closes the created tab; a failure after it preserves the tab and reports `needs_attention`. There are
+1. Resolve participant, driver, model, persona, and profile independently, and confirm the whole batch once (driver, model, persona,
+   profile, project); `workspace-write` is part of that same confirmation. The child participant's generation — absent, or `vacant` at that
+   generation — is the expected reservation.
+2. Provision the `workspace-write` worktree, reusing an existing checkout, then create one empty no-focus Herdr tab at the intended cwd.
+3. Run `herdr agent start <collab-hash> --kind pi|claude|codex --pane <id>` with the driver's startup arguments after `--`, and accept the
+   started agent only when its name, pane, terminal and agent kind are the authorized ones.
+4. Native drivers call `bridge.bind` with held participant authority, agent name, driver, profile, and client and expected participant
+   generations; it is idempotent for that exact tuple, so an uncertain response is retried. Pi registers itself from its prepared session
+   and its tab identity bootstrap instead.
+5. Runtime re-verifies `herdr agent get`, binds the target and acquires the participant in one state operation, then hands the
+   registration back to the launching Pi, which records the reconnection authority.
+
+Any failing step stops what that launch started — the tab and any prepared session — and reports the original error. A half-launched
+collaborator is never preserved, and a failed start records no authority. There are
 no launch, reconnect, or reservation tokens — the participant generation is the only lease. Claude receives appended system context and an
 inline MCP server entry, Codex a server-configuration override and startup user context; both reference the shared messaging skill by
 absolute path, and the launch command is capped at 4000 bytes and fails closed rather than truncating.

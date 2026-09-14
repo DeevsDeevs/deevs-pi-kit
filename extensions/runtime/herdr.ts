@@ -56,10 +56,17 @@ export async function currentHerdrPane(pi: ExtensionAPI): Promise<HerdrPane> {
 	return { paneId: text(value.pane_id), terminalId: text(value.terminal_id) };
 }
 
-export async function createCollaboratorTab(pi: ExtensionAPI, launchCwd: string, participantId: string): Promise<CollaboratorTab> {
+export async function createCollaboratorTab(
+	pi: ExtensionAPI,
+	launchCwd: string,
+	participantId: string,
+	env: string[] = [],
+): Promise<CollaboratorTab> {
 	const workspaceId = process.env.HERDR_WORKSPACE_ID;
 	if (!workspaceId) throw new HostedRuntimeClientError("host_unavailable", "Collaborator start requires a Herdr workspace.");
-	const args = ["tab", "create", "--workspace", workspaceId, "--cwd", launchCwd, "--label", `collaborator:${participantId}`, "--no-focus"];
+	const environment = env.flatMap((entry) => ["--env", entry]);
+	const label = `collaborator:${participantId}`;
+	const args = ["tab", "create", "--workspace", workspaceId, "--cwd", launchCwd, "--label", label, ...environment, "--no-focus"];
 	const created = await pi.exec("herdr", args, { timeout: 5_000 });
 	if (created.code !== 0) throw new HostedRuntimeClientError("host_unavailable", "Herdr could not create the native collaborator tab.");
 	const result = strictObject(strictObject(JSON.parse(created.stdout), "Herdr response").result, "Herdr result");

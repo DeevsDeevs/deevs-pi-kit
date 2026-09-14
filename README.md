@@ -150,8 +150,10 @@ hosts persistent Pi, Claude Code, and Codex collaborators as real interactive ag
 participant identity lease, and each writer working in its own Git worktree on `runtime/collab/<protocol>/<participantId>`.
 
 Every start, stand-down, stop, release, takeover, and worktree cleanup needs one explicit confirmed interactive step; collaborator prose
-never authorizes any of them. Automatic prompt injection into a Claude/Codex tab is not implemented — their mail waits for human input in
-the tab. Runtime never commits or merges: review a writer's branch and integrate it with ordinary Git.
+never authorizes any of them. A start is one dialog listing driver, model, persona, profile and project, then one path for every driver:
+worktree for a writer, no-focus tab, `herdr agent start`, `bridge.bind`, record. A failed step stops whatever it started and reports the
+error; nothing half-launched is kept for recovery. Automatic prompt injection into a Claude/Codex tab is not implemented — their mail
+waits for human input in the tab. Runtime never commits or merges: review a writer's branch and integrate it with ordinary Git.
 
 Every RPC method, every persisted Runtime record, and every section of Pi's hidden session entry is declared as a TypeBox schema and
 checked before use; a malformed request is `invalid_request` and corrupt state fails closed instead of being repaired.
@@ -162,8 +164,8 @@ worktrees and confirm exact cleanup, plus the six shared MCP mail tools (`collab
 through one stdio interface and the [shared messaging skill](skills/collaborator-messaging/SKILL.md).
 
 Commands: `/runtime start`, `/runtime status`, `/runtime register`, `/runtime monitor <directory>`, `/runtime monitor-delete`,
-`/runtime collaborate <protocol> <id>`, `/runtime collaborator-start <protocol> <id> [model]`, `/runtime participants`,
-`/runtime stand-down`, `/runtime leave`, and `/runtime takeover <protocol> <id>`.
+`/runtime collaborate <protocol> <id>`, `/runtime participants`, `/runtime stand-down`, `/runtime leave`, and
+`/runtime takeover <protocol> <id>`. Collaborator starts are a `collaborator_manage` operation, not a command.
 
 See [`extensions/runtime/PROTOCOL.md`](extensions/runtime/PROTOCOL.md) for the wire protocol, method map, identity rules, and limits.
 
