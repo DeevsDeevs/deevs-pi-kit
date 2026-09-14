@@ -129,7 +129,7 @@ export interface MissionRequirementAudit {
 	evidence: string;
 }
 
-export interface MissionCompletionResult {
+interface MissionCompletionResult {
 	mission?: MissionCurrent;
 	usage: MissionUsage;
 	userRequested: boolean;

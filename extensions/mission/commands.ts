@@ -272,7 +272,7 @@ export function parseCreateArgs(input: string): MissionCreateInput {
 	return result;
 }
 
-export function parseUpdateArgs(input: string): MissionUpdateInput {
+function parseUpdateArgs(input: string): MissionUpdateInput {
 	const tokens = input.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
 	const result: MissionUpdateInput = { reason: "" };
 	const reasonParts: string[] = [];
