@@ -59,7 +59,7 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 	}
 
 	command(args: string, ctx: ExtensionCommandContext): Promise<void> {
-		const services: RuntimeCommandServices = { session: this.session, messaging: this.messaging, collaborators: this.collaborators };
+		const services: RuntimeCommandServices = { session: this.session, messaging: this.messaging };
 		return runRuntimeCommand(services, args, ctx);
 	}
 
