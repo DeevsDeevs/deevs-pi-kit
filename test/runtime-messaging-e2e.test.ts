@@ -4,13 +4,14 @@ import fs, { mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, statSync,
 import { syncBuiltinESMExports } from "node:module";
 import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { HostedRuntimeClient } from "../extensions/runtime/client.ts";
 import { MessagingMcpClient } from "../extensions/runtime/mcp/client.ts";
 import { messagingDescriptorPath } from "../extensions/runtime/service/messaging.ts";
 import { HOSTED_ACK_RETENTION_MS } from "../extensions/runtime/hosted-types.ts";
-import type { HostedLiveAgent, RegisterPiInput } from "../extensions/runtime/service/registration.ts";
+import type { HostedLiveAgent } from "../extensions/runtime/service/identity.ts";
+import type { RegisterPiInput } from "../extensions/runtime/service/registration.ts";
 import { startRuntimeServer, type RuntimeServerHandle } from "../extensions/runtime/service/server.ts";
 import { HostedStateStorageError, HostedStateStore, readHostedRuntimeState, runtimeStatePaths, writeHostedRuntimeState } from "../extensions/runtime/service/state.ts";
 
@@ -61,6 +62,13 @@ async function setup(monitor: { scanIntervalMs?: number; onError?: (error: Error
 	const { namespaceId, secret } = JSON.parse(readFileSync(issued.descriptorPath, "utf8")) as { namespaceId: string; secret: string };
 	const descriptor = { namespaceId, secret };
 	return { root, runtimeRoot, client, sender, recipient, outsider, senderParticipant, recipientParticipant, issued, issue, descriptor, inputs, register, setNow(value: number) { now = value; }, async restart() { await server.close(); server = await startRuntimeServer(options); Object.assign(sender, await register("sender")); Object.assign(recipient, await register("recipient")); }, readState() { return readHostedRuntimeState(runtimeRoot); } };
+}
+
+/** The descriptor a failed issuance may have staged, before it is renamed over the live one. */
+function pendingDescriptor(descriptorPath: string): boolean {
+	const directory = dirname(descriptorPath);
+	const prefix = `${basename(descriptorPath)}.`;
+	return fs.readdirSync(directory).some(entry => entry.startsWith(prefix));
 }
 
 async function mcp(path: string, calls: Call[]): Promise<Result[]> {
@@ -552,7 +560,7 @@ it("preserves an issued descriptor after an uncertain state commit", async () =>
 	const originalSync = fs.fsyncSync;
 	let injected = 0;
 	const fault = vi.spyOn(fs, "fsyncSync").mockImplementation(fd => {
-		if (fs.fstatSync(fd).isDirectory() && fs.existsSync(descriptorPath)) {
+		if (fs.fstatSync(fd).isDirectory() && pendingDescriptor(descriptorPath)) {
 			injected++;
 			throw Object.assign(new Error("Injected issuance directory-sync failure"), { code: "EIO" });
 		}
@@ -578,6 +586,24 @@ it("preserves an issued descriptor after an uncertain state commit", async () =>
 	expect(Object.keys(test.readState().messaging)).toHaveLength(2);
 });
 
+it("supersedes a target's previous namespace so one descriptor never serves two live grants", async () => {
+	const test = await setup();
+	const descriptorPath = messagingDescriptorPath(test.runtimeRoot, test.sender.targetKey);
+	expect(test.issued.descriptorPath).toBe(descriptorPath);
+	const auth = { registrationId: test.sender.registrationId, registrationKey: test.sender.registrationKey };
+	await test.client.call("participant.release", { ...auth, participantKey: test.senderParticipant.participantKey });
+	const acquired = await test.client.call("participant.acquire", { ...auth, protocol: "proof", participantId: "sender", revive: true });
+	const reacquired = (acquired as { participant: Participant }).participant;
+	expect(reacquired.generation).not.toBe(test.senderParticipant.generation);
+	const reissued = await test.issue(reacquired);
+	expect(reissued.namespaceId).not.toBe(test.issued.namespaceId);
+	expect(reissued.descriptorPath).toBe(descriptorPath);
+	expect(test.readState().messaging[test.issued.namespaceId]?.status).toBe("expired");
+	expect(JSON.parse(readFileSync(descriptorPath, "utf8")).namespaceId).toBe(reissued.namespaceId);
+	const [peers] = await mcp(descriptorPath, [{ name: "collaborator_peers", arguments: {} }]);
+	expect(peers!.isError).toBe(false);
+});
+
 it("removes an uncommitted descriptor after a definite issuance failure", async () => {
 	const test = await setup({}, false);
 	const descriptorPath = messagingDescriptorPath(test.runtimeRoot, test.recipient.targetKey);
@@ -585,7 +611,7 @@ it("removes an uncommitted descriptor after a definite issuance failure", async 
 	const originalRename = fs.renameSync;
 	let injected = 0;
 	const fault = vi.spyOn(fs, "renameSync").mockImplementation((source, destination) => {
-		if (destination === statePath && fs.existsSync(descriptorPath)) {
+		if (destination === statePath && pendingDescriptor(descriptorPath)) {
 			injected++;
 			throw Object.assign(new Error("Injected issuance pre-rename failure"), { code: "EIO" });
 		}
@@ -597,6 +623,7 @@ it("removes an uncommitted descriptor after a definite issuance failure", async 
 		expect(injected).toBe(1);
 	} finally { fault.mockRestore(); syncBuiltinESMExports(); }
 	expect(fs.existsSync(descriptorPath)).toBe(false);
+	expect(pendingDescriptor(descriptorPath)).toBe(false);
 	expect(Object.keys(test.readState().messaging)).toHaveLength(1);
 	const issued = await test.issue(test.recipientParticipant);
 	const [peers] = await mcp(issued.descriptorPath, [{ name: "collaborator_peers", arguments: {} }]);

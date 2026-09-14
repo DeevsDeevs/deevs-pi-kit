@@ -7,7 +7,6 @@ import type {
 	MessageStartEvent,
 	ToolCallEvent,
 } from "@earendil-works/pi-coding-agent";
-import { markClaudeWorkspaceTrusted } from "./claude-trust.ts";
 import type { CollaboratorToolBlock } from "./collaborator-policy.ts";
 import {
 	CollaboratorService,
@@ -37,12 +36,12 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 	private readonly native: NativeAgentService;
 	private readonly collaborators: CollaboratorService;
 
-	constructor(pi: ExtensionAPI, root = defaultRuntimeRoot(), trustClaudeWorkspace: (cwd: string) => void = markClaudeWorkspaceTrusted) {
+	constructor(pi: ExtensionAPI, root = defaultRuntimeRoot()) {
 		this.store = new HostedSessionStore(pi);
 		this.session = new RuntimeSession(pi, root, this.store, this);
 		this.delivery = new HostedDelivery(this.session);
 		this.messaging = new MessagingClient(this.session);
-		this.native = new NativeAgentService(this.session, this.messaging, trustClaudeWorkspace);
+		this.native = new NativeAgentService(this.session, this.messaging);
 		this.collaborators = new CollaboratorService(this.session, this.native);
 	}
 

@@ -75,9 +75,9 @@ function hostedMessages() {
 	return sessionEntries().filter((entry) => entry.type === "custom_message" && entry.customType === "deevs.hosted-runtime.v1");
 }
 
-async function startRuntime(epoch) {
+async function startRuntime() {
 	process.env.HERDR_SOCKET_PATH = herdrSocket;
-	runtime = await startRuntimeServer({ root: runtimeRoot, epoch, monitor: { scanIntervalMs: 100, watchDebounceMs: 10 } });
+	runtime = await startRuntimeServer({ root: runtimeRoot, monitor: { scanIntervalMs: 100, watchDebounceMs: 10 } });
 	return runtime;
 }
 
@@ -135,7 +135,7 @@ function simulatedPreAckCrashState() {
 try {
 	herdrServer = spawn("herdr", ["--session", sessionName, "server"], { stdio: ["ignore", "pipe", "pipe"], env: herdrEnv });
 	await waitFor(() => existsSync(herdrSocket), "isolated Herdr socket did not start");
-	await startRuntime("epoch_release_1");
+	await startRuntime();
 
 	const initial = await startPi("runtime-release-target-1", targetSessionFile);
 	await assertRuntimeRegistered(initial.pane.pane_id);
@@ -152,7 +152,7 @@ try {
 	assert.equal(Object.keys(readState().wakes).length, 0, "offline target received a wake");
 
 	await stopRuntime();
-	await startRuntime("epoch_release_2");
+	await startRuntime();
 	assert.equal(readState().events[pendingEvent.eventId].delivery.status, "pending");
 
 	const foreign = await startPi("runtime-release-foreign", foreignSessionFile, false);
@@ -161,17 +161,13 @@ try {
 		projectRoot,
 		piSessionId: foreignSessionId,
 		piSessionFile: foreignSessionFile,
-		clientGeneration: "foreign_client",
 		admittedClaims: [],
-		herdr: { paneId: foreign.pane.pane_id, terminalId: foreign.pane.terminal_id },
 	});
 	await assert.rejects(() => client.call("pi.register", {
 		projectRoot,
 		piSessionId: targetSessionId,
 		piSessionFile: targetSessionFile,
-		clientGeneration: "foreign_steal",
 		admittedClaims: [],
-		herdr: { paneId: foreign.pane.pane_id, terminalId: foreign.pane.terminal_id },
 	}), (error) => error?.code === "identity_mismatch");
 	await assert.rejects(() => client.call("inbox.claim", { registrationId: foreignRegistration.registrationId, registrationKey: foreignRegistration.registrationKey }), (error) => error?.code === "not_found");
 
@@ -194,7 +190,7 @@ try {
 	await stopRuntime();
 	const simulatedClaim = simulatedPreAckCrashState();
 	assert.equal(hostedMessages().length, 1, "crash simulation lost the admitted Pi receipt");
-	await startRuntime("epoch_release_3");
+	await startRuntime();
 	const reconciler = await startPi("runtime-release-target-3", targetSessionFile);
 	await assertRuntimeRegistered(reconciler.pane.pane_id);
 	await waitFor(() => readState().claims[simulatedClaim.claimId]?.status === "acked", "historical Pi receipt did not reconcile after restart");
@@ -202,7 +198,7 @@ try {
 
 	await closePane(reconciler.pane.pane_id);
 	await stopRuntime();
-	await startRuntime("epoch_release_4");
+	await startRuntime();
 	const finalPi = await startPi("runtime-release-target-4", targetSessionFile);
 	await assertRuntimeRegistered(finalPi.pane.pane_id);
 	// Cover one full client heartbeat interval as well as register/scan-triggered wake paths.

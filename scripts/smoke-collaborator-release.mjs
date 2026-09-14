@@ -100,15 +100,14 @@ function auth(registration) {
 	return { registrationId: registration.registrationId, registrationKey: registration.registrationKey };
 }
 
-async function startRuntime(epoch) {
+async function startRuntime() {
 	process.env.HERDR_SOCKET_PATH = herdrSocket;
 	runtimeNow += 1_000;
 	runtime = await startRuntimeServer({
 		root: runtimeRoot,
-		epoch,
 		registration: { now: () => runtimeNow },
 		// Reconnect grace has deterministic unit coverage; zero keeps this destructive takeover gate bounded.
-		participant: { now: () => runtimeNow, reconnectGraceMs: 0, epochStartedAt: runtimeNow },
+		participant: { now: () => runtimeNow, reconnectGraceMs: 0, startedAt: runtimeNow },
 		wake: { now: () => runtimeNow, claimLeaseMs: 1_000 },
 	});
 	return runtime;
@@ -223,16 +222,14 @@ async function launchCollaborator(parent, participantId) {
 	return { ...launched, sessionId: header.id, callerAcquired: true };
 }
 
-async function directRegistration(pi, sessionId, clientGeneration) {
+async function directRegistration(pi, sessionId) {
 	const client = new HostedRuntimeClient(runtime.socketPath);
 	const receipts = hostedMessages(pi.sessionFile).map((entry) => ({ claimId: entry.details.claimId, eventIds: entry.details.eventIds }));
 	const registration = await client.call("pi.register", {
 		projectRoot,
 		piSessionId: sessionId,
 		piSessionFile: pi.sessionFile,
-		clientGeneration,
 		admittedClaims: receipts,
-		herdr: { paneId: pi.pane.pane_id, terminalId: pi.pane.terminal_id },
 	});
 	return { client, registration, pi, sessionId };
 }
@@ -242,7 +239,7 @@ async function directCall(sender, method, params) {
 		try { return await sender.client.call(method, { ...auth(sender.registration), ...params }); }
 		catch (error) {
 			if (error?.code !== "registration_stale" || attempt >= 4) throw error;
-			const refreshed = await directRegistration(sender.pi, sender.sessionId, `direct_retry_${randomUUID()}`);
+			const refreshed = await directRegistration(sender.pi, sender.sessionId);
 			sender.client = refreshed.client;
 			sender.registration = refreshed.registration;
 		}
@@ -419,7 +416,7 @@ function simulatePreAckCrash(eventId) {
 try {
 	herdrServer = spawn("herdr", ["--session", sessionName, "server"], { stdio: ["ignore", "pipe", "pipe"], env: herdrEnv });
 	await waitFor(() => existsSync(herdrSocket), "isolated Herdr socket did not start");
-	await startRuntime("epoch_collaborator_1");
+	await startRuntime();
 
 	let alphaPi = await startPi("collaborator-alpha-1", alphaSessionFile);
 	await assertRuntimeRegistered(alphaPi);
@@ -432,7 +429,7 @@ try {
 	const betaKey = participant("review", "beta").participantKey;
 	assert.notEqual(alphaKey, betaKey);
 
-	let alphaDirect = await directRegistration(alphaPi, alphaSessionId, "direct_alpha_1");
+	let alphaDirect = await directRegistration(alphaPi, alphaSessionId);
 	const alphaToBeta = await send(alphaDirect, betaKey, "send_alpha_beta", "alpha-to-beta release marker; do not use tools or modify files");
 	await waitMessage(betaSessionFile, "alpha-to-beta release marker", 1);
 	await waitFor(() => readState().events[alphaToBeta.eventId].delivery.status === "acked", "alpha-to-beta mail was not acknowledged");
@@ -444,7 +441,7 @@ try {
 	await waitFor(() => participant("review", "alpha")?.holderTargetKey === alphaDirect.registration.targetKey, "alpha identity did not restore to its stable target");
 	const productionMissionId = await createProductionMission(alphaPi);
 
-	let betaDirect = await directRegistration(betaPi, betaSessionId, "direct_beta_1");
+	let betaDirect = await directRegistration(betaPi, betaSessionId);
 	const betaToAlpha = await send(betaDirect, alphaKey, "send_beta_alpha", "beta-to-alpha release marker; do not use tools or modify files");
 	await waitMessage(alphaSessionFile, "beta-to-alpha release marker", 1);
 	await waitFor(() => readState().events[betaToAlpha.eventId].delivery.status === "acked", "beta-to-alpha mail was not acknowledged");
@@ -460,7 +457,7 @@ try {
 	cli("agent", "prompt", alphaPi.pane.pane_id, "/runtime stand-down");
 	await waitFor(() => participant("review", "alpha").state === "vacant", "restored alpha identity could not stand down");
 	await waitFor(() => sessionEntries(alphaSessionFile).filter((entry) => entry.type === "custom" && entry.customType === sessionEntry).at(-1)?.data?.participant?.disposition === "vacant", "alpha stand-down disposition was not persisted");
-	betaDirect = await directRegistration(betaPi, betaSessionId, "direct_beta_2");
+	betaDirect = await directRegistration(betaPi, betaSessionId);
 	const queuedWhileVacant = await send(betaDirect, alphaKey, "send_vacant", "vacant-queue release marker; do not use tools or modify files");
 	assert.equal(readState().events[queuedWhileVacant.eventId].delivery.status, "pending");
 	await closePi(alphaPi);
@@ -474,16 +471,16 @@ try {
 	await waitMessage(alphaSessionFile, "vacant-queue release marker", 2);
 	await waitIdle(alphaPi);
 
-	alphaDirect = await directRegistration(alphaPi, alphaSessionId, "direct_alpha_3");
+	alphaDirect = await directRegistration(alphaPi, alphaSessionId);
 	await directCall(alphaDirect, "participant.release", { participantKey: alphaKey });
 	assert.equal(participant("review", "alpha").state, "ended");
-	betaDirect = await directRegistration(betaPi, betaSessionId, "direct_beta_3");
+	betaDirect = await directRegistration(betaPi, betaSessionId);
 	await assert.rejects(() => send(betaDirect, alphaKey, "send_ended", "must reject"), (error) => error?.code === "not_found");
 	const revived = await directCall(alphaDirect, "participant.acquire", { protocol: "review", participantId: "alpha", revive: true });
 	assert.equal(revived.revived, true);
 	assert.equal(revived.participant.state, "held");
 
-	betaDirect = await directRegistration(betaPi, betaSessionId, "direct_beta_4");
+	betaDirect = await directRegistration(betaPi, betaSessionId);
 	const takeoverMail = await send(betaDirect, alphaKey, "send_takeover", "takeover-claim release marker; do not use tools or modify files");
 	const claimed = await directCall(alphaDirect, "inbox.claim", {});
 	assert.ok(claimed.events.some((event) => event.eventId === takeoverMail.eventId));
@@ -510,7 +507,7 @@ try {
 	await stopRuntime();
 	const simulatedClaim = simulatePreAckCrash(takeoverMail.eventId);
 	const beforeReconcileMessages = hostedMessages(betaSessionFile).length;
-	await startRuntime("epoch_collaborator_2");
+	await startRuntime();
 	betaPi = await startPi("collaborator-beta-3-reconcile", betaSessionFile);
 	await assertRuntimeRegistered(betaPi);
 	await waitFor(() => readState().claims[simulatedClaim.claimId]?.status === "acked", "historical mailbox receipt did not reconcile");
@@ -518,7 +515,7 @@ try {
 
 	await closePi(betaPi);
 	await stopRuntime();
-	await startRuntime("epoch_collaborator_3");
+	await startRuntime();
 	betaPi = await startPi("collaborator-beta-4-final", betaSessionFile);
 	await assertRuntimeRegistered(betaPi);
 	await sleep(11_000);

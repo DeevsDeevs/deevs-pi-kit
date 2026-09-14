@@ -14,12 +14,9 @@ import {
 	type HostedProtocolContext,
 } from "./protocol.ts";
 import { HostedParticipantCoordinator, type HostedParticipantCoordinatorOptions } from "./participant.ts";
-import {
-	HerdrCliHostVerifier,
-	RuntimeRegistrationManager,
-	type HostedHostVerifier,
-	type RegistrationManagerOptions,
-} from "./registration.ts";
+import { HerdrCliHostVerifier } from "./herdr-cli.ts";
+import type { HostedHostVerifier } from "./identity.ts";
+import { RuntimeRegistrationManager, type RegistrationManagerOptions } from "./registration.ts";
 import { HostedStateStore, loadOrCreateRuntimeInstance } from "./state.ts";
 import { HostedWakeCoordinator, type HostedWakeOptions } from "./wake.ts";
 import { RuntimeWorktrees } from "./worktree.ts";

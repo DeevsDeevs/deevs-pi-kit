@@ -7,7 +7,8 @@ import type { MessagingClient } from "../extensions/runtime/messaging-client.ts"
 import { NativeAgentService } from "../extensions/runtime/native-agents.ts";
 import type { RuntimeSession } from "../extensions/runtime/runtime-session.ts";
 import type { ManagedAgentControl } from "../extensions/runtime/session-record.ts";
-import { RuntimeRegistrationManager, type HostedHostVerifier, type HostedLiveAgent } from "../extensions/runtime/service/registration.ts";
+import type { HostedHostVerifier, HostedLiveAgent } from "../extensions/runtime/service/identity.ts";
+import { RuntimeRegistrationManager } from "../extensions/runtime/service/registration.ts";
 import { HostedStateStore } from "../extensions/runtime/service/state.ts";
 
 const roots: string[] = [];
@@ -74,7 +75,7 @@ describe("decision A identity", () => {
 			},
 		} as unknown as RuntimeSession;
 		const messaging = { isManagedIssued: () => true } as unknown as MessagingClient;
-		await new NativeAgentService(session, messaging, () => {}).heartbeatManagedAgents();
+		await new NativeAgentService(session, messaging).heartbeatManagedAgents();
 		expect(persisted).toEqual([{ ...control, state: "needs_attention" }]);
 	});
 });

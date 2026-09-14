@@ -5,14 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DirectoryMonitorManager } from "../extensions/runtime/service/monitor.ts";
 import { dispatchHostedLine, type HostedProtocolContext } from "../extensions/runtime/service/protocol.ts";
-import {
-	HerdrCliHostVerifier,
-	RegistrationError,
-	RuntimeRegistrationManager,
-	type HostedHostVerifier,
-	type HostedLiveAgent,
-	type RegisterPiInput,
-} from "../extensions/runtime/service/registration.ts";
+import { HerdrCliHostVerifier } from "../extensions/runtime/service/herdr-cli.ts";
+import { RegistrationError, type HostedHostVerifier, type HostedLiveAgent } from "../extensions/runtime/service/identity.ts";
+import { RuntimeRegistrationManager, type RegisterPiInput } from "../extensions/runtime/service/registration.ts";
 import { HostedStateStore, pendingHostedEvents, piTargetKey } from "../extensions/runtime/service/state.ts";
 import { HostedWakeCoordinator } from "../extensions/runtime/service/wake.ts";
 

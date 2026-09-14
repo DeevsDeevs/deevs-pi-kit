@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DirectoryMonitorManager } from "../extensions/runtime/service/monitor.ts";
-import { RuntimeRegistrationManager, type HostedHostVerifier, type HostedLiveAgent, type RegisterPiInput } from "../extensions/runtime/service/registration.ts";
+import type { HostedHostVerifier, HostedLiveAgent } from "../extensions/runtime/service/identity.ts";
+import { RuntimeRegistrationManager, type RegisterPiInput } from "../extensions/runtime/service/registration.ts";
 import { HostedStateStore, pendingHostedEvents } from "../extensions/runtime/service/state.ts";
 import { HostedWakeCoordinator } from "../extensions/runtime/service/wake.ts";
 

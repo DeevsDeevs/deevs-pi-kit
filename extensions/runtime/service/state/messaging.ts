@@ -24,7 +24,14 @@ export function issueMessagingGrant(state: HostedRuntimeState, operation: IssueO
 	}
 	if (!newlyIssuedGrant(state, grant)) throw new HostedStateConflictError("conflict", "Messaging namespace must be newly issued.");
 	assertMessagingHolder(state, grant, grant.createdAt);
-	return { ...state, messaging: { ...state.messaging, [grant.namespaceId]: grant } };
+	// One descriptor file exists per target, so a fresh grant supersedes that target's previous namespace.
+	const superseded = supersedeTargetGrants(state, grant.targetKey);
+	return { ...superseded, messaging: { ...superseded.messaging, [grant.namespaceId]: grant } };
+}
+
+function supersedeTargetGrants(state: HostedRuntimeState, targetKey: string): HostedRuntimeState {
+	const stale = Object.values(state.messaging).filter(grant => grant.targetKey === targetKey && grant.status === "active");
+	return stale.reduce((next, grant) => expireMessagingGrant(next, { type: "messaging.expire", namespaceId: grant.namespaceId }), state);
 }
 
 export function expireMessagingGrant(state: HostedRuntimeState, operation: ExpireOperation): HostedRuntimeState {
