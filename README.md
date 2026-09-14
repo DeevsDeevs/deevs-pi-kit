@@ -144,38 +144,15 @@ When Pi runs inside Herdr (`HERDR_ENV=1`), normalize legacy and Kitty Alt+Enter 
 
 ### Hosted runtime
 
-Runtime is a local daemon with two jobs. It watches newly created direct-child files in a monitored directory and delivers them to one
-exact Pi session across restarts, handing them out on Pi's own heartbeat instead of prompting or focusing any pane. Delivery is
-at-least-once: a session that dies before acknowledging is handed the same batch again, and a bounded durable seen-set in its session
-entry keeps the repeat from reaching the model twice. It also
-hosts persistent Pi, Claude Code, and Codex collaborators as real interactive agents in no-focus Herdr tabs, each holding a durable
-participant identity lease, and each writer working in its own Git worktree on `runtime/collab/<protocol>/<participantId>`.
+Runtime is a local daemon that watches newly created direct-child files in a monitored directory and delivers them to one exact Pi session across restarts, handing them out on Pi's own heartbeat instead of prompting or focusing any pane. Delivery is at-least-once: a session that dies before acknowledging is handed the same batch again, and a bounded durable seen-set in its session entry keeps the repeat from reaching the model twice. It also hosts persistent Pi, Claude Code and Codex collaborators as real interactive agents in no-focus Herdr tabs, each holding a participant identity lease, and each writer working in its own Git worktree on `runtime/collab/<protocol>/<participantId>`.
 
-A client is trusted while it presents the registration ID and key Runtime minted for it, and its target stays live while `herdr agent
-get <name>` still reports that agent in this project — or, for a Pi session, while its session file still carries that session ID and
-project cwd. Nothing else is re-verified: pane, tab, and terminal IDs are kept only so stop can close the exact tab Runtime opened.
+Identity is the registration ID and key Runtime minted plus `herdr agent get <name>` — for a Pi session, its session file header. Panes, tabs and terminals are never re-verified; the stored tab ID exists only so stop can close the exact tab Runtime opened. Every start, stand-down, stop, release, takeover and worktree cleanup needs one explicit confirmed interactive step, and collaborator prose never authorizes any of them. A failing launch step stops what it started and reports the error; nothing half-launched is kept. Automatic prompt injection into a Claude/Codex tab is not implemented — their mail waits for human input in the tab. Runtime never commits or merges: review a writer's branch and integrate it with ordinary Git.
 
-Every start, stand-down, stop, release, takeover, and worktree cleanup needs one explicit confirmed interactive step; collaborator prose
-never authorizes any of them. A start is one dialog listing driver, model, persona, profile and project, then one path for every driver:
-worktree for a writer, no-focus tab, `herdr agent start`, `bridge.bind`, record. A failed step stops whatever it started and reports the
-error; nothing half-launched is kept for recovery. Automatic prompt injection into a Claude/Codex tab is not implemented — their mail
-waits for human input in the tab. Runtime never commits or merges: review a writer's branch and integrate it with ordinary Git.
+Tools: `collaborator_list` for discovery, `collaborator_manage` for participant and process lifecycle, `collaborator_workspace` to list worktrees and confirm exact cleanup, plus the six shared MCP mail tools (`collaborator_peers`, `collaborator_send`, `collaborator_receive`, `collaborator_received`, `collaborator_reply`, `collaborator_status`) used by Pi, Claude Code and Codex alike through one stdio interface and the [shared messaging skill](skills/collaborator-messaging/SKILL.md).
 
-Every RPC method, every persisted Runtime record, and every section of Pi's hidden session entry is declared as a TypeBox schema and
-checked before use; a malformed request is `invalid_request` and corrupt state fails closed instead of being repaired. Runtime state is
-current-only: a participant keeps just its last transition, a target owns at most one monitor, and a new state shape replaces the old one
-without migration.
+Commands: `/runtime start`, `/runtime status`, `/runtime register`, `/runtime monitor <directory>`, `/runtime monitor-delete`, `/runtime collaborate <protocol> <id>`, `/runtime participants`, `/runtime stand-down`, `/runtime leave`, and `/runtime takeover <protocol> <id>`. Collaborator starts are a `collaborator_manage` operation, not a command.
 
-Tools: `collaborator_list` for discovery, `collaborator_manage` for participant and process lifecycle, `collaborator_workspace` to list
-worktrees and confirm exact cleanup, plus the six shared MCP mail tools (`collaborator_peers`, `collaborator_send`,
-`collaborator_receive`, `collaborator_received`, `collaborator_reply`, `collaborator_status`) used by Pi, Claude Code, and Codex alike
-through one stdio interface and the [shared messaging skill](skills/collaborator-messaging/SKILL.md).
-
-Commands: `/runtime start`, `/runtime status`, `/runtime register`, `/runtime monitor <directory>`, `/runtime monitor-delete`,
-`/runtime collaborate <protocol> <id>`, `/runtime participants`, `/runtime stand-down`, `/runtime leave`, and
-`/runtime takeover <protocol> <id>`. Collaborator starts are a `collaborator_manage` operation, not a command.
-
-See [`extensions/runtime/PROTOCOL.md`](extensions/runtime/PROTOCOL.md) for the wire protocol, method map, identity rules, and limits.
+See [`extensions/runtime/PROTOCOL.md`](extensions/runtime/PROTOCOL.md) for the wire protocol, method map, identity rules and limits.
 
 ## Skills
 
