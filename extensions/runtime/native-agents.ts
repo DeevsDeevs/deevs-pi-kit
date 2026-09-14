@@ -3,7 +3,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { HostedRuntimeClientError } from "./client.ts";
 import type { DriverSpec, StartedAgentIdentity } from "./drivers.ts";
 import type { CollaboratorTab } from "./herdr.ts";
-import type { HostedCollaboratorProfile, HostedNativeCollaboratorDriver } from "./hosted-types.ts";
+import { type HostedCollaboratorProfile, type HostedNativeCollaboratorDriver, isHeld } from "./hosted-types.ts";
 import { nativeMessagingConfiguration, type NativeMessagingConfiguration } from "./mcp/native.ts";
 import type { MessagingClient } from "./messaging-client.ts";
 import { parseBoundAgent, parseManagedAgent, type BoundAgent, type ManagedAgentStatus } from "./native-parse.ts";
@@ -253,7 +253,7 @@ export class NativeAgentService {
 		const registration = this.session.liveRegistration;
 		const identity = this.session.store.identity;
 		if (!registration) throw new HostedRuntimeClientError("registration_stale", "Managed agent rebinding requires a live Pi registration.");
-		if (identity?.disposition !== "held" || !identity.participantKey || !identity.generation) {
+		if (!identity || !isHeld(identity.disposition) || !identity.participantKey || !identity.generation) {
 			throw new HostedRuntimeClientError("conflict", "Managed agent rebinding requires this Pi session to hold its collaborator identity.");
 		}
 		const bound = await this.bindAgent(registration, {

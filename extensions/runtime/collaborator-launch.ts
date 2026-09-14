@@ -12,6 +12,7 @@ import { HostedRuntimeClient, HostedRuntimeClientError } from "./client.ts";
 import type { ResolvedCollaboratorCandidate } from "./collaborator-policy.ts";
 import { DRIVERS, driverLaunchArgv, type DriverSpec } from "./drivers.ts";
 import { createCollaboratorTab, throwIfAborted, waitForHerdrPaneCwd, type CollaboratorTab } from "./herdr.ts";
+import { isVacant, isWriter } from "./hosted-types.ts";
 import type { ManagedAgentPlan, NativeAgentService } from "./native-agents.ts";
 import { auth, strictObject, text, type ClientParticipantStatus, type LiveClientRegistration } from "./responses.ts";
 import type { RuntimeSession } from "./runtime-session.ts";
@@ -83,7 +84,7 @@ export class CollaboratorLauncher {
 	private async launchAgent(request: CollaboratorLaunchRequest): Promise<string> {
 		const { start, candidate, existing, spec, plan } = request;
 		throwIfAborted(start.signal);
-		const worktreePath = candidate.profile === "workspace-write"
+		const worktreePath = isWriter(candidate.profile)
 			? await this.ensureWorktree(start, candidate.participantId)
 			: undefined;
 		const launchCwd = worktreePath ?? start.projectRoot;
@@ -204,6 +205,6 @@ function notifyNativePrompt(ctx: ExtensionContext, paneId: string): void {
 }
 
 export function standingDown(participant: ClientParticipantStatus | undefined): participant is ClientParticipantStatus {
-	if (participant?.state !== "vacant") return false;
+	if (!participant || !isVacant(participant.state)) return false;
 	return participant.lastTransition.cause === "stand_down";
 }

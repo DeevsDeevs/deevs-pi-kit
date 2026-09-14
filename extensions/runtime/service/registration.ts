@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import type { HostedAgentTarget, HostedTarget } from "../hosted-types.ts";
+import { type HostedAgentTarget, type HostedTarget, isAgentTarget } from "../hosted-types.ts";
 import { assertAgentInProject, canonicalDirectory, canonicalFile, heldByTarget, verifyPiSessionHeader } from "./identity.ts";
 import { RegistrationError, type HostedHostVerifier } from "./identity.ts";
 import { HostedStateStore, piTargetKey } from "./state.ts";
@@ -76,7 +76,7 @@ export class RuntimeRegistrationManager {
 	registerAgent(target: HostedAgentTarget): HostedLiveRegistration {
 		this.ensureOpen();
 		const state = this.store.read();
-		if (state.targets[target.targetKey]?.kind !== "agent") {
+		if (!isAgentTarget(state.targets[target.targetKey])) {
 			throw new RegistrationError("registration_stale", "Herdr agent target is absent from durable state.");
 		}
 		if (!heldByTarget(this.store, target)) {

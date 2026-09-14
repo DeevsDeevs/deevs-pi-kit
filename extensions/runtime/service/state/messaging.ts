@@ -1,10 +1,11 @@
 import { Value } from "typebox/value";
-import type {
-	HostedMailboxMessageEvent,
-	HostedMessagingGrant,
-	HostedMessagingSend,
-	HostedRuntimeState,
-	HostedStateOperation,
+import {
+	type HostedMailboxMessageEvent,
+	type HostedMessagingGrant,
+	type HostedMessagingSend,
+	type HostedRuntimeState,
+	type HostedStateOperation,
+	isHeld,
 } from "../../hosted-types.ts";
 import { HOSTED_ACK_RETENTION_MS } from "../../schemas/common.ts";
 import { HostedMessagingGrantSchema } from "../../schemas/state.ts";
@@ -138,7 +139,7 @@ function messagingAuthorityIsLive(state: HostedRuntimeState, grant: HostedMessag
 	const target = state.targets[grant.targetKey];
 	if (grant.status !== "active") return false;
 	if (!withinWindow(at, grant.createdAt, grant.expiresAt)) return false;
-	if (holder?.state !== "held" || holder.generation !== grant.holderGeneration || holder.holderTargetKey !== grant.targetKey) return false;
+	if (!isHeld(holder?.state) || holder.generation !== grant.holderGeneration || holder.holderTargetKey !== grant.targetKey) return false;
 	return target !== undefined && messagingConfigurationHash(target) === grant.configurationHash;
 }
 

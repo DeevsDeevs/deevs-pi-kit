@@ -4,6 +4,8 @@ import {
 	type HostedParticipant,
 	type HostedRuntimeState,
 	type HostedStateOperation,
+	isEnded,
+	isHeld,
 } from "../../hosted-types.ts";
 import { HostedStateConflictError } from "./errors.ts";
 import { assertStateId, assertStateTime } from "./guards.ts";
@@ -20,7 +22,7 @@ export function sendMailboxMessage(state: HostedRuntimeState, operation: Mailbox
 	if (!sender || !senderHoldsIdentity(sender, operation)) {
 		throw new HostedStateConflictError("conflict", "Mailbox sender identity or generation changed before send.");
 	}
-	if (!recipient || recipient.state === "ended") throw new HostedStateConflictError("conflict", "Mailbox recipient is unavailable.");
+	if (!recipient || isEnded(recipient.state)) throw new HostedStateConflictError("conflict", "Mailbox recipient is unavailable.");
 	if (!participantsSharePeerScope(sender, recipient)) {
 		throw new HostedStateConflictError("conflict", "Mailbox participants must be distinct and share one project and protocol.");
 	}
@@ -49,7 +51,7 @@ export function sendMailboxMessage(state: HostedRuntimeState, operation: Mailbox
 }
 
 function senderHoldsIdentity(sender: HostedParticipant, operation: MailboxSendOperation): boolean {
-	return sender.state === "held"
+	return isHeld(sender.state)
 		&& sender.generation === operation.expectedSenderGeneration
 		&& sender.holderTargetKey === operation.senderTargetKey;
 }

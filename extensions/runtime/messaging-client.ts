@@ -1,5 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { HostedRuntimeClientError } from "./client.ts";
+import { isHeld, isWriter } from "./hosted-types.ts";
 import { auth, strictObject, text, type ClientParticipantStatus, type LiveClientRegistration, type MailHint } from "./responses.ts";
 import type { RuntimeSession } from "./runtime-session.ts";
 import type { ManagedAgentControl, ParticipantIdentity } from "./session-record.ts";
@@ -90,7 +91,7 @@ export class MessagingClient {
 
 	private hintReady(registration: LiveClientRegistration, ctx: ExtensionContext): boolean {
 		if (!this.session.scope(ctx, registration)()) return false;
-		if (this.session.store.identity?.disposition !== "held") return false;
+		if (!isHeld(this.session.store.identity?.disposition)) return false;
 		if (!this.session.pi.getActiveTools().includes("collaborator_receive")) return false;
 		if (ctx.mode !== "tui" || !ctx.hasUI) return false;
 		if (!ctx.isIdle() || ctx.hasPendingMessages()) return false;
@@ -98,7 +99,7 @@ export class MessagingClient {
 	}
 
 	private holdsIdentity(registration: LiveClientRegistration, identity: ParticipantIdentity): boolean {
-		if (!this.session.isActive || identity.disposition !== "held") return false;
+		if (!this.session.isActive || !isHeld(identity.disposition)) return false;
 		return this.session.liveRegistration?.registrationId === registration.registrationId;
 	}
 
@@ -108,16 +109,16 @@ export class MessagingClient {
 		if (live.registrationKey !== registration.registrationKey) return false;
 		const current = this.session.store.identity;
 		if (!current || current.participantKey !== identity.participantKey || current.generation !== identity.generation) return false;
-		return current.disposition === "held";
+		return isHeld(current.disposition);
 	}
 }
 
 function managedParticipantConfigured(control: ManagedAgentControl, participant: ClientParticipantStatus): boolean {
 	return control.messagingConfigured === true
 		&& control.state === "active"
-		&& participant.state === "held"
+		&& isHeld(participant.state)
 		&& participant.holderLive
 		&& participant.generation === control.holderGeneration
-		&& participant.profile === "workspace-write"
+		&& isWriter(participant.profile)
 		&& participant.driver === control.driver;
 }

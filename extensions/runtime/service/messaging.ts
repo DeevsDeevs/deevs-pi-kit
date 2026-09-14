@@ -9,6 +9,8 @@ import {
 	type HostedParticipantState,
 	type HostedRuntimeState,
 	type HostedTarget,
+	isHeld,
+	isPiTarget,
 } from "../hosted-types.ts";
 import { HostedParticipantCoordinator } from "./participant.ts";
 import { RegistrationError } from "./identity.ts";
@@ -129,10 +131,10 @@ export class RuntimeMessaging {
 
 	async issue(caller: HostedLiveRegistration, participantKey: string, expectedGeneration: string): Promise<MessagingIssued> {
 		const state = this.store.read();
-		const held = (candidate: HostedParticipant) => candidate.state === "held" && candidate.holderTargetKey === caller.targetKey;
+		const held = (candidate: HostedParticipant) => isHeld(candidate.state) && candidate.holderTargetKey === caller.targetKey;
 		const callerParticipant = Object.values(state.participants).find(held);
 		const participant = state.participants[participantKey];
-		if (state.targets[caller.targetKey]?.kind !== "pi" || !callerParticipant || !participant) throw issuanceMismatch();
+		if (!isPiTarget(state.targets[caller.targetKey]) || !callerParticipant || !participant) throw issuanceMismatch();
 		if (!issuanceScopeMatches(callerParticipant, participant, expectedGeneration)) throw issuanceMismatch();
 		const holderTargetKey = participant.holderTargetKey;
 		if (!holderTargetKey) throw issuanceMismatch();
@@ -254,7 +256,7 @@ export class RuntimeMessaging {
 
 	private peerView(peer: HostedParticipant): MessagingPeer {
 		const holderTargetKey = peer.holderTargetKey;
-		const holderLive = peer.state === "held" && holderTargetKey !== undefined && this.registrations.hasLiveTarget(holderTargetKey);
+		const holderLive = isHeld(peer.state) && holderTargetKey !== undefined && this.registrations.hasLiveTarget(holderTargetKey);
 		return { participantId: peer.participantId, state: peer.state, holderLive };
 	}
 
@@ -368,13 +370,13 @@ function issuanceMismatch(): RegistrationError {
 function issuanceScopeMatches(caller: HostedParticipant, participant: HostedParticipant, expectedGeneration: string): boolean {
 	return caller.projectRoot === participant.projectRoot
 		&& caller.protocol === participant.protocol
-		&& participant.state === "held"
+		&& isHeld(participant.state)
 		&& participant.generation === expectedGeneration;
 }
 
 function stillHeldBy(participant: HostedParticipant | undefined, generation: string, targetKey: string): boolean {
-	return participant?.state === "held"
-		&& participant.generation === generation
+	if (!participant || !isHeld(participant.state)) return false;
+	return participant.generation === generation
 		&& participant.holderTargetKey === targetKey;
 }
 
@@ -399,7 +401,7 @@ function isPeerOf(sender: HostedParticipant, candidate: HostedParticipant): bool
 }
 
 function messagingBinding(target: HostedTarget): MessagingBinding {
-	if (target.kind !== "pi") return { kind: "agent" };
+	if (!isPiTarget(target)) return { kind: "agent" };
 	return {
 		kind: "pi",
 		sessionId: target.piSessionId,
@@ -424,7 +426,7 @@ function liveTargetNamespace(
 		return grant.targetKey === registration.targetKey
 			&& grant.status === "active"
 			&& grant.configurationHash === messagingConfigurationHash(target)
-			&& holder?.state === "held"
+			&& isHeld(holder?.state)
 			&& holder.holderTargetKey === grant.targetKey
 			&& holder.generation === grant.holderGeneration
 			&& grant.createdAt <= at

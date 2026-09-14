@@ -1,5 +1,5 @@
 import { closeSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
-import type { HostedAgentTarget, HostedTarget } from "../hosted-types.ts";
+import { type HostedAgentTarget, type HostedTarget, isHeld } from "../hosted-types.ts";
 import { HostedStateStore } from "./state.ts";
 
 export type ParsedValue = null | boolean | number | string | ParsedValue[] | ParsedObject;
@@ -42,7 +42,7 @@ export interface HostedHostVerifier {
 
 export function heldByTarget(store: HostedStateStore, target: HostedAgentTarget): boolean {
 	const participant = store.read().participants[target.participantKey];
-	return participant?.state === "held"
+	return isHeld(participant?.state)
 		&& participant.holderTargetKey === target.targetKey
 		&& participant.generation === target.holderGeneration;
 }

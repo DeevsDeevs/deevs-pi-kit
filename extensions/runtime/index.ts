@@ -8,6 +8,7 @@ import { registerRuntimeEventRenderer } from "../shared/runtime-ui.ts";
 import type { ClientParticipantStatus } from "./responses.ts";
 import type { CollaboratorManageInput, CollaboratorManageResult, CollaboratorWorktreeInput } from "./collaborators.ts";
 import { HostedRuntimeIntegration } from "./hosted-integration.ts";
+import { isHeld } from "./hosted-types.ts";
 
 const DRIVER_LITERALS = [Type.Literal("pi"), Type.Literal("claude-code"), Type.Literal("codex")];
 const PROFILE_LITERALS = [Type.Literal("read-only"), Type.Literal("workspace-write")];
@@ -20,7 +21,7 @@ const PROFILE_DESCRIPTION = "Execution profile; persona starts default to read-o
 function collaboratorLines(participants: ClientParticipantStatus[]): string {
 	if (participants.length === 0) return "No Runtime collaborators exist for this project.";
 	return participants.map((participant) => {
-		const liveness = participant.state === "held" ? ` (${participant.holderLive ? "live" : "offline"})` : "";
+		const liveness = isHeld(participant.state) ? ` (${participant.holderLive ? "live" : "offline"})` : "";
 		return `${participant.protocol}/${participant.participantId}: ${participant.state}${liveness}`;
 	}).join("\n");
 }

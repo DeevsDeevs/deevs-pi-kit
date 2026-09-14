@@ -1,4 +1,4 @@
-import type { HostedEvent, HostedRuntimeState } from "../../hosted-types.ts";
+import { type HostedEvent, type HostedRuntimeState, isHeld } from "../../hosted-types.ts";
 import { HOSTED_ACK_RETENTION_MS, HOSTED_MAX_STATE_RECORDS } from "../../schemas/common.ts";
 import { deriveParticipantKey, mailboxDedupeKey, targetIdentityKey } from "./keys.ts";
 
@@ -39,7 +39,7 @@ function checkParticipants(state: HostedRuntimeState): void {
 		checkKey(key, participant.participantKey, "participant");
 		const derived = deriveParticipantKey(participant.projectRoot, participant.protocol, participant.participantId);
 		checkKey(key, derived, "participant identity");
-		if (participant.state !== "held") continue;
+		if (!isHeld(participant.state)) continue;
 		const holder = participant.holderTargetKey ? state.targets[participant.holderTargetKey] : undefined;
 		if (!holder || holder.projectRoot !== participant.projectRoot) {
 			throw new Error(`held participant ${key} has no holder target in its project`);

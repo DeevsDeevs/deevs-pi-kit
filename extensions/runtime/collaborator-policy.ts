@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
 import { lstatSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { Value } from "typebox/value";
 import type { CustomToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { findAgent, loadBuiltinAgents } from "../subagents/agents.ts";
 import { HostedRuntimeClientError } from "./client.ts";
 import { collaboratorProfileTools, DRIVERS } from "./drivers.ts";
-import type { HostedCollaboratorDriver, HostedCollaboratorProfile } from "./hosted-types.ts";
+import { type HostedCollaboratorDriver, type HostedCollaboratorProfile, isWriter } from "./hosted-types.ts";
+import { HostedCollaboratorProfileSchema } from "./schemas/state.ts";
 import { isStringValue } from "./responses.ts";
 import { COLLABORATOR_MODEL, COLLABORATOR_NAME, type CollaboratorPersona } from "./session-record.ts";
 
@@ -78,7 +80,7 @@ function resolvePersona(requested: string): ResolvedPersona {
 
 function usesNativeUserConfiguration(candidate: ResolvedCollaboratorCandidate): boolean {
 	if (!DRIVERS[candidate.driver].bind) return false;
-	return candidate.profile === "workspace-write";
+	return isWriter(candidate.profile);
 }
 
 export function collaboratorConfiguration(candidate: ResolvedCollaboratorCandidate): string {
@@ -162,7 +164,7 @@ function assertUnambiguousCollaboratorModel(qualified: boolean, model: string | 
 }
 
 function collaboratorProfile(value: HostedCollaboratorProfile | undefined): HostedCollaboratorProfile | undefined {
-	if (value !== undefined && value !== "read-only" && value !== "workspace-write") {
+	if (value !== undefined && !Value.Check(HostedCollaboratorProfileSchema, value)) {
 		throw new HostedRuntimeClientError("invalid_request", "profile must be read-only or workspace-write.");
 	}
 	return value;

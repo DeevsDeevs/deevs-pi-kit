@@ -9,6 +9,7 @@ import {
 	type CollaboratorWorktreeInput,
 } from "./collaborators.ts";
 import { HostedDelivery } from "./delivery.ts";
+import { isHeld } from "./hosted-types.ts";
 import { MessagingClient } from "./messaging-client.ts";
 import { NativeAgentService } from "./native-agents.ts";
 import type { ClientParticipantStatus, HostedHeartbeat, LiveClientRegistration, SerializedValue } from "./responses.ts";
@@ -98,7 +99,7 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 	}
 
 	async afterRegister(registration: LiveClientRegistration, _ctx: ExtensionContext, current: () => boolean): Promise<void> {
-		if (this.store.identity?.disposition === "held") await this.messaging.provision(registration, current);
+		if (isHeld(this.store.identity?.disposition)) await this.messaging.provision(registration, current);
 	}
 
 	async afterHeartbeat(
