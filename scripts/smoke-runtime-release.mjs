@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -55,6 +55,11 @@ function piSession(name, sessionId) {
 	return { name, sessionId, file };
 }
 
+/** The persisted store, read straight off disk: what survives a restart is what is in this file. */
+function readState() {
+	return JSON.parse(readFileSync(join(runtimeRoot, "state.v1.json"), "utf8"));
+}
+
 function auth(registration) {
 	return { registrationId: registration.registrationId, registrationKey: registration.registrationKey };
 }
@@ -82,7 +87,7 @@ async function issue(registration, participant) {
 	});
 }
 
-/** The production stdio MCP endpoint, driven exactly as a provider would drive its six tools. */
+/** The production stdio MCP endpoint, driven exactly as a provider would drive its four tools. */
 class MessagingPeer {
 	constructor(descriptorPath) {
 		this.child = spawn(process.execPath, ["--experimental-strip-types", mcpMain, descriptorPath], {
@@ -121,10 +126,9 @@ class MessagingPeer {
 		assert.equal(info.serverInfo.name, "pi-kit-messaging");
 		this.child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
 		const listed = await this.send("tools/list", {});
-		assert.deepEqual(listed.tools.map((tool) => tool.name).sort(), [
-			"collaborator_inbox", "collaborator_peers", "collaborator_received", "collaborator_receive",
-			"collaborator_reply", "collaborator_send", "collaborator_status",
-		].sort(), "MCP endpoint does not expose the seven collaborator tools");
+		assert.deepEqual(listed.tools.map((tool) => tool.name), [
+			"collaborator_peers", "collaborator_inbox", "collaborator_send", "collaborator_reply",
+		], "MCP endpoint does not expose the four collaborator tools in catalog order");
 		return this;
 	}
 
@@ -209,46 +213,40 @@ try {
 	const betaPeer = await new MessagingPeer(betaGrant.descriptorPath).initialize();
 
 	const listed = await alphaPeer.tool("collaborator_peers", {});
-	assert.equal(listed.caller, "alpha");
-	assert.equal(listed.protocol, "review");
-	assert.deepEqual(listed.peers.map((peer) => peer.participantId), ["beta"]);
+	assert.equal(listed.me, "alpha");
+	assert.deepEqual(listed.peers, [{ participantId: "beta", live: true }]);
 	assert.equal(listed.binding.sessionId, alphaSession.sessionId);
 
-	// A sends to B through the MCP send; B's next heartbeat carries the hint.
-	const sendArguments = { namespaceId: alphaGrant.namespaceId, participantId: "beta", operationId: "op_alpha_1", body: alphaBody };
-	const sent = await alphaPeer.tool("collaborator_send", sendArguments);
+	// A sends to B through the MCP send; B's next heartbeat carries the hint for that event.
+	const sent = await alphaPeer.tool("collaborator_send", { participantId: "beta", body: alphaBody });
 	const betaBeat = await call("pi.heartbeat", auth(beta));
 	assert.deepEqual(betaBeat.mail, { namespaceId: betaGrant.namespaceId, eventId: sent.eventId }, "B did not receive its mail hint");
 
-	// A retry of the same operation ID returns the original event rather than publishing a second one.
-	const retried = await alphaPeer.tool("collaborator_send", sendArguments);
-	assert.equal(retried.eventId, sent.eventId, "an identical retry published a second event");
-	await assert.rejects(
-		() => alphaPeer.tool("collaborator_send", { ...sendArguments, body: "changed input" }),
-		(error) => /conflict|different input/i.test(error.message),
-		"a reused operation ID accepted changed input",
-	);
+	// The MCP mints a fresh operation per call, so a repeated send is a second message by design.
+	const resent = await alphaPeer.tool("collaborator_send", { participantId: "beta", body: alphaBody });
+	assert.notEqual(resent.eventId, sent.eventId, "a repeated MCP send reused its event");
 
-	// B receives, records receipt and replies; A's heartbeat then carries the reply hint.
-	const received = await betaPeer.tool("collaborator_receive", { namespaceId: betaGrant.namespaceId, eventId: sent.eventId });
-	assert.equal(received.message.from, "alpha");
-	assert.equal(received.message.body, alphaBody);
-	assert.equal(received.message.readAt, undefined);
-	const marked = await betaPeer.tool("collaborator_received", { namespaceId: betaGrant.namespaceId, eventId: sent.eventId });
-	assert.ok(marked.readAt > 0, "receipt did not record a read time");
-	const replied = await betaPeer.tool("collaborator_reply", {
-		namespaceId: betaGrant.namespaceId,
-		operationId: "op_beta_1",
-		eventId: sent.eventId,
-		body: betaBody,
-	});
+	// B's inbox delivers both bodies oldest first and marks them read in the same write.
+	const inbox = await betaPeer.tool("collaborator_inbox", {});
+	assert.deepEqual(inbox.messages, [
+		{ eventId: sent.eventId, from: "alpha", body: alphaBody },
+		{ eventId: resent.eventId, from: "alpha", body: alphaBody },
+	], "B's inbox did not deliver both messages oldest first");
+	assert.equal(inbox.truncated, false);
+	assert.ok(readState().events[sent.eventId].readAt > 0, "the inbox did not record a read time");
+	assert.deepEqual((await betaPeer.tool("collaborator_inbox", {})).messages, [], "the inbox re-delivered an already-read message");
+	assert.equal((await call("pi.heartbeat", auth(beta))).mail, undefined, "a drained mailbox still offered a mail hint");
+
+	// B replies; A's heartbeat carries the reply hint and A's own inbox delivers it.
+	const replied = await betaPeer.tool("collaborator_reply", { eventId: sent.eventId, body: betaBody });
 	const alphaBeat = await call("pi.heartbeat", auth(alpha));
 	assert.deepEqual(alphaBeat.mail, { namespaceId: alphaGrant.namespaceId, eventId: replied.eventId }, "A did not receive its reply hint");
-	const status = await alphaPeer.tool("collaborator_status", { namespaceId: alphaGrant.namespaceId, operationId: "op_alpha_1" });
-	assert.equal(status.event.eventId, sent.eventId);
-	assert.equal(status.event.readAt, marked.readAt, "A's status does not show the recipient's read time");
+	const alphaInbox = await alphaPeer.tool("collaborator_inbox", {});
+	assert.deepEqual(alphaInbox.messages, [{ eventId: replied.eventId, from: "beta", body: betaBody }], "A's inbox did not deliver the reply");
+	const replyReadAt = readState().events[replied.eventId].readAt;
+	assert.ok(replyReadAt > 0, "A's inbox did not record a read time on the reply");
 
-	// A restart keeps participants and mail: the same namespace and event survive a SIGTERM.
+	// A restart keeps participants and mail: the stored reply and the live namespace survive a SIGTERM.
 	await stopDaemon();
 	await startDaemon();
 	alpha = await register(alphaSession);
@@ -257,10 +255,11 @@ try {
 		"review/alpha:held", "review/beta:held",
 	], "participants did not survive the daemon restart");
 	assert.equal(survivors.find((participant) => participant.participantId === "alpha").generation, alphaHeld.generation);
-	const restarted = await alphaPeer.tool("collaborator_status", { namespaceId: alphaGrant.namespaceId, operationId: "op_alpha_1" });
-	assert.deepEqual(restarted.event, status.event, "mail did not survive the daemon restart");
-	const restoredReply = await alphaPeer.tool("collaborator_receive", { namespaceId: alphaGrant.namespaceId, eventId: replied.eventId });
-	assert.equal(restoredReply.message.body, betaBody, "the reply body did not survive the daemon restart");
+	const storedReply = readState().events[replied.eventId];
+	assert.equal(storedReply.body, betaBody, "the reply body did not survive the daemon restart");
+	assert.equal(storedReply.inReplyToEventId, sent.eventId, "the reply lost its inbound link across the daemon restart");
+	assert.equal(storedReply.readAt, replyReadAt, "the reply's read time did not survive the daemon restart");
+	assert.equal((await alphaPeer.tool("collaborator_peers", {})).me, "alpha", "the MCP namespace did not survive the daemon restart");
 	alphaPeer.close();
 	betaPeer.close();
 
@@ -298,8 +297,8 @@ try {
 		runtimeId: started.runtimeId,
 		registrations: 5,
 		wrongKeyRejected: true,
-		mail: { sent: sent.eventId, reply: replied.eventId, readAt: marked.readAt, retriedSameEvent: true },
-		mcpTools: 7,
+		mail: { sent: sent.eventId, resent: resent.eventId, reply: replied.eventId, replyReadAt, inboxDrains: true, freshOperationPerSend: true },
+		mcpTools: 4,
 		daemonRestarts: 1,
 		participants: ["review/alpha", "review/beta", "review/gamma"],
 	}));

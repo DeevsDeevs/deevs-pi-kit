@@ -15,7 +15,7 @@ interface PendingWake {
 /**
  * A native collaborator has no heartbeat to carry a mail hint, so the daemon nudges its tab instead:
  * at most one short prompt per target per 30 s, only while `herdr agent get` reports `idle`, and only
- * while the mail is still unread. The prompt names the event; it never carries a body, never proves the
+ * while the mail is still unread. The prompt names the sender; it never carries a body, never proves the
  * agent acted, and may land on a partially typed line.
  */
 export class NativeWakeSweeper {
@@ -57,11 +57,10 @@ export class NativeWakeSweeper {
 	private pendingWake(state: HostedRuntimeState, target: HostedAgentTarget): PendingWake | undefined {
 		const participant = state.participants[target.participantKey];
 		if (!isHeld(participant?.state) || participant.holderTargetKey !== target.targetKey) return undefined;
-		const unread = unreadMailEvents(state, target.participantKey);
-		const newest = unread.at(-1);
+		const newest = unreadMailEvents(state, target.participantKey).at(-1);
 		const from = newest ? state.participants[newest.source.id]?.participantId : undefined;
-		if (!newest || from === undefined) return undefined;
-		return { targetKey: target.targetKey, agentName: target.agentName, text: wakeText(unread.length, newest.eventId, from) };
+		if (from === undefined) return undefined;
+		return { targetKey: target.targetKey, agentName: target.agentName, text: wakeText(from) };
 	}
 
 	private async prompt(wake: PendingWake): Promise<void> {
@@ -83,8 +82,6 @@ export class NativeWakeSweeper {
 	}
 }
 
-function wakeText(unread: number, eventId: string, participantId: string): string {
-	return `Mail from ${participantId} (${unread} unread, newest ${eventId}).`
-		+ " Read it with collaborator_inbox and collaborator_receive, do what it asks, and answer with collaborator_reply."
-		+ " Keep narration to one line.";
+function wakeText(from: string): string {
+	return `Mail from ${from}: call collaborator_inbox, do what it asks, answer with collaborator_reply.`;
 }

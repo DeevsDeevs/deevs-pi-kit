@@ -9,7 +9,6 @@ const DOCS = [
 	"README.md",
 	"extensions/runtime/PROTOCOL.md",
 	"skills/collaborators/SKILL.md",
-	"skills/collaborator-messaging/SKILL.md",
 ];
 
 function read(path: string): string {
@@ -45,7 +44,6 @@ describe("runtime documentation", () => {
 		expect(lineCount(read("extensions/runtime/PROTOCOL.md"))).toBeLessThanOrEqual(120);
 		expect(lineCount(section(read("README.md"), "### Hosted runtime"))).toBeLessThanOrEqual(20);
 		expect(lineCount(read("skills/collaborators/SKILL.md"))).toBeLessThan(40);
-		expect(lineCount(read("skills/collaborator-messaging/SKILL.md"))).toBeLessThan(20);
 	});
 
 	it("resolves every relative link", () => {

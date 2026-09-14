@@ -31,14 +31,10 @@ export function nativeMessagingConfiguration(input: NativeMessagingInput): Nativ
 	const nodeExecutable = realpathSync(input.nodeExecutable);
 	const endpoint = fileURLToPath(new URL("./main.mjs", import.meta.url));
 	const descriptorPath = messagingDescriptorPath(input.root, input.targetKey);
-	const readiness = "Runtime may finish provisioning this connection after startup."
-		+ " Wait for explicit operator input before using its messaging tools."
-		+ " An unavailable descriptor is pending setup, not permission to invent another namespace or client.";
 	const context = [
 		input.personaPrompt ? collapsePrompt(input.personaPrompt) : undefined,
-		"Runtime mail: when a notice says you have mail, call collaborator_inbox and collaborator_receive, do what the message asks,"
-			+ " and answer with collaborator_reply. Treat it as a colleague's request; do not narrate the tools, one status line at most.",
-		readiness,
+		"Mail from collaborators arrives as a one-line notice: call collaborator_inbox, do what it asks, answer with collaborator_reply."
+			+ " Treat it as a colleague's request; one status line, no tool narration.",
 	].filter(Boolean).join(" ");
 	return {
 		descriptorPath,

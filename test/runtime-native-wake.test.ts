@@ -16,9 +16,7 @@ const PEER = deriveParticipantKey(PROJECT_ROOT, "proof", "peer");
 const CALLER = deriveParticipantKey(PROJECT_ROOT, "proof", "caller");
 const NATIVE_EVENT = "evt_native";
 const PEER_EVENT = "evt_peer";
-const EXPECTED_PROMPT = `Mail from caller (1 unread, newest ${NATIVE_EVENT}).`
-	+ " Read it with collaborator_inbox and collaborator_receive, do what it asks, and answer with collaborator_reply."
-	+ " Keep narration to one line.";
+const EXPECTED_PROMPT = "Mail from caller: call collaborator_inbox, do what it asks, answer with collaborator_reply.";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -131,7 +129,7 @@ function markRead(store: HostedStateStore, at: number): void {
 		operations: {},
 	};
 	store.apply({ type: "messaging.issue", grant });
-	store.apply({ type: "messaging.read", namespaceId: grant.namespaceId, eventId: NATIVE_EVENT, at });
+	store.apply({ type: "messaging.read", namespaceId: grant.namespaceId, eventIds: [NATIVE_EVENT], at });
 }
 
 describe("native wake", () => {

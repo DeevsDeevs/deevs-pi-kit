@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, expect, it } from "vitest";
@@ -43,11 +43,8 @@ it.each(["claude-code", "codex"] as const)("compiles %s native configuration wit
 	expect(compiled.args.join("\n")).not.toContain("trust_level");
 	const context = driver === "claude-code" ? compiled.args[compiled.args.indexOf("--append-system-prompt") + 1]! : compiled.args.at(-1)!;
 	expect(context).toContain("Selected persona context.");
-	const skill = readFileSync(resolve("skills/collaborator-messaging/SKILL.md"), "utf8");
-	expect(context).not.toContain(resolve("skills/collaborator-messaging/SKILL.md"));
-	expect(context).not.toContain(skill.replace(/\s+/gu, " ").trim());
-	expect(context).toContain("Wait for explicit operator input");
-	expect(context).toContain("call collaborator_inbox and collaborator_receive");
+	expect(context).toContain("call collaborator_inbox, do what it asks, answer with collaborator_reply");
+	expect(context.length).toBeLessThan(400);
 	expect(escapedCommandBytes(compiled.argv)).toBeLessThanOrEqual(4000);
 	expect(launch({ ...config, personaPrompt: "Selected persona context." }).args).toEqual(compiled.args);
 	if (driver === "claude-code") {

@@ -25,7 +25,7 @@ export type HostedStateOperation =
 	| { type: "messaging.issue"; grant: HostedMessagingGrant }
 	| { type: "messaging.expire"; namespaceId: string }
 	| ({ type: "messaging.send" } & HostedMessagingSend)
-	| { type: "messaging.read"; namespaceId: string; eventId: string; at: number }
+	| { type: "messaging.read"; namespaceId: string; eventIds: string[]; at: number }
 	| { type: "target.ensure"; target: HostedTarget }
 	| { type: "agent.bind"; bind: HostedAgentBind }
 	| {

@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -21,8 +20,7 @@ export default function proofProvider(pi: ExtensionAPI): void {
 				output.content = [{ type: "toolCall", id: randomUUID(), ...call }];
 				output.stopReason = "toolUse";
 			} else {
-				const skill = readFileSync(new URL("../../skills/collaborator-messaging/SKILL.md", import.meta.url), "utf8");
-				output.content = [{ type: "text", text: JSON.stringify({ tools: context.tools?.map(tool => tool.name), sharedSkill: context.systemPrompt?.includes(skill) }) }];
+				output.content = [{ type: "text", text: JSON.stringify({ tools: context.tools?.map(tool => tool.name) }) }];
 			}
 			stream.push({ type: "start", partial: output });
 			const block = output.content[0]!;

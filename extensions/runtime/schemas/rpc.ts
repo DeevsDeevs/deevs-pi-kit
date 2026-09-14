@@ -99,10 +99,7 @@ export const MessagingIssueParams = Type.Object({
 	expectedGeneration: IdText,
 	confirmed: Type.Literal(true),
 }, STRICT_OBJECT);
-export const MessagingPeersParams = Type.Object({ ...NAMESPACE, cursor: Type.Optional(boundedText(512)) }, STRICT_OBJECT);
-export const MessagingStatusParams = Type.Object({ ...NAMESPACE, operationId: IdText }, STRICT_OBJECT);
-export const MessagingEventParams = Type.Object({ ...NAMESPACE, eventId: IdText }, STRICT_OBJECT);
-export const MessagingInboxParams = Type.Object({ ...NAMESPACE }, STRICT_OBJECT);
+export const MessagingNamespaceParams = Type.Object({ ...NAMESPACE }, STRICT_OBJECT);
 export const MessagingSendParams = Type.Object({
 	...NAMESPACE,
 	operationId: IdText,
@@ -126,12 +123,11 @@ export const LiveRegistrationResult = Type.Object({
 
 const MailHintResult = Type.Object({ namespaceId: IdText, eventId: IdText });
 
-/** One unread mail header: enough to choose an event to receive, never the body. */
+/** One delivered message: exactly what a model needs to act and reply. */
 const InboxMessageResult = Type.Object({
 	eventId: IdText,
 	from: ParticipantNameText,
-	createdAt: Count,
-	inReplyToEventId: Type.Optional(IdText),
+	body: boundedText(HOSTED_MAILBOX_MAX_BODY_BYTES),
 });
 
 const MessagingInboxResult = Type.Object({ messages: Type.Array(InboxMessageResult), truncated: Type.Boolean() });

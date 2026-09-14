@@ -1,7 +1,6 @@
 /* oxlint-disable anti-slop/no-runtime-typeof -- CLI flags and MCP peer bindings are external input boundaries. */
-import { readFileSync, realpathSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { isAbsolute } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { AgentToolResult, ExtensionAPI, ExtensionContext, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -9,7 +8,6 @@ import { isJsonObject, type JsonObject, type JsonValue } from "../schemas/json.t
 import { MessagingMcpClient, type McpToolResult } from "./client.ts";
 import { toolDefinitions } from "./tools.ts";
 
-const skillPath = fileURLToPath(new URL("../../../skills/collaborator-messaging/SKILL.md", import.meta.url));
 const toolNames = new Set(toolDefinitions.map(tool => tool.name));
 
 type DescriptorResolver = (ctx: ExtensionContext) => Promise<string>;
@@ -17,7 +15,14 @@ type DescriptorResolver = (ctx: ExtensionContext) => Promise<string>;
 interface McpConnection {
 	path: string;
 	client: MessagingMcpClient;
+	/** Resolves once the transport is initialized and its descriptor is proven to belong to this exact Pi session. */
 	ready: Promise<void>;
+}
+
+interface PiBinding {
+	sessionId: string;
+	sessionFile: string;
+	cwd: string;
 }
 
 interface MessagingToolOutcome {
@@ -64,7 +69,7 @@ class MessagingSession {
 		if (foreign) throw new Error("Conflicting messaging tools: load only the shared Runtime MCP registrar.");
 	}
 
-	async transport(path: string, signal?: AbortSignal): Promise<MessagingMcpClient> {
+	async transport(path: string, binding: PiBinding, signal?: AbortSignal): Promise<MessagingMcpClient> {
 		const previous = this.connection;
 		if (previous?.client.closed) {
 			await previous.client.close();
@@ -80,10 +85,12 @@ class MessagingSession {
 		}
 		if (!this.connection) {
 			const client = new MessagingMcpClient(path);
-			const ready = client.initialize(signal).catch(async error => {
-				await client.close();
-				throw error;
-			});
+			const ready = client.initialize(signal)
+				.then(async () => assertBoundDescriptor(requireSuccess(await client.callTool("collaborator_peers", {}, signal)), binding))
+				.catch(async error => {
+					await client.close();
+					throw error;
+				});
 			this.connection = { path, client, ready };
 		}
 		await this.connection.ready;
@@ -105,14 +112,14 @@ function requireSuccess(result: McpToolResult): McpToolResult {
 	return result;
 }
 
-function assertBoundDescriptor(peers: McpToolResult, ctx: ExtensionContext, sessionId: string, sessionFile: string): void {
+function assertBoundDescriptor(peers: McpToolResult, expected: PiBinding): void {
 	const binding = peers.structuredContent?.binding;
 	// binding is unvalidated MCP structuredContent, not a HostedTarget, so the typed isPiTarget() predicate cannot be used here.
 	const bound = isJsonObject(binding)
 		&& binding.kind === "pi"
-		&& binding.sessionId === sessionId
-		&& binding.sessionFile === realpathSync(sessionFile)
-		&& binding.cwd === realpathSync(ctx.cwd);
+		&& binding.sessionId === expected.sessionId
+		&& binding.sessionFile === realpathSync(expected.sessionFile)
+		&& binding.cwd === realpathSync(expected.cwd);
 	if (!bound) {
 		throw new Error("MCP descriptor does not belong to this exact Pi session and cwd."
 			+ " Request a correctly bound descriptor; do not migrate uncertain operations.");
@@ -136,15 +143,19 @@ async function executeMessagingTool(
 	const path = await descriptorPath(ctx);
 	session.assertCurrent(ctx, sessionId, started, signal);
 	if (!isAbsolute(path)) throw new Error("Runtime returned a non-absolute MCP descriptor path.");
-	const client = await session.transport(path, signal);
+	const client = await session.transport(path, { sessionId, sessionFile, cwd: ctx.cwd }, signal);
 	session.assertCurrent(ctx, sessionId, started, signal);
-	const isPeers = toolName === "collaborator_peers";
-	const peers = requireSuccess(await client.callTool("collaborator_peers", isPeers ? args : {}, signal));
+	const result = requireSuccess(await client.callTool(toolName, args, signal));
 	session.assertCurrent(ctx, sessionId, started, signal);
-	assertBoundDescriptor(peers, ctx, sessionId, sessionFile);
-	const result = isPeers ? peers : requireSuccess(await client.callTool(toolName, args, signal));
-	session.assertCurrent(ctx, sessionId, started, signal);
-	return { content: result.content, details: result.structuredContent };
+	return modelVisible(result);
+}
+
+/** The peers binding is bridge plumbing, not something the model should spend context on. */
+function modelVisible(result: McpToolResult): MessagingToolOutcome {
+	const details = result.structuredContent;
+	if (!details || !Object.hasOwn(details, "binding")) return { content: result.content, details };
+	const { binding: _binding, ...visible } = details;
+	return { content: [{ type: "text", text: JSON.stringify(visible) }], details: visible };
 }
 
 function registerMessagingEvents(pi: ExtensionAPI, session: MessagingSession): void {
@@ -155,10 +166,6 @@ function registerMessagingEvents(pi: ExtensionAPI, session: MessagingSession): v
 		} catch (error) {
 			return { block: true, reason: error instanceof Error ? error.message : "MCP configuration unavailable" };
 		}
-	});
-	pi.on("before_agent_start", event => {
-		if (!pi.getActiveTools().some(name => toolNames.has(name))) return;
-		return { systemPrompt: `${event.systemPrompt}\n\n${readFileSync(skillPath, "utf8")}` };
 	});
 	pi.on("session_start", () => session.start());
 	pi.on("session_tree", () => session.invalidate());
@@ -189,9 +196,6 @@ const CALL_LABELS = {
 	collaborator_inbox: () => "inbox",
 	collaborator_send: (args) => `mail \u2192 ${args.participantId ?? "?"}`,
 	collaborator_reply: (args) => `reply \u21a9 ${shortId(args.eventId)}`,
-	collaborator_receive: (args) => `read ${shortId(args.eventId)}`,
-	collaborator_received: (args) => `mark read ${shortId(args.eventId)}`,
-	collaborator_status: (args) => `status ${shortId(args.operationId)}`,
 } satisfies Record<string, (args: Record<string, string>) => string>;
 
 function callLabel(name: string, args: Record<string, string>): string {
@@ -212,13 +216,16 @@ function messagingResult(name: string, details: McpToolResult["structuredContent
 
 function resultSummary(name: string, details: JsonObject | undefined): string {
 	if (!details) return "done";
-	const message = details.message;
-	if (name === "collaborator_receive" && isJsonObject(message)) return `${text(message.from)}: ${excerpt(text(message.body))}`;
-	if (name === "collaborator_inbox") return `${Array.isArray(details.messages) ? details.messages.length : 0} unread`;
+	if (name === "collaborator_inbox") return inboxSummary(Array.isArray(details.messages) ? details.messages : []);
 	if (name === "collaborator_peers") return `${Array.isArray(details.peers) ? details.peers.length : 0} peers`;
-	if (name === "collaborator_status") return details.readAt === undefined || details.readAt === null ? "unread" : "read";
-	if (name === "collaborator_received") return "read";
 	return `sent ${shortId(text(details.eventId))}`;
+}
+
+function inboxSummary(messages: JsonValue[]): string {
+	const [first] = messages;
+	if (!isJsonObject(first)) return "no mail";
+	const rest = messages.length > 1 ? ` (+${messages.length - 1} more)` : "";
+	return `${text(first.from)}: ${excerpt(text(first.body))}${rest}`;
 }
 
 function text(value: JsonValue | undefined): string {
