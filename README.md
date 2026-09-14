@@ -149,6 +149,10 @@ exact Pi session across restarts, claiming them in-process through Pi's heartbea
 hosts persistent Pi, Claude Code, and Codex collaborators as real interactive agents in no-focus Herdr tabs, each holding a durable
 participant identity lease, and each writer working in its own Git worktree on `runtime/collab/<protocol>/<participantId>`.
 
+A client is trusted while it presents the registration ID and key Runtime minted for it, and its target stays live while `herdr agent
+get <name>` still reports that agent in this project — or, for a Pi session, while its session file still carries that session ID and
+project cwd. Nothing else is re-verified: pane, tab, and terminal IDs are kept only so stop can close the exact tab Runtime opened.
+
 Every start, stand-down, stop, release, takeover, and worktree cleanup needs one explicit confirmed interactive step; collaborator prose
 never authorizes any of them. Automatic prompt injection into a Claude/Codex tab is not implemented — their mail waits for human input in
 the tab. Runtime never commits or merges: review a writer's branch and integrate it with ordinary Git.
