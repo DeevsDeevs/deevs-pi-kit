@@ -21,6 +21,11 @@ export class HerdrCliHostVerifier implements HostedHostVerifier {
 		return liveAgent(decodeAgents(HerdrLiveAgentResultSchema, result).agent);
 	}
 
+	/** The one native wake: Herdr's own prompt API, with no --wait and no proof that the agent acted on it. */
+	async promptAgent(agentName: string, text: string): Promise<void> {
+		await execHerdr(["agent", "prompt", agentName, text]);
+	}
+
 	async closeTarget(target: HostedTarget, runtimeRoot: string): Promise<"closed" | "already_absent" | "unmanaged"> {
 		switch (target.kind) {
 			case "agent": return this.closeAgentTarget(target);
@@ -103,6 +108,7 @@ function decodeAgents<Schema extends TSchema>(schema: Schema, result: JsonObject
 function liveAgent(agent: HerdrLiveAgent): HostedLiveAgent {
 	const result: HostedLiveAgent = { cwd: agent.cwd };
 	if (agent.name !== undefined) result.name = agent.name;
+	if (agent.agent_status !== undefined) result.agentStatus = agent.agent_status;
 	if (agent.tab_id !== undefined) result.tabId = agent.tab_id;
 	if (agent.workspace_id !== undefined) result.workspaceId = agent.workspace_id;
 	const sessionPath = agent.agent_session?.kind === "path" ? canonicalPath(agent.agent_session.value) : undefined;
@@ -114,14 +120,17 @@ function canonicalPath(path: string): string | undefined {
 	try { return realpathSync(path); } catch { return undefined; }
 }
 
-function runHerdr(args: string[]): Promise<JsonObject> {
+async function runHerdr(args: string[]): Promise<JsonObject> {
+	const stdout = await execHerdr(args);
+	try { return herdrResult(stdout); } catch { throw new RuntimeError("host_unavailable", "Herdr returned invalid JSON."); }
+}
+
+/** A command whose exit status is the whole answer; only queries also have to decode a result envelope. */
+function execHerdr(args: string[]): Promise<string> {
 	return new Promise((resolve, reject) => {
 		execFile("herdr", args, { timeout: 2_000, maxBuffer: 1024 * 1024, encoding: "utf8" }, (error, stdout) => {
-			if (error) {
-				reject(herdrQueryFailure(stdout));
-				return;
-			}
-			try { resolve(herdrResult(stdout)); } catch { reject(new RuntimeError("host_unavailable", "Herdr returned invalid JSON.")); }
+			if (error) reject(herdrQueryFailure(stdout));
+			else resolve(stdout);
 		});
 	});
 }

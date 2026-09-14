@@ -69,6 +69,6 @@ A participant is `(canonicalProjectRoot, protocol, participantId)` in `held`, `v
 
 ## Limits
 
-- **No automatic native wake.** Claude/Codex mail waits for explicit human input in the tab; `herdr agent prompt`, keystroke injection and pane scraping are not used and must not be worked around.
+- **Idle-gated native wake.** While a native collaborator's mail is unread, the daemon sends one `herdr agent prompt` to its tab at most once per target per 30 s, and only while `herdr agent get` reports `agent_status` `idle`. That prompt names the unread count and the newest event ID and sender, never a body; it may land on a partially typed human line, and it never proves the agent read the mail or acted on it. Once `readAt` is set nothing more is sent. Keystroke injection and pane scraping stay unused and must not be worked around.
 - An MCP client receipt is not provider admission: `readAt` proves neither a durable commit nor task completion, and Pi mail hints are not replayed after loss. Guarded native read-only launches get no automatic MCP provisioning.
 - Mail stays point-to-point — no collaborator groups, broadcasts, attachments or durable schedules. Node Unix sockets expose no peer credentials, so owner-only permissions and random credentials protect against accidental and cross-wired children only.

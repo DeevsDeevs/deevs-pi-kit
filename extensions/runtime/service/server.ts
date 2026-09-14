@@ -14,6 +14,7 @@ import {
 } from "./protocol.ts";
 import { HostedParticipantCoordinator, type HostedParticipantCoordinatorOptions } from "./participant.ts";
 import { HerdrCliHostVerifier } from "./herdr-cli.ts";
+import { NativeWakeSweeper } from "./native-wake.ts";
 import type { HostedHostVerifier } from "./identity.ts";
 import { RuntimeRegistrationManager, type RegistrationManagerOptions } from "./registration.ts";
 import { isNodeError, RuntimeError } from "../errors.ts";
@@ -22,6 +23,7 @@ import { HostedStateStore, loadOrCreateRuntimeInstance } from "./state.ts";
 import { RuntimeWorktrees } from "./worktree.ts";
 
 const RETENTION_SWEEP_MS = 5 * 60_000;
+const NATIVE_WAKE_SWEEP_MS = 5_000;
 
 export class RuntimeAlreadyRunningError extends RuntimeError {
 	constructor(message: string) {
@@ -34,6 +36,7 @@ interface RuntimeServerOptions {
 	socketPath?: string;
 	probeTimeoutMs?: number;
 	retentionSweepMs?: number;
+	nativeWakeSweepMs?: number;
 	host?: HostedHostVerifier;
 	registration?: RegistrationManagerOptions;
 	participant?: HostedParticipantCoordinatorOptions;
@@ -50,6 +53,7 @@ export interface RuntimeServerHandle {
 /** The long-lived services a started runtime must shut down again. */
 interface RuntimeLifecycle {
 	sweep: NodeJS.Timeout;
+	wake: NodeJS.Timeout;
 	registrations: RuntimeRegistrationManager;
 }
 
@@ -78,15 +82,17 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 		stopTarget: options.participant?.stopTarget ?? (closeTarget ? (target) => closeTarget(target, options.root) : undefined),
 	});
 	const socketPath = options.socketPath ?? join(options.root, "runtime.sock");
+	const wake = new NativeWakeSweeper(store, host, options.participant?.now);
 	const context: HostedProtocolContext = {
 		runtimeId: instance.runtimeId,
 		registrations,
-		messaging: new RuntimeMessaging(store, registrations, participants, socketPath, options.participant?.now),
+		messaging: new RuntimeMessaging(store, registrations, participants, socketPath, options.participant?.now, () => wake.trigger()),
 		participants,
 		bridges,
 		worktrees,
 	};
-	return await serve(options, context, socketPath, { sweep: startRetentionSweep(store, options), registrations });
+	const lifecycle = { sweep: startRetentionSweep(store, options), wake: startNativeWakeSweep(wake, options), registrations };
+	return await serve(options, context, socketPath, lifecycle);
 }
 
 async function serve(
@@ -133,8 +139,16 @@ function startRetentionSweep(store: HostedStateStore, options: RuntimeServerOpti
 	return sweep;
 }
 
+/** Native tabs carry no heartbeat, so unread mail for an idle one is nudged from this timer instead. */
+function startNativeWakeSweep(wake: NativeWakeSweeper, options: RuntimeServerOptions): NodeJS.Timeout {
+	const sweep = setInterval(() => wake.trigger(), options.nativeWakeSweepMs ?? NATIVE_WAKE_SWEEP_MS);
+	sweep.unref?.();
+	return sweep;
+}
+
 function closeLifecycle(lifecycle: RuntimeLifecycle): void {
 	clearInterval(lifecycle.sweep);
+	clearInterval(lifecycle.wake);
 	lifecycle.registrations.close();
 }
 

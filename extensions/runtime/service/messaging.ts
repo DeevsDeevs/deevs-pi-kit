@@ -114,6 +114,7 @@ export class RuntimeMessaging {
 	private readonly participants: HostedParticipantCoordinator;
 	private readonly socketPath: string;
 	private readonly now: () => number;
+	private readonly onPublished: () => void;
 
 	constructor(
 		store: HostedStateStore,
@@ -121,12 +122,14 @@ export class RuntimeMessaging {
 		participants: HostedParticipantCoordinator,
 		socketPath: string,
 		now: () => number = Date.now,
+		onPublished: () => void = () => {},
 	) {
 		this.store = store;
 		this.registrations = registrations;
 		this.participants = participants;
 		this.socketPath = socketPath;
 		this.now = now;
+		this.onPublished = onPublished;
 	}
 
 	async issue(caller: HostedLiveRegistration, participantKey: string, expectedGeneration: string): Promise<MessagingIssued> {
@@ -324,6 +327,7 @@ export class RuntimeMessaging {
 		const current = this.requireGrant(grant.namespaceId);
 		const eventId = Object.hasOwn(current.operations, operationId) ? current.operations[operationId] : undefined;
 		if (eventId === undefined) throw new RuntimeError("not_found", "Operation has no publication in this namespace.");
+		this.onPublished();
 		return { namespaceId: grant.namespaceId, eventId };
 	}
 

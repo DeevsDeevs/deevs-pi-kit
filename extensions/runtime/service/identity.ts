@@ -1,21 +1,25 @@
 import { closeSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { RuntimeError } from "../errors.ts";
+import type { HerdrAgentStatus } from "../schemas/herdr.ts";
 import { isJsonObject, isJsonString, type JsonObject, type JsonValue } from "../schemas/json.ts";
 import { type HostedAgentTarget, type HostedTarget, isHeld } from "../schemas/state.ts";
 import { HostedStateStore } from "./state.ts";
 
-/** What `herdr agent get` reports about one live agent: where it runs, and the tab that owns it. */
+/** What `herdr agent get` reports about one live agent: where it runs, the tab that owns it, and how busy it is. */
 export interface HostedLiveAgent {
 	name?: string;
 	cwd: string;
 	tabId?: string;
 	workspaceId?: string;
 	sessionPath?: string;
+	agentStatus?: HerdrAgentStatus;
 }
 
 export interface HostedHostVerifier {
 	/** Resolves `herdr agent get <name>` for one exact Herdr agent name. */
 	getAgent(agentName: string): Promise<HostedLiveAgent>;
+	/** Injects one short prompt into a native tab; a failure means undelivered, never that the agent acted. */
+	promptAgent?(agentName: string, text: string): Promise<void>;
 	closeTarget?(target: HostedTarget, runtimeRoot: string): Promise<"closed" | "already_absent" | "unmanaged">;
 }
 
