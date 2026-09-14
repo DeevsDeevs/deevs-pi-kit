@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it } from "vitest";
 import { HostedRuntimeClientError } from "../extensions/runtime/client.ts";
 import type { MessagingClient } from "../extensions/runtime/messaging-client.ts";
@@ -78,4 +79,58 @@ describe("decision A identity", () => {
 		await new NativeAgentService(session, messaging).heartbeatManagedAgents();
 		expect(persisted).toEqual([{ ...control, state: "needs_attention" }]);
 	});
+
+	it("records no managed authority when native messaging provisioning fails after the bind", async () => {
+		const control = managedControl();
+		const agents = new Map<string, ManagedAgentControl>();
+		const store = {
+			agents,
+			agent: (targetKey: string) => agents.get(targetKey),
+			persistAgent: (value: ManagedAgentControl) => { agents.set(value.targetKey, value); },
+			forgetAgent: (targetKey: string) => { agents.delete(targetKey); },
+		};
+		const registration = { targetKey: control.targetKey, registrationId: "reg_agent", registrationKey: "key_agent", leaseUntil: 31_000 };
+		const session = {
+			store,
+			client: {
+				call: async () => ({
+					...registration,
+					participantKey: "participant_child",
+					holderGeneration: control.holderGeneration,
+					driver: control.driver,
+					profile: control.profile,
+					projectRoot: control.projectRoot,
+					cwd: control.cwd,
+				}),
+			},
+		} as unknown as RuntimeSession;
+		const messaging = {
+			provisionManaged: async () => { throw new HostedRuntimeClientError("identity_mismatch", "Descriptor differs."); },
+		} as unknown as MessagingClient;
+		const native = new NativeAgentService(session, messaging);
+		await expect(native.bindLaunched(bindLaunchedRequest(control))).rejects.toMatchObject({ code: "identity_mismatch" });
+		expect([...agents.keys()]).toEqual([]);
+	});
 });
+
+function bindLaunchedRequest(control: ManagedAgentControl) {
+	return {
+		ctx: {
+			cwd: control.owner.cwd,
+			sessionManager: { getSessionId: () => control.owner.sessionId, getSessionFile: () => control.owner.sessionFile },
+		} as unknown as ExtensionContext,
+		registration: { targetKey: "pi_session_1", registrationId: "reg_pi", registrationKey: "key_pi", leaseUntil: 31_000 },
+		plan: { agentName: control.agentName, targetKey: control.targetKey },
+		driver: control.driver,
+		profile: control.profile,
+		protocol: control.protocol,
+		participantId: control.participantId,
+		projectRoot: control.projectRoot,
+		cwd: control.cwd,
+		tab: { tabId: "tab_1", paneId: control.paneId, terminalId: control.terminalId },
+		agentSession: control.agentSession,
+		callerParticipantKey: "participant_main",
+		expectedCallerGeneration: "lease_main",
+		messagingConfigured: true,
+	};
+}

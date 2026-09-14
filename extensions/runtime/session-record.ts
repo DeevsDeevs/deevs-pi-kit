@@ -77,6 +77,11 @@ export class HostedSessionStore {
 		this.persist();
 	}
 
+	forgetAgent(targetKey: string): void {
+		if (!this.agentControls.delete(targetKey)) return;
+		this.persist();
+	}
+
 	rememberAdmitted(eventIds: readonly string[]): void {
 		for (const eventId of eventIds) {
 			this.admittedEvents.delete(eventId);

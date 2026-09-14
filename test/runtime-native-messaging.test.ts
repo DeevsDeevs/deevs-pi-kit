@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "no
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { DRIVERS, driverLaunchArgv } from "../extensions/runtime/drivers.ts";
+import { driverLaunchArgv } from "../extensions/runtime/drivers.ts";
 import type { HostedNativeCollaboratorDriver } from "../extensions/runtime/hosted-types.ts";
 import { nativeMessagingConfiguration } from "../extensions/runtime/mcp/native.ts";
 import { toolDefinitions } from "../extensions/runtime/mcp/tools.ts";
@@ -18,15 +18,15 @@ function input(driver: HostedNativeCollaboratorDriver) {
 
 type NativeInput = ReturnType<typeof input>;
 
-function launch(config: NativeInput): { args: string[]; descriptorPath: string; serverName: string } {
+function launch(config: NativeInput): { argv: string[]; args: string[]; descriptorPath: string; serverName: string } {
 	const mcp = nativeMessagingConfiguration(config);
-	const args = driverLaunchArgv(config.driver, { profile: "workspace-write", cwd: config.root, model: config.model, mcp });
-	return { args, descriptorPath: mcp.descriptorPath, serverName: mcp.serverName };
+	const input = { profile: "workspace-write" as const, cwd: config.root, model: config.model, mcp };
+	const argv = driverLaunchArgv({ driver: config.driver, agentName: "collab-native", paneId: "pane_native", input });
+	return { argv, args: argv.slice(argv.indexOf("--") + 1), descriptorPath: mcp.descriptorPath, serverName: mcp.serverName };
 }
 
-function escapedCommandBytes(driver: HostedNativeCollaboratorDriver, args: string[]): number {
-	const command = [DRIVERS[driver].kind, ...args].map(argument => `'${argument.replaceAll("'", `'"'"'`)}'`).join(" ");
-	return Buffer.byteLength(command);
+function escapedCommandBytes(argv: string[]): number {
+	return Buffer.byteLength(["herdr", ...argv].map(argument => `'${argument.replaceAll("'", `'"'"'`)}'`).join(" "));
 }
 
 it.each(["claude-code", "codex"] as const)("compiles %s native configuration without processes, credentials or permission overrides", driver => {
@@ -48,7 +48,7 @@ it.each(["claude-code", "codex"] as const)("compiles %s native configuration wit
 	expect(context).not.toContain(skill.replace(/\s+/gu, " ").trim());
 	expect(context).toContain("Wait for explicit operator input");
 	expect(context).toContain("Before using messaging tools, read the shared skill");
-	expect(escapedCommandBytes(driver, compiled.args)).toBeLessThanOrEqual(4000);
+	expect(escapedCommandBytes(compiled.argv)).toBeLessThanOrEqual(4000);
 	expect(launch({ ...config, personaPrompt: "Selected persona context." }).args).toEqual(compiled.args);
 	if (driver === "claude-code") {
 		const servers = JSON.parse(compiled.args[compiled.args.indexOf("--mcp-config") + 1]!).mcpServers;
@@ -64,10 +64,10 @@ it.each(["claude-code", "codex"] as const)("compiles %s native configuration wit
 it.each(["claude-code", "codex"] as const)("bounds the escaped %s launch command before authority or process creation", driver => {
 	const config = input(driver);
 	const initial = launch(config);
-	const remaining = 4000 - escapedCommandBytes(driver, initial.args);
+	const remaining = 4000 - escapedCommandBytes(initial.argv);
 	expect(remaining).toBeGreaterThan(0);
 	const personaPrompt = config.personaPrompt + "x".repeat(remaining);
-	expect(escapedCommandBytes(driver, launch({ ...config, personaPrompt }).args)).toBe(4000);
+	expect(escapedCommandBytes(launch({ ...config, personaPrompt }).argv)).toBe(4000);
 	expect(() => launch({ ...config, personaPrompt: `${personaPrompt}x` })).toThrow("4000-byte");
 	for (const oversized of ["x".repeat(4001), "'".repeat(1100), "💡".repeat(1100)]) {
 		expect(() => launch({ ...config, personaPrompt: oversized })).toThrow("4000-byte");

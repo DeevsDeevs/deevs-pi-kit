@@ -104,11 +104,12 @@ profile tool policy, and nothing else branches on the driver.
 5. Runtime re-verifies `herdr agent get`, binds the target and acquires the participant in one state operation, then hands the
    registration back to the launching Pi, which records the reconnection authority.
 
-Any failing step stops what that launch started — the tab and any prepared session — and reports the original error. A half-launched
-collaborator is never preserved, and a failed start records no authority. There are
+Any failing step stops what that launch started — the tab and any prepared session — and reports the original error, and a step that
+fails after the bind also withdraws the persisted control and its cached registration. A half-launched collaborator is never preserved,
+and a failed start records no authority. There are
 no launch, reconnect, or reservation tokens — the participant generation is the only lease. Claude receives appended system context and an
 inline MCP server entry, Codex a server-configuration override and startup user context; both reference the shared messaging skill by
-absolute path, and the launch command is capped at 4000 bytes and fails closed rather than truncating.
+absolute path, and the whole `herdr agent start` invocation is capped at 4000 escaped bytes and fails closed rather than truncating.
 
 ## Worktrees
 

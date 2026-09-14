@@ -6,17 +6,8 @@ import type { CollaboratorTab } from "./herdr.ts";
 import type { HostedCollaboratorProfile, HostedNativeCollaboratorDriver } from "./hosted-types.ts";
 import { nativeMessagingConfiguration, type NativeMessagingConfiguration } from "./mcp/native.ts";
 import type { MessagingClient } from "./messaging-client.ts";
-import {
-	auth,
-	booleanValue,
-	parseHeartbeat,
-	parseRegistration,
-	strictObject,
-	text,
-	type LiveClientRegistration,
-	type RuntimeResponse,
-	type SerializedObject,
-} from "./responses.ts";
+import { parseBoundAgent, parseManagedAgent, type BoundAgent, type ManagedAgentStatus } from "./native-parse.ts";
+import { auth, parseHeartbeat, text, type LiveClientRegistration } from "./responses.ts";
 import type { RuntimeSession } from "./runtime-session.ts";
 import type { ManagedAgentControl, ManagedAgentSession } from "./session-record.ts";
 import { deriveAgentTargetKey } from "./service/state.ts";
@@ -63,25 +54,6 @@ interface AgentBindRequest {
 	callerParticipantKey: string;
 	expectedCallerGeneration: string;
 	expectedParticipantGeneration?: string;
-}
-
-interface BoundAgent {
-	registration: LiveClientRegistration;
-	participantKey: string;
-	holderGeneration: string;
-	driver: HostedNativeCollaboratorDriver;
-	profile: HostedCollaboratorProfile;
-	projectRoot: string;
-	cwd: string;
-}
-
-interface ManagedAgentStatus {
-	name: string;
-	paneId: string;
-	terminalId: string;
-	status: "idle" | "working" | "blocked" | "done" | "unknown";
-	focused: boolean;
-	agentSession: ManagedAgentSession;
 }
 
 /** Starts, binds and re-verifies collaborators as real Herdr agents. */
@@ -141,10 +113,8 @@ export class NativeAgentService {
 
 	/** Starts one exact Herdr agent and proves it is the driver and pane the launch authorized. */
 	async startAgent(request: StartAgentRequest): Promise<StartedAgentIdentity> {
-		const { agentName, spec, tab, argv } = request;
-		const separated = argv.length ? ["--", ...argv] : [];
-		const args = ["agent", "start", agentName, "--kind", spec.kind, "--pane", tab.paneId, "--timeout", "30000", ...separated];
-		const started = await this.pi.exec("herdr", args, { timeout: 35_000 });
+		const { spec, tab } = request;
+		const started = await this.pi.exec("herdr", request.argv, { timeout: 35_000 });
 		if (started.code !== 0) {
 			const detail = `Herdr could not start ${spec.kind} in ${tab.paneId} (exit ${started.code}).`;
 			throw new HostedRuntimeClientError("host_unavailable", detail);
@@ -181,9 +151,22 @@ export class NativeAgentService {
 			state: "active",
 		};
 		if (request.messagingConfigured) control.messagingConfigured = true;
+		// provisionManaged checks the persisted control, so authority is recorded first and withdrawn when provisioning fails.
 		this.session.store.persistAgent(control);
 		this.registrations.set(request.plan.targetKey, bound.registration);
-		if (request.messagingConfigured) await this.messaging.provisionManaged(ctx, request.registration, control);
+		if (!request.messagingConfigured) return;
+		try {
+			await this.messaging.provisionManaged(ctx, request.registration, control);
+		} catch (error) {
+			this.discardLaunch(request.plan.targetKey);
+			throw error;
+		}
+	}
+
+	/** A failed launch leaves neither persisted authority nor a cached registration for its closed pane. */
+	private discardLaunch(targetKey: string): void {
+		this.registrations.delete(targetKey);
+		this.session.store.forgetAgent(targetKey);
 	}
 
 	private async bindAgent(registration: LiveClientRegistration, request: AgentBindRequest): Promise<BoundAgent> {
@@ -319,58 +302,4 @@ function boundAgentMatchesLaunch(bound: BoundAgent, request: BindLaunchedRequest
 		&& bound.driver === request.driver
 		&& bound.profile === request.profile
 		&& bound.cwd === request.cwd;
-}
-
-function parseBoundAgent(value: RuntimeResponse): BoundAgent {
-	const result = strictObject(value, "Herdr agent bind result");
-	if (result.driver !== "claude-code" && result.driver !== "codex") {
-		throw new HostedRuntimeClientError("invalid_response", "Runtime returned an invalid bound agent driver.");
-	}
-	if (result.profile !== "read-only" && result.profile !== "workspace-write") {
-		throw new HostedRuntimeClientError("invalid_response", "Runtime returned an invalid bound agent profile.");
-	}
-	return {
-		registration: parseRegistration(value),
-		participantKey: text(result.participantKey),
-		holderGeneration: text(result.holderGeneration),
-		driver: result.driver,
-		profile: result.profile,
-		projectRoot: text(result.projectRoot),
-		cwd: text(result.cwd),
-	};
-}
-
-function parseManagedAgent(value: string): ManagedAgentStatus {
-	let response: SerializedObject;
-	try {
-		response = strictObject(JSON.parse(value), "Herdr response");
-	} catch {
-		throw new HostedRuntimeClientError("invalid_response", "Herdr returned malformed agent JSON.");
-	}
-	const agent = strictObject(strictObject(response.result, "Herdr result").agent, "Herdr agent");
-	const agentKind = text(agent.agent);
-	const session = agent.agent_session === undefined
-		? { source: `herdr:${agentKind}`, agent: agentKind, kind: "id", value: text(agent.name) }
-		: strictObject(agent.agent_session, "Herdr agent session");
-	if (session.kind !== "id" && session.kind !== "path") {
-		throw new HostedRuntimeClientError("invalid_response", "Herdr agent session kind is invalid.");
-	}
-	if (session.agent !== agentKind || session.source !== `herdr:${agentKind}`) {
-		throw new HostedRuntimeClientError("identity_mismatch", "Herdr agent session does not match its reported driver.");
-	}
-	if (!isManagedAgentStatus(agent.agent_status)) throw new HostedRuntimeClientError("invalid_response", "Herdr agent status is invalid.");
-	return {
-		name: text(agent.name),
-		paneId: text(agent.pane_id),
-		terminalId: text(agent.terminal_id),
-		status: agent.agent_status,
-		focused: booleanValue(agent.focused),
-		agentSession: { source: text(session.source), agent: text(session.agent), kind: session.kind, value: text(session.value) },
-	};
-}
-
-const MANAGED_AGENT_STATUSES: readonly ManagedAgentStatus["status"][] = ["idle", "working", "blocked", "done", "unknown"];
-
-function isManagedAgentStatus(value: RuntimeResponse): value is ManagedAgentStatus["status"] {
-	return MANAGED_AGENT_STATUSES.some((status) => status === value);
 }
