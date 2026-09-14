@@ -1,5 +1,5 @@
 import { createHash, randomUUID, type Hash } from "node:crypto";
-import { constants } from "node:fs";
+import { constants, type Stats } from "node:fs";
 import { lstat, open, readFile, readlink, realpath, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -95,6 +95,63 @@ interface MissionSystemPrompt {
 
 function isActiveRuntimeStatus(status: string): boolean {
 	return ACTIVE_RUNTIME_STATUSES.includes(status);
+}
+
+/** Review dispositions that hold the worktree: a reviewer is running or is about to start. */
+function reviewHoldsWorktree(status: MissionReviewStatus): boolean {
+	return status === "starting" || status === "running" || status === "due";
+}
+
+function missionIsFinished(mission: MissionCurrent): boolean {
+	return mission.status === "complete" || mission.status === "ended";
+}
+
+function missionAwaitsContinuation(mission: MissionCurrent): boolean {
+	return mission.status === "active" && !mission.review.admission.initialBaselinePending;
+}
+
+function reviewIsDue(mission: MissionCurrent): boolean {
+	return mission.status === "active" && mission.review.admission.status === "due";
+}
+
+/** The reviewer run id reconciliation may still adopt, or undefined when no run is recoverable. */
+function recoverableReviewRunId(mission: MissionCurrent): string | undefined {
+	if (mission.status !== "active") return undefined;
+	if (mission.review.admission.status !== "running") return undefined;
+	return mission.review.admission.runId;
+}
+
+function sessionCanContinue(ctx: ExtensionContext): boolean {
+	if (!ctx.isIdle()) return false;
+	if (ctx.hasPendingMessages()) return false;
+	return Boolean(ctx.sessionManager.getSessionFile());
+}
+
+function hasActiveSubagentWork(work: ActiveSubagentWork): boolean {
+	if (work.runs.length) return true;
+	if (work.groupIds.length) return true;
+	return Boolean(work.launchReservations);
+}
+
+function worktreeChangedDuringTurn(before: string | undefined, after: string | undefined): boolean {
+	if (before === undefined) return false;
+	if (after === undefined) return false;
+	return before !== after;
+}
+
+/** True once the objective, scope, or worktree no longer matches the candidate the reviewer was admitted for. */
+function reviewCandidateDrifted(mission: MissionCurrent, fingerprint: string, candidateId: string): boolean {
+	const candidate = mission.review.candidate;
+	if (!candidate.worktreeFingerprint) return true;
+	if (candidate.worktreeFingerprint !== fingerprint) return true;
+	if (candidate.objectiveVersion !== (mission.objectiveVersion ?? 1)) return true;
+	return candidate.id !== candidateId;
+}
+
+function isFingerprintableFile(info: Stats, totalBytes: number): boolean {
+	if (!info.isFile()) return false;
+	if (info.size > MAX_FINGERPRINT_FILE_BYTES) return false;
+	return totalBytes + info.size <= MAX_FINGERPRINT_TOTAL_BYTES;
 }
 
 /** Review dispositions whose evidence is bound to one exact candidate rather than the last admitted workspace. */
@@ -281,16 +338,21 @@ export class MissionRuntime {
 				candidateId: mission.review.candidate.id,
 			}));
 			chainCheckpoints.current?.due(`Mission review adjudicated: ${input.reviewVerdict}`, "mission_milestone");
-			const correction = adjudicated?.review.correction;
-			if (adjudicated?.review.admission.status === "changes_requested" && correction && correction.count > correction.limit) {
-				this.state.append(this.pi, this.state.statusEvent(
-					"blocked",
-					"review correction limit reached",
-					`Correction cycle ${correction.count} requires explicit user authorization.`,
-				));
-			}
+			this.blockOnCorrectionLimit(adjudicated);
 		}
 		this.updateStatus();
+	}
+
+	/** A correction cycle past its limit blocks the Mission until the user authorizes another round. */
+	private blockOnCorrectionLimit(mission: MissionCurrent | undefined): void {
+		if (mission?.review.admission.status !== "changes_requested") return;
+		const correction = mission.review.correction;
+		if (correction.count <= correction.limit) return;
+		this.state.append(this.pi, this.state.statusEvent(
+			"blocked",
+			"review correction limit reached",
+			`Correction cycle ${correction.count} requires explicit user authorization.`,
+		));
 	}
 
 	async workspaceFingerprint(ctx: ExtensionContext): Promise<string | undefined> {
@@ -505,7 +567,8 @@ export class MissionRuntime {
 				+ " Do not continue its work or act on stale Mission wakes in this session.";
 			return { systemPrompt: `${systemPrompt}\n\n${transferred}` };
 		}
-		if (!mission || mission.status === "complete" || mission.status === "ended") return undefined;
+		if (!mission) return undefined;
+		if (missionIsFinished(mission)) return undefined;
 		if (mission.status !== "active") {
 			return { systemPrompt: `${systemPrompt}\n\n${suspendedMissionContext(mission, this.state.readProgress().at(-1))}` };
 		}
@@ -560,8 +623,8 @@ export class MissionRuntime {
 		this.restore(ctx);
 		const mission = this.state.read();
 		if (this.disposed || this.continuationInFlight) return;
-		if (!mission || mission.status !== "active" || mission.review.admission.initialBaselinePending) return;
-		if (!ctx.isIdle() || ctx.hasPendingMessages() || !ctx.sessionManager.getSessionFile()) return;
+		if (!mission || !missionAwaitsContinuation(mission)) return;
+		if (!sessionCanContinue(ctx)) return;
 		let activeSubagents: ActiveSubagentWork;
 		try {
 			activeSubagents = this.activeSubagentWork();
@@ -592,12 +655,12 @@ export class MissionRuntime {
 
 	private continuationIsBlocked(mission: MissionCurrent, activeSubagents: ActiveSubagentWork): boolean {
 		if (this.state.budgetExceeded()) return true;
-		if (activeSubagents.runs.length || activeSubagents.groupIds.length || activeSubagents.launchReservations) return true;
+		if (hasActiveSubagentWork(activeSubagents)) return true;
 		if (this.activeJobs().length) return true;
 		const admission = mission.review.admission;
 		// Block on "due" as well as "running": a continuation turn during the review-admission window would mutate the
 		// worktree while a reviewer is about to start, guaranteeing a review failure and wasting a strike.
-		if (admission.status === "starting" || admission.status === "running" || admission.status === "due") return true;
+		if (reviewHoldsWorktree(admission.status)) return true;
 		if (admission.status !== "awaiting_adjudication") return false;
 		return (mission.lastContinuationAt ?? 0) >= (admission.updatedAt ?? mission.updatedAt);
 	}
@@ -679,7 +742,7 @@ export class MissionRuntime {
 		const mission = this.state.read();
 		if (!mission || mission.status !== "active") return;
 		const after = await worktreeFingerprint(this.pi, ctx.cwd, mission);
-		if (this.worktreeBeforeTurn !== undefined && after !== undefined && this.worktreeBeforeTurn !== after) {
+		if (worktreeChangedDuringTurn(this.worktreeBeforeTurn, after)) {
 			this.materialMutationSinceSettle = true;
 			this.markReviewDue("worktree changed during turn");
 		}
@@ -787,8 +850,7 @@ export class MissionRuntime {
 	private markReviewDue(reason: string): void {
 		const mission = this.state.read();
 		if (!mission || mission.status !== "active") return;
-		const status = mission.review.admission.status;
-		if (status === "starting" || status === "running" || status === "due") return;
+		if (reviewHoldsWorktree(mission.review.admission.status)) return;
 		this.state.append(this.pi, this.state.reviewEvent("due", { reason }));
 		if (this.ctx) this.scheduleRecovery(this.ctx);
 		this.updateStatus();
@@ -796,7 +858,7 @@ export class MissionRuntime {
 
 	private async admitDueReview(ctx: ExtensionContext): Promise<boolean> {
 		const mission = this.state.read();
-		if (!mission || mission.status !== "active" || mission.review.admission.status !== "due") return false;
+		if (!mission || !reviewIsDue(mission)) return false;
 		if (await this.priorReviewerStillRunning(ctx, mission)) return true;
 		if (!ctx.isIdle() || ctx.hasPendingMessages()) return true;
 		const fingerprint = await worktreeFingerprint(this.pi, ctx.cwd, mission);
@@ -1029,7 +1091,8 @@ export class MissionRuntime {
 		const initialRevisions = correctionReview
 			? undefined
 			: await reviewedWorkspaceRevisions(this.pi, ctx.cwd, reviewCwd, workspace, ignoredPaths);
-		if ((correctionReview && !correction) || (!correctionReview && !initialRevisions)) {
+		const scopeMissing = correctionReview ? !correction : !initialRevisions;
+		if (scopeMissing) {
 			this.state.append(this.pi, this.state.statusEvent(
 				"blocked",
 				"independent review requires one exact clean candidate commit",
@@ -1163,7 +1226,9 @@ export class MissionRuntime {
 		const mission = this.state.read();
 		// Only an active Mission may transition review state; reviewEvent()/failReview() call requireActive()
 		// and would throw on a paused/blocked Mission whose reviewer settled after the pause.
-		if (!mission?.review.admission.runId || mission.review.admission.status !== "running" || mission.status !== "active") return false;
+		if (!mission) return false;
+		const reviewRunId = recoverableReviewRunId(mission);
+		if (!reviewRunId) return false;
 		const service = getSubagentService();
 		if (service.restorationComplete?.() === false) {
 			if (this.ctx) this.scheduleRecovery(this.ctx, 1_000);
@@ -1182,7 +1247,7 @@ export class MissionRuntime {
 		}
 		let run: DelegateRun;
 		try {
-			run = service.executor.get(mission.review.admission.runId);
+			run = service.executor.get(reviewRunId);
 		} catch (error) {
 			if (service.restorationComplete?.() === false) {
 				if (this.ctx) this.scheduleRecovery(this.ctx, 1_000);
@@ -1200,12 +1265,7 @@ export class MissionRuntime {
 			return true;
 		}
 		const candidateId = reviewCandidateId(latest, fingerprint);
-		if (
-			!latest.review.candidate.worktreeFingerprint
-			|| fingerprint !== latest.review.candidate.worktreeFingerprint
-			|| latest.review.candidate.objectiveVersion !== (latest.objectiveVersion ?? 1)
-			|| latest.review.candidate.id !== candidateId
-		) {
+		if (reviewCandidateDrifted(latest, fingerprint, candidateId)) {
 			this.supersedeReview("objective, scope, or worktree changed while independent review was running", candidateId, fingerprint);
 			return true;
 		}
@@ -1905,16 +1965,12 @@ async function hashWorkspacePath(
 	// Submodule worktrees require a separate recursive ownership model; fail closed rather than
 	// fingerprinting only the gitlink while nested contents may be dirty.
 	if (indexMode === "160000" || info.isDirectory()) return undefined;
-	if (!info.isFile() || info.size > MAX_FINGERPRINT_FILE_BYTES || totalBytes + info.size > MAX_FINGERPRINT_TOTAL_BYTES) return undefined;
+	if (!isFingerprintableFile(info, totalBytes)) return undefined;
 	const handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK).catch(() => undefined);
 	if (!handle) return undefined;
 	try {
 		const opened = await handle.stat();
-		if (
-			!opened.isFile()
-			|| opened.size > MAX_FINGERPRINT_FILE_BYTES
-			|| totalBytes + opened.size > MAX_FINGERPRINT_TOTAL_BYTES
-		) return undefined;
+		if (!isFingerprintableFile(opened, totalBytes)) return undefined;
 		hash.update(opened.mode & 0o111 ? "100755\0" : "100644\0").update(String(opened.size)).update("\0");
 		const buffer = Buffer.allocUnsafe(64 * 1024);
 		let position = 0;
