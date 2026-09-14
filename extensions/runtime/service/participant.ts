@@ -27,7 +27,7 @@ export interface HostedParticipantStatus {
 	holderLive: boolean;
 	driver?: HostedCollaboratorDriver;
 	profile?: "read-only" | "workspace-write";
-	queued?: { pending: number; claimed: number };
+	unreadMail?: number;
 	lastTransition: HostedParticipant["transitions"][number];
 }
 
@@ -40,12 +40,6 @@ export interface AcquiredParticipant {
 export interface StoppedParticipant {
 	participant: HostedParticipantStatus;
 	outcome: "stopped" | "already_stopped" | "unmanaged";
-}
-
-export interface HostedMessageStatus {
-	eventId: string;
-	recipientParticipantKey: string;
-	deliveryState: "pending" | "admitted";
 }
 
 export interface MessagingPublication {
@@ -280,8 +274,6 @@ export class HostedParticipantCoordinator {
 		if (!this.seenTargets.has(previousHolderTargetKey) && this.now() - this.epochStartedAt < graceMs) {
 			throw new HostedParticipantError("busy", "Participant holder is inside the Runtime reconnect grace period.");
 		}
-		this.store.apply({ type: "inbox.release_expired", at: this.now() });
-		if (this.hasActiveClaim(participantKey)) throw new HostedParticipantError("busy", "Participant still has an active delivery claim.");
 		this.store.apply({
 			type: "participant.takeover",
 			participantKey,
@@ -345,25 +337,6 @@ export class HostedParticipantCoordinator {
 		if (!retry && recipient?.state === "held" && recipient.holderTargetKey) this.wakes.request(recipient.holderTargetKey);
 	}
 
-	messageStatus(
-		registration: HostedLiveRegistration,
-		senderParticipantKey: string,
-		expectedSenderGeneration: string,
-		eventId: string,
-	): HostedMessageStatus {
-		const target = this.requireTarget(registration.targetKey);
-		const sender = this.requireParticipant(senderParticipantKey, target.projectRoot);
-		if (!holdsIdentity(sender, expectedSenderGeneration, registration.targetKey)) {
-			throw new HostedParticipantError("conflict", "Message status caller identity or generation changed.");
-		}
-		const event = this.store.read().events[eventId];
-		if (!event || event.type !== "mailbox.message" || event.source.id !== senderParticipantKey) {
-			throw new HostedParticipantError("not_found", "Mailbox message is absent for this sender.");
-		}
-		const deliveryState = event.delivery.status === "acked" ? "admitted" as const : "pending" as const;
-		return { eventId, recipientParticipantKey: event.recipientParticipantKey, deliveryState };
-	}
-
 	private leave(
 		registration: HostedLiveRegistration,
 		participantKey: string,
@@ -387,13 +360,6 @@ export class HostedParticipantCoordinator {
 	}
 
 	private status(participant: HostedParticipant, includeQueue = true): HostedParticipantStatus {
-		let pending = 0;
-		let claimed = 0;
-		if (includeQueue) for (const event of Object.values(this.store.read().events)) {
-			if (event.type === "filesystem.created" || event.recipientParticipantKey !== participant.participantKey) continue;
-			if (event.delivery.status === "pending") pending++;
-			else if (event.delivery.status === "claimed") claimed++;
-		}
 		const holderTargetKey = participant.holderTargetKey;
 		const holder = holderTargetKey ? this.store.read().targets[holderTargetKey] : undefined;
 		const lastTransition = participant.transitions.at(-1);
@@ -415,8 +381,17 @@ export class HostedParticipantCoordinator {
 			status.driver = holder.driver;
 			status.profile = holder.profile;
 		}
-		if (includeQueue) status.queued = { pending, claimed };
+		if (includeQueue) status.unreadMail = this.unreadMail(participant.participantKey);
 		return status;
+	}
+
+	/** Mail is read by `messaging.read`, never claimed, so unread depth is the absence of a read time. */
+	private unreadMail(participantKey: string): number {
+		return Object.values(this.store.read().events)
+			.filter((event) => event.type === "mailbox.message"
+				&& event.recipientParticipantKey === participantKey
+				&& event.readAt === undefined)
+			.length;
 	}
 
 	private requireTarget(targetKey: string): HostedTarget {
@@ -439,14 +414,6 @@ export class HostedParticipantCoordinator {
 
 	private assertTargetNotStopping(targetKey: string): void {
 		if (this.stoppingTargets.has(targetKey)) throw new HostedParticipantError("busy", "Target collaborator process is stopping.");
-	}
-
-	private hasActiveClaim(participantKey: string): boolean {
-		const state = this.store.read();
-		return Object.values(state.claims).some((claim) => claim.status === "active" && claim.eventIds.some((eventId) => {
-			const event = state.events[eventId];
-			return event !== undefined && event.type !== "filesystem.created" && event.recipientParticipantKey === participantKey;
-		}));
 	}
 
 	private createEventId(): string {

@@ -82,8 +82,8 @@ export function takeoverParticipant(state: HostedRuntimeState, operation: Takeov
 		throw new HostedStateConflictError("conflict", "Participant is not eligible for takeover.");
 	}
 	if (current.holderTargetKey === operation.targetKey) return state;
-	if (!takeoverAdvances(current, operation) || hasActiveParticipantClaim(state, current.participantKey)) {
-		throw new HostedStateConflictError("conflict", "Participant takeover is blocked by its current generation, time, or active claims.");
+	if (!takeoverAdvances(current, operation)) {
+		throw new HostedStateConflictError("conflict", "Participant takeover is blocked by its current generation or time.");
 	}
 	assertTargetHasNoParticipant(state, operation.targetKey, current.participantKey);
 	const transition: HostedParticipantTransition = {
@@ -108,11 +108,11 @@ export function clearParticipantWorktree(state: HostedRuntimeState, operation: C
 	return replaceParticipant(state, participant);
 }
 
-export function replaceParticipant(state: HostedRuntimeState, participant: HostedParticipant): HostedRuntimeState {
+function replaceParticipant(state: HostedRuntimeState, participant: HostedParticipant): HostedRuntimeState {
 	return { ...state, participants: { ...state.participants, [participant.participantKey]: participant } };
 }
 
-export function assertTargetHasNoParticipant(state: HostedRuntimeState, targetKey: string, exceptParticipantKey: string): void {
+function assertTargetHasNoParticipant(state: HostedRuntimeState, targetKey: string, exceptParticipantKey: string): void {
 	const conflicting = Object.values(state.participants).some((participant) => participant.participantKey !== exceptParticipantKey
 		&& participant.state === "held"
 		&& participant.holderTargetKey === targetKey);
@@ -221,11 +221,4 @@ function latestHolderTargetKey(participant: HostedParticipant): string | undefin
 		if (transition.previousHolderTargetKey) return transition.previousHolderTargetKey;
 	}
 	return undefined;
-}
-
-function hasActiveParticipantClaim(state: HostedRuntimeState, participantKey: string): boolean {
-	return Object.values(state.claims).some((claim) => claim.status === "active" && claim.eventIds.some((eventId) => {
-		const event = state.events[eventId];
-		return event !== undefined && event.type !== "filesystem.created" && event.recipientParticipantKey === participantKey;
-	}));
 }

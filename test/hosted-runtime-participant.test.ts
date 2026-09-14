@@ -88,9 +88,9 @@ describe("hosted participant coordinator", () => {
 		const { main, mainParticipant } = await acquirePair(test);
 		const retry = test.participants.acquire(main, "review", "main");
 		expect(retry).toMatchObject({ revived: false, participant: { generation: mainParticipant.generation } });
-		expect(test.participants.get(main, mainParticipant.participantKey)).toMatchObject({ holderLive: true, queued: { pending: 0, claimed: 0 } });
+		expect(test.participants.get(main, mainParticipant.participantKey)).toMatchObject({ holderLive: true, unreadMail: 0 });
 		expect(test.participants.list(main).map((participant) => participant.participantId)).toEqual(["fable", "main"]);
-		expect(test.participants.list(main)[0]).not.toHaveProperty("queued");
+		expect(test.participants.list(main)[0]).not.toHaveProperty("unreadMail");
 	});
 
 	it("sends idempotently, wakes a held recipient, and queues while vacant", async () => {
@@ -181,7 +181,7 @@ describe("hosted participant coordinator", () => {
 		await expect(test.participants.stopConfirmed(main, fableParticipant.participantKey, "stale")).rejects.toMatchObject({ code: "conflict" });
 		expect(test.stoppedTargets).toEqual([]);
 		const stopped = await test.participants.stopConfirmed(main, fableParticipant.participantKey, fableParticipant.generation);
-		expect(stopped).toMatchObject({ outcome: "stopped", participant: { state: "vacant", queued: { pending: 1 } } });
+		expect(stopped).toMatchObject({ outcome: "stopped", participant: { state: "vacant", unreadMail: 1 } });
 		expect(test.stoppedTargets).toEqual([fable.targetKey]);
 		test.setStopOutcome("already_absent");
 		const lostResponseRetry = await test.participants.stopConfirmed(main, fableParticipant.participantKey, fableParticipant.generation);
@@ -318,7 +318,7 @@ describe("participant and mailbox RPC", () => {
 		mainAuth = { registrationId: reconnectedMain.registrationId, registrationKey: reconnectedMain.registrationKey };
 		expect(await call("mailbox.send", { ...mainAuth, senderParticipantKey: sender.participantKey, expectedSenderGeneration: sender.generation, recipientParticipantKey: recipient.participantKey, sendId: "send_rpc", body: "Review RPC." })).toMatchObject({ ok: true, result: { sequence: 1 } });
 		expect(await call("mailbox.send", { ...mainAuth, senderParticipantKey: sender.participantKey, expectedSenderGeneration: "stale", recipientParticipantKey: recipient.participantKey, sendId: "send_stale", body: "Wrong sender." })).toMatchObject({ ok: false, error: { code: "conflict" } });
-		expect(await call("participant.get", { ...mainAuth, participantKey: recipient.participantKey })).toMatchObject({ ok: true, result: { queued: { pending: 1 } } });
+		expect(await call("participant.get", { ...mainAuth, participantKey: recipient.participantKey })).toMatchObject({ ok: true, result: { unreadMail: 1 } });
 		expect(await call("participant.list", mainAuth)).toMatchObject({ ok: true, result: { participants: [{ participantId: "fable" }, { participantId: "main" }] } });
 		expect(await call("participant.acquire", { ...mainAuth, protocol: "review", participantId: "bad", extra: true })).toMatchObject({ ok: false, error: { code: "invalid_request" } });
 		expect(await call("participant.acquire", { ...mainAuth, protocol: "Review", participantId: "bad" })).toMatchObject({ ok: false, error: { code: "invalid_request" } });

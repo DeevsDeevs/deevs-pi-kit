@@ -262,21 +262,6 @@ function inboxStatus(call: HostedMethodCall): HostedResponse {
 	return success(call.id, call.wakes.status(call.registrations.authorize(auth.registrationId, auth.registrationKey)));
 }
 
-function mailboxStatus(call: HostedMethodCall): HostedResponse {
-	const participants = requireParticipants(call);
-	const fields = ["registrationId", "registrationKey", "senderParticipantKey", "expectedSenderGeneration", "eventIds"];
-	const input = strictObject(call.params, "mailbox.status params", fields);
-	const registration = authorize(call, input);
-	const eventIds = boundedArray(input.eventIds, "event IDs", 12).map((eventId) => boundedText(eventId, "event ID", 200));
-	if (eventIds.length < 1 || new Set(eventIds).size !== eventIds.length) {
-		throw new Error("message status event IDs must contain 1 to 12 unique items");
-	}
-	const senderParticipantKey = boundedText(input.senderParticipantKey, "sender participant key", 200);
-	const senderGeneration = boundedText(input.expectedSenderGeneration, "sender generation", 200);
-	const messages = eventIds.map((eventId) => participants.messageStatus(registration, senderParticipantKey, senderGeneration, eventId));
-	return success(call.id, { messages });
-}
-
 function sendMailbox(call: HostedMethodCall): HostedResponse {
 	const participants = requireParticipants(call);
 	const fields = [
@@ -402,7 +387,6 @@ const HOSTED_METHODS = new Map<string, HostedMethodHandler>([
 	["participant.release", releaseParticipant],
 	["participant.takeover", takeoverParticipant],
 	["mailbox.send", sendMailbox],
-	["mailbox.status", mailboxStatus],
 ]);
 
 function requireMessaging(call: HostedMethodCall): RuntimeMessaging {

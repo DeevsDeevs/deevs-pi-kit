@@ -36,7 +36,7 @@ export interface ClientParticipantStatus {
 	holderLive: boolean;
 	driver?: HostedCollaboratorDriver;
 	profile?: HostedCollaboratorProfile;
-	queued?: { pending: number; claimed: number };
+	unreadMail?: number;
 	lastTransition: { cause: string };
 }
 
@@ -104,7 +104,6 @@ export function parseParticipant(value: RuntimeResponse): ClientParticipantStatu
 	if (participant.state !== "held" && participant.state !== "vacant" && participant.state !== "ended") {
 		throw new HostedRuntimeClientError("invalid_response", "Participant state is invalid.");
 	}
-	const queued = asRecord(participant.queued);
 	const result: ClientParticipantStatus = {
 		participantKey: text(participant.participantKey),
 		protocol: text(participant.protocol),
@@ -119,7 +118,7 @@ export function parseParticipant(value: RuntimeResponse): ClientParticipantStatu
 		result.driver = participant.driver;
 	}
 	if (participant.profile === "read-only" || participant.profile === "workspace-write") result.profile = participant.profile;
-	if (queued) result.queued = { pending: integer(queued.pending), claimed: integer(queued.claimed) };
+	if (participant.unreadMail !== undefined) result.unreadMail = integer(participant.unreadMail);
 	return result;
 }
 
