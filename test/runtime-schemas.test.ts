@@ -17,7 +17,7 @@ const context: HostedProtocolContext = { runtimeId: "rt_test", agentWake: "none"
 
 function populatedState(): HostedRuntimeState {
 	return {
-		version: 21,
+		version: 22,
 		messaging: {
 			[NAMESPACE]: {
 				namespaceId: NAMESPACE,

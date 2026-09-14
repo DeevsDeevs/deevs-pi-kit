@@ -105,6 +105,7 @@ function requireSuccess(result: McpToolResult): McpToolResult {
 
 function assertBoundDescriptor(peers: McpToolResult, ctx: ExtensionContext, sessionId: string, sessionFile: string): void {
 	const binding = peers.structuredContent?.binding;
+	// binding is unvalidated MCP structuredContent, not a HostedTarget, so the typed isPiTarget() predicate cannot be used here.
 	const bound = record(binding)
 		&& binding.kind === "pi"
 		&& binding.sessionId === sessionId
