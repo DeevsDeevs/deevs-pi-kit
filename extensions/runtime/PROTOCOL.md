@@ -2,7 +2,7 @@
 
 Runtime is a local daemon providing durable Monitor delivery to one exact Pi session, durable participant identity, durable mail, and
 lifecycle authority over persistent collaborators living in Herdr tabs, which owns processes, panes, and interactive input. Runtime
-accepts only state schema v17; unsupported stores fail closed. Collaborators keep identity and conversation across turns; use a Subagent
+accepts only state schema v18; unsupported stores fail closed. Collaborators keep identity and conversation across turns; use a Subagent
 for bounded structured work.
 
 ## Execution primitives
@@ -17,8 +17,8 @@ for bounded structured work.
 ## Guarantees and non-guarantees
 
 Guaranteed:
-- Monitor events, mail, and participant state persist before delivery or host mutation, and a live target binds exact project, Herdr
-  workspace/tab/pane/terminal, agent kind, and agent session. Restart preserves them all, invalidating registration leases.
+- Monitor events, mail, and participant state persist before delivery or host mutation, and a live target binds its exact project plus
+  either its Pi session file or its Herdr agent name. Restart preserves them all, invalidating registration leases.
 - Authorization consumes validated IDs, generations, keys, and confirmation booleans; prose is display-only, and busy, blocked, offline,
   or unverifiable targets retain pending events. No operation focuses or scrapes a pane; stop preserves collaborator worktrees.
 
@@ -48,7 +48,7 @@ malformed call is always `invalid_request`.
 {"v":1,"id":"req_...","ok":false,"error":{"code":"not_found","message":"diagnostic"}}
 ```
 
-`runtimeId` persists; `epoch` changes on every service start. `hello` returns `{version, runtimeId, epoch, capabilities}`, carrying
+`runtimeId` persists across service starts. `hello` returns `{version, runtimeId, capabilities}`, carrying
 `agentWake`, `maxDeliveryBatch`, `targets`, `monitor`, and — when the matching authority is loaded — `mailbox`, `interactiveAgent`, and
 `worktree`. Error codes: `invalid_request`, `unsupported_version`, `capability_unavailable`, `not_found`, `conflict`, `busy`,
 `registration_stale`, `identity_mismatch`, `claim_conflict`, `host_unavailable`, `storage_error`, `internal`.
@@ -71,13 +71,19 @@ Every method except `hello` and initial registration requires exact current auth
 
 ## Target identity
 
-A **Pi target** is canonical project root plus Pi session ID; registration verifies the session file header, Herdr pane/terminal/session
-identity, canonical cwd, and exclusive live ownership, then issues an epoch-scoped registration key renewed by heartbeat. A
-**Claude/Codex target** is keyed `agent_<sha256(projectRoot\0agentName)>` on the Runtime-generated Herdr agent name, and stores the driver
-key, Herdr managed-agent session, exact workspace/tab/pane/terminal IDs, participant key and held generation, requested profile, optional
-worktree path, and the client generation its MCP descriptor is bound to. Labels and terminal titles are never authoritative: the target is
-live only while `herdr agent get <name>` resolves the same name, kind, managed session, pane/tab/workspace/terminal, and canonical cwd,
-and its participant generation is still held. Mismatch fails closed — registration goes stale, the participant vacates through stop.
+Identity is five lines, and nothing else:
+
+1. A client is trusted exactly while it presents the registration ID and key Runtime minted for its target; each `pi.register` or
+   `bridge.bind` mints a fresh pair and drops the target's previous one.
+2. A **Pi target** is keyed `pi_<piSessionId>` and is live while its session file header still carries that session ID and its canonical
+   project or worktree cwd.
+3. A **Claude/Codex target** is keyed `agent_<projectHash>_<agentName>` — a plain Herdr agent name, prefixed only because two projects
+   may use the same name — and is live while `herdr agent get <name>` reports that name with that canonical cwd.
+4. The participant generation on the lease is the collaborator's identity; an agent target is live only while its participant is still
+   held at the generation the bind recorded.
+5. The stored tab and workspace IDs exist so stop can close the exact tab Runtime opened; they are never re-verified as identity.
+
+Labels and terminal titles are never authoritative. Mismatch fails closed — registration goes stale, the participant vacates through stop.
 
 ## Collaborator launch
 
@@ -85,10 +91,10 @@ and its participant generation is still held. Mismatch fails closed — registra
    and read the child participant's generation as the expected reservation: absent, or `vacant` at that generation.
 2. Provision the `workspace-write` worktree, reusing an existing checkout, then create one empty no-focus Herdr tab at the intended cwd.
 3. Run `herdr agent start <collab-hash> --kind pi|claude|codex --pane <id>` with driver-owned startup arguments after `--`.
-4. Call `bridge.bind` with held participant authority, agent name, driver, profile, and client and expected participant generations; it is
+4. Call `bridge.bind` with held participant authority, agent name, driver, profile, and the expected participant generation; it is
    idempotent for that exact tuple, so an uncertain response is retried.
-5. Runtime re-verifies `herdr agent get`, binds the target and acquires the participant in one state operation, then hands the
-   registration back to the launching Pi.
+5. Runtime resolves `herdr agent get <name>`, checks the reported cwd is the project root or an authorized worktree of it, binds the
+   target and acquires the participant in one state operation, then hands a freshly minted registration back to the launching Pi.
 
 A failure before `herdr agent start` closes the created tab; a failure after it preserves the tab and reports `needs_attention`. There are
 no launch, reconnect, or reservation tokens — the participant generation is the only lease. Claude receives appended system context and an
@@ -106,7 +112,7 @@ repository. Runtime owns only creation, listing, and confirmed removal, never co
 
 A participant is `(canonicalProjectRoot, protocol, participantId)` in `held`, `vacant`, or `ended` state. Mail is addressed to the
 participant: a later namespace of the same held participant reads it, and mail to a vacant participant queues for its next holder. Two
-durable records exist — a **namespace** (one credential per target and client generation: participant, holder generation, secret digest,
+durable records exist — a **namespace** (one credential per target registration: participant, holder generation, secret digest,
 expiry, operation-ID to event-ID map) and a **message** `{eventId, from, to, body, inReplyToEventId?, createdAt, readAt?}`. Ordinary mail
 is retrieved only through the package-owned stdio MCP endpoint and its six tools
 ([shared skill](../../skills/collaborator-messaging/SKILL.md)): `collaborator_peers`, `collaborator_send`, `collaborator_receive`,
