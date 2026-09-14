@@ -30,7 +30,7 @@ const herdrIntegration = join(homedir(), ".pi", "agent", "extensions", "herdr-ag
 const runtimeExtension = join(repo, "extensions", "runtime", "index.ts");
 const missionExtension = join(repo, "extensions", "mission", "index.ts");
 const missionHoldExtension = join(base, "mission-hold.ts");
-const sessionEntry = "deevs.hosted-runtime.v2";
+const sessionEntry = "deevs.hosted-runtime.v3";
 const hostedEntry = "deevs.hosted-runtime.v1";
 
 if (!existsSync(herdrIntegration)) throw new Error(`Herdr Pi integration is missing: ${herdrIntegration}`);
@@ -108,7 +108,7 @@ async function startRuntime() {
 		registration: { now: () => runtimeNow },
 		// Reconnect grace has deterministic unit coverage; zero keeps this destructive takeover gate bounded.
 		participant: { now: () => runtimeNow, reconnectGraceMs: 0, startedAt: runtimeNow },
-		wake: { now: () => runtimeNow, claimLeaseMs: 1_000 },
+		delivery: { now: () => runtimeNow, claimLeaseMs: 1_000 },
 	});
 	return runtime;
 }
@@ -224,12 +224,10 @@ async function launchCollaborator(parent, participantId) {
 
 async function directRegistration(pi, sessionId) {
 	const client = new HostedRuntimeClient(runtime.socketPath);
-	const receipts = hostedMessages(pi.sessionFile).map((entry) => ({ claimId: entry.details.claimId, eventIds: entry.details.eventIds }));
 	const registration = await client.call("pi.register", {
 		projectRoot,
 		piSessionId: sessionId,
 		piSessionFile: pi.sessionFile,
-		admittedClaims: receipts,
 	});
 	return { client, registration, pi, sessionId };
 }
@@ -400,19 +398,6 @@ async function proveMissionCompletionOnce(replyEventId) {
 	}
 }
 
-function simulatePreAckCrash(eventId) {
-	const state = readState();
-	const event = state.events[eventId];
-	assert.equal(event.delivery.status, "acked");
-	const claim = state.claims[event.delivery.claimId];
-	assert.ok(claim);
-	claim.status = "active";
-	delete claim.settledAt;
-	event.delivery = { status: "claimed", claimId: claim.claimId };
-	writeFileSync(join(runtimeRoot, "state.v1.json"), `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
-	return claim;
-}
-
 try {
 	herdrServer = spawn("herdr", ["--session", sessionName, "server"], { stdio: ["ignore", "pipe", "pipe"], env: herdrEnv });
 	await waitFor(() => existsSync(herdrSocket), "isolated Herdr socket did not start");
@@ -432,7 +417,7 @@ try {
 	let alphaDirect = await directRegistration(alphaPi, alphaSessionId);
 	const alphaToBeta = await send(alphaDirect, betaKey, "send_alpha_beta", "alpha-to-beta release marker; do not use tools or modify files");
 	await waitMessage(betaSessionFile, "alpha-to-beta release marker", 1);
-	await waitFor(() => readState().events[alphaToBeta.eventId].delivery.status === "acked", "alpha-to-beta mail was not acknowledged");
+	assert.ok(readState().events[alphaToBeta.eventId], "alpha-to-beta mail was not retained");
 	await waitIdle(betaPi);
 	await alphaDirect.client.call("pi.unregister", auth(alphaDirect.registration)).catch(() => {});
 	await closePi(alphaPi);
@@ -444,7 +429,7 @@ try {
 	let betaDirect = await directRegistration(betaPi, betaSessionId);
 	const betaToAlpha = await send(betaDirect, alphaKey, "send_beta_alpha", "beta-to-alpha release marker; do not use tools or modify files");
 	await waitMessage(alphaSessionFile, "beta-to-alpha release marker", 1);
-	await waitFor(() => readState().events[betaToAlpha.eventId].delivery.status === "acked", "beta-to-alpha mail was not acknowledged");
+	assert.ok(readState().events[betaToAlpha.eventId], "beta-to-alpha mail was not retained");
 	await waitIdle(alphaPi);
 	await closePi(alphaPi);
 	const missionCompletion = await proveMissionCompletionOnce(betaToAlpha.eventId);
@@ -459,14 +444,14 @@ try {
 	await waitFor(() => sessionEntries(alphaSessionFile).filter((entry) => entry.type === "custom" && entry.customType === sessionEntry).at(-1)?.data?.participant?.disposition === "vacant", "alpha stand-down disposition was not persisted");
 	betaDirect = await directRegistration(betaPi, betaSessionId);
 	const queuedWhileVacant = await send(betaDirect, alphaKey, "send_vacant", "vacant-queue release marker; do not use tools or modify files");
-	assert.equal(readState().events[queuedWhileVacant.eventId].delivery.status, "pending");
+	assert.ok(readState().events[queuedWhileVacant.eventId], "vacant-queued mail was not retained");
 	await closePi(alphaPi);
 	// The pane died before its best-effort unregister could be observed; advance the isolated clock past the registration lease.
 	runtimeNow += 31_000;
 	alphaPi = await startPi("collaborator-alpha-3", alphaSessionFile);
 	await assertRuntimeRegistered(alphaPi);
 	await sleep(250);
-	assert.equal(readState().events[queuedWhileVacant.eventId].delivery.status, "pending", "vacant identity auto-reacquired");
+	assert.equal(participant("review", "alpha").state, "vacant", "vacant identity auto-reacquired");
 	await acquire(alphaPi, "alpha");
 	await waitMessage(alphaSessionFile, "vacant-queue release marker", 2);
 	await waitIdle(alphaPi);
@@ -482,8 +467,9 @@ try {
 
 	betaDirect = await directRegistration(betaPi, betaSessionId);
 	const takeoverMail = await send(betaDirect, alphaKey, "send_takeover", "takeover-claim release marker; do not use tools or modify files");
-	const claimed = await directCall(alphaDirect, "inbox.claim", {});
-	assert.ok(claimed.events.some((event) => event.eventId === takeoverMail.eventId));
+	// Ordinary mail never enters native delivery: the heartbeat hands out Monitor events only.
+	const alphaHeartbeat = await directCall(alphaDirect, "pi.heartbeat", { admit: true });
+	assert.equal(alphaHeartbeat.events, undefined, "ordinary mail entered native delivery");
 	await closePi(alphaPi);
 	await alphaDirect.client.call("pi.unregister", auth(alphaDirect.registration)).catch(() => {});
 	await directCall(betaDirect, "participant.stand_down", { participantKey: betaKey });
@@ -492,26 +478,16 @@ try {
 	runtimeNow += 2_000;
 	const taken = await directCall(betaDirect, "participant.takeover", { participantKey: alphaKey, expectedGeneration: generationBeforeTakeover, confirmed: true });
 	assert.equal(taken.holderTargetKey, betaDirect.registration.targetKey);
-	assert.equal(readState().events[takeoverMail.eventId].delivery.status, "pending");
+	assert.ok(readState().events[takeoverMail.eventId], "taken-over mail was not retained");
 
 	await closePi(betaPi);
 	await betaDirect.client.call("pi.unregister", auth(betaDirect.registration)).catch(() => {});
-	appendParticipantIdentity(betaSessionFile, { version: 2, participant: { protocol: "review", participantId: "alpha", participantKey: alphaKey, generation: taken.generation, disposition: "held" } });
+	appendParticipantIdentity(betaSessionFile, { version: 3, participant: { protocol: "review", participantId: "alpha", participantKey: alphaKey, generation: taken.generation, disposition: "held" } });
 	betaPi = await startPi("collaborator-beta-2-takeover", betaSessionFile);
 	await assertRuntimeRegistered(betaPi);
 	await waitMessage(betaSessionFile, "takeover-claim release marker", 2);
-	await waitFor(() => readState().events[takeoverMail.eventId].delivery.status === "acked", "taken-over mailbox event was not acknowledged");
 	await waitIdle(betaPi);
-
-	await closePi(betaPi);
-	await stopRuntime();
-	const simulatedClaim = simulatePreAckCrash(takeoverMail.eventId);
 	const beforeReconcileMessages = hostedMessages(betaSessionFile).length;
-	await startRuntime();
-	betaPi = await startPi("collaborator-beta-3-reconcile", betaSessionFile);
-	await assertRuntimeRegistered(betaPi);
-	await waitFor(() => readState().claims[simulatedClaim.claimId]?.status === "acked", "historical mailbox receipt did not reconcile");
-	assert.equal(hostedMessages(betaSessionFile).length, beforeReconcileMessages, "historical reconciliation redelivered mailbox mail");
 
 	await closePi(betaPi);
 	await stopRuntime();
@@ -519,12 +495,12 @@ try {
 	betaPi = await startPi("collaborator-beta-4-final", betaSessionFile);
 	await assertRuntimeRegistered(betaPi);
 	await sleep(11_000);
-	assert.equal(readState().events[takeoverMail.eventId].delivery.status, "acked");
+	assert.ok(readState().events[takeoverMail.eventId], "taken-over mail was not retained after the final restart");
 	try {
-		await waitFor(() => Object.keys(readState().wakes).length === 0, "final wake did not settle after the full heartbeat window", 10_000);
+		await waitFor(() => Object.keys(readState().claims).length === 0, "final delivery claim did not settle after the full heartbeat window", 10_000);
 	} catch (error) {
 		const failedState = readState();
-		throw new Error(`${error.message}: ${JSON.stringify({ wakes: failedState.wakes, participants: failedState.participants, unsettled: Object.values(failedState.events).filter((event) => event.delivery?.status !== "acked") })}`);
+		throw new Error(`${error.message}: ${JSON.stringify({ claims: failedState.claims, participants: failedState.participants })}`);
 	}
 	const finalState = readState();
 	assert.equal(hostedMessages(betaSessionFile).length, beforeReconcileMessages, "mailbox event redelivered after final restart");
@@ -543,8 +519,7 @@ try {
 		standDownQueued: queuedWhileVacant.eventId,
 		releaseRejected: true,
 		revived: true,
-		claimedTakeover: takeoverMail.eventId,
-		historicalReconciled: true,
+		takeoverMail: takeoverMail.eventId,
 		noRedelivery: true,
 		runtimeRestarts: 2,
 		piStarts: { alpha: 3, beta: 4 },

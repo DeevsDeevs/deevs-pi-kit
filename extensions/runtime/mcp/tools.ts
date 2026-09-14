@@ -26,7 +26,7 @@ export const tools = [
 	{
 		name: "collaborator_receive",
 		description: "Return the complete body of one message addressed to your participant. "
-			+ "Repeating receive is safe and changes nothing; it does not record receipt or consume a native claim.",
+			+ "Repeating receive is safe and changes nothing; it does not record receipt or settle native delivery.",
 		properties: { namespaceId: text(), eventId: text() },
 		required: ["namespaceId", "eventId"],
 		readOnlyHint: false,
