@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { existsSync, mkdtempSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { dispatchHostedLine, HOSTED_MAX_REQUEST_BYTES } from "../extensions/runtime/service/protocol.ts";
 import { HostedStateStore } from "../extensions/runtime/service/state.ts";
-import { protocolContext } from "./fixtures/runtime-protocol.ts";
+import type { HostedTarget } from "../extensions/runtime/schemas/state.ts";
+import { AbsentHost, protocolContext } from "./fixtures/runtime-protocol.ts";
 import { RuntimeAlreadyRunningError, startRuntimeServer, type RuntimeServerHandle } from "../extensions/runtime/service/server.ts";
 import { HostedStateStorageError, runtimeStatePaths } from "../extensions/runtime/service/state.ts";
 
@@ -118,6 +119,35 @@ describe("hosted runtime Unix socket service", () => {
 		expect(statSync(recovered.socketPath).isSocket()).toBe(true);
 	});
 
+	it("stops a collaborator through the host verifier's own instance", async () => {
+		const root = temporaryRoot();
+		const project = temporaryRoot();
+		const stopped: string[] = [];
+		class RecordingHost extends AbsentHost {
+			private readonly closed = stopped;
+
+			async closeTarget(target: HostedTarget): Promise<"already_absent"> {
+				this.closed.push(target.targetKey);
+				return "already_absent";
+			}
+		}
+		const server = await startRuntimeServer({ root, host: new RecordingHost() });
+		servers.push(server);
+		const holder = await register(server.socketPath, project, "holder");
+		const caller = await register(server.socketPath, project, "caller");
+		const acquired = await call(server.socketPath, "participant.acquire", { ...auth(holder), protocol: "review", participantId: "beta" });
+		const participant = (acquired.result as { participant: { participantKey: string; generation: string } }).participant;
+		const outcome = await call(server.socketPath, "participant.stop_confirmed", {
+			...auth(caller),
+			participantKey: participant.participantKey,
+			expectedGeneration: participant.generation,
+			confirmed: true,
+		});
+
+		expect(stopped).toEqual([holder.targetKey]);
+		expect(outcome.result).toMatchObject({ outcome: "already_stopped", participant: { state: "vacant" } });
+	});
+
 	it("fails closed before listening when durable state is corrupt", async () => {
 		const root = temporaryRoot();
 		mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -126,6 +156,27 @@ describe("hosted runtime Unix socket service", () => {
 		expect(existsSync(join(root, "runtime.sock"))).toBe(false);
 	});
 });
+
+function auth(registration: { registrationId: string; registrationKey: string }) {
+	return { registrationId: registration.registrationId, registrationKey: registration.registrationKey };
+}
+
+async function call(socketPath: string, method: string, params: Record<string, unknown>) {
+	const [response] = await exchange(socketPath, [JSON.stringify({ v: 1, id: `req_${method}`, method, params })]);
+	if (response?.ok !== true) throw new Error(`${method} failed: ${JSON.stringify(response)}`);
+	return response as { result: unknown };
+}
+
+/** Registers one Pi target from a session file whose header is the only proof of its liveness. */
+async function register(socketPath: string, project: string, name: string) {
+	const projectRoot = realpathSync(project);
+	const piSessionId = `pi_${projectRoot.replaceAll("/", "_")}-${name}`.slice(0, 120);
+	const piSessionFile = join(projectRoot, `${name}.jsonl`);
+	writeFileSync(piSessionFile, `${JSON.stringify({ type: "session", version: 3, id: piSessionId, cwd: projectRoot })}\n`);
+	const registered = await call(socketPath, "pi.register", { projectRoot, piSessionId, piSessionFile });
+	const { targetKey, registrationId, registrationKey } = registered.result as Record<"targetKey" | "registrationId" | "registrationKey", string>;
+	return { targetKey, registrationId, registrationKey };
+}
 
 function exchange(socketPath: string, lines: string[]): Promise<Array<Record<string, unknown>>> {
 	return new Promise((resolve, reject) => {

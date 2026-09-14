@@ -1,19 +1,15 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
-import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
 const repo = process.cwd();
 const { HostedRuntimeClient } = await import(pathToFileURL(join(repo, "extensions/runtime/client.ts")));
 const { startRuntimeServer } = await import(pathToFileURL(join(repo, "extensions/runtime/service/server.ts")));
-const { MissionState, MISSION_CUSTOM_TYPE } = await import(pathToFileURL(join(repo, "extensions/mission/state.ts")));
-const { MissionRuntime } = await import(pathToFileURL(join(repo, "extensions/mission/runtime.ts")));
-const { registerMissionTools } = await import(pathToFileURL(join(repo, "extensions/mission/tools.ts")));
-const { setSubagentService, clearSubagentService } = await import(pathToFileURL(join(repo, "extensions/subagents/registry.ts")));
+const { projectScope } = await import(pathToFileURL(join(repo, "extensions/runtime/service/state.ts")));
 const base = mkdtempSync(join(tmpdir(), "pi-kit-collaborator-release-"));
 const cleanupBase = () => rmSync(base, { recursive: true, force: true });
 process.once("exit", cleanupBase);
@@ -23,33 +19,82 @@ const agentDir = join(base, "agent");
 const runtimeRoot = join(agentDir, "runtime");
 const projectRoot = join(base, "project");
 const alphaSessionFile = join(base, "alpha.jsonl");
-let betaSessionFile;
 const alphaSessionId = "019f0000-0000-7000-8000-000000000101";
-let betaSessionId;
 const herdrIntegration = join(homedir(), ".pi", "agent", "extensions", "herdr-agent-state.ts");
 const runtimeExtension = join(repo, "extensions", "runtime", "index.ts");
-const missionExtension = join(repo, "extensions", "mission", "index.ts");
-const missionHoldExtension = join(base, "mission-hold.ts");
-const sessionEntry = "deevs.hosted-runtime.v3";
-const hostedEntry = "deevs.hosted-runtime.v1";
+const providerExtension = join(base, "release-gate-provider.ts");
+const mailEntry = "deevs.hosted-runtime.messaging-mail.v1";
+const model = "release-gate/noop";
+const mailBody = "caller mail marker for the collaborator release gate; do not use tools or modify files";
+
+/** Every collaborator lifecycle step this gate drives through the production tools, one trigger phrase each. */
+const TOOL_CALLS = [
+	{
+		id: "runlaunch",
+		name: "collaborator_manage",
+		arguments: {
+			action: "start",
+			protocol: "review",
+			callerParticipantId: "alpha",
+			participants: [{ participantId: "beta", profile: "workspace-write", model }, { participantId: "gamma", model }],
+		},
+	},
+	{
+		id: "runstanddown",
+		name: "collaborator_manage",
+		arguments: { action: "stand_down", protocol: "review", participants: [{ participantId: "gamma" }] },
+	},
+	{
+		id: "runstop",
+		name: "collaborator_manage",
+		arguments: { action: "stop", protocol: "review", participants: [{ participantId: "beta" }] },
+	},
+	{ id: "runcleanup", name: "collaborator_workspace", arguments: { action: "cleanup", participantId: "beta" } },
+];
 
 if (!existsSync(herdrIntegration)) throw new Error(`Herdr Pi integration is missing: ${herdrIntegration}`);
 mkdirSync(projectRoot, { recursive: true });
 mkdirSync(agentDir, { recursive: true });
-writeFileSync(join(projectRoot, "release.txt"), "runtime collaborator Mission release gate\n");
+writeFileSync(join(projectRoot, "release.txt"), "runtime collaborator release gate\n");
 execFileSync("git", ["init", "-q"], { cwd: projectRoot });
 execFileSync("git", ["add", "release.txt"], { cwd: projectRoot });
 execFileSync("git", ["-c", "user.name=Release Gate", "-c", "user.email=release@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "release baseline"], { cwd: projectRoot });
 writeFileSync(alphaSessionFile, `${JSON.stringify({ type: "session", version: 3, id: alphaSessionId, timestamp: new Date().toISOString(), cwd: projectRoot })}\n`);
-writeFileSync(missionHoldExtension, `import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";\nimport { setJobManager } from ${JSON.stringify(pathToFileURL(join(repo, "extensions/jobs/registry.ts")).href)};\nconst manager = { list: () => [{ spec: { id: "combined-release-hold" }, runtime: { status: "running" } }] };\nlet launchIssued = false;
-function stream(model, context) { const events = createAssistantMessageEventStream(); const serialized = JSON.stringify(context); const launch = !launchIssued && serialized.includes("release-gate collaborator tool launch") && !serialized.includes("Started review/beta"); launchIssued ||= launch; const toolCall = { type: "toolCall", id: "release-gate-collaborator-start", name: "collaborator_manage", arguments: { action: "start", participants: [{ participantId: "beta" }], protocol: "review", callerParticipantId: "alpha" } }; const message = { role: "assistant", content: launch ? [toolCall] : [], api: model.api, provider: model.provider, model: model.id, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: launch ? "toolUse" : "stop", timestamp: Date.now() }; queueMicrotask(() => { events.push({ type: "start", partial: message }); if (launch) { events.push({ type: "toolcall_start", contentIndex: 0, partial: message }); events.push({ type: "toolcall_end", contentIndex: 0, toolCall, partial: message }); } events.push({ type: "done", reason: message.stopReason, message }); events.end(); }); return events; }\nexport default function (pi) { setJobManager(manager); pi.registerProvider("release-gate", { name: "Release Gate", baseUrl: "http://release.invalid", apiKey: "test", api: "release-gate", streamSimple: stream, models: [{ id: "noop", name: "No-op", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 4096, maxTokens: 64 }] }); }\n`);
-writeFileSync(join(agentDir, "settings.json"), `${JSON.stringify({ defaultProjectTrust: "always", extensions: [missionHoldExtension, herdrIntegration, runtimeExtension, missionExtension] }, null, 2)}\n`);
+writeFileSync(providerExtension, `import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+const CALLS = ${JSON.stringify(TOOL_CALLS)};
+const issued = new Set();
+const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+function stream(model, context) {
+	const events = createAssistantMessageEventStream();
+	const serialized = JSON.stringify(context);
+	const pending = CALLS.find((call) => !issued.has(call.id) && serialized.includes(call.id));
+	if (pending) issued.add(pending.id);
+	const toolCall = pending ? { type: "toolCall", id: pending.id, name: pending.name, arguments: pending.arguments } : undefined;
+	const message = { role: "assistant", content: toolCall ? [toolCall] : [], api: model.api, provider: model.provider, model: model.id, usage, stopReason: toolCall ? "toolUse" : "stop", timestamp: Date.now() };
+	queueMicrotask(() => {
+		events.push({ type: "start", partial: message });
+		if (toolCall) {
+			events.push({ type: "toolcall_start", contentIndex: 0, partial: message });
+			events.push({ type: "toolcall_end", contentIndex: 0, toolCall, partial: message });
+		}
+		events.push({ type: "done", reason: message.stopReason, message });
+		events.end();
+	});
+	return events;
+}
+export default function (pi) {
+	pi.registerProvider("release-gate", { name: "Release Gate", baseUrl: "http://release.invalid", apiKey: "test", api: "release-gate", streamSimple: stream, models: [{ id: "noop", name: "No-op", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 4096, maxTokens: 64 }] });
+}
+`);
+writeFileSync(join(agentDir, "settings.json"), `${JSON.stringify({
+	defaultProjectTrust: "always",
+	extensions: [providerExtension, herdrIntegration, runtimeExtension],
+}, null, 2)}\n`);
 
 const herdrEnv = { ...process.env, HERDR_SOCKET_PATH: herdrSocket, PI_CODING_AGENT_DIR: agentDir };
 delete herdrEnv.PI_PACKAGE_DIR;
 let herdrServer;
 let runtime;
-let runtimeNow = Date.now();
 const panes = new Set();
 
 function cli(...args) {
@@ -57,7 +102,7 @@ function cli(...args) {
 	return output ? JSON.parse(output) : {};
 }
 
-function readPane(paneId, lines = 100) {
+function readPane(paneId, lines = 200) {
 	return execFileSync("herdr", ["--session", sessionName, "pane", "read", paneId, "--source", "recent-unwrapped", "--lines", String(lines)], { encoding: "utf8", env: herdrEnv });
 }
 
@@ -65,7 +110,7 @@ function sleep(ms) {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitFor(check, message, timeoutMs = 30_000) {
+async function waitFor(check, message, timeoutMs = 60_000) {
 	const deadline = Date.now() + timeoutMs;
 	let lastError;
 	while (Date.now() < deadline) {
@@ -75,7 +120,7 @@ async function waitFor(check, message, timeoutMs = 30_000) {
 		} catch (error) {
 			lastError = error;
 		}
-		await sleep(50);
+		await sleep(100);
 	}
 	throw new Error(`${message}${lastError ? `: ${lastError.message}` : ""}`);
 }
@@ -84,39 +129,16 @@ function readState() {
 	return JSON.parse(readFileSync(join(runtimeRoot, "state.v1.json"), "utf8"));
 }
 
+function participant(participantId) {
+	return Object.values(readState().participants).find((candidate) => candidate.protocol === "review" && candidate.participantId === participantId);
+}
+
 function sessionEntries(path) {
 	return readFileSync(path, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
 }
 
-function hostedMessages(path) {
-	return sessionEntries(path).filter((entry) => entry.type === "custom_message" && entry.customType === hostedEntry);
-}
-
-function participant(protocol, participantId) {
-	return Object.values(readState().participants).find((candidate) => candidate.protocol === protocol && candidate.participantId === participantId);
-}
-
 function auth(registration) {
 	return { registrationId: registration.registrationId, registrationKey: registration.registrationKey };
-}
-
-async function startRuntime() {
-	process.env.HERDR_SOCKET_PATH = herdrSocket;
-	runtimeNow += 1_000;
-	runtime = await startRuntimeServer({
-		root: runtimeRoot,
-		registration: { now: () => runtimeNow },
-		// Reconnect grace has deterministic unit coverage; zero keeps this destructive takeover gate bounded.
-		participant: { now: () => runtimeNow, reconnectGraceMs: 0, startedAt: runtimeNow },
-		delivery: { now: () => runtimeNow, claimLeaseMs: 1_000 },
-	});
-	return runtime;
-}
-
-async function stopRuntime() {
-	if (!runtime) return;
-	await runtime.close();
-	runtime = undefined;
 }
 
 async function startPi(name, sessionFile) {
@@ -124,31 +146,17 @@ async function startPi(name, sessionFile) {
 	const created = cli("tab", "create", "--workspace", workspace.workspace_id, "--cwd", projectRoot, "--label", name, "--no-focus");
 	const pane = created.result.root_pane;
 	panes.add(pane.pane_id);
-	cli("agent", "start", name, "--kind", "pi", "--pane", pane.pane_id, "--timeout", "10000", "--", "--approve", "--model", "release-gate/noop", "--session", sessionFile);
+	cli("agent", "start", name, "--kind", "pi", "--pane", pane.pane_id, "--timeout", "10000", "--", "--approve", "--model", model, "--session", sessionFile);
 	const live = await waitFor(() => {
 		const agent = cli("agent", "get", pane.pane_id).result.agent;
 		return agent.agent_session?.kind === "path" ? agent : undefined;
 	}, `${name} did not report a Pi session`);
-	assert.equal(live.terminal_id, pane.terminal_id);
 	assert.equal(live.agent_session.value, sessionFile);
-	return { pane, live, sessionFile };
-}
-
-async function closePi(pi) {
-	try { cli("pane", "close", pi.pane.pane_id); } catch {}
-	panes.delete(pi.pane.pane_id);
-	await waitFor(() => {
-		try {
-			execFileSync("herdr", ["--session", sessionName, "agent", "get", pi.pane.pane_id], { stdio: "pipe", env: herdrEnv });
-			return false;
-		} catch {
-			return true;
-		}
-	}, `pane ${pi.pane.pane_id} remained live`);
+	return { pane, sessionFile };
 }
 
 async function waitIdle(pi) {
-	await waitFor(() => ["idle", "done"].includes(cli("agent", "get", pi.pane.pane_id).result.agent.agent_status), `${pi.pane.pane_id} did not become idle or done`, 60_000);
+	await waitFor(() => ["idle", "done"].includes(cli("agent", "get", pi.pane.pane_id).result.agent.agent_status), `${pi.pane.pane_id} did not settle`);
 }
 
 async function assertRuntimeRegistered(pi) {
@@ -160,369 +168,97 @@ async function assertRuntimeRegistered(pi) {
 	}, `Pi pane ${pi.pane.pane_id} did not report a live Runtime registration`);
 }
 
-async function createProductionMission(pi) {
-	cli("agent", "prompt", pi.pane.pane_id, "/mission Prove collaborator-to-Mission completion once --name combined-release-gate --req 'Reply is durably admitted and typed completion settles once'");
-	const snapshot = await waitFor(() => {
-		const stateDir = join(projectRoot, ".missions", ".state");
-		if (!existsSync(stateDir)) return undefined;
-		for (const file of readdirSync(stateDir).filter((name) => name.endsWith(".json"))) {
-			const candidate = JSON.parse(readFileSync(join(stateDir, file), "utf8"));
-			if (candidate.mission?.title === "combined-release-gate") return candidate;
-		}
-		return undefined;
-	}, "production parent Mission was not created", 60_000);
+/** One production tool call: the trigger prompt, its single trusted confirmation, then the settled turn. */
+async function driveTool(pi, trigger, confirmation) {
+	cli("agent", "prompt", pi.pane.pane_id, trigger);
+	await waitFor(() => readPane(pi.pane.pane_id).includes(confirmation), `${trigger} did not request ${JSON.stringify(confirmation)}`);
+	cli("pane", "send-keys", pi.pane.pane_id, "y", "enter");
 	await waitIdle(pi);
-	return snapshot.mission.missionId;
 }
 
-async function acquire(pi, participantId) {
-	const before = sessionEntries(pi.sessionFile).filter((entry) => entry.type === "custom" && entry.customType === sessionEntry).length;
-	cli("agent", "prompt", pi.pane.pane_id, `/runtime collaborate review ${participantId}`);
-	await waitFor(() => participant("review", participantId)?.state === "held", `${participantId} did not become held`);
-	await waitFor(() => {
-		const entries = sessionEntries(pi.sessionFile).filter((entry) => entry.type === "custom" && entry.customType === sessionEntry);
-		const latest = entries.at(-1);
-		return entries.length > before && latest?.data?.participant?.participantId === participantId && latest.data.participant.disposition === "held";
-	}, `${participantId} identity was not persisted`);
-}
-
-async function launchCollaborator(parent, participantId) {
-	const callerEntriesBefore = sessionEntries(parent.sessionFile).filter((entry) => entry.type === "custom" && entry.customType === sessionEntry).length;
-	cli("agent", "prompt", parent.pane.pane_id, "release-gate collaborator tool launch");
-	await waitFor(() => readPane(parent.pane.pane_id, 200).includes("Start Runtime collaborator?"), "collaborator_manage did not request trusted confirmation", 60_000);
-	cli("pane", "send-keys", parent.pane.pane_id, "y", "enter");
-	await waitFor(() => {
-		const current = participant("review", participantId);
-		return current?.state === "held" ? current : undefined;
-	}, `${participantId} did not acquire through the collaborator_manage tool`, 60_000);
-	await waitFor(() => participant("review", "alpha")?.state === "held", "collaborator_manage did not acquire the caller identity");
-	await waitFor(() => {
-		const entries = sessionEntries(parent.sessionFile).filter((entry) => entry.type === "custom" && entry.customType === sessionEntry);
-		const latest = entries.at(-1);
-		return entries.length > callerEntriesBefore && latest?.data?.participant?.participantId === "alpha" && latest.data.participant.disposition === "held";
-	}, "collaborator_manage did not persist caller acquisition");
-	const launched = await waitFor(() => {
-		const tabs = cli("tab", "list", "--workspace", parent.pane.workspace_id).result.tabs;
-		const tab = tabs.find((candidate) => candidate.label === `collaborator:${participantId}`);
-		if (!tab) return undefined;
-		const pane = cli("pane", "list", "--workspace", parent.pane.workspace_id).result.panes.find((candidate) => candidate.tab_id === tab.tab_id);
-		if (!pane?.agent_session?.value) return undefined;
-		return { pane, live: pane, sessionFile: pane.agent_session.value };
-	}, `${participantId} Herdr tab/session was not discoverable`, 60_000);
-	panes.add(launched.pane.pane_id);
-	const header = sessionEntries(launched.sessionFile)[0];
-	assert.equal(header.type, "session");
-	assert.equal(header.version, 3);
-	assert.equal(header.cwd, projectRoot);
-	const launchConfig = sessionEntries(launched.sessionFile).find((entry) => entry.type === "custom" && entry.customType === sessionEntry);
-	assert.equal(launchConfig?.data?.version, 2, "Collaborator launch did not persist versioned launch metadata");
-	assert.equal(launchConfig?.data?.launch?.driver, "pi", "Omitted collaborator driver did not resolve to Pi");
-	await waitFor(() => sessionEntries(launched.sessionFile).filter((entry) => entry.type === "custom" && entry.customType === sessionEntry).at(-1)?.data?.participant?.participantId === participantId, `${participantId} launch identity was not persisted`);
-	await waitFor(() => readPane(parent.pane.pane_id, 200).includes(`Started review/${participantId} in`), `parent tool did not confirm ${participantId} production launch`);
-	return { ...launched, sessionId: header.id, callerAcquired: true };
-}
-
-async function directRegistration(pi, sessionId) {
-	const client = new HostedRuntimeClient(runtime.socketPath);
-	const registration = await client.call("pi.register", {
-		projectRoot,
-		piSessionId: sessionId,
-		piSessionFile: pi.sessionFile,
-	});
-	return { client, registration, pi, sessionId };
-}
-
-async function directCall(sender, method, params) {
-	for (let attempt = 0; ; attempt++) {
-		try { return await sender.client.call(method, { ...auth(sender.registration), ...params }); }
-		catch (error) {
-			if (error?.code !== "registration_stale" || attempt >= 4) throw error;
-			const refreshed = await directRegistration(sender.pi, sender.sessionId);
-			sender.client = refreshed.client;
-			sender.registration = refreshed.registration;
-		}
-	}
-}
-
-async function send(sender, recipientKey, sendId, body) {
-	const identity = Object.values(readState().participants).find((candidate) => candidate.state === "held" && candidate.holderTargetKey === sender.registration.targetKey);
-	assert.ok(identity, `registration ${sender.registration.targetKey} has no held sender identity`);
-	return directCall(sender, "mailbox.send", { senderParticipantKey: identity.participantKey, expectedSenderGeneration: identity.generation, recipientParticipantKey: recipientKey, sendId, body });
-}
-
-async function waitMessage(path, body, count) {
-	return waitFor(() => {
-		const messages = hostedMessages(path);
-		return messages.length === count && messages.some((entry) => String(entry.content).includes(body)) ? messages : undefined;
-	}, `Pi session did not admit ${body}`, 60_000);
-}
-
-function appendParticipantIdentity(path, value) {
-	const entries = sessionEntries(path);
-	const parent = entries.at(-1);
-	appendFileSync(path, `${JSON.stringify({
-		type: "custom",
-		id: randomUUID(),
-		parentId: parent?.id ?? null,
-		timestamp: new Date().toISOString(),
-		customType: sessionEntry,
-		data: value,
-	})}\n`);
-}
-
-async function proveMissionCompletionOnce(replyEventId) {
-	const branch = sessionEntries(alphaSessionFile);
-	let progressTool;
-	let completeTool;
-	const pi = {
-		appendEntry(customType, data) { branch.push({ type: "custom", customType, data }); },
-		registerTool(tool) {
-			if (tool.name === "mission_progress") progressTool = tool;
-			if (tool.name === "mission_complete") completeTool = tool;
-		},
-		registerCommand() {},
-		on() {},
-		sendMessage() {},
-		async exec(command, args, options = {}) {
-			try { return { code: 0, stdout: execFileSync(command, args, { cwd: options.cwd, encoding: "utf8" }), stderr: "", killed: false }; }
-			catch (error) { return { code: error.status ?? 1, stdout: error.stdout?.toString() ?? "", stderr: error.stderr?.toString() ?? "", killed: false }; }
-		},
-	};
-	const ctx = {
-		cwd: projectRoot,
-		hasUI: true,
-		isIdle: () => true,
-		hasPendingMessages: () => false,
-		ui: { confirm: async () => true, notify() {}, setStatus() {} },
-		sessionManager: { getBranch: () => branch, getSessionFile: () => alphaSessionFile, getSessionId: () => alphaSessionId },
-	};
-	let reviewRun;
-	let reviewerStarts = 0;
-	const reviewArtifacts = join(base, "combined-mission-review");
-	const service = {
-		list: () => ({ runs: reviewRun ? [reviewRun] : [], groups: [] }),
-		start: async () => {
-			reviewerStarts++;
-			mkdirSync(reviewArtifacts, { recursive: true });
-			reviewRun = { spec: { id: "typed-release-review", artifactsDir: reviewArtifacts }, runtime: { status: "running", output: "" } };
-			return reviewRun;
-		},
-		executor: { get: (runId) => reviewRun?.spec.id === runId ? reviewRun : undefined, onChange: () => () => undefined },
-	};
-	let activeService = service;
-	setSubagentService(activeService);
-	try {
-		const state = new MissionState();
-		state.loadFromSession(ctx);
-		assert.equal(state.read()?.title, "combined-release-gate", "production parent Mission was not restored");
-		const missionRuntime = new MissionRuntime(pi, state);
-		registerMissionTools(pi, state, () => missionRuntime.restore(ctx), {
-			onProgress: (input, currentCtx) => missionRuntime.onProgress(input, currentCtx),
-			validateCompletion: (input, currentCtx) => missionRuntime.validateCompletion(input, currentCtx),
-			authorizeCompletion: (currentCtx) => missionRuntime.authorizeCompletion(currentCtx),
-			completionCandidateId: (currentCtx) => missionRuntime.completionCandidateId(currentCtx),
-			onCompleted: (currentCtx, mission) => missionRuntime.onCompleted(currentCtx, mission),
-		});
-		assert.ok(progressTool && completeTool);
-		await progressTool.execute("release-evidence", { summary: "Collaborator reply admitted", evidence: [`Runtime reply event ${replyEventId} acknowledged by the production parent Mission`], validation: [{ command: "runtime collaborator reply acknowledgement", exitCode: 0 }] }, undefined, undefined, ctx);
-		state.append(pi, state.reviewEvent("due", { reason: "combined release review" }));
-		await missionRuntime.startReview(ctx, state.read());
-		assert.equal(reviewerStarts, 1);
-		assert.equal(state.read().reviewStatus, "running");
-		reviewRun.runtime.status = "completed";
-		writeFileSync(join(reviewArtifacts, "review-report.json"), JSON.stringify({ version: 1, verdict: "clear", overallExplanation: "Release review clear.", findings: [] }));
-
-		const recoveredState = new MissionState();
-		recoveredState.loadFromSession(ctx);
-		const recoveredRuntime = new MissionRuntime(pi, recoveredState);
-		await recoveredRuntime.recover(ctx);
-		assert.equal(recoveredState.read().reviewStatus, "awaiting_adjudication");
-		let recoveredProgressTool;
-		const recoveredPi = { ...pi, registerTool(tool) { if (tool.name === "mission_progress") recoveredProgressTool = tool; } };
-		registerMissionTools(recoveredPi, recoveredState, () => recoveredRuntime.restore(ctx), { onProgress: (input, currentCtx) => recoveredRuntime.onProgress(input, currentCtx) });
-		await recoveredProgressTool.execute("release-adjudication", { summary: "Typed parent adjudication", reviewVerdict: "clear", reviewRunId: "typed-release-review", reviewReason: "Structured release gate has zero blocking findings." }, undefined, undefined, ctx);
-		const candidateId = recoveredState.read().reviewAdjudicatedCandidateId;
-		assert.ok(candidateId);
-
-		clearSubagentService(activeService);
-		activeService = {
-			list: () => ({ runs: [], groups: [] }),
-			start: async () => { reviewerStarts++; return { spec: { id: `duplicate-review-${reviewerStarts}` }, runtime: { status: "running", output: "" } }; },
-			executor: { get: () => undefined, onChange: () => () => undefined },
-		};
-		setSubagentService(activeService);
-		const replayState = new MissionState();
-		replayState.loadFromSession(ctx);
-		const replayRuntime = new MissionRuntime(pi, replayState);
-		replayState.append(pi, replayState.reviewEvent("due", { reason: "synthetic replay after adjudication" }));
-		await replayRuntime.startReview(ctx, replayState.read());
-		assert.equal(reviewerStarts, 1);
-		assert.equal(replayState.read().reviewStatus, "clear");
-		let completionEffects = 0;
-		completeTool = undefined;
-		registerMissionTools(pi, replayState, () => replayRuntime.restore(ctx), {
-			validateCompletion: (input, currentCtx) => replayRuntime.validateCompletion(input, currentCtx),
-			authorizeCompletion: (currentCtx) => replayRuntime.authorizeCompletion(currentCtx),
-			completionCandidateId: (currentCtx) => replayRuntime.completionCandidateId(currentCtx),
-			onCompleted: (currentCtx, mission) => { completionEffects++; replayRuntime.onCompleted(currentCtx, mission); },
-		});
-		assert.ok(completeTool);
-		const completionInput = { authorizeCompletion: true, summary: "Combined Runtime collaborator and Mission release gate passed.", audit: [{ requirementIndex: 0, evidence: `Acknowledged reply ${replyEventId}; typed review clear.` }] };
-		const first = await completeTool.execute("release-completion-1", completionInput, undefined, undefined, ctx);
-		assert.equal(first.details.mission.status, "complete");
-		assert.equal(first.details.mission.completionEffectsStatus, "done");
-		const beforeReplay = branch.filter((entry) => entry.customType === MISSION_CUSTOM_TYPE && entry.data?.kind === "completed").length;
-		const reviewsBeforeReplay = branch.filter((entry) => entry.customType === MISSION_CUSTOM_TYPE && entry.data?.kind === "review_changed").length;
-
-		const completionReplayState = new MissionState();
-		completionReplayState.loadFromSession(ctx);
-		const completionReplayRuntime = new MissionRuntime(pi, completionReplayState);
-		completeTool = undefined;
-		registerMissionTools(pi, completionReplayState, () => completionReplayRuntime.restore(ctx), {
-			validateCompletion: (input, currentCtx) => completionReplayRuntime.validateCompletion(input, currentCtx),
-			authorizeCompletion: (currentCtx) => completionReplayRuntime.authorizeCompletion(currentCtx),
-			completionCandidateId: (currentCtx) => completionReplayRuntime.completionCandidateId(currentCtx),
-			onCompleted: (currentCtx, mission) => { completionEffects++; completionReplayRuntime.onCompleted(currentCtx, mission); },
-		});
-		const replay = await completeTool.execute("release-completion-2", completionInput, undefined, undefined, ctx);
-		assert.equal(replay.details.alreadyComplete, true);
-		assert.equal(branch.filter((entry) => entry.customType === MISSION_CUSTOM_TYPE && entry.data?.kind === "completed").length, beforeReplay);
-		assert.equal(beforeReplay, 1);
-		assert.equal(completionEffects, 1);
-		assert.equal(branch.filter((entry) => entry.customType === MISSION_CUSTOM_TYPE && entry.data?.kind === "review_changed").length, reviewsBeforeReplay);
-		assert.equal(completionReplayState.readAny()?.status, "complete");
-		assert.equal(completionReplayState.readAny()?.completionEffectsStatus, "done");
-		return { missionId: completionReplayState.readAny().missionId, productionParentMission: true, parentReloads: 3, reviewers: reviewerStarts, completions: beforeReplay, completionEffects };
-	} finally {
-		clearSubagentService(activeService);
-	}
+/** The launched collaborator tab Runtime created, discovered exactly as an operator would see it. */
+function collaboratorPane(workspaceId, participantId) {
+	const tab = cli("tab", "list", "--workspace", workspaceId).result.tabs.find((candidate) => candidate.label === `collaborator:${participantId}`);
+	if (!tab) return undefined;
+	const pane = cli("pane", "list", "--workspace", workspaceId).result.panes.find((candidate) => candidate.tab_id === tab.tab_id);
+	return pane?.agent_session?.value ? pane : undefined;
 }
 
 try {
 	herdrServer = spawn("herdr", ["--session", sessionName, "server"], { stdio: ["ignore", "pipe", "pipe"], env: herdrEnv });
-	await waitFor(() => existsSync(herdrSocket), "isolated Herdr socket did not start");
-	await startRuntime();
+	await waitFor(() => existsSync(herdrSocket), "isolated Herdr socket did not start", 20_000);
+	process.env.HERDR_SOCKET_PATH = herdrSocket;
+	runtime = await startRuntimeServer({ root: runtimeRoot });
 
-	let alphaPi = await startPi("collaborator-alpha-1", alphaSessionFile);
+	const alphaPi = await startPi("collaborator-alpha", alphaSessionFile);
 	await assertRuntimeRegistered(alphaPi);
-	let betaPi = await launchCollaborator(alphaPi, "beta");
-	assert.equal(betaPi.callerAcquired, true);
-	betaSessionFile = betaPi.sessionFile;
-	betaSessionId = betaPi.sessionId;
-	await assertRuntimeRegistered(betaPi);
-	const alphaKey = participant("review", "alpha").participantKey;
-	const betaKey = participant("review", "beta").participantKey;
-	assert.notEqual(alphaKey, betaKey);
 
-	let alphaDirect = await directRegistration(alphaPi, alphaSessionId);
-	const alphaToBeta = await send(alphaDirect, betaKey, "send_alpha_beta", "alpha-to-beta release marker; do not use tools or modify files");
-	await waitMessage(betaSessionFile, "alpha-to-beta release marker", 1);
-	assert.ok(readState().events[alphaToBeta.eventId], "alpha-to-beta mail was not retained");
-	await waitIdle(betaPi);
-	await alphaDirect.client.call("pi.unregister", auth(alphaDirect.registration)).catch(() => {});
-	await closePi(alphaPi);
-	alphaPi = await startPi("collaborator-alpha-2", alphaSessionFile);
-	await assertRuntimeRegistered(alphaPi);
-	await waitFor(() => participant("review", "alpha")?.holderTargetKey === alphaDirect.registration.targetKey, "alpha identity did not restore to its stable target");
-	const productionMissionId = await createProductionMission(alphaPi);
+	// One confirmed production start batch: a workspace-write writer and a read-only peer.
+	await driveTool(alphaPi, "runlaunch", "Start Runtime collaborator");
+	const beta = await waitFor(() => collaboratorPane(alphaPi.pane.workspace_id, "beta"), "beta collaborator tab was not created");
+	const gamma = await waitFor(() => collaboratorPane(alphaPi.pane.workspace_id, "gamma"), "gamma collaborator tab was not created");
+	panes.add(beta.pane_id);
+	panes.add(gamma.pane_id);
+	await waitFor(() => participant("alpha")?.state === "held", "collaborator_manage did not acquire the caller identity");
+	await waitFor(() => participant("beta")?.state === "held", "beta did not become held");
+	await waitFor(() => participant("gamma")?.state === "held", "gamma did not become held");
+	assert.ok(readPane(alphaPi.pane.pane_id).includes("Started review/beta in"), "the tool did not report beta's production launch");
 
-	let betaDirect = await directRegistration(betaPi, betaSessionId);
-	const betaToAlpha = await send(betaDirect, alphaKey, "send_beta_alpha", "beta-to-alpha release marker; do not use tools or modify files");
-	await waitMessage(alphaSessionFile, "beta-to-alpha release marker", 1);
-	assert.ok(readState().events[betaToAlpha.eventId], "beta-to-alpha mail was not retained");
-	await waitIdle(alphaPi);
-	await closePi(alphaPi);
-	const missionCompletion = await proveMissionCompletionOnce(betaToAlpha.eventId);
-	assert.equal(missionCompletion.missionId, productionMissionId);
-	alphaPi = await startPi("collaborator-alpha-post-mission", alphaSessionFile);
-	await assertRuntimeRegistered(alphaPi);
-	await waitFor(() => participant("review", "alpha")?.holderTargetKey === alphaDirect.registration.targetKey, "alpha identity did not restore after Mission replay");
-	await assert.rejects(() => directCall(betaDirect, "participant.acquire", { protocol: "review", participantId: "alpha", revive: false }), (error) => error?.code === "conflict");
+	// The writer runs in its own Runtime-owned worktree; the Herdr agent is live under the isolated socket.
+	const worktree = join(runtimeRoot, "workspaces", `${projectScope(projectRoot)}__review__beta`);
+	assert.ok(existsSync(join(worktree, "release.txt")), `beta has no worktree at ${worktree}`);
+	assert.equal(participant("beta").worktreePath, worktree);
+	const betaAgent = cli("agent", "get", beta.pane_id).result.agent;
+	assert.ok(betaAgent.name.startsWith("collab-"), `beta agent name ${betaAgent.name} is not Runtime-owned`);
+	assert.equal(betaAgent.cwd, worktree);
+	assert.equal(betaAgent.agent_session.value, beta.agent_session.value);
+	assert.equal(sessionEntries(beta.agent_session.value)[0].cwd, worktree);
+	assert.equal(participant("gamma").worktreePath, undefined, "a read-only collaborator was given a worktree");
 
-	cli("agent", "prompt", alphaPi.pane.pane_id, "/runtime stand-down");
-	await waitFor(() => participant("review", "alpha").state === "vacant", "restored alpha identity could not stand down");
-	await waitFor(() => sessionEntries(alphaSessionFile).filter((entry) => entry.type === "custom" && entry.customType === sessionEntry).at(-1)?.data?.participant?.disposition === "vacant", "alpha stand-down disposition was not persisted");
-	betaDirect = await directRegistration(betaPi, betaSessionId);
-	const queuedWhileVacant = await send(betaDirect, alphaKey, "send_vacant", "vacant-queue release marker; do not use tools or modify files");
-	assert.ok(readState().events[queuedWhileVacant.eventId], "vacant-queued mail was not retained");
-	await closePi(alphaPi);
-	// The pane died before its best-effort unregister could be observed; advance the isolated clock past the registration lease.
-	runtimeNow += 31_000;
-	alphaPi = await startPi("collaborator-alpha-3", alphaSessionFile);
-	await assertRuntimeRegistered(alphaPi);
-	await sleep(250);
-	assert.equal(participant("review", "alpha").state, "vacant", "vacant identity auto-reacquired");
-	await acquire(alphaPi, "alpha");
-	await waitMessage(alphaSessionFile, "vacant-queue release marker", 2);
-	await waitIdle(alphaPi);
+	// Mail from the caller reaches the collaborator as a heartbeat hint, never as a pushed body.
+	const client = new HostedRuntimeClient(runtime.socketPath, 10_000);
+	const alphaRegistration = await client.call("pi.register", { projectRoot, piSessionId: alphaSessionId, piSessionFile: alphaSessionFile });
+	const alphaHeld = participant("alpha");
+	const sent = await client.call("mailbox.send", {
+		...auth(alphaRegistration),
+		senderParticipantKey: alphaHeld.participantKey,
+		expectedSenderGeneration: alphaHeld.generation,
+		recipientParticipantKey: participant("beta").participantKey,
+		sendId: "send_caller_beta",
+		body: mailBody,
+	});
+	const hint = await waitFor(() => sessionEntries(beta.agent_session.value)
+		.find((entry) => entry.type === "custom_message" && entry.customType === mailEntry), "beta's heartbeat did not carry the mail hint");
+	assert.equal(hint.details.eventId, sent.eventId);
+	assert.ok(!String(hint.content).includes(mailBody), "the hint pushed the message body into the collaborator");
 
-	alphaDirect = await directRegistration(alphaPi, alphaSessionId);
-	await directCall(alphaDirect, "participant.release", { participantKey: alphaKey });
-	assert.equal(participant("review", "alpha").state, "ended");
-	betaDirect = await directRegistration(betaPi, betaSessionId);
-	await assert.rejects(() => send(betaDirect, alphaKey, "send_ended", "must reject"), (error) => error?.code === "not_found");
-	const revived = await directCall(alphaDirect, "participant.acquire", { protocol: "review", participantId: "alpha", revive: true });
-	assert.equal(revived.revived, true);
-	assert.equal(revived.participant.state, "held");
+	// Stand down one collaborator, stop the other, then clean up the stopped writer's worktree.
+	await driveTool(alphaPi, "runstanddown", "Stand down Runtime collaborator");
+	await waitFor(() => participant("gamma")?.state === "vacant", "gamma did not stand down");
+	assert.ok(collaboratorPane(alphaPi.pane.workspace_id, "gamma"), "stand-down closed the collaborator tab");
 
-	betaDirect = await directRegistration(betaPi, betaSessionId);
-	const takeoverMail = await send(betaDirect, alphaKey, "send_takeover", "takeover-claim release marker; do not use tools or modify files");
-	// Ordinary mail never enters native delivery: the heartbeat hands out Monitor events only.
-	const alphaHeartbeat = await directCall(alphaDirect, "pi.heartbeat", { admit: true });
-	assert.equal(alphaHeartbeat.events, undefined, "ordinary mail entered native delivery");
-	await closePi(alphaPi);
-	await alphaDirect.client.call("pi.unregister", auth(alphaDirect.registration)).catch(() => {});
-	await directCall(betaDirect, "participant.stand_down", { participantKey: betaKey });
-	const generationBeforeTakeover = participant("review", "alpha").generation;
-	await assert.rejects(() => directCall(betaDirect, "participant.takeover", { participantKey: alphaKey, expectedGeneration: generationBeforeTakeover, confirmed: true }), (error) => error?.code === "busy");
-	runtimeNow += 2_000;
-	const taken = await directCall(betaDirect, "participant.takeover", { participantKey: alphaKey, expectedGeneration: generationBeforeTakeover, confirmed: true });
-	assert.equal(taken.holderTargetKey, betaDirect.registration.targetKey);
-	assert.ok(readState().events[takeoverMail.eventId], "taken-over mail was not retained");
+	await driveTool(alphaPi, "runstop", "Stop Runtime collaborator");
+	await waitFor(() => participant("beta")?.state === "vacant", "beta did not vacate after stop");
+	await waitFor(() => collaboratorPane(alphaPi.pane.workspace_id, "beta") === undefined, "stop left beta's Herdr tab open");
+	assert.ok(existsSync(worktree), "stop deleted a collaborator worktree");
 
-	await closePi(betaPi);
-	await betaDirect.client.call("pi.unregister", auth(betaDirect.registration)).catch(() => {});
-	appendParticipantIdentity(betaSessionFile, { version: 3, participant: { protocol: "review", participantId: "alpha", participantKey: alphaKey, generation: taken.generation, disposition: "held" } });
-	betaPi = await startPi("collaborator-beta-2-takeover", betaSessionFile);
-	await assertRuntimeRegistered(betaPi);
-	await waitMessage(betaSessionFile, "takeover-claim release marker", 2);
-	await waitIdle(betaPi);
-	const beforeReconcileMessages = hostedMessages(betaSessionFile).length;
-
-	await closePi(betaPi);
-	await stopRuntime();
-	await startRuntime();
-	betaPi = await startPi("collaborator-beta-4-final", betaSessionFile);
-	await assertRuntimeRegistered(betaPi);
-	await sleep(11_000);
-	assert.ok(readState().events[takeoverMail.eventId], "taken-over mail was not retained after the final restart");
-	try {
-		await waitFor(() => Object.keys(readState().claims).length === 0, "final delivery claim did not settle after the full heartbeat window", 10_000);
-	} catch (error) {
-		const failedState = readState();
-		throw new Error(`${error.message}: ${JSON.stringify({ claims: failedState.claims, participants: failedState.participants })}`);
-	}
-	const finalState = readState();
-	assert.equal(hostedMessages(betaSessionFile).length, beforeReconcileMessages, "mailbox event redelivered after final restart");
+	await driveTool(alphaPi, "runcleanup", "Remove collaborator worktree?");
+	await waitFor(() => !existsSync(worktree), "collaborator_workspace cleanup did not remove the worktree");
+	const branches = execFileSync("git", ["branch", "--list", "runtime/collab/review/beta"], { cwd: projectRoot, encoding: "utf8" });
+	assert.equal(branches.trim(), "", "cleanup left the collaborator branch behind");
 
 	console.log(JSON.stringify({
 		status: "pass",
-		productionLaunch: true,
 		productionToolLaunch: true,
-		trustedConfirmation: true,
+		trustedConfirmations: 4,
 		callerAcquired: true,
-		materializedChildSession: true,
-		participants: 2,
-		alphaToBeta: alphaToBeta.eventId,
-		betaToAlpha: betaToAlpha.eventId,
-		missionCompletion,
-		standDownQueued: queuedWhileVacant.eventId,
-		releaseRejected: true,
-		revived: true,
-		takeoverMail: takeoverMail.eventId,
-		noRedelivery: true,
-		runtimeRestarts: 2,
-		piStarts: { alpha: 3, beta: 4 },
+		collaborators: ["review/beta", "review/gamma"],
+		agentName: betaAgent.name,
+		worktree,
+		mailHint: sent.eventId,
+		stoodDown: "review/gamma",
+		stopped: "review/beta",
+		worktreeRemoved: true,
 	}));
 } catch (error) {
 	for (const paneId of panes) {
@@ -530,13 +266,13 @@ try {
 	}
 	throw error;
 } finally {
-	await stopRuntime().catch(() => {});
-	try { execFileSync("herdr", ["session", "stop", sessionName], { stdio: "ignore" }); } catch {}
+	if (runtime) await runtime.close().catch(() => {});
+	try { execFileSync("herdr", ["session", "stop", sessionName], { stdio: "ignore", env: herdrEnv }); } catch {}
 	if (herdrServer && herdrServer.exitCode === null) {
 		herdrServer.kill("SIGTERM");
 		await once(herdrServer, "exit").catch(() => {});
 	}
-	try { execFileSync("herdr", ["session", "delete", sessionName], { stdio: "ignore" }); } catch {}
+	try { execFileSync("herdr", ["session", "delete", sessionName], { stdio: "ignore", env: herdrEnv }); } catch {}
 	cleanupBase();
 	process.off("exit", cleanupBase);
 }

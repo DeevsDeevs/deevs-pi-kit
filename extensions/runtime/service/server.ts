@@ -72,7 +72,7 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 	});
 	const worktrees = new RuntimeWorktrees(options.root, store);
 	const bridges = new RuntimeAgentBinder(store, registrations, host, options.bridge);
-	const closeTarget = host.closeTarget;
+	const closeTarget = host.closeTarget?.bind(host);
 	participants = new HostedParticipantCoordinator(store, registrations, {
 		...options.participant,
 		stopTarget: options.participant?.stopTarget ?? (closeTarget ? (target) => closeTarget(target, options.root) : undefined),
