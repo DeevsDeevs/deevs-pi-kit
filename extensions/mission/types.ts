@@ -332,6 +332,10 @@ export interface MissionProgressInput {
 	reviewContinueReason?: string;
 }
 
+export interface MissionResumeInput {
+	reason: string;
+}
+
 export interface MissionSearchInput {
 	query: string;
 	maxResults?: number;

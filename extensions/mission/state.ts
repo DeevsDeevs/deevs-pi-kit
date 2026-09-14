@@ -1244,11 +1244,16 @@ function normalizePaths(values: string[] | undefined): string[] {
 	const result: string[] = [];
 	for (const value of values ?? []) {
 		const path = normalizePath(value.trim()).replaceAll("\\", "/");
-		const unsafe = !path || path === "." || isAbsolute(path) || path === ".." || path.startsWith("../");
-		if (unsafe) throw new Error(`Mission path must stay relative to the project: ${value}`);
+		if (isUnsafeMissionPath(path)) throw new Error(`Mission path must stay relative to the project: ${value}`);
 		if (!result.includes(path)) result.push(path);
 	}
 	return result;
+}
+
+function isUnsafeMissionPath(path: string): boolean {
+	if (!path || path === "." || path === "..") return true;
+	if (isAbsolute(path)) return true;
+	return path.startsWith("../");
 }
 
 function sameOrderedStrings(left: string[], right: string[]): boolean {

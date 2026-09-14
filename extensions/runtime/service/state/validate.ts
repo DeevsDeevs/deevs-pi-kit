@@ -508,7 +508,8 @@ function validateMessagingOperation(state: HostedRuntimeState, grant: HostedMess
 	const event = state.events[eventId];
 	const recipient = event?.type === "mailbox.message" ? state.participants[event.recipientParticipantKey] : undefined;
 	const sender = state.participants[grant.participantKey];
-	if (!event || event.type !== "mailbox.message" || !recipient || !sender) throw new Error("messaging operation event is missing");
+	if (!event || event.type !== "mailbox.message") throw new Error("messaging operation event is missing or not mail");
+	if (!recipient || !sender) throw new Error("messaging operation participants are missing");
 	if (event.source.id !== grant.participantKey || event.source.generation !== grant.holderGeneration) {
 		throw new Error("messaging operation event has another publisher");
 	}
@@ -560,10 +561,19 @@ function validateEventIntegrity(state: HostedRuntimeState): void {
 		validateEventParticipants(state, event);
 		const claimId = event.delivery.status === "pending" ? event.delivery.latestClaimId : event.delivery.claimId;
 		const claim = claimId ? state.claims[claimId] : undefined;
-		if (claimId && (!claim || !hostedEventRoutesToTarget(event, claim.targetKey) || !claim.eventIds.includes(event.eventId))) {
-			throw new Error("event claim reference is invalid");
-		}
+		if (claimId && !claimCoversEvent(claim, event)) throw new Error("event claim reference is invalid");
 	}
+}
+
+function sameMessagingNamespace(sender: HostedParticipant, recipient: HostedParticipant): boolean {
+	return sender.projectRoot === recipient.projectRoot
+		&& sender.protocol === recipient.protocol;
+}
+
+function claimCoversEvent(claim: HostedClaim | undefined, event: HostedEvent): boolean {
+	if (!claim) return false;
+	return hostedEventRoutesToTarget(event, claim.targetKey)
+		&& claim.eventIds.includes(event.eventId);
 }
 
 function validateEventParticipants(state: HostedRuntimeState, event: HostedEvent): void {
@@ -573,9 +583,8 @@ function validateEventParticipants(state: HostedRuntimeState, event: HostedEvent
 	}
 	const sender = state.participants[event.source.id];
 	const recipient = state.participants[event.recipientParticipantKey];
-	if (!sender || !recipient || sender.projectRoot !== recipient.projectRoot || sender.protocol !== recipient.protocol) {
-		throw new Error("mailbox event participant reference is invalid");
-	}
+	if (!sender || !recipient) throw new Error("mailbox event participant is missing");
+	if (!sameMessagingNamespace(sender, recipient)) throw new Error("mailbox event participants are in different namespaces");
 }
 
 function validateClaimIntegrity(state: HostedRuntimeState): void {

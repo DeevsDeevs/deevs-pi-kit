@@ -142,10 +142,12 @@ async function issueMessaging(call: HostedMethodCall): Promise<HostedResponse> {
 
 async function callMessaging(call: HostedMethodCall, method: string): Promise<HostedResponse> {
 	const messaging = requireMessaging(call);
-	const input = strictObject(call.params, `${method} params`, ["namespaceId", "secret", ...MESSAGING_CALL_FIELDS.get(method) ?? []]);
+	const definition = MESSAGING_CALLS.get(method);
+	if (!definition) throw new Error(`${method} is not a messaging method.`);
+	const input = strictObject(call.params, `${method} params`, ["namespaceId", "secret", ...definition.fields]);
 	const namespaceId = boundedText(input.namespaceId, "namespace ID", 200);
 	const secret = boundedText(input.secret, "messaging secret", 200);
-	const result = success(call.id, await messaging.call(namespaceId, secret, messagingCallInput(input, method)));
+	const result = success(call.id, await messaging.call(namespaceId, secret, definition.build(input)));
 	if (Buffer.byteLength(encodeHostedResponse(result)) > 128 * 1024) {
 		return failure(call.id, "conflict", "Messaging response exceeds its byte limit.");
 	}
@@ -615,32 +617,63 @@ function errorCode(cause: unknown): HostedErrorCode {
 	return "internal";
 }
 
-const MESSAGING_CALL_FIELDS = new Map<string, readonly string[]>([
-	["messaging.peers", ["cursor"]],
-	["messaging.send", ["operationId", "participantId", "bodyBase64"]],
-	["messaging.status", ["operationId"]],
-	["messaging.receive", ["eventId"]],
-	["messaging.received", ["eventId"]],
-	["messaging.reply", ["operationId", "eventId", "bodyBase64"]],
+interface MessagingCall {
+	fields: readonly string[];
+	build: (input: JsonObject) => MessagingInput;
+}
+
+const MESSAGING_CALLS = new Map<string, MessagingCall>([
+	["messaging.peers", { fields: ["cursor"], build: messagingPeersInput }],
+	["messaging.send", { fields: ["operationId", "participantId", "bodyBase64"], build: messagingSendInput }],
+	["messaging.status", { fields: ["operationId"], build: messagingStatusInput }],
+	["messaging.receive", { fields: ["eventId"], build: (input) => ({ method: "receive", eventId: messagingEventId(input) }) }],
+	["messaging.received", { fields: ["eventId"], build: (input) => ({ method: "received", eventId: messagingEventId(input) }) }],
+	["messaging.reply", { fields: ["operationId", "eventId", "bodyBase64"], build: messagingReplyInput }],
 ]);
 
-function messagingCallInput(input: JsonObject, method: string): MessagingInput {
-	if (method === "messaging.peers") {
-		return input.cursor === undefined ? { method: "peers" } : { method: "peers", cursor: boundedText(input.cursor, "cursor", 512) };
-	}
-	if (method === "messaging.status") return { method: "status", operationId: boundedText(input.operationId, "operation ID", 200) };
-	if (method === "messaging.receive") return { method: "receive", eventId: boundedText(input.eventId, "event ID", 200) };
-	if (method === "messaging.received") return { method: "received", eventId: boundedText(input.eventId, "event ID", 200) };
+function messagingPeersInput(input: JsonObject): MessagingInput {
+	if (input.cursor === undefined) return { method: "peers" };
+	return { method: "peers", cursor: boundedText(input.cursor, "cursor", 512) };
+}
+
+function messagingStatusInput(input: JsonObject): MessagingInput {
+	return { method: "status", operationId: messagingOperationId(input) };
+}
+
+function messagingReplyInput(input: JsonObject): MessagingInput {
+	return {
+		method: "reply",
+		operationId: messagingOperationId(input),
+		eventId: messagingEventId(input),
+		body: messagingBody(input),
+	};
+}
+
+function messagingSendInput(input: JsonObject): MessagingInput {
+	return {
+		method: "send",
+		operationId: messagingOperationId(input),
+		participantId: participantName(input.participantId, "recipient participant ID"),
+		body: messagingBody(input),
+	};
+}
+
+function messagingOperationId(input: JsonObject): string {
+	return boundedText(input.operationId, "operation ID", 200);
+}
+
+function messagingEventId(input: JsonObject): string {
+	return boundedText(input.eventId, "event ID", 200);
+}
+
+function messagingBody(input: JsonObject): string {
 	// Base64 avoids expanding a 16 KiB body past the unchanged 64 KiB RPC request cap.
 	const encoded = boundedText(input.bodyBase64, "encoded body", 24 * 1024);
 	const bytes = Buffer.from(encoded, "base64");
 	if (bytes.toString("base64") !== encoded || bytes.length > HOSTED_MAILBOX_MAX_BODY_BYTES) {
 		throw new Error("Messaging body encoding or byte limit is invalid.");
 	}
-	const body = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-	const operationId = boundedText(input.operationId, "operation ID", 200);
-	if (method === "messaging.reply") return { method: "reply", operationId, eventId: boundedText(input.eventId, "event ID", 200), body };
-	return { method: "send", operationId, participantId: participantName(input.participantId, "recipient participant ID"), body };
+	return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 }
 
 const ERROR_CODES: ReadonlySet<string> = new Set([
@@ -687,7 +720,8 @@ function envelopeVersion(value: JsonValue | undefined): number {
 }
 
 function isJsonObject(value: JsonValue | undefined): value is JsonObject {
-	return value !== undefined && value !== null && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
+	// Object.getPrototypeOf throws on null and undefined, so both are excluded before it runs.
+	return value !== undefined && value !== null && Object.getPrototypeOf(value) === Object.prototype;
 }
 
 function isText(value: JsonValue | undefined): value is string {

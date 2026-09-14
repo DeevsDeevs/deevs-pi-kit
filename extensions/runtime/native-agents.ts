@@ -11,7 +11,7 @@ import {
 	waitForHerdrPaneCwd,
 	type CollaboratorTab,
 } from "./herdr.ts";
-import type { HostedCollaboratorProfile, HostedNativeCollaboratorDriver } from "./hosted-types.ts";
+import { sameAgentSession, type HostedCollaboratorProfile, type HostedNativeCollaboratorDriver } from "./hosted-types.ts";
 import { nativeMessagingLaunch } from "./mcp/native.ts";
 import type { MessagingClient } from "./messaging-client.ts";
 import {
@@ -28,7 +28,7 @@ import {
 	type SerializedObject,
 } from "./responses.ts";
 import type { RuntimeSession } from "./runtime-session.ts";
-import { sameAgentSession, type ManagedAgentControl, type ManagedAgentSession } from "./session-record.ts";
+import type { ManagedAgentControl, ManagedAgentSession } from "./session-record.ts";
 import { deriveAgentTargetKey } from "./service/state.ts";
 
 const FATAL_HEARTBEAT_CODES = ["not_found", "conflict", "identity_mismatch"];
@@ -553,6 +553,8 @@ function parseManagedAgent(value: string): ManagedAgentStatus {
 	};
 }
 
+const MANAGED_AGENT_STATUSES: readonly ManagedAgentStatus["status"][] = ["idle", "working", "blocked", "done", "unknown"];
+
 function isManagedAgentStatus(value: RuntimeResponse): value is ManagedAgentStatus["status"] {
-	return value === "idle" || value === "working" || value === "blocked" || value === "done" || value === "unknown";
+	return MANAGED_AGENT_STATUSES.some((status) => status === value);
 }

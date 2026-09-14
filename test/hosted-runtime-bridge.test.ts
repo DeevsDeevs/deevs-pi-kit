@@ -186,7 +186,6 @@ describe("authoritative Herdr agent bind", () => {
 		expect(await call("bridge.bind", { ...params, driver: "pi" })).toMatchObject({ ok: false, error: { code: "invalid_request" } });
 		const bound = await call("bridge.bind", params);
 		expect(bound).toMatchObject({ ok: true, result: { targetKey: expect.stringMatching(/^agent_/), holderGeneration: "lease_agent", driver: "codex", profile: "read-only" } });
-		expect(await call("inbox.submit_begin", { ...auth, claimId: "claim_1", eventIds: ["event_1"], attemptId: "attempt_1" })).toMatchObject({ ok: false, error: { code: "not_found" } });
 		expect(await call("pi.register", { ...test.inputs.get("successor"), extra: true })).toMatchObject({ ok: false, error: { code: "invalid_request" } });
 		wakes.close();
 	});

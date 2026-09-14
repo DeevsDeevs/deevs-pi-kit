@@ -144,7 +144,15 @@ function assertMessagingHolder(state: HostedRuntimeState, grant: HostedMessaging
 function messagingAuthorityIsLive(state: HostedRuntimeState, grant: HostedMessagingGrant, at: number): boolean {
 	const holder = state.participants[grant.participantKey];
 	const target = state.targets[grant.targetKey];
-	if (grant.status !== "active" || !Number.isFinite(at) || at < grant.createdAt || at >= grant.expiresAt) return false;
+	if (grant.status !== "active") return false;
+	if (!withinWindow(at, grant.createdAt, grant.expiresAt)) return false;
 	if (holder?.state !== "held" || holder.generation !== grant.holderGeneration || holder.holderTargetKey !== grant.targetKey) return false;
 	return target !== undefined && messagingConfigurationHash(target) === grant.configurationHash;
+}
+
+/** Half-open [start, end): a grant is live from its creation until, but not at, its expiry. */
+function withinWindow(at: number, start: number, end: number): boolean {
+	return Number.isFinite(at)
+		&& at >= start
+		&& at < end;
 }

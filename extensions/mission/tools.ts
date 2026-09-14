@@ -24,6 +24,7 @@ import type {
 	MissionCreateInput,
 	MissionCurrent,
 	MissionProgressInput,
+	MissionResumeInput,
 	MissionSearchInput,
 	MissionTakeoverCandidate,
 	MissionTakeoverInput,
@@ -414,9 +415,9 @@ function createResumeTool(
 			"Record the concrete authorization or resolved blocker in reason.",
 		],
 		parameters: ResumeSchema,
-		renderCall: (args: { reason: string }, theme: Theme) => missionCall("resume", args.reason, theme),
+		renderCall: (args: MissionResumeInput, theme: Theme) => missionCall("resume", args.reason, theme),
 		renderResult: renderMissionResult,
-		async execute(_toolCallId: string, params: { reason: string }, _signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
+		async execute(_toolCallId: string, params: MissionResumeInput, _signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
 			setContext(ctx);
 			state.loadFromSession(ctx);
 			const current = state.readAny();

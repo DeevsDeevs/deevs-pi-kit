@@ -15,6 +15,7 @@ import { missionRoot } from "./artifacts.ts";
 import { MAX_MISSION_REVIEW_ADJUDICATIONS } from "./types.ts";
 import type {
 	MissionCompleteInput,
+	MissionConvergedReviewStatus,
 	MissionCurrent,
 	MissionProgressInput,
 	MissionProgressRecord,
@@ -31,6 +32,7 @@ import type {
 
 const REVIEW_QUIET_WINDOW_MS = 100;
 const ACTIVE_RUNTIME_STATUSES = ["starting", "running", "stopping"];
+const CONVERGED_REVIEW_STATUSES: readonly MissionConvergedReviewStatus[] = ["not_required", "clear", "skipped"];
 
 const LIMIT_WRAPUP_GUIDANCE = "Do not start substantive work. Record a concise progress/blocker/next-step handoff, settle "
 	+ "active children, and save the due Chain checkpoint. Complete only if the evidence gate was already satisfied.";
@@ -371,11 +373,10 @@ export class MissionRuntime {
 	async authorizeCompletion(ctx: ExtensionContext): Promise<string> {
 		this.restore(ctx);
 		const mission = this.state.read();
-		const reviewStatus = mission?.review.admission.status ?? "not_required";
-		if (
-			!mission
-			|| (reviewStatus !== "clear" && reviewStatus !== "skipped" && reviewStatus !== "not_required")
-		) throw new Error("Mission completion cannot be authorized before review convergence.");
+		const reviewStatus = convergedReviewStatus(mission?.review.admission.status ?? "not_required");
+		if (!mission || !reviewStatus) {
+			throw new Error("Mission completion cannot be authorized before review convergence.");
+		}
 		const settlement = this.settlementBlockers();
 		if (settlement.length) throw new Error(`Mission completion cannot be authorized while child work is unsettled: ${settlement.join("; ")}`);
 		const fingerprint = await worktreeFingerprint(this.pi, ctx.cwd, mission);
@@ -1682,7 +1683,11 @@ function deriveReviewReport(findings: MissionReviewFinding[]): DerivedReviewRepo
 }
 
 function reviewSeverity(value: string | null | undefined): MissionReviewSeverity | undefined {
-	return value === "blocker" || value === "major" || value === "minor" || value === "nit" ? value : undefined;
+	return REVIEW_SEVERITIES.find((severity) => severity === value);
+}
+
+function convergedReviewStatus(status: MissionReviewStatus): MissionConvergedReviewStatus | undefined {
+	return CONVERGED_REVIEW_STATUSES.find((candidate) => candidate === status);
 }
 
 function optionalInteger(value: number | null | undefined, minimum: number): number | undefined {

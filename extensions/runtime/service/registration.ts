@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { closeSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { HostedAgentTarget, HostedTarget } from "../hosted-types.ts";
+import { sameAgentSession, type HostedAgentTarget, type HostedTarget } from "../hosted-types.ts";
 import { HostedStateStore } from "./state.ts";
 import { isProjectWorktree } from "./worktree.ts";
 
@@ -514,10 +514,6 @@ function sameHerdrLocator(agent: HostedLiveAgent, target: HostedAgentTarget): bo
 		&& agent.terminalId === target.herdr.terminalId
 		&& agent.tabId === target.herdr.tabId
 		&& agent.workspaceId === target.herdr.workspaceId;
-}
-
-function sameAgentSession(left: HostedAgentSessionIdentity, right: HostedAgentSessionIdentity): boolean {
-	return left.source === right.source && left.agent === right.agent && left.kind === right.kind && left.value === right.value;
 }
 
 function canonicalDirectory(path: string, name: string): string {
