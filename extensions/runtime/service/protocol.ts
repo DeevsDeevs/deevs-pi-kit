@@ -5,17 +5,17 @@ import {
 	HOSTED_MAX_DELIVERY_BATCH,
 	HOSTED_MONITOR_MAX_ENTRIES,
 	HOSTED_PROTOCOL_VERSION,
+	type HostedFilesystemCreatedEvent,
 	type HostedMonitor,
 } from "../hosted-types.ts";
 import { schemaError } from "../schemas/common.ts";
 import {
 	BridgeBindParams,
-	ClaimReceiptParams,
 	HelloParams,
 	HostedRequestIdSchema,
 	HostedRequestSchema,
 	HostedRequestVersionSchema,
-	InboxClaimParams,
+	InboxAckParams,
 	MailboxSendParams,
 	MessagingEventParams,
 	MessagingIssueParams,
@@ -29,9 +29,9 @@ import {
 	ParticipantAuthParams,
 	ParticipantConfirmedParams,
 	ParticipantStandDownParams,
+	PiHeartbeatParams,
 	PiRegisterParams,
 	RegistrationAuthParams,
-	WakeAcceptParams,
 	WorktreeEnsureParams,
 	WorktreeRemoveParams,
 	type JsonObject,
@@ -43,7 +43,7 @@ import { DirectoryMonitorManager } from "./monitor.ts";
 import { RuntimeMessaging, type MessagingInput } from "./messaging.ts";
 import { HostedParticipantCoordinator } from "./participant.ts";
 import { RuntimeRegistrationManager, type HostedLiveRegistration } from "./registration.ts";
-import { HostedWakeCoordinator, type HostedClaimResult } from "./wake.ts";
+import { RuntimeInbox } from "./delivery.ts";
 import { RuntimeWorktrees } from "./worktree.ts";
 
 export const HOSTED_MAX_REQUEST_BYTES = 64 * 1024;
@@ -57,7 +57,6 @@ export type HostedErrorCode =
 	| "conflict"
 	| "registration_stale"
 	| "identity_mismatch"
-	| "claim_conflict"
 	| "host_unavailable"
 	| "busy"
 	| "storage_error"
@@ -70,7 +69,7 @@ export interface HostedProtocolContext {
 	registrations?: RuntimeRegistrationManager;
 	messaging?: RuntimeMessaging;
 	monitors?: DirectoryMonitorManager;
-	wakes?: HostedWakeCoordinator;
+	inbox?: RuntimeInbox;
 	participants?: HostedParticipantCoordinator;
 	bridges?: RuntimeAgentBinder;
 	worktrees?: RuntimeWorktrees;
@@ -86,7 +85,7 @@ interface HostedMethodCall {
 	context: HostedProtocolContext;
 	registrations: RuntimeRegistrationManager;
 	monitors: DirectoryMonitorManager;
-	wakes: HostedWakeCoordinator;
+	inbox: RuntimeInbox;
 }
 
 type HostedMethodHandler = (
@@ -142,9 +141,9 @@ export function invalidFrame(message: string): HostedResponse {
 function authorizedCall(id: string, context: HostedProtocolContext): HostedMethodCall {
 	const registrations = context.registrations;
 	const monitors = context.monitors;
-	const wakes = context.wakes;
-	if (!registrations || !monitors || !wakes) throw new HostedCapabilityError("Hosted runtime methods are unavailable in this process.");
-	return { id, context, registrations, monitors, wakes };
+	const inbox = context.inbox;
+	if (!registrations || !monitors || !inbox) throw new HostedCapabilityError("Hosted runtime methods are unavailable in this process.");
+	return { id, context, registrations, monitors, inbox };
 }
 
 function hello(id: string, value: JsonValue | undefined, context: HostedProtocolContext): HostedResponse {
@@ -240,13 +239,16 @@ async function registerPi(call: HostedMethodCall, params: Static<typeof PiRegist
 
 async function heartbeatAgent(call: HostedMethodCall, params: Static<typeof RegistrationAuthParams>): Promise<HostedResponse> {
 	const registration = await call.registrations.heartbeat(params.registrationId, params.registrationKey);
-	return success(call.id, { ...registrationResult(registration), inboxReady: call.wakes.status(registration).pending > 0 });
+	return success(call.id, registrationResult(registration));
 }
 
-async function heartbeatPi(call: HostedMethodCall, params: Static<typeof RegistrationAuthParams>): Promise<HostedResponse> {
+/** The Pi heartbeat is the only delivery path: it hands out one batch and Pi acks what it admitted. */
+async function heartbeatPi(call: HostedMethodCall, params: Static<typeof PiHeartbeatParams>): Promise<HostedResponse> {
 	const registration = await call.registrations.heartbeat(params.registrationId, params.registrationKey);
 	const mail = call.context.messaging?.unread(registration);
-	const heartbeat: JsonObject = { ...registrationResult(registration), inboxReady: call.wakes.status(registration).pending > 0 };
+	const heartbeat: JsonObject = registrationResult(registration);
+	const events = params.admit === true ? call.inbox.deliver(registration) : [];
+	if (events.length > 0) heartbeat.events = events.map(inboxEventResult);
 	if (mail) heartbeat.mail = { namespaceId: mail.namespaceId, eventId: mail.eventId };
 	return success(call.id, heartbeat);
 }
@@ -271,27 +273,13 @@ function deleteMonitor(call: HostedMethodCall, params: Static<typeof MonitorDele
 	return success(call.id, { deleted: true });
 }
 
-function acceptWake(call: HostedMethodCall, params: Static<typeof WakeAcceptParams>): HostedResponse {
-	return success(call.id, claimResult(call.wakes.accept(authorize(call, params), params.wakeId)));
-}
-
-function claimInbox(call: HostedMethodCall, params: Static<typeof InboxClaimParams>): HostedResponse {
-	const maxEvents = params.maxEvents ?? HOSTED_MAX_DELIVERY_BATCH;
-	return success(call.id, claimResult(call.wakes.claim(authorize(call, params), maxEvents)));
-}
-
-function ackInbox(call: HostedMethodCall, params: Static<typeof ClaimReceiptParams>): HostedResponse {
-	call.wakes.ack(authorize(call, params), params.claimId, params.eventIds);
-	return success(call.id, { settled: true });
-}
-
-function releaseInbox(call: HostedMethodCall, params: Static<typeof ClaimReceiptParams>): HostedResponse {
-	call.wakes.release(authorize(call, params), params.claimId, params.eventIds);
+function ackInbox(call: HostedMethodCall, params: Static<typeof InboxAckParams>): HostedResponse {
+	call.inbox.ack(authorize(call, params), params.eventIds);
 	return success(call.id, { settled: true });
 }
 
 function inboxStatus(call: HostedMethodCall, params: Static<typeof RegistrationAuthParams>): HostedResponse {
-	return success(call.id, call.wakes.status(authorize(call, params)));
+	return success(call.id, call.inbox.status(authorize(call, params)));
 }
 
 function sendMailbox(call: HostedMethodCall, params: Static<typeof MailboxSendParams>): HostedResponse {
@@ -373,7 +361,7 @@ const HOSTED_METHODS = new Map<string, HostedMethodHandler>([
 	}))],
 	["messaging.reply", method(MessagingReplyParams, replyMessaging)],
 	["pi.register", method(PiRegisterParams, registerPi)],
-	["pi.heartbeat", method(RegistrationAuthParams, heartbeatPi)],
+	["pi.heartbeat", method(PiHeartbeatParams, heartbeatPi)],
 	["pi.unregister", method(RegistrationAuthParams, unregister)],
 	["bridge.bind", method(BridgeBindParams, bindAgent)],
 	["bridge.heartbeat", method(RegistrationAuthParams, heartbeatAgent)],
@@ -384,10 +372,7 @@ const HOSTED_METHODS = new Map<string, HostedMethodHandler>([
 	["monitor.create", method(MonitorCreateParams, createMonitor)],
 	["monitor.get", method(RegistrationAuthParams, getMonitor)],
 	["monitor.delete", method(MonitorDeleteParams, deleteMonitor)],
-	["wake.accept", method(WakeAcceptParams, acceptWake)],
-	["inbox.claim", method(InboxClaimParams, claimInbox)],
-	["inbox.ack", method(ClaimReceiptParams, ackInbox)],
-	["inbox.release", method(ClaimReceiptParams, releaseInbox)],
+	["inbox.ack", method(InboxAckParams, ackInbox)],
 	["inbox.status", method(RegistrationAuthParams, inboxStatus)],
 	["participant.acquire", method(ParticipantAcquireParams, acquireParticipant)],
 	["participant.get", method(ParticipantAuthParams, getParticipant)],
@@ -453,13 +438,8 @@ function monitorResult(monitor: HostedMonitor) {
 	};
 }
 
-function claimResult(result: HostedClaimResult) {
-	return {
-		claimId: result.claim.claimId,
-		leaseUntil: result.claim.leaseUntil,
-		status: result.claim.status,
-		events: result.events,
-	};
+function inboxEventResult(event: HostedFilesystemCreatedEvent) {
+	return { eventId: event.eventId, type: event.type, summary: event.summary, path: event.payload.path };
 }
 
 function success<Result>(id: string, result: Result): HostedResponse {
@@ -472,7 +452,7 @@ function failure(id: string | null, code: HostedErrorCode, message: string): Hos
 
 const ERROR_CODES: ReadonlySet<string> = new Set([
 	"invalid_request", "unsupported_version", "capability_unavailable", "not_found", "conflict", "registration_stale",
-	"identity_mismatch", "claim_conflict", "host_unavailable", "busy", "storage_error", "internal",
+	"identity_mismatch", "host_unavailable", "busy", "storage_error", "internal",
 ]);
 
 function errorCode(cause: unknown): HostedErrorCode {

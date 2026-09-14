@@ -1,16 +1,5 @@
 import type { HostedRuntimeState, HostedStateOperation } from "../../hosted-types.ts";
-import {
-	ackClaim,
-	acceptWake,
-	claimInboxEvents,
-	clearWake,
-	pruneRetention,
-	reconcileClaim,
-	reconcileClaims,
-	releaseExpiredClaims,
-	releaseInboxClaim,
-	setWake,
-} from "./inbox.ts";
+import { ackDeliveredEvents, claimTargetInbox, pruneRetention } from "./inbox.ts";
 import { sendMailboxMessage } from "./mailbox.ts";
 import {
 	expireMessagingGrant,
@@ -50,16 +39,9 @@ const reducers: HostedStateReducers = {
 	"participant.worktree.clear": clearParticipantWorktree,
 	"participant.takeover": takeoverParticipant,
 	"mailbox.send": sendMailboxMessage,
-	"inbox.claim": claimInboxEvents,
-	"inbox.ack": ackClaim,
-	"inbox.reconcile": reconcileClaim,
-	"inbox.reconcile_many": reconcileClaims,
-	"inbox.release": releaseInboxClaim,
-	"inbox.release_expired": releaseExpiredClaims,
+	"inbox.claim": claimTargetInbox,
+	"inbox.ack": ackDeliveredEvents,
 	"retention.prune": pruneRetention,
-	"wake.set": setWake,
-	"wake.accept": acceptWake,
-	"wake.clear": clearWake,
 };
 
 export function reduceHostedState(state: HostedRuntimeState, operation: HostedStateOperation): HostedRuntimeState {

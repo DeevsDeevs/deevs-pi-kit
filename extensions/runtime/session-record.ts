@@ -4,8 +4,10 @@ import { Value } from "typebox/value";
 import type { CustomEntry, ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { asRecord, type RestoredSessionData, type SerializedObject } from "./responses.ts";
 import {
+	AdmittedEventIdsSchema,
 	CollaboratorLaunchSchema,
 	CollaboratorWorktreeSchema,
+	HOSTED_ADMITTED_EVENT_LIMIT,
 	ManagedAgentControlSchema,
 	ParticipantIdentitySchema,
 	type CollaboratorLaunch,
@@ -24,18 +26,19 @@ export type {
 } from "./schemas/session.ts";
 
 /** One current-only hidden entry kind; older kinds are ignored rather than migrated. */
-export const HOSTED_SESSION_ENTRY = "deevs.hosted-runtime.v2";
+export const HOSTED_SESSION_ENTRY = "deevs.hosted-runtime.v3";
 export const COLLABORATOR_ENV = "PI_RUNTIME_COLLABORATE";
 export const COLLABORATOR_NAME = /^[a-z][a-z0-9_-]{0,63}$/;
 export const COLLABORATOR_MODEL = /^[A-Za-z0-9][A-Za-z0-9._/*:-]{0,199}$/;
 
 /** Everything one Pi session persists about its Runtime collaboration, in one entry. */
 export interface HostedSessionRecord {
-	version: 2;
+	version: 3;
 	participant?: ParticipantIdentity;
 	launch?: CollaboratorLaunch;
 	worktree?: CollaboratorWorktree;
 	agents?: ManagedAgentControl[];
+	admitted?: string[];
 }
 
 const RECOVERY_LAUNCH: CollaboratorLaunch = { driver: "pi", profile: "read-only" };
@@ -51,6 +54,7 @@ export class HostedSessionStore {
 	private launchState?: CollaboratorLaunch;
 	private worktreeState?: CollaboratorWorktree;
 	private readonly agentControls = new Map<string, ManagedAgentControl>();
+	private readonly admittedEvents = new Set<string>();
 
 	constructor(pi: ExtensionAPI) {
 		this.pi = pi;
@@ -76,18 +80,23 @@ export class HostedSessionStore {
 		return this.agentControls.get(targetKey);
 	}
 
+	hasAdmitted(eventId: string): boolean {
+		return this.admittedEvents.has(eventId);
+	}
+
 	restore(ctx: ExtensionContext): void {
 		this.identityState = undefined;
 		this.launchState = undefined;
 		this.worktreeState = undefined;
 		this.agentControls.clear();
+		this.admittedEvents.clear();
 		const entry = lastSessionRecord(ctx);
 		if (!entry) {
 			this.identityState = bootstrapIdentity(process.env[COLLABORATOR_ENV]);
 			return;
 		}
 		const record = asRecord(entry.data);
-		if (record?.version !== 2) {
+		if (record?.version !== 3) {
 			this.launchState = RECOVERY_LAUNCH;
 			ctx.ui.notify(INVALID_RECORD, "warning");
 			return;
@@ -96,6 +105,7 @@ export class HostedSessionStore {
 		this.restoreLaunch(record, ctx);
 		this.worktreeState = parseWorktree(record.worktree, ctx);
 		this.restoreAgents(record, ctx);
+		this.restoreAdmitted(record);
 	}
 
 	persistIdentity(identity: ParticipantIdentity): void {
@@ -105,6 +115,19 @@ export class HostedSessionStore {
 
 	persistAgent(control: ManagedAgentControl): void {
 		this.agentControls.set(control.targetKey, control);
+		this.persist();
+	}
+
+	rememberAdmitted(eventIds: readonly string[]): void {
+		for (const eventId of eventIds) {
+			this.admittedEvents.delete(eventId);
+			this.admittedEvents.add(eventId);
+		}
+		while (this.admittedEvents.size > HOSTED_ADMITTED_EVENT_LIMIT) {
+			const oldest = this.admittedEvents.values().next();
+			if (oldest.done) break;
+			this.admittedEvents.delete(oldest.value);
+		}
 		this.persist();
 	}
 
@@ -125,6 +148,11 @@ export class HostedSessionStore {
 		ctx.ui.notify(INVALID_LAUNCH, "warning");
 	}
 
+	private restoreAdmitted(record: SerializedObject): void {
+		if (!Value.Check(AdmittedEventIdsSchema, record.admitted)) return;
+		for (const eventId of record.admitted) this.admittedEvents.add(eventId);
+	}
+
 	private restoreAgents(record: SerializedObject, ctx: ExtensionContext): void {
 		if (record.agents === undefined) return;
 		const controls = parseAgents(record.agents, ctx);
@@ -136,11 +164,12 @@ export class HostedSessionStore {
 	}
 
 	private persist(): void {
-		const record: HostedSessionRecord = { version: 2 };
+		const record: HostedSessionRecord = { version: 3 };
 		if (this.identityState) record.participant = this.identityState;
 		if (this.launchState) record.launch = this.launchState;
 		if (this.worktreeState) record.worktree = this.worktreeState;
 		if (this.agentControls.size > 0) record.agents = [...this.agentControls.values()];
+		if (this.admittedEvents.size > 0) record.admitted = [...this.admittedEvents];
 		this.pi.appendEntry(HOSTED_SESSION_ENTRY, record);
 	}
 }

@@ -277,7 +277,6 @@ function createdEvent(monitor: HostedMonitor, entry: HostedFileObservation, sequ
 			size: entry.size,
 			mtimeMs: entry.mtimeMs,
 		},
-		delivery: { status: "pending" },
 	};
 }
 

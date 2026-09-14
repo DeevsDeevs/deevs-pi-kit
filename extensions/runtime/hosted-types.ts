@@ -1,11 +1,9 @@
 import type {
 	HostedAgentTarget,
-	HostedClaim,
 	HostedFilesystemCreatedEvent,
 	HostedMessagingGrant,
 	HostedMonitor,
 	HostedTarget,
-	HostedWake,
 } from "./schemas/state.ts";
 
 export {
@@ -20,11 +18,9 @@ export {
 
 export type {
 	HostedAgentTarget,
-	HostedClaim,
 	HostedCollaboratorDriver,
 	HostedCollaboratorProfile,
 	HostedEvent,
-	HostedEventDelivery,
 	HostedFileObservation,
 	HostedFilesystemCreatedEvent,
 	HostedHerdrLocator,
@@ -38,7 +34,6 @@ export type {
 	HostedRuntimeInstance,
 	HostedRuntimeState,
 	HostedTarget,
-	HostedWake,
 } from "./schemas/state.ts";
 
 export interface HostedAgentBind {
@@ -104,13 +99,6 @@ export type HostedStateOperation =
 			body: string;
 			at: number;
 	  }
-	| { type: "inbox.claim"; claim: HostedClaim }
-	| { type: "inbox.ack"; targetKey: string; claimId: string; eventIds: string[]; at: number }
-	| { type: "inbox.reconcile"; targetKey: string; claimId: string; eventIds: string[]; at: number }
-	| { type: "inbox.reconcile_many"; targetKey: string; receipts: Array<{ claimId: string; eventIds: string[] }>; at: number }
-	| { type: "inbox.release"; targetKey: string; claimId: string; eventIds: string[]; at: number }
-	| { type: "inbox.release_expired"; at: number }
-	| { type: "retention.prune"; before: number }
-	| { type: "wake.set"; wake: HostedWake }
-	| { type: "wake.accept"; wakeId: string; claim: HostedClaim }
-	| { type: "wake.clear"; targetKey: string; wakeId: string };
+	| { type: "inbox.claim"; targetKey: string; leaseUntil: number }
+	| { type: "inbox.ack"; targetKey: string; eventIds: string[]; at: number }
+	| { type: "retention.prune"; before: number };

@@ -1,12 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type {
-	ExtensionAPI,
-	ExtensionCommandContext,
-	ExtensionContext,
-	MessageStartEvent,
-	ToolCallEvent,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import type { CollaboratorToolBlock } from "./collaborator-policy.ts";
 import {
 	CollaboratorService,
@@ -14,16 +8,15 @@ import {
 	type CollaboratorManageResult,
 	type CollaboratorWorktreeInput,
 } from "./collaborators.ts";
-import { HostedDelivery, type HostedClaimCustomMessage } from "./delivery.ts";
+import { HostedDelivery } from "./delivery.ts";
 import { MessagingClient } from "./messaging-client.ts";
 import { NativeAgentService } from "./native-agents.ts";
 import type { ClientParticipantStatus, HostedHeartbeat, LiveClientRegistration, SerializedValue } from "./responses.ts";
 import { runRuntimeCommand, type RuntimeCommandServices } from "./runtime-command.ts";
-import { RuntimeSession, type HostedReceipt, type RuntimeSessionHooks } from "./runtime-session.ts";
+import { RuntimeSession, type RuntimeSessionHooks } from "./runtime-session.ts";
 import { HostedSessionStore } from "./session-record.ts";
 
 interface BeforeAgentStartResult {
-	message?: HostedClaimCustomMessage;
 	systemPrompt?: string;
 }
 
@@ -61,14 +54,6 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 		return this.session.sessionShutdown();
 	}
 
-	acceptWake(args: string, ctx: ExtensionCommandContext): Promise<void> {
-		return this.delivery.acceptWake(args, ctx);
-	}
-
-	acknowledgeMessage(message: MessageStartEvent["message"]): void {
-		this.delivery.acknowledgeMessage(message);
-	}
-
 	messagingDescriptor(ctx: ExtensionContext): Promise<string> {
 		return this.messaging.descriptor(ctx);
 	}
@@ -94,45 +79,22 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 		return this.collaborators.manageWorktrees(input, ctx, signal);
 	}
 
-	/** Adds any collaborator persona prompt and admits one claimed batch before the turn starts. */
-	async beforeAgentStart(systemPrompt: string, ctx: ExtensionContext): Promise<BeforeAgentStartResult | undefined> {
+	/** Adds any collaborator persona prompt; durable events arrive through the heartbeat alone. */
+	beforeAgentStart(systemPrompt: string, ctx: ExtensionContext): BeforeAgentStartResult | undefined {
 		this.session.setContext(ctx);
-		if (!this.session.isActive) return undefined;
-		const current = this.session.scope(ctx);
-		const result: BeforeAgentStartResult = {};
 		const persona = this.store.launch?.persona;
-		if (persona) result.systemPrompt = `${systemPrompt}\n\n# Collaborator persona: ${persona.name}\n\n${persona.prompt}`;
-		let registration: LiveClientRegistration;
-		try { registration = await this.session.requireRegistration(ctx); } catch { return personaOnly(result); }
-		if (!current()) return undefined;
-		const claim = await this.delivery.claimForTurn(registration, current);
-		switch (claim.status) {
-			case "none": return personaOnly(result);
-			case "stale": return undefined;
-			case "claimed": {
-				result.message = claim.message;
-				return result;
-			}
-			default: {
-				const unreachable: never = claim;
-				return unreachable;
-			}
-		}
+		if (!this.session.isActive || !persona) return undefined;
+		return { systemPrompt: `${systemPrompt}\n\n# Collaborator persona: ${persona.name}\n\n${persona.prompt}` };
 	}
 
 	restoreSessionState(ctx: ExtensionContext): void {
 		this.native.clearRegistrations();
 		this.messaging.clearManagedIssuance();
 		this.store.restore(ctx);
-		this.delivery.restoreAdmissions(ctx);
 	}
 
-	admittedClaims(): HostedReceipt[] {
-		return this.delivery.admittedClaims();
-	}
-
-	clearPendingAcks(): void {
-		this.delivery.clearPendingAcks();
+	canAdmit(ctx: ExtensionContext): boolean {
+		return this.delivery.canAdmit(ctx);
 	}
 
 	async afterRegister(registration: LiveClientRegistration, _ctx: ExtensionContext, current: () => boolean): Promise<void> {
@@ -145,9 +107,7 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 		heartbeat: HostedHeartbeat,
 		current: () => boolean,
 	): Promise<void> {
-		await this.delivery.retryAdmissions(registration);
-		this.session.requireCurrentScope(current);
-		if (heartbeat.inboxReady) await this.delivery.admitHeartbeatInbox(registration, ctx);
+		await this.delivery.admit(registration, ctx, heartbeat.events);
 		this.session.requireCurrentScope(current);
 		this.messaging.offerMailHint(registration, ctx, heartbeat.mail);
 	}
@@ -155,10 +115,6 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 	afterHeartbeatSettled(): Promise<void> {
 		return this.native.heartbeatManagedAgents();
 	}
-}
-
-function personaOnly(result: BeforeAgentStartResult): BeforeAgentStartResult | undefined {
-	return result.systemPrompt ? result : undefined;
 }
 
 function defaultRuntimeRoot(): string {

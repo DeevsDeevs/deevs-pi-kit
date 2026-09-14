@@ -49,7 +49,7 @@ describe("decision A identity", () => {
 		writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: "session_1", cwd: projectRoot })}\n`);
 		const store = new HostedStateStore(join(root, "runtime"));
 		const registrations = new RuntimeRegistrationManager(store, new AbsentAgentHost());
-		const registration = await registrations.register({ projectRoot, piSessionId: "session_1", piSessionFile: sessionFile, admittedClaims: [] });
+		const registration = await registrations.register({ projectRoot, piSessionId: "session_1", piSessionFile: sessionFile });
 		expect(() => registrations.authorize(registration.registrationId, "forged-key")).toThrow(/does not match its key/);
 		await expect(registrations.heartbeat(registration.registrationId, "forged-key")).rejects.toMatchObject({ code: "registration_stale" });
 		await expect(registrations.heartbeat("reg_forged", registration.registrationKey)).rejects.toMatchObject({ code: "registration_stale" });

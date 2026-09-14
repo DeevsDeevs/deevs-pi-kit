@@ -1,6 +1,5 @@
-import type { HostedClaim, HostedEvent, HostedEventDelivery, HostedRuntimeState } from "../../hosted-types.ts";
+import type { HostedEvent, HostedRuntimeState } from "../../hosted-types.ts";
 import { HOSTED_ACK_RETENTION_MS, HOSTED_MAX_STATE_RECORDS } from "../../schemas/common.ts";
-import { hostedEventRoutesToTarget } from "./events.ts";
 import { deriveParticipantKey, mailboxDedupeKey, targetIdentityKey } from "./keys.ts";
 
 /**
@@ -33,7 +32,6 @@ function checkKeyedRecords(state: HostedRuntimeState): void {
 		checkKey(key, monitor.monitorId, "monitor");
 		for (const [path, entry] of Object.entries(monitor.entries)) checkKey(path, entry.relativePath, "file observation");
 	}
-	for (const [key, wake] of Object.entries(state.wakes)) checkKey(key, wake.targetKey, "wake target");
 }
 
 function checkParticipants(state: HostedRuntimeState): void {
@@ -58,7 +56,6 @@ function checkEvents(state: HostedRuntimeState): void {
 		checkKey(key, event.eventId, "event");
 		if (state.dedupe[event.dedupeKey] !== event.eventId) throw new Error(`event ${key} is unreachable through its dedupe key`);
 		checkEventParticipants(state, event);
-		checkEventClaim(state, event);
 	}
 }
 
@@ -72,31 +69,9 @@ function checkEventParticipants(state: HostedRuntimeState, event: HostedEvent): 
 	}
 }
 
-function checkEventClaim(state: HostedRuntimeState, event: HostedEvent): void {
-	const claimId = deliveryClaimId(event.delivery);
-	if (!claimId) return;
-	const claim = state.claims[claimId];
-	if (!claim || !claimCoversEvent(claim, event)) {
-		throw new Error(`event ${event.eventId} references claim ${claimId} that does not cover it`);
-	}
-}
-
-function deliveryClaimId(delivery: HostedEventDelivery): string | undefined {
-	if (delivery.status === "pending") return delivery.latestClaimId;
-	return delivery.claimId;
-}
-
-function claimCoversEvent(claim: HostedClaim, event: HostedEvent): boolean {
-	return hostedEventRoutesToTarget(event, claim.targetKey) && claim.eventIds.includes(event.eventId);
-}
-
 function checkClaims(state: HostedRuntimeState): void {
-	for (const [key, claim] of Object.entries(state.claims)) {
-		checkKey(key, claim.claimId, "claim");
-		if (claim.leaseUntil <= claim.createdAt) throw new Error(`claim ${key} has a lease that does not outlive its creation`);
-		for (const eventId of claim.eventIds) {
-			if (!state.events[eventId]) throw new Error(`claim ${key} references absent event ${eventId}`);
-		}
+	for (const targetKey of Object.keys(state.claims)) {
+		if (!state.targets[targetKey]) throw new Error(`delivery claim ${targetKey} references an absent target`);
 	}
 }
 

@@ -8,6 +8,7 @@ import {
 	ParticipantNameText,
 	PathText,
 	STRICT_OBJECT,
+	SummaryText,
 	boundedText,
 } from "./common.ts";
 import {
@@ -33,8 +34,7 @@ const WORKTREE = {
 	participantId: ParticipantNameText,
 };
 
-const EventIds = Type.Array(IdText, { maxItems: HOSTED_MAX_DELIVERY_BATCH, uniqueItems: true });
-const ClaimedEventIds = Type.Array(IdText, { minItems: 1, maxItems: HOSTED_MAX_DELIVERY_BATCH, uniqueItems: true });
+const DeliveredEventIds = Type.Array(IdText, { minItems: 1, maxItems: HOSTED_MAX_DELIVERY_BATCH, uniqueItems: true });
 /** Base64 keeps a 16 KiB body under the unchanged 64 KiB RPC request cap. */
 const BodyBase64 = boundedText(24 * 1024);
 
@@ -57,8 +57,10 @@ export const PiRegisterParams = Type.Object({
 	worktreePath: Type.Optional(PathText),
 	piSessionId: IdText,
 	piSessionFile: PathText,
-	admittedClaims: Type.Array(Type.Object({ claimId: IdText, eventIds: EventIds }, STRICT_OBJECT), { maxItems: 12 }),
 }, STRICT_OBJECT);
+
+/** Pi asks for its undelivered events only while it can admit them, so a busy session never holds a claim. */
+export const PiHeartbeatParams = Type.Object({ ...AUTH, admit: Type.Optional(Type.Boolean()) }, STRICT_OBJECT);
 
 export const BridgeBindParams = Type.Object({
 	...AUTH,
@@ -78,12 +80,7 @@ export const WorktreeRemoveParams = Type.Object({ ...AUTH, ...WORKTREE, discardC
 export const MonitorCreateParams = Type.Object({ ...AUTH, directory: PathText, settleMs: Count }, STRICT_OBJECT);
 export const MonitorDeleteParams = Type.Object({ ...AUTH, monitorId: IdText }, STRICT_OBJECT);
 
-export const WakeAcceptParams = Type.Object({ ...AUTH, wakeId: IdText }, STRICT_OBJECT);
-export const InboxClaimParams = Type.Object({
-	...AUTH,
-	maxEvents: Type.Optional(Type.Integer({ minimum: 1, maximum: HOSTED_MAX_DELIVERY_BATCH })),
-}, STRICT_OBJECT);
-export const ClaimReceiptParams = Type.Object({ ...AUTH, claimId: IdText, eventIds: ClaimedEventIds }, STRICT_OBJECT);
+export const InboxAckParams = Type.Object({ ...AUTH, eventIds: DeliveredEventIds }, STRICT_OBJECT);
 
 export const ParticipantAcquireParams = Type.Object({
 	...AUTH,
@@ -144,12 +141,19 @@ export const LiveRegistrationResult = Type.Object({
 
 export const MailHintResult = Type.Object({ namespaceId: IdText, eventId: IdText });
 
+export const InboxEventResult = Type.Object({
+	eventId: IdText,
+	type: Type.Literal("filesystem.created"),
+	summary: SummaryText,
+	path: PathText,
+});
+
 export const HeartbeatResult = Type.Object({
 	targetKey: IdText,
 	registrationId: IdText,
 	registrationKey: IdText,
 	leaseUntil: Count,
-	inboxReady: Type.Optional(Type.Boolean()),
+	events: Type.Optional(Type.Array(InboxEventResult, { maxItems: HOSTED_MAX_DELIVERY_BATCH })),
 	mail: Type.Optional(MailHintResult),
 });
 
@@ -181,4 +185,5 @@ export interface MessagingNamespaceAuth {
 
 export type LiveClientRegistration = Static<typeof LiveRegistrationResult>;
 export type MailHint = Static<typeof MailHintResult>;
+export type InboxEvent = Static<typeof InboxEventResult>;
 export type ClientParticipantStatus = Static<typeof ParticipantStatusResult>;

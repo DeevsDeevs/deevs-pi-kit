@@ -101,6 +101,5 @@ function mailboxEvent(
 		body: operation.body,
 		createdAt: operation.at,
 		summary: `message from ${sender.participantId} to ${recipient.participantId}`,
-		delivery: { status: "pending" },
 	};
 }

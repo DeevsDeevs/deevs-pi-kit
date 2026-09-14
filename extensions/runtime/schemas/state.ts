@@ -3,7 +3,6 @@ import {
 	AgentNameText,
 	Count,
 	HOSTED_MAILBOX_MAX_BODY_BYTES,
-	HOSTED_MAX_DELIVERY_BATCH,
 	HOSTED_MONITOR_MAX_ENTRIES,
 	HOSTED_PARTICIPANT_TRANSITION_LIMIT,
 	HashText,
@@ -121,12 +120,6 @@ export const HostedParticipantSchema = Type.Object({
 	updatedAt: Timestamp,
 }, STRICT_OBJECT);
 
-export const HostedEventDeliverySchema = Type.Union([
-	Type.Object({ status: Type.Literal("pending"), latestClaimId: Type.Optional(IdText) }, STRICT_OBJECT),
-	Type.Object({ status: Type.Literal("claimed"), claimId: IdText }, STRICT_OBJECT),
-	Type.Object({ status: Type.Literal("acked"), claimId: IdText, ackedAt: Timestamp }, STRICT_OBJECT),
-]);
-
 export const HostedFilesystemCreatedEventSchema = Type.Object({
 	version: Type.Literal(1),
 	eventId: IdText,
@@ -148,7 +141,7 @@ export const HostedFilesystemCreatedEventSchema = Type.Object({
 		size: Count,
 		mtimeMs: Timestamp,
 	}, STRICT_OBJECT),
-	delivery: HostedEventDeliverySchema,
+	deliveredAt: Type.Optional(Timestamp),
 }, STRICT_OBJECT);
 
 export const HostedMailboxMessageEventSchema = Type.Object({
@@ -169,28 +162,9 @@ export const HostedMailboxMessageEventSchema = Type.Object({
 	readAt: Type.Optional(Timestamp),
 	createdAt: Timestamp,
 	summary: SummaryText,
-	delivery: HostedEventDeliverySchema,
 }, STRICT_OBJECT);
 
 export const HostedEventSchema = Type.Union([HostedFilesystemCreatedEventSchema, HostedMailboxMessageEventSchema]);
-
-export const HostedClaimSchema = Type.Object({
-	claimId: IdText,
-	targetKey: IdText,
-	registrationId: IdText,
-	eventIds: Type.Array(IdText, { minItems: 1, maxItems: HOSTED_MAX_DELIVERY_BATCH, uniqueItems: true }),
-	createdAt: Timestamp,
-	leaseUntil: Timestamp,
-	status: Type.Union([Type.Literal("active"), Type.Literal("released"), Type.Literal("acked")]),
-	settledAt: Type.Optional(Timestamp),
-}, STRICT_OBJECT);
-
-export const HostedWakeSchema = Type.Object({
-	wakeId: IdText,
-	targetKey: IdText,
-	registrationId: IdText,
-	createdAt: Timestamp,
-}, STRICT_OBJECT);
 
 export const HostedMessagingGrantSchema = Type.Object({
 	namespaceId: Type.String({ pattern: "^msg_[0-9a-f-]{36}$" }),
@@ -206,7 +180,7 @@ export const HostedMessagingGrantSchema = Type.Object({
 	operations: keyedRecord(IdText),
 }, STRICT_OBJECT);
 
-export const HOSTED_STATE_VERSION = 18;
+export const HOSTED_STATE_VERSION = 19;
 
 export const HostedRuntimeStateSchema = Type.Object({
 	version: Type.Literal(HOSTED_STATE_VERSION),
@@ -216,8 +190,8 @@ export const HostedRuntimeStateSchema = Type.Object({
 	participants: keyedRecord(HostedParticipantSchema),
 	events: keyedRecord(HostedEventSchema),
 	dedupe: keyedRecord(IdText),
-	claims: keyedRecord(HostedClaimSchema),
-	wakes: keyedRecord(HostedWakeSchema),
+	/** One delivery claim per target: its key is the target key and its value the lease expiry. */
+	claims: keyedRecord(Timestamp),
 }, STRICT_OBJECT);
 
 export type HostedRuntimeInstance = Static<typeof HostedRuntimeInstanceSchema>;
@@ -232,12 +206,9 @@ export type HostedMonitor = Static<typeof HostedMonitorSchema>;
 export type HostedParticipantTransition = Static<typeof HostedParticipantTransitionSchema>;
 export type HostedParticipantState = Static<typeof HostedParticipantStateSchema>;
 export type HostedParticipant = Static<typeof HostedParticipantSchema>;
-export type HostedEventDelivery = Static<typeof HostedEventDeliverySchema>;
 export type HostedFilesystemCreatedEvent = Static<typeof HostedFilesystemCreatedEventSchema>;
 export type HostedMailboxMessageEvent = Static<typeof HostedMailboxMessageEventSchema>;
 export type HostedEvent = Static<typeof HostedEventSchema>;
-export type HostedClaim = Static<typeof HostedClaimSchema>;
-export type HostedWake = Static<typeof HostedWakeSchema>;
 export type HostedMessagingGrant = Static<typeof HostedMessagingGrantSchema>;
 export type HostedRuntimeState = Static<typeof HostedRuntimeStateSchema>;
 
@@ -251,6 +222,5 @@ export function emptyHostedRuntimeState(): HostedRuntimeState {
 		events: {},
 		dedupe: {},
 		claims: {},
-		wakes: {},
 	};
 }

@@ -4,7 +4,6 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { HostedRuntimeClient, HostedRuntimeClientError } from "./client.ts";
 import { delay, shellQuote } from "./herdr.ts";
-import { HOSTED_MAX_DELIVERY_BATCH } from "./hosted-types.ts";
 import {
 	auth,
 	parseAcquireResult,
@@ -22,16 +21,10 @@ import { HostedSessionStore, type ParticipantIdentity } from "./session-record.t
 // ponytail: two-second host verification is fine for small teams; add Runtime subscriptions if concurrent Pi count makes it measurable.
 const HEARTBEAT_MS = 2_000;
 
-export interface HostedReceipt {
-	claimId: string;
-	eventIds: string[];
-}
-
 /** Everything the session lifecycle hands back to the collaborator, delivery and messaging services. */
 export interface RuntimeSessionHooks {
 	restoreSessionState(ctx: ExtensionContext): void;
-	admittedClaims(): HostedReceipt[];
-	clearPendingAcks(): void;
+	canAdmit(ctx: ExtensionContext): boolean;
 	afterRegister(registration: LiveClientRegistration, ctx: ExtensionContext, current: () => boolean): Promise<void>;
 	afterHeartbeat(
 		registration: LiveClientRegistration,
@@ -238,7 +231,6 @@ export class RuntimeSession {
 			try { await this.client.call("pi.unregister", auth(registration)); } catch {}
 			this.requireCurrentScope(current);
 		}
-		this.hooks.clearPendingAcks();
 		this.registration = registration;
 		this.startHeartbeat();
 		try {
@@ -259,7 +251,6 @@ export class RuntimeSession {
 			projectRoot: worktree?.projectRoot ?? realpathSync(ctx.cwd),
 			piSessionId: ctx.sessionManager.getSessionId(),
 			piSessionFile: realpathSync(sessionFile),
-			admittedClaims: this.hooks.admittedClaims().slice(-HOSTED_MAX_DELIVERY_BATCH),
 		};
 		if (worktree) params.worktreePath = worktree.worktreePath;
 		return params;
@@ -297,7 +288,8 @@ export class RuntimeSession {
 	}
 
 	private async heartbeatOnce(registration: LiveClientRegistration, ctx: ExtensionContext, current: () => boolean): Promise<void> {
-		const heartbeat = parseHeartbeat(await this.client.call("pi.heartbeat", auth(registration)));
+		const params = { ...auth(registration), admit: this.hooks.canAdmit(ctx) };
+		const heartbeat = parseHeartbeat(await this.client.call("pi.heartbeat", params));
 		this.requireCurrentScope(current);
 		if (!sameRegistrationIdentity(heartbeat.registration, registration)) {
 			throw new HostedRuntimeClientError("registration_stale", "Heartbeat replaced its registration identity.");
@@ -383,7 +375,6 @@ interface RegisterPiParams {
 	projectRoot: string;
 	piSessionId: string;
 	piSessionFile: string;
-	admittedClaims: HostedReceipt[];
 	worktreePath?: string;
 }
 
