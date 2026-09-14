@@ -174,7 +174,7 @@ export class RuntimeMessaging {
 
 	/** The live descriptor is replaced only once its successor grant is durable, never truncated in place. */
 	private writeDescriptor(descriptorPath: string, grant: HostedMessagingGrant, secret: string): void {
-		const pending = `${descriptorPath}.${process.pid}.tmp`;
+		const pending = `${descriptorPath}.${randomUUID()}.tmp`;
 		const fd = openSync(pending, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
 		try {
 			const descriptor = { version: 1, socketPath: this.socketPath, namespaceId: grant.namespaceId, secret };
