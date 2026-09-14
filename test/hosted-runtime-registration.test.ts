@@ -17,10 +17,13 @@ import {
 import { HostedStateStore, pendingHostedEvents } from "../extensions/runtime/service/state.ts";
 import { HostedWakeCoordinator } from "../extensions/runtime/service/wake.ts";
 
-const herdrResult = vi.hoisted(() => ({ value: {} as unknown }));
+const herdrResult = vi.hoisted(() => ({ value: {} as unknown, failure: undefined as string | undefined }));
 vi.mock("node:child_process", async importOriginal => ({
 	...await importOriginal<typeof import("node:child_process")>(),
-	execFile: vi.fn((_command: string, _args: string[], _options: object, callback: (error: Error | null, stdout: string) => void) => callback(null, JSON.stringify({ result: herdrResult.value }))),
+	execFile: vi.fn((_command: string, _args: string[], _options: object, callback: (error: Error | null, stdout: string) => void) => {
+		if (herdrResult.failure !== undefined) return callback(new Error("herdr exited non-zero"), herdrResult.failure);
+		return callback(null, JSON.stringify({ result: herdrResult.value }));
+	}),
 }));
 
 const roots: string[] = [];
@@ -91,6 +94,14 @@ describe("Herdr exact-terminal verification", () => {
 		expect(execFile).toHaveBeenCalledWith("herdr", ["agent", "list"], expect.objectContaining({ timeout: 2000 }), expect.any(Function));
 		herdrResult.value = { agent: unrelated };
 		await expect(new HerdrCliHostVerifier().getAgent("w2:p1")).rejects.toMatchObject({ code: "host_unavailable" });
+	});
+
+	it("separates a Herdr refusal from an unanswered query", async () => {
+		herdrResult.failure = JSON.stringify({ error: { code: "agent_not_found" } });
+		await expect(new HerdrCliHostVerifier().getAgent("gone")).rejects.toMatchObject({ code: "identity_mismatch" });
+		herdrResult.failure = "herdr: command not found";
+		await expect(new HerdrCliHostVerifier().getAgent("gone")).rejects.toMatchObject({ code: "host_unavailable" });
+		herdrResult.failure = undefined;
 	});
 
 	it.each([
