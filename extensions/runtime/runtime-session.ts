@@ -1,21 +1,19 @@
-import { existsSync, mkdirSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { HostedRuntimeClient, HostedRuntimeClientError } from "./client.ts";
-import { delay, shellQuote } from "./herdr.ts";
+import { restoreHeldParticipant } from "./held-identity.ts";
 import {
 	auth,
-	parseAcquireResult,
 	parseHeartbeat,
 	parseParticipant,
 	parseRegistration,
 	strictObject,
-	text,
 	type ClientParticipantStatus,
 	type HostedHeartbeat,
 	type LiveClientRegistration,
 } from "./responses.ts";
+import { startRuntimeService } from "./service-launch.ts";
 import { HostedSessionStore, type ParticipantIdentity } from "./session-record.ts";
 
 // ponytail: two-second host verification is fine for small teams; add Runtime subscriptions if concurrent Pi count makes it measurable.
@@ -125,16 +123,9 @@ export class RuntimeSession {
 			const current = this.sessionContext;
 			if (current?.cwd !== cwd) return false;
 			if (current.sessionManager.getSessionId() !== sessionId || current.sessionManager.getSessionFile() !== sessionFile) return false;
-			return !registration || this.registrationMatches(registration);
+			if (!registration) return true;
+			return this.registration !== undefined && sameRegistrationIdentity(this.registration, registration);
 		};
-	}
-
-	private registrationMatches(registration: LiveClientRegistration): boolean {
-		const live = this.registration;
-		if (!live) return false;
-		return live.registrationId === registration.registrationId
-			&& live.registrationKey === registration.registrationKey
-			&& live.targetKey === registration.targetKey;
 	}
 
 	requireCurrentScope(current: () => boolean): void {
@@ -163,52 +154,11 @@ export class RuntimeSession {
 
 	start(ctx: Pick<ExtensionContext, "isProjectTrusted">): Promise<void> {
 		if (this.starting) return this.starting;
-		const starting = this.startOnce(ctx);
+		const starting = startRuntimeService(this.pi, this.client, this.root, ctx);
 		this.starting = starting;
 		const cleanup = () => { if (this.starting === starting) this.starting = undefined; };
 		void starting.then(cleanup, cleanup);
 		return starting;
-	}
-
-	private async startOnce(ctx: Pick<ExtensionContext, "isProjectTrusted">): Promise<void> {
-		try {
-			await this.client.hello();
-			return;
-		} catch {}
-		if (process.env.HERDR_ENV !== "1") {
-			throw new HostedRuntimeClientError("host_unavailable", "Runtime start requires this Pi session to run inside Herdr.");
-		}
-		if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Runtime start requires a trusted project.");
-		mkdirSync(this.root, { recursive: true, mode: 0o700 });
-		const workspace = await this.createServicesWorkspace();
-		const serviceMain = fileURLToPath(new URL("./service/main.ts", import.meta.url));
-		const command = `exec node ${shellQuote(serviceMain)} --root ${shellQuote(this.root)}`;
-		const launched = await this.pi.exec("herdr", ["pane", "run", workspace.paneId, command], { timeout: 5_000 });
-		if (launched.code !== 0) {
-			await this.closeServicesWorkspace(workspace.workspaceId);
-			throw new HostedRuntimeClientError("host_unavailable", "Herdr could not launch the Runtime service.");
-		}
-		for (let attempt = 0; attempt < 30; attempt++) {
-			try { await this.client.hello(); return; } catch { await delay(100); }
-		}
-		await this.closeServicesWorkspace(workspace.workspaceId);
-		throw new HostedRuntimeClientError("unavailable", "Runtime service did not become ready.");
-	}
-
-	private async createServicesWorkspace(): Promise<RuntimeServicesWorkspace> {
-		const args = ["workspace", "create", "--cwd", this.root, "--label", "pi-kit-services", "--no-focus"];
-		const created = await this.pi.exec("herdr", args, { timeout: 5_000 });
-		if (created.code !== 0) throw new HostedRuntimeClientError("host_unavailable", "Herdr could not create the Runtime services workspace.");
-		const result = strictObject(strictObject(JSON.parse(created.stdout), "Herdr response").result, "Herdr result");
-		const workspaceId = text(strictObject(result.workspace, "Herdr workspace").workspace_id);
-		const paneId = text(strictObject(result.root_pane, "Herdr root pane").pane_id);
-		const tabId = text(strictObject(result.tab, "Herdr tab").tab_id);
-		await this.pi.exec("herdr", ["tab", "rename", tabId, "pi-kit-runtime"], { timeout: 5_000 });
-		return { workspaceId, paneId };
-	}
-
-	private async closeServicesWorkspace(workspaceId: string): Promise<void> {
-		await this.pi.exec("herdr", ["workspace", "close", workspaceId], { timeout: 5_000 });
 	}
 
 	register(ctx: ExtensionContext): Promise<LiveClientRegistration> {
@@ -234,7 +184,7 @@ export class RuntimeSession {
 		this.registration = registration;
 		this.startHeartbeat();
 		try {
-			await this.restoreHeldParticipant(registration, ctx);
+			await restoreHeldParticipant(this, registration, ctx);
 			this.requireCurrentScope(current);
 			await this.hooks.afterRegister(registration, ctx, current);
 		} catch (error) {
@@ -295,80 +245,10 @@ export class RuntimeSession {
 			throw new HostedRuntimeClientError("registration_stale", "Heartbeat replaced its registration identity.");
 		}
 		this.registration = heartbeat.registration;
-		if (this.store.identity?.participantKey) await this.restoreHeldParticipant(this.registration, ctx);
+		if (this.store.identity?.participantKey) await restoreHeldParticipant(this, this.registration, ctx);
 		this.requireCurrentScope(current);
 		await this.hooks.afterHeartbeat(this.registration, ctx, heartbeat, current);
 	}
-
-	/** Re-proves a persisted held identity against Runtime, demoting it in session history when it no longer holds. */
-	async restoreHeldParticipant(registration: LiveClientRegistration, ctx: ExtensionContext): Promise<void> {
-		const identity = this.store.identity;
-		const scope = this.scope(ctx, registration);
-		const currentScope = () => scope() && this.store.identity === identity;
-		if (!identity || identity.disposition !== "held") return;
-		this.requireCurrentScope(currentScope);
-		if (identity.participantKey && await this.verifyHeldParticipant(identity, registration, ctx, currentScope)) return;
-		const acquired = parseAcquireResult(await this.client.call("participant.acquire", {
-			...auth(registration),
-			protocol: identity.protocol,
-			participantId: identity.participantId,
-			revive: identity.reviveAuthorized === true,
-		}));
-		this.requireCurrentScope(currentScope);
-		const restored: ParticipantIdentity = {
-			protocol: identity.protocol,
-			participantId: identity.participantId,
-			participantKey: acquired.participant.participantKey,
-			generation: acquired.participant.generation,
-			disposition: "held",
-		};
-		const changed = identity.participantKey !== restored.participantKey || identity.generation !== restored.generation;
-		if (changed) this.store.persistIdentity(restored);
-	}
-
-	/** True when the persisted key resolved and no further acquisition should follow. */
-	private async verifyHeldParticipant(
-		identity: ParticipantIdentity,
-		registration: LiveClientRegistration,
-		ctx: ExtensionContext,
-		currentScope: () => boolean,
-	): Promise<boolean> {
-		const participantKey = identity.participantKey;
-		if (!participantKey) return false;
-		let current: ClientParticipantStatus;
-		try {
-			current = parseParticipant(await this.client.call("participant.get", { ...auth(registration), participantKey }));
-		} catch (error) {
-			this.requireCurrentScope(currentScope);
-			if (!(error instanceof HostedRuntimeClientError) || error.code !== "not_found") throw error;
-			this.store.persistIdentity({ protocol: identity.protocol, participantId: identity.participantId, disposition: "vacant" });
-			const name = `${identity.protocol}/${identity.participantId}`;
-			ctx.ui.notify(`Collaborator ${name} is absent from Runtime; explicit acquire is required.`, "warning");
-			return true;
-		}
-		this.requireCurrentScope(currentScope);
-		if (current.protocol !== identity.protocol || current.participantId !== identity.participantId) {
-			this.store.persistIdentity({ protocol: identity.protocol, participantId: identity.participantId, disposition: "vacant" });
-			const name = `${identity.protocol}/${identity.participantId}`;
-			ctx.ui.notify(`Collaborator identity key does not match ${name}; explicit acquire is required.`, "warning");
-			return true;
-		}
-		if (current.state === "held" && current.holderTargetKey === registration.targetKey) return false;
-		this.store.persistIdentity({
-			...identity,
-			participantKey: current.participantKey,
-			generation: current.generation,
-			disposition: current.state === "ended" ? "ended" : "vacant",
-		});
-		const name = `${identity.protocol}/${identity.participantId}`;
-		ctx.ui.notify(`Collaborator ${name} is ${current.state}; explicit acquire or takeover is required.`, "warning");
-		return true;
-	}
-}
-
-interface RuntimeServicesWorkspace {
-	workspaceId: string;
-	paneId: string;
 }
 
 interface RegisterPiParams {

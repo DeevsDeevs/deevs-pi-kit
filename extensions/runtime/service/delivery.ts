@@ -9,7 +9,7 @@ export interface HostedDeliveryOptions {
 	claimLeaseMs?: number;
 }
 
-export interface HostedInboxStatus {
+interface HostedInboxStatus {
 	undelivered: number;
 	delivered: number;
 }
