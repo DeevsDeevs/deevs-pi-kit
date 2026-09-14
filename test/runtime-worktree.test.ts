@@ -51,9 +51,9 @@ describe("Runtime collaborator worktrees", () => {
 		const authority = { callerParticipantKey: caller.participantKey, expectedCallerGeneration: caller.generation, protocol: "review", participantId: "writer" };
 
 		const worktree = await test.worktrees.ensure(main, authority);
-		expect(worktree).toMatchObject({ participantId: "writer", branchRef: "refs/heads/runtime/collab/writer" });
+		expect(worktree).toMatchObject({ protocol: "review", participantId: "writer", branchRef: "refs/heads/runtime/collab/review/writer" });
 		expect(existsSync(join(worktree.path, "app.txt"))).toBe(true);
-		expect(git(worktree.path, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("runtime/collab/writer");
+		expect(git(worktree.path, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("runtime/collab/review/writer");
 		expect(await test.worktrees.ensure(main, authority)).toEqual(worktree);
 
 		const writerSession = join(test.root, "writer.jsonl");
@@ -63,14 +63,14 @@ describe("Runtime collaborator worktrees", () => {
 		expect(test.store.read().targets[writer.targetKey]).toMatchObject({ kind: "pi", projectRoot: test.project, worktreePath: worktree.path });
 		const held = test.participants.acquire(writer, "review", "writer").participant;
 		expect(test.store.read().participants[held.participantKey]?.worktreePath).toBe(worktree.path);
-		expect(await test.worktrees.list(main)).toEqual([{ ...worktree, protocol: "review", participantState: "held", recorded: true }]);
+		expect(await test.worktrees.list(main)).toEqual([{ ...worktree, participantState: "held", recorded: true }]);
 
 		await expect(test.worktrees.remove(main, { ...authority, discardConfirmed: true })).rejects.toThrow("Stop the collaborator");
 		test.participants.standDown(writer, held.participantKey);
 		await expect(test.worktrees.remove(main, { ...authority, discardConfirmed: false })).rejects.toThrow("confirmed discard");
 		expect(await test.worktrees.remove(main, { ...authority, discardConfirmed: true })).toEqual({ removed: true });
 		expect(existsSync(worktree.path)).toBe(false);
-		expect(git(test.project, ["branch", "--list", "runtime/collab/writer"])).toBe("");
+		expect(git(test.project, ["branch", "--list", "runtime/collab/review/writer"])).toBe("");
 		expect(test.store.read().participants[held.participantKey]?.worktreePath).toBeUndefined();
 		expect(await test.worktrees.list(main)).toEqual([]);
 	});
@@ -82,5 +82,37 @@ describe("Runtime collaborator worktrees", () => {
 		await expect(test.worktrees.ensure(main, { callerParticipantKey: caller.participantKey, expectedCallerGeneration: "lease_other", protocol: "review", participantId: "writer" })).rejects.toThrow("caller authority");
 		await expect(test.worktrees.ensure(main, { callerParticipantKey: caller.participantKey, expectedCallerGeneration: caller.generation, protocol: "review", participantId: "main" })).rejects.toThrow("own worktree");
 		expect(await test.worktrees.list(main)).toEqual([]);
+	});
+
+	it("keeps one participant ID apart across protocols", async () => {
+		const test = setup();
+		const main = await test.registrations.register(test.input);
+		const caller = test.participants.acquire(main, "review", "main").participant;
+		const authority = { callerParticipantKey: caller.participantKey, expectedCallerGeneration: caller.generation };
+		const review = await test.worktrees.ensure(main, { ...authority, protocol: "review", participantId: "writer" });
+		const build = await test.worktrees.ensure(main, { ...authority, protocol: "build", participantId: "writer" });
+
+		expect(build.path).not.toBe(review.path);
+		expect(build.branchRef).toBe("refs/heads/runtime/collab/build/writer");
+		const removal = { ...authority, protocol: "build", participantId: "writer", discardConfirmed: true };
+		expect(await test.worktrees.remove(main, removal)).toEqual({ removed: true });
+		expect(existsSync(build.path)).toBe(false);
+		expect(existsSync(review.path)).toBe(true);
+		expect(git(test.project, ["branch", "--list", "runtime/collab/review/writer"])).toContain("runtime/collab/review/writer");
+	});
+
+	it("reattaches a leftover collaborator branch that has no worktree", async () => {
+		const test = setup();
+		const main = await test.registrations.register(test.input);
+		const caller = test.participants.acquire(main, "review", "main").participant;
+		git(test.project, ["branch", "runtime/collab/review/writer"]);
+
+		const worktree = await test.worktrees.ensure(main, {
+			callerParticipantKey: caller.participantKey,
+			expectedCallerGeneration: caller.generation,
+			protocol: "review",
+			participantId: "writer",
+		});
+		expect(git(worktree.path, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("runtime/collab/review/writer");
 	});
 });
