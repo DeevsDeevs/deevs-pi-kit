@@ -8,6 +8,7 @@ import { isProjectWorktree } from "./worktree.ts";
 
 const REGISTRATION_LEASE_MS = 30_000;
 const MAX_ADMITTED_CLAIMS = 12;
+const MAX_HERDR_ERROR_BYTES = 8192;
 
 type HerdrValue = null | boolean | number | string | HerdrValue[] | HerdrObject;
 
@@ -608,12 +609,31 @@ function runHerdr(args: string[]): Promise<HerdrValue> {
 	return new Promise((resolve, reject) => {
 		execFile("herdr", args, { timeout: 2_000, maxBuffer: 1024 * 1024, encoding: "utf8" }, (error, stdout) => {
 			if (error) {
-				reject(new RegistrationError("host_unavailable", "Herdr identity query failed."));
+				reject(herdrQueryFailure(stdout));
 				return;
 			}
 			try { resolve(JSON.parse(stdout)); } catch { reject(new RegistrationError("host_unavailable", "Herdr returned invalid JSON.")); }
 		});
 	});
+}
+
+/** A structured Herdr error means Herdr ran and refused the identity; only an unanswered query is a transport failure. */
+function herdrQueryFailure(stdout: string): RegistrationError {
+	const code = herdrErrorCode(stdout);
+	if (code === undefined) return new RegistrationError("host_unavailable", "Herdr identity query failed.");
+	return new RegistrationError("identity_mismatch", `Herdr rejected the identity query with ${code}.`);
+}
+
+function herdrErrorCode(stdout: string): string | undefined {
+	if (stdout.length > MAX_HERDR_ERROR_BYTES) return undefined;
+	try {
+		// SAFETY: Herdr CLI output is untrusted JSON, narrowed field by field below.
+		const response = JSON.parse(stdout) as HerdrValue;
+		if (!isHerdrObject(response) || !isHerdrObject(response.error)) return undefined;
+		return stringValue(response.error.code);
+	} catch {
+		return undefined;
+	}
 }
 
 function strictObject(value: HerdrValue | undefined, name: string): HerdrObject {
