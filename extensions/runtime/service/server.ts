@@ -18,7 +18,7 @@ import { HerdrCliHostVerifier } from "./herdr-cli.ts";
 import type { HostedHostVerifier } from "./identity.ts";
 import { RuntimeRegistrationManager, type RegistrationManagerOptions } from "./registration.ts";
 import { HostedStateStore, loadOrCreateRuntimeInstance } from "./state.ts";
-import { HostedWakeCoordinator, type HostedWakeOptions } from "./wake.ts";
+import { RuntimeInbox, type HostedDeliveryOptions } from "./delivery.ts";
 import { RuntimeWorktrees } from "./worktree.ts";
 
 export class RuntimeAlreadyRunningError extends Error {
@@ -34,7 +34,7 @@ export interface RuntimeServerOptions {
 	registration?: RegistrationManagerOptions;
 	participant?: HostedParticipantCoordinatorOptions;
 	bridge?: AgentBinderOptions;
-	wake?: HostedWakeOptions;
+	delivery?: HostedDeliveryOptions;
 }
 
 export interface RuntimeServerHandle {
@@ -48,7 +48,6 @@ export interface RuntimeServerHandle {
 interface RuntimeLifecycle {
 	monitors: DirectoryMonitorManager;
 	registrations: RuntimeRegistrationManager;
-	wakes: HostedWakeCoordinator;
 }
 
 interface SocketIdentity {
@@ -60,28 +59,20 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 	const instance = loadOrCreateRuntimeInstance(options.root);
 	const store = new HostedStateStore(options.root);
 	const host = options.host ?? new HerdrCliHostVerifier();
-	let wakes: HostedWakeCoordinator | undefined;
 	let participants: HostedParticipantCoordinator | undefined;
-	const monitors = new DirectoryMonitorManager(store, {
-		...options.monitor,
-		onEvents: (targetKey) => {
-			options.monitor?.onEvents?.(targetKey);
-			wakes?.request(targetKey);
-		},
-	});
+	const monitors = new DirectoryMonitorManager(store, options.monitor);
 	const registrations = new RuntimeRegistrationManager(store, host, {
 		...options.registration,
 		onReady: (targetKey) => {
 			options.registration?.onReady?.(targetKey);
 			participants?.registrationReady(targetKey);
-			wakes?.request(targetKey);
 		},
 	});
-	wakes = new HostedWakeCoordinator(store, options.wake);
+	const inbox = new RuntimeInbox(store, options.delivery);
 	const worktrees = new RuntimeWorktrees(options.root, store);
 	const bridges = new RuntimeAgentBinder(store, registrations, host, options.bridge);
 	const closeTarget = host.closeTarget;
-	participants = new HostedParticipantCoordinator(store, registrations, wakes, {
+	participants = new HostedParticipantCoordinator(store, registrations, {
 		...options.participant,
 		stopTarget: options.participant?.stopTarget ?? (closeTarget ? (target) => closeTarget(target, options.root) : undefined),
 	});
@@ -92,12 +83,12 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 		registrations,
 		messaging: new RuntimeMessaging(store, registrations, participants, socketPath, options.participant?.now),
 		monitors,
-		wakes,
+		inbox,
 		participants,
 		bridges,
 		worktrees,
 	};
-	return await serve(options, context, socketPath, { monitors, registrations, wakes });
+	return await serve(options, context, socketPath, { monitors, registrations });
 }
 
 async function serve(
@@ -137,7 +128,6 @@ async function serve(
 
 function closeLifecycle(lifecycle: RuntimeLifecycle): void {
 	lifecycle.monitors.close();
-	lifecycle.wakes.close();
 	lifecycle.registrations.close();
 }
 

@@ -2,16 +2,16 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HOSTED_ACK_RETENTION_MS, HOSTED_MONITOR_MAX_ENTRIES, HOSTED_STATE_MAX_BYTES, type HostedClaim, type HostedFilesystemCreatedEvent, type HostedMonitor, type HostedTarget } from "../extensions/runtime/hosted-types.ts";
+import { HOSTED_ACK_RETENTION_MS, HOSTED_MONITOR_MAX_ENTRIES, HOSTED_STATE_MAX_BYTES, type HostedFilesystemCreatedEvent, type HostedMonitor, type HostedTarget } from "../extensions/runtime/hosted-types.ts";
 import {
 	HostedStateConflictError,
 	HostedStateStorageError,
 	emptyHostedRuntimeState,
 	loadOrCreateRuntimeInstance,
-	pendingHostedEvents,
 	readHostedRuntimeState,
 	reduceHostedState,
 	runtimeStatePaths,
+	undeliveredHostedEvents,
 	validateHostedRuntimeState,
 	writeHostedRuntimeState,
 } from "../extensions/runtime/service/state.ts";
@@ -72,7 +72,6 @@ function event(id = "evt_1", sequence = 1): HostedFilesystemCreatedEvent {
 			size: 42,
 			mtimeMs: 200,
 		},
-		delivery: { status: "pending" },
 	};
 }
 
@@ -92,24 +91,12 @@ function populatedState(): ReturnType<typeof emptyHostedRuntimeState> {
 	});
 }
 
-function claim(id = "claim_1", eventIds = ["evt_1"]): HostedClaim {
-	return {
-		claimId: id,
-		targetKey: "pi_session-1",
-		registrationId: "reg_1",
-		eventIds,
-		createdAt: 300,
-		leaseUntil: 1_300,
-		status: "active",
-	};
-}
-
 describe("hosted runtime state reducer", () => {
 	it("commits a monitor cursor and event together while deduplicating repeats", () => {
 		const state = populatedState();
 		expect(state.monitors.mon_1?.sequence).toBe(1);
 		expect(state.events.evt_1?.type === "filesystem.created" ? state.events.evt_1.payload.relativePath : undefined).toBe("review.md");
-		expect(pendingHostedEvents(state, "pi_session-1").map((candidate) => candidate.eventId)).toEqual(["evt_1"]);
+		expect(undeliveredHostedEvents(state, "pi_session-1").map((candidate) => candidate.eventId)).toEqual(["evt_1"]);
 
 		const duplicate = { ...event("evt_duplicate"), dedupeKey: event().dedupeKey };
 		const replayed = reduceHostedState(state, { type: "monitor.commit", monitor: state.monitors.mon_1!, events: [duplicate] });
@@ -120,7 +107,7 @@ describe("hosted runtime state reducer", () => {
 		const older: HostedFilesystemCreatedEvent = { ...event("evt_older", 12), createdAt: 100, source: { kind: "monitor", id: "source_fable", generation: "gen_1", sequence: 12 } };
 		const newer: HostedFilesystemCreatedEvent = { ...event("evt_newer", 2), createdAt: 200, source: { kind: "monitor", id: "source_release_gate", generation: "gen_1", sequence: 2 } };
 		const state = { ...populatedState(), events: { evt_newer: newer, evt_older: older } };
-		expect(pendingHostedEvents(state, "pi_session-1").map((candidate) => candidate.eventId)).toEqual(["evt_older", "evt_newer"]);
+		expect(undeliveredHostedEvents(state, "pi_session-1").map((candidate) => candidate.eventId)).toEqual(["evt_older", "evt_newer"]);
 	});
 
 	it("distinguishes idempotent natural-key retries from conflicts", () => {
@@ -157,135 +144,43 @@ describe("hosted runtime state reducer", () => {
 		}
 	});
 
-	it("claims only pending target events and enforces exact claim receipts", () => {
-		let state = reduceHostedState(populatedState(), { type: "inbox.claim", claim: claim() });
-		expect(state.events.evt_1?.delivery).toEqual({ status: "claimed", claimId: "claim_1" });
-
-		const foreignAck = reduceHostedState(state, {
-			type: "inbox.ack",
-			targetKey: "pi_foreign",
-			claimId: "claim_1",
-			eventIds: ["evt_1"],
-			at: 400,
-		});
-		expect(foreignAck).toBe(state);
-
-		state = reduceHostedState(state, {
-			type: "inbox.release",
-			targetKey: "pi_session-1",
-			claimId: "claim_1",
-			eventIds: ["evt_1"],
-			at: 400,
-		});
-		expect(state.events.evt_1?.delivery).toEqual({ status: "pending", latestClaimId: "claim_1" });
-
-		state = reduceHostedState(state, {
-			type: "inbox.ack",
-			targetKey: "pi_session-1",
-			claimId: "claim_1",
-			eventIds: ["evt_1"],
-			at: 500,
-		});
-		expect(state.events.evt_1?.delivery).toEqual({ status: "acked", claimId: "claim_1", ackedAt: 500 });
-		expect(state.claims.claim_1?.status).toBe("acked");
-	});
-
-	it("preserves the first acknowledgement receipt when an older released claim reconciles later", () => {
-		let state = reduceHostedState(populatedState(), { type: "inbox.claim", claim: claim("claim_1") });
-		state = reduceHostedState(state, { type: "inbox.release", targetKey: "pi_session-1", claimId: "claim_1", eventIds: ["evt_1"], at: 400 });
-		state = reduceHostedState(state, { type: "inbox.claim", claim: { ...claim("claim_2"), createdAt: 500, leaseUntil: 1_500 } });
-		const staleAck = reduceHostedState(state, { type: "inbox.ack", targetKey: "pi_session-1", claimId: "claim_1", eventIds: ["evt_1"], at: 550 });
-		expect(staleAck).toBe(state);
-		expect(state.events.evt_1?.delivery).toEqual({ status: "claimed", claimId: "claim_2" });
-		state = reduceHostedState(state, { type: "inbox.ack", targetKey: "pi_session-1", claimId: "claim_2", eventIds: ["evt_1"], at: 600 });
-		state = reduceHostedState(state, { type: "inbox.reconcile", targetKey: "pi_session-1", claimId: "claim_1", eventIds: ["evt_1"], at: 700 });
-		expect(state.events.evt_1?.delivery).toEqual({ status: "acked", claimId: "claim_2", ackedAt: 600 });
-	});
-
-	it("reconciles an older exact admission without leaving a newer claim active", () => {
-		let state = reduceHostedState(populatedState(), { type: "inbox.claim", claim: claim("claim_1") });
-		state = reduceHostedState(state, { type: "inbox.release", targetKey: "pi_session-1", claimId: "claim_1", eventIds: ["evt_1"], at: 400 });
-		state = reduceHostedState(state, { type: "inbox.claim", claim: { ...claim("claim_2"), createdAt: 500, leaseUntil: 1_500 } });
-		state = reduceHostedState(state, { type: "inbox.reconcile", targetKey: "pi_session-1", claimId: "claim_1", eventIds: ["evt_1"], at: 550 });
-		expect(state.events.evt_1?.delivery).toEqual({ status: "acked", claimId: "claim_1", ackedAt: 550 });
-		expect(state.claims.claim_1?.status).toBe("acked");
-		expect(state.claims.claim_2?.status).toBe("released");
-		expect(Object.values(state.claims).filter((candidate) => candidate.status === "active")).toEqual([]);
-	});
-
-	it("rejects malformed or conflicting claim attempts", () => {
+	it("holds one claim per target and only for a known target", () => {
 		const state = populatedState();
-		expect(reduceHostedState(state, { type: "inbox.claim", claim: claim("duplicate", ["evt_1", "evt_1"]) })).toBe(state);
-		expect(reduceHostedState(state, { type: "inbox.claim", claim: { ...claim("expired"), leaseUntil: 300 } })).toBe(state);
-		expect(reduceHostedState(state, { type: "inbox.claim", claim: claim("missing", ["evt_missing"]) })).toBe(state);
-
-		const claimed = reduceHostedState(state, { type: "inbox.claim", claim: claim() });
-		expect(() => reduceHostedState(claimed, {
-			type: "inbox.claim",
-			claim: { ...claim(), eventIds: ["evt_other"] },
-		})).toThrow(HostedStateConflictError);
-		expect(() => reduceHostedState(claimed, { type: "inbox.claim", claim: claim("claim_2") })).toThrow(HostedStateConflictError);
+		const claimed = reduceHostedState(state, { type: "inbox.claim", targetKey: "pi_session-1", leaseUntil: 1_300 });
+		expect(claimed.claims).toEqual({ "pi_session-1": 1_300 });
+		expect(reduceHostedState(claimed, { type: "inbox.claim", targetKey: "pi_session-1", leaseUntil: 1_900 }).claims)
+			.toEqual({ "pi_session-1": 1_900 });
+		expect(reduceHostedState(state, { type: "inbox.claim", targetKey: "pi_absent", leaseUntil: 1_300 })).toBe(state);
 	});
 
-	it("releases expired claims without replaying acknowledged events", () => {
-		let state = populatedState();
-		state = reduceHostedState(state, { type: "inbox.claim", claim: claim() });
-		state = reduceHostedState(state, { type: "inbox.release_expired", at: 1_300 });
-		expect(state.events.evt_1?.delivery.status).toBe("pending");
-		expect(state.claims.claim_1?.status).toBe("released");
+	it("acknowledges only its own target's events and frees that target's claim", () => {
+		let state = reduceHostedState(populatedState(), { type: "inbox.claim", targetKey: "pi_session-1", leaseUntil: 1_300 });
+		expect(reduceHostedState(state, { type: "inbox.ack", targetKey: "pi_foreign", eventIds: ["evt_1"], at: 400 })).toBe(state);
+		expect(undeliveredHostedEvents(state, "pi_session-1").map((candidate) => candidate.eventId)).toEqual(["evt_1"]);
 
-		state = reduceHostedState(state, { type: "inbox.ack", targetKey: "pi_session-1", claimId: "claim_1", eventIds: ["evt_1"], at: 1_400 });
-		const afterAckExpiry = reduceHostedState(state, { type: "inbox.release_expired", at: 2_000 });
-		expect(afterAckExpiry.events.evt_1?.delivery.status).toBe("acked");
+		state = reduceHostedState(state, { type: "inbox.ack", targetKey: "pi_session-1", eventIds: ["evt_1"], at: 500 });
+		expect(state.events.evt_1?.type === "filesystem.created" ? state.events.evt_1.deliveredAt : undefined).toBe(500);
+		expect(state.claims).toEqual({});
+		expect(undeliveredHostedEvents(state, "pi_session-1")).toEqual([]);
+		expect(reduceHostedState(state, { type: "inbox.ack", targetKey: "pi_session-1", eventIds: ["evt_1"], at: 600 })).toBe(state);
 	});
 
-	it("prunes old acknowledged receipt groups during later acknowledgements", () => {
-		let state = reduceHostedState(populatedState(), { type: "inbox.claim", claim: claim("claim_1") });
-		state = reduceHostedState(state, { type: "inbox.ack", targetKey: "pi_session-1", claimId: "claim_1", eventIds: ["evt_1"], at: 1_000 });
+	it("prunes delivered events once they outlive their retention window", () => {
+		let state = reduceHostedState(populatedState(), { type: "inbox.ack", targetKey: "pi_session-1", eventIds: ["evt_1"], at: 1_000 });
 		state = reduceHostedState(state, { type: "monitor.commit", monitor: { ...state.monitors.mon_1!, sequence: 2, updatedAt: 2_000 }, events: [event("evt_2", 2)] });
-		state = reduceHostedState(state, { type: "inbox.claim", claim: { ...claim("claim_2", ["evt_2"]), createdAt: 2_000, leaseUntil: 3_000 } });
-		state = reduceHostedState(state, { type: "inbox.ack", targetKey: "pi_session-1", claimId: "claim_2", eventIds: ["evt_2"], at: 1_001 + HOSTED_ACK_RETENTION_MS });
+		state = reduceHostedState(state, { type: "inbox.ack", targetKey: "pi_session-1", eventIds: ["evt_2"], at: 1_001 + HOSTED_ACK_RETENTION_MS });
 		expect(state.events.evt_1).toBeUndefined();
-		expect(state.claims.claim_1).toBeUndefined();
-		expect(state.events.evt_2?.delivery.status).toBe("acked");
+		expect(state.events.evt_2?.type === "filesystem.created" ? state.events.evt_2.deliveredAt : undefined).toBeDefined();
 	});
 
-	it("prunes only complete old acknowledged receipt groups", () => {
-		let state = reduceHostedState(populatedState(), { type: "inbox.claim", claim: claim() });
-		state = reduceHostedState(state, { type: "inbox.ack", targetKey: "pi_session-1", claimId: "claim_1", eventIds: ["evt_1"], at: 1_000 });
+	it("retains a delivered event until its retention window passes", () => {
+		let state = reduceHostedState(populatedState(), { type: "inbox.ack", targetKey: "pi_session-1", eventIds: ["evt_1"], at: 1_000 });
 		expect(reduceHostedState(state, { type: "retention.prune", before: 1_000 }).events.evt_1).toBeDefined();
-		state = reduceHostedState(state, { type: "retention.prune", before: 1_000 + HOSTED_ACK_RETENTION_MS });
+		state = reduceHostedState(state, { type: "retention.prune", before: 1_001 });
 		expect(state.events).toEqual({});
 		expect(state.dedupe).toEqual({});
-		expect(state.claims).toEqual({});
 	});
 
-	it("atomically accepts one wake into its exact first pending batch", () => {
-		let state = populatedState();
-		state = reduceHostedState(state, { type: "wake.set", wake: { wakeId: "wake_1", targetKey: "pi_session-1", registrationId: "reg_1", createdAt: 250 } });
-		const operation = { type: "wake.accept" as const, wakeId: "wake_1", claim: claim() };
-		state = reduceHostedState(state, operation);
-		expect(state.wakes).toEqual({});
-		expect(state.events.evt_1?.delivery).toEqual({ status: "claimed", claimId: "claim_1" });
-		expect(reduceHostedState(state, operation)).toBe(state);
-		const fresh = reduceHostedState(populatedState(), { type: "wake.set", wake: { wakeId: "wake_1", targetKey: "pi_session-1", registrationId: "reg_1", createdAt: 250 } });
-		expect(() => reduceHostedState(fresh, { ...operation, claim: claim("claim_wrong", ["evt_missing"]) })).toThrow(HostedStateConflictError);
-	});
-
-	it("keeps one outstanding wake per target and clears only the exact wake", () => {
-		let state = reduceHostedState(emptyHostedRuntimeState(), { type: "target.ensure", target: target() });
-		state = reduceHostedState(state, {
-			type: "wake.set",
-			wake: { wakeId: "wake_1", targetKey: "pi_session-1", registrationId: "reg_1", createdAt: 200 },
-		});
-		expect(reduceHostedState(state, { type: "wake.set", wake: { wakeId: "wake_1", targetKey: "pi_session-1", registrationId: "reg_1", createdAt: 200 } })).toBe(state);
-		expect(() => reduceHostedState(state, {
-			type: "wake.set",
-			wake: { wakeId: "wake_2", targetKey: "pi_session-1", registrationId: "reg_1", createdAt: 201 },
-		})).toThrow(HostedStateConflictError);
-		expect(reduceHostedState(state, { type: "wake.clear", targetKey: "pi_session-1", wakeId: "wake_2" })).toBe(state);
-		expect(reduceHostedState(state, { type: "wake.clear", targetKey: "pi_session-1", wakeId: "wake_1" }).wakes).toEqual({});
-	});
 });
 
 describe("hosted runtime state persistence", () => {
@@ -310,9 +205,9 @@ describe("hosted runtime state persistence", () => {
 		writeFileSync(join(root, ".state.v1.json.crash.tmp"), JSON.stringify(emptyHostedRuntimeState()), { mode: 0o600 });
 		expect(readHostedRuntimeState(root)).toEqual(oldState);
 
-		const claimed = reduceHostedState(oldState, { type: "inbox.claim", claim: claim() });
+		const claimed = reduceHostedState(oldState, { type: "inbox.claim", targetKey: "pi_session-1", leaseUntil: 1_300 });
 		writeHostedRuntimeState(root, claimed);
-		expect(readHostedRuntimeState(root).events.evt_1?.delivery.status).toBe("claimed");
+		expect(readHostedRuntimeState(root).claims).toEqual({ "pi_session-1": 1_300 });
 	});
 
 	it("preserves committed state when a replacement fails validation", () => {
@@ -332,7 +227,7 @@ describe("hosted runtime state persistence", () => {
 		expect(readdirSync(root).filter((name) => name.endsWith(".tmp"))).toEqual([]);
 	});
 
-	it("fails closed for malformed, unknown-field, mismatched-delivery, and oversized state", () => {
+	it("fails closed for malformed, unknown-field, and oversized state", () => {
 		const root = temporaryRoot();
 		const path = runtimeStatePaths(root).state;
 		writeFileSync(path, "{not-json", { mode: 0o600 });
@@ -341,19 +236,15 @@ describe("hosted runtime state persistence", () => {
 		writeFileSync(path, JSON.stringify({ ...emptyHostedRuntimeState(), surprise: true }), { mode: 0o600 });
 		expect(() => readHostedRuntimeState(root)).toThrow(/additional properties.*surprise/);
 
-		const mismatched = populatedState();
-		(mismatched.events.evt_1!.delivery as unknown as Record<string, unknown>).claimId = "stray";
-		writeFileSync(path, JSON.stringify(mismatched), { mode: 0o600 });
-		expect(() => readHostedRuntimeState(root)).toThrow(/additional properties.*claimId/);
-
 		writeFileSync(path, Buffer.alloc(HOSTED_STATE_MAX_BYTES + 1, 0x20), { mode: 0o600 });
 		expect(() => readHostedRuntimeState(root)).toThrow(/exceeds/);
 	});
 
 	it("rejects invalid cross-references rather than repairing them", () => {
-		const claimed = reduceHostedState(populatedState(), { type: "inbox.claim", claim: claim() });
-		const dangling = structuredClone(claimed);
-		delete dangling.events.evt_1;
+		const dangling = structuredClone(populatedState());
+		delete dangling.dedupe[dangling.events.evt_1!.dedupeKey];
 		expect(() => validateHostedRuntimeState(dangling)).toThrow(HostedStateStorageError);
+		const orphanClaim = { ...populatedState(), claims: { pi_absent: 1_300 } };
+		expect(() => validateHostedRuntimeState(orphanClaim)).toThrow(HostedStateStorageError);
 	});
 });

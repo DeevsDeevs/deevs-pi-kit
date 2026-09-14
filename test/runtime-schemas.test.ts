@@ -17,7 +17,7 @@ const context: HostedProtocolContext = { runtimeId: "rt_test", agentWake: "none"
 
 function populatedState(): HostedRuntimeState {
 	return {
-		version: 18,
+		version: 19,
 		messaging: {
 			[NAMESPACE]: {
 				namespaceId: NAMESPACE,
@@ -82,22 +82,10 @@ function populatedState(): HostedRuntimeState {
 				createdAt: 201,
 				summary: "new file: review.md",
 				payload: { relativePath: "review.md", path: "/tmp/project/reviews/review.md", fileType: "regular", size: 42, mtimeMs: 200 },
-				delivery: { status: "claimed", claimId: "claim_1" },
 			},
 		},
 		dedupe: { [DEDUPE_KEY]: "evt_1" },
-		claims: {
-			claim_1: {
-				claimId: "claim_1",
-				targetKey: "pi_session-1",
-				registrationId: "reg_1",
-				eventIds: ["evt_1"],
-				createdAt: 300,
-				leaseUntil: 1_300,
-				status: "active",
-			},
-		},
-		wakes: { "pi_session-1": { wakeId: "wake_1", targetKey: "pi_session-1", registrationId: "reg_1", createdAt: 250 } },
+		claims: { "pi_session-1": 1_300 },
 	};
 }
 
@@ -115,8 +103,7 @@ const MALFORMED: Array<[string, (state: HostedRuntimeState) => void]> = [
 	["participants", (state) => { record(state.participants, PARTICIPANT).transitions = []; }],
 	["events", (state) => { Reflect.set(record(state.events, "evt_1"), "type", "filesystem.removed"); }],
 	["dedupe", (state) => { Reflect.set(state.dedupe, DEDUPE_KEY, 7); }],
-	["claims", (state) => { record(state.claims, "claim_1").eventIds = ["evt_1", "evt_1"]; }],
-	["wakes", (state) => { Reflect.deleteProperty(record(state.wakes, "pi_session-1"), "registrationId"); }],
+	["claims", (state) => { Reflect.set(state.claims, "pi_session-1", "not-a-timestamp"); }],
 ];
 
 /** Cross-record invariants no single-record schema can see; each must fail the load, never be repaired. */
@@ -124,10 +111,9 @@ const INCOHERENT: Array<[string, (state: HostedRuntimeState) => void]> = [
 	["dangling dedupe entry", (state) => { state.dedupe.stale = "evt_missing"; }],
 	["dedupe entry pointing at an event that carries another key", (state) => { record(state.events, "evt_1").dedupeKey = "other"; }],
 	["event unreachable through its dedupe key", (state) => { Reflect.deleteProperty(state.dedupe, DEDUPE_KEY); }],
-	["record id that differs from its map key", (state) => { record(state.claims, "claim_1").claimId = "claim_2"; }],
+	["record id that differs from its map key", (state) => { Reflect.set(record(state.monitors, "mon_1"), "monitorId", "mon_2"); }],
 	["participant key that is not derived from its identity", (state) => { record(state.participants, PARTICIPANT).participantId = "other"; }],
-	["claim lease that does not outlive its creation", (state) => { record(state.claims, "claim_1").leaseUntil = 300; }],
-	["event claim that does not cover it", (state) => { record(state.claims, "claim_1").targetKey = "other_target"; }],
+	["delivery claim held for an absent target", (state) => { Reflect.set(state.claims, "pi_absent", 1_300); }],
 	["messaging grant with an edited lifetime", (state) => { record(state.messaging, NAMESPACE).expiresAt += 1; }],
 ];
 

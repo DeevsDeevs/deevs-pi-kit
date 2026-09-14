@@ -8,8 +8,8 @@ import { dispatchHostedLine, type HostedProtocolContext } from "../extensions/ru
 import { HerdrCliHostVerifier } from "../extensions/runtime/service/herdr-cli.ts";
 import { RegistrationError, type HostedHostVerifier, type HostedLiveAgent } from "../extensions/runtime/service/identity.ts";
 import { RuntimeRegistrationManager, type RegisterPiInput } from "../extensions/runtime/service/registration.ts";
-import { HostedStateStore, pendingHostedEvents, piTargetKey } from "../extensions/runtime/service/state.ts";
-import { HostedWakeCoordinator } from "../extensions/runtime/service/wake.ts";
+import { HostedStateStore, piTargetKey } from "../extensions/runtime/service/state.ts";
+import { RuntimeInbox } from "../extensions/runtime/service/delivery.ts";
 
 const herdrResult = vi.hoisted(() => ({ value: {} as unknown, failure: undefined as string | undefined }));
 vi.mock("node:child_process", async importOriginal => ({
@@ -52,7 +52,7 @@ function setup() {
 		createId: () => `reg_${++nextId}`,
 		createKey: () => `key_${nextId}`,
 	});
-	const input: RegisterPiInput = { projectRoot, piSessionId: "session_1", piSessionFile: sessionFile, admittedClaims: [] };
+	const input: RegisterPiInput = { projectRoot, piSessionId: "session_1", piSessionFile: sessionFile };
 	return { root, projectRoot, watchRoot, sessionFile, store, host, registrations, input, setNow: (value: number) => { now = value; } };
 }
 
@@ -93,13 +93,6 @@ describe("hosted Pi registration", () => {
 		expect(test.store.read().targets).toEqual({});
 	});
 
-	it("validates admitted claims before persisting a new Pi target", async () => {
-		const test = setup();
-		const admittedClaims = Array.from({ length: 13 }, (_, index) => ({ claimId: `claim_${index}`, eventIds: [`event_${index}`] }));
-		await expect(test.registrations.register({ ...test.input, admittedClaims })).rejects.toMatchObject({ code: "invalid_request" });
-		expect(test.store.read().targets).toEqual({});
-	});
-
 	it("keeps a heartbeat from resurrecting a registration removed while it verified", async () => {
 		const test = setup();
 		const registration = await test.registrations.register(test.input);
@@ -109,30 +102,14 @@ describe("hosted Pi registration", () => {
 		expect(() => test.registrations.authorize(registration.registrationId, registration.registrationKey)).toThrow(RegistrationError);
 	});
 
-	it("ignores pruned historical receipts but reconciles an exact retained admission", async () => {
-		const test = setup();
-		const registration = await test.registrations.register(test.input);
-		const monitors = new DirectoryMonitorManager(test.store, { automatic: false, now: () => 1_000, createId: (prefix) => `${prefix}_receipt` });
-		const monitor = monitors.create(registration.targetKey, test.watchRoot, 0);
-		writeFileSync(join(test.watchRoot, "review.md"), "review");
-		monitors.reconcile(monitor.monitorId);
-		const later = new DirectoryMonitorManager(test.store, { automatic: false, now: () => 1_001 });
-		later.reconcile(monitor.monitorId);
-		const event = pendingHostedEvents(test.store.read(), registration.targetKey)[0]!;
-		test.store.apply({ type: "inbox.claim", claim: { claimId: "claim_old", targetKey: registration.targetKey, registrationId: registration.registrationId, eventIds: [event.eventId], createdAt: 1_001, leaseUntil: 2_000, status: "active" } });
-		test.registrations.close();
-		const replacement = new RuntimeRegistrationManager(test.store, test.host, { now: () => 3_000, createId: () => "reg_new", createKey: () => "key_new" });
-		await replacement.register({ ...test.input, admittedClaims: [{ claimId: "claim_missing_after_prune", eventIds: ["evt_pruned"] }, { claimId: "claim_old", eventIds: [event.eventId] }] });
-		expect(test.store.read().events[event.eventId]?.delivery).toMatchObject({ status: "acked", claimId: "claim_old", ackedAt: 3_000 });
-	});
 });
 
 describe("registration-authorized Monitor protocol", () => {
 	it("registers, creates/reads/deletes a Monitor, and rejects a stale key", async () => {
 		const test = setup();
 		const monitors = new DirectoryMonitorManager(test.store, { automatic: false, now: () => 1_000, createId: (prefix) => `${prefix}_rpc` });
-		const wakes = new HostedWakeCoordinator(test.store);
-		const context: HostedProtocolContext = { runtimeId: "rt_test", agentWake: "none", registrations: test.registrations, monitors, wakes };
+		const inbox = new RuntimeInbox(test.store);
+		const context: HostedProtocolContext = { runtimeId: "rt_test", agentWake: "none", registrations: test.registrations, monitors, inbox };
 		const call = (method: string, params: unknown) => dispatchHostedLine(JSON.stringify({ v: 1, id: method, method, params }), context);
 		const registered = await call("pi.register", test.input);
 		expect(registered).toMatchObject({ ok: true, result: { registrationId: "reg_1", registrationKey: "key_1" } });
@@ -140,8 +117,7 @@ describe("registration-authorized Monitor protocol", () => {
 		expect(await call("monitor.create", { ...auth, directory: test.watchRoot, settleMs: 250 })).toMatchObject({ ok: true, result: { monitorId: "mon_rpc", status: "watching" } });
 		expect(await call("monitor.get", auth)).toMatchObject({ ok: true, result: { monitor: { monitorId: "mon_rpc" } } });
 		expect(await call("monitor.get", { ...auth, registrationKey: "wrong" })).toMatchObject({ ok: false, error: { code: "registration_stale" } });
-		expect(await call("inbox.status", auth)).toMatchObject({ ok: true, result: { pending: 0, claimed: 0, acknowledged: 0 } });
-		expect(await call("wake.accept", { ...auth, wakeId: "wake_missing" })).toMatchObject({ ok: false, error: { code: "not_found" } });
+		expect(await call("inbox.status", auth)).toMatchObject({ ok: true, result: { undelivered: 0, delivered: 0 } });
 		expect(await call("inbox.status", { ...auth, extra: true })).toMatchObject({ ok: false, error: { code: "invalid_request" } });
 		expect(await call("monitor.delete", { ...auth, monitorId: "mon_rpc" })).toMatchObject({ ok: true, result: { deleted: true } });
 		expect(await call("monitor.get", auth)).toMatchObject({ ok: true, result: { monitor: null } });

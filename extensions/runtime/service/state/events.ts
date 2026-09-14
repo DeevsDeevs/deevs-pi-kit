@@ -1,24 +1,18 @@
-import type { HostedEvent, HostedEventDelivery, HostedRuntimeState } from "../../hosted-types.ts";
+import type { HostedFilesystemCreatedEvent, HostedRuntimeState } from "../../hosted-types.ts";
 
-export function pendingHostedEvents(state: HostedRuntimeState, targetKey: string): HostedEvent[] {
-	return Object.values(state.events)
-		.filter((event) => event.delivery.status === "pending" && hostedEventRoutesToTarget(event, targetKey))
-		.sort(byDeliveryOrder);
+/** Ordinary mail is read through MCP and never enters this queue, so only Monitor events are deliverable. */
+export function undeliveredHostedEvents(state: HostedRuntimeState, targetKey: string): HostedFilesystemCreatedEvent[] {
+	const events: HostedFilesystemCreatedEvent[] = [];
+	for (const event of Object.values(state.events)) {
+		if (event.type !== "filesystem.created") continue;
+		if (event.targetKey !== targetKey || event.deliveredAt !== undefined) continue;
+		events.push(event);
+	}
+	return events.sort(byDeliveryOrder);
 }
 
-export function hostedEventRoutesToTarget(event: HostedEvent, targetKey: string): boolean {
-	if (event.type === "mailbox.message") return false;
-	return event.targetKey === targetKey;
-}
-
-export function deliveryBelongsToClaim(delivery: HostedEventDelivery, claimId: string): boolean {
-	if (delivery.status !== "pending") return delivery.claimId === claimId;
-	return delivery.latestClaimId === claimId;
-}
-
-function byDeliveryOrder(left: HostedEvent, right: HostedEvent): number {
+function byDeliveryOrder(left: HostedFilesystemCreatedEvent, right: HostedFilesystemCreatedEvent): number {
 	return left.createdAt - right.createdAt
-		|| left.source.kind.localeCompare(right.source.kind)
 		|| left.source.id.localeCompare(right.source.id)
 		|| left.source.generation.localeCompare(right.source.generation)
 		|| left.source.sequence - right.source.sequence

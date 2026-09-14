@@ -1,5 +1,5 @@
 export { HostedStateConflictError, HostedStateStorageError } from "./state/errors.ts";
-export { hostedEventRoutesToTarget, pendingHostedEvents } from "./state/events.ts";
+export { undeliveredHostedEvents } from "./state/events.ts";
 export { deriveAgentTargetKey, deriveParticipantKey, messagingConfigurationHash, piTargetKey } from "./state/keys.ts";
 export { messagingInboxEvent } from "./state/messaging.ts";
 export { reduceHostedState } from "./state/reduce.ts";

@@ -152,10 +152,6 @@ function registerCollaboratorWorkspaceTool(pi: ExtensionAPI, hosted: HostedRunti
 }
 
 function registerRuntimeEvents(pi: ExtensionAPI, hosted: HostedRuntimeIntegration): void {
-	pi.registerCommand("pi-kit-runtime-wake", {
-		description: "Internal durable Runtime wake protocol",
-		handler: (args, ctx) => hosted.acceptWake(args, ctx),
-	});
 	pi.on("session_start", async (_event, ctx) => {
 		runtimeDelivery.restore(ctx);
 		void runtimeDelivery.maybeDeliver();
@@ -167,11 +163,8 @@ function registerRuntimeEvents(pi: ExtensionAPI, hosted: HostedRuntimeIntegratio
 		void runtimeDelivery.maybeDeliver();
 	});
 	pi.on("session_compact", (_event, ctx) => hosted.sessionCompact(ctx));
-	pi.on("message_start", (event) => {
-		runtimeDelivery.acknowledgeMessage(event.message);
-		hosted.acknowledgeMessage(event.message);
-	});
-	pi.on("before_agent_start", async (event, ctx) => {
+	pi.on("message_start", (event) => runtimeDelivery.acknowledgeMessage(event.message));
+	pi.on("before_agent_start", (event, ctx) => {
 		runtimeDelivery.setContext(ctx);
 		return hosted.beforeAgentStart(event.systemPrompt, ctx);
 	});

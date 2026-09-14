@@ -37,8 +37,8 @@ function setup() {
 	const store = new HostedStateStore(runtimeRoot);
 	let registrationId = 0;
 	const registrations = new RuntimeRegistrationManager(store, host, { createId: () => `reg_${++registrationId}`, createKey: () => `key_${registrationId}` });
-	const participants = new HostedParticipantCoordinator(store, registrations, { request() {} }, { createGeneration: () => `lease_${Object.keys(store.read().participants).length + 1}` });
-	const input: RegisterPiInput = { projectRoot: project, piSessionId: "session_main", piSessionFile: sessionFile, admittedClaims: [] };
+	const participants = new HostedParticipantCoordinator(store, registrations, { createGeneration: () => `lease_${Object.keys(store.read().participants).length + 1}` });
+	const input: RegisterPiInput = { projectRoot: project, piSessionId: "session_main", piSessionFile: sessionFile };
 	return { root, project, host, store, registrations, participants, input, worktrees: new RuntimeWorktrees(runtimeRoot, store) };
 }
 
@@ -57,7 +57,7 @@ describe("Runtime collaborator worktrees", () => {
 
 		const writerSession = join(test.root, "writer.jsonl");
 		writeFileSync(writerSession, `${JSON.stringify({ type: "session", version: 3, id: "session_writer", timestamp: "2026-01-01T00:00:00.000Z", cwd: worktree.path })}\n`);
-		const writer = await test.registrations.register({ projectRoot: test.project, worktreePath: worktree.path, piSessionId: "session_writer", piSessionFile: writerSession, admittedClaims: [] });
+		const writer = await test.registrations.register({ projectRoot: test.project, worktreePath: worktree.path, piSessionId: "session_writer", piSessionFile: writerSession });
 		expect(test.store.read().targets[writer.targetKey]).toMatchObject({ kind: "pi", projectRoot: test.project, worktreePath: worktree.path });
 		const held = test.participants.acquire(writer, "review", "writer").participant;
 		expect(test.store.read().participants[held.participantKey]?.worktreePath).toBe(worktree.path);

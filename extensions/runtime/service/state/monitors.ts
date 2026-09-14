@@ -75,5 +75,5 @@ function validMonitorEvent(monitor: HostedMonitor, event: HostedFilesystemCreate
 		&& event.source.kind === "monitor"
 		&& event.source.id === monitor.monitorId
 		&& event.source.generation === monitor.generation
-		&& event.delivery.status === "pending";
+		&& event.deliveredAt === undefined;
 }

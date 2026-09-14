@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HOSTED_MONITOR_MAX_ENTRIES, type HostedFileObservation, type HostedMonitor, type HostedTarget } from "../extensions/runtime/hosted-types.ts";
 import { DirectoryMonitorManager, MonitorInputError, MonitorLimitError } from "../extensions/runtime/service/monitor.ts";
-import { HostedStateStore, pendingHostedEvents } from "../extensions/runtime/service/state.ts";
+import { HostedStateStore, undeliveredHostedEvents } from "../extensions/runtime/service/state.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -50,17 +50,17 @@ describe("hosted directory Monitor", () => {
 		test.manager.reconcile(monitor.monitorId);
 		test.setNow(1_249);
 		test.manager.reconcile(monitor.monitorId);
-		expect(pendingHostedEvents(test.store.read(), "pi_session_1")).toEqual([]);
+		expect(undeliveredHostedEvents(test.store.read(), "pi_session_1")).toEqual([]);
 		test.setNow(1_250);
 		test.manager.reconcile(monitor.monitorId);
-		expect(pendingHostedEvents(test.store.read(), "pi_session_1")).toMatchObject([{
+		expect(undeliveredHostedEvents(test.store.read(), "pi_session_1")).toMatchObject([{
 			source: { id: "mon_fixed", generation: "gen_fixed", sequence: 1 },
 			payload: { relativePath: "review.md", fileType: "regular", size: 6 },
 		}]);
 		test.setNow(2_000);
 		writeFileSync(join(test.watchRoot, "review.md"), "modified after emission");
 		test.manager.reconcile(monitor.monitorId);
-		expect(pendingHostedEvents(test.store.read(), "pi_session_1")).toHaveLength(1);
+		expect(undeliveredHostedEvents(test.store.read(), "pi_session_1")).toHaveLength(1);
 	});
 
 	it("resets settling after disappearance but never emits a baseline path", () => {
@@ -79,10 +79,10 @@ describe("hosted directory Monitor", () => {
 		test.manager.reconcile(monitor.monitorId);
 		test.setNow(1_449);
 		test.manager.reconcile(monitor.monitorId);
-		expect(pendingHostedEvents(test.store.read(), "pi_session_1")).toEqual([]);
+		expect(undeliveredHostedEvents(test.store.read(), "pi_session_1")).toEqual([]);
 		test.setNow(1_450);
 		test.manager.reconcile(monitor.monitorId);
-		expect(pendingHostedEvents(test.store.read(), "pi_session_1").map((event) => event.type === "filesystem.created" ? event.payload.relativePath : "")).toEqual(["new.md"]);
+		expect(undeliveredHostedEvents(test.store.read(), "pi_session_1").map((event) => event.type === "filesystem.created" ? event.payload.relativePath : "")).toEqual(["new.md"]);
 	});
 
 	it("rejects symlink roots and ignores symlink entries and nested files", () => {
@@ -100,7 +100,7 @@ describe("hosted directory Monitor", () => {
 		test.manager.reconcile(monitor.monitorId);
 		test.setNow(1_001);
 		test.manager.reconcile(monitor.monitorId);
-		expect(pendingHostedEvents(test.store.read(), "pi_session_1")).toEqual([]);
+		expect(undeliveredHostedEvents(test.store.read(), "pi_session_1")).toEqual([]);
 	});
 
 	it("degrades without losing its cursor and recovers when the root returns", () => {
@@ -140,7 +140,7 @@ describe("hosted directory Monitor", () => {
 		restarted.reconcile(monitor.monitorId);
 		now = 5_250;
 		restarted.reconcile(monitor.monitorId);
-		expect(pendingHostedEvents(store.read(), "pi_session_1").map((event) => event.type === "filesystem.created" ? event.payload.relativePath : "")).toEqual(["offline.md"]);
+		expect(undeliveredHostedEvents(store.read(), "pi_session_1").map((event) => event.type === "filesystem.created" ? event.payload.relativePath : "")).toEqual(["offline.md"]);
 	});
 
 	it("uses fs.watch only as a low-latency hint", async () => {
@@ -148,7 +148,7 @@ describe("hosted directory Monitor", () => {
 		const monitor = test.manager.create("pi_session_1", test.watchRoot, 0);
 		test.manager.start();
 		writeFileSync(join(test.watchRoot, "hinted.md"), "hinted");
-		await vi.waitFor(() => expect(pendingHostedEvents(test.store.read(), "pi_session_1").map((event) => event.type === "filesystem.created" ? event.payload.relativePath : "")).toContain("hinted.md"), { timeout: 1_000, interval: 10 });
+		await vi.waitFor(() => expect(undeliveredHostedEvents(test.store.read(), "pi_session_1").map((event) => event.type === "filesystem.created" ? event.payload.relativePath : "")).toContain("hinted.md"), { timeout: 1_000, interval: 10 });
 		test.manager.close();
 		expect(test.store.read().monitors[monitor.monitorId]?.status).toBe("watching");
 	});

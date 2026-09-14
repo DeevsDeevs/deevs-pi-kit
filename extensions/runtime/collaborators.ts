@@ -770,7 +770,7 @@ export class CollaboratorService {
 		const directory = join(this.session.root, "collaborator-sessions");
 		mkdirSync(directory, { recursive: true, mode: 0o700 });
 		const sessionFile = join(directory, `${timestamp.replace(/[:.]/g, "-")}_${sessionId}.jsonl`);
-		const record: HostedSessionRecord = { version: 2, launch };
+		const record: HostedSessionRecord = { version: 3, launch };
 		if (sessionCwd !== projectRoot) record.worktree = { projectRoot, worktreePath: sessionCwd };
 		const entries: Array<SessionHeader | CustomEntry<HostedSessionRecord>> = [
 			{ type: "session", version: CURRENT_SESSION_VERSION, id: sessionId, timestamp, cwd: sessionCwd },

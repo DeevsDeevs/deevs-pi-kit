@@ -6,19 +6,12 @@ import { HostedStateStore, piTargetKey } from "./state.ts";
 import { isProjectWorktree } from "./worktree.ts";
 
 const REGISTRATION_LEASE_MS = 30_000;
-const MAX_ADMITTED_CLAIMS = 12;
-
-interface AdmittedClaimReceipt {
-	claimId: string;
-	eventIds: string[];
-}
 
 export interface RegisterPiInput {
 	projectRoot: string;
 	worktreePath?: string;
 	piSessionId: string;
 	piSessionFile: string;
-	admittedClaims: AdmittedClaimReceipt[];
 }
 
 export interface HostedLiveRegistration {
@@ -75,9 +68,8 @@ export class RuntimeRegistrationManager {
 			createdAt: this.now(),
 		};
 		if (worktreePath) target.worktreePath = worktreePath;
-		this.validateAdmissions(targetKey, input.admittedClaims);
 		this.store.apply({ type: "target.ensure", target });
-		return this.install(targetKey, input.admittedClaims);
+		return this.install(targetKey);
 	}
 
 	/** Installs the live registration of a Herdr agent target the binder already verified. */
@@ -90,7 +82,7 @@ export class RuntimeRegistrationManager {
 		if (!heldByTarget(this.store, target)) {
 			throw new RegistrationError("registration_stale", "Herdr agent participant generation is not held by its target.");
 		}
-		return this.install(target.targetKey, []);
+		return this.install(target.targetKey);
 	}
 
 	async heartbeat(registrationId: string, registrationKey: string): Promise<HostedLiveRegistration> {
@@ -134,16 +126,12 @@ export class RuntimeRegistrationManager {
 	}
 
 	/** Every registration call mints fresh credentials: the newest client of a target owns it. */
-	private install(targetKey: string, admittedClaims: AdmittedClaimReceipt[]): HostedLiveRegistration {
+	private install(targetKey: string): HostedLiveRegistration {
 		this.expire();
-		this.validateAdmissions(targetKey, admittedClaims);
 		const registrationId = this.options.createId?.() ?? `reg_${randomUUID()}`;
 		if (this.registrations.has(registrationId)) throw new RegistrationError("conflict", "Registration ID is already live.");
 		const previous = this.byTarget.get(targetKey);
 		if (previous) this.drop(previous);
-		if (admittedClaims.length) {
-			this.store.apply({ type: "inbox.reconcile_many", targetKey, receipts: admittedClaims, at: this.now() });
-		}
 		const registration: HostedLiveRegistration = {
 			targetKey,
 			registrationId,
@@ -201,19 +189,6 @@ export class RuntimeRegistrationManager {
 		if (this.closed) throw new RegistrationError("registration_stale", "Runtime registration service is closing.");
 	}
 
-	private validateAdmissions(targetKey: string, admittedClaims: AdmittedClaimReceipt[]): void {
-		const unique = new Set(admittedClaims.map((receipt) => receipt.claimId)).size === admittedClaims.length;
-		if (admittedClaims.length > MAX_ADMITTED_CLAIMS || !unique) {
-			throw new RegistrationError("invalid_request", `At most ${MAX_ADMITTED_CLAIMS} unique admitted claims may be reconciled.`);
-		}
-		for (const receipt of admittedClaims) {
-			const claim = this.store.read().claims[receipt.claimId];
-			if (claim && (claim.targetKey !== targetKey || !sameIds(claim.eventIds, receipt.eventIds))) {
-				throw new RegistrationError("conflict", "Admitted claim receipt does not match durable state.");
-			}
-		}
-	}
-
 	private expire(): void {
 		const now = this.now();
 		for (const registration of this.registrations.values()) if (registration.leaseUntil <= now) this.drop(registration.registrationId);
@@ -237,10 +212,4 @@ export class RuntimeRegistrationManager {
 	private ready(targetKey: string): void {
 		if (this.options.onReady) queueMicrotask(() => this.options.onReady?.(targetKey));
 	}
-}
-
-function sameIds(left: string[], right: string[]): boolean {
-	if (left.length !== right.length) return false;
-	const sorted = [...right].sort();
-	return [...left].sort().every((value, index) => value === sorted[index]);
 }

@@ -47,21 +47,20 @@ describe("hosted runtime client vertical", () => {
 			projectRoot,
 			piSessionId: "session_1",
 			piSessionFile: sessionFile,
-			admittedClaims: [],
 		}) as Record<string, unknown>;
 		expect(registration).toMatchObject({ registrationId: "reg_client", registrationKey: "secret_client" });
 		const auth = { registrationId: "reg_client", registrationKey: "secret_client" };
 		const sender = await client.call("participant.acquire", { ...auth, protocol: "review", participantId: "main" }) as { participant: { participantKey: string; generation: string } };
 		expect(sender).toMatchObject({ participant: { participantId: "main", holderLive: true }, revived: false });
-		const fableRegistration = await client.call("pi.register", { projectRoot, piSessionId: "session_2", piSessionFile: fableSessionFile, admittedClaims: [] }) as Record<string, unknown>;
+		const fableRegistration = await client.call("pi.register", { projectRoot, piSessionId: "session_2", piSessionFile: fableSessionFile }) as Record<string, unknown>;
 		const fableAuth = { registrationId: String(fableRegistration.registrationId), registrationKey: String(fableRegistration.registrationKey) };
 		const recipient = await client.call("participant.acquire", { ...fableAuth, protocol: "review", participantId: "fable" }) as { participant: { participantKey: string } };
 		expect(await client.call("participant.list", auth)).toMatchObject({ participants: [{ participantId: "fable" }, { participantId: "main" }] });
 		expect(await client.call("monitor.create", { ...auth, directory: watchRoot, settleMs: 250 })).toMatchObject({ monitorId: "mon_client", status: "watching" });
 		expect(await client.call("monitor.get", auth)).toMatchObject({ monitor: { monitorId: "mon_client" } });
 		await client.call("mailbox.send", { ...auth, senderParticipantKey: sender.participant.participantKey, expectedSenderGeneration: sender.participant.generation, recipientParticipantKey: recipient.participant.participantKey, sendId: "send_client", body: "Focused mail" });
-		expect(await client.call("pi.heartbeat", fableAuth)).toMatchObject({ registrationId: fableAuth.registrationId, inboxReady: false });
-		expect(await client.call("pi.heartbeat", auth)).toMatchObject({ registrationId: "reg_client", inboxReady: false });
+		expect(await client.call("pi.heartbeat", fableAuth)).toMatchObject({ registrationId: fableAuth.registrationId });
+		expect(await client.call("pi.heartbeat", { ...auth, admit: true })).toMatchObject({ registrationId: "reg_client" });
 		await expect(client.call("monitor.get", { ...auth, registrationKey: "wrong" })).rejects.toMatchObject({ code: "registration_stale" });
 		await client.call("monitor.delete", { ...auth, monitorId: "mon_client" });
 		expect(await client.call("monitor.get", auth)).toEqual({ monitor: null });

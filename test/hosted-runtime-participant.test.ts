@@ -8,8 +8,8 @@ import { HostedParticipantCoordinator, HostedParticipantError } from "../extensi
 import { dispatchHostedLine, type HostedProtocolContext } from "../extensions/runtime/service/protocol.ts";
 import type { HostedHostVerifier, HostedLiveAgent } from "../extensions/runtime/service/identity.ts";
 import { RuntimeRegistrationManager, type HostedLiveRegistration, type RegisterPiInput } from "../extensions/runtime/service/registration.ts";
-import { deriveAgentTargetKey, HostedStateStore, pendingHostedEvents } from "../extensions/runtime/service/state.ts";
-import { HostedWakeCoordinator } from "../extensions/runtime/service/wake.ts";
+import { deriveAgentTargetKey, HostedStateStore, undeliveredHostedEvents } from "../extensions/runtime/service/state.ts";
+import { RuntimeInbox } from "../extensions/runtime/service/delivery.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -38,26 +38,25 @@ function setup() {
 		const sessionFile = join(root, `${name}.jsonl`);
 		const sessionId = `session_${name}`;
 		writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: sessionId, timestamp: "2026-01-01T00:00:00.000Z", cwd: projectRoot })}\n`);
-		inputs.set(name, { projectRoot, piSessionId: sessionId, piSessionFile: sessionFile, admittedClaims: [] });
+		inputs.set(name, { projectRoot, piSessionId: sessionId, piSessionFile: sessionFile });
 	}
 	const store = new HostedStateStore(join(root, "runtime"));
 	let now = 1_000;
 	let registrationNumber = 0;
 	const registrations = new RuntimeRegistrationManager(store, host, { now: () => now, createId: () => `reg_${++registrationNumber}`, createKey: () => `key_${registrationNumber}` });
-	const requested: string[] = [];
 	let generationNumber = 0;
 	let eventNumber = 0;
 	let stopOutcome: "closed" | "already_absent" | "unmanaged" = "closed";
 	const stoppedTargets: string[] = [];
 	let stopTarget = async (target: HostedTarget) => { stoppedTargets.push(target.targetKey); return stopOutcome; };
-	const participants = new HostedParticipantCoordinator(store, registrations, { request: (targetKey) => requested.push(targetKey) }, {
+	const participants = new HostedParticipantCoordinator(store, registrations, {
 		now: () => now,
 		startedAt: 1_000,
 		createGeneration: () => `lease_${++generationNumber}`,
 		createEventId: () => `event_${++eventNumber}`,
 		stopTarget: (target) => stopTarget(target),
 	});
-	return { root, projectRoot, host, inputs, store, registrations, participants, requested, stoppedTargets, setStopOutcome(value: typeof stopOutcome) { stopOutcome = value; }, setStopTarget(value: typeof stopTarget) { stopTarget = value; }, setNow(value: number) { now = value; } };
+	return { root, projectRoot, host, inputs, store, registrations, participants, stoppedTargets, setStopOutcome(value: typeof stopOutcome) { stopOutcome = value; }, setStopTarget(value: typeof stopTarget) { stopTarget = value; }, setNow(value: number) { now = value; } };
 }
 
 async function register(test: ReturnType<typeof setup>, name: string): Promise<HostedLiveRegistration> {
@@ -90,10 +89,9 @@ describe("hosted participant coordinator", () => {
 		const { main, fable, mainParticipant, fableParticipant } = await acquirePair(test);
 		const first = test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "send_1", "Please review.");
 		expect(test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "send_1", "Please review.").eventId).toBe(first.eventId);
-		expect(test.requested.at(-1)).toBe(fable.targetKey);
 		test.participants.standDown(fable, fableParticipant.participantKey);
 		const queued = test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "send_2", "Queued review.");
-		expect(pendingHostedEvents(test.store.read(), fable.targetKey).map((event) => event.eventId)).not.toContain(queued.eventId);
+		expect(undeliveredHostedEvents(test.store.read(), fable.targetKey).map((event) => event.eventId)).not.toContain(queued.eventId);
 		expect(() => test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "send_1", "Changed.")).toThrow(expect.objectContaining({ code: "conflict" }));
 	});
 
@@ -120,10 +118,9 @@ describe("hosted participant coordinator", () => {
 		expect(managed).toMatchObject({ state: "held", holderTargetKey: managedTarget.targetKey, generation: "lease_managed" });
 		expect(test.participants.list(main).find((participant) => participant.participantId === "fable")).toMatchObject({ driver: "codex", profile: "read-only" });
 		const ordinary = test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, managed.participantKey, "send_managed", "Please inspect.");
-		let managedClaim = 0;
-		const wakes = new HostedWakeCoordinator(test.store, { now: () => 1_001, createClaimId: () => `claim_managed_${++managedClaim}` });
-		expect(() => wakes.claim(managedRegistration, 1)).toThrow("Inbox has no pending events");
-		expect(test.store.read().events[ordinary.eventId]?.delivery).toEqual({ status: "pending" });
+		const inbox = new RuntimeInbox(test.store, { now: () => 1_001 });
+		expect(inbox.deliver(managedRegistration)).toEqual([]);
+		expect(test.store.read().events[ordinary.eventId]).toBeDefined();
 		const monitors = new DirectoryMonitorManager(test.store, { automatic: false });
 		const monitor = monitors.create(managedTarget.targetKey, test.projectRoot, 0);
 		const nativeEvent = (name: string) => {
@@ -133,15 +130,11 @@ describe("hosted participant coordinator", () => {
 			return Object.values(test.store.read().events).find(event => event.type === "filesystem.created" && event.payload.relativePath === name)!;
 		};
 		const message = nativeEvent("monitored.txt");
-		const claim = wakes.claim(managedRegistration, 1);
-		expect(claim.events.map((event) => event.eventId)).toEqual([message.eventId]);
-		expect(wakes.status(managedRegistration)).toMatchObject({ pending: 0, claimed: 1, acknowledged: 0 });
-		wakes.ack(managedRegistration, claim.claim.claimId, claim.claim.eventIds);
-		expect(test.store.read().events[message.eventId]?.delivery.status).toBe("acked");
-		const released = nativeEvent("released.txt");
-		const second = wakes.claim(managedRegistration, 1);
-		wakes.release(managedRegistration, second.claim.claimId, second.claim.eventIds);
-		expect(pendingHostedEvents(test.store.read(), managedTarget.targetKey).map((event) => event.eventId)).toEqual([released.eventId]);
+		expect(inbox.deliver(managedRegistration).map((event) => event.eventId)).toEqual([message.eventId]);
+		inbox.ack(managedRegistration, [message.eventId]);
+		expect(inbox.status(managedRegistration)).toEqual({ undelivered: 0, delivered: 1 });
+		const later = nativeEvent("later.txt");
+		expect(undeliveredHostedEvents(test.store.read(), managedTarget.targetKey).map((event) => event.eventId)).toEqual([later.eventId]);
 	});
 
 	it("rejects cross-protocol send after a target changes identity", async () => {
@@ -154,12 +147,10 @@ describe("hosted participant coordinator", () => {
 
 	it("allows a confirmed same-project target to generation-fence a live collaborator stand-down", async () => {
 		const test = setup();
-		const { main, fable, fableParticipant } = await acquirePair(test);
-		test.requested.length = 0;
+		const { main, fableParticipant } = await acquirePair(test);
 		expect(() => test.participants.standDownConfirmed(main, fableParticipant.participantKey, "stale_generation")).toThrow(expect.objectContaining({ code: "conflict" }));
 		const vacant = test.participants.standDownConfirmed(main, fableParticipant.participantKey, fableParticipant.generation);
 		expect(vacant).toMatchObject({ state: "vacant", holderLive: false, lastTransition: { cause: "stand_down", previousGeneration: fableParticipant.generation } });
-		expect(test.requested).toEqual([fable.targetKey, main.targetKey]);
 		expect(test.participants.standDownConfirmed(main, fableParticipant.participantKey, fableParticipant.generation).generation).toBe(vacant.generation);
 	});
 
@@ -227,11 +218,9 @@ describe("hosted participant coordinator", () => {
 		const successor = await register(test, "successor");
 		expect(() => test.participants.takeover(successor, fableParticipant.participantKey, fableParticipant.generation)).toThrow(HostedParticipantError);
 		test.registrations.unregister(fable.registrationId, fable.registrationKey);
-		test.requested.length = 0;
 		expect(() => test.participants.takeover(successor, fableParticipant.participantKey, "stale_generation")).toThrow(expect.objectContaining({ code: "conflict" }));
 		const taken = test.participants.takeover(successor, fableParticipant.participantKey, fableParticipant.generation);
 		expect(taken).toMatchObject({ state: "held", holderTargetKey: successor.targetKey, lastTransition: { cause: "takeover" } });
-		expect(test.requested).toEqual([fable.targetKey, successor.targetKey]);
 		expect(test.participants.takeover(successor, fableParticipant.participantKey, fableParticipant.generation).generation).toBe(taken.generation);
 	});
 
@@ -243,7 +232,7 @@ describe("hosted participant coordinator", () => {
 		let id = 0;
 		const registrations = new RuntimeRegistrationManager(test.store, test.host, { now: () => now, createId: () => `restart_reg_${++id}`, createKey: () => `restart_key_${id}` });
 		const successor = await registrations.register(test.inputs.get("successor")!);
-		const participants = new HostedParticipantCoordinator(test.store, registrations, { request() {} }, { now: () => now, startedAt: 2_000, reconnectGraceMs: 60_000, createGeneration: () => "lease_after_restart" });
+		const participants = new HostedParticipantCoordinator(test.store, registrations, { now: () => now, startedAt: 2_000, reconnectGraceMs: 60_000, createGeneration: () => "lease_after_restart" });
 		participants.registrationReady(successor.targetKey);
 		expect(() => participants.takeover(successor, fableParticipant.participantKey, fableParticipant.generation)).toThrow(expect.objectContaining({ code: "busy" }));
 		now = 62_001;
@@ -259,8 +248,8 @@ describe("hosted participant coordinator", () => {
 		writeFileSync(join(test.projectRoot, "created.txt"), "created\n");
 		monitors.reconcile(monitor.monitorId);
 		monitors.reconcile(monitor.monitorId);
-		const event = pendingHostedEvents(test.store.read(), fable.targetKey).find((candidate) => candidate.type === "filesystem.created")!;
-		test.store.apply({ type: "inbox.claim", claim: { claimId: "claim_filesystem", targetKey: fable.targetKey, registrationId: fable.registrationId, eventIds: [event.eventId], createdAt: 1_000, leaseUntil: 2_000, status: "active" } });
+		expect(undeliveredHostedEvents(test.store.read(), fable.targetKey)).toHaveLength(1);
+		test.store.apply({ type: "inbox.claim", targetKey: fable.targetKey, leaseUntil: 2_000 });
 		test.registrations.unregister(fable.registrationId, fable.registrationKey);
 		expect(test.participants.takeover(successor, fableParticipant.participantKey, fableParticipant.generation)).toMatchObject({ holderTargetKey: successor.targetKey });
 	});
@@ -291,8 +280,8 @@ describe("participant and mailbox RPC", () => {
 		const main = await register(test, "main");
 		const fable = await register(test, "fable");
 		const monitors = new DirectoryMonitorManager(test.store, { automatic: false });
-		const wakes = new HostedWakeCoordinator(test.store);
-		const context: HostedProtocolContext = { runtimeId: "rt_test", agentWake: "none", registrations: test.registrations, monitors, wakes, participants: test.participants };
+		const inbox = new RuntimeInbox(test.store);
+		const context: HostedProtocolContext = { runtimeId: "rt_test", agentWake: "none", registrations: test.registrations, monitors, inbox, participants: test.participants };
 		const call = (method: string, params: unknown) => dispatchHostedLine(JSON.stringify({ v: 1, id: method, method, params }), context);
 		expect(await call("hello", { minVersion: 1, maxVersion: 1 })).toMatchObject({ ok: true, result: { capabilities: { mailbox: { maxBodyBytes: 16_384 } } } });
 		let mainAuth = { registrationId: main.registrationId, registrationKey: main.registrationKey };

@@ -10,9 +10,9 @@ export class HostedStateStorageError extends Error {
 }
 
 export class HostedStateConflictError extends Error {
-	readonly code: "conflict" | "claim_conflict";
+	readonly code: "conflict";
 
-	constructor(code: "conflict" | "claim_conflict", message: string) {
+	constructor(code: "conflict", message: string) {
 		super(message);
 		this.code = code;
 	}

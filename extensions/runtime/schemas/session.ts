@@ -16,6 +16,11 @@ export const ParticipantIdentitySchema = Type.Object({
 	reviveAuthorized: Type.Optional(Type.Literal(true)),
 }, STRICT_OBJECT);
 
+/** Bounded durable dedupe for at-least-once Runtime delivery: the oldest ID is pruned first. */
+export const HOSTED_ADMITTED_EVENT_LIMIT = 1_000;
+
+export const AdmittedEventIdsSchema = Type.Array(IdText, { maxItems: HOSTED_ADMITTED_EVENT_LIMIT });
+
 export const CollaboratorPersonaSchema = Type.Object({
 	name: boundedText(64),
 	prompt: boundedText(64 * 1024),

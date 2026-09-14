@@ -40,11 +40,11 @@ async function setup(monitor: { scanIntervalMs?: number; onError?: (error: Error
 		const file = join(sessionRoot, `${name}.jsonl`);
 		writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: name, cwd })}\n`);
 		agents.set(name, { name, cwd });
-		inputs.set(name, { projectRoot: cwd, piSessionId: name, piSessionFile: file, admittedClaims: [] });
+		inputs.set(name, { projectRoot: cwd, piSessionId: name, piSessionFile: file });
 	}
 	// Only Herdr identity is a fixture. MCP is a real child; RPC, authorization,
 	// publication, delivery claims and restart recovery use the actual service/store.
-	const options = { root: runtimeRoot, monitor, host: { async getAgent(name: string) { return agents.get(name)!; } }, registration: { now: () => now }, participant: { now: () => now }, wake: { now: () => now } };
+	const options = { root: runtimeRoot, monitor, host: { async getAgent(name: string) { return agents.get(name)!; } }, registration: { now: () => now }, participant: { now: () => now }, delivery: { now: () => now } };
 	let server: RuntimeServerHandle = await startRuntimeServer(options);
 	cleanups.push(async () => { await server.close(); rmSync(root, { recursive: true, force: true }); });
 	const client = new HostedRuntimeClient(server.socketPath);
@@ -179,14 +179,13 @@ it("delivers a full body, records readAt, correlates a reply, and keeps ordinary
 	expect(offered!.isError).toBe(false);
 	expect(offered!.structuredContent.message).toEqual({ eventId, from: "sender", body: "\u0000".repeat(16384), createdAt: 1000 });
 	expect(repeated!.structuredContent.message).toEqual(offered!.structuredContent.message);
-	expect(test.readState().events[eventId]!.delivery.status).toBe("pending");
 	const auth = { registrationId: test.recipient.registrationId, registrationKey: test.recipient.registrationKey };
-	await expect(test.client.call("inbox.claim", { ...auth, maxEvents: 1 })).rejects.toMatchObject({ code: "not_found" });
+	expect(await test.client.call("pi.heartbeat", { ...auth, admit: true })).not.toHaveProperty("events");
 	const [replied, receipted, exactAgain] = await mcp(recipient.descriptorPath, [reply(eventId), received(eventId), receive(eventId)]);
 	expect(replied!.isError).toBe(false);
 	expect(receipted!.structuredContent).toEqual({ namespaceId: recipient.namespaceId, eventId, readAt: 1000 });
 	expect(exactAgain!.structuredContent.message?.readAt).toBe(1000);
-	expect(test.readState().events[eventId]!.delivery.status).toBe("pending");
+	expect(test.readState().events[eventId]).toBeDefined();
 	const [seen, lookup] = await mcp(test.issued.descriptorPath, [receive(replied!.structuredContent.eventId), status("offer")]);
 	expect(seen!.structuredContent.message).toMatchObject({ body: "Reply.", inReplyToEventId: eventId });
 	expect(lookup!.structuredContent.event).toMatchObject({ eventId, readAt: 1000 });
@@ -242,14 +241,14 @@ it("publishes before the recipient has a namespace, fences other participants' m
 	expect(committedRetry!.structuredContent.eventId).toBe(eventId);
 	expect(queued!.isError).toBe(false);
 	expect(Object.keys(test.readState().events)).toHaveLength(2);
-	expect(test.readState().events[eventId]!.delivery.status).toBe("pending");
+	expect(test.readState().events[eventId]).toBeDefined();
 });
 
 it("uses the default Runtime registrar, real registration and private issuance through the actual MCP child", async () => {
 	const test = await setup();
 	const sessionFile = test.inputs.get("sender")!.piSessionFile;
-	writeFileSync(sessionFile, readFileSync(sessionFile, "utf8") + JSON.stringify({ type: "custom", id: "b00c0001", parentId: null, timestamp: new Date().toISOString(), customType: "deevs.hosted-runtime.v2", data: { version: 2, participant: { protocol: "proof", participantId: "sender", participantKey: test.senderParticipant.participantKey, generation: test.senderParticipant.generation, disposition: "held" } } }) + "\n");
-	expect(readFileSync(sessionFile, "utf8")).toContain('"customType":"deevs.hosted-runtime.v2"');
+	writeFileSync(sessionFile, readFileSync(sessionFile, "utf8") + JSON.stringify({ type: "custom", id: "b00c0001", parentId: null, timestamp: new Date().toISOString(), customType: "deevs.hosted-runtime.v3", data: { version: 3, participant: { protocol: "proof", participantId: "sender", participantKey: test.senderParticipant.participantKey, generation: test.senderParticipant.generation, disposition: "held" } } }) + "\n");
+	expect(readFileSync(sessionFile, "utf8")).toContain('"customType":"deevs.hosted-runtime.v3"');
 	expect(JSON.parse(readFileSync(sessionFile, "utf8").split("\n")[0]!).id).toBe("sender");
 	const recipient = await test.issue(test.recipientParticipant);
 	const pi = await piSession(test, ["--tools", "collaborator_peers,collaborator_send,collaborator_status,collaborator_receive,collaborator_received,collaborator_reply"], true);
@@ -302,7 +301,7 @@ it("persists native Pi receive results while keeping read receipts separate from
 	const persisted = transcript.trim().split("\n").map(line => JSON.parse(line)).find(entry => entry.message?.role === "toolResult" && entry.message.toolName === "collaborator_receive");
 	expect(persisted.message.details).toEqual(fetched.result.details);
 	expect(persisted.message.isError).toBe(false);
-	expect(test.readState().events[eventId]!.delivery.status).toBe("pending");
+	expect(test.readState().events[eventId]).toBeDefined();
 	expect(transcript).not.toContain(test.descriptor.secret);
 	const restarted = await piSession(test, ["--tools", allTools]);
 	const recovered = await restarted.call({ ...receive(eventId), arguments: { namespaceId: test.issued.namespaceId, eventId } });
@@ -328,11 +327,11 @@ it("rejects actual Monitor events through MCP while preserving the shared native
 	const [denied, offered] = await mcp(recipient.descriptorPath, [receive(monitor.eventId), receive(eventId)]);
 	expect(denied!.isError).toBe(true);
 	expect(offered!.isError).toBe(false);
-	const claim = await test.client.call("inbox.claim", { ...auth, maxEvents: 12 }) as { events: Array<{ eventId: string }> };
-	expect(claim.events.map(event => event.eventId)).toEqual([monitor.eventId]);
+	const delivered = await test.client.call("pi.heartbeat", { ...auth, admit: true }) as { events?: Array<{ eventId: string }> };
+	expect(delivered.events?.map(event => event.eventId)).toEqual([monitor.eventId]);
 	await mcp(recipient.descriptorPath, [received(eventId)]);
-	expect(test.readState().events[monitor.eventId]!.delivery.status).toBe("claimed");
-	expect(test.readState().events[eventId]!.delivery.status).toBe("pending");
+	expect(test.readState().claims[test.recipient.targetKey]).toBeDefined();
+	expect(test.readState().events[eventId]).toBeDefined();
 });
 
 it("does not record a read receipt or half a reply on pre-rename storage failure", async () => {
@@ -377,7 +376,7 @@ it("retains a published body until its sender retry authority expires, then prun
 	const store = new HostedStateStore(root);
 	store.apply({ type: "retention.prune", before: receiver.expiresAt + 1 });
 	expect(store.read().messaging[receiver.namespaceId]!.status).toBe("expired");
-	expect(store.read().events[eventId]!.delivery).toEqual({ status: "pending" });
+	expect(store.read().events[eventId]).toBeDefined();
 	expect(Object.values(store.read().dedupe)).toContain(eventId);
 	expect(store.read().claims).toEqual({});
 	expect(readHostedRuntimeState(root)).toEqual(store.read());
@@ -427,10 +426,12 @@ it("publishes and retrieves only through MCP, rejects native claiming, and recov
 	expect(peers!.structuredContent.peers).toEqual([{ participantId: "recipient", state: "held", holderLive: true }]);
 	expect(sent!.isError).toBe(false);
 	const eventId = sent!.structuredContent.eventId;
-	expect(firstStatus!.structuredContent.event?.delivery.status).toBe("pending");
+	expect(firstStatus!.structuredContent.event?.eventId).toBe(eventId);
 	const auth = { registrationId: test.recipient.registrationId, registrationKey: test.recipient.registrationKey };
-	await expect(test.client.call("inbox.claim", { ...auth, maxEvents: 1 })).rejects.toMatchObject({ code: "not_found" });
-	await expect(test.client.call("inbox.ack", { ...auth, claimId: "forged_native_claim", eventIds: [eventId] })).rejects.toMatchObject({ code: "not_found" });
+	expect(await test.client.call("pi.heartbeat", { ...auth, admit: true })).not.toHaveProperty("events");
+	// Ordinary mail cannot be settled through the native ack path: the body stays readable.
+	await test.client.call("inbox.ack", { ...auth, eventIds: [eventId] });
+	expect(test.readState().events[eventId]).toBeDefined();
 	const recipient = await test.issue(test.recipientParticipant);
 	const [offered] = await mcp(recipient.descriptorPath, [receive(eventId)]);
 	expect(offered!.structuredContent.message).toMatchObject({ eventId, body: "Please inspect." });
@@ -439,7 +440,7 @@ it("publishes and retrieves only through MCP, rejects native claiming, and recov
 	await test.restart();
 	const [retry, recovered] = await mcp(test.issued.descriptorPath, [send("op-1"), status("op-1")]);
 	expect(retry!.structuredContent.eventId).toBe(eventId);
-	expect(recovered!.structuredContent.event).toMatchObject({ eventId, readAt: 1000, delivery: { status: "pending" } });
+	expect(recovered!.structuredContent.event).toMatchObject({ eventId, readAt: 1000 });
 	expect(Object.keys(test.readState().events)).toEqual([eventId]);
 	expect(statSync(test.issued.descriptorPath).mode & 0o777).toBe(0o600);
 	expect(readFileSync(runtimeStatePaths(test.runtimeRoot).state, "utf8")).not.toContain(test.descriptor.secret);
@@ -506,7 +507,7 @@ it("never grants lifecycle authority to the messaging secret and fences a cross-
 	const test = await setup();
 	const forbidden: Array<[string, Record<string, unknown>]> = [
 		["pi.heartbeat", {}],
-		["inbox.claim", { maxEvents: 1 }],
+		["inbox.ack", { eventIds: ["evt_forged"] }],
 		["participant.acquire", { protocol: "proof", participantId: "forged" }],
 		["participant.stop_confirmed", { participantKey: test.recipientParticipant.participantKey, expectedGeneration: test.recipientParticipant.generation, confirmed: true }],
 		["worktree.remove", { callerParticipantKey: test.senderParticipant.participantKey, expectedCallerGeneration: test.senderParticipant.generation, protocol: "proof", participantId: "recipient", discardConfirmed: true }],
