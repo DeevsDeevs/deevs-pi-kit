@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { HostedRuntimeClientError } from "./client.ts";
+import { isEnded, isHeld } from "./hosted-types.ts";
 import type { MessagingClient } from "./messaging-client.ts";
 import {
 	auth,
@@ -80,11 +81,11 @@ async function runCollaborate({ services, args, ctx }: RuntimeCommandInput): Pro
 	const { session } = services;
 	const registration = await session.requireRegistration(ctx);
 	const existing = findParticipant(await session.listParticipants(registration), protocol, participantId);
-	if (existing?.state === "ended") {
+	if (isEnded(existing?.state)) {
 		const detail = `Revive ${protocol}/${participantId} and make its queued mail deliverable?`;
 		if (!await ctx.ui.confirm("Revive collaborator identity?", detail)) return;
 	}
-	const params = { ...auth(registration), protocol, participantId, revive: existing?.state === "ended" };
+	const params = { ...auth(registration), protocol, participantId, revive: isEnded(existing?.state) };
 	const result = parseAcquireResult(await session.client.call("participant.acquire", params));
 	session.store.persistIdentity({
 		protocol,
@@ -137,7 +138,7 @@ async function recoverParticipantKey(
 	const current = (await session.listParticipants(registration)).find((participant) =>
 		participant.protocol === identity.protocol
 		&& participant.participantId === identity.participantId
-		&& participant.state === "held"
+		&& isHeld(participant.state)
 		&& participant.holderTargetKey === registration.targetKey);
 	if (!current) throw new HostedRuntimeClientError("not_found", "Current collaborator identity has no recoverable durable participant key.");
 	const recovered: ParticipantIdentity = {

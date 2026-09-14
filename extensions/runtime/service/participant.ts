@@ -1,10 +1,15 @@
 import { randomUUID } from "node:crypto";
-import type {
-	HostedCollaboratorDriver,
-	HostedMailboxMessageEvent,
-	HostedParticipant,
-	HostedStateOperation,
-	HostedTarget,
+import {
+	type HostedCollaboratorDriver,
+	type HostedMailboxMessageEvent,
+	type HostedParticipant,
+	type HostedStateOperation,
+	type HostedTarget,
+	isAgentTarget,
+	isEnded,
+	isHeld,
+	isPiTarget,
+	isVacant,
 } from "../hosted-types.ts";
 import { RuntimeRegistrationManager, type HostedLiveRegistration } from "./registration.ts";
 import { deriveParticipantKey, HostedStateStore } from "./state.ts";
@@ -96,14 +101,14 @@ export class HostedParticipantCoordinator {
 		const participantKey = deriveParticipantKey(target.projectRoot, protocol, participantId);
 		this.assertNotStopping(participantKey);
 		const before = this.store.read().participants[participantKey];
-		if (before?.state === "ended" && !allowRevive) {
+		if (isEnded(before?.state) && !allowRevive) {
 			throw new HostedParticipantError("conflict", "Ended participant requires explicit revival authorization.");
 		}
 		const latest = before?.transitions.at(-1);
-		const revivedOwnHold = before?.state === "held"
+		const revivedOwnHold = isHeld(before?.state)
 			&& before.holderTargetKey === registration.targetKey
 			&& latest?.cause === "revive";
-		const revived = before?.state === "ended" || revivedOwnHold;
+		const revived = isEnded(before?.state) || revivedOwnHold;
 		this.store.apply({
 			type: "participant.acquire",
 			participantKey,
@@ -115,7 +120,7 @@ export class HostedParticipantCoordinator {
 			at: this.now(),
 		});
 		const participant = this.requireParticipant(participantKey, target.projectRoot);
-		const transitioned = before?.state !== "held" || before.holderTargetKey !== registration.targetKey;
+		const transitioned = !isHeld(before?.state) || before.holderTargetKey !== registration.targetKey;
 		return { participant: this.status(participant), revived, transitioned };
 	}
 
@@ -141,10 +146,10 @@ export class HostedParticipantCoordinator {
 		const target = this.requireTarget(registration.targetKey);
 		const participant = this.requireParticipant(participantKey, target.projectRoot);
 		const latest = participant.transitions.at(-1);
-		if (participant.state === "vacant" && latest?.cause === "stand_down" && latest.previousGeneration === expectedGeneration) {
+		if (isVacant(participant.state) && latest?.cause === "stand_down" && latest.previousGeneration === expectedGeneration) {
 			return this.status(participant);
 		}
-		if (participant.state !== "held" || participant.generation !== expectedGeneration) {
+		if (!isHeld(participant.state) || participant.generation !== expectedGeneration) {
 			throw new HostedParticipantError("conflict", "Participant state or generation changed before confirmed stand-down.");
 		}
 		const holderTargetKey = participant.holderTargetKey;
@@ -199,12 +204,12 @@ export class HostedParticipantCoordinator {
 		registration: HostedLiveRegistration,
 		expectedGeneration: string,
 	): string {
-		const vacantStoppedTarget = participant.state === "vacant" && latest.cause === "stand_down" ? latest.previousHolderTargetKey : undefined;
+		const vacantStoppedTarget = isVacant(participant.state) && latest.cause === "stand_down" ? latest.previousHolderTargetKey : undefined;
 		const retryingLostResponse = vacantStoppedTarget !== undefined && latest.previousGeneration === expectedGeneration;
 		if (participant.generation !== expectedGeneration && !retryingLostResponse) {
 			throw new HostedParticipantError("conflict", "Participant generation changed before confirmed stop.");
 		}
-		const holderTargetKey = participant.state === "held" ? participant.holderTargetKey : vacantStoppedTarget;
+		const holderTargetKey = isHeld(participant.state) ? participant.holderTargetKey : vacantStoppedTarget;
 		if (!holderTargetKey) throw new HostedParticipantError("conflict", "Participant has no stoppable collaborator target.");
 		if (holderTargetKey === registration.targetKey) {
 			throw new HostedParticipantError("conflict", "A Pi target cannot stop its own Herdr tab.");
@@ -212,7 +217,7 @@ export class HostedParticipantCoordinator {
 		this.assertTargetNotStopping(holderTargetKey);
 		const otherHolder = Object.values(this.store.read().participants)
 			.find((candidate) => candidate.participantKey !== participant.participantKey
-				&& candidate.state === "held"
+				&& isHeld(candidate.state)
 				&& candidate.holderTargetKey === holderTargetKey);
 		if (otherHolder) {
 			throw new HostedParticipantError("conflict", `Collaborator target now holds ${otherHolder.protocol}/${otherHolder.participantId}.`);
@@ -226,13 +231,13 @@ export class HostedParticipantCoordinator {
 		expectedGeneration: string,
 	): void {
 		const current = this.requireParticipant(participant.participantKey, participant.projectRoot);
-		if (participant.state !== "held") {
-			if (current.state !== "vacant" || current.generation !== participant.generation) {
+		if (!isHeld(participant.state)) {
+			if (!isVacant(current.state) || current.generation !== participant.generation) {
 				throw new HostedParticipantError("conflict", "Participant changed while its prior collaborator process was stopping.");
 			}
 			return;
 		}
-		if (current.state !== "held" || current.generation !== expectedGeneration || current.holderTargetKey !== holderTargetKey) {
+		if (!isHeld(current.state) || current.generation !== expectedGeneration || current.holderTargetKey !== holderTargetKey) {
 			throw new HostedParticipantError("conflict", "Participant changed while its collaborator process was stopping.");
 		}
 		this.store.apply({
@@ -256,7 +261,7 @@ export class HostedParticipantCoordinator {
 		const participant = this.requireParticipant(participantKey, target.projectRoot);
 		const latest = participant.transitions.at(-1);
 		if (takeoverAlreadyApplied(participant, latest, registration.targetKey, expectedGeneration)) return this.status(participant);
-		if (participant.state !== "held" || participant.generation !== expectedGeneration) {
+		if (!isHeld(participant.state) || participant.generation !== expectedGeneration) {
 			throw new HostedParticipantError("conflict", "Participant state or generation changed before takeover.");
 		}
 		if (participant.holderTargetKey === registration.targetKey) return this.status(participant);
@@ -294,7 +299,7 @@ export class HostedParticipantCoordinator {
 			throw new HostedParticipantError("conflict", "Sender identity or generation changed before send.");
 		}
 		const recipient = this.requireParticipant(recipientParticipantKey, target.projectRoot);
-		if (recipient.state === "ended") throw new HostedParticipantError("not_found", "Mailbox recipient has ended.");
+		if (isEnded(recipient.state)) throw new HostedParticipantError("not_found", "Mailbox recipient has ended.");
 		this.store.apply({
 			type: "mailbox.send",
 			senderParticipantKey: sender.participantKey,
@@ -357,13 +362,12 @@ export class HostedParticipantCoordinator {
 			participantId: participant.participantId,
 			state: participant.state,
 			generation: participant.generation,
-			holderLive: participant.state === "held" && holderTargetKey !== undefined && this.registrations.hasLiveTarget(holderTargetKey),
+			holderLive: isHeld(participant.state) && holderTargetKey !== undefined && this.registrations.hasLiveTarget(holderTargetKey),
 			lastTransition,
 		};
 		if (holderTargetKey) status.holderTargetKey = holderTargetKey;
-		if (holder?.kind === "pi") {
-			status.driver = "pi";
-		} else if (holder?.kind === "agent") {
+		if (isPiTarget(holder)) status.driver = "pi";
+		if (isAgentTarget(holder)) {
 			status.driver = holder.driver;
 			status.profile = holder.profile;
 		}
@@ -416,7 +420,7 @@ export class HostedParticipantCoordinator {
 }
 
 function holdsIdentity(participant: HostedParticipant, generation: string, targetKey: string): boolean {
-	return participant.state === "held"
+	return isHeld(participant.state)
 		&& participant.generation === generation
 		&& participant.holderTargetKey === targetKey;
 }
@@ -427,7 +431,7 @@ function takeoverAlreadyApplied(
 	targetKey: string,
 	expectedGeneration: string,
 ): boolean {
-	return participant.state === "held"
+	return isHeld(participant.state)
 		&& participant.holderTargetKey === targetKey
 		&& latest?.cause === "takeover"
 		&& latest.previousGeneration === expectedGeneration;
@@ -438,7 +442,7 @@ function stoppedGeneration(
 	latest: HostedParticipant["transitions"][number],
 	expectedGeneration: string,
 ): string {
-	if (participant.state === "held") return expectedGeneration;
+	if (isHeld(participant.state)) return expectedGeneration;
 	const previous = latest.previousGeneration;
 	if (previous === undefined) throw new HostedParticipantError("conflict", "Stopped participant has no prior generation.");
 	return previous;

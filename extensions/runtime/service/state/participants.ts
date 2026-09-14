@@ -5,6 +5,8 @@ import {
 	type HostedRuntimeState,
 	type HostedStateOperation,
 	type HostedTarget,
+	isHeld,
+	isVacant,
 } from "../../hosted-types.ts";
 import { HostedStateConflictError } from "./errors.ts";
 import { assertParticipantName, assertStateId, assertStateTime } from "./guards.ts";
@@ -33,7 +35,7 @@ export function acquireParticipant(state: HostedRuntimeState, operation: Acquire
 	assertParticipantName(operation.protocol, "protocol");
 	assertParticipantName(operation.participantId, "participant ID");
 	const current = state.participants[operation.participantKey];
-	if (current?.state === "held") {
+	if (isHeld(current?.state)) {
 		if (current.holderTargetKey === operation.targetKey) return state;
 		throw new HostedStateConflictError("conflict", "Participant is held by another target.");
 	}
@@ -41,7 +43,7 @@ export function acquireParticipant(state: HostedRuntimeState, operation: Acquire
 	if (!current) return replaceParticipant(state, newParticipant(operation, target));
 	assertReacquirable(current, operation);
 	const transition: HostedParticipantTransition = {
-		cause: current.state === "vacant" ? "reacquire" : "revive",
+		cause: isVacant(current.state) ? "reacquire" : "revive",
 		generation: operation.generation,
 		holderTargetKey: operation.targetKey,
 		previousGeneration: current.generation,
@@ -79,7 +81,7 @@ export function takeoverParticipant(state: HostedRuntimeState, operation: Takeov
 	const current = state.participants[operation.participantKey];
 	const target = state.targets[operation.targetKey];
 	if (!current || !target) throw new HostedStateConflictError("conflict", "Participant or takeover target is absent.");
-	if (current.state !== "held" || target.projectRoot !== current.projectRoot) {
+	if (!isHeld(current.state) || target.projectRoot !== current.projectRoot) {
 		throw new HostedStateConflictError("conflict", "Participant is not eligible for takeover.");
 	}
 	if (current.holderTargetKey === operation.targetKey) return state;
@@ -101,7 +103,7 @@ export function takeoverParticipant(state: HostedRuntimeState, operation: Takeov
 export function clearParticipantWorktree(state: HostedRuntimeState, operation: ClearWorktreeOperation): HostedRuntimeState {
 	const current = state.participants[operation.participantKey];
 	if (!current) throw new HostedStateConflictError("conflict", "Participant is absent.");
-	if (current.state === "held") {
+	if (isHeld(current.state)) {
 		throw new HostedStateConflictError("conflict", "A held participant keeps its worktree until it stands down.");
 	}
 	if (!current.worktreePath) return state;
@@ -115,7 +117,7 @@ function replaceParticipant(state: HostedRuntimeState, participant: HostedPartic
 
 function assertTargetHasNoParticipant(state: HostedRuntimeState, targetKey: string, exceptParticipantKey: string): void {
 	const conflicting = Object.values(state.participants).some((participant) => participant.participantKey !== exceptParticipantKey
-		&& participant.state === "held"
+		&& isHeld(participant.state)
 		&& participant.holderTargetKey === targetKey);
 	if (conflicting) throw new HostedStateConflictError("conflict", "Target already holds another participant identity.");
 }
@@ -154,7 +156,7 @@ function assertReacquirable(current: HostedParticipant, operation: AcquireOperat
 
 function standDownAlreadyApplied(current: HostedParticipant, operation: StandDownOperation): boolean {
 	const latest = current.transitions.at(-1);
-	return current.state === "vacant"
+	return isVacant(current.state)
 		&& latest?.cause === "stand_down"
 		&& latest.previousGeneration === operation.expectedGeneration
 		&& latest.previousHolderTargetKey === operation.targetKey;
@@ -171,7 +173,7 @@ function applyParticipantTransition(
 	cause: HostedParticipantTransition["cause"],
 	nextState: HostedParticipant["state"],
 ): HostedRuntimeState {
-	if (current.state !== "held" || current.holderTargetKey !== operation.targetKey) {
+	if (!isHeld(current.state) || current.holderTargetKey !== operation.targetKey) {
 		const latest = current.transitions.at(-1);
 		if (current.state === nextState && latest?.cause === cause && latest.previousHolderTargetKey === operation.targetKey) return state;
 		throw new HostedStateConflictError("conflict", "Only the current participant holder may change its state.");

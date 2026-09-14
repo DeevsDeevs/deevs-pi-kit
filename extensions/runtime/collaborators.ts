@@ -12,7 +12,13 @@ import {
 	type ResolvedCollaboratorCandidate,
 } from "./collaborator-policy.ts";
 import { throwIfAborted } from "./herdr.ts";
-import type { HostedCollaboratorProfile } from "./hosted-types.ts";
+import {
+	type HostedCollaboratorProfile,
+	isEnded,
+	isHeld,
+	isVacant,
+	isWriter,
+} from "./hosted-types.ts";
 import type { NativeAgentService } from "./native-agents.ts";
 import {
 	auth,
@@ -89,9 +95,9 @@ export class CollaboratorService {
 
 	/** A workspace-write collaborator falls back to read-only until its worktree and held identity are both proven. */
 	private effectiveProfile(configured: HostedCollaboratorProfile): HostedCollaboratorProfile {
-		if (configured !== "workspace-write") return configured;
+		if (!isWriter(configured)) return configured;
 		if (!this.session.store.worktree) return "read-only";
-		return this.session.store.identity?.disposition === "held" ? "workspace-write" : "read-only";
+		return isHeld(this.session.store.identity?.disposition) ? "workspace-write" : "read-only";
 	}
 
 	async manage(input: CollaboratorManageInput, ctx: ExtensionContext, signal?: AbortSignal): Promise<CollaboratorManageResult[]> {
@@ -125,7 +131,7 @@ export class CollaboratorService {
 		throwIfAborted(signal);
 		assertInteractiveHerdrStart(ctx);
 		const identity = this.session.store.identity;
-		if (identity?.disposition === "ended") {
+		if (isEnded(identity?.disposition)) {
 			throw new HostedRuntimeClientError("conflict", "Current collaborator identity has ended; explicit revival is required.");
 		}
 		const protocol = collaboratorName(identity?.protocol ?? input.protocol, "protocol");
@@ -158,10 +164,10 @@ export class CollaboratorService {
 	): ClientParticipantStatus | undefined {
 		const caller = findByName(participants, protocol, participantId);
 		if (!caller) return undefined;
-		if (caller.state === "ended") {
+		if (isEnded(caller.state)) {
 			throw new HostedRuntimeClientError("conflict", "Ended caller identities require explicit /runtime collaborate revival.");
 		}
-		if (caller.state !== "held") return undefined;
+		if (!isHeld(caller.state)) return undefined;
 		if (caller.holderTargetKey !== registration.targetKey) {
 			const detail = `Current collaborator identity ${protocol}/${participantId} is held by another Pi target.`;
 			throw new HostedRuntimeClientError("conflict", detail);
@@ -243,10 +249,10 @@ export class CollaboratorService {
 			const protocol = collaboratorName(requestedProtocol ?? this.session.store.identity?.protocol, "protocol");
 			const registration = await this.session.requireRegistration(ctx);
 			const targets = await this.resolveChangeTargets(protocol, candidates, registration);
-			const actionable = action === "stand_down" ? targets.filter((participant) => participant.state === "held") : targets;
+			const actionable = action === "stand_down" ? targets.filter((participant) => isHeld(participant.state)) : targets;
 			const results = Array<CollaboratorManageResult>(targets.length);
 			if (action === "stand_down") targets.forEach((participant, index) => {
-				if (participant.state !== "vacant") return;
+				if (!isVacant(participant.state)) return;
 				results[index] = { participant: `${protocol}/${participant.participantId}`, status: "already_vacant" };
 			});
 			if (actionable.length === 0) return results;
@@ -277,7 +283,7 @@ export class CollaboratorService {
 		return participantIds.map((participantId) => {
 			const participant = participants.find((candidate) => candidate.protocol === protocol && candidate.participantId === participantId);
 			if (!participant) throw new HostedRuntimeClientError("not_found", `No ${protocol}/${participantId} participant exists.`);
-			if (participant.state === "ended") throw new HostedRuntimeClientError("conflict", `Participant ${protocol}/${participantId} has ended.`);
+			if (isEnded(participant.state)) throw new HostedRuntimeClientError("conflict", `Participant ${protocol}/${participantId} has ended.`);
 			return participant;
 		});
 	}
@@ -336,7 +342,7 @@ export class CollaboratorService {
 			throw new HostedRuntimeClientError("invalid_response", "Runtime returned an invalid collaborator stop outcome.");
 		}
 		const identity = this.session.store.identity;
-		if (identity?.participantKey === changed.participantKey && changed.state === "vacant") {
+		if (identity?.participantKey === changed.participantKey && isVacant(changed.state)) {
 			this.session.store.persistIdentity({ ...identity, generation: changed.generation, disposition: "vacant" });
 		}
 		const control = participant.holderTargetKey ? this.session.store.agent(participant.holderTargetKey) : undefined;
@@ -348,7 +354,7 @@ export class CollaboratorService {
 	async manageWorktrees(input: CollaboratorWorktreeInput, ctx: ExtensionContext, signal?: AbortSignal): Promise<SerializedValue> {
 		throwIfAborted(signal);
 		const identity = this.session.requireParticipantIdentity();
-		if (identity.disposition !== "held" || !identity.participantKey || !identity.generation) {
+		if (!isHeld(identity.disposition) || !identity.participantKey || !identity.generation) {
 			throw new HostedRuntimeClientError("conflict", "Current collaborator identity is not authoritatively held.");
 		}
 		const registration = await this.session.requireRegistration(ctx);
@@ -420,10 +426,10 @@ function assertStartableChildren(
 ): void {
 	for (const candidate of candidates) {
 		const existing = findByName(participants, protocol, candidate.participantId);
-		if (existing?.state === "held") {
+		if (isHeld(existing?.state)) {
 			throw new HostedRuntimeClientError("conflict", `Participant ${protocol}/${candidate.participantId} already has a holder.`);
 		}
-		if (existing?.state === "ended") {
+		if (isEnded(existing?.state)) {
 			throw new HostedRuntimeClientError("conflict", `Ended collaborator ${protocol}/${candidate.participantId} requires explicit revival.`);
 		}
 	}
@@ -449,7 +455,7 @@ function confirmStart(request: StartConfirmation): Promise<boolean> {
 	const { ctx, protocol, callerParticipantId, candidates } = request;
 	const projectRoot = realpathSync(ctx.cwd);
 	const summary = candidates.map((candidate) => {
-		const worktree = candidate.profile === "workspace-write" ? "yes" : "no";
+		const worktree = isWriter(candidate.profile) ? "yes" : "no";
 		const replaces = standingDown(findByName(request.participants, protocol, candidate.participantId)) ? "yes" : "no";
 		return `${protocol}/${candidate.participantId} — ${collaboratorConfiguration(candidate)},`
 			+ ` isolated worktree ${worktree}, replace stood-down process ${replaces}`;

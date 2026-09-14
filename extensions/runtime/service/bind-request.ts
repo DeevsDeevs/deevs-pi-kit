@@ -1,10 +1,12 @@
 import { realpathSync } from "node:fs";
-import type {
-	HostedAgentBind,
-	HostedAgentTarget,
-	HostedCollaboratorProfile,
-	HostedHerdrLocator,
-	HostedNativeCollaboratorDriver,
+import {
+	type HostedAgentBind,
+	type HostedAgentTarget,
+	type HostedCollaboratorProfile,
+	type HostedHerdrLocator,
+	type HostedNativeCollaboratorDriver,
+	isAgentTarget,
+	isWriter,
 } from "../hosted-types.ts";
 import type { HostedLiveAgent } from "./identity.ts";
 import type { HostedLiveRegistration } from "./registration.ts";
@@ -77,7 +79,7 @@ function agentTarget(draft: AgentBindDraft, worktreePath: string | undefined): H
 	const { input, names, projectRoot } = draft;
 	const targetKey = deriveAgentTargetKey(projectRoot, names.agentName);
 	const existing = draft.store.read().targets[targetKey];
-	if (existing !== undefined && existing.kind !== "agent") {
+	if (existing !== undefined && !isAgentTarget(existing)) {
 		throw new AgentBindError("conflict", "Herdr agent target key already belongs to another target kind.");
 	}
 	const target: HostedAgentTarget = {
@@ -120,7 +122,7 @@ function agentTab(agent: HostedLiveAgent): HostedHerdrLocator {
 }
 
 async function isWritableWorktree(worktreePath: string, projectRoot: string, profile: HostedCollaboratorProfile): Promise<boolean> {
-	if (profile !== "workspace-write") return false;
+	if (!isWriter(profile)) return false;
 	return isProjectWorktree(worktreePath, projectRoot);
 }
 

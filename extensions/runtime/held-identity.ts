@@ -1,5 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { HostedRuntimeClientError, type HostedRuntimeClient } from "./client.ts";
+import { isEnded, isHeld } from "./hosted-types.ts";
 import { auth, parseAcquireResult, parseParticipant, type ClientParticipantStatus, type LiveClientRegistration } from "./responses.ts";
 import type { HostedSessionStore, ParticipantIdentity } from "./session-record.ts";
 
@@ -20,7 +21,7 @@ export async function restoreHeldParticipant(
 	const identity = session.store.identity;
 	const scope = session.scope(ctx, registration);
 	const currentScope = (): boolean => scope() && session.store.identity === identity;
-	if (!identity || identity.disposition !== "held") return;
+	if (!identity || !isHeld(identity.disposition)) return;
 	session.requireCurrentScope(currentScope);
 	if (identity.participantKey && await verifyHeldParticipant(session, identity, registration, ctx, currentScope)) return;
 	const acquired = parseAcquireResult(await session.client.call("participant.acquire", {
@@ -64,12 +65,12 @@ async function verifyHeldParticipant(
 	if (current.protocol !== identity.protocol || current.participantId !== identity.participantId) {
 		return vacate(session, identity, ctx, `Collaborator identity key does not match ${name}; explicit acquire is required.`);
 	}
-	if (current.state === "held" && current.holderTargetKey === registration.targetKey) return false;
+	if (isHeld(current.state) && current.holderTargetKey === registration.targetKey) return false;
 	session.store.persistIdentity({
 		...identity,
 		participantKey: current.participantKey,
 		generation: current.generation,
-		disposition: current.state === "ended" ? "ended" : "vacant",
+		disposition: isEnded(current.state) ? "ended" : "vacant",
 	});
 	ctx.ui.notify(`Collaborator ${name} is ${current.state}; explicit acquire or takeover is required.`, "warning");
 	return true;

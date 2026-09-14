@@ -1,5 +1,7 @@
+import { Value } from "typebox/value";
 import { HostedRuntimeClientError } from "./client.ts";
 import type { HostedCollaboratorProfile, HostedNativeCollaboratorDriver } from "./hosted-types.ts";
+import { HostedCollaboratorProfileSchema, HostedNativeCollaboratorDriverSchema } from "./schemas/state.ts";
 import {
 	booleanValue,
 	parseRegistration,
@@ -34,10 +36,10 @@ export interface ManagedAgentStatus {
 
 export function parseBoundAgent(value: RuntimeResponse): BoundAgent {
 	const result = strictObject(value, "Herdr agent bind result");
-	if (result.driver !== "claude-code" && result.driver !== "codex") {
+	if (!Value.Check(HostedNativeCollaboratorDriverSchema, result.driver)) {
 		throw new HostedRuntimeClientError("invalid_response", "Runtime returned an invalid bound agent driver.");
 	}
-	if (result.profile !== "read-only" && result.profile !== "workspace-write") {
+	if (!Value.Check(HostedCollaboratorProfileSchema, result.profile)) {
 		throw new HostedRuntimeClientError("invalid_response", "Runtime returned an invalid bound agent profile.");
 	}
 	return {

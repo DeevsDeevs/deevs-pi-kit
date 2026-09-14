@@ -1,4 +1,13 @@
-import type { HostedAgentBind, HostedParticipant, HostedRuntimeState, HostedStateOperation } from "../../hosted-types.ts";
+import {
+	type HostedAgentBind,
+	type HostedParticipant,
+	type HostedRuntimeState,
+	type HostedStateOperation,
+	isHeld,
+	isPiTarget,
+	isVacant,
+	isWriter,
+} from "../../hosted-types.ts";
 import { sameTarget } from "./compare.ts";
 import { HostedStateConflictError } from "./errors.ts";
 import { assertParticipantName, assertStateId, assertStateTime } from "./guards.ts";
@@ -29,7 +38,7 @@ export function bindAgentTarget(state: HostedRuntimeState, operation: BindAgentO
 	assertAgentBindCaller(state, bind);
 	assertAgentBindIdentity(bind);
 	const participant = state.participants[target.participantKey];
-	const alreadyBound = participant?.state === "held"
+	const alreadyBound = isHeld(participant?.state)
 		&& participant.holderTargetKey === target.targetKey
 		&& participant.generation === target.holderGeneration;
 	if (!alreadyBound && !reservedForBind(participant, bind.expectedParticipantGeneration)) {
@@ -60,7 +69,7 @@ function assertAgentBindIdentity(bind: HostedAgentBind): void {
 	if (target.participantKey === bind.callerParticipantKey) {
 		throw new HostedStateConflictError("conflict", "An agent target may not hold its caller's participant identity.");
 	}
-	if (target.profile === "read-only" && target.worktreePath !== undefined) {
+	if (!isWriter(target.profile) && target.worktreePath !== undefined) {
 		throw new HostedStateConflictError("conflict", "Read-only agent targets never carry a worktree.");
 	}
 }
@@ -68,16 +77,16 @@ function assertAgentBindIdentity(bind: HostedAgentBind): void {
 function assertAgentBindCaller(state: HostedRuntimeState, bind: HostedAgentBind): void {
 	const caller = state.participants[bind.callerParticipantKey];
 	const callerTarget = state.targets[bind.callerTargetKey];
-	const held = caller?.state === "held"
+	const held = isHeld(caller?.state)
 		&& caller.generation === bind.callerGeneration
 		&& caller.holderTargetKey === bind.callerTargetKey;
 	if (!held) throw new HostedStateConflictError("conflict", "Agent bind caller authority changed.");
-	if (callerTarget?.kind !== "pi" || caller.projectRoot !== bind.target.projectRoot) {
+	if (!isPiTarget(callerTarget) || caller.projectRoot !== bind.target.projectRoot) {
 		throw new HostedStateConflictError("conflict", "Agent bind caller is outside its Pi project.");
 	}
 }
 
 function reservedForBind(participant: HostedParticipant | undefined, expectedGeneration: string | undefined): boolean {
 	if (!participant) return expectedGeneration === undefined;
-	return participant.state === "vacant" && participant.generation === expectedGeneration;
+	return isVacant(participant.state) && participant.generation === expectedGeneration;
 }

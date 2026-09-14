@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import type { HostedParticipant } from "../hosted-types.ts";
+import { type HostedParticipant, isHeld, isPiTarget } from "../hosted-types.ts";
 import type { HostedLiveRegistration } from "./registration.ts";
 import { deriveParticipantKey, HostedStateStore } from "./state.ts";
 
@@ -62,7 +62,7 @@ export class RuntimeWorktrees {
 		const projectRoot = this.authorize(caller, input);
 		const participantKey = this.participantKey(projectRoot, input);
 		const participant = this.store.read().participants[participantKey];
-		if (participant?.state === "held") {
+		if (isHeld(participant?.state)) {
 			throw new RuntimeWorktreeError("conflict", "Participant already has a live holder; stop it before reusing its worktree.");
 		}
 		const existing = (await listWorktrees(projectRoot)).find((worktree) => isWorktreeOf(worktree, input));
@@ -107,7 +107,7 @@ export class RuntimeWorktrees {
 		}
 		const projectRoot = this.authorize(caller, input);
 		const participantKey = this.participantKey(projectRoot, input);
-		if (this.store.read().participants[participantKey]?.state === "held") {
+		if (isHeld(this.store.read().participants[participantKey]?.state)) {
 			throw new RuntimeWorktreeError("conflict", "Stop the collaborator before removing its worktree.");
 		}
 		const worktree = (await listWorktrees(projectRoot)).find((candidate) => isWorktreeOf(candidate, input));
@@ -143,7 +143,7 @@ export class RuntimeWorktrees {
 
 	private projectRoot(caller: HostedLiveRegistration): string {
 		const target = this.store.read().targets[caller.targetKey];
-		if (target?.kind !== "pi") {
+		if (!isPiTarget(target)) {
 			throw new RuntimeWorktreeError("conflict", "Only an authenticated Pi target may manage collaborator worktrees.");
 		}
 		return target.projectRoot;
@@ -160,7 +160,7 @@ function callerHoldsAuthority(
 	caller: HostedLiveRegistration,
 	projectRoot: string,
 ): boolean {
-	if (!participant || participant.state !== "held") return false;
+	if (!participant || !isHeld(participant.state)) return false;
 	return participant.generation === input.expectedCallerGeneration
 		&& participant.holderTargetKey === caller.targetKey
 		&& participant.projectRoot === projectRoot;

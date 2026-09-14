@@ -1,8 +1,11 @@
 import type {
 	HostedAgentTarget,
+	HostedCollaboratorProfile,
 	HostedFilesystemCreatedEvent,
 	HostedMessagingGrant,
 	HostedMonitor,
+	HostedParticipantState,
+	HostedPiTarget,
 	HostedTarget,
 } from "./schemas/state.ts";
 
@@ -31,10 +34,35 @@ export type {
 	HostedParticipant,
 	HostedParticipantState,
 	HostedParticipantTransition,
+	HostedPiTarget,
 	HostedRuntimeInstance,
 	HostedRuntimeState,
 	HostedTarget,
 } from "./schemas/state.ts";
+
+export function isHeld(state: HostedParticipantState | undefined): boolean {
+	return state === "held";
+}
+
+export function isVacant(state: HostedParticipantState | undefined): boolean {
+	return state === "vacant";
+}
+
+export function isEnded(state: HostedParticipantState | undefined): boolean {
+	return state === "ended";
+}
+
+export function isPiTarget(target: HostedTarget | undefined): target is HostedPiTarget {
+	return target?.kind === "pi";
+}
+
+export function isAgentTarget(target: HostedTarget | undefined): target is HostedAgentTarget {
+	return target?.kind === "agent";
+}
+
+export function isWriter(profile: HostedCollaboratorProfile | undefined): boolean {
+	return profile === "workspace-write";
+}
 
 export interface HostedAgentBind {
 	target: HostedAgentTarget;
