@@ -10,7 +10,7 @@ const NAME = /^[a-z][a-z0-9_-]{0,63}$/;
 const MAX_GIT_BUFFER = 1024 * 1024;
 const GIT_TIMEOUT_MS = 30_000;
 
-export class RuntimeWorktreeError extends Error {
+class RuntimeWorktreeError extends Error {
 	readonly code: "invalid_request" | "not_found" | "conflict" | "git_error";
 
 	constructor(code: RuntimeWorktreeError["code"], message: string) {
@@ -20,6 +20,7 @@ export class RuntimeWorktreeError extends Error {
 }
 
 export interface RuntimeWorktree {
+	protocol: string;
 	participantId: string;
 	path: string;
 	branchRef: string;
@@ -44,7 +45,6 @@ export interface RemovedWorktree {
 }
 
 export interface WorktreeListing extends RuntimeWorktree {
-	protocol?: string;
 	participantState?: HostedParticipant["state"];
 	recorded: boolean;
 }
@@ -60,22 +60,23 @@ export class RuntimeWorktrees {
 
 	async ensure(caller: HostedLiveRegistration, input: EnsureWorktreeInput): Promise<RuntimeWorktree> {
 		const projectRoot = this.authorize(caller, input);
-		const participant = this.store.read().participants[this.participantKey(projectRoot, input)];
+		const participantKey = this.participantKey(projectRoot, input);
+		const participant = this.store.read().participants[participantKey];
 		if (participant?.state === "held") {
 			throw new RuntimeWorktreeError("conflict", "Participant already has a live holder; stop it before reusing its worktree.");
 		}
-		const recorded = participant?.worktreePath;
-		const existing = (await listWorktrees(projectRoot)).find((worktree) => worktree.participantId === input.participantId);
+		const existing = (await listWorktrees(projectRoot)).find((worktree) => isWorktreeOf(worktree, input));
 		if (existing) {
-			if (recorded && recorded !== existing.path) {
+			this.assertWorktreeIsOwn(existing.path, participantKey);
+			if (participant?.worktreePath && participant.worktreePath !== existing.path) {
 				throw new RuntimeWorktreeError("conflict", "Recorded participant worktree does not match its Git worktree.");
 			}
 			return existing;
 		}
-		const path = join(this.root, "workspaces", input.participantId);
+		const path = join(this.root, "workspaces", `${input.protocol}__${input.participantId}`);
 		mkdirSync(join(this.root, "workspaces"), { recursive: true, mode: 0o700 });
-		await git(projectRoot, ["worktree", "add", "-b", `runtime/collab/${input.participantId}`, path, "HEAD"]);
-		return { participantId: input.participantId, path: realpathSync(path), branchRef: `${BRANCH_PREFIX}${input.participantId}` };
+		await addWorktree(projectRoot, collaboratorBranch(input), path);
+		return { protocol: input.protocol, participantId: input.participantId, path: realpathSync(path), branchRef: branchRef(input) };
 	}
 
 	async list(caller: HostedLiveRegistration): Promise<WorktreeListing[]> {
@@ -84,15 +85,15 @@ export class RuntimeWorktrees {
 		const listings = (await listWorktrees(projectRoot)).map((worktree): WorktreeListing => {
 			const participant = participants.find((candidate) => candidate.worktreePath === worktree.path);
 			if (!participant) return { ...worktree, recorded: false };
-			return { ...worktree, protocol: participant.protocol, participantState: participant.state, recorded: true };
+			return { ...worktree, participantState: participant.state, recorded: true };
 		});
 		for (const participant of participants) {
 			if (!participant.worktreePath || listings.some((listing) => listing.path === participant.worktreePath)) continue;
 			listings.push({
+				protocol: participant.protocol,
 				participantId: participant.participantId,
 				path: participant.worktreePath,
-				branchRef: `${BRANCH_PREFIX}${participant.participantId}`,
-				protocol: participant.protocol,
+				branchRef: branchRef(participant),
 				participantState: participant.state,
 				recorded: true,
 			});
@@ -109,12 +110,20 @@ export class RuntimeWorktrees {
 		if (this.store.read().participants[participantKey]?.state === "held") {
 			throw new RuntimeWorktreeError("conflict", "Stop the collaborator before removing its worktree.");
 		}
-		const worktree = (await listWorktrees(projectRoot)).find((candidate) => candidate.participantId === input.participantId);
+		const worktree = (await listWorktrees(projectRoot)).find((candidate) => isWorktreeOf(candidate, input));
 		if (!worktree) throw new RuntimeWorktreeError("not_found", "Participant has no Runtime worktree in this project.");
-		await git(projectRoot, ["worktree", "remove", "--force", worktree.path]);
-		await git(projectRoot, ["branch", "-D", `runtime/collab/${input.participantId}`]);
+		this.assertWorktreeIsOwn(worktree.path, participantKey);
 		if (this.store.read().participants[participantKey]) this.store.apply({ type: "participant.worktree.clear", participantKey });
+		await git(projectRoot, ["worktree", "remove", "--force", worktree.path]);
+		await git(projectRoot, ["branch", "-D", collaboratorBranch(input)]);
 		return { removed: true };
+	}
+
+	/** A Git worktree recorded on another participant belongs to that identity, whatever its branch says. */
+	private assertWorktreeIsOwn(path: string, participantKey: string): void {
+		const owner = Object.values(this.store.read().participants)
+			.find((participant) => participant.worktreePath === path && participant.participantKey !== participantKey);
+		if (owner) throw new RuntimeWorktreeError("conflict", `Worktree ${path} belongs to ${owner.protocol}/${owner.participantId}.`);
 	}
 
 	private authorize(caller: HostedLiveRegistration, input: EnsureWorktreeInput): string {
@@ -157,17 +166,58 @@ function callerHoldsAuthority(
 		&& participant.projectRoot === projectRoot;
 }
 
+interface ParticipantIdentity {
+	protocol: string;
+	participantId: string;
+}
+
+function isWorktreeOf(worktree: RuntimeWorktree, identity: ParticipantIdentity): boolean {
+	return worktree.protocol === identity.protocol
+		&& worktree.participantId === identity.participantId;
+}
+
+function collaboratorBranch(identity: ParticipantIdentity): string {
+	return `runtime/collab/${identity.protocol}/${identity.participantId}`;
+}
+
+function branchRef(identity: ParticipantIdentity): string {
+	return `${BRANCH_PREFIX}${identity.protocol}/${identity.participantId}`;
+}
+
+/** A leftover branch outrules `-b`, so an interrupted removal or a manually pruned directory still reattaches. */
+async function addWorktree(projectRoot: string, branch: string, path: string): Promise<void> {
+	const reattach = await branchExists(projectRoot, branch);
+	if (reattach) await git(projectRoot, ["worktree", "add", path, branch]);
+	else await git(projectRoot, ["worktree", "add", "-b", branch, path, "HEAD"]);
+}
+
+async function branchExists(projectRoot: string, branch: string): Promise<boolean> {
+	try {
+		await git(projectRoot, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 export async function listWorktrees(projectRoot: string): Promise<RuntimeWorktree[]> {
 	const worktrees: RuntimeWorktree[] = [];
 	let path: string | undefined;
 	for (const line of (await git(projectRoot, ["worktree", "list", "--porcelain"])).split("\n")) {
 		if (line.startsWith("worktree ")) path = line.slice("worktree ".length);
 		if (!line.startsWith("branch ") || !path) continue;
-		const branchRef = line.slice("branch ".length);
-		if (branchRef.startsWith(BRANCH_PREFIX)) worktrees.push({ participantId: branchRef.slice(BRANCH_PREFIX.length), path, branchRef });
+		const worktree = parseWorktreeBranch(line.slice("branch ".length), path);
+		if (worktree) worktrees.push(worktree);
 		path = undefined;
 	}
 	return worktrees;
+}
+
+function parseWorktreeBranch(branch: string, path: string): RuntimeWorktree | undefined {
+	if (!branch.startsWith(BRANCH_PREFIX)) return undefined;
+	const [protocol, participantId, ...rest] = branch.slice(BRANCH_PREFIX.length).split("/");
+	if (!protocol || !participantId || rest.length > 0) return undefined;
+	return { protocol, participantId, path, branchRef: branch };
 }
 
 export async function isProjectWorktree(path: string, projectRoot: string): Promise<boolean> {

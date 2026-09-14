@@ -588,7 +588,8 @@ export class CollaboratorService {
 		}
 		if (!ctx.hasUI) throw new HostedRuntimeClientError("host_unavailable", "Worktree cleanup requires an interactive trusted Pi session.");
 		const participantId = collaboratorName(input.participantId, "participant ID");
-		const detail = `Force-remove the worktree of ${identity.protocol}/${participantId} and delete branch runtime/collab/${participantId}?`
+		const detail = `Force-remove the worktree of ${identity.protocol}/${participantId}`
+			+ ` and delete branch runtime/collab/${identity.protocol}/${participantId}?`
 			+ " Uncommitted or unmerged work in it is lost.";
 		if (!await ctx.ui.confirm("Remove collaborator worktree?", detail, { signal })) return { declined: true };
 		const params = {

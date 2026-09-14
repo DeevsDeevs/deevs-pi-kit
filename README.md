@@ -147,7 +147,7 @@ When Pi runs inside Herdr (`HERDR_ENV=1`), normalize legacy and Kitty Alt+Enter 
 Runtime is a local daemon with two jobs. It watches newly created direct-child files in a monitored directory and delivers them to one
 exact Pi session across restarts, claiming them in-process through Pi's heartbeat instead of prompting or focusing any pane. It also
 hosts persistent Pi, Claude Code, and Codex collaborators as real interactive agents in no-focus Herdr tabs, each holding a durable
-participant identity lease, and each writer working in its own Git worktree on `runtime/collab/<participantId>`.
+participant identity lease, and each writer working in its own Git worktree on `runtime/collab/<protocol>/<participantId>`.
 
 Every start, stand-down, stop, release, takeover, and worktree cleanup needs one explicit confirmed interactive step; collaborator prose
 never authorizes any of them. Automatic prompt injection into a Claude/Codex tab is not implemented — their mail waits for human input in

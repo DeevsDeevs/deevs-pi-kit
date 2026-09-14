@@ -33,7 +33,7 @@ One Unix socket per Pi agent directory. A missing daemon starts in the initial t
 workspace rooted at the Runtime state directory. Each collaborator instead occupies a real Herdr agent tab in the requesting project
 workspace, started with `herdr agent start --kind pi|claude|codex`; that tab holds the real provider UI, never a Runtime bridge command,
 and Runtime drives it only through Herdr's structured agent API — never `pane run`, `pane send-*`, PTY bytes, or focus mutation. State is
-`instance.json`, `state.v1.json`, `runtime.sock`, and `workspaces/<participantId>/` under `$PI_CODING_AGENT_DIR/runtime/`, a mode `0700`
+`instance.json`, `state.v1.json`, `runtime.sock`, and `workspaces/<protocol>__<participantId>/` under `$PI_CODING_AGENT_DIR/runtime/`, a mode `0700`
 directory holding mode `0600` files.
 
 ## Wire transport
@@ -95,8 +95,8 @@ absolute path, and the launch command is capped at 4000 bytes and fails closed r
 
 ## Worktrees
 
-`read-only` is the default. `workspace-write` gets one Runtime-owned worktree at `<runtimeRoot>/workspaces/<participantId>` on branch
-`runtime/collab/<participantId>`; no writer gets the main checkout as cwd, and Runtime verifies the cwd is a separate worktree of the same
+`read-only` is the default. `workspace-write` gets one Runtime-owned worktree at `<runtimeRoot>/workspaces/<protocol>__<participantId>` on branch
+`runtime/collab/<protocol>/<participantId>`; no writer gets the main checkout as cwd, and Runtime verifies the cwd is a separate worktree of the same
 repository. Runtime owns only creation, listing, and confirmed removal, never commits or merges; stop retains the worktree, and
 `worktree.remove` force-removes it and deletes its branch after a trusted confirmation.
 
