@@ -1,8 +1,6 @@
 import { resolve } from "node:path";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { HostedRuntimeClientError } from "./client.ts";
-import { collaboratorName, resolveCollaboratorCandidate } from "./collaborator-policy.ts";
-import type { CollaboratorService } from "./collaborators.ts";
 import type { MessagingClient } from "./messaging-client.ts";
 import {
 	auth,
@@ -19,12 +17,11 @@ import type { RuntimeSession } from "./runtime-session.ts";
 import type { ParticipantIdentity } from "./session-record.ts";
 
 const USAGE = "Usage: /runtime [status|start|register|monitor <directory>|monitor-delete|collaborate <protocol> <id>"
-	+ "|collaborator-start <protocol> <id>|participants|stand-down|leave|takeover <protocol> <id>]";
+	+ "|participants|stand-down|leave|takeover <protocol> <id>]";
 
 export interface RuntimeCommandServices {
 	session: RuntimeSession;
 	messaging: MessagingClient;
-	collaborators: CollaboratorService;
 }
 
 interface RuntimeCommandInput {
@@ -44,7 +41,6 @@ const HANDLERS = new Map<string, RuntimeCommandHandler>([
 	["stand-down", (input) => runRelinquish(input, "stand-down")],
 	["leave", (input) => runRelinquish(input, "leave")],
 	["takeover", runTakeover],
-	["collaborator-start", runCollaboratorStart],
 	["monitor", runMonitor],
 	["monitor-delete", runMonitorDelete],
 ]);
@@ -177,17 +173,6 @@ async function runTakeover({ services, args, ctx }: RuntimeCommandInput): Promis
 		disposition: "held",
 	});
 	ctx.ui.notify(`Took over ${protocol}/${participantId}.`, "info");
-}
-
-async function runCollaboratorStart({ services, args, ctx }: RuntimeCommandInput): Promise<void> {
-	const [rawProtocol, rawParticipantId, rawModel, ...extra] = args;
-	if (!rawProtocol || !rawParticipantId || extra.length) {
-		throw new HostedRuntimeClientError("invalid_request", "Usage: /runtime collaborator-start <protocol> <participant-id> [model]");
-	}
-	const protocol = collaboratorName(rawProtocol, "protocol");
-	const participantId = collaboratorName(rawParticipantId, "participant ID");
-	const candidate = resolveCollaboratorCandidate({ participantId: rawParticipantId, model: rawModel });
-	await services.collaborators.startFromCommand(ctx, protocol, participantId, candidate);
 }
 
 async function runMonitor({ services, args, ctx }: RuntimeCommandInput): Promise<void> {

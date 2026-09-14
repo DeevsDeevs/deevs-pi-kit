@@ -1,21 +1,18 @@
 import { createHash, randomUUID } from "node:crypto";
-import { realpathSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { HostedRuntimeClientError } from "./client.ts";
-import { HostedCollaboratorStartError, type ResolvedCollaboratorCandidate } from "./collaborator-policy.ts";
-import { createCollaboratorTab, throwIfAborted, waitForHerdrPaneCwd, type CollaboratorTab } from "./herdr.ts";
+import type { DriverSpec, StartedAgentIdentity } from "./drivers.ts";
+import type { CollaboratorTab } from "./herdr.ts";
 import type { HostedCollaboratorProfile, HostedNativeCollaboratorDriver } from "./hosted-types.ts";
-import { nativeMessagingLaunch } from "./mcp/native.ts";
+import { nativeMessagingConfiguration, type NativeMessagingConfiguration } from "./mcp/native.ts";
 import type { MessagingClient } from "./messaging-client.ts";
 import {
 	auth,
 	booleanValue,
-	errorCode,
 	parseHeartbeat,
 	parseRegistration,
 	strictObject,
 	text,
-	type ClientParticipantStatus,
 	type LiveClientRegistration,
 	type RuntimeResponse,
 	type SerializedObject,
@@ -26,29 +23,34 @@ import { deriveAgentTargetKey } from "./service/state.ts";
 
 const FATAL_HEARTBEAT_CODES = ["not_found", "conflict", "identity_mismatch"];
 
-interface NativeLaunchRequest {
-	ctx: ExtensionContext;
-	registration: LiveClientRegistration;
-	protocol: string;
-	participantId: string;
-	candidate: ResolvedCollaboratorCandidate;
-	caller: ClientParticipantStatus | undefined;
-	existing: ClientParticipantStatus | undefined;
-	worktreePath: string | undefined;
-	signal?: AbortSignal;
-}
-
-interface ManagedAgentLaunch {
-	protocol: string;
-	participantId: string;
+/** The Runtime-owned identity one collaborator launch starts and binds under. */
+export interface ManagedAgentPlan {
 	agentName: string;
 	targetKey: string;
-	projectRoot: string;
-	cwd: string;
+}
+
+interface StartAgentRequest {
+	agentName: string;
+	spec: DriverSpec;
+	tab: CollaboratorTab;
+	argv: string[];
+}
+
+interface BindLaunchedRequest {
+	ctx: ExtensionContext;
+	registration: LiveClientRegistration;
+	plan: ManagedAgentPlan;
 	driver: HostedNativeCollaboratorDriver;
 	profile: HostedCollaboratorProfile;
+	protocol: string;
+	participantId: string;
+	projectRoot: string;
+	cwd: string;
 	tab: CollaboratorTab;
 	agentSession: ManagedAgentSession;
+	callerParticipantKey: string;
+	expectedCallerGeneration: string;
+	expectedParticipantGeneration?: string;
 	messagingConfigured: boolean;
 }
 
@@ -82,17 +84,7 @@ interface ManagedAgentStatus {
 	agentSession: ManagedAgentSession;
 }
 
-interface NativeLaunchScope {
-	agentName: string;
-	targetKey: string;
-	projectRoot: string;
-	driver: HostedNativeCollaboratorDriver;
-	profile: HostedCollaboratorProfile;
-	caller: ClientParticipantStatus;
-	current: () => boolean;
-}
-
-/** Starts, binds and re-verifies interactive Claude Code and Codex collaborators as real Herdr agents. */
+/** Starts, binds and re-verifies collaborators as real Herdr agents. */
 export class NativeAgentService {
 	private readonly session: RuntimeSession;
 	private readonly messaging: MessagingClient;
@@ -119,184 +111,79 @@ export class NativeAgentService {
 		this.session.store.persistAgent({ ...control, state: "stopped" });
 	}
 
-	async launch(request: NativeLaunchRequest): Promise<string> {
-		const { candidate, caller } = request;
-		if (!caller || candidate.driver === "pi" || !candidate.profile) {
-			throw new HostedRuntimeClientError("conflict", "Native launch requires a held caller and a resolved profile.");
-		}
-		const projectRoot = realpathSync(request.ctx.cwd);
-		const agentName = managedAgentName(request.protocol, request.participantId);
-		const identity = this.session.store.identity;
-		const scope = this.session.scope(request.ctx, request.registration);
-		const launchScope: NativeLaunchScope = {
-			agentName,
-			targetKey: deriveAgentTargetKey(projectRoot, agentName),
-			projectRoot,
-			driver: candidate.driver,
-			profile: candidate.profile,
-			caller,
-			current: () => scope() && this.session.store.identity === identity,
-		};
-		this.launching.add(launchScope.targetKey);
-		try {
-			return await this.launchTab(request, launchScope);
-		} finally {
-			this.launching.delete(launchScope.targetKey);
-		}
+	plan(protocol: string, participantId: string, projectRoot: string): ManagedAgentPlan {
+		const digest = createHash("sha256").update(`${protocol}\0${participantId}\0${randomUUID()}`).digest("hex");
+		const agentName = `collab-${digest.slice(0, 25)}`;
+		return { agentName, targetKey: deriveAgentTargetKey(projectRoot, agentName) };
 	}
 
-	private async launchTab(request: NativeLaunchRequest, launch: NativeLaunchScope): Promise<string> {
-		let tab: CollaboratorTab | undefined;
-		let childMayBeLive = false;
-		try {
-			throwIfAborted(request.signal);
-			const launchCwd = request.worktreePath ?? launch.projectRoot;
-			tab = await createCollaboratorTab(this.pi, launchCwd, request.participantId);
-			const messaging = await this.configureLaunchMessaging(request, launch, tab, launchCwd);
-			this.session.requireCurrentScope(launch.current);
-			throwIfAborted(request.signal);
-			childMayBeLive = true;
-			return await this.startAndBind(request, launch, tab, launchCwd, messaging);
-		} catch (error) {
-			if (error instanceof HostedCollaboratorStartError && error.childMayBeLive) childMayBeLive = true;
-			if (!childMayBeLive) throw error;
-			throw new HostedCollaboratorStartError(errorCode(error), error instanceof Error ? error.message : String(error), true);
-		} finally {
-			if (!childMayBeLive && tab) await this.closeFailedTab(tab);
-		}
+	/** Holds the heartbeat sweep off one target for the length of its launch. */
+	beginLaunch(targetKey: string): void {
+		this.launching.add(targetKey);
 	}
 
-	private async closeFailedTab(tab: CollaboratorTab): Promise<void> {
-		const closed = await this.pi.exec("herdr", ["tab", "close", tab.tabId], { timeout: 5_000 });
-		if (closed.code !== 0) {
-			// oxlint-disable-next-line no-unsafe-finally -- Cleanup failure must replace the original launch result instead of claiming quiescence.
-			throw new HostedRuntimeClientError("host_unavailable", "Herdr could not clean up failed native collaborator resources.");
-		}
+	finishLaunch(targetKey: string): void {
+		this.launching.delete(targetKey);
 	}
 
-	/** Only a writer in its own settled worktree receives an MCP messaging configuration. */
-	private async configureLaunchMessaging(
-		request: NativeLaunchRequest,
-		launch: NativeLaunchScope,
-		tab: CollaboratorTab,
-		launchCwd: string,
-	): Promise<NativeMessagingConfiguration | undefined> {
-		if (!request.worktreePath) return undefined;
-		await waitForHerdrPaneCwd(this.pi, tab, launchCwd, request.signal);
-		this.session.requireCurrentScope(launch.current);
-		return this.configureNativeMessaging(request.candidate, launch.targetKey);
-	}
-
-	private async startAndBind(
-		request: NativeLaunchRequest,
-		scope: NativeLaunchScope,
-		tab: CollaboratorTab,
-		launchCwd: string,
-		messaging: NativeMessagingConfiguration | undefined,
-	): Promise<string> {
-		const { candidate, ctx } = request;
-		const kind = scope.driver === "claude-code" ? "claude" : "codex";
-		const nativeArgs = messaging?.args ?? guardedNativeArgs(candidate, launchCwd);
-		if (messaging) {
-			const prompt = `Complete any native trust or permission prompt in ${tab.paneId}.`
-				+ " Runtime will not accept it for you; startup has a bounded timeout.";
-			ctx.ui.notify(prompt, "info");
-		}
-		const launch: ManagedAgentLaunch = {
-			protocol: request.protocol,
-			participantId: request.participantId,
-			agentName: scope.agentName,
-			targetKey: scope.targetKey,
-			projectRoot: scope.projectRoot,
-			cwd: launchCwd,
-			driver: scope.driver,
-			profile: scope.profile,
-			tab,
-			agentSession: await this.startManagedAgent(scope.agentName, kind, tab, nativeArgs),
-			messagingConfigured: messaging !== undefined,
-		};
-		this.session.requireCurrentScope(scope.current);
-		const bound = await this.bindAgent(request.registration, bindRequestFor(launch, scope.caller, request.existing));
-		this.session.requireCurrentScope(scope.current);
-		await this.settleBoundAgent(ctx, request.registration, launch, bound);
-		ctx.ui.notify(`Interactive ${kind} collaborator ${request.protocol}/${request.participantId} started in ${tab.paneId}.`, "info");
-		return tab.paneId;
-	}
-
-	/** Records one verified bound agent and proves its participant lease settled before provisioning messaging. */
-	private async settleBoundAgent(
-		ctx: ExtensionContext,
-		registration: LiveClientRegistration,
-		launch: ManagedAgentLaunch,
-		bound: BoundAgent,
-	): Promise<void> {
-		if (!boundAgentMatchesLaunch(bound, launch)) {
-			throw new HostedRuntimeClientError("identity_mismatch", "Runtime bound another Herdr agent identity than the one this launch started.");
-		}
-		const control: ManagedAgentControl = {
-			owner: { sessionId: ctx.sessionManager.getSessionId(), sessionFile: text(ctx.sessionManager.getSessionFile()), cwd: ctx.cwd },
-			projectRoot: launch.projectRoot,
-			cwd: launch.cwd,
-			agentName: launch.agentName,
-			targetKey: launch.targetKey,
-			driver: launch.driver,
-			profile: launch.profile,
-			protocol: launch.protocol,
-			participantId: launch.participantId,
-			holderGeneration: bound.holderGeneration,
-			paneId: launch.tab.paneId,
-			terminalId: launch.tab.terminalId,
-			agentSession: launch.agentSession,
-			state: "active",
-		};
-		if (launch.messagingConfigured) control.messagingConfigured = true;
-		this.session.store.persistAgent(control);
-		this.registrations.set(launch.targetKey, bound.registration);
-		const participants = await this.session.listParticipants(registration);
-		const participant = participants.find((item) => item.protocol === launch.protocol && item.participantId === launch.participantId);
-		const settled = participant?.state === "held"
-			&& participant.holderTargetKey === launch.targetKey
-			&& participant.generation === bound.holderGeneration;
-		if (!settled) {
-			const detail = `Collaborator started in ${launch.tab.paneId}, but its Runtime identity did not settle; its tab was preserved.`;
-			throw new HostedRuntimeClientError("unavailable", detail);
-		}
-		if (launch.messagingConfigured) await this.messaging.provisionManaged(ctx, registration, control);
-	}
-
-	private async configureNativeMessaging(
-		candidate: ResolvedCollaboratorCandidate,
-		targetKey: string,
-	): Promise<NativeMessagingConfiguration> {
-		if (candidate.driver === "pi") throw new HostedRuntimeClientError("conflict", "Native messaging requires an interactive driver.");
+	async messagingConfiguration(plan: ManagedAgentPlan, personaPrompt: string | undefined): Promise<NativeMessagingConfiguration> {
 		const node = await this.pi.exec("node", ["--print", "process.execPath"], { timeout: 3_000 });
 		if (node.code !== 0) {
 			throw new HostedRuntimeClientError("capability_unavailable", "Native messaging requires an available Node executable.");
 		}
-		return nativeMessagingLaunch({
-			driver: candidate.driver,
+		const input = {
 			root: this.session.root,
-			targetKey,
+			targetKey: plan.targetKey,
 			nodeExecutable: node.stdout.trim(),
-			model: candidate.model,
-			personaPrompt: candidate.persona?.prompt,
-		});
+		};
+		return nativeMessagingConfiguration(personaPrompt ? { ...input, personaPrompt } : input);
 	}
 
-	private async startManagedAgent(
-		agentName: string,
-		kind: "claude" | "codex",
-		tab: CollaboratorTab,
-		nativeArgs: string[],
-	): Promise<ManagedAgentSession> {
-		const separated = nativeArgs.length ? ["--", ...nativeArgs] : [];
-		const args = ["agent", "start", agentName, "--kind", kind, "--pane", tab.paneId, "--timeout", "30000", ...separated];
+	/** Starts one exact Herdr agent and proves it is the driver and pane the launch authorized. */
+	async startAgent(request: StartAgentRequest): Promise<StartedAgentIdentity> {
+		const { agentName, spec, tab, argv } = request;
+		const separated = argv.length ? ["--", ...argv] : [];
+		const args = ["agent", "start", agentName, "--kind", spec.kind, "--pane", tab.paneId, "--timeout", "30000", ...separated];
 		const started = await this.pi.exec("herdr", args, { timeout: 35_000 });
 		if (started.code !== 0) {
-			const detail = `Herdr could not start ${kind} in ${tab.paneId} (exit ${started.code}); its tab was preserved.`;
+			const detail = `Herdr could not start ${spec.kind} in ${tab.paneId} (exit ${started.code}).`;
 			throw new HostedRuntimeClientError("host_unavailable", detail);
 		}
-		return parseStartedAgent(started.stdout, tab.paneId, tab.terminalId, kind, agentName);
+		const agent = parseManagedAgent(started.stdout);
+		if (!startedAsAuthorized(agent, request)) {
+			const detail = "Herdr started agent identity does not match the authorized collaborator target.";
+			throw new HostedRuntimeClientError("identity_mismatch", detail);
+		}
+		return agent;
+	}
+
+	/** Binds one started agent to its participant lease and records the reconnection authority. */
+	async bindLaunched(request: BindLaunchedRequest): Promise<void> {
+		const bound = await this.bindAgent(request.registration, bindRequestFor(request));
+		if (!boundAgentMatchesLaunch(bound, request)) {
+			throw new HostedRuntimeClientError("identity_mismatch", "Runtime bound another Herdr agent identity than the one this launch started.");
+		}
+		const { ctx } = request;
+		const control: ManagedAgentControl = {
+			owner: { sessionId: ctx.sessionManager.getSessionId(), sessionFile: text(ctx.sessionManager.getSessionFile()), cwd: ctx.cwd },
+			projectRoot: request.projectRoot,
+			cwd: request.cwd,
+			agentName: request.plan.agentName,
+			targetKey: request.plan.targetKey,
+			driver: request.driver,
+			profile: request.profile,
+			protocol: request.protocol,
+			participantId: request.participantId,
+			holderGeneration: bound.holderGeneration,
+			paneId: request.tab.paneId,
+			terminalId: request.tab.terminalId,
+			agentSession: request.agentSession,
+			state: "active",
+		};
+		if (request.messagingConfigured) control.messagingConfigured = true;
+		this.session.store.persistAgent(control);
+		this.registrations.set(request.plan.targetKey, bound.registration);
+		if (request.messagingConfigured) await this.messaging.provisionManaged(ctx, request.registration, control);
 	}
 
 	private async bindAgent(registration: LiveClientRegistration, request: AgentBindRequest): Promise<BoundAgent> {
@@ -406,49 +293,32 @@ export class NativeAgentService {
 	}
 }
 
-type NativeMessagingConfiguration = ReturnType<typeof nativeMessagingLaunch>;
-
-function managedAgentName(protocol: string, participantId: string): string {
-	return `collab-${createHash("sha256").update(`${protocol}\0${participantId}\0${randomUUID()}`).digest("hex").slice(0, 25)}`;
+function startedAsAuthorized(agent: ManagedAgentStatus, request: StartAgentRequest): boolean {
+	if (agent.name !== request.agentName) return false;
+	if (agent.paneId !== request.tab.paneId) return false;
+	if (agent.terminalId !== request.tab.terminalId) return false;
+	return request.spec.verify(agent);
 }
 
-function guardedNativeArgs(candidate: ResolvedCollaboratorCandidate, launchCwd: string): string[] {
-	if (candidate.profile !== "read-only" || candidate.driver === "pi") {
-		throw new HostedRuntimeClientError("capability_unavailable", "Guarded native startup requires a read-only profile.");
-	}
-	const model = candidate.model ? ["--model", candidate.model] : [];
-	if (candidate.driver === "claude-code") {
-		const persona = candidate.persona ? ["--append-system-prompt", candidate.persona.prompt] : [];
-		return ["--safe-mode", "--permission-mode", "dontAsk", "--tools", "Read,Glob,Grep", ...model, ...persona];
-	}
-	const trustedProject = `projects={ ${JSON.stringify(launchCwd)} = { trust_level = "trusted" } }`;
-	const persona = candidate.persona ? ["--config", `developer_instructions=${JSON.stringify(candidate.persona.prompt)}`] : [];
-	return ["--ask-for-approval", "never", "--sandbox", "read-only", "--disable", "hooks", "--config", trustedProject, ...model, ...persona];
-}
-
-function bindRequestFor(
-	launch: ManagedAgentLaunch,
-	caller: ClientParticipantStatus,
-	existing: ClientParticipantStatus | undefined,
-): AgentBindRequest {
-	const request: AgentBindRequest = {
-		agentName: launch.agentName,
-		driver: launch.driver,
-		profile: launch.profile,
-		protocol: launch.protocol,
-		participantId: launch.participantId,
-		callerParticipantKey: caller.participantKey,
-		expectedCallerGeneration: caller.generation,
+function bindRequestFor(request: BindLaunchedRequest): AgentBindRequest {
+	const bind: AgentBindRequest = {
+		agentName: request.plan.agentName,
+		driver: request.driver,
+		profile: request.profile,
+		protocol: request.protocol,
+		participantId: request.participantId,
+		callerParticipantKey: request.callerParticipantKey,
+		expectedCallerGeneration: request.expectedCallerGeneration,
 	};
-	if (existing) request.expectedParticipantGeneration = existing.generation;
-	return request;
+	if (request.expectedParticipantGeneration) bind.expectedParticipantGeneration = request.expectedParticipantGeneration;
+	return bind;
 }
 
-function boundAgentMatchesLaunch(bound: BoundAgent, launch: ManagedAgentLaunch): boolean {
-	return bound.registration.targetKey === launch.targetKey
-		&& bound.driver === launch.driver
-		&& bound.profile === launch.profile
-		&& bound.cwd === launch.cwd;
+function boundAgentMatchesLaunch(bound: BoundAgent, request: BindLaunchedRequest): boolean {
+	return bound.registration.targetKey === request.plan.targetKey
+		&& bound.driver === request.driver
+		&& bound.profile === request.profile
+		&& bound.cwd === request.cwd;
 }
 
 function parseBoundAgent(value: RuntimeResponse): BoundAgent {
@@ -468,26 +338,6 @@ function parseBoundAgent(value: RuntimeResponse): BoundAgent {
 		projectRoot: text(result.projectRoot),
 		cwd: text(result.cwd),
 	};
-}
-
-function parseStartedAgent(
-	value: string,
-	paneId: string,
-	terminalId: string,
-	kind: "claude" | "codex",
-	agentName: string,
-): ManagedAgentSession {
-	const agent = parseManagedAgent(value);
-	const matches = agent.paneId === paneId
-		&& agent.terminalId === terminalId
-		&& agent.agentSession.source === `herdr:${kind}`
-		&& agent.agentSession.agent === kind
-		&& agent.name === agentName;
-	if (!matches) {
-		const detail = "Herdr started agent identity does not match the authorized collaborator target.";
-		throw new HostedRuntimeClientError("identity_mismatch", detail);
-	}
-	return agent.agentSession;
 }
 
 function parseManagedAgent(value: string): ManagedAgentStatus {
