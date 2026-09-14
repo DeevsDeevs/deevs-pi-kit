@@ -8,7 +8,7 @@ This repository is a portable pi package. Keep it minimal and intentional.
 - Persona prompts live under `extensions/subagents/agents/*.md`.
 - Skills live under `skills/<name>/SKILL.md`.
 - Extensions live in `extensions/<name>/index.ts`; the `pi.extensions` manifest globs `./extensions/*/index.ts` only.
-- Zero production dependencies; peer and dev dependencies only. Justify any addition.
+- One production dependency, `typebox`, pinned to the exact version Pi ships: the Runtime daemon and the MCP server run as standalone Node processes from the installed checkout and cannot borrow Pi's bundled copy. Everything else is peer or dev only; justify any addition.
 - Document user-facing resources in `README.md` when they are added.
 - Validate with `npm run check` (typecheck, tests, RPC/print/JSONL mode smoke, supply-chain audit, pack).
 
