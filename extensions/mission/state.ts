@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isAbsolute, normalize as normalizePath } from "node:path";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { ChainService } from "../chains/service.ts";
 import { slugify } from "../chains/parser.ts";
 import { missionDir } from "./artifacts.ts";
@@ -13,7 +13,9 @@ import {
 	writeMissionSnapshot,
 } from "./persistence.ts";
 import { MAX_MISSION_REVIEW_ADJUDICATIONS } from "./types.ts";
+import { addUsage, addUsageFromEntry, aggregateUsage, usageFromAggregate, zeroUsage } from "./usage.ts";
 import type {
+	MissionAnchor,
 	MissionCompletionLatch,
 	MissionConvergedReviewStatus,
 	MissionCreateInput,
@@ -21,6 +23,7 @@ import type {
 	MissionEvent,
 	MissionEventKind,
 	MissionOwner,
+	MissionOwnershipConflict,
 	MissionProgressInput,
 	MissionProgressRecord,
 	MissionReview,
@@ -70,7 +73,7 @@ interface MissionReviewEventInput {
 const DEFAULT_CHAIN_BRANCH = "main";
 const MAX_REQUIREMENTS = 12;
 const MAX_PATHS = 100;
-export const DEFAULT_REVIEW_CORRECTION_LIMIT = 3;
+const DEFAULT_REVIEW_CORRECTION_LIMIT = 3;
 const TERMINAL_STATUSES: readonly MissionStatus[] = ["complete", "ended", "cleared"];
 const STATUS_TRANSITIONS = {
 	active: ["paused", "blocked", "terminal_error", "budget_limited", "usage_limited", "complete", "ended", "cleared"],
@@ -101,6 +104,37 @@ interface MissionRequirementAudit {
 
 function isTerminalMissionStatus(status: MissionStatus): boolean {
 	return TERMINAL_STATUSES.includes(status);
+}
+
+/** Statuses after which branch usage stops accruing, so the frozen total is what the Mission reports. */
+function freezesUsage(status: MissionStatus | undefined): boolean {
+	if (status === undefined) return false;
+	return isTerminalMissionStatus(status) || status === "budget_limited";
+}
+
+function isMissionEventEntry(entry: SessionEntry): boolean {
+	return entry.type === "custom" && entry.customType === MISSION_CUSTOM_TYPE;
+}
+
+function missionEventOf(entry: SessionEntry): MissionEvent | undefined {
+	if (entry.type !== "custom") return undefined;
+	if (entry.customType !== MISSION_CUSTOM_TYPE) return undefined;
+	// SAFETY: Only this extension writes the matching custom entry; a malformed branch entry is
+	// rejected by snapshot validation before it can become canonical state.
+	return entry.data as MissionEvent | undefined;
+}
+
+/** Backfills the usage baseline on legacy `created` events that predate baseline capture. */
+function withUsageBaseline(event: MissionEvent, rolling: MissionUsage): MissionEvent {
+	if (event.kind !== "created") return event;
+	if (event.baselineMainTokens !== undefined) return event;
+	return {
+		...event,
+		baselineMainTokens: rolling.mainTokens,
+		baselineSubagentTokens: rolling.subagentTokens,
+		baselineMainCostUsd: rolling.mainCostUsd,
+		baselineSubagentCostUsd: rolling.subagentCostUsd,
+	};
 }
 
 function missionEventBase(kind: MissionEventKind, mission: MissionCurrent): MissionEvent {
@@ -240,7 +274,7 @@ export class MissionState {
 	private cwd?: string;
 	private owner?: MissionOwner;
 	private snapshotRevision?: number;
-	private ownershipConflict?: { missionId: string; ownerSessionId: string };
+	private ownershipConflict?: MissionOwnershipConflict;
 	private persistenceError?: string;
 
 	read(): MissionCurrent | undefined {
@@ -269,7 +303,7 @@ export class MissionState {
 		return this.owner ? { ...this.owner } : undefined;
 	}
 
-	readOwnershipConflict(): { missionId: string; ownerSessionId: string } | undefined {
+	readOwnershipConflict(): MissionOwnershipConflict | undefined {
 		return this.ownershipConflict ? { ...this.ownershipConflict } : undefined;
 	}
 
@@ -409,38 +443,27 @@ export class MissionState {
 		}
 	}
 
-	private loadBranch(branch: Array<any>, cwd: string): void {
+	private loadBranch(branch: SessionEntry[], cwd: string): void {
 		const rolling = zeroUsage();
 		let terminalUsage: MissionUsage | undefined;
 		const seenSubagents = new Set<string>();
 		this.clearLoadedState();
 		for (const entry of branch) {
-			if (entry.type === "custom" && entry.customType === MISSION_CUSTOM_TYPE) {
-				// SAFETY: Only this extension writes the matching custom entry; a malformed branch entry is
-				// rejected by snapshot validation before it can become canonical state.
-				const rawEvent = entry.data as MissionEvent | undefined;
-				if (!rawEvent?.missionId || rawEvent.kind === "taken_over") continue;
-				const event = rawEvent.kind === "created" && rawEvent.baselineMainTokens === undefined
-					? {
-						...rawEvent,
-						baselineMainTokens: rolling.mainTokens,
-						baselineSubagentTokens: rolling.subagentTokens,
-						baselineMainCostUsd: rolling.mainCostUsd,
-						baselineSubagentCostUsd: rolling.subagentCostUsd,
-					}
-					: rawEvent;
-				this.applyEvent(event);
-				if (event.reviewOutcome === "failed") this.reviewFailureCount++;
-				const status = this.current?.status;
-				if (["complete", "ended", "cleared", "budget_limited"].includes(status ?? "")) terminalUsage = { ...rolling };
+			if (!isMissionEventEntry(entry)) {
+				addUsageFromEntry(rolling, entry, seenSubagents);
 				continue;
 			}
-			addUsageFromEntry(rolling, entry, seenSubagents);
+			const rawEvent = missionEventOf(entry);
+			if (!rawEvent?.missionId || rawEvent.kind === "taken_over") continue;
+			const event = withUsageBaseline(rawEvent, rolling);
+			this.applyEvent(event);
+			if (event.reviewOutcome === "failed") this.reviewFailureCount++;
+			if (freezesUsage(this.current?.status)) terminalUsage = { ...rolling };
 		}
 		const current = this.current;
 		if (current) current.artifactDir = missionDir(cwd, current.slug);
-		const terminal = current && ["complete", "ended", "cleared", "budget_limited"].includes(current.status);
-		this.usage = current ? usageFromAggregate(terminal ? terminalUsage ?? rolling : rolling, current) : zeroUsage();
+		const frozen = current && freezesUsage(current.status);
+		this.usage = current ? usageFromAggregate(frozen ? terminalUsage ?? rolling : rolling, current) : zeroUsage();
 	}
 
 	private clearLoadedState(): void {
@@ -454,7 +477,7 @@ export class MissionState {
 		this.snapshotRevision = undefined;
 	}
 
-	private restoreSnapshot(snapshot: MissionSnapshot, branch: Array<any>, cwd: string, includeBranchUsage = true): void {
+	private restoreSnapshot(snapshot: MissionSnapshot, branch: SessionEntry[], cwd: string, includeBranchUsage = true): void {
 		this.current = { ...snapshot.mission, artifactDir: missionDir(cwd, snapshot.mission.slug) };
 		this.progress = cloneProgress(snapshot.progress);
 		this.continuationProgressIndex = snapshot.continuationProgressIndex;
@@ -1125,11 +1148,9 @@ function takeoverStatus(snapshot: MissionSnapshot): MissionStatus {
 	return "active";
 }
 
-function latestMissionAnchor(branch: Array<any>): { kind: "created" | "taken_over"; missionId: string; slug: string } | undefined {
+function latestMissionAnchor(branch: SessionEntry[]): MissionAnchor | undefined {
 	for (let index = branch.length - 1; index >= 0; index--) {
-		const entry = branch[index];
-		// SAFETY: The matching custom type is exclusively emitted by this extension; only anchor identity fields are read here.
-		const event = entry?.type === "custom" && entry.customType === MISSION_CUSTOM_TYPE ? entry.data as MissionEvent | undefined : undefined;
+		const event = missionEventOf(branch[index]);
 		if (event?.kind !== "created" && event?.kind !== "taken_over") continue;
 		if (!event.missionId || !event.slug) continue;
 		return { kind: event.kind, missionId: event.missionId, slug: event.slug };
@@ -1144,17 +1165,6 @@ function onlyOwnedMission(snapshots: MissionSnapshot[], sessionId: string): Miss
 		throw new Error(`Session controls multiple nonterminal Missions: ${owned.map((snapshot) => snapshot.mission.missionId).join(", ")}`);
 	}
 	return owned[0];
-}
-
-function addUsage(left: MissionUsage, right: MissionUsage): MissionUsage {
-	return {
-		mainTokens: left.mainTokens + right.mainTokens,
-		subagentTokens: left.subagentTokens + right.subagentTokens,
-		totalTokens: left.totalTokens + right.totalTokens,
-		mainCostUsd: left.mainCostUsd + right.mainCostUsd,
-		subagentCostUsd: left.subagentCostUsd + right.subagentCostUsd,
-		totalCostUsd: left.totalCostUsd + right.totalCostUsd,
-	};
 }
 
 function cloneProgress(progress: MissionProgressRecord[]): MissionProgressRecord[] {
@@ -1282,93 +1292,4 @@ function positiveNumber(value: number | undefined, name: string): number | undef
 function positiveInteger(value: number | undefined, name: string): number | undefined {
 	const positive = positiveNumber(value, name);
 	return positive === undefined ? undefined : Math.floor(positive);
-}
-
-function usageFromAggregate(aggregate: MissionUsage, mission: MissionCurrent): MissionUsage {
-	const usage: MissionUsage = {
-		mainTokens: Math.max(0, aggregate.mainTokens - mission.baselineMainTokens),
-		subagentTokens: Math.max(0, aggregate.subagentTokens - mission.baselineSubagentTokens),
-		totalTokens: 0,
-		mainCostUsd: Math.max(0, aggregate.mainCostUsd - mission.baselineMainCostUsd),
-		subagentCostUsd: Math.max(0, aggregate.subagentCostUsd - mission.baselineSubagentCostUsd),
-		totalCostUsd: 0,
-	};
-	usage.totalTokens = usage.mainTokens + usage.subagentTokens;
-	usage.totalCostUsd = usage.mainCostUsd + usage.subagentCostUsd;
-	return usage;
-}
-
-function aggregateUsage(branch: Array<any>, cutoffMs?: number): MissionUsage {
-	const seenSubagents = new Set<string>();
-	const usage = zeroUsage();
-	for (const entry of branch) {
-		if (cutoffMs !== undefined && entryTimestampMs(entry) > cutoffMs) continue;
-		addUsageFromEntry(usage, entry, seenSubagents);
-	}
-	usage.totalTokens = usage.mainTokens + usage.subagentTokens;
-	usage.totalCostUsd = usage.mainCostUsd + usage.subagentCostUsd;
-	return usage;
-}
-
-function addUsageFromEntry(usage: MissionUsage, entry: any, seenSubagents: Set<string>): void {
-	if (entry.type === "message" && entry.message?.role === "assistant" && entry.message.usage) addMainUsage(usage, entry.message.usage);
-	const runtimeEmit = entry.type === "custom" && entry.customType === "deevs.runtime-event-op.v1" && entry.data?.type === "emit";
-	const runtimeEvent = runtimeEmit ? entry.data.event : undefined;
-	if (runtimeEvent?.source?.kind === "subagent" && runtimeEvent.usage) {
-		const key = `${runtimeEvent.source.id}:${runtimeEvent.source.generation ?? "legacy"}`;
-		if (!seenSubagents.has(key)) {
-			seenSubagents.add(key);
-			usage.subagentTokens += numberValue(runtimeEvent.usage.inputTokens)
-				+ numberValue(runtimeEvent.usage.outputTokens)
-				+ numberValue(runtimeEvent.usage.cacheWriteTokens);
-			usage.subagentCostUsd += numberValue(runtimeEvent.usage.costUsd);
-		}
-	}
-	const details = entry.type === "custom_message" && entry.customType === "subagents"
-		? entry.details
-		: entry.type === "message" && entry.message?.role === "toolResult" ? entry.message.details : undefined;
-	addSubagentUsageFromDetails(usage, details, seenSubagents);
-	usage.totalTokens = usage.mainTokens + usage.subagentTokens;
-	usage.totalCostUsd = usage.mainCostUsd + usage.subagentCostUsd;
-}
-
-function entryTimestampMs(entry: any): number {
-	const timestamp = Date.parse(entry?.timestamp ?? "");
-	return Number.isFinite(timestamp) ? timestamp : 0;
-}
-
-function addMainUsage(target: MissionUsage, raw: any): void {
-	target.mainTokens += billableTokens(raw);
-	target.mainCostUsd += numberValue(raw.cost?.total);
-}
-
-function addSubagentUsageFromDetails(target: MissionUsage, details: any, seen: Set<string>): void {
-	const runs = [details?.run, ...(Array.isArray(details?.runs) ? details.runs : [])].filter(Boolean);
-	if (details?.group?.usage && details.group.id && !seen.has(details.group.id)) {
-		seen.add(details.group.id);
-		target.subagentTokens += billableTokens(details.group.usage);
-		target.subagentCostUsd += numberValue(details.group.usage.cost?.total);
-	}
-	for (const run of runs) {
-		if (!run?.id || !run.usage || seen.has(run.id)) continue;
-		seen.add(run.id);
-		target.subagentTokens += billableTokens(run.usage);
-		target.subagentCostUsd += numberValue(run.usage.cost?.total);
-	}
-}
-
-function billableTokens(raw: any): number {
-	const input = numberValue(raw?.input ?? raw?.inputTokens);
-	const cacheWrite = numberValue(raw?.cacheWrite ?? raw?.cacheCreationInputTokens);
-	const output = numberValue(raw?.output ?? raw?.outputTokens);
-	const computed = Math.max(0, input) + Math.max(0, cacheWrite) + Math.max(0, output);
-	return computed || numberValue(raw?.totalTokens ?? raw?.total);
-}
-
-function numberValue(value: number | null | undefined): number {
-	return value !== null && value !== undefined && Number.isFinite(value) ? value : 0;
-}
-
-function zeroUsage(): MissionUsage {
-	return { mainTokens: 0, subagentTokens: 0, totalTokens: 0, mainCostUsd: 0, subagentCostUsd: 0, totalCostUsd: 0 };
 }

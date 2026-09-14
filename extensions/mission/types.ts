@@ -255,6 +255,19 @@ export interface MissionOwner {
 	sessionFile: string;
 }
 
+/** A Mission this session's branch anchors to but another Pi session now controls. */
+export interface MissionOwnershipConflict {
+	missionId: string;
+	ownerSessionId: string;
+}
+
+/** The latest branch event that binds this session to a Mission on disk. */
+export interface MissionAnchor {
+	kind: "created" | "taken_over";
+	missionId: string;
+	slug: string;
+}
+
 export interface MissionSnapshot {
 	version: 2;
 	revision: number;
