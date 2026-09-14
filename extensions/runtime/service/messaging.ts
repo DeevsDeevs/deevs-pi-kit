@@ -15,6 +15,7 @@ import {
 import { HostedParticipantCoordinator } from "./participant.ts";
 import { RuntimeError } from "../errors.ts";
 import { RuntimeRegistrationManager, type HostedLiveRegistration } from "./registration.ts";
+import type { MessagingInboxMessageView, MessagingInboxView } from "../schemas/rpc.ts";
 import {
 	deriveParticipantKey,
 	HostedStateStorageError,
@@ -26,9 +27,11 @@ import {
 
 const MAX_IN_FLIGHT = 12;
 const PEER_PAGE = 12;
+const INBOX_PAGE = 50;
 
 export type MessagingInput =
 	| { method: "peers"; cursor?: string }
+	| { method: "inbox" }
 	| { method: "send"; participantId: string; operationId: string; body: string }
 	| { method: "status"; operationId: string }
 	| { method: "receive"; eventId: string }
@@ -98,6 +101,7 @@ interface MessagingStatusResult {
 }
 
 type MessagingResult =
+	| MessagingInboxView
 	| MessagingPeersResult
 	| MessagingMessageResult
 	| MessagingEventResult
@@ -199,9 +203,7 @@ export class RuntimeMessaging {
 		const state = this.store.read();
 		const grant = liveTargetNamespace(state, registration, this.now());
 		if (!grant) return undefined;
-		const [event] = Object.values(state.events)
-			.filter((candidate) => candidate.recipientParticipantKey === grant.participantKey && candidate.readAt === undefined)
-			.sort((left, right) => left.createdAt - right.createdAt || left.eventId.localeCompare(right.eventId));
+		const [event] = unreadMailEvents(state, grant.participantKey);
 		return event ? { namespaceId: grant.namespaceId, eventId: event.eventId } : undefined;
 	}
 
@@ -214,6 +216,7 @@ export class RuntimeMessaging {
 			const { grant, registration } = await this.verify(namespaceId, secret);
 			switch (input.method) {
 				case "peers": return this.peers(grant, input.cursor);
+				case "inbox": return this.inbox(grant);
 				case "receive": return this.receive(grant, input.eventId);
 				case "received": return this.markRead(grant, input.eventId);
 				case "status": return this.status(grant, input.operationId);
@@ -227,6 +230,22 @@ export class RuntimeMessaging {
 		} finally {
 			this.inFlight--;
 		}
+	}
+
+	/** Unread headers only, oldest first: the caller then receives each body by its exact event ID. */
+	private inbox(grant: HostedMessagingGrant): MessagingInboxView {
+		const unread = unreadMailEvents(this.store.read(), grant.participantKey);
+		return { messages: unread.slice(0, INBOX_PAGE).map((event) => this.inboxMessage(event)), truncated: unread.length > INBOX_PAGE };
+	}
+
+	private inboxMessage(event: HostedMailboxMessageEvent): MessagingInboxMessageView {
+		const message: MessagingInboxMessageView = {
+			eventId: event.eventId,
+			from: this.requireParticipant(event.source.id).participantId,
+			createdAt: event.createdAt,
+		};
+		if (event.inReplyToEventId !== undefined) message.inReplyToEventId = event.inReplyToEventId;
+		return message;
 	}
 
 	private peers(grant: HostedMessagingGrant, cursor?: string): MessagingPeersResult {
@@ -349,6 +368,13 @@ export class RuntimeMessaging {
 		}
 	}
 
+}
+
+/** Mail is read by `messaging.read`, never claimed, so unread is the absence of a read time, oldest first. */
+export function unreadMailEvents(state: HostedRuntimeState, participantKey: string): HostedMailboxMessageEvent[] {
+	return Object.values(state.events)
+		.filter((event) => event.recipientParticipantKey === participantKey && event.readAt === undefined)
+		.sort((left, right) => left.createdAt - right.createdAt || left.eventId.localeCompare(right.eventId));
 }
 
 function issuanceMismatch(): RuntimeError {

@@ -10,6 +10,7 @@ import {
 	HostedRequestVersionSchema,
 	MailboxSendParams,
 	MessagingEventParams,
+	MessagingInboxParams,
 	MessagingIssueParams,
 	MessagingPeersParams,
 	MessagingReplyParams,
@@ -169,6 +170,7 @@ const HOSTED_METHODS = new Map<string, HostedMethodHandler>([
 	["messaging.peers", method(MessagingPeersParams, (call, params) => callMessaging(call, params, params.cursor === undefined
 		? { method: "peers" }
 		: { method: "peers", cursor: params.cursor }))],
+	["messaging.inbox", method(MessagingInboxParams, (call, params) => callMessaging(call, params, { method: "inbox" }))],
 	["messaging.send", method(MessagingSendParams, (call, params) => callMessaging(call, params, {
 		method: "send",
 		operationId: params.operationId,
