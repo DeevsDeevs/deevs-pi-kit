@@ -68,11 +68,6 @@ export class RuntimeSession {
 		return this.registration;
 	}
 
-	/** The registration a wake may act on, awaiting an in-flight registration instead of racing it. */
-	async settledRegistration(): Promise<LiveClientRegistration | undefined> {
-		return this.registration ?? await this.registering;
-	}
-
 	async sessionStart(ctx: ExtensionContext): Promise<void> {
 		this.sessionEpoch++;
 		this.active = true;

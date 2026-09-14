@@ -10,11 +10,7 @@ import { HostedStateStorageError, runtimeStatePaths } from "../extensions/runtim
 const roots: string[] = [];
 const servers: RuntimeServerHandle[] = [];
 
-const context: HostedProtocolContext = {
-	runtimeId: "rt_test",
-	agentWake: "none",
-	degradedReason: "host_unavailable",
-};
+const context: HostedProtocolContext = { runtimeId: "rt_test" };
 
 afterEach(async () => {
 	await Promise.all(servers.splice(0).map((server) => server.close()));
@@ -42,11 +38,7 @@ describe("hosted runtime protocol", () => {
 			result: {
 				version: 1,
 				runtimeId: "rt_test",
-				capabilities: {
-					agentWake: "none",
-					degradedReason: "host_unavailable",
-					targets: ["pi", "claude-code", "codex"],
-				},
+				capabilities: { targets: ["pi", "claude-code", "codex"] },
 			},
 		});
 	});

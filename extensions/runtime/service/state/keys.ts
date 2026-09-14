@@ -11,8 +11,13 @@ export function piTargetKey(piSessionId: string): string {
 	return `pi_${piSessionId}`;
 }
 
+/** One runtime root serves every project, so per-project names carry this discriminator. */
+export function projectScope(projectRoot: string): string {
+	return createHash("sha256").update(projectRoot).digest("hex").slice(0, 16);
+}
+
 export function deriveAgentTargetKey(projectRoot: string, agentName: string): string {
-	return `agent_${createHash("sha256").update(projectRoot).digest("hex").slice(0, 16)}_${agentName}`;
+	return `agent_${projectScope(projectRoot)}_${agentName}`;
 }
 
 export function targetIdentityKey(target: HostedTarget): string {

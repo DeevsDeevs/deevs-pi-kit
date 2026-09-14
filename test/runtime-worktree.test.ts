@@ -99,6 +99,26 @@ describe("Runtime collaborator worktrees", () => {
 		expect(git(test.project, ["branch", "--list", "runtime/collab/review/writer"])).toContain("runtime/collab/review/writer");
 	});
 
+	/** One runtime root serves every project, so the same identity in a second project needs its own directory. */
+	it("keeps one participant ID apart across projects sharing a runtime root", async () => {
+		const first = setup();
+		const second = setup();
+		const runtimeRoot = join(first.root, "runtime");
+		const shared = new RuntimeWorktrees(runtimeRoot, second.store);
+		const main = await first.registrations.register(first.input);
+		const caller = first.participants.acquire(main, "review", "main").participant;
+		const other = await second.registrations.register(second.input);
+		const otherCaller = second.participants.acquire(other, "review", "main").participant;
+
+		const mine = await first.worktrees.ensure(main, { callerParticipantKey: caller.participantKey, expectedCallerGeneration: caller.generation, protocol: "review", participantId: "writer" });
+		const theirs = await shared.ensure(other, { callerParticipantKey: otherCaller.participantKey, expectedCallerGeneration: otherCaller.generation, protocol: "review", participantId: "writer" });
+		expect(theirs.path).not.toBe(mine.path);
+		expect(theirs.path.startsWith(join(runtimeRoot, "workspaces"))).toBe(true);
+		expect(existsSync(join(mine.path, "app.txt"))).toBe(true);
+		expect(git(theirs.path, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("runtime/collab/review/writer");
+		expect(git(theirs.path, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).not.toBe(git(mine.path, ["rev-parse", "--path-format=absolute", "--git-common-dir"]));
+	});
+
 	it("reattaches a leftover collaborator branch that has no worktree", async () => {
 		const test = setup();
 		const main = await test.registrations.register(test.input);

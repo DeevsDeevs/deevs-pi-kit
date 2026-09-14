@@ -3,7 +3,7 @@ import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { type HostedParticipant, isHeld, isPiTarget } from "../hosted-types.ts";
 import type { HostedLiveRegistration } from "./registration.ts";
-import { deriveParticipantKey, HostedStateStore } from "./state.ts";
+import { deriveParticipantKey, HostedStateStore, projectScope } from "./state.ts";
 
 const BRANCH_PREFIX = "refs/heads/runtime/collab/";
 const NAME = /^[a-z][a-z0-9_-]{0,63}$/;
@@ -73,7 +73,7 @@ export class RuntimeWorktrees {
 			}
 			return existing;
 		}
-		const path = join(this.root, "workspaces", `${input.protocol}__${input.participantId}`);
+		const path = join(this.root, "workspaces", `${projectScope(projectRoot)}__${input.protocol}__${input.participantId}`);
 		mkdirSync(join(this.root, "workspaces"), { recursive: true, mode: 0o700 });
 		await addWorktree(projectRoot, collaboratorBranch(input), path);
 		return { protocol: input.protocol, participantId: input.participantId, path: realpathSync(path), branchRef: branchRef(input) };

@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { closeSync, constants, fsyncSync, openSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fsyncSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
 	HOSTED_ACK_RETENTION_MS,
@@ -154,7 +154,10 @@ export class RuntimeMessaging {
 		const descriptorPath = messagingDescriptorPath(this.store.root, target.targetKey);
 		const existing = Object.values(this.store.read().messaging)
 			.find((grant) => reusableGrant(grant, target, expectedGeneration, createdAt));
-		if (existing) return { namespaceId: existing.namespaceId, descriptorPath, expiresAt: existing.expiresAt };
+		// The reused secret only exists on disk, so a descriptor that names another namespace forces a fresh grant.
+		if (existing && descriptorNames(descriptorPath, existing.namespaceId)) {
+			return { namespaceId: existing.namespaceId, descriptorPath, expiresAt: existing.expiresAt };
+		}
 		const secret = randomBytes(32).toString("base64url");
 		const grant: HostedMessagingGrant = {
 			namespaceId: `msg_${randomUUID()}`,
@@ -446,4 +449,14 @@ function peerCursorOffset(peers: HostedParticipant[], namespaceId: string, curso
 
 function digest(value: string): string {
 	return createHash("sha256").update(value).digest("hex");
+}
+
+function descriptorNames(descriptorPath: string, namespaceId: string): boolean {
+	try {
+		// SAFETY: The descriptor is this service's own file; only its namespace field is read, and never trusted beyond this check.
+		const descriptor = JSON.parse(readFileSync(descriptorPath, "utf8")) as { namespaceId?: unknown };
+		return descriptor.namespaceId === namespaceId;
+	} catch {
+		return false;
+	}
 }

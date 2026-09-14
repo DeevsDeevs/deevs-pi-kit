@@ -17,7 +17,7 @@ Runtime is a local daemon with two jobs: durable participant identity and mail, 
 
 **Identity is the registration key plus `herdr agent get`.** A client is trusted exactly while it presents the registration ID and key Runtime minted for its target; each `pi.register` or `bridge.bind` mints a fresh pair and drops the previous one. A Pi target `pi_<piSessionId>` is live while its session file header still carries that session ID and canonical cwd; a native target `agent_<projectHash>_<agentName>` is live while `herdr agent get <name>` reports that name at that cwd and its participant is still held at the generation the bind recorded. Panes, terminals and labels are never identity — the stored tab ID exists only so stop can close the exact tab Runtime opened — and a mismatch fails closed: registration goes stale, the participant vacates.
 
-**One worktree per writer.** `read-only` is the default; each `workspace-write` collaborator gets one Runtime-owned worktree at `<root>/workspaces/<protocol>__<participantId>` on branch `runtime/collab/<protocol>/<participantId>`, verified to be a separate worktree of the same repository, and no writer gets the main checkout as cwd. Runtime owns creation, listing and confirmed removal only, never commits or merges, and worktree cwd is launch authority, not an OS boundary.
+**One worktree per writer.** `read-only` is the default; each `workspace-write` collaborator gets one Runtime-owned worktree at `<root>/workspaces/<projectHash>__<protocol>__<participantId>` on branch `runtime/collab/<protocol>/<participantId>`, verified to be a separate worktree of the same repository, and no writer gets the main checkout as cwd. Runtime owns creation, listing and confirmed removal only, never commits or merges, and worktree cwd is launch authority, not an OS boundary.
 
 ## Topology
 
@@ -32,7 +32,7 @@ Newline-delimited JSON, capped at 64 KiB per request line and 128 KiB per messag
 {"v":1,"id":"req_1","ok":false,"error":{"code":"not_found","message":"diagnostic"}}
 ```
 
-`hello` returns `{version, runtimeId, capabilities}` with `agentWake` and `targets`, and — when the matching authority is loaded — `mailbox`, `interactiveAgent` and `worktree`; `runtimeId` persists across service starts. Error codes: `invalid_request`, `unsupported_version`, `capability_unavailable`, `not_found`, `conflict`, `busy`, `registration_stale`, `identity_mismatch`, `host_unavailable`, `storage_error`, `internal`.
+`hello` returns `{version, runtimeId, capabilities}` with `targets`, and — when the matching authority is loaded — `mailbox`, `interactiveAgent` and `worktree`; `runtimeId` persists across service starts. Error codes: `invalid_request`, `unsupported_version`, `capability_unavailable`, `not_found`, `conflict`, `busy`, `registration_stale`, `identity_mismatch`, `host_unavailable`, `storage_error`, `internal`.
 
 ## Methods
 
@@ -54,7 +54,7 @@ One confirmation, then one path for every driver: a driver table supplies the ag
 2. Provision the writer's worktree, reusing an existing checkout, then create one empty no-focus Herdr tab at the intended cwd and run `herdr agent start <collab-hash> --kind pi|claude|codex --pane <id>` with the driver's startup arguments after `--`, accepting that agent only when its name, pane, terminal and agent kind are the authorized ones.
 3. Native drivers call `bridge.bind` with held participant authority, agent name, driver, profile and expected generation — idempotent for that exact tuple, so an uncertain response is retried; Pi registers itself from its prepared session instead. Runtime then re-verifies `herdr agent get`, binds the target and acquires the participant in one state operation, and hands the registration back to the caller.
 
-A failing step stops what that launch started and reports the original error, withdrawing the persisted control if the bind already happened; nothing half-launched is preserved, and the participant generation is the only lease — there are no launch, reconnect or reservation tokens. Claude receives appended system context and an inline MCP server entry, Codex a server-configuration override and startup user context, both naming the shared messaging skill by absolute path, and the whole invocation is capped at 4000 escaped bytes and fails closed rather than truncating.
+A failing step stops what that launch started and reports the original error, withdrawing the persisted control if the bind already happened; nothing half-launched is preserved, and the participant generation is the only lease. Claude receives appended system context and an inline MCP server entry, Codex a server-configuration override and startup user context, both naming the shared messaging skill by absolute path, and the whole invocation is capped at 4000 escaped bytes and fails closed rather than truncating.
 
 ## Mail
 

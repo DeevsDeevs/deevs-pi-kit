@@ -1,5 +1,5 @@
 import { HostedRuntimeClientError } from "./client.ts";
-import { shellQuote } from "./herdr.ts";
+import { collapsePrompt, shellQuote } from "./herdr.ts";
 import type { HostedCollaboratorDriver, HostedCollaboratorProfile, HostedNativeCollaboratorDriver } from "./hosted-types.ts";
 import type { NativeMessagingConfiguration } from "./mcp/native.ts";
 import { toolDefinitions } from "./mcp/tools.ts";
@@ -135,7 +135,7 @@ function claudeCommand(input: DriverCommandInput): string[] {
 		const servers = JSON.stringify({ mcpServers: { [input.mcp.serverName]: input.mcp.server } });
 		return ["--mcp-config", servers, ...model, "--append-system-prompt", input.mcp.context];
 	}
-	const persona = input.persona ? ["--append-system-prompt", input.persona.prompt] : [];
+	const persona = input.persona ? ["--append-system-prompt", collapsePrompt(input.persona.prompt)] : [];
 	return ["--safe-mode", "--permission-mode", "dontAsk", "--tools", CLAUDE_READ_ONLY_TOOLS, ...model, ...persona];
 }
 

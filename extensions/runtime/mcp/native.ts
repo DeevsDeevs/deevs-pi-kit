@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
+import { collapsePrompt } from "../herdr.ts";
 import { messagingDescriptorPath } from "../service/messaging.ts";
 
 interface NativeMessagingInput {
@@ -35,7 +36,7 @@ export function nativeMessagingConfiguration(input: NativeMessagingInput): Nativ
 		+ " Wait for explicit operator input before using its messaging tools."
 		+ " An unavailable descriptor is pending setup, not permission to invent another namespace or client.";
 	const context = [
-		input.personaPrompt?.replace(/\s+/gu, " ").trim(),
+		input.personaPrompt ? collapsePrompt(input.personaPrompt) : undefined,
 		`Before using messaging tools, read the shared skill at ${JSON.stringify(skillPath)}.`,
 		readiness,
 	].filter(Boolean).join(" ");

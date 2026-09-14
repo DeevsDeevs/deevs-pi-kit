@@ -40,7 +40,7 @@ describe("hosted runtime client vertical", () => {
 		});
 		servers.push(server);
 		const client = new HostedRuntimeClient(server.socketPath);
-		expect(await client.hello()).toMatchObject({ capabilities: { agentWake: "none", mailbox: { maxBodyBytes: 16_384 } } });
+		expect(await client.hello()).toMatchObject({ capabilities: { mailbox: { maxBodyBytes: 16_384 } } });
 		const registration = await client.call("pi.register", {
 			projectRoot,
 			piSessionId: "session_1",
