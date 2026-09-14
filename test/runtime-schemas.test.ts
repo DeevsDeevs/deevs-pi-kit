@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { HOSTED_ACK_RETENTION_MS, type HostedRuntimeState } from "../extensions/runtime/hosted-types.ts";
 import { dispatchHostedLine, type HostedProtocolContext } from "../extensions/runtime/service/protocol.ts";
-import { HostedStateStorageError, validateHostedRuntimeState } from "../extensions/runtime/service/state.ts";
+import {
+	HostedStateStorageError,
+	deriveParticipantKey,
+	validateHostedRuntimeState,
+} from "../extensions/runtime/service/state.ts";
 
 const DIGEST = "a".repeat(64);
 const NAMESPACE = "msg_00000000-0000-0000-0000-000000000001";
 const DEDUPE_KEY = "mon_1:gen_1:1:review.md";
+const PROJECT_ROOT = "/tmp/project";
+const PARTICIPANT = deriveParticipantKey(PROJECT_ROOT, "review", "main");
 
 const context: HostedProtocolContext = { runtimeId: "rt_test", epoch: "epoch_test", agentWake: "none" };
 
@@ -16,7 +22,7 @@ function populatedState(): HostedRuntimeState {
 			[NAMESPACE]: {
 				namespaceId: NAMESPACE,
 				secretDigest: DIGEST,
-				participantKey: "participant_a",
+				participantKey: PARTICIPANT,
 				holderGeneration: "lease_1",
 				targetKey: "pi_target",
 				clientGeneration: "client_1",
@@ -32,7 +38,7 @@ function populatedState(): HostedRuntimeState {
 			pi_target: {
 				kind: "pi",
 				targetKey: "pi_target",
-				projectRoot: "/tmp/project",
+				projectRoot: PROJECT_ROOT,
 				piSessionId: "session-1",
 				piSessionFile: "/tmp/session.jsonl",
 				createdAt: 100,
@@ -53,9 +59,9 @@ function populatedState(): HostedRuntimeState {
 			},
 		},
 		participants: {
-			participant_a: {
-				participantKey: "participant_a",
-				projectRoot: "/tmp/project",
+			[PARTICIPANT]: {
+				participantKey: PARTICIPANT,
+				projectRoot: PROJECT_ROOT,
 				protocol: "review",
 				participantId: "main",
 				state: "held",
@@ -94,20 +100,38 @@ function populatedState(): HostedRuntimeState {
 				status: "active",
 			},
 		},
-		wakes: { wake_1: { wakeId: "wake_1", targetKey: "pi_target", registrationId: "reg_1", createdAt: 250 } },
+		wakes: { pi_target: { wakeId: "wake_1", targetKey: "pi_target", registrationId: "reg_1", createdAt: 250 } },
 	};
+}
+
+function record<Value>(records: Record<string, Value>, key: string): Value {
+	const found = records[key];
+	if (found === undefined) throw new Error(`fixture is missing ${key}`);
+	return found;
 }
 
 /** One malformed record per top-level collection; each must fail the root schema, never be repaired. */
 const MALFORMED: Array<[string, (state: HostedRuntimeState) => void]> = [
-	["messaging", (state) => { state.messaging[NAMESPACE]!.secretDigest = "not-a-digest"; }],
-	["targets", (state) => { Reflect.set(state.targets.pi_target!, "kind", "unknown"); }],
-	["monitors", (state) => { Reflect.set(state.monitors.mon_1!, "status", "paused"); }],
-	["participants", (state) => { state.participants.participant_a!.transitions = []; }],
-	["events", (state) => { Reflect.set(state.events.evt_1!, "type", "filesystem.removed"); }],
+	["messaging", (state) => { record(state.messaging, NAMESPACE).secretDigest = "not-a-digest"; }],
+	["targets", (state) => { Reflect.set(record(state.targets, "pi_target"), "kind", "unknown"); }],
+	["monitors", (state) => { Reflect.set(record(state.monitors, "mon_1"), "status", "paused"); }],
+	["participants", (state) => { record(state.participants, PARTICIPANT).transitions = []; }],
+	["events", (state) => { Reflect.set(record(state.events, "evt_1"), "type", "filesystem.removed"); }],
 	["dedupe", (state) => { Reflect.set(state.dedupe, DEDUPE_KEY, 7); }],
-	["claims", (state) => { state.claims.claim_1!.eventIds = ["evt_1", "evt_1"]; }],
-	["wakes", (state) => { Reflect.deleteProperty(state.wakes.wake_1!, "registrationId"); }],
+	["claims", (state) => { record(state.claims, "claim_1").eventIds = ["evt_1", "evt_1"]; }],
+	["wakes", (state) => { Reflect.deleteProperty(record(state.wakes, "pi_target"), "registrationId"); }],
+];
+
+/** Cross-record invariants no single-record schema can see; each must fail the load, never be repaired. */
+const INCOHERENT: Array<[string, (state: HostedRuntimeState) => void]> = [
+	["dangling dedupe entry", (state) => { state.dedupe.stale = "evt_missing"; }],
+	["dedupe entry pointing at an event that carries another key", (state) => { record(state.events, "evt_1").dedupeKey = "other"; }],
+	["event unreachable through its dedupe key", (state) => { Reflect.deleteProperty(state.dedupe, DEDUPE_KEY); }],
+	["record id that differs from its map key", (state) => { record(state.claims, "claim_1").claimId = "claim_2"; }],
+	["participant key that is not derived from its identity", (state) => { record(state.participants, PARTICIPANT).participantId = "other"; }],
+	["claim lease that does not outlive its creation", (state) => { record(state.claims, "claim_1").leaseUntil = 300; }],
+	["event claim that does not cover it", (state) => { record(state.claims, "claim_1").targetKey = "other_target"; }],
+	["messaging grant with an edited lifetime", (state) => { record(state.messaging, NAMESPACE).expiresAt += 1; }],
 ];
 
 describe("runtime schemas", () => {
@@ -116,6 +140,12 @@ describe("runtime schemas", () => {
 	});
 
 	it.each(MALFORMED)("rejects a malformed %s record", (_collection, corrupt) => {
+		const state = populatedState();
+		corrupt(state);
+		expect(() => validateHostedRuntimeState(state)).toThrow(HostedStateStorageError);
+	});
+
+	it.each(INCOHERENT)("rejects a %s", (_invariant, corrupt) => {
 		const state = populatedState();
 		corrupt(state);
 		expect(() => validateHostedRuntimeState(state)).toThrow(HostedStateStorageError);
