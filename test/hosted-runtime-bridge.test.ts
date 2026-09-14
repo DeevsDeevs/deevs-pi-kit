@@ -7,7 +7,8 @@ import type { HostedTarget } from "../extensions/runtime/schemas/state.ts";
 import type { BindAgentInput } from "../extensions/runtime/service/bind-request.ts";
 import { RuntimeAgentBinder } from "../extensions/runtime/service/bridge.ts";
 import { HostedParticipantCoordinator } from "../extensions/runtime/service/participant.ts";
-import { dispatchHostedLine, type HostedProtocolContext } from "../extensions/runtime/service/protocol.ts";
+import { dispatchHostedLine } from "../extensions/runtime/service/protocol.ts";
+import { protocolContext } from "./fixtures/runtime-protocol.ts";
 import type { HostedHostVerifier, HostedLiveAgent } from "../extensions/runtime/service/identity.ts";
 import { RuntimeRegistrationManager, type RegisterPiInput } from "../extensions/runtime/service/registration.ts";
 import { startRuntimeServer } from "../extensions/runtime/service/server.ts";
@@ -153,7 +154,7 @@ describe("authoritative Herdr agent bind", () => {
 		const main = await registerPi(test, "main");
 		const caller = test.participants.acquire(main, "review", "main").participant;
 		test.host.agents.set(AGENT_NAME, codexAgent(test.projectRoot));
-		const context: HostedProtocolContext = { runtimeId: "rt_test", registrations: test.registrations, participants: test.participants, bridges: test.bridges };
+		const context = protocolContext(test.root, test.store, test.host, test.registrations, test.participants, test.bridges);
 		const call = (method: string, params: unknown) => dispatchHostedLine(JSON.stringify({ v: 1, id: method, method, params }), context);
 		expect(await call("hello", { minVersion: 1, maxVersion: 1 })).toMatchObject({ ok: true, result: { capabilities: { interactiveAgent: { bind: "herdr_agent_name" } } } });
 		const auth = { registrationId: main.registrationId, registrationKey: main.registrationKey };

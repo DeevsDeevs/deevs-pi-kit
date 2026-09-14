@@ -2,7 +2,16 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import { closeSync, constants, fsyncSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { HOSTED_ACK_RETENTION_MS } from "../schemas/common.ts";
-import { type HostedMailboxMessageEvent, type HostedMessagingGrant, type HostedParticipant, type HostedParticipantState, type HostedRuntimeState, type HostedTarget, isHeld, isPiTarget } from "../schemas/state.ts";
+import {
+	type HostedMailboxMessageEvent,
+	type HostedMessagingGrant,
+	type HostedParticipant,
+	type HostedParticipantState,
+	type HostedRuntimeState,
+	type HostedTarget,
+	isHeld,
+	isPiTarget,
+} from "../schemas/state.ts";
 import { HostedParticipantCoordinator } from "./participant.ts";
 import { RuntimeError } from "../errors.ts";
 import { RuntimeRegistrationManager, type HostedLiveRegistration } from "./registration.ts";
@@ -11,6 +20,7 @@ import {
 	HostedStateStorageError,
 	HostedStateStore,
 	messagingConfigurationHash,
+	messagingGrantIsLive,
 	messagingInboxEvent,
 } from "./state.ts";
 
@@ -75,15 +85,11 @@ interface MessagingMessageResult {
 	message: MessagingMessage;
 }
 
-interface MessagingReadResult {
+/** One published or retrieved event: a read receipt adds the time it was recorded. */
+interface MessagingEventResult {
 	namespaceId: string;
 	eventId: string;
-	readAt: number;
-}
-
-interface MessagingPublishedResult {
-	namespaceId: string;
-	eventId: string;
+	readAt?: number;
 }
 
 interface MessagingStatusResult {
@@ -94,8 +100,7 @@ interface MessagingStatusResult {
 type MessagingResult =
 	| MessagingPeersResult
 	| MessagingMessageResult
-	| MessagingReadResult
-	| MessagingPublishedResult
+	| MessagingEventResult
 	| MessagingStatusResult;
 
 export class RuntimeMessaging {
@@ -143,8 +148,9 @@ export class RuntimeMessaging {
 		}
 		const createdAt = this.now();
 		const descriptorPath = messagingDescriptorPath(this.store.root, target.targetKey);
-		const existing = Object.values(this.store.read().messaging)
-			.find((grant) => reusableGrant(grant, target, expectedGeneration, createdAt));
+		const current = this.store.read();
+		const existing = Object.values(current.messaging)
+			.find((grant) => reusableGrant(current, grant, target, expectedGeneration, createdAt));
 		// The reused secret only exists on disk, so a descriptor that names another namespace forces a fresh grant.
 		if (existing && descriptorNames(descriptorPath, existing.namespaceId)) {
 			return { namespaceId: existing.namespaceId, descriptorPath, expiresAt: existing.expiresAt };
@@ -194,9 +200,7 @@ export class RuntimeMessaging {
 		const grant = liveTargetNamespace(state, registration, this.now());
 		if (!grant) return undefined;
 		const [event] = Object.values(state.events)
-			.filter((candidate): candidate is HostedMailboxMessageEvent => candidate.type === "mailbox.message"
-				&& candidate.recipientParticipantKey === grant.participantKey
-				&& candidate.readAt === undefined)
+			.filter((candidate) => candidate.recipientParticipantKey === grant.participantKey && candidate.readAt === undefined)
 			.sort((left, right) => left.createdAt - right.createdAt || left.eventId.localeCompare(right.eventId));
 		return event ? { namespaceId: grant.namespaceId, eventId: event.eventId } : undefined;
 	}
@@ -264,7 +268,7 @@ export class RuntimeMessaging {
 		return { namespaceId: grant.namespaceId, message };
 	}
 
-	private markRead(grant: HostedMessagingGrant, eventId: string): MessagingReadResult {
+	private markRead(grant: HostedMessagingGrant, eventId: string): MessagingEventResult {
 		this.store.apply({ type: "messaging.read", namespaceId: grant.namespaceId, eventId, at: this.now() });
 		const event = messagingInboxEvent(this.store.read(), grant, eventId);
 		if (event.readAt === undefined) throw new RuntimeError("conflict", "Message read time was not recorded.");
@@ -274,9 +278,7 @@ export class RuntimeMessaging {
 	private status(grant: HostedMessagingGrant, operationId: string): MessagingStatusResult {
 		const eventId = Object.hasOwn(grant.operations, operationId) ? grant.operations[operationId] : undefined;
 		const event = eventId === undefined ? undefined : this.store.read().events[eventId];
-		if (!event || event.type !== "mailbox.message") {
-			throw new RuntimeError("not_found", "Operation has no publication in this namespace.");
-		}
+		if (!event) throw new RuntimeError("not_found", "Operation has no publication in this namespace.");
 		return { namespaceId: grant.namespaceId, event };
 	}
 
@@ -286,7 +288,7 @@ export class RuntimeMessaging {
 		operationId: string,
 		eventId: string,
 		body: string,
-	): MessagingPublishedResult {
+	): MessagingEventResult {
 		const inbound = messagingInboxEvent(this.store.read(), grant, eventId);
 		return this.publish(registration, grant, operationId, inbound.source.id, body, eventId);
 	}
@@ -298,7 +300,7 @@ export class RuntimeMessaging {
 		recipientParticipantKey: string,
 		body: string,
 		inReplyToEventId?: string,
-	): MessagingPublishedResult {
+	): MessagingEventResult {
 		this.participants.sendMessaging(registration, grant.namespaceId, { operationId, recipientParticipantKey, body, inReplyToEventId });
 		const current = this.requireGrant(grant.namespaceId);
 		const eventId = Object.hasOwn(current.operations, operationId) ? current.operations[operationId] : undefined;
@@ -342,18 +344,11 @@ export class RuntimeMessaging {
 			const message = "Messaging namespace expired; do not republish an uncertain operation under a new namespace.";
 			throw new RuntimeError("registration_stale", message);
 		}
-		if (!this.grantIsBoundToHolder(grant)) {
+		if (!messagingGrantIsLive(this.store.read(), grant, this.now())) {
 			throw new RuntimeError("registration_stale", "Messaging authority is expired or no longer bound to this holder.");
 		}
 	}
 
-	private grantIsBoundToHolder(grant: HostedMessagingGrant): boolean {
-		if (grant.status !== "active" || this.now() < grant.createdAt) return false;
-		const sender = this.store.read().participants[grant.participantKey];
-		if (!stillHeldBy(sender, grant.holderGeneration, grant.targetKey)) return false;
-		const target = this.store.read().targets[grant.targetKey];
-		return target !== undefined && messagingConfigurationHash(target) === grant.configurationHash;
-	}
 }
 
 function issuanceMismatch(): RuntimeError {
@@ -375,6 +370,7 @@ function stillHeldBy(participant: HostedParticipant | undefined, generation: str
 }
 
 function reusableGrant(
+	state: HostedRuntimeState,
 	grant: HostedMessagingGrant,
 	target: HostedTarget,
 	expectedGeneration: string,
@@ -382,10 +378,7 @@ function reusableGrant(
 ): boolean {
 	return grant.targetKey === target.targetKey
 		&& grant.holderGeneration === expectedGeneration
-		&& grant.configurationHash === messagingConfigurationHash(target)
-		&& grant.status === "active"
-		&& at >= grant.createdAt
-		&& at < grant.expiresAt;
+		&& messagingGrantIsLive(state, grant, at);
 }
 
 function isPeerOf(sender: HostedParticipant, candidate: HostedParticipant): boolean {
@@ -413,19 +406,8 @@ function liveTargetNamespace(
 	registration: HostedLiveRegistration,
 	at: number,
 ): HostedMessagingGrant | undefined {
-	const target = state.targets[registration.targetKey];
-	if (!target) return undefined;
-	const eligible = Object.values(state.messaging).filter(grant => {
-		const holder = state.participants[grant.participantKey];
-		return grant.targetKey === registration.targetKey
-			&& grant.status === "active"
-			&& grant.configurationHash === messagingConfigurationHash(target)
-			&& isHeld(holder?.state)
-			&& holder.holderTargetKey === grant.targetKey
-			&& holder.generation === grant.holderGeneration
-			&& grant.createdAt <= at
-			&& at < grant.expiresAt;
-	});
+	const eligible = Object.values(state.messaging)
+		.filter(grant => grant.targetKey === registration.targetKey && messagingGrantIsLive(state, grant, at));
 	return eligible.length === 1 ? eligible[0] : undefined;
 }
 

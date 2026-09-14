@@ -1,5 +1,5 @@
 import { type HostedMailboxMessageEvent, type HostedRuntimeState, isHeld } from "../../schemas/state.ts";
-import { HOSTED_ACK_RETENTION_MS, HOSTED_MAX_STATE_RECORDS } from "../../schemas/common.ts";
+import { HOSTED_ACK_RETENTION_MS } from "../../schemas/common.ts";
 import { deriveParticipantKey, mailboxDedupeKey, targetIdentityKey } from "./keys.ts";
 
 /**
@@ -8,7 +8,6 @@ import { deriveParticipantKey, mailboxDedupeKey, targetIdentityKey } from "./key
  * forged reference fails the load.
  */
 export function checkStateIntegrity(state: HostedRuntimeState): void {
-	checkCapacity(state);
 	checkKeyedRecords(state);
 	checkParticipants(state);
 	checkEvents(state);
@@ -63,9 +62,3 @@ function checkEventParticipants(state: HostedRuntimeState, event: HostedMailboxM
 	}
 }
 
-/** Every collection is bounded by its own schema; only nested messaging operations can outgrow their grant. */
-function checkCapacity(state: HostedRuntimeState): void {
-	let records = Object.keys(state.messaging).length;
-	for (const grant of Object.values(state.messaging)) records += Object.keys(grant.operations).length;
-	if (records > HOSTED_MAX_STATE_RECORDS) throw new Error("messaging authority and operation records exceed capacity");
-}

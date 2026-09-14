@@ -38,7 +38,7 @@ interface DriverCommandInput {
 }
 
 /** One authorized collaborator launch: which driver, under which agent name, in which pane. */
-export interface DriverLaunch {
+interface DriverLaunch {
 	driver: HostedCollaboratorDriver;
 	agentName: string;
 	paneId: string;

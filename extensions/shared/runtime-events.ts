@@ -3,14 +3,14 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export const RUNTIME_EVENT_ENTRY = "deevs.runtime-event-op.v1";
 
-export const RUNTIME_SOURCE_KINDS = ["subagent", "subagent-group", "job", "mission"] as const;
-export type RuntimeSourceKind = typeof RUNTIME_SOURCE_KINDS[number];
-export type RuntimeEventType = "attention" | "terminal";
+const RUNTIME_SOURCE_KINDS = ["subagent", "subagent-group", "job", "mission"] as const;
+type RuntimeSourceKind = typeof RUNTIME_SOURCE_KINDS[number];
+type RuntimeEventType = "attention" | "terminal";
 export type RuntimeTerminalStatus = "completed" | "partial" | "failed" | "cancelled" | "timeout" | "limited" | "blocked" | "lost";
-export type RuntimeDeliveryPolicy = "notify" | "record_only";
-export type RuntimeDeliveryStatus = "pending" | "claimed" | "acked";
+type RuntimeDeliveryPolicy = "notify" | "record_only";
+type RuntimeDeliveryStatus = "pending" | "claimed" | "acked";
 
-export interface RuntimeSource {
+interface RuntimeSource {
 	kind: RuntimeSourceKind;
 	id: string;
 	generation: string;
@@ -52,14 +52,14 @@ export interface RuntimeEvent {
 	usage?: RuntimeUsage;
 }
 
-export interface RuntimeDelivery {
+interface RuntimeDelivery {
 	status: RuntimeDeliveryStatus;
 	claimedBy?: string;
 	claimedAt?: number;
 	ackedAt?: number;
 }
 
-export interface RuntimeEventState {
+interface RuntimeEventState {
 	version: 1;
 	generations: Record<string, string>;
 	events: Record<string, RuntimeEvent>;
@@ -124,7 +124,7 @@ export function emptyRuntimeEventState(): RuntimeEventState {
 	return { version: 1, generations: {}, events: {}, dedupe: {}, deliveries: {} };
 }
 
-export function runtimeSourceKey(source: Pick<RuntimeSource, "kind" | "id">): string {
+function runtimeSourceKey(source: Pick<RuntimeSource, "kind" | "id">): string {
 	return `${source.kind}:${source.id}`;
 }
 
@@ -206,7 +206,7 @@ export function replayRuntimeEventEntries(entries: readonly unknown[]): RuntimeE
 
 interface RuntimeEventStateHolder { state: RuntimeEventState }
 
-export class RuntimeEventJournal {
+class RuntimeEventJournal {
 	private readonly holder: RuntimeEventStateHolder;
 
 	constructor(holder: RuntimeEventStateHolder = { state: emptyRuntimeEventState() }) { this.holder = holder; }

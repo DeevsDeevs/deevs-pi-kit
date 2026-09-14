@@ -32,7 +32,7 @@ Newline-delimited JSON, capped at 64 KiB per request line and 128 KiB per messag
 {"v":1,"id":"req_1","ok":false,"error":{"code":"not_found","message":"diagnostic"}}
 ```
 
-`hello` returns `{version, runtimeId, capabilities}` with `targets`, and — when the matching authority is loaded — `mailbox`, `interactiveAgent` and `worktree`; `runtimeId` persists across service starts. Error codes: `invalid_request`, `unsupported_version`, `capability_unavailable`, `not_found`, `conflict`, `busy`, `registration_stale`, `identity_mismatch`, `host_unavailable`, `storage_error`, `internal`.
+`hello` returns `{version, runtimeId, capabilities}` with `targets`, `mailbox`, `interactiveAgent` and `worktree`; `runtimeId` persists across service starts. Error codes: `invalid_request`, `unsupported_version`, `not_found`, `conflict`, `busy`, `registration_stale`, `identity_mismatch`, `host_unavailable`, `storage_error`, `internal`.
 
 ## Methods
 

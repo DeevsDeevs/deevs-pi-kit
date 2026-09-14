@@ -1,4 +1,11 @@
-import { type HostedCollaboratorDriver, type HostedParticipant, type HostedTarget, isAgentTarget, isHeld, isPiTarget } from "../schemas/state.ts";
+import {
+	type HostedCollaboratorDriver,
+	type HostedParticipant,
+	type HostedTarget,
+	isAgentTarget,
+	isHeld,
+	isPiTarget,
+} from "../schemas/state.ts";
 import { RuntimeError } from "../errors.ts";
 import type { RuntimeRegistrationManager } from "./registration.ts";
 import type { HostedStateStore } from "./state.ts";
@@ -63,8 +70,6 @@ export function participantStatus(
 /** Mail is read by `messaging.read`, never claimed, so unread depth is the absence of a read time. */
 function unreadMail(store: HostedStateStore, participantKey: string): number {
 	return Object.values(store.read().events)
-		.filter((event) => event.type === "mailbox.message"
-			&& event.recipientParticipantKey === participantKey
-			&& event.readAt === undefined)
+		.filter((event) => event.recipientParticipantKey === participantKey && event.readAt === undefined)
 		.length;
 }

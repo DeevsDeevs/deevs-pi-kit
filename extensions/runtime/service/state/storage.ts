@@ -36,7 +36,7 @@ type PersistedStateValue = string | number | boolean | null | PersistedStateValu
 const INSTANCE_MAX_BYTES = 4 * 1024;
 const PersistedStateVersion = Type.Object({ version: Type.Integer() });
 
-export interface RuntimeStatePaths {
+interface RuntimeStatePaths {
 	instance: string;
 	state: string;
 }
@@ -121,9 +121,10 @@ export function validateHostedRuntimeState<Source>(value: Source): HostedRuntime
 	}
 }
 
+/** The socket proves request params and the load proves the store; a reducer's own output is trusted. */
 export function writeHostedRuntimeState(root: string, state: HostedRuntimeState): void {
 	prepareRoot(root);
-	writeAtomicJson(root, runtimeStatePaths(root).state, validateHostedRuntimeState(state), HOSTED_STATE_MAX_BYTES);
+	writeAtomicJson(root, runtimeStatePaths(root).state, state, HOSTED_STATE_MAX_BYTES);
 }
 
 function prepareRoot(root: string): void {

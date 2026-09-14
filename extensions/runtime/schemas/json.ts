@@ -19,10 +19,6 @@ export function isJsonString(value: JsonValue | undefined): value is string {
 	try { return String.prototype.valueOf.call(value) === value; } catch { return false; }
 }
 
-export function isJsonNumber(value: JsonValue | undefined): value is number {
-	try { return Number.prototype.valueOf.call(value) === value; } catch { return false; }
-}
-
 export function isJsonBoolean(value: JsonValue | undefined): value is boolean {
 	try { return Boolean.prototype.valueOf.call(value) === value; } catch { return false; }
 }

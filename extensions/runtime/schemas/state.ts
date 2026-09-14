@@ -27,12 +27,12 @@ export const HostedCollaboratorDriverSchema = Type.Union([
 	Type.Literal("codex"),
 ]);
 
-export const HostedHerdrLocatorSchema = Type.Object({
+const HostedHerdrLocatorSchema = Type.Object({
 	tabId: IdText,
 	workspaceId: IdText,
 }, STRICT_OBJECT);
 
-export const HostedPiTargetSchema = Type.Object({
+const HostedPiTargetSchema = Type.Object({
 	kind: Type.Literal("pi"),
 	targetKey: IdText,
 	projectRoot: PathText,
@@ -42,7 +42,7 @@ export const HostedPiTargetSchema = Type.Object({
 	createdAt: Timestamp,
 }, STRICT_OBJECT);
 
-export const HostedAgentTargetSchema = Type.Object({
+const HostedAgentTargetSchema = Type.Object({
 	kind: Type.Literal("agent"),
 	targetKey: IdText,
 	projectRoot: PathText,
@@ -56,9 +56,9 @@ export const HostedAgentTargetSchema = Type.Object({
 	createdAt: Timestamp,
 }, STRICT_OBJECT);
 
-export const HostedTargetSchema = Type.Union([HostedPiTargetSchema, HostedAgentTargetSchema]);
+const HostedTargetSchema = Type.Union([HostedPiTargetSchema, HostedAgentTargetSchema]);
 
-export const HostedParticipantTransitionSchema = Type.Object({
+const HostedParticipantTransitionSchema = Type.Object({
 	cause: Type.Union([
 		Type.Literal("acquire"),
 		Type.Literal("reacquire"),
@@ -78,7 +78,7 @@ export const HostedParticipantStateSchema = Type.Union([
 	Type.Literal("ended"),
 ]);
 
-export const HostedParticipantSchema = Type.Object({
+const HostedParticipantSchema = Type.Object({
 	participantKey: IdText,
 	projectRoot: PathText,
 	protocol: ParticipantNameText,
@@ -93,7 +93,7 @@ export const HostedParticipantSchema = Type.Object({
 	updatedAt: Timestamp,
 }, STRICT_OBJECT);
 
-export const HostedMailboxMessageEventSchema = Type.Object({
+const HostedMailboxMessageEventSchema = Type.Object({
 	version: Type.Literal(1),
 	eventId: IdText,
 	dedupeKey: PathText,
@@ -143,7 +143,7 @@ export type HostedCollaboratorProfile = Static<typeof HostedCollaboratorProfileS
 export type HostedNativeCollaboratorDriver = Static<typeof HostedNativeCollaboratorDriverSchema>;
 export type HostedCollaboratorDriver = Static<typeof HostedCollaboratorDriverSchema>;
 export type HostedHerdrLocator = Static<typeof HostedHerdrLocatorSchema>;
-export type HostedPiTarget = Static<typeof HostedPiTargetSchema>;
+type HostedPiTarget = Static<typeof HostedPiTargetSchema>;
 export type HostedAgentTarget = Static<typeof HostedAgentTargetSchema>;
 export type HostedTarget = Static<typeof HostedTargetSchema>;
 export type HostedParticipantTransition = Static<typeof HostedParticipantTransitionSchema>;

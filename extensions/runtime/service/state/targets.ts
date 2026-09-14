@@ -2,7 +2,6 @@ import { RuntimeError } from "../../errors.ts";
 import { type HostedParticipant, type HostedRuntimeState, isHeld, isPiTarget, isVacant, isWriter } from "../../schemas/state.ts";
 import type { HostedAgentBind, HostedStateOperation } from "./operations.ts";
 import { sameTarget } from "./compare.ts";
-import { assertParticipantName, assertStateId, assertStateTime } from "./guards.ts";
 import { deriveAgentTargetKey, deriveParticipantKey } from "./keys.ts";
 import { acquireParticipant } from "./participants.ts";
 
@@ -23,10 +22,6 @@ export function ensureTarget(state: HostedRuntimeState, operation: EnsureTargetO
 export function bindAgentTarget(state: HostedRuntimeState, operation: BindAgentOperation): HostedRuntimeState {
 	const bind = operation.bind;
 	const target = bind.target;
-	assertStateTime(bind.at, "Agent bind time");
-	assertStateId(target.agentName, "Herdr agent name");
-	assertParticipantName(bind.protocol, "protocol");
-	assertParticipantName(bind.participantId, "participant ID");
 	assertAgentBindCaller(state, bind);
 	assertAgentBindIdentity(bind);
 	const participant = state.participants[target.participantKey];

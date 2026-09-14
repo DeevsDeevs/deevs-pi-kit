@@ -8,7 +8,7 @@ export const HOSTED_MAILBOX_MAX_BODY_BYTES = 16 * 1024;
 export const HOSTED_MAX_STATE_RECORDS = 10_000;
 
 export const MAX_ID_BYTES = 200;
-export const MAX_PATH_BYTES = 8 * 1024;
+const MAX_PATH_BYTES = 8 * 1024;
 const MAX_SUMMARY_BYTES = 2 * 1024;
 
 export const STRICT_OBJECT = { additionalProperties: false } as const;

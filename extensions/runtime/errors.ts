@@ -2,7 +2,6 @@
 export type RuntimeErrorCode =
 	| "invalid_request"
 	| "unsupported_version"
-	| "capability_unavailable"
 	| "not_found"
 	| "conflict"
 	| "registration_stale"

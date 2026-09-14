@@ -29,7 +29,7 @@ export class RuntimeAlreadyRunningError extends RuntimeError {
 	}
 }
 
-export interface RuntimeServerOptions {
+interface RuntimeServerOptions {
 	root: string;
 	socketPath?: string;
 	probeTimeoutMs?: number;

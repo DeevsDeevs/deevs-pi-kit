@@ -12,7 +12,7 @@ export const ParticipantIdentitySchema = Type.Object({
 	reviveAuthorized: Type.Optional(Type.Literal(true)),
 }, STRICT_OBJECT);
 
-export const CollaboratorPersonaSchema = Type.Object({
+const CollaboratorPersonaSchema = Type.Object({
 	name: boundedText(64),
 	prompt: boundedText(64 * 1024),
 	promptHash: HashText,
@@ -37,7 +37,7 @@ export const ManagedAgentSessionSchema = Type.Object({
 	value: PathText,
 }, STRICT_OBJECT);
 
-export const ManagedAgentOwnerSchema = Type.Object({
+const ManagedAgentOwnerSchema = Type.Object({
 	sessionId: IdText,
 	sessionFile: PathText,
 	cwd: PathText,

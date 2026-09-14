@@ -1,9 +1,14 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { HOSTED_ACK_RETENTION_MS } from "../extensions/runtime/schemas/common.ts";
 import type { HostedRuntimeState } from "../extensions/runtime/schemas/state.ts";
-import { dispatchHostedLine, type HostedProtocolContext } from "../extensions/runtime/service/protocol.ts";
+import { dispatchHostedLine } from "../extensions/runtime/service/protocol.ts";
+import { protocolContext } from "./fixtures/runtime-protocol.ts";
 import {
 	HostedStateStorageError,
+	HostedStateStore,
 	deriveParticipantKey,
 	validateHostedRuntimeState,
 } from "../extensions/runtime/service/state.ts";
@@ -14,8 +19,6 @@ const PROJECT_ROOT = "/tmp/project";
 const SENDER = deriveParticipantKey(PROJECT_ROOT, "review", "main");
 const RECIPIENT = deriveParticipantKey(PROJECT_ROOT, "review", "peer");
 const DEDUPE_KEY = `mailbox:${SENDER}:send_1`;
-
-const context: HostedProtocolContext = { runtimeId: "rt_test" };
 
 function populatedState(): HostedRuntimeState {
 	return {
@@ -134,6 +137,8 @@ describe("runtime schemas", () => {
 	});
 
 	it("rejects an RPC call carrying an unknown params field", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-kit-runtime-schemas-"));
+		const context = protocolContext(root, new HostedStateStore(root));
 		const line = JSON.stringify({
 			v: 1,
 			id: "req_unknown_field",
@@ -145,5 +150,6 @@ describe("runtime schemas", () => {
 			ok: false,
 			error: { code: "invalid_request" },
 		});
+		rmSync(root, { recursive: true, force: true });
 	});
 });

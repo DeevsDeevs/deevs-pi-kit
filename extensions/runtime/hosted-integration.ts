@@ -92,8 +92,8 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 		this.store.restore(ctx);
 	}
 
-	async afterRegister(registration: LiveClientRegistration, _ctx: ExtensionContext, current: () => boolean): Promise<void> {
-		if (isHeld(this.store.identity?.disposition)) await this.messaging.provision(registration, current);
+	async afterRegister(registration: LiveClientRegistration, ctx: ExtensionContext): Promise<void> {
+		if (isHeld(this.store.identity?.disposition)) await this.messaging.provision(registration, ctx);
 	}
 
 	afterHeartbeat(registration: LiveClientRegistration, ctx: ExtensionContext, heartbeat: HostedHeartbeat): Promise<void> {

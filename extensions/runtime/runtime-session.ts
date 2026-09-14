@@ -9,6 +9,7 @@ import {
 	parseParticipant,
 	parseRegistration,
 	strictObject,
+	type RuntimeResponse,
 	type ClientParticipantStatus,
 	type HostedHeartbeat,
 	type LiveClientRegistration,
@@ -22,13 +23,8 @@ const HEARTBEAT_MS = 2_000;
 /** Everything the session lifecycle hands back to the collaborator, delivery and messaging services. */
 export interface RuntimeSessionHooks {
 	restoreSessionState(ctx: ExtensionContext): void;
-	afterRegister(registration: LiveClientRegistration, ctx: ExtensionContext, current: () => boolean): Promise<void>;
-	afterHeartbeat(
-		registration: LiveClientRegistration,
-		ctx: ExtensionContext,
-		heartbeat: HostedHeartbeat,
-		current: () => boolean,
-	): Promise<void>;
+	afterRegister(registration: LiveClientRegistration, ctx: ExtensionContext): Promise<void>;
+	afterHeartbeat(registration: LiveClientRegistration, ctx: ExtensionContext, heartbeat: HostedHeartbeat): Promise<void>;
 	afterHeartbeatSettled(): Promise<void>;
 }
 
@@ -126,6 +122,14 @@ export class RuntimeSession {
 		if (!current()) throw new HostedRuntimeClientError("registration_stale", "Pi session or registration changed during Runtime work.");
 	}
 
+	/** The one place a scope is re-checked: an RPC is neither issued nor acted on outside the scope it began in. */
+	async scopedCall<Params extends object>(current: () => boolean, method: string, params: Params): Promise<RuntimeResponse> {
+		this.requireCurrentScope(current);
+		const result = await this.client.call(method, params);
+		this.requireCurrentScope(current);
+		return result;
+	}
+
 	async requireRegistration(ctx: ExtensionContext): Promise<LiveClientRegistration> {
 		if (this.registration) return this.registration;
 		await this.start(ctx);
@@ -179,8 +183,7 @@ export class RuntimeSession {
 		this.startHeartbeat();
 		try {
 			await restoreHeldParticipant(this, registration, ctx);
-			this.requireCurrentScope(current);
-			await this.hooks.afterRegister(registration, ctx, current);
+			await this.hooks.afterRegister(registration, ctx);
 		} catch (error) {
 			const cause = error instanceof Error ? error.message : String(error);
 			if (current()) ctx.ui.notify(`Collaborator identity or messaging unavailable: ${cause}`, "warning");
@@ -232,15 +235,14 @@ export class RuntimeSession {
 	}
 
 	private async heartbeatOnce(registration: LiveClientRegistration, ctx: ExtensionContext, current: () => boolean): Promise<void> {
-		const heartbeat = parseHeartbeat(await this.client.call("pi.heartbeat", auth(registration)));
-		this.requireCurrentScope(current);
+		const heartbeat = parseHeartbeat(await this.scopedCall(current, "pi.heartbeat", auth(registration)));
 		if (!sameRegistrationIdentity(heartbeat.registration, registration)) {
 			throw new HostedRuntimeClientError("registration_stale", "Heartbeat replaced its registration identity.");
 		}
 		this.registration = heartbeat.registration;
 		if (this.store.identity?.participantKey) await restoreHeldParticipant(this, this.registration, ctx);
 		this.requireCurrentScope(current);
-		await this.hooks.afterHeartbeat(this.registration, ctx, heartbeat, current);
+		await this.hooks.afterHeartbeat(this.registration, ctx, heartbeat);
 	}
 }
 

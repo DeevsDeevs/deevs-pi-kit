@@ -201,18 +201,20 @@ export class NativeAgentService {
 		control: ManagedAgentControl,
 		current: () => boolean,
 	): Promise<boolean> {
+		// One predicate for the whole sweep step: this session, and this exact persisted control, are still the ones it began on.
+		const live = (): boolean => current() && this.session.store.agent(targetKey) === control;
 		try {
-			const registration = await this.verifyManagedRegistration(targetKey, control, current);
+			const registration = await this.verifyManagedRegistration(targetKey, live);
 			if (!registration) return false;
 			this.registrations.set(targetKey, registration);
 			const active = this.session.store.agent(targetKey);
-			const live = this.session.liveRegistration;
+			const session = this.session.liveRegistration;
 			// Native automatic input is blocked until the provider can attest editor ownership and exact-session admission.
 			const needsMessaging = active?.messagingConfigured === true && !this.messaging.isManagedIssued(targetKey);
-			if (needsMessaging && live && active) await this.messaging.provisionManaged(ctx, live, active);
+			if (needsMessaging && session && active) await this.messaging.provisionManaged(ctx, session, active);
 			return true;
 		} catch (error) {
-			if (!current() || this.session.store.agent(targetKey) !== control) return false;
+			if (!live()) return false;
 			this.registrations.delete(targetKey);
 			if (error instanceof HostedRuntimeClientError && FATAL_HEARTBEAT_CODES.includes(error.code)) {
 				this.session.store.persistAgent({ ...control, state: "needs_attention" });
@@ -222,26 +224,23 @@ export class NativeAgentService {
 	}
 
 	/** The verified registration for one managed target, or undefined when this session moved on. */
-	private async verifyManagedRegistration(
-		targetKey: string,
-		control: ManagedAgentControl,
-		current: () => boolean,
-	): Promise<LiveClientRegistration | undefined> {
+	private async verifyManagedRegistration(targetKey: string, live: () => boolean): Promise<LiveClientRegistration | undefined> {
 		const known = this.registrations.get(targetKey);
+		const control = this.session.store.agent(targetKey);
+		if (!control) return undefined;
 		let registration: LiveClientRegistration;
 		if (known) {
 			const heartbeat = parseHeartbeat(await this.session.client.call("bridge.heartbeat", auth(known)));
-			if (!current() || this.session.store.agent(targetKey) !== control) return undefined;
+			if (!live()) return undefined;
 			if (heartbeat.registration.registrationId !== known.registrationId || heartbeat.registration.registrationKey !== known.registrationKey) {
 				throw new HostedRuntimeClientError("identity_mismatch", "Native heartbeat replaced its registration authority.");
 			}
 			registration = heartbeat.registration;
 		} else {
 			const bound = await this.rebindManagedAgent(control);
-			if (!current() || this.session.store.agent(targetKey) !== control) return undefined;
+			if (!live()) return undefined;
 			registration = bound.registration;
 		}
-		if (!current()) return undefined;
 		if (registration.targetKey !== targetKey) {
 			throw new HostedRuntimeClientError("identity_mismatch", "Native heartbeat replaced its target identity.");
 		}

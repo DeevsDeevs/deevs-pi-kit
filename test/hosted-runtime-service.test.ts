@@ -3,19 +3,24 @@ import { existsSync, mkdtempSync, mkdirSync, rmSync, statSync, writeFileSync } f
 import { createConnection, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { dispatchHostedLine, HOSTED_MAX_REQUEST_BYTES, type HostedProtocolContext } from "../extensions/runtime/service/protocol.ts";
+import { dispatchHostedLine, HOSTED_MAX_REQUEST_BYTES } from "../extensions/runtime/service/protocol.ts";
+import { HostedStateStore } from "../extensions/runtime/service/state.ts";
+import { protocolContext } from "./fixtures/runtime-protocol.ts";
 import { RuntimeAlreadyRunningError, startRuntimeServer, type RuntimeServerHandle } from "../extensions/runtime/service/server.ts";
 import { HostedStateStorageError, runtimeStatePaths } from "../extensions/runtime/service/state.ts";
 
 const roots: string[] = [];
 const servers: RuntimeServerHandle[] = [];
 
-const context: HostedProtocolContext = { runtimeId: "rt_test" };
-
 afterEach(async () => {
 	await Promise.all(servers.splice(0).map((server) => server.close()));
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
+
+function dispatcherContext() {
+	const root = temporaryRoot();
+	return protocolContext(root, new HostedStateStore(root));
+}
 
 function temporaryRoot(): string {
 	const root = mkdtempSync(join(tmpdir(), "pi-kit-runtime-service-"));
@@ -30,7 +35,7 @@ describe("hosted runtime protocol", () => {
 			id: "req_1",
 			method: "hello",
 			params: { minVersion: 1, maxVersion: 1 },
-		}), context);
+		}), dispatcherContext());
 		expect(response).toEqual({
 			v: 1,
 			id: "req_1",
@@ -38,20 +43,25 @@ describe("hosted runtime protocol", () => {
 			result: {
 				version: 1,
 				runtimeId: "rt_test",
-				capabilities: { targets: ["pi", "claude-code", "codex"] },
+				capabilities: {
+					targets: ["pi", "claude-code", "codex"],
+					mailbox: { maxBodyBytes: 16_384 },
+					interactiveAgent: { bind: "herdr_agent_name" },
+					worktree: { isolatedWrite: true },
+				},
 			},
 		});
 	});
 
 	it("rejects malformed framing, unsupported ranges, unknown fields, and unknown methods", async () => {
-		expect(await dispatchHostedLine("{bad", context)).toMatchObject({ id: null, ok: false, error: { code: "invalid_request" } });
-		expect(await dispatchHostedLine(JSON.stringify({ v: 1, id: "range", method: "hello", params: { minVersion: 2, maxVersion: 3 } }), context))
+		expect(await dispatchHostedLine("{bad", dispatcherContext())).toMatchObject({ id: null, ok: false, error: { code: "invalid_request" } });
+		expect(await dispatchHostedLine(JSON.stringify({ v: 1, id: "range", method: "hello", params: { minVersion: 2, maxVersion: 3 } }), dispatcherContext()))
 			.toMatchObject({ id: "range", ok: false, error: { code: "unsupported_version" } });
-		expect(await dispatchHostedLine(JSON.stringify({ v: 2, id: "future", method: "hello", params: {}, futureField: true }), context))
+		expect(await dispatchHostedLine(JSON.stringify({ v: 2, id: "future", method: "hello", params: {}, futureField: true }), dispatcherContext()))
 			.toMatchObject({ id: "future", ok: false, error: { code: "unsupported_version" } });
-		expect(await dispatchHostedLine(JSON.stringify({ v: 1, id: "extra", method: "hello", params: { minVersion: 1, maxVersion: 1, extra: true } }), context))
+		expect(await dispatchHostedLine(JSON.stringify({ v: 1, id: "extra", method: "hello", params: { minVersion: 1, maxVersion: 1, extra: true } }), dispatcherContext()))
 			.toMatchObject({ id: "extra", ok: false, error: { code: "invalid_request" } });
-		expect(await dispatchHostedLine(JSON.stringify({ v: 1, id: "missing", method: "other", params: {} }), context))
+		expect(await dispatchHostedLine(JSON.stringify({ v: 1, id: "missing", method: "other", params: {} }), dispatcherContext()))
 			.toMatchObject({ id: "missing", ok: false, error: { code: "not_found" } });
 	});
 });
