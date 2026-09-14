@@ -32,7 +32,7 @@ extensions/ask-user/    Interactive clarification UI (`ask_user`)
 extensions/codex-fast/  OpenAI Codex Fast mode service tier (`/codex-fast`)
 extensions/notifier/    Ready-for-input terminal notifications
 extensions/herdr-compat/ Experimental Shift+Enter compatibility for Pi inside Herdr
-extensions/runtime/     Durable Monitor inbox and exact Pi/Herdr wake delivery
+extensions/runtime/     Durable Monitor inbox and exact Pi/Herdr heartbeat delivery
 skills/                 Agent behavior guidance
 ```
 
@@ -145,7 +145,9 @@ When Pi runs inside Herdr (`HERDR_ENV=1`), normalize legacy and Kitty Alt+Enter 
 ### Hosted runtime
 
 Runtime is a local daemon with two jobs. It watches newly created direct-child files in a monitored directory and delivers them to one
-exact Pi session across restarts, claiming them in-process through Pi's heartbeat instead of prompting or focusing any pane. It also
+exact Pi session across restarts, handing them out on Pi's own heartbeat instead of prompting or focusing any pane. Delivery is
+at-least-once: a session that dies before acknowledging is handed the same batch again, and a bounded durable seen-set in its session
+entry keeps the repeat from reaching the model twice. It also
 hosts persistent Pi, Claude Code, and Codex collaborators as real interactive agents in no-focus Herdr tabs, each holding a durable
 participant identity lease, and each writer working in its own Git worktree on `runtime/collab/<protocol>/<participantId>`.
 

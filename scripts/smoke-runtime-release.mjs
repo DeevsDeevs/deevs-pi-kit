@@ -121,15 +121,14 @@ async function assertRuntimeRegistered(paneId) {
 	await waitFor(() => readPane(paneId).includes("registered until"), `Pi pane ${paneId} did not report a live Runtime registration`);
 }
 
-function simulatedPreAckCrashState() {
+/** Delivery is at-least-once: a crash before the ack leaves the event undelivered and it is handed out again. */
+function simulateCrashBeforeAck(eventId) {
 	const state = readState();
-	const claim = Object.values(state.claims).find((candidate) => candidate.status === "acked");
-	assert.ok(claim, "acknowledged claim is missing before crash simulation");
-	claim.status = "active";
-	delete claim.settledAt;
-	for (const eventId of claim.eventIds) state.events[eventId].delivery = { status: "claimed", claimId: claim.claimId };
+	const event = state.events[eventId];
+	assert.ok(event?.deliveredAt !== undefined, "delivered event is missing before crash simulation");
+	delete event.deliveredAt;
+	state.claims = {};
 	writeFileSync(join(runtimeRoot, "state.v1.json"), `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
-	return claim;
 }
 
 try {
@@ -147,13 +146,13 @@ try {
 	writeFileSync(join(watchRoot, "0050-release-review.md"), "# release review\n");
 	const pendingEvent = await waitFor(() => {
 		const events = Object.values(readState().events);
-		return events.length === 1 && events[0].delivery.status === "pending" ? events[0] : undefined;
-	}, "offline file did not become one durable pending event");
-	assert.equal(Object.keys(readState().wakes).length, 0, "offline target received a wake");
+		return events.length === 1 && events[0].deliveredAt === undefined ? events[0] : undefined;
+	}, "offline file did not become one durable undelivered event");
+	assert.equal(Object.keys(readState().claims).length, 0, "offline target holds a delivery claim");
 
 	await stopRuntime();
 	await startRuntime();
-	assert.equal(readState().events[pendingEvent.eventId].delivery.status, "pending");
+	assert.equal(readState().events[pendingEvent.eventId].deliveredAt, undefined);
 
 	const foreign = await startPi("runtime-release-foreign", foreignSessionFile, false);
 	const client = new HostedRuntimeClient(runtime.socketPath);
@@ -161,50 +160,43 @@ try {
 		projectRoot,
 		piSessionId: foreignSessionId,
 		piSessionFile: foreignSessionFile,
-		admittedClaims: [],
 	});
 	await assert.rejects(() => client.call("pi.register", {
 		projectRoot,
 		piSessionId: targetSessionId,
 		piSessionFile: targetSessionFile,
-		admittedClaims: [],
 	}), (error) => error?.code === "identity_mismatch");
-	await assert.rejects(() => client.call("inbox.claim", { registrationId: foreignRegistration.registrationId, registrationKey: foreignRegistration.registrationKey }), (error) => error?.code === "not_found");
+	const foreignAuth = { registrationId: foreignRegistration.registrationId, registrationKey: foreignRegistration.registrationKey };
+	const foreignHeartbeat = await client.call("pi.heartbeat", { ...foreignAuth, admit: true });
+	assert.equal(foreignHeartbeat.events, undefined, "another target was handed this target's events");
 
 	const resumed = await startPi("runtime-release-target-2", targetSessionFile);
 	await assertRuntimeRegistered(resumed.pane.pane_id);
-	const acknowledgedEvent = await waitFor(() => {
+	await waitFor(() => {
 		const event = readState().events[pendingEvent.eventId];
-		return event?.delivery.status === "acked" ? event : undefined;
+		return event?.deliveredAt !== undefined ? event : undefined;
 	}, "resumed exact target did not admit and acknowledge its event", 30_000);
 	await waitFor(() => hostedMessages().length === 1, "exact hosted custom message was not persisted");
-	const acknowledgedClaim = readState().claims[acknowledgedEvent.delivery.claimId];
-	await assert.rejects(() => client.call("inbox.ack", {
-		registrationId: foreignRegistration.registrationId,
-		registrationKey: foreignRegistration.registrationKey,
-		claimId: acknowledgedClaim.claimId,
-		eventIds: acknowledgedClaim.eventIds,
-	}), (error) => error?.code === "claim_conflict");
 
 	await closePane(resumed.pane.pane_id);
 	await stopRuntime();
-	const simulatedClaim = simulatedPreAckCrashState();
+	simulateCrashBeforeAck(pendingEvent.eventId);
 	assert.equal(hostedMessages().length, 1, "crash simulation lost the admitted Pi receipt");
 	await startRuntime();
 	const reconciler = await startPi("runtime-release-target-3", targetSessionFile);
 	await assertRuntimeRegistered(reconciler.pane.pane_id);
-	await waitFor(() => readState().claims[simulatedClaim.claimId]?.status === "acked", "historical Pi receipt did not reconcile after restart");
-	assert.equal(hostedMessages().length, 1, "historical reconciliation redelivered the event");
+	await waitFor(() => readState().events[pendingEvent.eventId].deliveredAt !== undefined, "redelivered event was not acknowledged again");
+	assert.equal(hostedMessages().length, 1, "the durable seen-set admitted a duplicate delivery twice");
 
 	await closePane(reconciler.pane.pane_id);
 	await stopRuntime();
 	await startRuntime();
 	const finalPi = await startPi("runtime-release-target-4", targetSessionFile);
 	await assertRuntimeRegistered(finalPi.pane.pane_id);
-	// Cover one full client heartbeat interval as well as register/scan-triggered wake paths.
+	// Cover one full client heartbeat interval as well as the register and scan paths.
 	await sleep(11_000);
-	assert.equal(readState().events[pendingEvent.eventId].delivery.status, "acked");
-	assert.equal(Object.keys(readState().wakes).length, 0);
+	assert.ok(readState().events[pendingEvent.eventId].deliveredAt !== undefined);
+	assert.equal(Object.keys(readState().claims).length, 0);
 	assert.equal(hostedMessages().length, 1, "acknowledged event was redelivered after the second restart");
 
 	console.log(JSON.stringify({

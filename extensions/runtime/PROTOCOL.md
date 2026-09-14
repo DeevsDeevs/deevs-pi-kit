@@ -2,7 +2,7 @@
 
 Runtime is a local daemon providing durable Monitor delivery to one exact Pi session, durable participant identity, durable mail, and
 lifecycle authority over persistent collaborators living in Herdr tabs, which owns processes, panes, and interactive input. Runtime
-accepts only state schema v18; unsupported stores fail closed. Collaborators keep identity and conversation across turns; use a Subagent
+accepts only state schema v19; unsupported stores fail closed. Collaborators keep identity and conversation across turns; use a Subagent
 for bounded structured work.
 
 ## Execution primitives
@@ -23,6 +23,8 @@ Guaranteed:
   or unverifiable targets retain pending events. No operation focuses or scrapes a pane; stop preserves collaborator worktrees.
 
 Not guaranteed:
+- Delivery is at-least-once, never exactly-once: a Pi that dies between hand-out and ack is handed the same batch again once its claim
+  expires, and only Pi's durable seen-set keeps that duplicate out of the session.
 - No automatic prompt injection into a Claude/Codex tab, no reply capture from terminal output, and no claim of provider exactly-once
   execution, durable model admission, or semantic completion.
 - Worktree cwd is launch authority, not an OS boundary, and Runtime is no isolation boundary against a hostile same-UID process.
@@ -51,7 +53,7 @@ malformed call is always `invalid_request`.
 `runtimeId` persists across service starts. `hello` returns `{version, runtimeId, capabilities}`, carrying
 `agentWake`, `maxDeliveryBatch`, `targets`, `monitor`, and — when the matching authority is loaded — `mailbox`, `interactiveAgent`, and
 `worktree`. Error codes: `invalid_request`, `unsupported_version`, `capability_unavailable`, `not_found`, `conflict`, `busy`,
-`registration_stale`, `identity_mismatch`, `claim_conflict`, `host_unavailable`, `storage_error`, `internal`.
+`registration_stale`, `identity_mismatch`, `host_unavailable`, `storage_error`, `internal`.
 
 ## Methods
 
@@ -61,7 +63,7 @@ malformed call is always `invalid_request`.
 | Pi registration | `pi.register`, `pi.heartbeat`, `pi.unregister` |
 | Interactive agent | `bridge.bind`, `bridge.heartbeat`, `bridge.unregister` |
 | Monitor | `monitor.create`, `monitor.get`, `monitor.delete` |
-| Inbox and wake | `inbox.claim`, `inbox.ack`, `inbox.release`, `inbox.status`, `wake.accept` |
+| Inbox | `inbox.ack`, `inbox.status` |
 | Participants | `participant.acquire`, `participant.get`, `participant.list`, `participant.stand_down`, `participant.stand_down_confirmed`, `participant.stop_confirmed`, `participant.release`, `participant.takeover` |
 | Mail | `mailbox.send` |
 | Messaging | `messaging.issue`, `messaging.peers`, `messaging.send`, `messaging.status`, `messaging.receive`, `messaging.received`, `messaging.reply` |
@@ -116,8 +118,8 @@ durable records exist — a **namespace** (one credential per target registratio
 expiry, operation-ID to event-ID map) and a **message** `{eventId, from, to, body, inReplyToEventId?, createdAt, readAt?}`. Ordinary mail
 is retrieved only through the package-owned stdio MCP endpoint and its six tools
 ([shared skill](../../skills/collaborator-messaging/SKILL.md)): `collaborator_peers`, `collaborator_send`, `collaborator_receive`,
-`collaborator_received`, `collaborator_reply`, `collaborator_status`. It never enters native pending queues, claims, ACKs, or
-reconciliation, so a retained event's `delivery.status` stays `pending`. Pi's notification instead rides the `pi.heartbeat` response: with
+`collaborator_received`, `collaborator_reply`, `collaborator_status`. It never enters native delivery: only Monitor events are handed to a
+target, and a mail event carries no delivery state at all. Pi's notification instead rides the `pi.heartbeat` response: with
 exactly one live namespace, the reply carries the `namespaceId` and `eventId` of the oldest unread message, offered once per session, only
 in `ctx.mode === "tui"` with an idle session and known-empty editor. That hint is notification, not delivery.
 
@@ -129,9 +131,14 @@ changed input conflicts, a new operation ID creates new mail. MCP cannot acquire
 
 A Monitor observes newly created direct-child regular files under one canonical non-symlink directory; existing files form a non-emitting
 baseline. `fs.watch` is a latency hint only — startup, hints, and reconciliation use the same authoritative scan. Cursor and event state
-commit atomically before notification, and events move `pending -> claimed -> acked`, returning to `pending` on release or lease expiry.
-Pi claims a bounded batch through its in-process heartbeat, writes one hidden model-visible custom message, and acknowledges at
-`message_start`; registration reconciles historical session receipts after a crash. Runtime never prompts or focuses a Pi pane.
+commit atomically before notification, and an event is undelivered until an ack stamps its `deliveredAt`.
+
+Delivery is at-least-once through one path. Pi's two-second `pi.heartbeat` carries `admit` while the session is idle with no pending
+messages; the reply then carries up to `maxDeliveryBatch` undelivered events for that target and records one claim, keyed by target key
+and holding nothing but its expiry, so a second heartbeat hands out nothing until that claim is acked or expires. Pi writes one hidden
+model-visible custom message, appends those event IDs to a bounded durable seen-set (1,000 IDs, oldest pruned) in its hidden session
+entry, and calls `inbox.ack`. A crash before the ack re-hands the batch; the seen-set is what keeps it from being admitted twice.
+Runtime never prompts or focuses a Pi pane.
 
 ## Stop, stand-down, recovery
 
@@ -143,12 +150,12 @@ Pi claims a bounded batch through its in-process heartbeat, writes one hidden mo
 
 ## Persistence and security boundary
 
-Pi persists its Runtime collaboration state in one hidden session entry, `deevs.hosted-runtime.v2`: participant identity, launch metadata,
-worktree, and managed native agent controls. Each append writes the current record and restore reads the last one on the branch; older
+Pi persists its Runtime collaboration state in one hidden session entry, `deevs.hosted-runtime.v3`: participant identity, launch metadata,
+worktree, managed native agent controls, and the bounded seen-set of admitted event IDs. Each append writes the current record and restore reads the last one on the branch; older
 entry kinds are ignored rather than migrated, and each section of the record is schema-checked on restore: a malformed section is dropped
 or demoted to `needs_attention`, never repaired. Runtime state is validated by one TypeBox schema per persisted record against the root
 state schema, then by a single cross-reference check (held participants resolve to a same-project target, mail resolves to existing
-participants, claims resolve to existing events) and the messaging record capacity bound. Validation runs on load and before every atomic
+participants, delivery claims resolve to existing targets) and the messaging record capacity bound. Validation runs on load and before every atomic
 write/fsync/rename/directory-fsync replacement, and corruption fails closed. Socket and state rely on owner-only permissions, and Node
 Unix sockets expose no peer credentials, so random credentials protect against accidental and cross-wired children only. Herdr is an
 external trusted host capability, not an npm dependency; Runtime validates its responses and never trusts labels.
