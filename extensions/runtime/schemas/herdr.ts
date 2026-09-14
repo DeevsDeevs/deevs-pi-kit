@@ -19,12 +19,21 @@ export const HerdrWorkspaceCreatedSchema = Type.Object({
 	root_pane: HerdrPaneSchema,
 });
 
+const HerdrAgentStatusSchema = Type.Union([
+	Type.Literal("idle"),
+	Type.Literal("working"),
+	Type.Literal("blocked"),
+	Type.Literal("done"),
+	Type.Literal("unknown"),
+]);
+
 /** What `herdr agent get|list` reports: only the cwd is guaranteed, the rest identifies the owning tab. */
 const HerdrLiveAgentSchema = Type.Object({
 	name: OptionalId,
 	cwd: PathText,
 	tab_id: OptionalId,
 	workspace_id: OptionalId,
+	agent_status: Type.Optional(HerdrAgentStatusSchema),
 	agent_session: Type.Optional(ManagedAgentSessionSchema),
 });
 export const HerdrLiveAgentResultSchema = Type.Object({ agent: HerdrLiveAgentSchema });
@@ -37,18 +46,13 @@ export const HerdrStartedAgentSchema = Type.Object({
 		agent: boundedText(64),
 		pane_id: IdText,
 		terminal_id: IdText,
-		agent_status: Type.Union([
-			Type.Literal("idle"),
-			Type.Literal("working"),
-			Type.Literal("blocked"),
-			Type.Literal("done"),
-			Type.Literal("unknown"),
-		]),
+		agent_status: HerdrAgentStatusSchema,
 		focused: Type.Boolean(),
 		agent_session: Type.Optional(ManagedAgentSessionSchema),
 	}),
 });
 
+export type HerdrAgentStatus = Static<typeof HerdrAgentStatusSchema>;
 export type HerdrLiveAgent = Static<typeof HerdrLiveAgentSchema>;
 export type HerdrStartedAgent = Static<typeof HerdrStartedAgentSchema>["agent"];
 
