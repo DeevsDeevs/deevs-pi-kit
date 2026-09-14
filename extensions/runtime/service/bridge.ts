@@ -1,38 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
-import type {
-	HostedAgentBind,
-	HostedAgentTarget,
-	HostedCollaboratorProfile,
-	HostedHerdrLocator,
-	HostedNativeCollaboratorDriver,
-} from "../hosted-types.ts";
-import { RuntimeRegistrationManager, type HostedHostVerifier, type HostedLiveAgent, type HostedLiveRegistration } from "./registration.ts";
-import { deriveAgentTargetKey, deriveParticipantKey, HostedStateStore } from "./state.ts";
-import { isProjectWorktree } from "./worktree.ts";
-
-const NAME = /^[a-z][a-z0-9_-]{0,63}$/;
-const AGENT_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-
-class AgentBindError extends Error {
-	readonly code: "invalid_request" | "conflict" | "identity_mismatch";
-
-	constructor(code: AgentBindError["code"], message: string) {
-		super(message);
-		this.code = code;
-	}
-}
-
-export interface BindAgentInput {
-	agentName: string;
-	driver: HostedNativeCollaboratorDriver;
-	profile: HostedCollaboratorProfile;
-	protocol: string;
-	participantId: string;
-	callerParticipantKey: string;
-	expectedCallerGeneration: string;
-	expectedParticipantGeneration?: string;
-}
+import type { HostedAgentTarget, HostedCollaboratorProfile, HostedNativeCollaboratorDriver } from "../hosted-types.ts";
+import { AgentBindError, boundAgentNames, draftAgentBind, type BindAgentInput } from "./bind-request.ts";
+import type { HostedHostVerifier } from "./identity.ts";
+import { RuntimeRegistrationManager, type HostedLiveRegistration } from "./registration.ts";
+import { HostedStateStore } from "./state.ts";
 
 export interface BoundAgentResult {
 	registration: HostedLiveRegistration;
@@ -43,13 +15,6 @@ export interface BoundAgentResult {
 	profile: HostedCollaboratorProfile;
 	projectRoot: string;
 	cwd: string;
-}
-
-/** The validated identifiers a bind request carries, parsed once before any target is built. */
-interface BoundAgentNames {
-	agentName: string;
-	protocol: string;
-	participantId: string;
 }
 
 export interface AgentBinderOptions {
@@ -84,72 +49,18 @@ export class RuntimeAgentBinder {
 		const projectRoot = realpathSync(callerTarget.projectRoot);
 		const names = boundAgentNames(input);
 		const verified = await this.host.getAgent(names.agentName);
-		if (verified.name !== names.agentName) throw new AgentBindError("identity_mismatch", "Herdr resolved another agent name.");
-		const cwd = agentCwd(verified);
-		const worktreePath = cwd === projectRoot ? undefined : cwd;
-		if (worktreePath !== undefined && !await isWritableWorktree(worktreePath, projectRoot, input.profile)) {
-			throw new AgentBindError("identity_mismatch", "Herdr agent cwd is neither the project root nor a workspace-write worktree of it.");
-		}
-		const target = this.agentTarget(projectRoot, names, input, verified, worktreePath);
-		this.store.apply({ type: "agent.bind", bind: this.bindRecord(caller, input, names, target) });
-		return {
-			registration: this.registrations.registerAgent(target),
-			targetKey: target.targetKey,
-			participantKey: target.participantKey,
-			holderGeneration: target.holderGeneration,
-			driver: target.driver,
-			profile: target.profile,
+		const bind = await draftAgentBind({
+			store: this.store,
+			caller,
+			input,
+			names,
+			verified,
 			projectRoot,
-			cwd,
-		};
-	}
-
-	private agentTarget(
-		projectRoot: string,
-		names: BoundAgentNames,
-		input: BindAgentInput,
-		verified: HostedLiveAgent,
-		worktreePath: string | undefined,
-	): HostedAgentTarget {
-		const targetKey = deriveAgentTargetKey(projectRoot, names.agentName);
-		const existing = this.store.read().targets[targetKey];
-		if (existing !== undefined && existing.kind !== "agent") {
-			throw new AgentBindError("conflict", "Herdr agent target key already belongs to another target kind.");
-		}
-		const target: HostedAgentTarget = {
-			kind: "agent",
-			targetKey,
-			projectRoot,
-			agentName: names.agentName,
-			driver: input.driver,
-			participantKey: deriveParticipantKey(projectRoot, names.protocol, names.participantId),
-			holderGeneration: existing?.holderGeneration ?? this.options.createGeneration?.() ?? `lease_${randomUUID()}`,
-			profile: input.profile,
-			herdr: agentTab(verified),
-			createdAt: existing?.createdAt ?? this.now(),
-		};
-		if (worktreePath) target.worktreePath = worktreePath;
-		return target;
-	}
-
-	private bindRecord(
-		caller: HostedLiveRegistration,
-		input: BindAgentInput,
-		names: BoundAgentNames,
-		target: HostedAgentTarget,
-	): HostedAgentBind {
-		const bind: HostedAgentBind = {
-			target,
-			protocol: names.protocol,
-			participantId: names.participantId,
-			callerTargetKey: caller.targetKey,
-			callerParticipantKey: bounded(input.callerParticipantKey, "caller participant key", 200),
-			callerGeneration: bounded(input.expectedCallerGeneration, "caller generation", 200),
 			at: this.now(),
-		};
-		const expected = input.expectedParticipantGeneration;
-		if (expected !== undefined) bind.expectedParticipantGeneration = bounded(expected, "expected participant generation", 200);
-		return bind;
+			createGeneration: () => this.options.createGeneration?.() ?? `lease_${randomUUID()}`,
+		});
+		this.store.apply({ type: "agent.bind", bind });
+		return boundResult(this.registrations.registerAgent(bind.target), bind.target);
 	}
 
 	private now(): number {
@@ -157,38 +68,15 @@ export class RuntimeAgentBinder {
 	}
 }
 
-function boundAgentNames(input: BindAgentInput): BoundAgentNames {
+function boundResult(registration: HostedLiveRegistration, target: HostedAgentTarget): BoundAgentResult {
 	return {
-		agentName: boundedName(input.agentName, AGENT_NAME, "Herdr agent name"),
-		protocol: boundedName(input.protocol, NAME, "protocol"),
-		participantId: boundedName(input.participantId, NAME, "participant ID"),
+		registration,
+		targetKey: target.targetKey,
+		participantKey: target.participantKey,
+		holderGeneration: target.holderGeneration,
+		driver: target.driver,
+		profile: target.profile,
+		projectRoot: target.projectRoot,
+		cwd: target.worktreePath ?? target.projectRoot,
 	};
-}
-
-/** The tab Runtime later closes to stop this collaborator. */
-function agentTab(agent: HostedLiveAgent): HostedHerdrLocator {
-	const { tabId, workspaceId } = agent;
-	if (!tabId || !workspaceId) throw new AgentBindError("identity_mismatch", "Herdr agent has no exact tab and workspace identity.");
-	return { tabId, workspaceId };
-}
-
-async function isWritableWorktree(worktreePath: string, projectRoot: string, profile: HostedCollaboratorProfile): Promise<boolean> {
-	if (profile !== "workspace-write") return false;
-	return isProjectWorktree(worktreePath, projectRoot);
-}
-
-function agentCwd(agent: HostedLiveAgent): string {
-	try { return realpathSync(agent.cwd); } catch { throw new AgentBindError("identity_mismatch", "Herdr agent cwd is unavailable."); }
-}
-
-function boundedName(value: string, pattern: RegExp, name: string): string {
-	if (!pattern.test(value)) throw new AgentBindError("invalid_request", `${name} has invalid syntax.`);
-	return value;
-}
-
-function bounded(value: string, name: string, maxBytes: number): string {
-	if (!value.trim() || Buffer.byteLength(value) > maxBytes) {
-		throw new AgentBindError("invalid_request", `${name} must be a non-empty string of at most ${maxBytes} bytes.`);
-	}
-	return value;
 }

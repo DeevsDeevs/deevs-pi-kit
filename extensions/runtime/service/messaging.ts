@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { closeSync, constants, fsyncSync, openSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fsyncSync, openSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
 	HOSTED_ACK_RETENTION_MS,
@@ -11,7 +11,8 @@ import {
 	type HostedTarget,
 } from "../hosted-types.ts";
 import { HostedParticipantCoordinator } from "./participant.ts";
-import { RegistrationError, RuntimeRegistrationManager, type HostedLiveRegistration } from "./registration.ts";
+import { RegistrationError } from "./identity.ts";
+import { RuntimeRegistrationManager, type HostedLiveRegistration } from "./registration.ts";
 import {
 	deriveParticipantKey,
 	HostedStateStorageError,
@@ -169,19 +170,26 @@ export class RuntimeMessaging {
 		return { namespaceId: grant.namespaceId, descriptorPath, expiresAt: grant.expiresAt };
 	}
 
+	/** The live descriptor is replaced only once its successor grant is durable, never truncated in place. */
 	private writeDescriptor(descriptorPath: string, grant: HostedMessagingGrant, secret: string): void {
-		const fd = openSync(descriptorPath, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
+		const pending = `${descriptorPath}.${process.pid}.tmp`;
+		const fd = openSync(pending, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
 		try {
 			const descriptor = { version: 1, socketPath: this.socketPath, namespaceId: grant.namespaceId, secret };
 			writeFileSync(fd, `${JSON.stringify(descriptor)}\n`);
 			fsyncSync(fd);
-			this.store.apply({ type: "messaging.issue", grant });
-		} catch (error) {
-			if (!(error instanceof HostedStateStorageError && error.uncertain)) unlinkSync(descriptorPath);
-			throw error;
 		} finally {
 			closeSync(fd);
 		}
+		try {
+			this.store.apply({ type: "messaging.issue", grant });
+		} catch (error) {
+			// An uncertain write may still have issued the grant, so its descriptor has to be published anyway.
+			if (error instanceof HostedStateStorageError && error.uncertain) renameSync(pending, descriptorPath);
+			else unlinkSync(pending);
+			throw error;
+		}
+		renameSync(pending, descriptorPath);
 	}
 
 	/** Best-effort idle hint for a Pi holder: the oldest unread message in its sole live namespace. */

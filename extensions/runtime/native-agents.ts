@@ -96,15 +96,13 @@ interface NativeLaunchScope {
 export class NativeAgentService {
 	private readonly session: RuntimeSession;
 	private readonly messaging: MessagingClient;
-	private readonly trustClaudeWorkspace: (cwd: string) => void;
 	private readonly registrations = new Map<string, LiveClientRegistration>();
 	private readonly launching = new Set<string>();
 	private heartbeatActive = false;
 
-	constructor(session: RuntimeSession, messaging: MessagingClient, trustClaudeWorkspace: (cwd: string) => void) {
+	constructor(session: RuntimeSession, messaging: MessagingClient) {
 		this.session = session;
 		this.messaging = messaging;
-		this.trustClaudeWorkspace = trustClaudeWorkspace;
 	}
 
 	private get pi(): ExtensionAPI {
@@ -198,7 +196,6 @@ export class NativeAgentService {
 	): Promise<string> {
 		const { candidate, ctx } = request;
 		const kind = scope.driver === "claude-code" ? "claude" : "codex";
-		if (scope.driver === "claude-code" && scope.profile === "read-only") this.trustClaudeWorkspace(launchCwd);
 		const nativeArgs = messaging?.args ?? guardedNativeArgs(candidate, launchCwd);
 		if (messaging) {
 			const prompt = `Complete any native trust or permission prompt in ${tab.paneId}.`
