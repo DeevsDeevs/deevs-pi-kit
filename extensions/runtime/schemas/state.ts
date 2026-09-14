@@ -75,7 +75,6 @@ export const HostedMonitorSchema = Type.Object({
 	directory: PathText,
 	settleMs: Count,
 	status: Type.Union([Type.Literal("watching"), Type.Literal("degraded")]),
-	sequence: Count,
 	entries: keyedRecord(HostedFileObservationSchema, HOSTED_MONITOR_MAX_ENTRIES),
 	createdAt: Timestamp,
 	updatedAt: Timestamp,
@@ -119,7 +118,7 @@ export const HostedFilesystemCreatedEventSchema = Type.Object({
 	version: Type.Literal(1),
 	eventId: IdText,
 	dedupeKey: PathText,
-	source: Type.Object({ kind: Type.Literal("monitor"), id: IdText, sequence: Count }, STRICT_OBJECT),
+	source: Type.Object({ kind: Type.Literal("monitor"), id: IdText }, STRICT_OBJECT),
 	targetKey: IdText,
 	type: Type.Literal("filesystem.created"),
 	createdAt: Timestamp,
@@ -170,7 +169,7 @@ export const HostedMessagingGrantSchema = Type.Object({
 	operations: keyedRecord(IdText),
 }, STRICT_OBJECT);
 
-export const HOSTED_STATE_VERSION = 20;
+export const HOSTED_STATE_VERSION = 21;
 
 export const HostedRuntimeStateSchema = Type.Object({
 	version: Type.Literal(HOSTED_STATE_VERSION),

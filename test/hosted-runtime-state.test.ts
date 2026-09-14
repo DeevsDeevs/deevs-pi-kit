@@ -46,7 +46,6 @@ function monitor(overrides: Partial<HostedMonitor> = {}): HostedMonitor {
 		directory: "/tmp/project/reviews",
 		settleMs: 250,
 		status: "watching",
-		sequence: 0,
 		entries: {},
 		createdAt: 100,
 		updatedAt: 100,
@@ -60,7 +59,7 @@ function event(id = "evt_1", sequence = 1): HostedFilesystemCreatedEvent {
 		version: 1,
 		eventId: id,
 		dedupeKey: `mon_1:${relativePath}`,
-		source: { kind: "monitor", id: "mon_1", sequence },
+		source: { kind: "monitor", id: "mon_1" },
 		targetKey: "pi_session-1",
 		type: "filesystem.created",
 		createdAt: 200 + sequence,
@@ -81,7 +80,6 @@ function populatedState(): ReturnType<typeof emptyHostedRuntimeState> {
 	return reduceHostedState(state, {
 		type: "monitor.commit",
 		monitor: monitor({
-			sequence: 1,
 			updatedAt: 200,
 			entries: {
 				"review.md": { relativePath: "review.md", size: 42, mtimeMs: 200, stableSince: 200, present: true, emitted: true },
@@ -94,7 +92,7 @@ function populatedState(): ReturnType<typeof emptyHostedRuntimeState> {
 describe("hosted runtime state reducer", () => {
 	it("commits a monitor cursor and event together while deduplicating repeats", () => {
 		const state = populatedState();
-		expect(state.monitors.mon_1?.sequence).toBe(1);
+		expect(state.monitors.mon_1?.updatedAt).toBe(200);
 		expect(state.events.evt_1?.type === "filesystem.created" ? state.events.evt_1.payload.relativePath : undefined).toBe("review.md");
 		expect(undeliveredHostedEvents(state, "pi_session-1").map((candidate) => candidate.eventId)).toEqual(["evt_1"]);
 
@@ -104,8 +102,8 @@ describe("hosted runtime state reducer", () => {
 	});
 
 	it("orders events from different sources by Runtime creation time", () => {
-		const older: HostedFilesystemCreatedEvent = { ...event("evt_older", 12), createdAt: 100, source: { kind: "monitor", id: "source_fable", sequence: 12 } };
-		const newer: HostedFilesystemCreatedEvent = { ...event("evt_newer", 2), createdAt: 200, source: { kind: "monitor", id: "source_release_gate", sequence: 2 } };
+		const older: HostedFilesystemCreatedEvent = { ...event("evt_older", 12), createdAt: 100, source: { kind: "monitor", id: "source_fable" } };
+		const newer: HostedFilesystemCreatedEvent = { ...event("evt_newer", 2), createdAt: 200, source: { kind: "monitor", id: "source_release_gate" } };
 		const state = { ...populatedState(), events: { evt_newer: newer, evt_older: older } };
 		expect(undeliveredHostedEvents(state, "pi_session-1").map((candidate) => candidate.eventId)).toEqual(["evt_older", "evt_newer"]);
 	});
@@ -126,13 +124,12 @@ describe("hosted runtime state reducer", () => {
 		})).toThrow(/another monitor/);
 	});
 
-	it("rejects monitor definition changes, sequence rollback, and entry overflow", () => {
+	it("rejects monitor definition changes, cursor rollback, and entry overflow", () => {
 		const state = populatedState();
 		for (const changed of [
-			monitor({ sequence: 2, settleMs: 500, updatedAt: 300 }),
-			monitor({ sequence: 0, updatedAt: 300 }),
+			monitor({ settleMs: 500, updatedAt: 300 }),
+			monitor({ updatedAt: 100 }),
 			monitor({
-				sequence: 2,
 				updatedAt: 300,
 				entries: Object.fromEntries(Array.from({ length: HOSTED_MONITOR_MAX_ENTRIES + 1 }, (_, index) => {
 					const relativePath = `file-${index}`;
@@ -167,7 +164,7 @@ describe("hosted runtime state reducer", () => {
 
 	it("prunes delivered events once they outlive their retention window", () => {
 		let state = reduceHostedState(populatedState(), { type: "inbox.ack", targetKey: "pi_session-1", eventIds: ["evt_1"], at: 1_000 });
-		state = reduceHostedState(state, { type: "monitor.commit", monitor: { ...state.monitors.mon_1!, sequence: 2, updatedAt: 2_000 }, events: [event("evt_2", 2)] });
+		state = reduceHostedState(state, { type: "monitor.commit", monitor: { ...state.monitors.mon_1!, updatedAt: 2_000 }, events: [event("evt_2", 2)] });
 		state = reduceHostedState(state, { type: "inbox.ack", targetKey: "pi_session-1", eventIds: ["evt_2"], at: 1_001 + HOSTED_ACK_RETENTION_MS });
 		expect(state.events.evt_1).toBeUndefined();
 		expect(state.events.evt_2?.type === "filesystem.created" ? state.events.evt_2.deliveredAt : undefined).toBeDefined();

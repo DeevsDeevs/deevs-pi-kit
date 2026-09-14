@@ -17,7 +17,7 @@ const context: HostedProtocolContext = { runtimeId: "rt_test", agentWake: "none"
 
 function populatedState(): HostedRuntimeState {
 	return {
-		version: 20,
+		version: 21,
 		messaging: {
 			[NAMESPACE]: {
 				namespaceId: NAMESPACE,
@@ -49,7 +49,6 @@ function populatedState(): HostedRuntimeState {
 				directory: "/tmp/project/reviews",
 				settleMs: 250,
 				status: "watching",
-				sequence: 1,
 				entries: {},
 				createdAt: 100,
 				updatedAt: 200,
@@ -75,7 +74,7 @@ function populatedState(): HostedRuntimeState {
 				version: 1,
 				eventId: "evt_1",
 				dedupeKey: DEDUPE_KEY,
-				source: { kind: "monitor", id: "mon_1", sequence: 1 },
+				source: { kind: "monitor", id: "mon_1" },
 				targetKey: "pi_session-1",
 				type: "filesystem.created",
 				createdAt: 201,

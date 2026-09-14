@@ -1,10 +1,6 @@
 import { Type, type Static } from "typebox";
 import { HashText, IdText, ParticipantNameText, PathText, STRICT_OBJECT, boundedText } from "./common.ts";
-import {
-	HostedCollaboratorProfileSchema,
-	HostedNativeCollaboratorDriverSchema,
-	HostedParticipantStateSchema,
-} from "./state.ts";
+import { HostedCollaboratorProfileSchema, HostedNativeCollaboratorDriverSchema, HostedParticipantStateSchema } from "./state.ts";
 
 /** Restored identity never carries revive authorization: that comes from the environment, once. */
 export const ParticipantIdentitySchema = Type.Object({

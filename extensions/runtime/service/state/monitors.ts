@@ -42,7 +42,7 @@ export function commitMonitor(state: HostedRuntimeState, operation: CommitOperat
 	if (!current || !sameMonitorIdentity(current, operation.monitor)) return state;
 	if (!commitAdvances(current, operation.monitor)) return state;
 	if (Object.keys(operation.monitor.entries).length > HOSTED_MONITOR_MAX_ENTRIES) return state;
-	if (operation.events.some((event) => !committableEvent(event, current, operation.monitor))) return state;
+	if (operation.events.some((event) => !validMonitorEvent(operation.monitor, event))) return state;
 	let changed = current !== operation.monitor;
 	const events = { ...state.events };
 	const dedupe = { ...state.dedupe };
@@ -62,11 +62,7 @@ export function commitMonitor(state: HostedRuntimeState, operation: CommitOperat
 }
 
 function commitAdvances(current: HostedMonitor, next: HostedMonitor): boolean {
-	return next.createdAt === current.createdAt && next.sequence >= current.sequence && next.updatedAt >= current.updatedAt;
-}
-
-function committableEvent(event: HostedFilesystemCreatedEvent, current: HostedMonitor, next: HostedMonitor): boolean {
-	return validMonitorEvent(next, event) && event.source.sequence > current.sequence && event.source.sequence <= next.sequence;
+	return next.createdAt === current.createdAt && next.updatedAt >= current.updatedAt;
 }
 
 function validMonitorEvent(monitor: HostedMonitor, event: HostedFilesystemCreatedEvent): boolean {

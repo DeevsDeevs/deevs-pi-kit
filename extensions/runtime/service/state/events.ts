@@ -14,6 +14,5 @@ export function undeliveredHostedEvents(state: HostedRuntimeState, targetKey: st
 function byDeliveryOrder(left: HostedFilesystemCreatedEvent, right: HostedFilesystemCreatedEvent): number {
 	return left.createdAt - right.createdAt
 		|| left.source.id.localeCompare(right.source.id)
-		|| left.source.sequence - right.source.sequence
 		|| left.eventId.localeCompare(right.eventId);
 }

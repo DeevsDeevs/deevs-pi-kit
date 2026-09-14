@@ -94,7 +94,6 @@ export class DirectoryMonitorManager {
 			directory: canonicalDirectory,
 			settleMs,
 			status: "watching",
-			sequence: 0,
 			entries,
 			createdAt: now,
 			updatedAt: now,
@@ -149,18 +148,14 @@ export class DirectoryMonitorManager {
 			throw new MonitorLimitError(`Monitor cursor exceeds ${HOSTED_MONITOR_MAX_ENTRIES} entries.`);
 		}
 
-		let sequence = currentMonitor.sequence;
 		const events: HostedFilesystemCreatedEvent[] = [];
 		for (const entry of Object.values(entries).sort((left, right) => left.relativePath.localeCompare(right.relativePath))) {
 			if (!entry.present || entry.emitted || now - entry.stableSince < currentMonitor.settleMs) continue;
 			entry.emitted = true;
-			sequence++;
-			events.push(createdEvent(currentMonitor, entry, sequence, now));
+			events.push(createdEvent(currentMonitor, entry, now));
 		}
-		const changed = currentMonitor.status !== "watching"
-			|| sequence !== currentMonitor.sequence
-			|| !sameObservations(entries, currentMonitor.entries);
-		const monitor: HostedMonitor = changed ? { ...currentMonitor, status: "watching", sequence, entries, updatedAt: now } : currentMonitor;
+		const changed = currentMonitor.status !== "watching" || !sameObservations(entries, currentMonitor.entries);
+		const monitor: HostedMonitor = changed ? { ...currentMonitor, status: "watching", entries, updatedAt: now } : currentMonitor;
 		if (changed) {
 			this.store.apply({ type: "monitor.commit", monitor, events });
 			if (events.length > 0) this.options.onEvents?.(monitor.targetKey);
@@ -258,13 +253,13 @@ function scanRegularFiles(directory: string): Map<string, ScannedFile> {
 	return files;
 }
 
-function createdEvent(monitor: HostedMonitor, entry: HostedFileObservation, sequence: number, now: number): HostedFilesystemCreatedEvent {
-	const key = `${monitor.monitorId}\0${sequence}\0${entry.relativePath}`;
+function createdEvent(monitor: HostedMonitor, entry: HostedFileObservation, now: number): HostedFilesystemCreatedEvent {
+	const dedupeKey = `${monitor.monitorId}:${entry.relativePath}`;
 	return {
 		version: 1,
-		eventId: `evt_${createHash("sha256").update(key).digest("hex").slice(0, 24)}`,
-		dedupeKey: `${monitor.monitorId}:${entry.relativePath}`,
-		source: { kind: "monitor", id: monitor.monitorId, sequence },
+		eventId: `evt_${createHash("sha256").update(dedupeKey).digest("hex").slice(0, 24)}`,
+		dedupeKey,
+		source: { kind: "monitor", id: monitor.monitorId },
 		targetKey: monitor.targetKey,
 		type: "filesystem.created",
 		createdAt: now,
