@@ -28,16 +28,28 @@ it("keeps one launch table entry per collaborator driver", () => {
 	expect(Object.keys(DRIVERS).sort()).toEqual([...DRIVER_NAMES].sort());
 });
 
-it.each(DRIVER_NAMES)("bounds the %s launch argv and keeps it free of control characters", (driver) => {
-	const argv = driverLaunchArgv(driver, representativeInput(driver));
-	expect(argv.length).toBeGreaterThan(0);
+function launchArgv(driver: HostedCollaboratorDriver, input: ReturnType<typeof representativeInput>): string[] {
+	return driverLaunchArgv({ driver, agentName: "collab-0123456789abcdef012345678", paneId: "pane_launch", input });
+}
+
+it.each(DRIVER_NAMES)("gates the whole %s herdr invocation, not only its driver arguments", (driver) => {
+	const argv = launchArgv(driver, representativeInput(driver));
+	expect(argv.slice(0, 3)).toEqual(["agent", "start", "collab-0123456789abcdef012345678"]);
+	expect(argv.slice(3)).toContain(DRIVERS[driver].kind);
+	expect(argv[argv.indexOf("--pane") + 1]).toBe("pane_launch");
 	for (const argument of argv) expect(argument).not.toMatch(/\p{Cc}/u);
-	const command = [DRIVERS[driver].kind, ...argv].map(argument => `'${argument.replaceAll("'", `'"'"'`)}'`).join(" ");
+	const command = ["herdr", ...argv].map(argument => `'${argument.replaceAll("'", `'"'"'`)}'`).join(" ");
 	expect(Buffer.byteLength(command)).toBeLessThan(4000);
 });
 
 it.each(DRIVER_NAMES)("rejects an oversized or control-character %s launch before the agent starts", (driver) => {
 	const input = representativeInput(driver);
-	expect(() => driverLaunchArgv(driver, { ...input, model: "model\u001b" })).toThrow("control characters");
-	expect(() => driverLaunchArgv(driver, { ...input, model: "x".repeat(4001) })).toThrow("4000-byte");
+	expect(() => launchArgv(driver, { ...input, model: "model\u001b" })).toThrow("control characters");
+	expect(() => launchArgv(driver, { ...input, model: "x".repeat(4001) })).toThrow("4000-byte");
+});
+
+// 3950 escaped bytes of driver argv alone, which only exceeds the limit once the herdr agent start prefix is counted.
+it("counts the herdr prefix against the escaped command limit", () => {
+	const input = { ...representativeInput("pi"), model: `openai-codex/${"m".repeat(3617)}` };
+	expect(() => launchArgv("pi", input)).toThrow("4000-byte");
 });

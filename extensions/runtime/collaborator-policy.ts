@@ -4,7 +4,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import type { CustomToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { findAgent, loadBuiltinAgents } from "../subagents/agents.ts";
 import { HostedRuntimeClientError } from "./client.ts";
-import { collaboratorProfileTools, DRIVERS, READ_ONLY_COLLABORATOR_TOOLS } from "./drivers.ts";
+import { collaboratorProfileTools, DRIVERS } from "./drivers.ts";
 import type { HostedCollaboratorDriver, HostedCollaboratorProfile } from "./hosted-types.ts";
 import { isStringValue } from "./responses.ts";
 import { COLLABORATOR_MODEL, COLLABORATOR_NAME, type CollaboratorPersona } from "./session-record.ts";
@@ -99,7 +99,7 @@ export function collaboratorToolBlock(
 	path: CustomToolCallEvent["input"]["path"],
 	cwd: string,
 ): CollaboratorToolBlock | undefined {
-	const allowed = collaboratorProfileTools(profile) ?? READ_ONLY_COLLABORATOR_TOOLS;
+	const allowed = collaboratorProfileTools(profile);
 	if (!allowed.includes(toolName)) return { block: true, reason: `Collaborator profile ${profile} does not permit ${toolName}.` };
 	if (!FILE_TOOLS.has(toolName)) return undefined;
 	if (collaboratorPathAllowed(cwd, path, toolName === "write")) return undefined;
