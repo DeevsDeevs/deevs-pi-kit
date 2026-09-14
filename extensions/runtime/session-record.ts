@@ -1,73 +1,33 @@
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
+import { Value } from "typebox/value";
 import type { CustomEntry, ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
-import type { HostedCollaboratorProfile, HostedNativeCollaboratorDriver } from "./hosted-types.ts";
-import { asRecord, isStringValue, type RestoredSessionData, type SerializedObject } from "./responses.ts";
+import { asRecord, type RestoredSessionData, type SerializedObject } from "./responses.ts";
+import {
+	CollaboratorLaunchSchema,
+	CollaboratorWorktreeSchema,
+	ManagedAgentControlSchema,
+	ParticipantIdentitySchema,
+	type CollaboratorLaunch,
+	type CollaboratorWorktree,
+	type ManagedAgentControl,
+	type ManagedAgentOwner,
+	type ParticipantIdentity,
+} from "./schemas/session.ts";
+
+export type {
+	CollaboratorLaunch,
+	CollaboratorPersona,
+	ManagedAgentControl,
+	ManagedAgentSession,
+	ParticipantIdentity,
+} from "./schemas/session.ts";
 
 /** One current-only hidden entry kind; older kinds are ignored rather than migrated. */
 export const HOSTED_SESSION_ENTRY = "deevs.hosted-runtime.v2";
 export const COLLABORATOR_ENV = "PI_RUNTIME_COLLABORATE";
 export const COLLABORATOR_NAME = /^[a-z][a-z0-9_-]{0,63}$/;
 export const COLLABORATOR_MODEL = /^[A-Za-z0-9][A-Za-z0-9._/*:-]{0,199}$/;
-
-export interface ParticipantIdentity {
-	protocol: string;
-	participantId: string;
-	participantKey?: string;
-	generation?: string;
-	disposition: "held" | "vacant" | "ended";
-	reviveAuthorized?: true;
-}
-
-export interface CollaboratorPersona {
-	name: string;
-	prompt: string;
-	promptHash: string;
-}
-
-export interface CollaboratorLaunch {
-	driver: "pi";
-	model?: string;
-	profile?: HostedCollaboratorProfile;
-	persona?: CollaboratorPersona;
-}
-
-interface CollaboratorWorktree {
-	projectRoot: string;
-	worktreePath: string;
-}
-
-interface ManagedAgentOwner {
-	sessionId: string;
-	sessionFile: string;
-	cwd: string;
-}
-
-export interface ManagedAgentSession {
-	source: string;
-	agent: string;
-	kind: "id" | "path";
-	value: string;
-}
-
-export interface ManagedAgentControl {
-	owner: ManagedAgentOwner;
-	projectRoot: string;
-	cwd: string;
-	agentName: string;
-	targetKey: string;
-	driver: HostedNativeCollaboratorDriver;
-	profile: HostedCollaboratorProfile;
-	protocol: string;
-	participantId: string;
-	clientGeneration: string;
-	holderGeneration: string;
-	paneId: string;
-	terminalId: string;
-	agentSession: ManagedAgentSession;
-	messagingConfigured?: true;
-	state: "active" | "needs_attention" | "stopped";
-}
 
 /** Everything one Pi session persists about its Runtime collaboration, in one entry. */
 export interface HostedSessionRecord {
@@ -206,53 +166,31 @@ function bootstrapIdentity(value: string | undefined): ParticipantIdentity | und
 }
 
 function parseIdentity(value: RestoredSessionData): ParticipantIdentity | undefined {
-	const record = asRecord(value);
-	if (!record) return undefined;
-	if (record.disposition !== "held" && record.disposition !== "vacant" && record.disposition !== "ended") return undefined;
-	if (!isStringValue(record.protocol) || !isStringValue(record.participantId)) return undefined;
+	if (!Value.Check(ParticipantIdentitySchema, value)) return undefined;
+	// Revive authorization is one-shot: it is granted by the environment, never replayed from session history.
 	const identity: ParticipantIdentity = {
-		protocol: record.protocol,
-		participantId: record.participantId,
-		disposition: record.disposition,
+		protocol: value.protocol,
+		participantId: value.participantId,
+		disposition: value.disposition,
 	};
-	if (isStringValue(record.participantKey)) identity.participantKey = record.participantKey;
-	if (isStringValue(record.generation)) identity.generation = record.generation;
+	if (value.participantKey) identity.participantKey = value.participantKey;
+	if (value.generation) identity.generation = value.generation;
 	return identity;
 }
 
-const LAUNCH_KEYS = new Set(["driver", "model", "profile", "persona"]);
-
 function parseLaunch(value: RestoredSessionData): CollaboratorLaunch | undefined {
-	const record = asRecord(value);
-	if (!record || Object.keys(record).some((key) => !LAUNCH_KEYS.has(key))) return undefined;
-	if (record.driver !== "pi") return undefined;
-	if (record.model !== undefined && (!isStringValue(record.model) || !COLLABORATOR_MODEL.test(record.model))) return undefined;
-	if (record.profile !== undefined && record.profile !== "read-only" && record.profile !== "workspace-write") return undefined;
-	const launch: CollaboratorLaunch = { driver: "pi" };
-	if (isStringValue(record.model)) launch.model = record.model;
-	if (record.profile === "read-only" || record.profile === "workspace-write") launch.profile = record.profile;
-	if (record.persona === undefined) return launch;
-	const persona = parsePersona(record.persona);
-	if (!persona || launch.profile === undefined) return undefined;
-	launch.persona = persona;
-	return launch;
-}
-
-function parsePersona(value: RestoredSessionData): CollaboratorPersona | undefined {
-	const record = asRecord(value);
-	if (!record) return undefined;
-	const { name, prompt, promptHash } = record;
-	if (!isStringValue(name) || !isStringValue(prompt) || !isStringValue(promptHash)) return undefined;
-	if (createHash("sha256").update(prompt).digest("hex") !== promptHash) return undefined;
-	return { name, prompt, promptHash };
+	if (!Value.Check(CollaboratorLaunchSchema, value)) return undefined;
+	const persona = value.persona;
+	if (!persona) return value;
+	if (value.profile === undefined) return undefined;
+	return createHash("sha256").update(persona.prompt).digest("hex") === persona.promptHash ? value : undefined;
 }
 
 function parseWorktree(value: RestoredSessionData, ctx: ExtensionContext): CollaboratorWorktree | undefined {
-	const record = asRecord(value);
-	if (!record || !isStringValue(record.projectRoot) || !isStringValue(record.worktreePath)) return undefined;
+	if (!Value.Check(CollaboratorWorktreeSchema, value)) return undefined;
 	try {
-		const worktreePath = realpathSync(record.worktreePath);
-		const projectRoot = realpathSync(record.projectRoot);
+		const worktreePath = realpathSync(value.worktreePath);
+		const projectRoot = realpathSync(value.projectRoot);
 		if (worktreePath !== realpathSync(ctx.cwd) || worktreePath === projectRoot) return undefined;
 		return { projectRoot, worktreePath };
 	} catch {
@@ -277,63 +215,13 @@ function parseAgents(value: RestoredSessionData, ctx: ExtensionContext): Restore
 	return { accepted, malformed };
 }
 
-const CONTROL_KEYS = new Set([
-	"owner", "projectRoot", "cwd", "agentName", "targetKey", "driver", "profile", "protocol", "participantId",
-	"clientGeneration", "holderGeneration", "paneId", "terminalId", "agentSession", "messagingConfigured", "state",
-]);
-const OWNER_KEYS = new Set(["sessionId", "sessionFile", "cwd"]);
-const SESSION_KEYS = new Set(["source", "agent", "kind", "value"]);
-
 function parseAgentControl(value: RestoredSessionData, ctx: ExtensionContext): ManagedAgentControl | undefined {
-	const record = asRecord(value);
-	if (!record || Object.keys(record).some((key) => !CONTROL_KEYS.has(key))) return undefined;
-	const owner = parseOwner(record.owner, ctx);
-	const agentSession = parseAgentSession(record.agentSession);
-	if (!owner || !agentSession) return undefined;
-	if (!isStringValue(record.projectRoot) || !isStringValue(record.cwd)) return undefined;
-	if (!isStringValue(record.agentName) || !isStringValue(record.targetKey)) return undefined;
-	if (!isStringValue(record.clientGeneration) || !isStringValue(record.holderGeneration)) return undefined;
-	if (!isStringValue(record.paneId) || !isStringValue(record.terminalId)) return undefined;
-	if (record.driver !== "claude-code" && record.driver !== "codex") return undefined;
-	if (record.profile !== "read-only" && record.profile !== "workspace-write") return undefined;
-	if (!isStringValue(record.protocol) || !COLLABORATOR_NAME.test(record.protocol)) return undefined;
-	if (!isStringValue(record.participantId) || !COLLABORATOR_NAME.test(record.participantId)) return undefined;
-	if (record.state !== "active" && record.state !== "needs_attention" && record.state !== "stopped") return undefined;
-	if (record.messagingConfigured !== undefined && record.messagingConfigured !== true) return undefined;
-	const control: ManagedAgentControl = {
-		owner,
-		projectRoot: record.projectRoot,
-		cwd: record.cwd,
-		agentName: record.agentName,
-		targetKey: record.targetKey,
-		driver: record.driver,
-		profile: record.profile,
-		protocol: record.protocol,
-		participantId: record.participantId,
-		clientGeneration: record.clientGeneration,
-		holderGeneration: record.holderGeneration,
-		paneId: record.paneId,
-		terminalId: record.terminalId,
-		agentSession,
-		state: record.state,
-	};
-	if (record.messagingConfigured) control.messagingConfigured = true;
-	return control;
+	if (!Value.Check(ManagedAgentControlSchema, value)) return undefined;
+	return ownedByThisSession(value.owner, ctx) ? value : undefined;
 }
 
-function parseOwner(value: RestoredSessionData, ctx: ExtensionContext): ManagedAgentOwner | undefined {
-	const owner = asRecord(value);
-	if (!owner || Object.keys(owner).some((key) => !OWNER_KEYS.has(key))) return undefined;
-	if (!isStringValue(owner.sessionId) || !isStringValue(owner.sessionFile) || !isStringValue(owner.cwd)) return undefined;
-	if (owner.sessionId !== ctx.sessionManager.getSessionId() || owner.sessionFile !== ctx.sessionManager.getSessionFile()) return undefined;
-	if (owner.cwd !== ctx.cwd) return undefined;
-	return { sessionId: owner.sessionId, sessionFile: owner.sessionFile, cwd: owner.cwd };
-}
-
-function parseAgentSession(value: RestoredSessionData): ManagedAgentSession | undefined {
-	const session = asRecord(value);
-	if (!session || Object.keys(session).some((key) => !SESSION_KEYS.has(key))) return undefined;
-	if (!isStringValue(session.source) || !isStringValue(session.agent) || !isStringValue(session.value)) return undefined;
-	if (session.kind !== "id" && session.kind !== "path") return undefined;
-	return { source: session.source, agent: session.agent, kind: session.kind, value: session.value };
+function ownedByThisSession(owner: ManagedAgentOwner, ctx: ExtensionContext): boolean {
+	return owner.sessionId === ctx.sessionManager.getSessionId()
+		&& owner.sessionFile === ctx.sessionManager.getSessionFile()
+		&& owner.cwd === ctx.cwd;
 }

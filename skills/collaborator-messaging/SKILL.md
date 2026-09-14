@@ -8,7 +8,7 @@ description: Use the configured Runtime MCP connection for collaborator discover
 Use the configured MCP tools; harness prefixes may differ. If `collaborator_peers` is absent, report that messaging is not configured. Never substitute a different backend or argument format.
 
 1. Call `collaborator_peers` for your Runtime-derived identity, protocol, `namespaceId`, expiry and peers, following `nextCursor` for more.
-2. Send explicit user-authorized mail with `collaborator_send`: exact namespace, a durable `operationId`, an existing `participantId`, and a `body` of at most 16 KiB UTF-8; keep the returned `eventId`.
+2. Send explicit user-authorized mail with `collaborator_send`: exact namespace, a durable `operationId`, an existing `participantId` matching `^[a-z][a-z0-9_-]{0,63}$`, and a `body` of at most 16 KiB UTF-8; keep the returned `eventId`. Every argument is schema-checked, so an unknown field or an oversized body is `invalid_request`, never a truncated send.
 3. Call `collaborator_receive` with your namespace and an exact `eventId` to read one complete body; repeating it is safe and records nothing.
 4. Call `collaborator_received` to set that message's `readAt`, or `collaborator_reply` with a durable operation ID and your authorized body, which publishes to the original sender and sets `readAt` in one step.
 5. After uncertainty, use `collaborator_status` or repeat the original send/reply with **identical namespace, operation ID and all arguments**; a repeat returns the original message, changed input is a conflict, and a new operation ID creates new mail.

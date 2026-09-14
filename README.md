@@ -153,6 +153,9 @@ Every start, stand-down, stop, release, takeover, and worktree cleanup needs one
 never authorizes any of them. Automatic prompt injection into a Claude/Codex tab is not implemented — their mail waits for human input in
 the tab. Runtime never commits or merges: review a writer's branch and integrate it with ordinary Git.
 
+Every RPC method, every persisted Runtime record, and every section of Pi's hidden session entry is declared as a TypeBox schema and
+checked before use; a malformed request is `invalid_request` and corrupt state fails closed instead of being repaired.
+
 Tools: `collaborator_list` for discovery, `collaborator_manage` for participant and process lifecycle, `collaborator_workspace` to list
 worktrees and confirm exact cleanup, plus the six shared MCP mail tools (`collaborator_peers`, `collaborator_send`,
 `collaborator_receive`, `collaborator_received`, `collaborator_reply`, `collaborator_status`) used by Pi, Claude Code, and Codex alike

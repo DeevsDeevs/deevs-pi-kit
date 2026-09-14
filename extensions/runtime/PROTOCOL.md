@@ -39,7 +39,9 @@ directory holding mode `0600` files.
 ## Wire transport
 
 Newline-delimited JSON over the Unix socket, capped at 64 KiB per request line and 128 KiB per messaging response. Invalid framing or
-JSON closes the connection after an error response.
+JSON closes the connection after an error response. Every method declares one TypeBox params schema; the dispatcher validates the
+envelope and those params — unknown fields, bad syntax, and out-of-bound sizes included — before it resolves any capability, so a
+malformed call is always `invalid_request`.
 
 ```json
 {"v":1,"id":"req_...","method":"hello","params":{"minVersion":1,"maxVersion":1}}
@@ -137,7 +139,10 @@ Pi claims a bounded batch through its in-process heartbeat, writes one hidden mo
 
 Pi persists its Runtime collaboration state in one hidden session entry, `deevs.hosted-runtime.v2`: participant identity, launch metadata,
 worktree, and managed native agent controls. Each append writes the current record and restore reads the last one on the branch; older
-entry kinds are ignored rather than migrated, and a malformed record fails closed. Runtime state uses strict schema validation with atomic
+entry kinds are ignored rather than migrated, and each section of the record is schema-checked on restore: a malformed section is dropped
+or demoted to `needs_attention`, never repaired. Runtime state is validated by one TypeBox schema per persisted record against the root
+state schema, then by a single cross-reference check (held participants resolve to a same-project target, mail resolves to existing
+participants, claims resolve to existing events) and the messaging record capacity bound. Validation runs on load and before every atomic
 write/fsync/rename/directory-fsync replacement, and corruption fails closed. Socket and state rely on owner-only permissions, and Node
 Unix sockets expose no peer credentials, so random credentials protect against accidental and cross-wired children only. Herdr is an
 external trusted host capability, not an npm dependency; Runtime validates its responses and never trusts labels.

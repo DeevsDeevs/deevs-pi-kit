@@ -81,17 +81,20 @@ export type HostedResponse =
 	| { v: 1; id: string | null; ok: true; result: unknown }
 	| { v: 1; id: string | null; ok: false; error: { code: HostedErrorCode; message: string } };
 
-/** One authorized call: the envelope fields plus the runtime services every hosted method needs. */
+/** One authorized call: the request id plus the runtime services every hosted method needs. */
 interface HostedMethodCall {
 	id: string;
-	params: JsonValue | undefined;
 	context: HostedProtocolContext;
 	registrations: RuntimeRegistrationManager;
 	monitors: DirectoryMonitorManager;
 	wakes: HostedWakeCoordinator;
 }
 
-type HostedMethodHandler = (call: HostedMethodCall) => HostedResponse | Promise<HostedResponse>;
+type HostedMethodHandler = (
+	id: string,
+	params: JsonValue | undefined,
+	context: HostedProtocolContext,
+) => HostedResponse | Promise<HostedResponse>;
 
 class HostedCapabilityError extends Error {
 	readonly code = "capability_unavailable" as const;
@@ -102,10 +105,9 @@ function method<Schema extends TSchema>(
 	schema: Schema,
 	handle: (call: HostedMethodCall, params: Static<Schema>) => HostedResponse | Promise<HostedResponse>,
 ): HostedMethodHandler {
-	return (call) => {
-		const params = call.params;
+	return (id, params, context) => {
 		if (!Value.Check(schema, params)) throw schemaError(schema, params, "Request params");
-		return handle(call, params);
+		return handle(authorizedCall(id, context), params);
 	};
 }
 
@@ -124,7 +126,7 @@ export async function dispatchHostedLine(line: string, context: HostedProtocolCo
 		if (value.method === "hello") return hello(value.id, value.params, context);
 		const handle = HOSTED_METHODS.get(value.method);
 		if (!handle) return failure(value.id, "not_found", "Unknown runtime method.");
-		return await handle(authorizedCall(value.id, value.params, context));
+		return await handle(value.id, value.params, context);
 	} catch (error) {
 		return failure(candidateId, errorCode(error), error instanceof Error ? error.message : "Invalid request.");
 	}
@@ -138,12 +140,12 @@ export function invalidFrame(message: string): HostedResponse {
 	return failure(null, "invalid_request", message);
 }
 
-function authorizedCall(id: string, params: JsonValue | undefined, context: HostedProtocolContext): HostedMethodCall {
+function authorizedCall(id: string, context: HostedProtocolContext): HostedMethodCall {
 	const registrations = context.registrations;
 	const monitors = context.monitors;
 	const wakes = context.wakes;
 	if (!registrations || !monitors || !wakes) throw new HostedCapabilityError("Hosted runtime methods are unavailable in this process.");
-	return { id, params, context, registrations, monitors, wakes };
+	return { id, context, registrations, monitors, wakes };
 }
 
 function hello(id: string, value: JsonValue | undefined, context: HostedProtocolContext): HostedResponse {
