@@ -1,12 +1,7 @@
 import type { HostedRuntimeState, HostedStateOperation } from "../../hosted-types.ts";
 import { ackDeliveredEvents, claimTargetInbox, pruneRetention } from "./inbox.ts";
 import { sendMailboxMessage } from "./mailbox.ts";
-import {
-	expireMessagingGrant,
-	issueMessagingGrant,
-	markMessagingEventRead,
-	publishMessagingEvent,
-} from "./messaging.ts";
+import { expireMessagingGrant, issueMessagingGrant, markMessagingEventRead, publishMessagingEvent } from "./messaging.ts";
 import { commitMonitor, createMonitor, deleteMonitor } from "./monitors.ts";
 import {
 	acquireParticipant,

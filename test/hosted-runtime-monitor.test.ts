@@ -54,7 +54,7 @@ describe("hosted directory Monitor", () => {
 		test.setNow(1_250);
 		test.manager.reconcile(monitor.monitorId);
 		expect(undeliveredHostedEvents(test.store.read(), "pi_session_1")).toMatchObject([{
-			source: { id: "mon_fixed", sequence: 1 },
+			source: { id: "mon_fixed" },
 			payload: { relativePath: "review.md", fileType: "regular", size: 6 },
 		}]);
 		test.setNow(2_000);
@@ -123,7 +123,7 @@ describe("hosted directory Monitor", () => {
 			const relativePath = `old-${index}.md`;
 			return [relativePath, { relativePath, size: 1, mtimeMs: 1, stableSince: 1, present: false, emitted: true }];
 		}));
-		const monitor: HostedMonitor = { monitorId: "mon_cap", targetKey: "pi_session_1", directory: test.watchRoot, settleMs: 250, status: "watching", sequence: 0, entries, createdAt: 1, updatedAt: 1 };
+		const monitor: HostedMonitor = { monitorId: "mon_cap", targetKey: "pi_session_1", directory: test.watchRoot, settleMs: 250, status: "watching", entries, createdAt: 1, updatedAt: 1 };
 		test.store.apply({ type: "monitor.create", monitor });
 		writeFileSync(join(test.watchRoot, "overflow.md"), "overflow");
 		expect(() => test.manager.reconcile(monitor.monitorId)).toThrow(MonitorLimitError);

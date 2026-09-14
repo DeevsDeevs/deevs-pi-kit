@@ -1,9 +1,4 @@
-import {
-	HOSTED_ACK_RETENTION_MS,
-	type HostedEvent,
-	type HostedRuntimeState,
-	type HostedStateOperation,
-} from "../../hosted-types.ts";
+import { HOSTED_ACK_RETENTION_MS, type HostedEvent, type HostedRuntimeState, type HostedStateOperation } from "../../hosted-types.ts";
 import { expireMessagingGrant } from "./messaging.ts";
 
 type ClaimOperation = Extract<HostedStateOperation, { type: "inbox.claim" }>;

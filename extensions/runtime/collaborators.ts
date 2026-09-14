@@ -12,13 +12,7 @@ import {
 	type ResolvedCollaboratorCandidate,
 } from "./collaborator-policy.ts";
 import { throwIfAborted } from "./herdr.ts";
-import {
-	type HostedCollaboratorProfile,
-	isEnded,
-	isHeld,
-	isVacant,
-	isWriter,
-} from "./hosted-types.ts";
+import { type HostedCollaboratorProfile, isEnded, isHeld, isVacant, isWriter } from "./hosted-types.ts";
 import type { NativeAgentService } from "./native-agents.ts";
 import {
 	auth,
