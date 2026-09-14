@@ -173,6 +173,10 @@ export class RuntimeSession {
 		if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Runtime registration requires a trusted project.");
 		const sessionFile = ctx.sessionManager.getSessionFile();
 		if (!sessionFile) throw new HostedRuntimeClientError("invalid_request", "Runtime requires a persisted Pi session.");
+		// Pi writes a new session's file only after its first assistant reply; identity is verified against that file.
+		if (!existsSync(sessionFile)) {
+			throw new HostedRuntimeClientError("invalid_request", "This Pi session has no file yet; send one message, then run /runtime start again.");
+		}
 		const params = this.registrationParams(ctx, sessionFile);
 		const registration = parseRegistration(await this.client.call("pi.register", params));
 		if (!current()) {
