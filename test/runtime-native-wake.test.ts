@@ -16,8 +16,9 @@ const PEER = deriveParticipantKey(PROJECT_ROOT, "proof", "peer");
 const CALLER = deriveParticipantKey(PROJECT_ROOT, "proof", "caller");
 const NATIVE_EVENT = "evt_native";
 const PEER_EVENT = "evt_peer";
-const EXPECTED_PROMPT = `Runtime mail: 1 unread message(s), newest event ${NATIVE_EVENT} from caller.`
-	+ " Call collaborator_inbox, then collaborator_receive and collaborator_reply or collaborator_received.";
+const EXPECTED_PROMPT = `Mail from caller (1 unread, newest ${NATIVE_EVENT}).`
+	+ " Read it with collaborator_inbox and collaborator_receive, do what it asks, and answer with collaborator_reply."
+	+ " Keep narration to one line.";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
