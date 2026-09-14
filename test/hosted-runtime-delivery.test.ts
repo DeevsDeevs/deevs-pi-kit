@@ -13,6 +13,13 @@ import type { HostedHostVerifier, HostedLiveAgent } from "../extensions/runtime/
 import { RuntimeRegistrationManager, type RegisterPiInput } from "../extensions/runtime/service/registration.ts";
 import { HostedStateStore, undeliveredHostedEvents } from "../extensions/runtime/service/state.ts";
 
+const REGISTRATION: LiveClientRegistration = {
+	targetKey: "pi_session_1",
+	registrationId: "reg_1",
+	registrationKey: "key_1",
+	leaseUntil: 31_000,
+};
+
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
@@ -28,7 +35,8 @@ function setup() {
 	const watchRoot = join(projectRoot, "reviews");
 	const sessionFile = join(root, "session.jsonl");
 	mkdirSync(watchRoot, { recursive: true });
-	writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: "session_1", timestamp: "2026-01-01T00:00:00.000Z", cwd: projectRoot })}\n`);
+	const header = { type: "session", version: 3, id: "session_1", timestamp: "2026-01-01T00:00:00.000Z", cwd: projectRoot };
+	writeFileSync(sessionFile, `${JSON.stringify(header)}\n`);
 	const store = new HostedStateStore(join(root, "runtime"));
 	let now = 1_000;
 	let registrationNumber = 0;
@@ -114,7 +122,9 @@ describe("pi-side admission", () => {
 	it("skips an event its durable seen-set already admitted", async () => {
 		const branch: Array<Record<string, unknown>> = [];
 		const sent: string[] = [];
-		const pi = { appendEntry(customType: string, data: unknown) { branch.push({ type: "custom", customType, data }); } } as unknown as ExtensionAPI;
+		const pi = {
+			appendEntry(customType: string, data: unknown) { branch.push({ type: "custom", customType, data }); },
+		} as unknown as ExtensionAPI;
 		const store = new HostedSessionStore(pi);
 		const ctx = {
 			isIdle: () => true,
@@ -124,10 +134,9 @@ describe("pi-side admission", () => {
 			cwd: "/tmp",
 		} as unknown as ExtensionContext;
 		store.restore(ctx);
-		const registration: LiveClientRegistration = { targetKey: "pi_session_1", registrationId: "reg_1", registrationKey: "key_1", leaseUntil: 31_000 };
 		const delivery = new HostedDelivery(piStub(store, branch, sent));
 
-		await delivery.admit(registration, ctx, [inboxEvent("evt_1")]);
+		await delivery.admit(REGISTRATION, ctx, [inboxEvent("evt_1")]);
 		expect(sent).toHaveLength(1);
 		expect(sent[0]).toContain("evt_1");
 
@@ -135,7 +144,7 @@ describe("pi-side admission", () => {
 		const restored = new HostedSessionStore(pi);
 		restored.restore(ctx);
 		const afterRestart = new HostedDelivery(piStub(restored, branch, sent));
-		await afterRestart.admit(registration, ctx, [inboxEvent("evt_1"), inboxEvent("evt_2")]);
+		await afterRestart.admit(REGISTRATION, ctx, [inboxEvent("evt_1"), inboxEvent("evt_2")]);
 		expect(sent).toHaveLength(2);
 		expect(sent[1]).toContain("evt_2");
 		expect(sent[1]).not.toContain("evt_1");
@@ -147,8 +156,7 @@ describe("pi-side admission", () => {
 		const pi = { appendEntry() {} } as unknown as ExtensionAPI;
 		const store = new HostedSessionStore(pi);
 		const busy = { isIdle: () => true, hasPendingMessages: () => true } as unknown as ExtensionContext;
-		const registration: LiveClientRegistration = { targetKey: "pi_session_1", registrationId: "reg_1", registrationKey: "key_1", leaseUntil: 31_000 };
-		await new HostedDelivery(piStub(store, branch, sent)).admit(registration, busy, [inboxEvent("evt_1")]);
+		await new HostedDelivery(piStub(store, branch, sent)).admit(REGISTRATION, busy, [inboxEvent("evt_1")]);
 		expect(sent).toEqual([]);
 	});
 });

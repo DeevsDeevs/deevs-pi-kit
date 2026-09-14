@@ -39,14 +39,8 @@ import {
 	type SerializedValue,
 } from "./responses.ts";
 import type { RuntimeSession } from "./runtime-session.ts";
-import {
-	COLLABORATOR_ENV,
-	HOSTED_SESSION_ENTRY,
-	type CollaboratorLaunch,
-	type CollaboratorPersona,
-	type HostedSessionRecord,
-	type ParticipantIdentity,
-} from "./session-record.ts";
+import type { CollaboratorLaunch, CollaboratorPersona, ParticipantIdentity } from "./session-record.ts";
+import { COLLABORATOR_ENV, HOSTED_SESSION_ENTRY, type HostedSessionRecord } from "./session-restore.ts";
 
 const COLLABORATOR_CONCURRENCY = 4;
 const COLLABORATOR_BATCH_LIMIT = 12;
