@@ -8,7 +8,7 @@ import {
 import { HostedStateConflictError } from "./errors.ts";
 import { assertStateId, assertStateTime } from "./guards.ts";
 import { mailboxDedupeKey } from "./keys.ts";
-import { MAX_ID_BYTES } from "./parse.ts";
+import { MAX_ID_BYTES } from "../../schemas/common.ts";
 
 type MailboxSendOperation = Extract<HostedStateOperation, { type: "mailbox.send" }>;
 

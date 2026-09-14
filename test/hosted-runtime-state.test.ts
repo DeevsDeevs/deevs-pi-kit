@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HOSTED_ACK_RETENTION_MS, HOSTED_MONITOR_MAX_ENTRIES, HOSTED_STATE_MAX_BYTES, type HostedClaim, type HostedFilesystemCreatedEvent, type HostedMonitor, type HostedTarget } from "../extensions/runtime/hosted-types.ts";
@@ -340,28 +340,21 @@ describe("hosted runtime state persistence", () => {
 		expect(() => readHostedRuntimeState(root)).toThrow(HostedStateStorageError);
 
 		writeFileSync(path, JSON.stringify({ ...emptyHostedRuntimeState(), surprise: true }), { mode: 0o600 });
-		expect(() => readHostedRuntimeState(root)).toThrow(/unknown field surprise/);
+		expect(() => readHostedRuntimeState(root)).toThrow(/additional properties.*surprise/);
 
 		const mismatched = populatedState();
 		(mismatched.events.evt_1!.delivery as unknown as Record<string, unknown>).claimId = "stray";
 		writeFileSync(path, JSON.stringify(mismatched), { mode: 0o600 });
-		expect(() => readHostedRuntimeState(root)).toThrow(/unknown field claimId/);
+		expect(() => readHostedRuntimeState(root)).toThrow(/additional properties.*claimId/);
 
 		writeFileSync(path, Buffer.alloc(HOSTED_STATE_MAX_BYTES + 1, 0x20), { mode: 0o600 });
 		expect(() => readHostedRuntimeState(root)).toThrow(/exceeds/);
 	});
 
 	it("rejects invalid cross-references rather than repairing them", () => {
-		const state = populatedState();
-		const parsed = JSON.parse(readFileSync(writeFixture(state), "utf8")) as Record<string, unknown>;
-		(parsed.dedupe as Record<string, string>)[state.events.evt_1!.dedupeKey] = "missing";
-		expect(() => validateHostedRuntimeState(parsed)).toThrow(HostedStateStorageError);
+		const claimed = reduceHostedState(populatedState(), { type: "inbox.claim", claim: claim() });
+		const dangling = structuredClone(claimed);
+		delete dangling.events.evt_1;
+		expect(() => validateHostedRuntimeState(dangling)).toThrow(HostedStateStorageError);
 	});
 });
-
-function writeFixture(state: unknown): string {
-	const root = temporaryRoot();
-	const path = join(root, "fixture.json");
-	writeFileSync(path, JSON.stringify(state), { mode: 0o600 });
-	return path;
-}

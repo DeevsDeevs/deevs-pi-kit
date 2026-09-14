@@ -1,3 +1,4 @@
+import { Value } from "typebox/value";
 import type {
 	HostedMailboxMessageEvent,
 	HostedMessagingGrant,
@@ -5,11 +6,12 @@ import type {
 	HostedRuntimeState,
 	HostedStateOperation,
 } from "../../hosted-types.ts";
+import { HOSTED_ACK_RETENTION_MS } from "../../schemas/common.ts";
+import { HostedMessagingGrantSchema } from "../../schemas/state.ts";
 import { HostedStateConflictError } from "./errors.ts";
 import { assertStateId } from "./guards.ts";
 import { messagingConfigurationHash, messagingSendId } from "./keys.ts";
 import { sendMailboxMessage } from "./mailbox.ts";
-import { validateMessagingGrant } from "./validate.ts";
 
 type IssueOperation = Extract<HostedStateOperation, { type: "messaging.issue" }>;
 type CloseOperation = Extract<HostedStateOperation, { type: "messaging.close" }>;
@@ -17,7 +19,10 @@ type InvalidateClientOperation = Extract<HostedStateOperation, { type: "messagin
 type ReadOperation = Extract<HostedStateOperation, { type: "messaging.read" }>;
 
 export function issueMessagingGrant(state: HostedRuntimeState, operation: IssueOperation): HostedRuntimeState {
-	const grant = validateMessagingGrant(operation.grant, operation.grant.namespaceId);
+	const grant = operation.grant;
+	if (!Value.Check(HostedMessagingGrantSchema, grant) || grant.expiresAt !== grant.createdAt + HOSTED_ACK_RETENTION_MS) {
+		throw new HostedStateConflictError("conflict", "Messaging namespace shape or lifetime is invalid.");
+	}
 	if (!newlyIssuedGrant(state, grant)) throw new HostedStateConflictError("conflict", "Messaging namespace must be newly issued.");
 	assertMessagingHolder(state, grant, grant.createdAt);
 	return { ...state, messaging: { ...state.messaging, [grant.namespaceId]: grant } };
