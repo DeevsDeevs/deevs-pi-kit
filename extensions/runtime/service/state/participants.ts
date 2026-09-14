@@ -52,7 +52,7 @@ export function standDownParticipant(state: HostedRuntimeState, operation: Stand
 		if (standDownAlreadyApplied(current, operation)) return state;
 		throw new RuntimeError("conflict", "Participant generation changed before stand-down.");
 	}
-	return applyParticipantTransition(state, current, operation, "stand_down", "vacant");
+	return applyParticipantTransition(state, current, operation, operation.cause ?? "stand_down", "vacant");
 }
 
 export function releaseParticipant(state: HostedRuntimeState, operation: ReleaseOperation): HostedRuntimeState {
@@ -133,7 +133,7 @@ function assertReacquirable(current: HostedParticipant, operation: AcquireOperat
 
 function standDownAlreadyApplied(current: HostedParticipant, operation: StandDownOperation): boolean {
 	return isVacant(current.state)
-		&& current.transition.cause === "stand_down"
+		&& sameVacatingFamily(current.transition.cause, operation.cause ?? "stand_down")
 		&& current.transition.previousGeneration === operation.expectedGeneration
 		&& current.transition.previousHolderTargetKey === operation.targetKey;
 }
@@ -172,8 +172,15 @@ function transitionAlreadyApplied(
 	nextState: HostedParticipant["state"],
 ): boolean {
 	return current.state === nextState
-		&& current.transition.cause === cause
+		&& sameVacatingFamily(current.transition.cause, cause)
 		&& current.transition.previousHolderTargetKey === operation.targetKey;
+}
+
+/** A stand-down retry after a confirmed stop (or the reverse) is the same vacating step, already applied. */
+function sameVacatingFamily(applied: HostedParticipantTransition["cause"], requested: HostedParticipantTransition["cause"]): boolean {
+	if (applied === requested) return true;
+	const vacating = new Set<HostedParticipantTransition["cause"]>(["stand_down", "stop"]);
+	return vacating.has(applied) && vacating.has(requested);
 }
 
 function transitionParticipant(

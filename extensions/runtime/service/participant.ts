@@ -287,12 +287,18 @@ export class HostedParticipantCoordinator {
 		if (!isHeld(current.state) || current.generation !== expectedGeneration || current.holderTargetKey !== holderTargetKey) {
 			throw new RuntimeError("conflict", "Participant changed while its collaborator process was stopping.");
 		}
-		this.applyStandDown(participant.participantKey, holderTargetKey, expectedGeneration);
+		this.applyStandDown(participant.participantKey, holderTargetKey, expectedGeneration, "stop");
 	}
 
-	private applyStandDown(participantKey: string, holderTargetKey: string, expectedGeneration: string): void {
+	private applyStandDown(
+		participantKey: string,
+		holderTargetKey: string,
+		expectedGeneration: string,
+		cause: "stand_down" | "stop" = "stand_down",
+	): void {
 		this.store.apply({
 			type: "participant.stand_down",
+			cause,
 			participantKey,
 			targetKey: holderTargetKey,
 			expectedGeneration,
@@ -352,7 +358,10 @@ function transitionAlreadyApplied(
 	state: HostedParticipant["state"],
 	previousGeneration: string,
 ): boolean {
+	const applied = participant.transition.cause;
+	const vacating = applied === "stop" || applied === "stand_down";
+	const sameCause = applied === cause || (vacating && (cause === "stop" || cause === "stand_down"));
 	return participant.state === state
-		&& participant.transition.cause === cause
+		&& sameCause
 		&& participant.transition.previousGeneration === previousGeneration;
 }

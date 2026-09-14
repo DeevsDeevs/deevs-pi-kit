@@ -146,7 +146,7 @@ describe("hosted participant coordinator", () => {
 		await expect(test.participants.stopConfirmed(main, fableParticipant.participantKey, "stale")).rejects.toMatchObject({ code: "conflict" });
 		expect(test.stoppedTargets).toEqual([]);
 		const stopped = await test.participants.stopConfirmed(main, fableParticipant.participantKey, fableParticipant.generation);
-		expect(stopped).toMatchObject({ outcome: "stopped", participant: { state: "vacant", unreadMail: 1 } });
+		expect(stopped).toMatchObject({ outcome: "stopped", participant: { state: "vacant", unreadMail: 1, lastTransition: { cause: "stop" } } });
 		expect(test.stoppedTargets).toEqual([fable.targetKey]);
 		const retry = test.participants.stopConfirmed(main, fableParticipant.participantKey, stopped.participant.generation);
 		await expect(retry).rejects.toMatchObject({ code: "conflict" });
