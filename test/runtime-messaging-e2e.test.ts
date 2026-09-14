@@ -22,7 +22,7 @@ type Auth = { registrationId: string; registrationKey: string; targetKey: string
 type Participant = { participantKey: string; generation: string };
 type Call = { name: string; arguments: Record<string, string> };
 type Message = { eventId: string; from: string; body: string; createdAt: number; inReplyToEventId?: string; readAt?: number };
-type Result = { isError: boolean; content: Array<{ type: string; text: string }>; structuredContent: { namespaceId: string; eventId: string; readAt?: number; message?: Message; event?: { eventId: string; body: string; readAt?: number; inReplyToEventId?: string; delivery: { status: string } }; peers?: Array<{ participantId: string }> } };
+type Result = { isError: boolean; content: Array<{ type: string; text: string }>; structuredContent: { namespaceId: string; eventId: string; readAt?: number; message?: Message; event?: { eventId: string; body: string; readAt?: number; inReplyToEventId?: string; delivery: { status: string } }; peers?: Array<{ participantId: string }>; messages?: Array<{ eventId: string; from: string; createdAt: number; inReplyToEventId?: string }>; truncated?: boolean } };
 
 async function setup(recipientReady = true) {
 	const root = mkdtempSync(join(tmpdir(), "messaging-e2e-"));
@@ -88,7 +88,7 @@ async function mcp(path: string, calls: Call[]): Promise<Result[]> {
 		const frames = stdout.trim().split("\n");
 		for (const line of frames) expect(Buffer.byteLength(line + "\n")).toBeLessThanOrEqual(256 * 1024);
 		const responses = frames.map(line => JSON.parse(line));
-		expect(responses[1].result.tools.map((tool: { name: string }) => tool.name)).toEqual(["collaborator_peers", "collaborator_send", "collaborator_status", "collaborator_receive", "collaborator_received", "collaborator_reply"]);
+		expect(responses[1].result.tools.map((tool: { name: string }) => tool.name)).toEqual(["collaborator_peers", "collaborator_send", "collaborator_status", "collaborator_receive", "collaborator_received", "collaborator_reply", "collaborator_inbox"]);
 		expect(responses).toHaveLength(calls.length + 2);
 		const secret = (JSON.parse(readFileSync(path, "utf8")) as { secret: string }).secret;
 		expect(stdout + stderr).not.toContain(secret);
@@ -169,6 +169,27 @@ const status = (operationId: string): Call => ({ name: "collaborator_status", ar
 const receive = (eventId: string): Call => ({ name: "collaborator_receive", arguments: { eventId } });
 const received = (eventId: string): Call => ({ name: "collaborator_received", arguments: { eventId } });
 const reply = (eventId: string, operationId = "reply-1", body = "Reply."): Call => ({ name: "collaborator_reply", arguments: { eventId, operationId, body } });
+const inbox = (): Call => ({ name: "collaborator_inbox", arguments: {} });
+
+it("lists the recipient's unread mail, drops each event once it is read, and caps the listing at 50", async () => {
+	const test = await setup();
+	const recipient = await test.issue(test.recipientParticipant);
+	const published = await mcp(test.issued.descriptorPath, [send("inbox-1", "first"), send("inbox-2", "second")]);
+	const [firstId, secondId] = published.map(result => result.structuredContent.eventId).sort((left, right) => left.localeCompare(right));
+	const [listed] = await mcp(recipient.descriptorPath, [inbox()]);
+	expect(listed!.structuredContent).toEqual({
+		messages: [{ eventId: firstId, from: "sender", createdAt: 1000 }, { eventId: secondId, from: "sender", createdAt: 1000 }],
+		truncated: false,
+	});
+	// The sender's own inbox is separate: it lists nothing until a reply arrives.
+	await expect(mcp(test.issued.descriptorPath, [inbox()])).resolves.toMatchObject([{ structuredContent: { messages: [] } }]);
+	const [, , emptied] = await mcp(recipient.descriptorPath, [received(firstId!), reply(secondId!), inbox()]);
+	expect(emptied!.structuredContent).toEqual({ messages: [], truncated: false });
+	await mcp(test.issued.descriptorPath, Array.from({ length: 51 }, (_unused, index) => send(`bulk-${index}`, `bulk ${index}`)));
+	const [full] = await mcp(recipient.descriptorPath, [inbox()]);
+	expect(full!.structuredContent.messages).toHaveLength(50);
+	expect(full!.structuredContent.truncated).toBe(true);
+});
 
 it("delivers a full body, records readAt, and correlates a reply", async () => {
 	const test = await setup();

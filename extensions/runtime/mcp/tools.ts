@@ -47,6 +47,14 @@ export const tools = [
 		required: ["namespaceId", "operationId", "eventId", "body"],
 		readOnlyHint: false,
 	},
+	{
+		name: "collaborator_inbox",
+		description: "List the unread mail addressed to your participant, oldest first, as event IDs with sender and time but no bodies. "
+			+ "At most 50 are returned and truncated reports whether more remain; read each one with collaborator_receive.",
+		properties: { namespaceId: text() },
+		required: ["namespaceId"],
+		readOnlyHint: true,
+	},
 ];
 
 export const toolDefinitions = tools.map(({ properties, required, readOnlyHint, ...tool }) => ({

@@ -122,9 +122,9 @@ class MessagingPeer {
 		this.child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
 		const listed = await this.send("tools/list", {});
 		assert.deepEqual(listed.tools.map((tool) => tool.name).sort(), [
-			"collaborator_peers", "collaborator_received", "collaborator_receive", "collaborator_reply",
-			"collaborator_send", "collaborator_status",
-		].sort(), "MCP endpoint does not expose the six collaborator tools");
+			"collaborator_inbox", "collaborator_peers", "collaborator_received", "collaborator_receive",
+			"collaborator_reply", "collaborator_send", "collaborator_status",
+		].sort(), "MCP endpoint does not expose the seven collaborator tools");
 		return this;
 	}
 

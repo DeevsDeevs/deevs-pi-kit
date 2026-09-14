@@ -102,6 +102,7 @@ export const MessagingIssueParams = Type.Object({
 export const MessagingPeersParams = Type.Object({ ...NAMESPACE, cursor: Type.Optional(boundedText(512)) }, STRICT_OBJECT);
 export const MessagingStatusParams = Type.Object({ ...NAMESPACE, operationId: IdText }, STRICT_OBJECT);
 export const MessagingEventParams = Type.Object({ ...NAMESPACE, eventId: IdText }, STRICT_OBJECT);
+export const MessagingInboxParams = Type.Object({ ...NAMESPACE }, STRICT_OBJECT);
 export const MessagingSendParams = Type.Object({
 	...NAMESPACE,
 	operationId: IdText,
@@ -124,6 +125,16 @@ export const LiveRegistrationResult = Type.Object({
 });
 
 const MailHintResult = Type.Object({ namespaceId: IdText, eventId: IdText });
+
+/** One unread mail header: enough to choose an event to receive, never the body. */
+const InboxMessageResult = Type.Object({
+	eventId: IdText,
+	from: ParticipantNameText,
+	createdAt: Count,
+	inReplyToEventId: Type.Optional(IdText),
+});
+
+const MessagingInboxResult = Type.Object({ messages: Type.Array(InboxMessageResult), truncated: Type.Boolean() });
 
 export const HeartbeatResult = Type.Object({
 	targetKey: IdText,
@@ -172,6 +183,8 @@ export interface MessagingNamespaceAuth {
 	secret: string;
 }
 
+export type MessagingInboxMessageView = Static<typeof InboxMessageResult>;
+export type MessagingInboxView = Static<typeof MessagingInboxResult>;
 export type LiveClientRegistration = Static<typeof LiveRegistrationResult>;
 export type MailHint = Static<typeof MailHintResult>;
 export type ClientParticipantStatus = Static<typeof ParticipantStatusResult>;
