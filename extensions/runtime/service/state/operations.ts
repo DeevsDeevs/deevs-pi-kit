@@ -44,6 +44,8 @@ export type HostedStateOperation =
 			targetKey: string;
 			generation: string;
 			expectedGeneration?: string;
+			/** "stop" records that the holder's process was closed, so a later start must not try to replace it. */
+			cause?: "stand_down" | "stop";
 			at: number;
 	  }
 	| { type: "participant.release"; participantKey: string; targetKey: string; generation: string; at: number }

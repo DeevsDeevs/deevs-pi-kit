@@ -63,6 +63,7 @@ const HostedParticipantTransitionSchema = Type.Object({
 		Type.Literal("acquire"),
 		Type.Literal("reacquire"),
 		Type.Literal("stand_down"),
+		Type.Literal("stop"),
 		Type.Literal("release"),
 		Type.Literal("takeover"),
 		Type.Literal("revive"),
