@@ -1,7 +1,20 @@
-import { constants } from "node:fs";
+import { constants, type Stats } from "node:fs";
 import { lstat, mkdir, open } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { MissionCurrent, MissionProgressRecord, MissionRequirementAudit, MissionUsage } from "./types.ts";
+
+export function isNodeError(cause: unknown): cause is NodeJS.ErrnoException {
+	return cause instanceof Error && "code" in cause;
+}
+
+export function isErrorCode(cause: unknown, code: string): boolean {
+	return isNodeError(cause) && cause.code === code;
+}
+
+/** A directory Pi may write into: present, a directory, and not reached through a symlink. */
+export function isRealDirectory(info: Stats): boolean {
+	return !info.isSymbolicLink() && info.isDirectory();
+}
 
 export function missionRoot(cwd: string): string {
 	return join(cwd, ".missions");
@@ -78,10 +91,10 @@ async function ensureDirectory(directory: string): Promise<void> {
 	try {
 		await mkdir(directory);
 	} catch (error) {
-		if (!(error instanceof Error) || !("code" in error) || error.code !== "EEXIST") throw error;
+		if (!isErrorCode(error, "EEXIST")) throw error;
 	}
 	const info = await lstat(directory);
-	if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(`Mission artifact path is not a real directory: ${directory}`);
+	if (!isRealDirectory(info)) throw new Error(`Mission artifact path is not a real directory: ${directory}`);
 }
 
 async function writeArtifactFile(filePath: string, content: string): Promise<void> {
@@ -89,7 +102,7 @@ async function writeArtifactFile(filePath: string, content: string): Promise<voi
 	try {
 		existing = await lstat(filePath);
 	} catch (error) {
-		if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
+		if (!isErrorCode(error, "ENOENT")) throw error;
 	}
 	if (existing?.isSymbolicLink()) throw new Error(`Mission artifact path is a symlink: ${filePath}`);
 	const handle = await open(filePath, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);

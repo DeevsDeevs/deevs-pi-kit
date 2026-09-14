@@ -93,6 +93,14 @@ interface MissionSystemPrompt {
 	systemPrompt: string;
 }
 
+function isCommitSha(value: string): boolean {
+	return /^[0-9a-f]{40,64}$/.test(value);
+}
+
+function escapesRoot(relativePath: string): boolean {
+	return relativePath === ".." || relativePath.startsWith("../");
+}
+
 function isActiveRuntimeStatus(status: string): boolean {
 	return ACTIVE_RUNTIME_STATUSES.includes(status);
 }
@@ -1807,7 +1815,9 @@ async function reviewedWorkspaceRevisions(
 		]);
 		const headCommit = head.stdout.trim();
 		const revisionRoot = normalizeReviewPath(relative(reviewCwd, root).replaceAll("\\", "/") || ".");
-		if (status.code !== 0 || status.stdout || head.code !== 0 || !revisionRoot || !/^[0-9a-f]{40,64}$/.test(headCommit)) return undefined;
+		if (status.code !== 0 || status.stdout) return undefined;
+		if (head.code !== 0 || !revisionRoot) return undefined;
+		if (!isCommitSha(headCommit)) return undefined;
 		revisions.push({ root: revisionRoot, base: headCommit, head: headCommit });
 	}
 	return revisions;
@@ -1845,7 +1855,7 @@ async function correctionReviewScope(
 		if (acceptedRevisions === undefined) {
 			const legacyBase = await pi.exec("git", ["rev-parse", "--verify", "HEAD^"], { cwd: root });
 			baseCommit = legacyBase.stdout.trim();
-			if (legacyBase.code !== 0 || !/^[0-9a-f]{40,64}$/.test(baseCommit)) return undefined;
+			if (legacyBase.code !== 0 || !isCommitSha(baseCommit)) return undefined;
 		} else {
 			const accepted = acceptedRevisions.find((revision) => revision.root === head.root);
 			if (!accepted) return undefined;
@@ -1950,7 +1960,8 @@ async function hashWorkspacePath(
 ): Promise<number | undefined> {
 	const target = resolve(root, path);
 	const relativeTarget = relative(root, target).replaceAll("\\", "/");
-	if (relativeTarget !== path || relativeTarget === ".." || relativeTarget.startsWith("../")) return undefined;
+	if (relativeTarget !== path) return undefined;
+	if (escapesRoot(relativeTarget)) return undefined;
 	const info = await lstat(target).catch(() => undefined);
 	// An ordinary indexed path absent from the worktree is a deletion and contributes no final-tree
 	// entry. Sparse and hidden index entries were rejected by the caller.

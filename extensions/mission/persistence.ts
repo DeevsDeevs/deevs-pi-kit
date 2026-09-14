@@ -16,7 +16,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { missionDir, missionRoot } from "./artifacts.ts";
+import { isErrorCode, isNodeError, isRealDirectory, missionDir, missionRoot } from "./artifacts.ts";
 import { MAX_MISSION_REVIEW_ADJUDICATIONS } from "./types.ts";
 import type {
 	MissionCompletionLatch,
@@ -193,7 +193,7 @@ function prepareStateDirectory(cwd: string): string {
 function validateStateDirectories(cwd: string): void {
 	for (const directory of [missionRoot(cwd), stateDirectory(cwd)]) {
 		const info = lstatSync(directory);
-		if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(`Mission state path is not a real directory: ${directory}`);
+		if (!isRealDirectory(info)) throw new Error(`Mission state path is not a real directory: ${directory}`);
 	}
 }
 
@@ -201,10 +201,10 @@ function ensureDirectory(directory: string): void {
 	try {
 		mkdirSync(directory, { mode: 0o700 });
 	} catch (error) {
-		if (!isNodeError(error) || error.code !== "EEXIST") throw error;
+		if (!isErrorCode(error, "EEXIST")) throw error;
 	}
 	const info = lstatSync(directory);
-	if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(`Mission state path is not a real directory: ${directory}`);
+	if (!isRealDirectory(info)) throw new Error(`Mission state path is not a real directory: ${directory}`);
 }
 
 function withLockPath<T>(lock: string, busyMessage: string, operation: () => T): T {
@@ -227,7 +227,7 @@ function acquireLock(lock: string, busyMessage: string): void {
 			return;
 		} catch (error) {
 			rmSync(candidate, { recursive: true, force: true });
-			if (!isNodeError(error) || (error.code !== "EEXIST" && error.code !== "ENOTEMPTY")) throw error;
+			if (!isLockContention(error)) throw error;
 		}
 		// A crashed holder leaves the lock dir forever; reclaim it only when its published owner is provably dead.
 		if (!reclaimIfStale(lock)) throw new Error(busyMessage);
@@ -439,12 +439,18 @@ function validateReviewCandidate(value: PersistedInput): MissionReviewCandidate 
 	return candidate;
 }
 
+const SUGGESTED_VERDICTS: readonly string[] = ["clear", "changes_requested", "unknown"];
+
+function isSuggestedVerdict(value: string): value is MissionReviewVerdict | "unknown" {
+	return SUGGESTED_VERDICTS.includes(value);
+}
+
 function validateReviewAdjudication(value: PersistedInput): MissionReviewAdjudication {
 	const record = object(value, "Mission review adjudication state", REVIEW_ADJUDICATION_FIELDS);
 	const adjudication: MissionReviewAdjudication = { history: reviewAdjudicationHistory(record.history) };
 	if (record.suggestedVerdict !== undefined) {
 		const verdict = text(record.suggestedVerdict, "reviewSuggestedVerdict", 20_000);
-		if (verdict !== "clear" && verdict !== "changes_requested" && verdict !== "unknown") {
+		if (!isSuggestedVerdict(verdict)) {
 			throw new Error("Invalid Mission suggested review verdict.");
 		}
 		adjudication.suggestedVerdict = verdict;
@@ -634,7 +640,10 @@ function stringArray(value: PersistedInput, name: string, maxItems: number, maxL
 }
 
 function text(value: PersistedInput, name: string, max: number): string {
-	if (!isString(value) || !value || value.length > max) throw new Error(`${name} must be a non-empty string of at most ${max} characters.`);
+	const invalid = `${name} must be a non-empty string of at most ${max} characters.`;
+	if (!isString(value)) throw new Error(invalid);
+	if (!value) throw new Error(invalid);
+	if (value.length > max) throw new Error(invalid);
 	return value;
 }
 
@@ -661,7 +670,8 @@ function nonnegativeInteger(value: PersistedInput, name: string): number {
 
 function boundedInteger(value: PersistedInput, name: string, min: number, max: number): number {
 	const result = number(value, name);
-	if (!Number.isInteger(result) || result < min || result > max) throw new Error(`${name} must be an integer from ${min} to ${max}.`);
+	if (!Number.isInteger(result)) throw new Error(`${name} must be an integer from ${min} to ${max}.`);
+	if (result < min || result > max) throw new Error(`${name} must be an integer from ${min} to ${max}.`);
 	return result;
 }
 
@@ -700,6 +710,8 @@ function isBoolean(value: PersistedInput): value is boolean {
 	return value === true || value === false;
 }
 
-function isNodeError(cause: unknown): cause is NodeJS.ErrnoException {
-	return cause instanceof Error && "code" in cause;
+/** Another process won the lock-directory race, or left a partial candidate behind. */
+function isLockContention(cause: unknown): boolean {
+	if (!isNodeError(cause)) return false;
+	return cause.code === "EEXIST" || cause.code === "ENOTEMPTY";
 }
