@@ -299,7 +299,7 @@ try {
 		registrations: 5,
 		wrongKeyRejected: true,
 		mail: { sent: sent.eventId, reply: replied.eventId, readAt: marked.readAt, retriedSameEvent: true },
-		mcpTools: 6,
+		mcpTools: 7,
 		daemonRestarts: 1,
 		participants: ["review/alpha", "review/beta", "review/gamma"],
 	}));
