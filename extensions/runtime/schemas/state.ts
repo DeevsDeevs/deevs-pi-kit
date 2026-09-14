@@ -1,0 +1,271 @@
+import { Type, type Static } from "typebox";
+import {
+	AgentNameText,
+	Count,
+	HOSTED_MAILBOX_MAX_BODY_BYTES,
+	HOSTED_MAX_DELIVERY_BATCH,
+	HOSTED_MONITOR_MAX_ENTRIES,
+	HOSTED_PARTICIPANT_TRANSITION_LIMIT,
+	HashText,
+	IdText,
+	ParticipantNameText,
+	PathText,
+	Sequence,
+	STRICT_OBJECT,
+	SummaryText,
+	Timestamp,
+	boundedText,
+	keyedRecord,
+} from "./common.ts";
+
+export const HostedRuntimeInstanceSchema = Type.Object({
+	version: Type.Literal(1),
+	runtimeId: IdText,
+}, STRICT_OBJECT);
+
+export const HostedCollaboratorProfileSchema = Type.Union([Type.Literal("read-only"), Type.Literal("workspace-write")]);
+export const HostedNativeCollaboratorDriverSchema = Type.Union([Type.Literal("claude-code"), Type.Literal("codex")]);
+export const HostedCollaboratorDriverSchema = Type.Union([
+	Type.Literal("pi"),
+	Type.Literal("claude-code"),
+	Type.Literal("codex"),
+]);
+
+export const HostedAgentSessionIdentitySchema = Type.Object({
+	source: IdText,
+	agent: boundedText(64),
+	kind: Type.Union([Type.Literal("id"), Type.Literal("path")]),
+	value: PathText,
+}, STRICT_OBJECT);
+
+export const HostedHerdrLocatorSchema = Type.Object({
+	paneId: IdText,
+	terminalId: IdText,
+	tabId: IdText,
+	workspaceId: IdText,
+}, STRICT_OBJECT);
+
+export const HostedPiTargetSchema = Type.Object({
+	kind: Type.Literal("pi"),
+	targetKey: IdText,
+	projectRoot: PathText,
+	piSessionId: IdText,
+	piSessionFile: PathText,
+	worktreePath: Type.Optional(PathText),
+	createdAt: Timestamp,
+}, STRICT_OBJECT);
+
+export const HostedAgentTargetSchema = Type.Object({
+	kind: Type.Literal("agent"),
+	targetKey: IdText,
+	projectRoot: PathText,
+	agentName: AgentNameText,
+	driver: HostedNativeCollaboratorDriverSchema,
+	agentSession: HostedAgentSessionIdentitySchema,
+	participantKey: IdText,
+	holderGeneration: IdText,
+	profile: HostedCollaboratorProfileSchema,
+	clientGeneration: IdText,
+	herdr: HostedHerdrLocatorSchema,
+	worktreePath: Type.Optional(PathText),
+	createdAt: Timestamp,
+}, STRICT_OBJECT);
+
+export const HostedTargetSchema = Type.Union([HostedPiTargetSchema, HostedAgentTargetSchema]);
+
+export const HostedFileObservationSchema = Type.Object({
+	relativePath: PathText,
+	size: Count,
+	mtimeMs: Timestamp,
+	stableSince: Timestamp,
+	present: Type.Boolean(),
+	emitted: Type.Boolean(),
+}, STRICT_OBJECT);
+
+export const HostedMonitorSchema = Type.Object({
+	monitorId: IdText,
+	targetKey: IdText,
+	generation: IdText,
+	directory: PathText,
+	settleMs: Count,
+	status: Type.Union([Type.Literal("watching"), Type.Literal("degraded")]),
+	sequence: Count,
+	entries: keyedRecord(HostedFileObservationSchema, HOSTED_MONITOR_MAX_ENTRIES),
+	createdAt: Timestamp,
+	updatedAt: Timestamp,
+}, STRICT_OBJECT);
+
+export const HostedParticipantTransitionSchema = Type.Object({
+	cause: Type.Union([
+		Type.Literal("acquire"),
+		Type.Literal("reacquire"),
+		Type.Literal("stand_down"),
+		Type.Literal("release"),
+		Type.Literal("takeover"),
+		Type.Literal("revive"),
+	]),
+	generation: IdText,
+	holderTargetKey: Type.Optional(IdText),
+	previousGeneration: Type.Optional(IdText),
+	previousHolderTargetKey: Type.Optional(IdText),
+	at: Timestamp,
+}, STRICT_OBJECT);
+
+export const HostedParticipantStateSchema = Type.Union([
+	Type.Literal("held"),
+	Type.Literal("vacant"),
+	Type.Literal("ended"),
+]);
+
+export const HostedParticipantSchema = Type.Object({
+	participantKey: IdText,
+	projectRoot: PathText,
+	protocol: ParticipantNameText,
+	participantId: ParticipantNameText,
+	state: HostedParticipantStateSchema,
+	generation: IdText,
+	holderTargetKey: Type.Optional(IdText),
+	worktreePath: Type.Optional(PathText),
+	outSeq: keyedRecord(Sequence),
+	transitions: Type.Array(HostedParticipantTransitionSchema, { minItems: 1, maxItems: HOSTED_PARTICIPANT_TRANSITION_LIMIT }),
+	createdAt: Timestamp,
+	updatedAt: Timestamp,
+}, STRICT_OBJECT);
+
+export const HostedEventDeliverySchema = Type.Union([
+	Type.Object({ status: Type.Literal("pending"), latestClaimId: Type.Optional(IdText) }, STRICT_OBJECT),
+	Type.Object({ status: Type.Literal("claimed"), claimId: IdText }, STRICT_OBJECT),
+	Type.Object({ status: Type.Literal("acked"), claimId: IdText, ackedAt: Timestamp }, STRICT_OBJECT),
+]);
+
+export const HostedFilesystemCreatedEventSchema = Type.Object({
+	version: Type.Literal(1),
+	eventId: IdText,
+	dedupeKey: PathText,
+	source: Type.Object({
+		kind: Type.Literal("monitor"),
+		id: IdText,
+		generation: IdText,
+		sequence: Count,
+	}, STRICT_OBJECT),
+	targetKey: IdText,
+	type: Type.Literal("filesystem.created"),
+	createdAt: Timestamp,
+	summary: SummaryText,
+	payload: Type.Object({
+		relativePath: PathText,
+		path: PathText,
+		fileType: Type.Literal("regular"),
+		size: Count,
+		mtimeMs: Timestamp,
+	}, STRICT_OBJECT),
+	delivery: HostedEventDeliverySchema,
+}, STRICT_OBJECT);
+
+export const HostedMailboxMessageEventSchema = Type.Object({
+	version: Type.Literal(1),
+	eventId: IdText,
+	dedupeKey: PathText,
+	type: Type.Literal("mailbox.message"),
+	source: Type.Object({
+		kind: Type.Literal("participant"),
+		id: IdText,
+		generation: IdText,
+		sequence: Sequence,
+	}, STRICT_OBJECT),
+	recipientParticipantKey: IdText,
+	sendId: IdText,
+	body: boundedText(HOSTED_MAILBOX_MAX_BODY_BYTES),
+	inReplyToEventId: Type.Optional(IdText),
+	readAt: Type.Optional(Timestamp),
+	createdAt: Timestamp,
+	summary: SummaryText,
+	delivery: HostedEventDeliverySchema,
+}, STRICT_OBJECT);
+
+export const HostedEventSchema = Type.Union([HostedFilesystemCreatedEventSchema, HostedMailboxMessageEventSchema]);
+
+export const HostedClaimSchema = Type.Object({
+	claimId: IdText,
+	targetKey: IdText,
+	registrationId: IdText,
+	clientGeneration: IdText,
+	eventIds: Type.Array(IdText, { minItems: 1, maxItems: HOSTED_MAX_DELIVERY_BATCH, uniqueItems: true }),
+	createdAt: Timestamp,
+	leaseUntil: Timestamp,
+	status: Type.Union([Type.Literal("active"), Type.Literal("released"), Type.Literal("acked")]),
+	settledAt: Type.Optional(Timestamp),
+}, STRICT_OBJECT);
+
+export const HostedWakeSchema = Type.Object({
+	wakeId: IdText,
+	targetKey: IdText,
+	registrationId: IdText,
+	createdAt: Timestamp,
+}, STRICT_OBJECT);
+
+export const HostedMessagingGrantSchema = Type.Object({
+	namespaceId: Type.String({ pattern: "^msg_[0-9a-f-]{36}$" }),
+	secretDigest: HashText,
+	participantKey: IdText,
+	holderGeneration: IdText,
+	targetKey: IdText,
+	clientGeneration: IdText,
+	terminalId: IdText,
+	configurationHash: HashText,
+	createdAt: Timestamp,
+	expiresAt: Timestamp,
+	status: Type.Union([Type.Literal("active"), Type.Literal("revoked"), Type.Literal("expired")]),
+	/** Operation ID to published event ID; a repeated operation ID returns its original event. */
+	operations: keyedRecord(IdText),
+}, STRICT_OBJECT);
+
+export const HOSTED_STATE_VERSION = 17;
+
+export const HostedRuntimeStateSchema = Type.Object({
+	version: Type.Literal(HOSTED_STATE_VERSION),
+	messaging: keyedRecord(HostedMessagingGrantSchema),
+	targets: keyedRecord(HostedTargetSchema),
+	monitors: keyedRecord(HostedMonitorSchema),
+	participants: keyedRecord(HostedParticipantSchema),
+	events: keyedRecord(HostedEventSchema),
+	dedupe: keyedRecord(IdText),
+	claims: keyedRecord(HostedClaimSchema),
+	wakes: keyedRecord(HostedWakeSchema),
+}, STRICT_OBJECT);
+
+export type HostedRuntimeInstance = Static<typeof HostedRuntimeInstanceSchema>;
+export type HostedCollaboratorProfile = Static<typeof HostedCollaboratorProfileSchema>;
+export type HostedNativeCollaboratorDriver = Static<typeof HostedNativeCollaboratorDriverSchema>;
+export type HostedCollaboratorDriver = Static<typeof HostedCollaboratorDriverSchema>;
+export type HostedAgentSessionIdentity = Static<typeof HostedAgentSessionIdentitySchema>;
+export type HostedHerdrLocator = Static<typeof HostedHerdrLocatorSchema>;
+export type HostedAgentTarget = Static<typeof HostedAgentTargetSchema>;
+export type HostedTarget = Static<typeof HostedTargetSchema>;
+export type HostedFileObservation = Static<typeof HostedFileObservationSchema>;
+export type HostedMonitor = Static<typeof HostedMonitorSchema>;
+export type HostedParticipantTransition = Static<typeof HostedParticipantTransitionSchema>;
+export type HostedParticipantState = Static<typeof HostedParticipantStateSchema>;
+export type HostedParticipant = Static<typeof HostedParticipantSchema>;
+export type HostedEventDelivery = Static<typeof HostedEventDeliverySchema>;
+export type HostedFilesystemCreatedEvent = Static<typeof HostedFilesystemCreatedEventSchema>;
+export type HostedMailboxMessageEvent = Static<typeof HostedMailboxMessageEventSchema>;
+export type HostedEvent = Static<typeof HostedEventSchema>;
+export type HostedClaim = Static<typeof HostedClaimSchema>;
+export type HostedWake = Static<typeof HostedWakeSchema>;
+export type HostedMessagingGrant = Static<typeof HostedMessagingGrantSchema>;
+export type HostedRuntimeState = Static<typeof HostedRuntimeStateSchema>;
+
+export function emptyHostedRuntimeState(): HostedRuntimeState {
+	return {
+		version: HOSTED_STATE_VERSION,
+		messaging: {},
+		targets: {},
+		monitors: {},
+		participants: {},
+		events: {},
+		dedupe: {},
+		claims: {},
+		wakes: {},
+	};
+}

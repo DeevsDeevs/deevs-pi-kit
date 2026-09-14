@@ -14,16 +14,20 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { basename, join } from "node:path";
+import { Value } from "typebox/value";
 import {
 	HOSTED_STATE_MAX_BYTES,
 	type HostedRuntimeInstance,
 	type HostedRuntimeState,
 	type HostedStateOperation,
 } from "../../hosted-types.ts";
+import { schemaError } from "../../schemas/common.ts";
+import { HostedRuntimeInstanceSchema, HostedRuntimeStateSchema, emptyHostedRuntimeState } from "../../schemas/state.ts";
 import { HostedStateStorageError, storageError } from "./errors.ts";
-import type { PersistedStateValue } from "./parse.ts";
+import { checkStateIntegrity } from "./integrity.ts";
 import { reduceHostedState } from "./reduce.ts";
-import { emptyHostedRuntimeState, validateHostedRuntimeState, validateInstance } from "./validate.ts";
+
+type PersistedStateValue = string | number | boolean | null | PersistedStateValue[] | { [field: string]: PersistedStateValue };
 
 const INSTANCE_MAX_BYTES = 4 * 1024;
 
@@ -75,7 +79,12 @@ export function loadOrCreateRuntimeInstance(root: string, createId: () => string
 	prepareRoot(root);
 	const path = runtimeStatePaths(root).instance;
 	const existing = readJson(path, INSTANCE_MAX_BYTES);
-	if (existing !== undefined) return validateInstance(existing);
+	if (existing !== undefined) {
+		if (!Value.Check(HostedRuntimeInstanceSchema, existing)) {
+			throw storageError("Runtime instance is malformed", schemaError(HostedRuntimeInstanceSchema, existing, "Runtime instance"));
+		}
+		return existing;
+	}
 	const instance: HostedRuntimeInstance = { version: 1, runtimeId: createId() };
 	writeAtomicJson(root, path, instance, INSTANCE_MAX_BYTES);
 	return instance;
@@ -87,6 +96,16 @@ export function readHostedRuntimeState(root: string): HostedRuntimeState {
 	const value = readJson(path, HOSTED_STATE_MAX_BYTES);
 	if (value === undefined) return emptyHostedRuntimeState();
 	return validateHostedRuntimeState(value);
+}
+
+export function validateHostedRuntimeState<Source>(value: Source): HostedRuntimeState {
+	try {
+		if (!Value.Check(HostedRuntimeStateSchema, value)) throw schemaError(HostedRuntimeStateSchema, value, "Runtime state");
+		checkStateIntegrity(value);
+		return value;
+	} catch (error) {
+		throw storageError("Runtime state is malformed", error);
+	}
 }
 
 export function writeHostedRuntimeState(root: string, state: HostedRuntimeState): void {

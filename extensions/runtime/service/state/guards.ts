@@ -1,5 +1,5 @@
 import { HostedStateConflictError } from "./errors.ts";
-import { MAX_ID_BYTES } from "./parse.ts";
+import { MAX_ID_BYTES } from "../../schemas/common.ts";
 
 export const PARTICIPANT_NAME = /^[a-z][a-z0-9_-]{0,63}$/;
 
