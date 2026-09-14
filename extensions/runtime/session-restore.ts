@@ -4,7 +4,6 @@ import { Value } from "typebox/value";
 import type { CustomEntry, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { asRecord, type RestoredSessionData, type SerializedObject } from "./responses.ts";
 import {
-	AdmittedEventIdsSchema,
 	CollaboratorLaunchSchema,
 	CollaboratorWorktreeSchema,
 	ManagedAgentControlSchema,
@@ -27,7 +26,6 @@ export interface HostedSessionRecord {
 	launch?: CollaboratorLaunch;
 	worktree?: CollaboratorWorktree;
 	agents?: ManagedAgentControl[];
-	admitted?: string[];
 }
 
 /** The validated state one Pi session resumes from; anything unreadable is reported, never trusted. */
@@ -36,7 +34,6 @@ interface RestoredRuntimeState {
 	launch?: CollaboratorLaunch;
 	worktree?: CollaboratorWorktree;
 	agents: ManagedAgentControl[];
-	admitted: readonly string[];
 }
 
 const RECOVERY_LAUNCH: CollaboratorLaunch = { driver: "pi", profile: "read-only" };
@@ -47,18 +44,17 @@ const INVALID_AGENTS = "Persisted managed collaborator control is invalid; affec
 
 export function restoreSessionRecord(ctx: ExtensionContext): RestoredRuntimeState {
 	const entry = lastSessionRecord(ctx);
-	if (!entry) return { identity: bootstrapIdentity(process.env[COLLABORATOR_ENV]), agents: [], admitted: [] };
+	if (!entry) return { identity: bootstrapIdentity(process.env[COLLABORATOR_ENV]), agents: [] };
 	const record = asRecord(entry.data);
 	if (record?.version !== 3) {
 		ctx.ui.notify(INVALID_RECORD, "warning");
-		return { launch: RECOVERY_LAUNCH, agents: [], admitted: [] };
+		return { launch: RECOVERY_LAUNCH, agents: [] };
 	}
 	return {
 		identity: restoreIdentity(record, ctx),
 		launch: restoreLaunch(record, ctx),
 		worktree: parseWorktree(record.worktree, ctx),
 		agents: restoreAgents(record, ctx),
-		admitted: restoreAdmitted(record),
 	};
 }
 
@@ -75,10 +71,6 @@ function restoreLaunch(record: SerializedObject, ctx: ExtensionContext): Collabo
 	if (launch) return launch;
 	ctx.ui.notify(INVALID_LAUNCH, "warning");
 	return RECOVERY_LAUNCH;
-}
-
-function restoreAdmitted(record: SerializedObject): readonly string[] {
-	return Value.Check(AdmittedEventIdsSchema, record.admitted) ? record.admitted : [];
 }
 
 function restoreAgents(record: SerializedObject, ctx: ExtensionContext): ManagedAgentControl[] {

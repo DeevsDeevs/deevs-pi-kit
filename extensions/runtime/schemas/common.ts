@@ -2,8 +2,6 @@ import { Type, type TRecordAction, type TRefineAdd, type TSchema, type TString }
 import { Value } from "typebox/value";
 
 export const HOSTED_PROTOCOL_VERSION = 1 as const;
-export const HOSTED_MAX_DELIVERY_BATCH = 12;
-export const HOSTED_MONITOR_MAX_ENTRIES = 10_000;
 export const HOSTED_STATE_MAX_BYTES = 8 * 1024 * 1024;
 export const HOSTED_ACK_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 export const HOSTED_MAILBOX_MAX_BODY_BYTES = 16 * 1024;

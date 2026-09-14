@@ -14,6 +14,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { basename, join } from "node:path";
+import { Type } from "typebox";
 import { Value } from "typebox/value";
 import {
 	HOSTED_STATE_MAX_BYTES,
@@ -22,7 +23,12 @@ import {
 	type HostedStateOperation,
 } from "../../hosted-types.ts";
 import { schemaError } from "../../schemas/common.ts";
-import { HostedRuntimeInstanceSchema, HostedRuntimeStateSchema, emptyHostedRuntimeState } from "../../schemas/state.ts";
+import {
+	HOSTED_STATE_VERSION,
+	HostedRuntimeInstanceSchema,
+	HostedRuntimeStateSchema,
+	emptyHostedRuntimeState,
+} from "../../schemas/state.ts";
 import { HostedStateStorageError, storageError } from "./errors.ts";
 import { checkStateIntegrity } from "./integrity.ts";
 import { reduceHostedState } from "./reduce.ts";
@@ -30,6 +36,7 @@ import { reduceHostedState } from "./reduce.ts";
 type PersistedStateValue = string | number | boolean | null | PersistedStateValue[] | { [field: string]: PersistedStateValue };
 
 const INSTANCE_MAX_BYTES = 4 * 1024;
+const PersistedStateVersion = Type.Object({ version: Type.Integer() });
 
 export interface RuntimeStatePaths {
 	instance: string;
@@ -95,7 +102,15 @@ export function readHostedRuntimeState(root: string): HostedRuntimeState {
 	const path = runtimeStatePaths(root).state;
 	const value = readJson(path, HOSTED_STATE_MAX_BYTES);
 	if (value === undefined) return emptyHostedRuntimeState();
+	// State is current-only: another version is discarded, never migrated and never a permanent load failure.
+	if (Value.Check(PersistedStateVersion, value) && value.version !== HOSTED_STATE_VERSION) return discardSupersededState(path);
 	return validateHostedRuntimeState(value);
+}
+
+function discardSupersededState(path: string): HostedRuntimeState {
+	try { renameSync(path, `${path}.superseded`); }
+	catch (error) { throw storageError(`Cannot discard superseded runtime state: ${path}`, error); }
+	return emptyHostedRuntimeState();
 }
 
 export function validateHostedRuntimeState<Source>(value: Source): HostedRuntimeState {

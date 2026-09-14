@@ -10,12 +10,11 @@ import {
 	ParticipantAcquireResult,
 	ParticipantStatusResult,
 	type ClientParticipantStatus,
-	type InboxEvent,
 	type LiveClientRegistration,
 	type MailHint,
 } from "./schemas/rpc.ts";
 
-export type { ClientParticipantStatus, InboxEvent, LiveClientRegistration, MailHint } from "./schemas/rpc.ts";
+export type { ClientParticipantStatus, LiveClientRegistration, MailHint } from "./schemas/rpc.ts";
 
 export type RuntimeResponse = Awaited<ReturnType<HostedRuntimeClient["call"]>>;
 export type RestoredSessionData = CustomEntry["data"];
@@ -33,7 +32,6 @@ interface RegistrationAuth {
 
 export interface HostedHeartbeat {
 	registration: LiveClientRegistration;
-	events: InboxEvent[];
 	mail?: MailHint;
 }
 
@@ -53,7 +51,7 @@ export function parseRegistration(value: RuntimeResponse): LiveClientRegistratio
 
 export function parseHeartbeat(value: RuntimeResponse): HostedHeartbeat {
 	const result = decode(HeartbeatResult, value, "Runtime heartbeat");
-	const heartbeat: HostedHeartbeat = { registration: result, events: result.events ?? [] };
+	const heartbeat: HostedHeartbeat = { registration: result };
 	if (result.mail) heartbeat.mail = result.mail;
 	return heartbeat;
 }

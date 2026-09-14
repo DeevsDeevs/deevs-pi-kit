@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { TextDecoder } from "node:util";
 import { RuntimeAgentBinder, type AgentBinderOptions } from "./bridge.ts";
 import { RuntimeMessaging } from "./messaging.ts";
-import { DirectoryMonitorManager, type DirectoryMonitorOptions } from "./monitor.ts";
 import {
 	dispatchHostedLine,
 	encodeHostedResponse,
@@ -17,9 +16,11 @@ import { HostedParticipantCoordinator, type HostedParticipantCoordinatorOptions 
 import { HerdrCliHostVerifier } from "./herdr-cli.ts";
 import type { HostedHostVerifier } from "./identity.ts";
 import { RuntimeRegistrationManager, type RegistrationManagerOptions } from "./registration.ts";
+import { HOSTED_ACK_RETENTION_MS } from "../hosted-types.ts";
 import { HostedStateStore, loadOrCreateRuntimeInstance } from "./state.ts";
-import { RuntimeInbox, type HostedDeliveryOptions } from "./delivery.ts";
 import { RuntimeWorktrees } from "./worktree.ts";
+
+const RETENTION_SWEEP_MS = 5 * 60_000;
 
 export class RuntimeAlreadyRunningError extends Error {
 	readonly code = "conflict" as const;
@@ -29,12 +30,11 @@ export interface RuntimeServerOptions {
 	root: string;
 	socketPath?: string;
 	probeTimeoutMs?: number;
-	monitor?: DirectoryMonitorOptions;
+	retentionSweepMs?: number;
 	host?: HostedHostVerifier;
 	registration?: RegistrationManagerOptions;
 	participant?: HostedParticipantCoordinatorOptions;
 	bridge?: AgentBinderOptions;
-	delivery?: HostedDeliveryOptions;
 }
 
 export interface RuntimeServerHandle {
@@ -46,7 +46,7 @@ export interface RuntimeServerHandle {
 
 /** The long-lived services a started runtime must shut down again. */
 interface RuntimeLifecycle {
-	monitors: DirectoryMonitorManager;
+	sweep: NodeJS.Timeout;
 	registrations: RuntimeRegistrationManager;
 }
 
@@ -60,7 +60,6 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 	const store = new HostedStateStore(options.root);
 	const host = options.host ?? new HerdrCliHostVerifier();
 	let participants: HostedParticipantCoordinator | undefined;
-	const monitors = new DirectoryMonitorManager(store, options.monitor);
 	const registrations = new RuntimeRegistrationManager(store, host, {
 		...options.registration,
 		onReady: (targetKey) => {
@@ -68,7 +67,6 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 			participants?.registrationReady(targetKey);
 		},
 	});
-	const inbox = new RuntimeInbox(store, options.delivery);
 	const worktrees = new RuntimeWorktrees(options.root, store);
 	const bridges = new RuntimeAgentBinder(store, registrations, host, options.bridge);
 	const closeTarget = host.closeTarget;
@@ -82,13 +80,11 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 		agentWake: "none",
 		registrations,
 		messaging: new RuntimeMessaging(store, registrations, participants, socketPath, options.participant?.now),
-		monitors,
-		inbox,
 		participants,
 		bridges,
 		worktrees,
 	};
-	return await serve(options, context, socketPath, { monitors, registrations });
+	return await serve(options, context, socketPath, { sweep: startRetentionSweep(store, options), registrations });
 }
 
 async function serve(
@@ -103,7 +99,6 @@ async function serve(
 	try {
 		chmodSync(socketPath, 0o600);
 		const identity = socketIdentity(socketPath);
-		lifecycle.monitors.start();
 		let closed = false;
 		return {
 			root: options.root,
@@ -126,8 +121,18 @@ async function serve(
 	}
 }
 
+/** Mail and messaging grants outlive every request, so retention runs on its own timer, not on a call. */
+function startRetentionSweep(store: HostedStateStore, options: RuntimeServerOptions): NodeJS.Timeout {
+	const now = options.participant?.now ?? Date.now;
+	const sweep = setInterval(() => {
+		try { store.apply({ type: "retention.prune", before: Math.max(0, now() - HOSTED_ACK_RETENTION_MS) }); } catch {}
+	}, options.retentionSweepMs ?? RETENTION_SWEEP_MS);
+	sweep.unref?.();
+	return sweep;
+}
+
 function closeLifecycle(lifecycle: RuntimeLifecycle): void {
-	lifecycle.monitors.close();
+	clearInterval(lifecycle.sweep);
 	lifecycle.registrations.close();
 }
 

@@ -1,9 +1,7 @@
 import type {
 	HostedAgentTarget,
 	HostedCollaboratorProfile,
-	HostedFilesystemCreatedEvent,
 	HostedMessagingGrant,
-	HostedMonitor,
 	HostedParticipantState,
 	HostedPiTarget,
 	HostedTarget,
@@ -12,8 +10,6 @@ import type {
 export {
 	HOSTED_ACK_RETENTION_MS,
 	HOSTED_MAILBOX_MAX_BODY_BYTES,
-	HOSTED_MAX_DELIVERY_BATCH,
-	HOSTED_MONITOR_MAX_ENTRIES,
 	HOSTED_PROTOCOL_VERSION,
 	HOSTED_STATE_MAX_BYTES,
 } from "./schemas/common.ts";
@@ -22,13 +18,9 @@ export type {
 	HostedAgentTarget,
 	HostedCollaboratorDriver,
 	HostedCollaboratorProfile,
-	HostedEvent,
-	HostedFileObservation,
-	HostedFilesystemCreatedEvent,
 	HostedHerdrLocator,
 	HostedMailboxMessageEvent,
 	HostedMessagingGrant,
-	HostedMonitor,
 	HostedNativeCollaboratorDriver,
 	HostedParticipant,
 	HostedParticipantState,
@@ -91,9 +83,6 @@ export type HostedStateOperation =
 	| { type: "messaging.read"; namespaceId: string; eventId: string; at: number }
 	| { type: "target.ensure"; target: HostedTarget }
 	| { type: "agent.bind"; bind: HostedAgentBind }
-	| { type: "monitor.create"; monitor: HostedMonitor }
-	| { type: "monitor.delete"; targetKey: string; monitorId: string }
-	| { type: "monitor.commit"; monitor: HostedMonitor; events: HostedFilesystemCreatedEvent[] }
 	| {
 			type: "participant.acquire";
 			participantKey: string;
@@ -126,6 +115,4 @@ export type HostedStateOperation =
 			body: string;
 			at: number;
 	  }
-	| { type: "inbox.claim"; targetKey: string; leaseUntil: number }
-	| { type: "inbox.ack"; targetKey: string; eventIds: string[]; at: number }
 	| { type: "retention.prune"; before: number };

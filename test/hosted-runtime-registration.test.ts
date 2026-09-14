@@ -3,13 +3,11 @@ import { execFile } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DirectoryMonitorManager } from "../extensions/runtime/service/monitor.ts";
 import { dispatchHostedLine, type HostedProtocolContext } from "../extensions/runtime/service/protocol.ts";
 import { HerdrCliHostVerifier } from "../extensions/runtime/service/herdr-cli.ts";
 import { RegistrationError, type HostedHostVerifier, type HostedLiveAgent } from "../extensions/runtime/service/identity.ts";
 import { RuntimeRegistrationManager, type RegisterPiInput } from "../extensions/runtime/service/registration.ts";
 import { HostedStateStore, piTargetKey } from "../extensions/runtime/service/state.ts";
-import { RuntimeInbox } from "../extensions/runtime/service/delivery.ts";
 
 const herdrResult = vi.hoisted(() => ({ value: {} as unknown, failure: undefined as string | undefined }));
 vi.mock("node:child_process", async importOriginal => ({
@@ -38,9 +36,8 @@ function setup() {
 	const root = mkdtempSync(join(tmpdir(), "pi-kit-runtime-registration-"));
 	roots.push(root);
 	const projectRoot = join(root, "project");
-	const watchRoot = join(projectRoot, "reviews");
 	const sessionFile = join(root, "session.jsonl");
-	mkdirSync(watchRoot, { recursive: true });
+	mkdirSync(projectRoot, { recursive: true });
 	writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: "session_1", timestamp: "2026-01-01T00:00:00.000Z", cwd: projectRoot })}\n`);
 	const store = new HostedStateStore(join(root, "runtime"));
 	const host = new FakeHost({ name: "collab-1", cwd: projectRoot, tabId: "w1:t1", workspaceId: "w1" });
@@ -53,7 +50,7 @@ function setup() {
 		createKey: () => `key_${nextId}`,
 	});
 	const input: RegisterPiInput = { projectRoot, piSessionId: "session_1", piSessionFile: sessionFile };
-	return { root, projectRoot, watchRoot, sessionFile, store, host, registrations, input, setNow: (value: number) => { now = value; } };
+	return { root, projectRoot, sessionFile, store, host, registrations, input, setNow: (value: number) => { now = value; } };
 }
 
 describe("Herdr agent queries", () => {
@@ -104,22 +101,18 @@ describe("hosted Pi registration", () => {
 
 });
 
-describe("registration-authorized Monitor protocol", () => {
-	it("registers, creates/reads/deletes a Monitor, and rejects a stale key", async () => {
+describe("registration-authorized protocol", () => {
+	it("registers, renews its lease, and rejects a stale key or an unknown params field", async () => {
 		const test = setup();
-		const monitors = new DirectoryMonitorManager(test.store, { automatic: false, now: () => 1_000, createId: () => "mon_rpc" });
-		const inbox = new RuntimeInbox(test.store);
-		const context: HostedProtocolContext = { runtimeId: "rt_test", agentWake: "none", registrations: test.registrations, monitors, inbox };
+		const context: HostedProtocolContext = { runtimeId: "rt_test", agentWake: "none", registrations: test.registrations };
 		const call = (method: string, params: unknown) => dispatchHostedLine(JSON.stringify({ v: 1, id: method, method, params }), context);
 		const registered = await call("pi.register", test.input);
 		expect(registered).toMatchObject({ ok: true, result: { registrationId: "reg_1", registrationKey: "key_1" } });
 		const auth = { registrationId: "reg_1", registrationKey: "key_1" };
-		expect(await call("monitor.create", { ...auth, directory: test.watchRoot, settleMs: 250 })).toMatchObject({ ok: true, result: { monitorId: "mon_rpc", status: "watching" } });
-		expect(await call("monitor.get", auth)).toMatchObject({ ok: true, result: { monitor: { monitorId: "mon_rpc" } } });
-		expect(await call("monitor.get", { ...auth, registrationKey: "wrong" })).toMatchObject({ ok: false, error: { code: "registration_stale" } });
-		expect(await call("inbox.status", auth)).toMatchObject({ ok: true, result: { undelivered: 0, delivered: 0 } });
-		expect(await call("inbox.status", { ...auth, extra: true })).toMatchObject({ ok: false, error: { code: "invalid_request" } });
-		expect(await call("monitor.delete", { ...auth, monitorId: "mon_rpc" })).toMatchObject({ ok: true, result: { deleted: true } });
-		expect(await call("monitor.get", auth)).toMatchObject({ ok: true, result: { monitor: null } });
+		expect(await call("pi.heartbeat", auth)).toMatchObject({ ok: true, result: { registrationId: "reg_1", leaseUntil: 31_000 } });
+		expect(await call("pi.heartbeat", { ...auth, registrationKey: "wrong" })).toMatchObject({ ok: false, error: { code: "registration_stale" } });
+		expect(await call("pi.heartbeat", { ...auth, extra: true })).toMatchObject({ ok: false, error: { code: "invalid_request" } });
+		expect(await call("pi.unregister", auth)).toMatchObject({ ok: true, result: { unregistered: true } });
+		expect(await call("pi.heartbeat", auth)).toMatchObject({ ok: false, error: { code: "registration_stale" } });
 	});
 });

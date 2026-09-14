@@ -45,9 +45,7 @@ describe("hosted runtime protocol", () => {
 				capabilities: {
 					agentWake: "none",
 					degradedReason: "host_unavailable",
-					maxDeliveryBatch: 12,
 					targets: ["pi", "claude-code", "codex"],
-					monitor: { maxEntries: 10_000 },
 				},
 			},
 		});

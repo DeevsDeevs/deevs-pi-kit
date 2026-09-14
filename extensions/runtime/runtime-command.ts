@@ -1,4 +1,3 @@
-import { resolve } from "node:path";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { HostedRuntimeClientError } from "./client.ts";
 import { isEnded, isHeld } from "./hosted-types.ts";
@@ -9,15 +8,13 @@ import {
 	parseAcquireResult,
 	parseParticipant,
 	strictObject,
-	text,
 	type ClientParticipantStatus,
 	type LiveClientRegistration,
-	type RuntimeResponse,
 } from "./responses.ts";
 import type { RuntimeSession } from "./runtime-session.ts";
 import type { ParticipantIdentity } from "./session-record.ts";
 
-const USAGE = "Usage: /runtime [status|start|register|monitor <directory>|monitor-delete|collaborate <protocol> <id>"
+const USAGE = "Usage: /runtime [status|start|register|collaborate <protocol> <id>"
 	+ "|participants|stand-down|leave|takeover <protocol> <id>]";
 
 export interface RuntimeCommandServices {
@@ -42,8 +39,6 @@ const HANDLERS = new Map<string, RuntimeCommandHandler>([
 	["stand-down", (input) => runRelinquish(input, "stand-down")],
 	["leave", (input) => runRelinquish(input, "leave")],
 	["takeover", runTakeover],
-	["monitor", runMonitor],
-	["monitor-delete", runMonitorDelete],
 ]);
 
 /** Dispatches one /runtime subcommand and reports every failure as a typed notification. */
@@ -174,34 +169,6 @@ async function runTakeover({ services, args, ctx }: RuntimeCommandInput): Promis
 		disposition: "held",
 	});
 	ctx.ui.notify(`Took over ${protocol}/${participantId}.`, "info");
-}
-
-async function runMonitor({ services, args, ctx }: RuntimeCommandInput): Promise<void> {
-	if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Monitor creation requires a trusted project.");
-	const directory = args.join(" ");
-	if (!directory) throw new HostedRuntimeClientError("invalid_request", "Usage: /runtime monitor <directory>");
-	const registration = await services.session.requireRegistration(ctx);
-	const params = { ...auth(registration), directory: resolve(ctx.cwd, directory), settleMs: 250 };
-	const result = strictObject(await services.session.client.call("monitor.create", params), "Runtime Monitor");
-	ctx.ui.notify(`Runtime Monitor active: ${text(result.monitorId)} (${text(result.status)})`, "info");
-}
-
-async function runMonitorDelete({ services, ctx }: RuntimeCommandInput): Promise<void> {
-	const registration = await services.session.requireRegistration(ctx);
-	const status = await services.session.client.call("monitor.get", auth(registration));
-	const monitorId = monitorIdFromStatus(status);
-	if (!monitorId) {
-		ctx.ui.notify("No Runtime Monitor is configured for this session.", "info");
-		return;
-	}
-	await services.session.client.call("monitor.delete", { ...auth(registration), monitorId });
-	ctx.ui.notify("Runtime Monitor deleted; queued events were retained.", "info");
-}
-
-function monitorIdFromStatus(value: RuntimeResponse): string | undefined {
-	const status = strictObject(value, "Runtime Monitor status");
-	if (status.monitor === null) return undefined;
-	return text(strictObject(status.monitor, "Runtime Monitor").monitorId);
 }
 
 interface ParticipantArguments {

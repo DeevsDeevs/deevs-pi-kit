@@ -1,4 +1,4 @@
-import { type HostedMonitor, type HostedTarget, isAgentTarget, isPiTarget } from "../../hosted-types.ts";
+import { type HostedTarget, isAgentTarget, isPiTarget } from "../../hosted-types.ts";
 
 export function sameTarget(left: HostedTarget, right: HostedTarget): boolean {
 	if (left.kind !== right.kind || left.targetKey !== right.targetKey || left.projectRoot !== right.projectRoot) return false;
@@ -18,9 +18,3 @@ export function sameTarget(left: HostedTarget, right: HostedTarget): boolean {
 	return false;
 }
 
-export function sameMonitorIdentity(left: HostedMonitor, right: HostedMonitor): boolean {
-	return left.monitorId === right.monitorId
-		&& left.targetKey === right.targetKey
-		&& left.directory === right.directory
-		&& left.settleMs === right.settleMs;
-}

@@ -1,4 +1,4 @@
-import { type HostedEvent, type HostedRuntimeState, isHeld } from "../../hosted-types.ts";
+import { type HostedMailboxMessageEvent, type HostedRuntimeState, isHeld } from "../../hosted-types.ts";
 import { HOSTED_ACK_RETENTION_MS, HOSTED_MAX_STATE_RECORDS } from "../../schemas/common.ts";
 import { deriveParticipantKey, mailboxDedupeKey, targetIdentityKey } from "./keys.ts";
 
@@ -12,7 +12,6 @@ export function checkStateIntegrity(state: HostedRuntimeState): void {
 	checkKeyedRecords(state);
 	checkParticipants(state);
 	checkEvents(state);
-	checkClaims(state);
 }
 
 function checkKey(key: string, identity: string, subject: string): void {
@@ -27,10 +26,6 @@ function checkKeyedRecords(state: HostedRuntimeState): void {
 	for (const [key, target] of Object.entries(state.targets)) {
 		checkKey(key, target.targetKey, "target");
 		checkKey(key, targetIdentityKey(target), "target identity");
-	}
-	for (const [key, monitor] of Object.entries(state.monitors)) {
-		checkKey(key, monitor.monitorId, "monitor");
-		for (const [path, entry] of Object.entries(monitor.entries)) checkKey(path, entry.relativePath, "file observation");
 	}
 }
 
@@ -59,19 +54,12 @@ function checkEvents(state: HostedRuntimeState): void {
 	}
 }
 
-function checkEventParticipants(state: HostedRuntimeState, event: HostedEvent): void {
-	if (event.type !== "mailbox.message") return;
+function checkEventParticipants(state: HostedRuntimeState, event: HostedMailboxMessageEvent): void {
 	const sender = state.participants[event.source.id];
 	const recipient = state.participants[event.recipientParticipantKey];
 	if (!sender || !recipient) throw new Error(`mail event ${event.eventId} references an absent participant`);
 	if (event.dedupeKey !== mailboxDedupeKey(event.source.id, event.sendId)) {
 		throw new Error(`mail event ${event.eventId} carries a dedupe key that is not derived from its sender and send ID`);
-	}
-}
-
-function checkClaims(state: HostedRuntimeState): void {
-	for (const targetKey of Object.keys(state.claims)) {
-		if (!state.targets[targetKey]) throw new Error(`delivery claim ${targetKey} references an absent target`);
 	}
 }
 

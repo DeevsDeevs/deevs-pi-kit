@@ -9,20 +9,21 @@ import {
 
 const DIGEST = "a".repeat(64);
 const NAMESPACE = "msg_00000000-0000-0000-0000-000000000001";
-const DEDUPE_KEY = "mon_1:review.md";
 const PROJECT_ROOT = "/tmp/project";
-const PARTICIPANT = deriveParticipantKey(PROJECT_ROOT, "review", "main");
+const SENDER = deriveParticipantKey(PROJECT_ROOT, "review", "main");
+const RECIPIENT = deriveParticipantKey(PROJECT_ROOT, "review", "peer");
+const DEDUPE_KEY = `mailbox:${SENDER}:send_1`;
 
 const context: HostedProtocolContext = { runtimeId: "rt_test", agentWake: "none" };
 
 function populatedState(): HostedRuntimeState {
 	return {
-		version: 22,
+		version: 23,
 		messaging: {
 			[NAMESPACE]: {
 				namespaceId: NAMESPACE,
 				secretDigest: DIGEST,
-				participantKey: PARTICIPANT,
+				participantKey: SENDER,
 				holderGeneration: "lease_1",
 				targetKey: "pi_session-1",
 				configurationHash: DIGEST,
@@ -42,29 +43,29 @@ function populatedState(): HostedRuntimeState {
 				createdAt: 100,
 			},
 		},
-		monitors: {
-			mon_1: {
-				monitorId: "mon_1",
-				targetKey: "pi_session-1",
-				directory: "/tmp/project/reviews",
-				settleMs: 250,
-				status: "watching",
-				entries: {},
-				createdAt: 100,
-				updatedAt: 200,
-			},
-		},
 		participants: {
-			[PARTICIPANT]: {
-				participantKey: PARTICIPANT,
+			[SENDER]: {
+				participantKey: SENDER,
 				projectRoot: PROJECT_ROOT,
 				protocol: "review",
 				participantId: "main",
 				state: "held",
 				generation: "lease_1",
 				holderTargetKey: "pi_session-1",
-				outSeq: {},
+				outSeq: { [RECIPIENT]: 1 },
 				transition: { cause: "acquire", at: 100 },
+				createdAt: 100,
+				updatedAt: 100,
+			},
+			[RECIPIENT]: {
+				participantKey: RECIPIENT,
+				projectRoot: PROJECT_ROOT,
+				protocol: "review",
+				participantId: "peer",
+				state: "vacant",
+				generation: "lease_2",
+				outSeq: {},
+				transition: { cause: "stand_down", at: 100 },
 				createdAt: 100,
 				updatedAt: 100,
 			},
@@ -74,16 +75,16 @@ function populatedState(): HostedRuntimeState {
 				version: 1,
 				eventId: "evt_1",
 				dedupeKey: DEDUPE_KEY,
-				source: { kind: "monitor", id: "mon_1" },
-				targetKey: "pi_session-1",
-				type: "filesystem.created",
+				type: "mailbox.message",
+				source: { kind: "participant", id: SENDER, generation: "lease_1", sequence: 1 },
+				recipientParticipantKey: RECIPIENT,
+				sendId: "send_1",
+				body: "Please inspect.",
 				createdAt: 201,
-				summary: "new file: review.md",
-				payload: { relativePath: "review.md", path: "/tmp/project/reviews/review.md", fileType: "regular", size: 42, mtimeMs: 200 },
+				summary: "message from main to peer",
 			},
 		},
 		dedupe: { [DEDUPE_KEY]: "evt_1" },
-		claims: { "pi_session-1": 1_300 },
 	};
 }
 
@@ -97,11 +98,9 @@ function record<Value>(records: Record<string, Value>, key: string): Value {
 const MALFORMED: Array<[string, (state: HostedRuntimeState) => void]> = [
 	["messaging", (state) => { record(state.messaging, NAMESPACE).secretDigest = "not-a-digest"; }],
 	["targets", (state) => { Reflect.set(record(state.targets, "pi_session-1"), "kind", "unknown"); }],
-	["monitors", (state) => { Reflect.set(record(state.monitors, "mon_1"), "status", "paused"); }],
-	["participants", (state) => { Reflect.set(record(state.participants, PARTICIPANT).transition, "cause", "paused"); }],
-	["events", (state) => { Reflect.set(record(state.events, "evt_1"), "type", "filesystem.removed"); }],
+	["participants", (state) => { Reflect.set(record(state.participants, SENDER).transition, "cause", "paused"); }],
+	["events", (state) => { Reflect.set(record(state.events, "evt_1"), "type", "filesystem.created"); }],
 	["dedupe", (state) => { Reflect.set(state.dedupe, DEDUPE_KEY, 7); }],
-	["claims", (state) => { Reflect.set(state.claims, "pi_session-1", "not-a-timestamp"); }],
 ];
 
 /** Cross-record invariants no single-record schema can see; each must fail the load, never be repaired. */
@@ -109,9 +108,10 @@ const INCOHERENT: Array<[string, (state: HostedRuntimeState) => void]> = [
 	["dangling dedupe entry", (state) => { state.dedupe.stale = "evt_missing"; }],
 	["dedupe entry pointing at an event that carries another key", (state) => { record(state.events, "evt_1").dedupeKey = "other"; }],
 	["event unreachable through its dedupe key", (state) => { Reflect.deleteProperty(state.dedupe, DEDUPE_KEY); }],
-	["record id that differs from its map key", (state) => { Reflect.set(record(state.monitors, "mon_1"), "monitorId", "mon_2"); }],
-	["participant key that is not derived from its identity", (state) => { record(state.participants, PARTICIPANT).participantId = "other"; }],
-	["delivery claim held for an absent target", (state) => { Reflect.set(state.claims, "pi_absent", 1_300); }],
+	["record id that differs from its map key", (state) => { record(state.events, "evt_1").eventId = "evt_2"; }],
+	["participant key that is not derived from its identity", (state) => { record(state.participants, SENDER).participantId = "other"; }],
+	["mail event addressed to an absent participant", (state) => { record(state.events, "evt_1").recipientParticipantKey = "participant_gone"; }],
+	["mail dedupe key that is not derived from its sender and send ID", (state) => { record(state.events, "evt_1").sendId = "send_2"; }],
 	["messaging grant with an edited lifetime", (state) => { record(state.messaging, NAMESPACE).expiresAt += 1; }],
 ];
 
@@ -136,7 +136,7 @@ describe("runtime schemas", () => {
 		const line = JSON.stringify({
 			v: 1,
 			id: "req_unknown_field",
-			method: "inbox.status",
+			method: "participant.list",
 			params: { registrationId: "reg_1", registrationKey: "key_1", extra: true },
 		});
 		expect(await dispatchHostedLine(line, context)).toMatchObject({

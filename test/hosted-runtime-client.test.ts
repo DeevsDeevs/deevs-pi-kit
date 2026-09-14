@@ -21,14 +21,13 @@ class FakeHost implements HostedHostVerifier {
 }
 
 describe("hosted runtime client vertical", () => {
-	it("registers and authorizes Monitor operations through the real Unix socket", async () => {
+	it("registers and authorizes participant and mail operations through the real Unix socket", async () => {
 		const root = mkdtempSync(join(tmpdir(), "pi-kit-runtime-client-"));
 		roots.push(root);
 		const projectRoot = join(root, "project");
-		const watchRoot = join(projectRoot, "reviews");
 		const sessionFile = join(root, "session.jsonl");
 		const fableSessionFile = join(root, "fable.jsonl");
-		mkdirSync(watchRoot, { recursive: true });
+		mkdirSync(projectRoot, { recursive: true });
 		writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: "session_1", timestamp: "2026-01-01T00:00:00.000Z", cwd: projectRoot })}\n`);
 		writeFileSync(fableSessionFile, `${JSON.stringify({ type: "session", version: 3, id: "session_2", timestamp: "2026-01-01T00:00:00.000Z", cwd: projectRoot })}\n`);
 		const host = new FakeHost({ name: "pi-main", cwd: projectRoot });
@@ -37,7 +36,6 @@ describe("hosted runtime client vertical", () => {
 		const server = await startRuntimeServer({
 			root: join(root, "runtime"),
 			host,
-			monitor: { automatic: false, now: () => 1_000, createId: () => "mon_client" },
 			registration: { now: () => 1_000, createId: () => registrationIds.shift()!, createKey: () => registrationKeys.shift()! },
 		});
 		servers.push(server);
@@ -56,14 +54,10 @@ describe("hosted runtime client vertical", () => {
 		const fableAuth = { registrationId: String(fableRegistration.registrationId), registrationKey: String(fableRegistration.registrationKey) };
 		const recipient = await client.call("participant.acquire", { ...fableAuth, protocol: "review", participantId: "fable" }) as { participant: { participantKey: string } };
 		expect(await client.call("participant.list", auth)).toMatchObject({ participants: [{ participantId: "fable" }, { participantId: "main" }] });
-		expect(await client.call("monitor.create", { ...auth, directory: watchRoot, settleMs: 250 })).toMatchObject({ monitorId: "mon_client", status: "watching" });
-		expect(await client.call("monitor.get", auth)).toMatchObject({ monitor: { monitorId: "mon_client" } });
 		await client.call("mailbox.send", { ...auth, senderParticipantKey: sender.participant.participantKey, expectedSenderGeneration: sender.participant.generation, recipientParticipantKey: recipient.participant.participantKey, sendId: "send_client", body: "Focused mail" });
 		expect(await client.call("pi.heartbeat", fableAuth)).toMatchObject({ registrationId: fableAuth.registrationId });
-		expect(await client.call("pi.heartbeat", { ...auth, admit: true })).toMatchObject({ registrationId: "reg_client" });
-		await expect(client.call("monitor.get", { ...auth, registrationKey: "wrong" })).rejects.toMatchObject({ code: "registration_stale" });
-		await client.call("monitor.delete", { ...auth, monitorId: "mon_client" });
-		expect(await client.call("monitor.get", auth)).toEqual({ monitor: null });
+		expect(await client.call("pi.heartbeat", auth)).toMatchObject({ registrationId: "reg_client" });
+		await expect(client.call("participant.list", { ...auth, registrationKey: "wrong" })).rejects.toMatchObject({ code: "registration_stale" });
 	});
 
 	it("unregisters a registration that finishes after Pi session shutdown", async () => {
@@ -75,7 +69,7 @@ describe("hosted runtime client vertical", () => {
 		writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: "session_1", timestamp: "2026-01-01T00:00:00.000Z", cwd: projectRoot })}\n`);
 		const host = new FakeHost({ name: "pi-main", cwd: projectRoot });
 		const runtimeRoot = join(root, "runtime");
-		const server = await startRuntimeServer({ root: runtimeRoot, host, monitor: { automatic: false }, registration: { createId: () => "reg_race", createKey: () => "key_race" } });
+		const server = await startRuntimeServer({ root: runtimeRoot, host, registration: { createId: () => "reg_race", createKey: () => "key_race" } });
 		servers.push(server);
 		const pi = { exec: async () => ({ code: 0, stdout: "{}", stderr: "", killed: false }) };
 		const ctx = { cwd: projectRoot, isProjectTrusted: () => true, sessionManager: { getSessionFile: () => sessionFile, getSessionId: () => "session_1", getBranch: () => [] } };
@@ -84,7 +78,7 @@ describe("hosted runtime client vertical", () => {
 		await integration.sessionShutdown();
 		await starting;
 		const client = new HostedRuntimeClient(server.socketPath);
-		await expect(client.call("monitor.get", { registrationId: "reg_race", registrationKey: "key_race" })).rejects.toMatchObject({ code: "registration_stale" });
+		await expect(client.call("participant.list", { registrationId: "reg_race", registrationKey: "key_race" })).rejects.toMatchObject({ code: "registration_stale" });
 	});
 
 	it("returns a typed unavailable error for an absent socket", async () => {

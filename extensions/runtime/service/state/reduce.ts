@@ -1,8 +1,7 @@
 import type { HostedRuntimeState, HostedStateOperation } from "../../hosted-types.ts";
-import { ackDeliveredEvents, claimTargetInbox, pruneRetention } from "./inbox.ts";
+import { pruneRetention } from "./inbox.ts";
 import { sendMailboxMessage } from "./mailbox.ts";
 import { expireMessagingGrant, issueMessagingGrant, markMessagingEventRead, publishMessagingEvent } from "./messaging.ts";
-import { commitMonitor, createMonitor, deleteMonitor } from "./monitors.ts";
 import {
 	acquireParticipant,
 	clearParticipantWorktree,
@@ -25,17 +24,12 @@ const reducers: HostedStateReducers = {
 	"messaging.read": markMessagingEventRead,
 	"target.ensure": ensureTarget,
 	"agent.bind": bindAgentTarget,
-	"monitor.create": createMonitor,
-	"monitor.delete": deleteMonitor,
-	"monitor.commit": commitMonitor,
 	"participant.acquire": acquireParticipant,
 	"participant.stand_down": standDownParticipant,
 	"participant.release": releaseParticipant,
 	"participant.worktree.clear": clearParticipantWorktree,
 	"participant.takeover": takeoverParticipant,
 	"mailbox.send": sendMailboxMessage,
-	"inbox.claim": claimTargetInbox,
-	"inbox.ack": ackDeliveredEvents,
 	"retention.prune": pruneRetention,
 };
 

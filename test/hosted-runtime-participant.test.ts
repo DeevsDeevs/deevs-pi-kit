@@ -3,14 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { HostedAgentTarget, HostedTarget } from "../extensions/runtime/hosted-types.ts";
-import { DirectoryMonitorManager } from "../extensions/runtime/service/monitor.ts";
 import { HostedParticipantCoordinator } from "../extensions/runtime/service/participant.ts";
 import { HostedParticipantError } from "../extensions/runtime/service/participant-status.ts";
 import { dispatchHostedLine, type HostedProtocolContext } from "../extensions/runtime/service/protocol.ts";
 import type { HostedHostVerifier, HostedLiveAgent } from "../extensions/runtime/service/identity.ts";
 import { RuntimeRegistrationManager, type HostedLiveRegistration, type RegisterPiInput } from "../extensions/runtime/service/registration.ts";
-import { deriveAgentTargetKey, HostedStateStore, undeliveredHostedEvents } from "../extensions/runtime/service/state.ts";
-import { RuntimeInbox } from "../extensions/runtime/service/delivery.ts";
+import { deriveAgentTargetKey, HostedStateStore } from "../extensions/runtime/service/state.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -92,11 +90,11 @@ describe("hosted participant coordinator", () => {
 		expect(test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "send_1", "Please review.").eventId).toBe(first.eventId);
 		test.participants.standDown(fable, fableParticipant.participantKey);
 		const queued = test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "send_2", "Queued review.");
-		expect(undeliveredHostedEvents(test.store.read(), fable.targetKey).map((event) => event.eventId)).not.toContain(queued.eventId);
+		expect(test.store.read().events[queued.eventId]).toMatchObject({ recipientParticipantKey: fableParticipant.participantKey });
 		expect(() => test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "send_1", "Changed.")).toThrow(expect.objectContaining({ code: "conflict" }));
 	});
 
-	it("excludes ordinary managed mail from the bound agent inbox and preserves Monitor delivery", async () => {
+	it("records ordinary mail addressed to a bound agent participant", async () => {
 		const test = setup();
 		const { main, fable, mainParticipant, fableParticipant } = await acquirePair(test);
 		const vacant = test.participants.standDown(fable, fableParticipant.participantKey);
@@ -114,28 +112,12 @@ describe("hosted participant coordinator", () => {
 			createdAt: 1_000,
 		};
 		test.store.apply({ type: "agent.bind", bind: { target: managedTarget, protocol: "review", participantId: "fable", callerTargetKey: main.targetKey, callerParticipantKey: mainParticipant.participantKey, callerGeneration: mainParticipant.generation, expectedParticipantGeneration: vacant.generation, at: 1_001 } });
-		const managedRegistration: HostedLiveRegistration = { targetKey: managedTarget.targetKey, registrationId: "reg_managed", registrationKey: "key_managed", leaseUntil: 31_000 };
 		const managed = test.participants.get(main, fableParticipant.participantKey);
 		expect(managed).toMatchObject({ state: "held", holderTargetKey: managedTarget.targetKey, generation: "lease_managed" });
 		expect(test.participants.list(main).find((participant) => participant.participantId === "fable")).toMatchObject({ driver: "codex", profile: "read-only" });
 		const ordinary = test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, managed.participantKey, "send_managed", "Please inspect.");
-		const inbox = new RuntimeInbox(test.store, { now: () => 1_001 });
-		expect(inbox.deliver(managedRegistration)).toEqual([]);
-		expect(test.store.read().events[ordinary.eventId]).toBeDefined();
-		const monitors = new DirectoryMonitorManager(test.store, { automatic: false });
-		const monitor = monitors.create(managedTarget.targetKey, test.projectRoot, 0);
-		const nativeEvent = (name: string) => {
-			writeFileSync(join(test.projectRoot, name), "native monitor input");
-			monitors.reconcile(monitor.monitorId);
-			monitors.reconcile(monitor.monitorId);
-			return Object.values(test.store.read().events).find(event => event.type === "filesystem.created" && event.payload.relativePath === name)!;
-		};
-		const message = nativeEvent("monitored.txt");
-		expect(inbox.deliver(managedRegistration).map((event) => event.eventId)).toEqual([message.eventId]);
-		inbox.ack(managedRegistration, [message.eventId]);
-		expect(inbox.status(managedRegistration)).toEqual({ undelivered: 0, delivered: 1 });
-		const later = nativeEvent("later.txt");
-		expect(undeliveredHostedEvents(test.store.read(), managedTarget.targetKey).map((event) => event.eventId)).toEqual([later.eventId]);
+		expect(test.store.read().events[ordinary.eventId]).toMatchObject({ type: "mailbox.message", recipientParticipantKey: managed.participantKey });
+		expect(test.participants.get(main, managed.participantKey).unreadMail).toBe(1);
 	});
 
 	it("rejects cross-protocol send after a target changes identity", async () => {
@@ -237,17 +219,10 @@ describe("hosted participant coordinator", () => {
 		expect(participants.takeover(successor, fableParticipant.participantKey, fableParticipant.generation)).toMatchObject({ holderTargetKey: successor.targetKey });
 	});
 
-	it("does not treat a target-scoped filesystem claim as participant takeover authority", async () => {
+	it("hands an offline holder's participant to a successor that takes it over", async () => {
 		const test = setup();
 		const { fable, fableParticipant } = await acquirePair(test);
 		const successor = await register(test, "successor");
-		const monitors = new DirectoryMonitorManager(test.store, { automatic: false });
-		const monitor = monitors.create(fable.targetKey, test.projectRoot, 0);
-		writeFileSync(join(test.projectRoot, "created.txt"), "created\n");
-		monitors.reconcile(monitor.monitorId);
-		monitors.reconcile(monitor.monitorId);
-		expect(undeliveredHostedEvents(test.store.read(), fable.targetKey)).toHaveLength(1);
-		test.store.apply({ type: "inbox.claim", targetKey: fable.targetKey, leaseUntil: 2_000 });
 		test.registrations.unregister(fable.registrationId, fable.registrationKey);
 		expect(test.participants.takeover(successor, fableParticipant.participantKey, fableParticipant.generation)).toMatchObject({ holderTargetKey: successor.targetKey });
 	});
@@ -288,9 +263,7 @@ describe("participant and mailbox RPC", () => {
 		const test = setup();
 		const main = await register(test, "main");
 		const fable = await register(test, "fable");
-		const monitors = new DirectoryMonitorManager(test.store, { automatic: false });
-		const inbox = new RuntimeInbox(test.store);
-		const context: HostedProtocolContext = { runtimeId: "rt_test", agentWake: "none", registrations: test.registrations, monitors, inbox, participants: test.participants };
+		const context: HostedProtocolContext = { runtimeId: "rt_test", agentWake: "none", registrations: test.registrations, participants: test.participants };
 		const call = (method: string, params: unknown) => dispatchHostedLine(JSON.stringify({ v: 1, id: method, method, params }), context);
 		expect(await call("hello", { minVersion: 1, maxVersion: 1 })).toMatchObject({ ok: true, result: { capabilities: { mailbox: { maxBodyBytes: 16_384 } } } });
 		let mainAuth = { registrationId: main.registrationId, registrationKey: main.registrationKey };
