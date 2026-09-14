@@ -51,8 +51,6 @@ export type HostedErrorCode =
 
 export interface HostedProtocolContext {
 	runtimeId: string;
-	agentWake: "herdr_exact_agent" | "none";
-	degradedReason?: "host_unavailable";
 	registrations?: RuntimeRegistrationManager;
 	messaging?: RuntimeMessaging;
 	participants?: HostedParticipantCoordinator;
@@ -133,11 +131,7 @@ function hello(id: string, value: JsonValue | undefined, context: HostedProtocol
 	if (minVersion > HOSTED_PROTOCOL_VERSION || maxVersion < HOSTED_PROTOCOL_VERSION || minVersion > maxVersion) {
 		return failure(id, "unsupported_version", "Requested version range does not include protocol v1.");
 	}
-	const capabilities = {
-		agentWake: context.agentWake,
-		targets: ["pi", "claude-code", "codex"],
-	};
-	if (context.degradedReason) Object.assign(capabilities, { degradedReason: context.degradedReason });
+	const capabilities = { targets: ["pi", "claude-code", "codex"] };
 	if (context.participants) Object.assign(capabilities, { mailbox: { maxBodyBytes: HOSTED_MAILBOX_MAX_BODY_BYTES } });
 	if (context.bridges) Object.assign(capabilities, { interactiveAgent: { bind: "herdr_agent_name" } });
 	if (context.worktrees) Object.assign(capabilities, { worktree: { isolatedWrite: true } });

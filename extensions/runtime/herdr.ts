@@ -13,6 +13,11 @@ export function shellQuote(value: string): string {
 	return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
+/** Herdr refuses an agent launch argv carrying control characters, so a multi-line prompt becomes one line. */
+export function collapsePrompt(value: string): string {
+	return value.replace(/\s+/gu, " ").trim();
+}
+
 export function delay(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }

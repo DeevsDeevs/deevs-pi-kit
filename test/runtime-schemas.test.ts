@@ -14,7 +14,7 @@ const SENDER = deriveParticipantKey(PROJECT_ROOT, "review", "main");
 const RECIPIENT = deriveParticipantKey(PROJECT_ROOT, "review", "peer");
 const DEDUPE_KEY = `mailbox:${SENDER}:send_1`;
 
-const context: HostedProtocolContext = { runtimeId: "rt_test", agentWake: "none" };
+const context: HostedProtocolContext = { runtimeId: "rt_test" };
 
 function populatedState(): HostedRuntimeState {
 	return {

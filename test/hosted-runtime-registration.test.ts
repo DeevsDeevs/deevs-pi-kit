@@ -104,7 +104,7 @@ describe("hosted Pi registration", () => {
 describe("registration-authorized protocol", () => {
 	it("registers, renews its lease, and rejects a stale key or an unknown params field", async () => {
 		const test = setup();
-		const context: HostedProtocolContext = { runtimeId: "rt_test", agentWake: "none", registrations: test.registrations };
+		const context: HostedProtocolContext = { runtimeId: "rt_test", registrations: test.registrations };
 		const call = (method: string, params: unknown) => dispatchHostedLine(JSON.stringify({ v: 1, id: method, method, params }), context);
 		const registered = await call("pi.register", test.input);
 		expect(registered).toMatchObject({ ok: true, result: { registrationId: "reg_1", registrationKey: "key_1" } });

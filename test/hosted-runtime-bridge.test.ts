@@ -153,7 +153,7 @@ describe("authoritative Herdr agent bind", () => {
 		const main = await registerPi(test, "main");
 		const caller = test.participants.acquire(main, "review", "main").participant;
 		test.host.agents.set(AGENT_NAME, codexAgent(test.projectRoot));
-		const context: HostedProtocolContext = { runtimeId: "rt_test", agentWake: "none", registrations: test.registrations, participants: test.participants, bridges: test.bridges };
+		const context: HostedProtocolContext = { runtimeId: "rt_test", registrations: test.registrations, participants: test.participants, bridges: test.bridges };
 		const call = (method: string, params: unknown) => dispatchHostedLine(JSON.stringify({ v: 1, id: method, method, params }), context);
 		expect(await call("hello", { minVersion: 1, maxVersion: 1 })).toMatchObject({ ok: true, result: { capabilities: { interactiveAgent: { bind: "herdr_agent_name" } } } });
 		const auth = { registrationId: main.registrationId, registrationKey: main.registrationKey };

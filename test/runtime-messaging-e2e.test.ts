@@ -234,6 +234,12 @@ it("publishes before the recipient has a namespace, fences other participants' m
 	expect(replacement.namespaceId).toBe(recipient.namespaceId);
 	const [inherited] = await mcp(replacement.descriptorPath, [received(eventId)]);
 	expect(inherited!.structuredContent.readAt).toBe(1000);
+	// A descriptor that no longer names the reusable grant holds an unrecoverable secret, so issuance mints a new one.
+	const stale = JSON.parse(readFileSync(replacement.descriptorPath, "utf8")) as { namespaceId: string };
+	writeFileSync(replacement.descriptorPath, `${JSON.stringify({ ...stale, namespaceId: "msg_00000000-0000-0000-0000-000000000000" })}\n`, { mode: 0o600 });
+	const minted = await test.issue(test.recipientParticipant);
+	expect(minted.namespaceId).not.toBe(replacement.namespaceId);
+	expect(JSON.parse(readFileSync(minted.descriptorPath, "utf8")).namespaceId).toBe(minted.namespaceId);
 	await test.client.call("participant.stand_down", { registrationId: test.recipient.registrationId, registrationKey: test.recipient.registrationKey, participantKey: test.recipientParticipant.participantKey, expectedGeneration: test.recipientParticipant.generation });
 	const [committedRetry, queued] = await mcp(test.issued.descriptorPath, [send("before-issuance"), send("recipient-stood-down")]);
 	expect(committedRetry!.structuredContent.eventId).toBe(eventId);

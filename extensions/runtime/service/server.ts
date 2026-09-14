@@ -77,7 +77,6 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 	const socketPath = options.socketPath ?? join(options.root, "runtime.sock");
 	const context: HostedProtocolContext = {
 		runtimeId: instance.runtimeId,
-		agentWake: "none",
 		registrations,
 		messaging: new RuntimeMessaging(store, registrations, participants, socketPath, options.participant?.now),
 		participants,

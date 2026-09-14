@@ -1,4 +1,6 @@
 import { expect, it } from "vitest";
+import { findAgent, loadBuiltinAgents } from "../extensions/subagents/agents.ts";
+import { resolveCollaboratorCandidate } from "../extensions/runtime/collaborator-policy.ts";
 import { DRIVERS, driverLaunchArgv } from "../extensions/runtime/drivers.ts";
 import type { HostedCollaboratorDriver } from "../extensions/runtime/hosted-types.ts";
 import { nativeMessagingConfiguration } from "../extensions/runtime/mcp/native.ts";
@@ -28,7 +30,7 @@ it("keeps one launch table entry per collaborator driver", () => {
 	expect(Object.keys(DRIVERS).sort()).toEqual([...DRIVER_NAMES].sort());
 });
 
-function launchArgv(driver: HostedCollaboratorDriver, input: ReturnType<typeof representativeInput>): string[] {
+function launchArgv(driver: HostedCollaboratorDriver, input: Parameters<typeof DRIVERS["pi"]["command"]>[0]): string[] {
 	return driverLaunchArgv({ driver, agentName: "collab-0123456789abcdef012345678", paneId: "pane_launch", input });
 }
 
@@ -52,4 +54,17 @@ it.each(DRIVER_NAMES)("rejects an oversized or control-character %s launch befor
 it("counts the herdr prefix against the escaped command limit", () => {
 	const input = { ...representativeInput("pi"), model: `openai-codex/${"m".repeat(3617)}` };
 	expect(() => launchArgv("pi", input)).toThrow("4000-byte");
+});
+
+/** A persona body is real markdown: every native launch must still reach Herdr free of control characters. */
+it.each(["claude-code", "codex"] as const)("collapses a multi-line built-in persona into the %s launch argv", (driver) => {
+	const definition = findAgent(loadBuiltinAgents(), "reviewer");
+	const prompt = definition?.body.trim() ?? "";
+	expect(prompt).toMatch(/\n/);
+	const candidate = resolveCollaboratorCandidate({ participantId: "child", driver, persona: "reviewer" });
+	expect(candidate.profile).toBe("read-only");
+	const input = { profile: candidate.profile, cwd: "/project", persona: candidate.persona };
+	const argv = launchArgv(driver, input);
+	for (const argument of argv) expect(argument).not.toMatch(/\p{Cc}/u);
+	expect(argv.join(" ")).toContain(prompt.split("\n")[0]);
 });
