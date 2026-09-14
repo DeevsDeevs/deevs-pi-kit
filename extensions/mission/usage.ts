@@ -5,7 +5,7 @@ import type { MissionCurrent, MissionUsage } from "./types.ts";
 const SUBAGENT_ENTRY = "subagents";
 
 /** Token counters as any Pi producer may spell them; every field is optional because the branch is untrusted. */
-export interface RawTokenUsage {
+interface RawTokenUsage {
 	input?: number | null;
 	inputTokens?: number | null;
 	cacheWrite?: number | null;
@@ -23,7 +23,7 @@ interface SubagentUsageHolder {
 }
 
 /** Subagent accounting attached to a `subagents` custom message or a toolResult message. */
-export interface SubagentUsageDetails {
+interface SubagentUsageDetails {
 	group?: SubagentUsageHolder | null;
 	run?: SubagentUsageHolder | null;
 	runs?: Array<SubagentUsageHolder | null> | null;

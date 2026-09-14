@@ -137,6 +137,26 @@ function withUsageBaseline(event: MissionEvent, rolling: MissionUsage): MissionE
 	};
 }
 
+/** A replayed event from a superseded Mission generation must not mutate the current one. */
+function targetsOtherGeneration(current: MissionCurrent, event: MissionEvent): boolean {
+	if (!event.generation) return false;
+	if (!current.generation) return false;
+	return event.generation !== current.generation;
+}
+
+/** A review reopened as "due" without a candidate drops the candidate identity the last run was bound to. */
+function clearsReviewCandidate(event: MissionEvent): boolean {
+	if (event.kind !== "review_changed") return false;
+	if (event.reviewStatus !== "due") return false;
+	return event.reviewCandidateId === undefined;
+}
+
+function carriesAdjudications(event: MissionEvent): boolean {
+	if (event.reviewAdjudications !== undefined) return true;
+	if (!event.reviewAdjudicatedCandidateId) return false;
+	return Boolean(event.reviewAdjudicatedVerdict);
+}
+
 function missionEventBase(kind: MissionEventKind, mission: MissionCurrent): MissionEvent {
 	return { kind, missionId: mission.missionId, generation: mission.generation, at: Date.now() };
 }
@@ -870,7 +890,7 @@ export class MissionState {
 			return;
 		}
 		if (!this.current || this.current.missionId !== event.missionId) return;
-		if (event.generation && this.current.generation && event.generation !== this.current.generation) return;
+		if (targetsOtherGeneration(this.current, event)) return;
 		const current = this.current;
 		this.eventHandlers[event.kind](current, event);
 		current.updatedAt = event.at;
@@ -892,7 +912,10 @@ export class MissionState {
 	}
 
 	private applyCreated(event: MissionEvent): void {
-		if (!event.objective || !event.slug || !event.chain || !event.artifactDir) return;
+		if (!event.objective) return;
+		if (!event.slug) return;
+		if (!event.chain) return;
+		if (!event.artifactDir) return;
 		const requirements = normalizeRequirements(event.requirements?.length ? event.requirements : inferRequirements(event.objective));
 		this.progress = [];
 		this.continuationProgressIndex = 0;
@@ -1075,7 +1098,7 @@ function applyReviewAdmissionFields(admission: MissionReviewAdmission, event: Mi
 function applyReviewCandidateFields(candidate: MissionReviewCandidate, event: MissionEvent): void {
 	if (event.reviewWorktreeFingerprint !== undefined) candidate.worktreeFingerprint = event.reviewWorktreeFingerprint;
 	if (event.admittedWorktreeFingerprint !== undefined) candidate.admittedWorktreeFingerprint = event.admittedWorktreeFingerprint;
-	if (event.kind === "review_changed" && event.reviewStatus === "due" && event.reviewCandidateId === undefined) {
+	if (clearsReviewCandidate(event)) {
 		candidate.id = undefined;
 		candidate.objectiveVersion = undefined;
 		candidate.worktreeFingerprint = undefined;
@@ -1093,7 +1116,7 @@ function applyReviewAdjudicationFields(adjudication: MissionReviewAdjudication, 
 	if (event.reviewSuggestedVerdict !== undefined) adjudication.suggestedVerdict = event.reviewSuggestedVerdict;
 	if (event.reviewAdjudicatedCandidateId !== undefined) adjudication.adjudicatedCandidateId = event.reviewAdjudicatedCandidateId;
 	if (event.reviewAdjudicatedVerdict !== undefined) adjudication.adjudicatedVerdict = event.reviewAdjudicatedVerdict;
-	if (event.reviewAdjudications !== undefined || (event.reviewAdjudicatedCandidateId && event.reviewAdjudicatedVerdict)) {
+	if (carriesAdjudications(event)) {
 		const additions = [...(event.reviewAdjudications ?? [])];
 		if (event.reviewAdjudicatedCandidateId && event.reviewAdjudicatedVerdict) {
 			additions.push({ candidateId: event.reviewAdjudicatedCandidateId, verdict: event.reviewAdjudicatedVerdict });

@@ -195,7 +195,7 @@ export async function resumeMission(pi: ExtensionAPI, state: MissionState, reaso
 	if (!explanation) throw new Error("Resuming a Mission requires a reason.");
 	const current = state.readAny();
 	if (!current) throw new Error("No Mission exists on this branch.");
-	if (current.status === "blocked" && current.review.correction.count > current.review.correction.limit) {
+	if (correctionLimitBlocked(current)) {
 		throw new Error("Mission cannot resume past the review correction limit; use trusted mission_progress reviewContinue "
 			+ "authorization first.");
 	}
@@ -381,7 +381,7 @@ function createTakeoverTool(
 /** Throws unless this session may resume the current Mission with the recorded reason. */
 function assertResumable(state: MissionState, current: MissionCurrent, explanation: string, hasUI: boolean): void {
 	if (!explanation) throw new Error("Resuming a Mission requires a reason.");
-	if (current.status === "blocked" && current.review.correction.count > current.review.correction.limit) {
+	if (correctionLimitBlocked(current)) {
 		throw new Error("Mission cannot resume past the review correction limit; use trusted mission_progress reviewContinue "
 			+ "authorization first.");
 	}
@@ -509,8 +509,7 @@ function assertProgressReviewControlsValid(params: MissionProgressInput, current
 		throw new Error("Review continuation authorization cannot be combined with waiver or adjudication.");
 	}
 	if (params.reviewContinue && !params.reviewContinueReason?.trim()) throw new Error("Review continuation authorization requires a reason.");
-	const correctionBlocked = currentMission?.status === "blocked"
-		&& currentMission.review.correction.count > currentMission.review.correction.limit;
+	const correctionBlocked = currentMission !== undefined && correctionLimitBlocked(currentMission);
 	if (params.reviewContinue && !correctionBlocked) {
 		throw new Error("Mission is not blocked on the review correction limit.");
 	}
@@ -786,7 +785,7 @@ async function commitCompletion(
 		state.loadFromSession(ctx);
 		const raced = state.readAny();
 		if (raced?.status !== "complete") throw error;
-		if (raced.completionEffectsStatus === "pending" && raced.completionId) {
+		if (hasPendingCompletionEffects(raced)) {
 			await settleCompletionEffects(pi, state, ctx, raced, hooks);
 		}
 		return { result: { mission: state.readAny(), usage: state.readUsage(), alreadyComplete: true, userRequested: false } };
@@ -806,7 +805,7 @@ export async function completeMission(
 	let existing = state.readAny();
 	let usage = state.readUsage();
 	if (existing?.status === "complete" || existing?.status === "ended") {
-		if (existing.status === "complete" && existing.completionEffectsStatus === "pending" && existing.completionId) {
+		if (hasPendingCompletionEffects(existing)) {
 			await settleCompletionEffects(pi, state, ctx, existing, hooks);
 		}
 		existing = state.readAny();
@@ -862,6 +861,19 @@ async function settleTerminalEffects(
 		const message = error instanceof Error ? error.message : String(error);
 		ctx.ui?.notify?.(`Mission ended; artifact/notification step failed: ${message}`, "warning");
 	}
+}
+
+/** A Mission blocked because its review correction cycles ran past the authorized limit. */
+function correctionLimitBlocked(mission: MissionCurrent): boolean {
+	if (mission.status !== "blocked") return false;
+	return mission.review.correction.count > mission.review.correction.limit;
+}
+
+/** A completed Mission whose durable completion effects still need settling. */
+function hasPendingCompletionEffects(mission: MissionCurrent): boolean {
+	if (mission.status !== "complete") return false;
+	if (mission.completionEffectsStatus !== "pending") return false;
+	return Boolean(mission.completionId);
 }
 
 async function settleCompletionEffects(

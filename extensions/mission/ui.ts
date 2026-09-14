@@ -1,8 +1,12 @@
-import { Key, matchesKey, type Component } from "@earendil-works/pi-tui";
+import { Key, matchesKey, type Component, type KeyId } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { dashboardFrame, detailLines, progressBar, statusIcon, tabs } from "../shared/dashboard.ts";
 import type { MissionState } from "./state.ts";
 import type { MissionCurrent, MissionProgressRecord } from "./types.ts";
+
+function matchesAnyKey(data: string, ...keys: KeyId[]): boolean {
+	return keys.some((key) => matchesKey(data, key));
+}
 
 export class MissionDashboard implements Component {
 	private tab = 0;
@@ -18,11 +22,11 @@ export class MissionDashboard implements Component {
 	) {}
 
 	handleInput(data: string): void {
-		if (matchesKey(data, Key.escape) || matchesKey(data, "q") || matchesKey(data, Key.ctrl("c"))) return this.done();
-		if (matchesKey(data, Key.left) || matchesKey(data, "h")) { this.tab = (this.tab + 3) % 4; this.offset = 0; }
-		if (matchesKey(data, Key.right) || matchesKey(data, "l") || matchesKey(data, Key.tab)) { this.tab = (this.tab + 1) % 4; this.offset = 0; }
-		if (matchesKey(data, Key.up) || matchesKey(data, "k")) this.offset = Math.max(0, this.offset - 1);
-		if (matchesKey(data, Key.down) || matchesKey(data, "j")) this.offset++;
+		if (matchesAnyKey(data, Key.escape, "q", Key.ctrl("c"))) return this.done();
+		if (matchesAnyKey(data, Key.left, "h")) { this.tab = (this.tab + 3) % 4; this.offset = 0; }
+		if (matchesAnyKey(data, Key.right, "l", Key.tab)) { this.tab = (this.tab + 1) % 4; this.offset = 0; }
+		if (matchesAnyKey(data, Key.up, "k")) this.offset = Math.max(0, this.offset - 1);
+		if (matchesAnyKey(data, Key.down, "j")) this.offset++;
 		if (matchesKey(data, "p")) this.togglePause();
 		this.requestRender();
 	}

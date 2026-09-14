@@ -29,6 +29,15 @@ interface MissionCommandHooks extends MissionCompletionHooks {
 
 type SetMissionContext = (ctx: ExtensionContext) => void;
 
+const STATUS_COMMANDS = ["", "status", "show"];
+const BUDGET_FLAGS = ["--budget", "--tokens", "--token-budget"];
+const LIFECYCLE_COMMANDS = ["pause", "resume", "clear"];
+const COMPLETION_COMMANDS = ["complete", "end", "stop"];
+
+function isVerb(command: string, verb: string): boolean {
+	return command === verb || command.startsWith(`${verb} `);
+}
+
 export function registerMissionCommands(
 	pi: ExtensionAPI,
 	state: MissionState,
@@ -42,24 +51,24 @@ export function registerMissionCommands(
 			setContext(ctx);
 			state.loadFromSession(ctx);
 			const trimmed = args.trim();
-			if (!trimmed || trimmed === "status" || trimmed === "show") {
+			if (STATUS_COMMANDS.includes(trimmed)) {
 				await showMissionStatus(pi, state, ctx, setContext, hooks);
 				return;
 			}
 			const command = trimmed.toLowerCase();
-			if (command === "takeover" || command.startsWith("takeover ")) {
+			if (isVerb(command, "takeover")) {
 				await runTakeover(pi, state, ctx, trimmed, hooks);
 				return;
 			}
-			if (["pause", "resume", "clear"].includes(command)) {
+			if (LIFECYCLE_COMMANDS.includes(command)) {
 				await runLifecycle(pi, state, ctx, command, hooks);
 				return;
 			}
-			if (command === "update" || command.startsWith("update ")) {
+			if (isVerb(command, "update")) {
 				await runUpdate(pi, state, ctx, trimmed, hooks);
 				return;
 			}
-			if (command === "complete" || command === "end" || command === "stop") {
+			if (COMPLETION_COMMANDS.includes(command)) {
 				await runCompletion(pi, state, ctx, command, hooks);
 				return;
 			}
@@ -251,7 +260,7 @@ export function parseCreateArgs(input: string): MissionCreateInput {
 	const result: MissionCreateInput = { objective: "" };
 	for (let i = 0; i < tokens.length; i += 1) {
 		const token = unquote(tokens[i]);
-		if (token === "--budget" || token === "--tokens" || token === "--token-budget") result.tokenBudget = parseBudget(tokens[++i], token);
+		if (BUDGET_FLAGS.includes(token)) result.tokenBudget = parseBudget(tokens[++i], token);
 		else if (token.startsWith("--budget=")) result.tokenBudget = parseBudget(token.slice("--budget=".length), "--budget");
 		else if (token === "--cost") result.costBudgetUsd = parseCost(tokens[++i]);
 		else if (token.startsWith("--cost=")) result.costBudgetUsd = parseCost(token.slice("--cost=".length));
@@ -283,7 +292,7 @@ function parseUpdateArgs(input: string): MissionUpdateInput {
 	};
 	for (let i = 0; i < tokens.length; i += 1) {
 		const token = unquote(tokens[i]);
-		if (token === "--budget" || token === "--tokens" || token === "--token-budget") {
+		if (BUDGET_FLAGS.includes(token)) {
 			result.tokenBudget = limit(tokens[++i], (value) => parseBudget(value, token));
 		}
 		else if (token.startsWith("--budget=")) result.tokenBudget = limit(token.slice("--budget=".length), (v) => parseBudget(v, "--budget"));
