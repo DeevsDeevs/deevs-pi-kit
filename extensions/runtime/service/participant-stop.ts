@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { type HostedParticipant, type HostedTarget, isHeld, isVacant } from "../hosted-types.ts";
+import { type HostedParticipant, type HostedTarget, isHeld, isVacant } from "../schemas/state.ts";
+import { RuntimeError } from "../errors.ts";
 import {
-	HostedParticipantError,
 	type HostedParticipantStatus,
 	participantStatus,
 	requireParticipant,
@@ -36,11 +36,11 @@ export class CollaboratorStopper {
 	}
 
 	assertNotStopping(participantKey: string): void {
-		if (this.stopping.has(participantKey)) throw new HostedParticipantError("busy", "Participant collaborator process is stopping.");
+		if (this.stopping.has(participantKey)) throw new RuntimeError("busy", "Participant collaborator process is stopping.");
 	}
 
 	assertTargetNotStopping(targetKey: string): void {
-		if (this.stoppingTargets.has(targetKey)) throw new HostedParticipantError("busy", "Target collaborator process is stopping.");
+		if (this.stoppingTargets.has(targetKey)) throw new RuntimeError("busy", "Target collaborator process is stopping.");
 	}
 
 	standDownConfirmed(registration: HostedLiveRegistration, participantKey: string, expectedGeneration: string): HostedParticipantStatus {
@@ -51,10 +51,10 @@ export class CollaboratorStopper {
 			return participantStatus(this.store, this.registrations, participant);
 		}
 		if (!isHeld(participant.state) || participant.generation !== expectedGeneration) {
-			throw new HostedParticipantError("conflict", "Participant state or generation changed before confirmed stand-down.");
+			throw new RuntimeError("conflict", "Participant state or generation changed before confirmed stand-down.");
 		}
 		const holderTargetKey = participant.holderTargetKey;
-		if (!holderTargetKey) throw new HostedParticipantError("conflict", "Held participant has no holder target.");
+		if (!holderTargetKey) throw new RuntimeError("conflict", "Held participant has no holder target.");
 		this.applyStandDown(participantKey, holderTargetKey, expectedGeneration);
 		const current = requireParticipant(this.store, participantKey, target.projectRoot);
 		return participantStatus(this.store, this.registrations, current);
@@ -76,7 +76,7 @@ export class CollaboratorStopper {
 			stoppingTargetKey = holderTargetKey;
 			const target = requireTarget(this.store, holderTargetKey);
 			if (target.projectRoot !== caller.projectRoot) {
-				throw new HostedParticipantError("conflict", "Collaborator target belongs to another project.");
+				throw new RuntimeError("conflict", "Collaborator target belongs to another project.");
 			}
 			return await this.stopHolder(participant, target, expectedGeneration);
 		} finally {
@@ -110,12 +110,12 @@ export class CollaboratorStopper {
 		expectedGeneration: string,
 	): string {
 		if (!isHeld(participant.state) || participant.generation !== expectedGeneration) {
-			throw new HostedParticipantError("conflict", "Participant state or generation changed before confirmed stop.");
+			throw new RuntimeError("conflict", "Participant state or generation changed before confirmed stop.");
 		}
 		const holderTargetKey = participant.holderTargetKey;
-		if (!holderTargetKey) throw new HostedParticipantError("conflict", "Participant has no stoppable collaborator target.");
+		if (!holderTargetKey) throw new RuntimeError("conflict", "Participant has no stoppable collaborator target.");
 		if (holderTargetKey === registration.targetKey) {
-			throw new HostedParticipantError("conflict", "A Pi target cannot stop its own Herdr tab.");
+			throw new RuntimeError("conflict", "A Pi target cannot stop its own Herdr tab.");
 		}
 		this.assertTargetNotStopping(holderTargetKey);
 		const otherHolder = Object.values(this.store.read().participants)
@@ -123,7 +123,7 @@ export class CollaboratorStopper {
 				&& isHeld(candidate.state)
 				&& candidate.holderTargetKey === holderTargetKey);
 		if (otherHolder) {
-			throw new HostedParticipantError("conflict", `Collaborator target now holds ${otherHolder.protocol}/${otherHolder.participantId}.`);
+			throw new RuntimeError("conflict", `Collaborator target now holds ${otherHolder.protocol}/${otherHolder.participantId}.`);
 		}
 		return holderTargetKey;
 	}
@@ -131,7 +131,7 @@ export class CollaboratorStopper {
 	private settleStopped(participant: HostedParticipant, holderTargetKey: string, expectedGeneration: string): void {
 		const current = requireParticipant(this.store, participant.participantKey, participant.projectRoot);
 		if (!isHeld(current.state) || current.generation !== expectedGeneration || current.holderTargetKey !== holderTargetKey) {
-			throw new HostedParticipantError("conflict", "Participant changed while its collaborator process was stopping.");
+			throw new RuntimeError("conflict", "Participant changed while its collaborator process was stopping.");
 		}
 		this.applyStandDown(participant.participantKey, holderTargetKey, expectedGeneration);
 	}

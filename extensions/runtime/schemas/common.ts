@@ -22,11 +22,17 @@ export function boundedText(maxBytes: number): TRefineAdd<TString> {
 	);
 }
 
+/** The one syntax for every collaborator name, Herdr agent name and driver-owned model in the package. */
+export const PARTICIPANT_NAME = /^[a-z][a-z0-9_-]{0,63}$/;
+export const AGENT_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+export const COLLABORATOR_MODEL = /^[A-Za-z0-9][A-Za-z0-9._/*:-]{0,199}$/;
+
 export const IdText = boundedText(MAX_ID_BYTES);
 export const PathText = boundedText(MAX_PATH_BYTES);
 export const HashText = Type.String({ pattern: "^[0-9a-f]{64}$" });
-export const ParticipantNameText = Type.String({ pattern: "^[a-z][a-z0-9_-]{0,63}$" });
-export const AgentNameText = Type.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$" });
+export const ParticipantNameText = Type.String({ pattern: PARTICIPANT_NAME.source });
+export const AgentNameText = Type.String({ pattern: AGENT_NAME.source });
+export const ModelText = Type.String({ pattern: COLLABORATOR_MODEL.source });
 export const SummaryText = Type.Refine(
 	Type.String({ maxLength: MAX_SUMMARY_BYTES }),
 	(value: string) => Buffer.byteLength(value) <= MAX_SUMMARY_BYTES,

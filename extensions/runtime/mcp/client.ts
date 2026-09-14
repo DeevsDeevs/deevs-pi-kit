@@ -1,10 +1,8 @@
 /* oxlint-disable anti-slop/no-runtime-typeof -- JSON-RPC envelopes arrive as untrusted external input. */
-/* oxlint-disable anti-slop/no-unknown-parameters -- Arbitrary MCP content stays unknown until an operation validates it. */
-/* oxlint-disable anti-slop/no-unknown-returns -- Decoded envelopes stay unknown until an operation validates them. */
-/* oxlint-disable anti-slop/no-unsafe-dictionary-type -- Structured MCP content is an open dictionary at the codec boundary. */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
+import { isJsonObject, type JsonObject, type JsonValue } from "../schemas/json.ts";
 import { toolDefinitions } from "./tools.ts";
 
 interface InitializeParams {
@@ -24,36 +22,34 @@ const PROTOCOL_VERSION = "2025-11-25";
 const RESPONSE_KEYS = ["jsonrpc", "id", "result", "error"];
 const failure = () => new Error("MCP transport stopped. Publication may be uncertain;"
 	+ " resolve it using the original namespace and operation ID.");
-export const record = (value: unknown): value is Record<string, unknown> =>
-	value !== null && typeof value === "object" && !Array.isArray(value);
 export interface McpToolResult {
 	isError: boolean;
 	content: Array<{ type: "text"; text: string }>;
-	structuredContent?: Record<string, unknown>;
+	structuredContent?: JsonObject;
 }
 
-function isMessagingServer(result: unknown): boolean {
-	if (!record(result) || result.protocolVersion !== PROTOCOL_VERSION) return false;
-	if (!record(result.capabilities) || !record(result.capabilities.tools)) return false;
-	return record(result.serverInfo) && result.serverInfo.name === "pi-kit-messaging";
+function isMessagingServer(result: JsonValue | undefined): boolean {
+	if (!isJsonObject(result) || result.protocolVersion !== PROTOCOL_VERSION) return false;
+	if (!isJsonObject(result.capabilities) || !isJsonObject(result.capabilities.tools)) return false;
+	return isJsonObject(result.serverInfo) && result.serverInfo.name === "pi-kit-messaging";
 }
 
 interface McpToolResponse {
 	isError: boolean;
 	content: [{ type: "text"; text: string }];
-	structuredContent?: unknown;
+	structuredContent?: JsonValue;
 }
 
-function isToolResult(result: unknown): result is McpToolResponse {
-	if (!record(result) || typeof result.isError !== "boolean") return false;
+function isToolResult(result: JsonValue | undefined): result is McpToolResponse & JsonObject {
+	if (!isJsonObject(result) || typeof result.isError !== "boolean") return false;
 	if (!Array.isArray(result.content) || result.content.length !== 1) return false;
 	const block = result.content[0];
-	if (!record(block) || block.type !== "text" || typeof block.text !== "string") return false;
-	return result.isError || record(result.structuredContent);
+	if (!isJsonObject(block) || block.type !== "text" || typeof block.text !== "string") return false;
+	return result.isError || isJsonObject(result.structuredContent);
 }
 
-function isJsonRpcResponse(response: unknown): response is { id: number; result?: unknown; error?: unknown } {
-	if (!record(response) || response.jsonrpc !== "2.0") return false;
+function isJsonRpcResponse(response: JsonValue | undefined): response is JsonObject & { id: number } {
+	if (!isJsonObject(response) || response.jsonrpc !== "2.0") return false;
 	if (typeof response.id !== "number" || !Number.isSafeInteger(response.id)) return false;
 	if (Object.keys(response).some(key => !RESPONSE_KEYS.includes(key))) return false;
 	return Object.hasOwn(response, "result") !== Object.hasOwn(response, "error");
@@ -66,7 +62,7 @@ export class MessagingMcpClient {
 	private stopped = false;
 	private nextId = 0;
 	private buffer = Buffer.alloc(0);
-	private readonly pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>();
+	private readonly pending = new Map<number, { resolve(value: JsonValue | undefined): void; reject(error: Error): void }>();
 
 	constructor(descriptorPath: string) {
 		this.child = spawn("node", [fileURLToPath(new URL("./main.mjs", import.meta.url)), descriptorPath], { stdio: "pipe" });
@@ -110,11 +106,11 @@ export class MessagingMcpClient {
 			await this.close();
 			throw failure();
 		}
-		const structured = record(result.structuredContent) ? result.structuredContent : undefined;
+		const structured = isJsonObject(result.structuredContent) ? result.structuredContent : undefined;
 		return { isError: result.isError, content: [{ type: "text", text: result.content[0].text }], structuredContent: structured };
 	}
 
-	private async request(method: string, params: RequestParams, signal?: AbortSignal): Promise<unknown> {
+	private async request(method: string, params: RequestParams, signal?: AbortSignal): Promise<JsonValue | undefined> {
 		if (signal?.aborted || this.stopped) throw failure();
 		if (this.pending.size >= 12) throw new Error("MCP capacity exhausted; retry the same operation ID.");
 		const id = ++this.nextId;
@@ -152,7 +148,8 @@ export class MessagingMcpClient {
 			this.buffer = Buffer.concat([this.buffer, chunk.subarray(start, end)]);
 			start = end + 1;
 			if (newline < 0) break;
-			const response: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(this.buffer));
+			// SAFETY: An MCP frame is untrusted JSON, proven to be a matching JSON-RPC response before any field is read.
+		const response = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(this.buffer)) as JsonValue;
 			this.buffer = Buffer.alloc(0);
 			if (!isJsonRpcResponse(response)) throw failure();
 			const request = this.pending.get(response.id);

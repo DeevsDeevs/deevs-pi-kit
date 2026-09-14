@@ -1,13 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { type HostedMailboxMessageEvent, type HostedParticipant, isEnded, isHeld } from "../schemas/state.ts";
+import type { HostedStateOperation } from "./state/operations.ts";
+import { RuntimeError } from "../errors.ts";
 import {
-	type HostedMailboxMessageEvent,
-	type HostedParticipant,
-	type HostedStateOperation,
-	isEnded,
-	isHeld,
-} from "../hosted-types.ts";
-import {
-	HostedParticipantError,
 	type HostedParticipantStatus,
 	participantStatus,
 	requireParticipant,
@@ -72,7 +67,7 @@ export class HostedParticipantCoordinator {
 		this.stopper.assertNotStopping(participantKey);
 		const before = this.store.read().participants[participantKey];
 		if (isEnded(before?.state) && !allowRevive) {
-			throw new HostedParticipantError("conflict", "Ended participant requires explicit revival authorization.");
+			throw new RuntimeError("conflict", "Ended participant requires explicit revival authorization.");
 		}
 		const revivedOwnHold = isHeld(before?.state)
 			&& before.holderTargetKey === registration.targetKey
@@ -133,17 +128,17 @@ export class HostedParticipantCoordinator {
 		const participant = requireParticipant(this.store, participantKey, target.projectRoot);
 		if (takeoverAlreadyApplied(participant, registration.targetKey, expectedGeneration)) return this.status(participant);
 		if (!isHeld(participant.state) || participant.generation !== expectedGeneration) {
-			throw new HostedParticipantError("conflict", "Participant state or generation changed before takeover.");
+			throw new RuntimeError("conflict", "Participant state or generation changed before takeover.");
 		}
 		if (participant.holderTargetKey === registration.targetKey) return this.status(participant);
 		const previousHolderTargetKey = participant.holderTargetKey;
-		if (!previousHolderTargetKey) throw new HostedParticipantError("conflict", "Held participant has no holder target.");
+		if (!previousHolderTargetKey) throw new RuntimeError("conflict", "Held participant has no holder target.");
 		if (this.registrations.hasLiveTarget(previousHolderTargetKey)) {
-			throw new HostedParticipantError("busy", "Participant holder is still live.");
+			throw new RuntimeError("busy", "Participant holder is still live.");
 		}
 		const graceMs = this.options.reconnectGraceMs ?? DEFAULT_RECONNECT_GRACE_MS;
 		if (!this.seenTargets.has(previousHolderTargetKey) && this.now() - this.startedAt < graceMs) {
-			throw new HostedParticipantError("busy", "Participant holder is inside the Runtime reconnect grace period.");
+			throw new RuntimeError("busy", "Participant holder is inside the Runtime reconnect grace period.");
 		}
 		this.store.apply({
 			type: "participant.takeover",
@@ -167,10 +162,10 @@ export class HostedParticipantCoordinator {
 		this.stopper.assertNotStopping(senderParticipantKey);
 		const sender = requireParticipant(this.store, senderParticipantKey, target.projectRoot);
 		if (!holdsIdentity(sender, expectedSenderGeneration, registration.targetKey)) {
-			throw new HostedParticipantError("conflict", "Sender identity or generation changed before send.");
+			throw new RuntimeError("conflict", "Sender identity or generation changed before send.");
 		}
 		const recipient = requireParticipant(this.store, recipientParticipantKey, target.projectRoot);
-		if (isEnded(recipient.state)) throw new HostedParticipantError("not_found", "Mailbox recipient has ended.");
+		if (isEnded(recipient.state)) throw new RuntimeError("not_found", "Mailbox recipient has ended.");
 		this.store.apply({
 			type: "mailbox.send",
 			senderParticipantKey: sender.participantKey,
@@ -186,14 +181,14 @@ export class HostedParticipantCoordinator {
 			.find((candidate): candidate is HostedMailboxMessageEvent => candidate.type === "mailbox.message"
 				&& candidate.source.id === sender.participantKey
 				&& candidate.sendId === sendId);
-		if (!event) throw new HostedParticipantError("conflict", "Mailbox send did not produce a durable event.");
+		if (!event) throw new RuntimeError("conflict", "Mailbox send did not produce a durable event.");
 		return event;
 	}
 
 	sendMessaging(registration: HostedLiveRegistration, namespaceId: string, publication: MessagingPublication): void {
 		const grant = this.store.read().messaging[namespaceId];
 		if (!grant || grant.targetKey !== registration.targetKey) {
-			throw new HostedParticipantError("conflict", "Messaging namespace does not belong to this target.");
+			throw new RuntimeError("conflict", "Messaging namespace does not belong to this target.");
 		}
 		this.stopper.assertNotStopping(grant.participantKey);
 		this.stopper.assertTargetNotStopping(grant.targetKey);

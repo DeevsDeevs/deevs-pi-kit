@@ -1,6 +1,6 @@
 import { HostedRuntimeClientError } from "./client.ts";
 import { collapsePrompt, shellQuote } from "./herdr.ts";
-import type { HostedCollaboratorDriver, HostedCollaboratorProfile, HostedNativeCollaboratorDriver } from "./hosted-types.ts";
+import type { HostedCollaboratorDriver, HostedCollaboratorProfile, HostedNativeCollaboratorDriver } from "./schemas/state.ts";
 import type { NativeMessagingConfiguration } from "./mcp/native.ts";
 import { toolDefinitions } from "./mcp/tools.ts";
 import type { CollaboratorPersona, ManagedAgentSession } from "./session-record.ts";

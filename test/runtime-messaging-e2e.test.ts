@@ -9,7 +9,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { HostedRuntimeClient } from "../extensions/runtime/client.ts";
 import { MessagingMcpClient } from "../extensions/runtime/mcp/client.ts";
 import { messagingDescriptorPath } from "../extensions/runtime/service/messaging.ts";
-import { HOSTED_ACK_RETENTION_MS } from "../extensions/runtime/hosted-types.ts";
+import { HOSTED_ACK_RETENTION_MS } from "../extensions/runtime/schemas/common.ts";
 import type { HostedLiveAgent } from "../extensions/runtime/service/identity.ts";
 import type { RegisterPiInput } from "../extensions/runtime/service/registration.ts";
 import { startRuntimeServer, type RuntimeServerHandle } from "../extensions/runtime/service/server.ts";

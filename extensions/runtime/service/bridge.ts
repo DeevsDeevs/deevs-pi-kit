@@ -1,12 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
-import {
-	type HostedAgentTarget,
-	type HostedCollaboratorProfile,
-	type HostedNativeCollaboratorDriver,
-	isPiTarget,
-} from "../hosted-types.ts";
-import { AgentBindError, boundAgentNames, draftAgentBind, type BindAgentInput } from "./bind-request.ts";
+import { RuntimeError } from "../errors.ts";
+import { type HostedAgentTarget, type HostedCollaboratorProfile, type HostedNativeCollaboratorDriver, isPiTarget } from "../schemas/state.ts";
+import { boundAgentNames, draftAgentBind, type BindAgentInput } from "./bind-request.ts";
 import type { HostedHostVerifier } from "./identity.ts";
 import { RuntimeRegistrationManager, type HostedLiveRegistration } from "./registration.ts";
 import { HostedStateStore } from "./state.ts";
@@ -49,7 +45,7 @@ export class RuntimeAgentBinder {
 	async bind(caller: HostedLiveRegistration, input: BindAgentInput): Promise<BoundAgentResult> {
 		const callerTarget = this.store.read().targets[caller.targetKey];
 		if (!isPiTarget(callerTarget)) {
-			throw new AgentBindError("conflict", "Only an authenticated Pi target may bind a Herdr agent collaborator.");
+			throw new RuntimeError("conflict", "Only an authenticated Pi target may bind a Herdr agent collaborator.");
 		}
 		const projectRoot = realpathSync(callerTarget.projectRoot);
 		const names = boundAgentNames(input);

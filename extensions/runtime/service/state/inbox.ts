@@ -1,4 +1,5 @@
-import { type HostedMailboxMessageEvent, type HostedRuntimeState, type HostedStateOperation } from "../../hosted-types.ts";
+import type { HostedMailboxMessageEvent, HostedRuntimeState } from "../../schemas/state.ts";
+import type { HostedStateOperation } from "./operations.ts";
 import { expireMessagingGrant } from "./messaging.ts";
 
 type PruneOperation = Extract<HostedStateOperation, { type: "retention.prune" }>;

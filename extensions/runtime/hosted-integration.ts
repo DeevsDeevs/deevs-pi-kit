@@ -7,11 +7,12 @@ import {
 	type CollaboratorManageInput,
 	type CollaboratorManageResult,
 	type CollaboratorWorktreeInput,
+	type CollaboratorWorktreeResult,
 } from "./collaborators.ts";
-import { isHeld } from "./hosted-types.ts";
+import { isHeld } from "./schemas/state.ts";
 import { MessagingClient } from "./messaging-client.ts";
 import { NativeAgentService } from "./native-agents.ts";
-import type { ClientParticipantStatus, HostedHeartbeat, LiveClientRegistration, SerializedValue } from "./responses.ts";
+import type { ClientParticipantStatus, HostedHeartbeat, LiveClientRegistration } from "./responses.ts";
 import { runRuntimeCommand, type RuntimeCommandServices } from "./runtime-command.ts";
 import { RuntimeSession, type RuntimeSessionHooks } from "./runtime-session.ts";
 import { HostedSessionStore } from "./session-record.ts";
@@ -73,7 +74,7 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 		return this.collaborators.manage(input, ctx, signal);
 	}
 
-	manageWorktrees(input: CollaboratorWorktreeInput, ctx: ExtensionContext, signal?: AbortSignal): Promise<SerializedValue> {
+	manageWorktrees(input: CollaboratorWorktreeInput, ctx: ExtensionContext, signal?: AbortSignal): Promise<CollaboratorWorktreeResult> {
 		return this.collaborators.manageWorktrees(input, ctx, signal);
 	}
 

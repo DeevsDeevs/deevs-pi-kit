@@ -3,7 +3,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { HostedRuntimeClientError } from "./client.ts";
 import type { DriverSpec, StartedAgentIdentity } from "./drivers.ts";
 import type { CollaboratorTab } from "./herdr.ts";
-import { type HostedCollaboratorProfile, type HostedNativeCollaboratorDriver, isHeld } from "./hosted-types.ts";
+import { type HostedCollaboratorProfile, type HostedNativeCollaboratorDriver, isHeld } from "./schemas/state.ts";
 import { nativeMessagingConfiguration, type NativeMessagingConfiguration } from "./mcp/native.ts";
 import type { MessagingClient } from "./messaging-client.ts";
 import { parseBoundAgent, parseManagedAgent, type BoundAgent, type ManagedAgentStatus } from "./native-parse.ts";

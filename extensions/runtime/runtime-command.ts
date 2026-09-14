@@ -1,14 +1,14 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { HostedRuntimeClientError } from "./client.ts";
-import { isEnded, isHeld } from "./hosted-types.ts";
+import { isEnded, isHeld } from "./schemas/state.ts";
 import type { MessagingClient } from "./messaging-client.ts";
 import {
 	auth,
 	errorCode,
+	findParticipant,
 	parseAcquireResult,
 	parseParticipant,
 	strictObject,
-	type ClientParticipantStatus,
 	type LiveClientRegistration,
 } from "./responses.ts";
 import type { RuntimeSession } from "./runtime-session.ts";
@@ -82,13 +82,7 @@ async function runCollaborate({ services, args, ctx }: RuntimeCommandInput): Pro
 	}
 	const params = { ...auth(registration), protocol, participantId, revive: isEnded(existing?.state) };
 	const result = parseAcquireResult(await session.client.call("participant.acquire", params));
-	session.store.persistIdentity({
-		protocol,
-		participantId,
-		participantKey: result.participant.participantKey,
-		generation: result.participant.generation,
-		disposition: "held",
-	});
+	session.store.persistHeld(protocol, participantId, result.participant);
 	await services.messaging.descriptor(ctx);
 	ctx.ui.notify(`Collaborating as ${protocol}/${participantId}${result.revived ? " (revived)" : ""}.`, "info");
 }
@@ -130,20 +124,13 @@ async function recoverParticipantKey(
 	identity: ParticipantIdentity,
 	registration: LiveClientRegistration,
 ): Promise<ParticipantIdentity> {
-	const current = (await session.listParticipants(registration)).find((participant) =>
-		participant.protocol === identity.protocol
-		&& participant.participantId === identity.participantId
-		&& isHeld(participant.state)
-		&& participant.holderTargetKey === registration.targetKey);
-	if (!current) throw new HostedRuntimeClientError("not_found", "Current collaborator identity has no recoverable durable participant key.");
-	const recovered: ParticipantIdentity = {
-		...identity,
-		participantKey: current.participantKey,
-		generation: current.generation,
-		disposition: "held",
-	};
-	session.store.persistIdentity(recovered);
-	return recovered;
+	const participants = await session.listParticipants(registration);
+	const current = findParticipant(participants, identity.protocol, identity.participantId);
+	if (!current || !isHeld(current.state) || current.holderTargetKey !== registration.targetKey) {
+		throw new HostedRuntimeClientError("not_found", "Current collaborator identity has no recoverable durable participant key.");
+	}
+	session.store.persistHeld(identity.protocol, identity.participantId, current);
+	return session.requireParticipantIdentity();
 }
 
 async function runTakeover({ services, args, ctx }: RuntimeCommandInput): Promise<void> {
@@ -161,13 +148,7 @@ async function runTakeover({ services, args, ctx }: RuntimeCommandInput): Promis
 		confirmed: true,
 	};
 	const participant = parseParticipant(await session.client.call("participant.takeover", params));
-	session.store.persistIdentity({
-		protocol,
-		participantId,
-		participantKey: participant.participantKey,
-		generation: participant.generation,
-		disposition: "held",
-	});
+	session.store.persistHeld(protocol, participantId, participant);
 	ctx.ui.notify(`Took over ${protocol}/${participantId}.`, "info");
 }
 
@@ -182,10 +163,3 @@ function participantArguments(args: string[], usage: string): ParticipantArgumen
 	return { protocol, participantId };
 }
 
-function findParticipant(
-	participants: ClientParticipantStatus[],
-	protocol: string,
-	participantId: string,
-): ClientParticipantStatus | undefined {
-	return participants.find((participant) => participant.protocol === protocol && participant.participantId === participantId);
-}

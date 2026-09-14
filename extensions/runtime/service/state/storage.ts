@@ -16,12 +16,10 @@ import {
 import { basename, join } from "node:path";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import {
-	HOSTED_STATE_MAX_BYTES,
-	type HostedRuntimeInstance,
-	type HostedRuntimeState,
-	type HostedStateOperation,
-} from "../../hosted-types.ts";
+import { HOSTED_STATE_MAX_BYTES } from "../../schemas/common.ts";
+import type { HostedRuntimeInstance, HostedRuntimeState } from "../../schemas/state.ts";
+import type { HostedStateOperation } from "./operations.ts";
+import { isNodeError } from "../../errors.ts";
 import { schemaError } from "../../schemas/common.ts";
 import {
 	HOSTED_STATE_VERSION,
@@ -177,8 +175,4 @@ function writeAtomicJson(root: string, path: string, value: HostedRuntimeState |
 		try { unlinkSync(temporary); } catch {}
 		throw storageError(`Cannot persist runtime state: ${path}`, error, renamed);
 	}
-}
-
-function isNodeError(cause: unknown): cause is NodeJS.ErrnoException {
-	return cause instanceof Error && "code" in cause;
 }

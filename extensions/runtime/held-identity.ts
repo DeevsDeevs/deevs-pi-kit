@@ -1,6 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { HostedRuntimeClientError, type HostedRuntimeClient } from "./client.ts";
-import { isEnded, isHeld } from "./hosted-types.ts";
+import { isEnded, isHeld } from "./schemas/state.ts";
 import { auth, parseAcquireResult, parseParticipant, type ClientParticipantStatus, type LiveClientRegistration } from "./responses.ts";
 import type { HostedSessionStore, ParticipantIdentity } from "./session-record.ts";
 
@@ -31,15 +31,9 @@ export async function restoreHeldParticipant(
 		revive: identity.reviveAuthorized === true,
 	}));
 	session.requireCurrentScope(currentScope);
-	const restored: ParticipantIdentity = {
-		protocol: identity.protocol,
-		participantId: identity.participantId,
-		participantKey: acquired.participant.participantKey,
-		generation: acquired.participant.generation,
-		disposition: "held",
-	};
+	const restored = acquired.participant;
 	const changed = identity.participantKey !== restored.participantKey || identity.generation !== restored.generation;
-	if (changed) session.store.persistIdentity(restored);
+	if (changed) session.store.persistHeld(identity.protocol, identity.participantId, restored);
 }
 
 /** True when the persisted key resolved and no further acquisition should follow. */

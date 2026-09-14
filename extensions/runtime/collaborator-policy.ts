@@ -5,11 +5,13 @@ import { Value } from "typebox/value";
 import type { CustomToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { findAgent, loadBuiltinAgents } from "../subagents/agents.ts";
 import { HostedRuntimeClientError } from "./client.ts";
+import { isNodeError } from "./errors.ts";
 import { collaboratorProfileTools, DRIVERS } from "./drivers.ts";
-import { type HostedCollaboratorDriver, type HostedCollaboratorProfile, isWriter } from "./hosted-types.ts";
+import { type HostedCollaboratorDriver, type HostedCollaboratorProfile, isWriter } from "./schemas/state.ts";
 import { HostedCollaboratorProfileSchema } from "./schemas/state.ts";
-import { isStringValue } from "./responses.ts";
-import { COLLABORATOR_MODEL, COLLABORATOR_NAME, type CollaboratorPersona } from "./session-record.ts";
+import { isJsonString, type JsonValue } from "./schemas/json.ts";
+import { COLLABORATOR_MODEL, PARTICIPANT_NAME } from "./schemas/common.ts";
+import type { CollaboratorPersona } from "./session-record.ts";
 
 const PATH_SEPARATOR = process.platform === "win32" ? "\\" : "/";
 const COLLABORATOR_PERSONAS = loadBuiltinAgents();
@@ -109,17 +111,19 @@ export function collaboratorToolBlock(
 }
 
 function collaboratorPathAllowed(cwd: string, value: CustomToolCallEvent["input"]["path"], allowMissing: boolean): boolean {
-	if (value !== undefined && !isStringValue(value)) return false;
+	// SAFETY: Tool input arrives untyped from the host; a non-string path is rejected on the next line.
+	const path = value as JsonValue | undefined;
+	if (path !== undefined && !isJsonString(path)) return false;
 	try {
 		const root = realpathSync(cwd);
-		const requested = resolve(root, value ?? ".");
+		const requested = resolve(root, path ?? ".");
 		const target = resolveExistingTarget(requested, allowMissing);
 		if (target === undefined) return false;
-		const path = relative(root, target);
-		if (path === "") return true;
-		return !isAbsolute(path)
-			&& path !== ".."
-			&& !path.startsWith(`..${PATH_SEPARATOR}`);
+		const relativePath = relative(root, target);
+		if (relativePath === "") return true;
+		return !isAbsolute(relativePath)
+			&& relativePath !== ".."
+			&& !relativePath.startsWith(`..${PATH_SEPARATOR}`);
 	} catch {
 		return false;
 	}
@@ -138,8 +142,8 @@ function resolveExistingTarget(requested: string, allowMissing: boolean): string
 }
 
 export function collaboratorName(value: string | undefined, name: string): string {
-	if (!value || !COLLABORATOR_NAME.test(value)) {
-		throw new HostedRuntimeClientError("invalid_request", `${name} must match ${COLLABORATOR_NAME}.`);
+	if (!value || !PARTICIPANT_NAME.test(value)) {
+		throw new HostedRuntimeClientError("invalid_request", `${name} must match ${PARTICIPANT_NAME}.`);
 	}
 	return value;
 }
@@ -168,8 +172,4 @@ function collaboratorProfile(value: HostedCollaboratorProfile | undefined): Host
 		throw new HostedRuntimeClientError("invalid_request", "profile must be read-only or workspace-write.");
 	}
 	return value;
-}
-
-function isNodeError(cause: unknown): cause is NodeJS.ErrnoException {
-	return cause instanceof Error && "code" in cause;
 }

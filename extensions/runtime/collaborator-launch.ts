@@ -12,7 +12,7 @@ import { HostedRuntimeClient, HostedRuntimeClientError } from "./client.ts";
 import type { ResolvedCollaboratorCandidate } from "./collaborator-policy.ts";
 import { DRIVERS, driverLaunchArgv, type DriverSpec } from "./drivers.ts";
 import { createCollaboratorTab, throwIfAborted, waitForHerdrPaneCwd, type CollaboratorTab } from "./herdr.ts";
-import { isVacant, isWriter } from "./hosted-types.ts";
+import { isVacant, isWriter } from "./schemas/state.ts";
 import type { ManagedAgentPlan, NativeAgentService } from "./native-agents.ts";
 import { auth, strictObject, text, type ClientParticipantStatus, type LiveClientRegistration } from "./responses.ts";
 import type { RuntimeSession } from "./runtime-session.ts";

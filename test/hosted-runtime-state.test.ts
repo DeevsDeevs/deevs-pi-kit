@@ -2,9 +2,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HOSTED_ACK_RETENTION_MS, HOSTED_STATE_MAX_BYTES, type HostedRuntimeState, type HostedTarget } from "../extensions/runtime/hosted-types.ts";
+import { HOSTED_ACK_RETENTION_MS, HOSTED_STATE_MAX_BYTES } from "../extensions/runtime/schemas/common.ts";
+import type { HostedRuntimeState, HostedTarget } from "../extensions/runtime/schemas/state.ts";
+import { RuntimeError } from "../extensions/runtime/errors.ts";
 import {
-	HostedStateConflictError,
 	HostedStateStorageError,
 	deriveParticipantKey,
 	emptyHostedRuntimeState,
@@ -93,7 +94,7 @@ describe("hosted runtime state reducer", () => {
 		expect(() => reduceHostedState(state, {
 			type: "target.ensure",
 			target: { ...target(), projectRoot: "/tmp/other" },
-		})).toThrow(HostedStateConflictError);
+		})).toThrow(RuntimeError);
 	});
 
 	it("publishes one mail event per send ID and repeats identical input without a second event", () => {

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createConnection } from "node:net";
+import type { JsonValue } from "./schemas/json.ts";
 
 const MAX_RESPONSE_BYTES = 64 * 1024;
 
@@ -12,7 +13,7 @@ interface RuntimeResponseEnvelope {
 	v?: number;
 	id?: string;
 	ok?: boolean;
-	result?: unknown;
+	result?: JsonValue;
 	error?: RuntimeErrorEnvelope | null;
 }
 
@@ -36,8 +37,7 @@ export class HostedRuntimeClient {
 		this.maxResponseBytes = maxResponseBytes;
 	}
 
-	// oxlint-disable-next-line anti-slop/no-unknown-returns -- Callers decode the RPC result or serialize it unchanged.
-	call<Params extends object>(method: string, params: Params): Promise<unknown> {
+	call<Params extends object>(method: string, params: Params): Promise<JsonValue | undefined> {
 		const id = `req_${randomUUID()}`;
 		const request = `${JSON.stringify({ v: 1, id, method, params })}\n`;
 		return new Promise((resolve, reject) => {
@@ -77,8 +77,7 @@ export class HostedRuntimeClient {
 		});
 	}
 
-	// oxlint-disable-next-line anti-slop/no-unknown-returns -- Registration callers validate the hello envelope before using its fields.
-	hello(): Promise<unknown> {
+	hello(): Promise<JsonValue | undefined> {
 		return this.call("hello", { minVersion: 1, maxVersion: 1 });
 	}
 }

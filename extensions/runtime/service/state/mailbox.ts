@@ -1,13 +1,7 @@
-import {
-	HOSTED_MAILBOX_MAX_BODY_BYTES,
-	type HostedMailboxMessageEvent,
-	type HostedParticipant,
-	type HostedRuntimeState,
-	type HostedStateOperation,
-	isEnded,
-	isHeld,
-} from "../../hosted-types.ts";
-import { HostedStateConflictError } from "./errors.ts";
+import { RuntimeError } from "../../errors.ts";
+import { HOSTED_MAILBOX_MAX_BODY_BYTES } from "../../schemas/common.ts";
+import { type HostedMailboxMessageEvent, type HostedParticipant, type HostedRuntimeState, isEnded, isHeld } from "../../schemas/state.ts";
+import type { HostedStateOperation } from "./operations.ts";
 import { assertStateId, assertStateTime } from "./guards.ts";
 import { mailboxDedupeKey } from "./keys.ts";
 import { MAX_ID_BYTES } from "../../schemas/common.ts";
@@ -20,21 +14,21 @@ export function sendMailboxMessage(state: HostedRuntimeState, operation: Mailbox
 	const sender = state.participants[operation.senderParticipantKey];
 	const recipient = state.participants[operation.recipientParticipantKey];
 	if (!sender || !senderHoldsIdentity(sender, operation)) {
-		throw new HostedStateConflictError("conflict", "Mailbox sender identity or generation changed before send.");
+		throw new RuntimeError("conflict", "Mailbox sender identity or generation changed before send.");
 	}
-	if (!recipient || isEnded(recipient.state)) throw new HostedStateConflictError("conflict", "Mailbox recipient is unavailable.");
+	if (!recipient || isEnded(recipient.state)) throw new RuntimeError("conflict", "Mailbox recipient is unavailable.");
 	if (!participantsSharePeerScope(sender, recipient)) {
-		throw new HostedStateConflictError("conflict", "Mailbox participants must be distinct and share one project and protocol.");
+		throw new RuntimeError("conflict", "Mailbox participants must be distinct and share one project and protocol.");
 	}
-	if (operation.at < sender.updatedAt) throw new HostedStateConflictError("conflict", "Mailbox send time precedes sender state.");
+	if (operation.at < sender.updatedAt) throw new RuntimeError("conflict", "Mailbox send time precedes sender state.");
 	assertMailboxPayload(operation);
 	const dedupeKey = mailboxDedupeKey(sender.participantKey, operation.sendId);
 	const existingId = state.dedupe[dedupeKey];
 	if (existingId !== undefined) {
 		if (repeatsExistingSend(state, existingId, sender, operation)) return state;
-		throw new HostedStateConflictError("conflict", "Mailbox send ID was already used with different input.");
+		throw new RuntimeError("conflict", "Mailbox send ID was already used with different input.");
 	}
-	if (state.events[operation.eventId]) throw new HostedStateConflictError("conflict", "Mailbox event ID already exists.");
+	if (state.events[operation.eventId]) throw new RuntimeError("conflict", "Mailbox event ID already exists.");
 	const sequence = (sender.outSeq[recipient.participantKey] ?? 0) + 1;
 	const event = mailboxEvent(sender, recipient, operation, dedupeKey, sequence);
 	const nextSender: HostedParticipant = {
@@ -64,10 +58,10 @@ function participantsSharePeerScope(sender: HostedParticipant, recipient: Hosted
 
 function assertMailboxPayload(operation: MailboxSendOperation): void {
 	if (!operation.body.trim() || Buffer.byteLength(operation.body) > HOSTED_MAILBOX_MAX_BODY_BYTES) {
-		throw new HostedStateConflictError("conflict", "Mailbox body is empty or exceeds its byte limit.");
+		throw new RuntimeError("conflict", "Mailbox body is empty or exceeds its byte limit.");
 	}
 	if (!operation.sendId.trim() || Buffer.byteLength(operation.sendId) > MAX_ID_BYTES) {
-		throw new HostedStateConflictError("conflict", "Mailbox send ID is invalid.");
+		throw new RuntimeError("conflict", "Mailbox send ID is invalid.");
 	}
 }
 

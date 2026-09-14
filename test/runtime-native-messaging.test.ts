@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { driverLaunchArgv } from "../extensions/runtime/drivers.ts";
-import type { HostedNativeCollaboratorDriver } from "../extensions/runtime/hosted-types.ts";
+import type { HostedNativeCollaboratorDriver } from "../extensions/runtime/schemas/state.ts";
 import { nativeMessagingConfiguration } from "../extensions/runtime/mcp/native.ts";
 import { toolDefinitions } from "../extensions/runtime/mcp/tools.ts";
 

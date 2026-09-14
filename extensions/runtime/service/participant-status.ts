@@ -1,22 +1,7 @@
-import {
-	type HostedCollaboratorDriver,
-	type HostedParticipant,
-	type HostedTarget,
-	isAgentTarget,
-	isHeld,
-	isPiTarget,
-} from "../hosted-types.ts";
+import { type HostedCollaboratorDriver, type HostedParticipant, type HostedTarget, isAgentTarget, isHeld, isPiTarget } from "../schemas/state.ts";
+import { RuntimeError } from "../errors.ts";
 import type { RuntimeRegistrationManager } from "./registration.ts";
 import type { HostedStateStore } from "./state.ts";
-
-export class HostedParticipantError extends Error {
-	readonly code: "not_found" | "conflict" | "busy" | "capability_unavailable";
-
-	constructor(code: "not_found" | "conflict" | "busy" | "capability_unavailable", message: string) {
-		super(message);
-		this.code = code;
-	}
-}
 
 export interface HostedParticipantStatus {
 	participantKey: string;
@@ -35,14 +20,14 @@ export interface HostedParticipantStatus {
 
 export function requireTarget(store: HostedStateStore, targetKey: string): HostedTarget {
 	const target = store.read().targets[targetKey];
-	if (!target) throw new HostedParticipantError("not_found", "Runtime target is absent.");
+	if (!target) throw new RuntimeError("not_found", "Runtime target is absent.");
 	return target;
 }
 
 export function requireParticipant(store: HostedStateStore, participantKey: string, projectRoot: string): HostedParticipant {
 	const participant = store.read().participants[participantKey];
 	if (!participant || participant.projectRoot !== projectRoot) {
-		throw new HostedParticipantError("not_found", "Participant is absent from this project.");
+		throw new RuntimeError("not_found", "Participant is absent from this project.");
 	}
 	return participant;
 }

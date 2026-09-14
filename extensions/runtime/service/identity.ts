@@ -1,29 +1,8 @@
 import { closeSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
-import { type HostedAgentTarget, type HostedTarget, isHeld } from "../hosted-types.ts";
+import { RuntimeError } from "../errors.ts";
+import { isJsonObject, isJsonString, type JsonObject, type JsonValue } from "../schemas/json.ts";
+import { type HostedAgentTarget, type HostedTarget, isHeld } from "../schemas/state.ts";
 import { HostedStateStore } from "./state.ts";
-
-export type ParsedValue = null | boolean | number | string | ParsedValue[] | ParsedObject;
-
-interface ParsedObject {
-	[key: string]: ParsedValue | undefined;
-}
-
-type RegistrationErrorCode =
-	| "invalid_request"
-	| "not_found"
-	| "conflict"
-	| "registration_stale"
-	| "identity_mismatch"
-	| "host_unavailable";
-
-export class RegistrationError extends Error {
-	readonly code: RegistrationErrorCode;
-
-	constructor(code: RegistrationErrorCode, message: string) {
-		super(message);
-		this.code = code;
-	}
-}
 
 /** What `herdr agent get` reports about one live agent: where it runs, and the tab that owns it. */
 export interface HostedLiveAgent {
@@ -49,13 +28,13 @@ export function heldByTarget(store: HostedStateStore, target: HostedAgentTarget)
 
 export function assertAgentInProject(agent: HostedLiveAgent, target: HostedAgentTarget): void {
 	if (agent.name !== target.agentName) {
-		throw new RegistrationError("identity_mismatch", "Herdr agent name does not match its Runtime target.");
+		throw new RuntimeError("identity_mismatch", "Herdr agent name does not match its Runtime target.");
 	}
 	let hostCwd: string;
 	try { hostCwd = canonicalDirectory(agent.cwd, "Herdr cwd"); }
-	catch { throw new RegistrationError("identity_mismatch", "Herdr agent cwd is unavailable or not canonical."); }
+	catch { throw new RuntimeError("identity_mismatch", "Herdr agent cwd is unavailable or not canonical."); }
 	if (hostCwd !== (target.worktreePath ?? target.projectRoot)) {
-		throw new RegistrationError("identity_mismatch", "Herdr agent cwd does not match its authorized project or worktree root.");
+		throw new RuntimeError("identity_mismatch", "Herdr agent cwd does not match its authorized project or worktree root.");
 	}
 }
 
@@ -65,7 +44,7 @@ export function canonicalDirectory(path: string, name: string): string {
 		if (!lstatSync(canonical).isDirectory()) throw new Error();
 		return canonical;
 	} catch {
-		throw new RegistrationError("invalid_request", `${name} must be an existing directory.`);
+		throw new RuntimeError("invalid_request", `${name} must be an existing directory.`);
 	}
 }
 
@@ -75,7 +54,7 @@ export function canonicalFile(path: string, name: string): string {
 		if (!lstatSync(canonical).isFile()) throw new Error();
 		return canonical;
 	} catch {
-		throw new RegistrationError("invalid_request", `${name} must be an existing regular file.`);
+		throw new RuntimeError("invalid_request", `${name} must be an existing regular file.`);
 	}
 }
 
@@ -92,38 +71,18 @@ export function verifyPiSessionHeader(path: string, expectedId: string, expected
 		if (header.type !== "session" || header.id !== expectedId) throw new Error("session identity mismatch");
 		if (canonicalDirectory(text(header.cwd), "Pi session cwd") !== expectedCwd) throw new Error("session identity mismatch");
 	} catch {
-		throw new RegistrationError("invalid_request", "Pi session file header does not match the supplied session ID.");
+		throw new RuntimeError("invalid_request", "Pi session file header does not match the supplied session ID.");
 	} finally {
 		if (descriptor !== undefined) closeSync(descriptor);
 	}
 }
 
-export function strictObject(value: ParsedValue | undefined, name: string): ParsedObject {
-	if (!isParsedObject(value)) throw new Error(`${name} must be an object.`);
+export function strictObject(value: JsonValue | undefined, name: string): JsonObject {
+	if (!isJsonObject(value)) throw new Error(`${name} must be an object.`);
 	return value;
 }
 
-export function text(value: ParsedValue | undefined): string {
-	const result = stringValue(value);
-	if (result === undefined || result.length === 0) throw new Error("expected non-empty text");
-	return result;
-}
-
-export function isParsedObject(value: ParsedValue | undefined): value is ParsedObject {
-	if (value === null || value === undefined || Array.isArray(value)) return false;
-	try {
-		const prototype = Object.getPrototypeOf(value);
-		return prototype === Object.prototype || prototype === null;
-	} catch {
-		return false;
-	}
-}
-
-export function stringValue(value: ParsedValue | undefined): string | undefined {
-	try {
-		const result = String.prototype.valueOf.call(value);
-		return result === value ? result : undefined;
-	} catch {
-		return undefined;
-	}
+export function text(value: JsonValue | undefined): string {
+	if (!isJsonString(value) || value.length === 0) throw new Error("expected non-empty text");
+	return value;
 }

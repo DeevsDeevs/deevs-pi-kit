@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ClientParticipantStatus } from "./responses.ts";
 import type {
 	CollaboratorLaunch,
 	CollaboratorWorktree,
@@ -14,9 +15,6 @@ export type {
 	ManagedAgentSession,
 	ParticipantIdentity,
 } from "./schemas/session.ts";
-
-export const COLLABORATOR_NAME = /^[a-z][a-z0-9_-]{0,63}$/;
-export const COLLABORATOR_MODEL = /^[A-Za-z0-9][A-Za-z0-9._/*:-]{0,199}$/;
 
 /** Reads and writes the single hidden session entry that carries this Pi session's Runtime state. */
 export class HostedSessionStore {
@@ -62,6 +60,17 @@ export class HostedSessionStore {
 	persistIdentity(identity: ParticipantIdentity): void {
 		this.identityState = identity;
 		this.persist();
+	}
+
+	/** Records one held identity; revive authorization is one-shot and never written back. */
+	persistHeld(protocol: string, participantId: string, participant: ClientParticipantStatus): void {
+		this.persistIdentity({
+			protocol,
+			participantId,
+			participantKey: participant.participantKey,
+			generation: participant.generation,
+			disposition: "held",
+		});
 	}
 
 	persistAgent(control: ManagedAgentControl): void {

@@ -1,4 +1,4 @@
-export { HostedStateConflictError, HostedStateStorageError } from "./state/errors.ts";
+export { HostedStateStorageError } from "./state/errors.ts";
 export { deriveAgentTargetKey, deriveParticipantKey, messagingConfigurationHash, piTargetKey, projectScope } from "./state/keys.ts";
 export { messagingInboxEvent } from "./state/messaging.ts";
 export { reduceHostedState } from "./state/reduce.ts";

@@ -1,16 +1,9 @@
 import { Value } from "typebox/value";
 import { HostedRuntimeClientError } from "./client.ts";
-import type { HostedCollaboratorProfile, HostedNativeCollaboratorDriver } from "./hosted-types.ts";
+import type { HostedCollaboratorProfile, HostedNativeCollaboratorDriver } from "./schemas/state.ts";
 import { HostedCollaboratorProfileSchema, HostedNativeCollaboratorDriverSchema } from "./schemas/state.ts";
-import {
-	booleanValue,
-	parseRegistration,
-	strictObject,
-	text,
-	type LiveClientRegistration,
-	type RuntimeResponse,
-	type SerializedObject,
-} from "./responses.ts";
+import { parseRegistration, strictObject, text, type LiveClientRegistration, type RuntimeResponse } from "./responses.ts";
+import { decodeHerdr, herdrResult, HerdrStartedAgentSchema, type HerdrStartedAgent } from "./schemas/herdr.ts";
 import type { ManagedAgentSession } from "./session-record.ts";
 
 /** The lease Runtime reports for one bound managed Herdr agent. */
@@ -54,36 +47,23 @@ export function parseBoundAgent(value: RuntimeResponse): BoundAgent {
 }
 
 export function parseManagedAgent(value: string): ManagedAgentStatus {
-	let response: SerializedObject;
+	let agent: HerdrStartedAgent;
 	try {
-		response = strictObject(JSON.parse(value), "Herdr response");
+		agent = decodeHerdr(HerdrStartedAgentSchema, herdrResult(value), "Herdr agent").agent;
 	} catch {
 		throw new HostedRuntimeClientError("invalid_response", "Herdr returned malformed agent JSON.");
 	}
-	const agent = strictObject(strictObject(response.result, "Herdr result").agent, "Herdr agent");
-	const agentKind = text(agent.agent);
-	const session = agent.agent_session === undefined
-		? { source: `herdr:${agentKind}`, agent: agentKind, kind: "id", value: text(agent.name) }
-		: strictObject(agent.agent_session, "Herdr agent session");
-	if (session.kind !== "id" && session.kind !== "path") {
-		throw new HostedRuntimeClientError("invalid_response", "Herdr agent session kind is invalid.");
-	}
-	if (session.agent !== agentKind || session.source !== `herdr:${agentKind}`) {
+	const session: ManagedAgentSession = agent.agent_session ?? { source: `herdr:${agent.agent}`, agent: agent.agent, kind: "id", value: agent.name };
+	if (session.agent !== agent.agent || session.source !== `herdr:${agent.agent}`) {
 		throw new HostedRuntimeClientError("identity_mismatch", "Herdr agent session does not match its reported driver.");
 	}
-	if (!isManagedAgentStatus(agent.agent_status)) throw new HostedRuntimeClientError("invalid_response", "Herdr agent status is invalid.");
 	return {
-		name: text(agent.name),
-		paneId: text(agent.pane_id),
-		terminalId: text(agent.terminal_id),
+		name: agent.name,
+		paneId: agent.pane_id,
+		terminalId: agent.terminal_id,
 		status: agent.agent_status,
-		focused: booleanValue(agent.focused),
-		agentSession: { source: text(session.source), agent: text(session.agent), kind: session.kind, value: text(session.value) },
+		focused: agent.focused,
+		agentSession: session,
 	};
 }
 
-const MANAGED_AGENT_STATUSES: readonly ManagedAgentStatus["status"][] = ["idle", "working", "blocked", "done", "unknown"];
-
-function isManagedAgentStatus(value: RuntimeResponse): value is ManagedAgentStatus["status"] {
-	return MANAGED_AGENT_STATUSES.some((status) => status === value);
-}

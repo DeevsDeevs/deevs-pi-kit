@@ -9,19 +9,14 @@ import {
 	STRICT_OBJECT,
 	boundedText,
 } from "./common.ts";
+export type { JsonObject, JsonValue } from "./json.ts";
+import type { JsonValue } from "./json.ts";
 import {
 	HostedCollaboratorDriverSchema,
 	HostedCollaboratorProfileSchema,
 	HostedNativeCollaboratorDriverSchema,
 	HostedParticipantStateSchema,
 } from "./state.ts";
-
-/** The JSON a request line can carry; method schemas narrow it to a typed params object. */
-export type JsonValue = string | number | boolean | null | JsonObject | JsonValue[];
-
-export interface JsonObject {
-	[key: string]: JsonValue | undefined;
-}
 
 const AUTH = { registrationId: IdText, registrationKey: IdText };
 const NAMESPACE = { namespaceId: IdText, secret: IdText };
@@ -152,6 +147,19 @@ export const ParticipantStatusResult = Type.Object({
 	lastTransition: Type.Object({ cause: IdText }),
 });
 
+export const WorktreeListResult = Type.Object({
+	worktrees: Type.Array(Type.Object({
+		protocol: ParticipantNameText,
+		participantId: ParticipantNameText,
+		path: PathText,
+		branchRef: PathText,
+		participantState: Type.Optional(HostedParticipantStateSchema),
+		recorded: Type.Boolean(),
+	})),
+});
+
+export const WorktreeRemoveResult = Type.Object({ removed: Type.Literal(true) });
+
 export const ParticipantAcquireResult = Type.Object({
 	participant: ParticipantStatusResult,
 	revived: Type.Boolean(),
@@ -167,3 +175,5 @@ export interface MessagingNamespaceAuth {
 export type LiveClientRegistration = Static<typeof LiveRegistrationResult>;
 export type MailHint = Static<typeof MailHintResult>;
 export type ClientParticipantStatus = Static<typeof ParticipantStatusResult>;
+export type ClientWorktreeList = Static<typeof WorktreeListResult>;
+export type ClientWorktreeRemoval = Static<typeof WorktreeRemoveResult>;

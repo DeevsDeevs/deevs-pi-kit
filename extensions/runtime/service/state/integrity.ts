@@ -1,4 +1,4 @@
-import { type HostedMailboxMessageEvent, type HostedRuntimeState, isHeld } from "../../hosted-types.ts";
+import { type HostedMailboxMessageEvent, type HostedRuntimeState, isHeld } from "../../schemas/state.ts";
 import { HOSTED_ACK_RETENTION_MS, HOSTED_MAX_STATE_RECORDS } from "../../schemas/common.ts";
 import { deriveParticipantKey, mailboxDedupeKey, targetIdentityKey } from "./keys.ts";
 

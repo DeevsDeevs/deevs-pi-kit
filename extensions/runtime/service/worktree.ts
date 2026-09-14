@@ -1,23 +1,15 @@
 import { execFile } from "node:child_process";
 import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import { type HostedParticipant, isHeld, isPiTarget } from "../hosted-types.ts";
+import { RuntimeError } from "../errors.ts";
+import { PARTICIPANT_NAME } from "../schemas/common.ts";
+import { type HostedParticipant, isHeld, isPiTarget } from "../schemas/state.ts";
 import type { HostedLiveRegistration } from "./registration.ts";
 import { deriveParticipantKey, HostedStateStore, projectScope } from "./state.ts";
 
 const BRANCH_PREFIX = "refs/heads/runtime/collab/";
-const NAME = /^[a-z][a-z0-9_-]{0,63}$/;
 const MAX_GIT_BUFFER = 1024 * 1024;
 const GIT_TIMEOUT_MS = 30_000;
-
-class RuntimeWorktreeError extends Error {
-	readonly code: "invalid_request" | "not_found" | "conflict" | "git_error";
-
-	constructor(code: RuntimeWorktreeError["code"], message: string) {
-		super(message);
-		this.code = code;
-	}
-}
 
 export interface RuntimeWorktree {
 	protocol: string;
@@ -63,13 +55,13 @@ export class RuntimeWorktrees {
 		const participantKey = this.participantKey(projectRoot, input);
 		const participant = this.store.read().participants[participantKey];
 		if (isHeld(participant?.state)) {
-			throw new RuntimeWorktreeError("conflict", "Participant already has a live holder; stop it before reusing its worktree.");
+			throw new RuntimeError("conflict", "Participant already has a live holder; stop it before reusing its worktree.");
 		}
 		const existing = (await listWorktrees(projectRoot)).find((worktree) => isWorktreeOf(worktree, input));
 		if (existing) {
 			this.assertWorktreeIsOwn(existing.path, participantKey);
 			if (participant?.worktreePath && participant.worktreePath !== existing.path) {
-				throw new RuntimeWorktreeError("conflict", "Recorded participant worktree does not match its Git worktree.");
+				throw new RuntimeError("conflict", "Recorded participant worktree does not match its Git worktree.");
 			}
 			return existing;
 		}
@@ -103,15 +95,15 @@ export class RuntimeWorktrees {
 
 	async remove(caller: HostedLiveRegistration, input: RemoveWorktreeInput): Promise<RemovedWorktree> {
 		if (input.discardConfirmed !== true) {
-			throw new RuntimeWorktreeError("invalid_request", "Worktree removal requires an explicit confirmed discard.");
+			throw new RuntimeError("invalid_request", "Worktree removal requires an explicit confirmed discard.");
 		}
 		const projectRoot = this.authorize(caller, input);
 		const participantKey = this.participantKey(projectRoot, input);
 		if (isHeld(this.store.read().participants[participantKey]?.state)) {
-			throw new RuntimeWorktreeError("conflict", "Stop the collaborator before removing its worktree.");
+			throw new RuntimeError("conflict", "Stop the collaborator before removing its worktree.");
 		}
 		const worktree = (await listWorktrees(projectRoot)).find((candidate) => isWorktreeOf(candidate, input));
-		if (!worktree) throw new RuntimeWorktreeError("not_found", "Participant has no Runtime worktree in this project.");
+		if (!worktree) throw new RuntimeError("not_found", "Participant has no Runtime worktree in this project.");
 		this.assertWorktreeIsOwn(worktree.path, participantKey);
 		if (this.store.read().participants[participantKey]) this.store.apply({ type: "participant.worktree.clear", participantKey });
 		await git(projectRoot, ["worktree", "remove", "--force", worktree.path]);
@@ -123,20 +115,20 @@ export class RuntimeWorktrees {
 	private assertWorktreeIsOwn(path: string, participantKey: string): void {
 		const owner = Object.values(this.store.read().participants)
 			.find((participant) => participant.worktreePath === path && participant.participantKey !== participantKey);
-		if (owner) throw new RuntimeWorktreeError("conflict", `Worktree ${path} belongs to ${owner.protocol}/${owner.participantId}.`);
+		if (owner) throw new RuntimeError("conflict", `Worktree ${path} belongs to ${owner.protocol}/${owner.participantId}.`);
 	}
 
 	private authorize(caller: HostedLiveRegistration, input: EnsureWorktreeInput): string {
 		const projectRoot = this.projectRoot(caller);
-		if (!NAME.test(input.protocol) || !NAME.test(input.participantId)) {
-			throw new RuntimeWorktreeError("invalid_request", "Protocol and participant ID have invalid syntax.");
+		if (!PARTICIPANT_NAME.test(input.protocol) || !PARTICIPANT_NAME.test(input.participantId)) {
+			throw new RuntimeError("invalid_request", "Protocol and participant ID have invalid syntax.");
 		}
 		const participant = this.store.read().participants[input.callerParticipantKey];
 		if (!callerHoldsAuthority(participant, input, caller, projectRoot)) {
-			throw new RuntimeWorktreeError("conflict", "Worktree caller authority is absent or no longer held.");
+			throw new RuntimeError("conflict", "Worktree caller authority is absent or no longer held.");
 		}
 		if (this.participantKey(projectRoot, input) === input.callerParticipantKey) {
-			throw new RuntimeWorktreeError("conflict", "A caller cannot provision its own worktree.");
+			throw new RuntimeError("conflict", "A caller cannot provision its own worktree.");
 		}
 		return projectRoot;
 	}
@@ -144,7 +136,7 @@ export class RuntimeWorktrees {
 	private projectRoot(caller: HostedLiveRegistration): string {
 		const target = this.store.read().targets[caller.targetKey];
 		if (!isPiTarget(target)) {
-			throw new RuntimeWorktreeError("conflict", "Only an authenticated Pi target may manage collaborator worktrees.");
+			throw new RuntimeError("conflict", "Only an authenticated Pi target may manage collaborator worktrees.");
 		}
 		return target.projectRoot;
 	}
@@ -237,7 +229,7 @@ function git(cwd: string, args: string[]): Promise<string> {
 		const env = { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" };
 		const options = { cwd, encoding: "utf8" as const, maxBuffer: MAX_GIT_BUFFER, timeout: GIT_TIMEOUT_MS, env };
 		execFile("git", args, options, (error, stdout, stderr) => {
-			if (error) reject(new RuntimeWorktreeError("git_error", `git ${args[0]} failed: ${stderr.trim() || error.message}`));
+			if (error) reject(new RuntimeError("host_unavailable", `git ${args[0]} failed: ${stderr.trim() || error.message}`));
 			else resolve(stdout);
 		});
 	});

@@ -1,29 +1,12 @@
 import { realpathSync } from "node:fs";
-import {
-	type HostedAgentBind,
-	type HostedAgentTarget,
-	type HostedCollaboratorProfile,
-	type HostedHerdrLocator,
-	type HostedNativeCollaboratorDriver,
-	isAgentTarget,
-	isWriter,
-} from "../hosted-types.ts";
+import { RuntimeError } from "../errors.ts";
+import { AGENT_NAME, PARTICIPANT_NAME } from "../schemas/common.ts";
+import { type HostedAgentTarget, type HostedCollaboratorProfile, type HostedHerdrLocator, type HostedNativeCollaboratorDriver, isAgentTarget, isWriter } from "../schemas/state.ts";
+import type { HostedAgentBind } from "./state/operations.ts";
 import type { HostedLiveAgent } from "./identity.ts";
 import type { HostedLiveRegistration } from "./registration.ts";
 import { deriveAgentTargetKey, deriveParticipantKey, HostedStateStore } from "./state.ts";
 import { isProjectWorktree } from "./worktree.ts";
-
-const NAME = /^[a-z][a-z0-9_-]{0,63}$/;
-const AGENT_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-
-export class AgentBindError extends Error {
-	readonly code: "invalid_request" | "conflict" | "identity_mismatch";
-
-	constructor(code: AgentBindError["code"], message: string) {
-		super(message);
-		this.code = code;
-	}
-}
 
 export interface BindAgentInput {
 	agentName: string;
@@ -58,19 +41,19 @@ interface AgentBindDraft {
 export function boundAgentNames(input: BindAgentInput): BoundAgentNames {
 	return {
 		agentName: boundedName(input.agentName, AGENT_NAME, "Herdr agent name"),
-		protocol: boundedName(input.protocol, NAME, "protocol"),
-		participantId: boundedName(input.participantId, NAME, "participant ID"),
+		protocol: boundedName(input.protocol, PARTICIPANT_NAME, "protocol"),
+		participantId: boundedName(input.participantId, PARTICIPANT_NAME, "participant ID"),
 	};
 }
 
 /** Resolves the agent's authorized cwd, then drafts the target and bind record it may be admitted under. */
 export async function draftAgentBind(draft: AgentBindDraft): Promise<HostedAgentBind> {
 	const { input, names, verified, projectRoot } = draft;
-	if (verified.name !== names.agentName) throw new AgentBindError("identity_mismatch", "Herdr resolved another agent name.");
+	if (verified.name !== names.agentName) throw new RuntimeError("identity_mismatch", "Herdr resolved another agent name.");
 	const cwd = agentCwd(verified);
 	const worktreePath = cwd === projectRoot ? undefined : cwd;
 	if (worktreePath !== undefined && !await isWritableWorktree(worktreePath, projectRoot, input.profile)) {
-		throw new AgentBindError("identity_mismatch", "Herdr agent cwd is neither the project root nor a workspace-write worktree of it.");
+		throw new RuntimeError("identity_mismatch", "Herdr agent cwd is neither the project root nor a workspace-write worktree of it.");
 	}
 	return bindRecord(draft, agentTarget(draft, worktreePath));
 }
@@ -80,7 +63,7 @@ function agentTarget(draft: AgentBindDraft, worktreePath: string | undefined): H
 	const targetKey = deriveAgentTargetKey(projectRoot, names.agentName);
 	const existing = draft.store.read().targets[targetKey];
 	if (existing !== undefined && !isAgentTarget(existing)) {
-		throw new AgentBindError("conflict", "Herdr agent target key already belongs to another target kind.");
+		throw new RuntimeError("conflict", "Herdr agent target key already belongs to another target kind.");
 	}
 	const target: HostedAgentTarget = {
 		kind: "agent",
@@ -117,7 +100,7 @@ function bindRecord(draft: AgentBindDraft, target: HostedAgentTarget): HostedAge
 /** The tab Runtime later closes to stop this collaborator. */
 function agentTab(agent: HostedLiveAgent): HostedHerdrLocator {
 	const { tabId, workspaceId } = agent;
-	if (!tabId || !workspaceId) throw new AgentBindError("identity_mismatch", "Herdr agent has no exact tab and workspace identity.");
+	if (!tabId || !workspaceId) throw new RuntimeError("identity_mismatch", "Herdr agent has no exact tab and workspace identity.");
 	return { tabId, workspaceId };
 }
 
@@ -127,17 +110,17 @@ async function isWritableWorktree(worktreePath: string, projectRoot: string, pro
 }
 
 function agentCwd(agent: HostedLiveAgent): string {
-	try { return realpathSync(agent.cwd); } catch { throw new AgentBindError("identity_mismatch", "Herdr agent cwd is unavailable."); }
+	try { return realpathSync(agent.cwd); } catch { throw new RuntimeError("identity_mismatch", "Herdr agent cwd is unavailable."); }
 }
 
 function boundedName(value: string, pattern: RegExp, name: string): string {
-	if (!pattern.test(value)) throw new AgentBindError("invalid_request", `${name} has invalid syntax.`);
+	if (!pattern.test(value)) throw new RuntimeError("invalid_request", `${name} has invalid syntax.`);
 	return value;
 }
 
 function bounded(value: string, name: string, maxBytes: number): string {
 	if (!value.trim() || Buffer.byteLength(value) > maxBytes) {
-		throw new AgentBindError("invalid_request", `${name} must be a non-empty string of at most ${maxBytes} bytes.`);
+		throw new RuntimeError("invalid_request", `${name} must be a non-empty string of at most ${maxBytes} bytes.`);
 	}
 	return value;
 }

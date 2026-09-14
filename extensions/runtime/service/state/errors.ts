@@ -1,20 +1,12 @@
-export class HostedStateStorageError extends Error {
-	readonly code = "storage_error" as const;
+import { RuntimeError } from "../../errors.ts";
 
+export class HostedStateStorageError extends RuntimeError {
+	/** True when the write may have reached disk, so the store must be recovered before it is trusted again. */
 	readonly uncertain: boolean;
 
 	constructor(message: string, uncertain = false) {
-		super(message);
+		super("storage_error", message);
 		this.uncertain = uncertain;
-	}
-}
-
-export class HostedStateConflictError extends Error {
-	readonly code: "conflict";
-
-	constructor(code: "conflict", message: string) {
-		super(message);
-		this.code = code;
 	}
 }
 

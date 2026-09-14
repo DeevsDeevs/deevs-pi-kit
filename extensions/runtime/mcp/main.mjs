@@ -3,10 +3,10 @@ import { once } from "node:events";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { HostedRuntimeClient } from "../client.ts";
+import { isJsonObject } from "../schemas/json.ts";
 import { tools, toolDefinitions } from "./tools.ts";
 
 const MAX_FRAME = 256 * 1024;
-const object = value => value !== null && typeof value === "object" && !Array.isArray(value);
 let phase = "new";
 let windowStart = Date.now();
 let requests = 0;
@@ -20,7 +20,7 @@ function descriptor(path) {
 		const stat = fstatSync(fd);
 		if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.size > 16384) throw new Error("Descriptor must be a bounded owner-private file");
 		const value = JSON.parse(readFileSync(fd, "utf8"));
-		if (!object(value) || Object.keys(value).sort().join(",") !== "namespaceId,secret,socketPath,version" || value.version !== 1 || typeof value.namespaceId !== "string" || !/^msg_[0-9a-f-]{36}$/.test(value.namespaceId) || typeof value.secret !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(value.secret) || typeof value.socketPath !== "string" || value.socketPath !== resolve(value.socketPath) || Buffer.byteLength(value.socketPath) > 8192) throw new Error("Invalid messaging descriptor");
+		if (!isJsonObject(value) || Object.keys(value).sort().join(",") !== "namespaceId,secret,socketPath,version" || value.version !== 1 || typeof value.namespaceId !== "string" || !/^msg_[0-9a-f-]{36}$/.test(value.namespaceId) || typeof value.secret !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(value.secret) || typeof value.socketPath !== "string" || value.socketPath !== resolve(value.socketPath) || Buffer.byteLength(value.socketPath) > 8192) throw new Error("Invalid messaging descriptor");
 		return value;
 	} finally { closeSync(fd); }
 }
@@ -33,17 +33,17 @@ async function serve(path) {
 		const validId = typeof id === "string" ? Buffer.byteLength(id) <= 128 : Number.isSafeInteger(id);
 		const error = (code, message) => ({ jsonrpc: "2.0", id: validId ? id : null, error: { code, message } });
 		const result = value => ({ jsonrpc: "2.0", id, result: value });
-		if (!object(request) || request.jsonrpc !== "2.0" || typeof request.method !== "string" || Object.keys(request).some(key => !["jsonrpc", "id", "method", "params"].includes(key)) || ("id" in request && !validId)) return error(-32600, "Invalid request");
+		if (!isJsonObject(request) || request.jsonrpc !== "2.0" || typeof request.method !== "string" || Object.keys(request).some(key => !["jsonrpc", "id", "method", "params"].includes(key)) || ("id" in request && !validId)) return error(-32600, "Invalid request");
 		if (!("id" in request)) {
-			if (request.method === "notifications/initialized" && phase === "initializing" && (request.params === undefined || object(request.params))) phase = "ready";
+			if (request.method === "notifications/initialized" && phase === "initializing" && (request.params === undefined || isJsonObject(request.params))) phase = "ready";
 			return;
 		}
-		if (request.params !== undefined && !object(request.params)) return error(-32602, "Expected object params");
+		if (request.params !== undefined && !isJsonObject(request.params)) return error(-32602, "Expected object params");
 		const params = request.params ?? {};
 		if (request.method === "ping") return result({});
 		if (request.method === "initialize") {
 			if (phase !== "new") return error(-32600, "Already initialized");
-			if (typeof params.protocolVersion !== "string" || params.protocolVersion.length > 64 || !object(params.capabilities) || !object(params.clientInfo) || typeof params.clientInfo.name !== "string" || typeof params.clientInfo.version !== "string") return error(-32602, "Invalid initialization");
+			if (typeof params.protocolVersion !== "string" || params.protocolVersion.length > 64 || !isJsonObject(params.capabilities) || !isJsonObject(params.clientInfo) || typeof params.clientInfo.name !== "string" || typeof params.clientInfo.version !== "string") return error(-32602, "Invalid initialization");
 			phase = "initializing";
 			return result({ protocolVersion: "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "pi-kit-messaging", version: "0.1.0" } });
 		}
@@ -57,7 +57,7 @@ async function serve(path) {
 		if (!tool) return error(-32602, "Unknown tool");
 		try {
 			const args = params.arguments ?? {};
-			if (Object.keys(params).some(key => !["name", "arguments", "_meta"].includes(key)) || !object(args) || Object.keys(args).some(key => !Object.hasOwn(tool.properties, key)) || tool.required.some(key => !Object.hasOwn(args, key))) throw new Error("Unexpected or missing tool arguments");
+			if (Object.keys(params).some(key => !["name", "arguments", "_meta"].includes(key)) || !isJsonObject(args) || Object.keys(args).some(key => !Object.hasOwn(tool.properties, key)) || tool.required.some(key => !Object.hasOwn(args, key))) throw new Error("Unexpected or missing tool arguments");
 			for (const [key, value] of Object.entries(args)) if (typeof value !== "string" || !value.length || Buffer.byteLength(value) > tool.properties[key].maxLength || Buffer.from(value).toString("utf8") !== value) throw new Error("Invalid tool argument type, UTF-8, or byte limit");
 			if (!authority) {
 				// Metadata negotiation may precede host binding; no credential or mail is usable until issuance.

@@ -1,19 +1,10 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { closeSync, constants, fsyncSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-	HOSTED_ACK_RETENTION_MS,
-	type HostedMailboxMessageEvent,
-	type HostedMessagingGrant,
-	type HostedParticipant,
-	type HostedParticipantState,
-	type HostedRuntimeState,
-	type HostedTarget,
-	isHeld,
-	isPiTarget,
-} from "../hosted-types.ts";
+import { HOSTED_ACK_RETENTION_MS } from "../schemas/common.ts";
+import { type HostedMailboxMessageEvent, type HostedMessagingGrant, type HostedParticipant, type HostedParticipantState, type HostedRuntimeState, type HostedTarget, isHeld, isPiTarget } from "../schemas/state.ts";
 import { HostedParticipantCoordinator } from "./participant.ts";
-import { RegistrationError } from "./identity.ts";
+import { RuntimeError } from "../errors.ts";
 import { RuntimeRegistrationManager, type HostedLiveRegistration } from "./registration.ts";
 import {
 	deriveParticipantKey,
@@ -143,12 +134,12 @@ export class RuntimeMessaging {
 		this.registrations.authorize(registration.registrationId, registration.registrationKey);
 		const currentCaller = this.store.read().participants[callerParticipant.participantKey];
 		if (!stillHeldBy(currentCaller, callerParticipant.generation, caller.targetKey)) {
-			throw new RegistrationError("registration_stale", "Messaging controller changed during verification.");
+			throw new RuntimeError("registration_stale", "Messaging controller changed during verification.");
 		}
 		const target = this.store.read().targets[registration.targetKey];
 		const currentParticipant = this.store.read().participants[participantKey];
 		if (!target || !stillHeldBy(currentParticipant, expectedGeneration, registration.targetKey)) {
-			throw new RegistrationError("registration_stale", "Messaging recipient authority changed during issuance.");
+			throw new RuntimeError("registration_stale", "Messaging recipient authority changed during issuance.");
 		}
 		const createdAt = this.now();
 		const descriptorPath = messagingDescriptorPath(this.store.root, target.targetKey);
@@ -212,7 +203,7 @@ export class RuntimeMessaging {
 
 	async call(namespaceId: string, secret: string, input: MessagingInput): Promise<MessagingResult> {
 		if (this.inFlight >= MAX_IN_FLIGHT) {
-			throw new RegistrationError("conflict", "Messaging request capacity is exhausted; retry the same operation ID.");
+			throw new RuntimeError("conflict", "Messaging request capacity is exhausted; retry the same operation ID.");
 		}
 		this.inFlight++;
 		try {
@@ -226,7 +217,7 @@ export class RuntimeMessaging {
 				case "reply": return this.publishReply(registration, grant, input.operationId, input.eventId, input.body);
 				default: {
 					const unsupported: never = input;
-					throw new RegistrationError("invalid_request", `Unsupported messaging method ${JSON.stringify(unsupported)}.`);
+					throw new RuntimeError("invalid_request", `Unsupported messaging method ${JSON.stringify(unsupported)}.`);
 				}
 			}
 		} finally {
@@ -244,7 +235,7 @@ export class RuntimeMessaging {
 		const page = peers.slice(offset, offset + PEER_PAGE).map((peer) => this.peerView(peer));
 		const last = peers[offset + page.length - 1];
 		const target = state.targets[grant.targetKey];
-		if (!target) throw new RegistrationError("registration_stale", "Messaging target is absent.");
+		if (!target) throw new RuntimeError("registration_stale", "Messaging target is absent.");
 		const more = offset + page.length < peers.length && last !== undefined;
 		return {
 			namespaceId: grant.namespaceId,
@@ -276,7 +267,7 @@ export class RuntimeMessaging {
 	private markRead(grant: HostedMessagingGrant, eventId: string): MessagingReadResult {
 		this.store.apply({ type: "messaging.read", namespaceId: grant.namespaceId, eventId, at: this.now() });
 		const event = messagingInboxEvent(this.store.read(), grant, eventId);
-		if (event.readAt === undefined) throw new RegistrationError("conflict", "Message read time was not recorded.");
+		if (event.readAt === undefined) throw new RuntimeError("conflict", "Message read time was not recorded.");
 		return { namespaceId: grant.namespaceId, eventId, readAt: event.readAt };
 	}
 
@@ -284,7 +275,7 @@ export class RuntimeMessaging {
 		const eventId = Object.hasOwn(grant.operations, operationId) ? grant.operations[operationId] : undefined;
 		const event = eventId === undefined ? undefined : this.store.read().events[eventId];
 		if (!event || event.type !== "mailbox.message") {
-			throw new RegistrationError("not_found", "Operation has no publication in this namespace.");
+			throw new RuntimeError("not_found", "Operation has no publication in this namespace.");
 		}
 		return { namespaceId: grant.namespaceId, event };
 	}
@@ -311,7 +302,7 @@ export class RuntimeMessaging {
 		this.participants.sendMessaging(registration, grant.namespaceId, { operationId, recipientParticipantKey, body, inReplyToEventId });
 		const current = this.requireGrant(grant.namespaceId);
 		const eventId = Object.hasOwn(current.operations, operationId) ? current.operations[operationId] : undefined;
-		if (eventId === undefined) throw new RegistrationError("not_found", "Operation has no publication in this namespace.");
+		if (eventId === undefined) throw new RuntimeError("not_found", "Operation has no publication in this namespace.");
 		return { namespaceId: grant.namespaceId, eventId };
 	}
 
@@ -330,13 +321,13 @@ export class RuntimeMessaging {
 
 	private requireGrant(namespaceId: string): HostedMessagingGrant {
 		const grant = this.store.read().messaging[namespaceId];
-		if (!grant) throw new RegistrationError("registration_stale", "Messaging namespace is absent.");
+		if (!grant) throw new RuntimeError("registration_stale", "Messaging namespace is absent.");
 		return grant;
 	}
 
 	private requireParticipant(participantKey: string): HostedParticipant {
 		const participant = this.store.read().participants[participantKey];
-		if (!participant) throw new RegistrationError("registration_stale", "Messaging participant is absent.");
+		if (!participant) throw new RuntimeError("registration_stale", "Messaging participant is absent.");
 		return participant;
 	}
 
@@ -344,15 +335,15 @@ export class RuntimeMessaging {
 		const grants = this.store.read().messaging;
 		const grant = Object.hasOwn(grants, namespaceId) ? grants[namespaceId] : undefined;
 		if (!grant || !timingSafeEqual(Buffer.from(grant.secretDigest, "hex"), Buffer.from(digest(secret), "hex"))) {
-			throw new RegistrationError("registration_stale", "Messaging credential is absent or invalid.");
+			throw new RuntimeError("registration_stale", "Messaging credential is absent or invalid.");
 		}
 		if (this.now() >= grant.expiresAt) {
 			this.store.apply({ type: "messaging.expire", namespaceId });
 			const message = "Messaging namespace expired; do not republish an uncertain operation under a new namespace.";
-			throw new RegistrationError("registration_stale", message);
+			throw new RuntimeError("registration_stale", message);
 		}
 		if (!this.grantIsBoundToHolder(grant)) {
-			throw new RegistrationError("registration_stale", "Messaging authority is expired or no longer bound to this holder.");
+			throw new RuntimeError("registration_stale", "Messaging authority is expired or no longer bound to this holder.");
 		}
 	}
 
@@ -365,9 +356,9 @@ export class RuntimeMessaging {
 	}
 }
 
-function issuanceMismatch(): RegistrationError {
+function issuanceMismatch(): RuntimeError {
 	const message = "Messaging issuance requires a held Pi controller in the exact project/protocol and target generation.";
-	return new RegistrationError("identity_mismatch", message);
+	return new RuntimeError("identity_mismatch", message);
 }
 
 function issuanceScopeMatches(caller: HostedParticipant, participant: HostedParticipant, expectedGeneration: string): boolean {
@@ -442,7 +433,7 @@ function peerCursorOffset(peers: HostedParticipant[], namespaceId: string, curso
 	const decoded = Buffer.from(cursor, "base64url").toString("utf8");
 	const index = peers.findIndex((peer) => decoded === `${namespaceId}:${peer.participantKey}`);
 	if (index < 0 || Buffer.from(decoded).toString("base64url") !== cursor) {
-		throw new RegistrationError("invalid_request", "Messaging cursor is absent or outside this namespace.");
+		throw new RuntimeError("invalid_request", "Messaging cursor is absent or outside this namespace.");
 	}
 	return index + 1;
 }

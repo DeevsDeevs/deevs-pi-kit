@@ -1,7 +1,7 @@
 import { realpathSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { HostedRuntimeClientError } from "./client.ts";
-import { optionalText, strictObject, text } from "./responses.ts";
+import { decodeHerdr, herdrResult, HerdrPaneResultSchema, HerdrTabCreatedSchema } from "./schemas/herdr.ts";
 
 export interface CollaboratorTab {
 	tabId: string;
@@ -39,12 +39,10 @@ export async function createCollaboratorTab(
 	const args = ["tab", "create", "--workspace", workspaceId, "--cwd", launchCwd, "--label", label, ...environment, "--no-focus"];
 	const created = await pi.exec("herdr", args, { timeout: 5_000 });
 	if (created.code !== 0) throw new HostedRuntimeClientError("host_unavailable", "Herdr could not create the native collaborator tab.");
-	const result = strictObject(strictObject(JSON.parse(created.stdout), "Herdr response").result, "Herdr result");
-	const rootPane = strictObject(result.root_pane, "Herdr root pane");
-	const paneId = text(rootPane.pane_id);
-	const tabId = text(strictObject(result.tab, "Herdr tab").tab_id);
-	const reported = optionalText(rootPane.terminal_id);
-	const terminalId = reported ? reported : await herdrPaneTerminal(pi, paneId);
+	const result = decodeHerdr(HerdrTabCreatedSchema, herdrResult(created.stdout), "Herdr tab");
+	const paneId = result.root_pane.pane_id;
+	const tabId = result.tab.tab_id;
+	const terminalId = result.root_pane.terminal_id ?? await herdrPaneTerminal(pi, paneId);
 	if (!terminalId) throw new HostedRuntimeClientError("invalid_response", "Herdr did not return the native collaborator terminal identity.");
 	return { tabId, paneId, terminalId };
 }
@@ -52,8 +50,7 @@ export async function createCollaboratorTab(
 async function herdrPaneTerminal(pi: ExtensionAPI, paneId: string): Promise<string | undefined> {
 	const pane = await pi.exec("herdr", ["pane", "get", paneId], { timeout: 2_000 });
 	if (pane.code !== 0) return undefined;
-	const response = strictObject(JSON.parse(pane.stdout), "Herdr response");
-	return text(strictObject(strictObject(response.result, "Herdr result").pane, "Herdr pane").terminal_id);
+	return decodeHerdr(HerdrPaneResultSchema, herdrResult(pane.stdout), "Herdr pane").pane.terminal_id;
 }
 
 /** Proves a pane reached its authorized cwd before anything is dispatched into it. */
@@ -74,10 +71,9 @@ async function herdrPaneSettledAt(pi: ExtensionAPI, expected: CollaboratorTab, e
 	const response = await pi.exec("herdr", ["pane", "get", expected.paneId], { timeout: 2_000 });
 	if (response.code !== 0) return false;
 	try {
-		const result = strictObject(strictObject(JSON.parse(response.stdout), "Herdr response").result, "Herdr result");
-		const pane = strictObject(result.pane, "Herdr pane");
+		const pane = decodeHerdr(HerdrPaneResultSchema, herdrResult(response.stdout), "Herdr pane").pane;
 		if (pane.pane_id !== expected.paneId || pane.terminal_id !== expected.terminalId) return false;
-		return realpathSync(text(pane.cwd)) === expectedCwd;
+		return pane.cwd !== undefined && realpathSync(pane.cwd) === expectedCwd;
 	} catch {
 		return false;
 	}
