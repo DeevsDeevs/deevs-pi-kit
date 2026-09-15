@@ -3,6 +3,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { HostedRuntimeClientError } from "./client.ts";
 import type { DriverSpec, StartedAgentIdentity } from "./drivers.ts";
 import type { CollaboratorTab } from "./herdr.ts";
+import type { HerdrAgentStatus } from "./schemas/herdr.ts";
 import { type HostedCollaboratorProfile, type HostedNativeCollaboratorDriver, isHeld } from "./schemas/state.ts";
 import { nativeMessagingConfiguration, type NativeMessagingConfiguration } from "./mcp/native.ts";
 import type { MessagingClient } from "./messaging-client.ts";
@@ -61,6 +62,8 @@ export class NativeAgentService {
 	private readonly session: RuntimeSession;
 	private readonly messaging: MessagingClient;
 	private readonly registrations = new Map<string, LiveClientRegistration>();
+	private readonly agentStatuses = new Map<string, HerdrAgentStatus>();
+	private readonly blockedNotified = new Set<string>();
 	private readonly launching = new Set<string>();
 	private heartbeatActive = false;
 
@@ -207,6 +210,7 @@ export class NativeAgentService {
 			const registration = await this.verifyManagedRegistration(targetKey, live);
 			if (!registration) return false;
 			this.registrations.set(targetKey, registration);
+			this.notifyBlocked(ctx, targetKey, control);
 			const active = this.session.store.agent(targetKey);
 			const session = this.session.liveRegistration;
 			// Native automatic input is blocked until the provider can attest editor ownership and exact-session admission.
@@ -223,6 +227,18 @@ export class NativeAgentService {
 		}
 	}
 
+	/** One notice per stretch of `blocked`, sent only when the lead is idle; a tab that unblocks arms the next one. */
+	private notifyBlocked(ctx: ExtensionContext, targetKey: string, control: ManagedAgentControl): void {
+		if (this.agentStatuses.get(targetKey) !== "blocked") {
+			this.blockedNotified.delete(targetKey);
+			return;
+		}
+		if (this.blockedNotified.has(targetKey)) return;
+		const notice = `Collaborator ${control.protocol}/${control.participantId} (${control.driver}) is blocked on a prompt in Herdr tab ${control.paneId}.`
+			+ " It cannot read mail until someone answers that prompt or you stop it with collaborator_manage.";
+		if (this.messaging.deliverNotice(ctx, notice)) this.blockedNotified.add(targetKey);
+	}
+
 	/** The verified registration for one managed target, or undefined when this session moved on. */
 	private async verifyManagedRegistration(targetKey: string, live: () => boolean): Promise<LiveClientRegistration | undefined> {
 		const known = this.registrations.get(targetKey);
@@ -232,6 +248,7 @@ export class NativeAgentService {
 		if (known) {
 			const heartbeat = parseHeartbeat(await this.session.client.call("bridge.heartbeat", auth(known)));
 			if (!live()) return undefined;
+			if (heartbeat.agentStatus) this.agentStatuses.set(targetKey, heartbeat.agentStatus);
 			if (heartbeat.registration.registrationId !== known.registrationId || heartbeat.registration.registrationKey !== known.registrationKey) {
 				throw new HostedRuntimeClientError("identity_mismatch", "Native heartbeat replaced its registration authority.");
 			}

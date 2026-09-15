@@ -139,6 +139,7 @@ export const HeartbeatResult = Type.Object({
 	registrationKey: IdText,
 	leaseUntil: Count,
 	mail: Type.Optional(MailHintResult),
+	agentStatus: Type.Optional(HerdrAgentStatusSchema),
 });
 
 export const ParticipantStatusResult = Type.Object({

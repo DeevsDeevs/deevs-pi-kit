@@ -9,6 +9,13 @@ import type { ManagedAgentControl, ParticipantIdentity } from "./session-record.
 import { messagingDescriptorPath } from "./service/messaging.ts";
 
 const HOSTED_MESSAGING_MAIL = "deevs.hosted-runtime.messaging-mail.v1";
+const HOSTED_RUNTIME_NOTICE = "deevs.hosted-runtime.notice.v1";
+
+/** An idle session with nothing queued and, in the TUI, nothing half-typed: the only moment Runtime speaks up. */
+function deliveryReady(ctx: ExtensionContext): boolean {
+	if (!ctx.hasUI || !ctx.isIdle() || ctx.hasPendingMessages()) return false;
+	return ctx.mode !== "tui" || ctx.ui.getEditorText() === "";
+}
 
 /** Issues private MCP messaging descriptors and delivers mail into an idle session; it never acquires identity. */
 export class MessagingClient {
@@ -95,6 +102,13 @@ export class MessagingClient {
 		);
 	}
 
+	/** A one-line Runtime notice for the model, delivered only when the session is idle; true once it went out. */
+	deliverNotice(ctx: ExtensionContext, content: string): boolean {
+		if (!this.session.isActive || !deliveryReady(ctx)) return false;
+		this.session.pi.sendMessage({ customType: HOSTED_RUNTIME_NOTICE, content, display: false }, { triggerTurn: true, deliverAs: "followUp" });
+		return true;
+	}
+
 	/** Falls back to a one-line hint when the inbox cannot be read, so the model still knows to look. */
 	private async mailContent(ctx: ExtensionContext): Promise<string> {
 		const hint = "You have collaborator mail: call collaborator_inbox, act on it, and answer with collaborator_reply if it asks for one."
@@ -111,8 +125,7 @@ export class MessagingClient {
 		if (!this.session.scope(ctx, registration)()) return false;
 		if (!isHeld(this.session.store.identity?.disposition)) return false;
 		if (!this.session.pi.getActiveTools().includes("collaborator_inbox")) return false;
-		if (!ctx.hasUI || !ctx.isIdle() || ctx.hasPendingMessages()) return false;
-		return ctx.mode !== "tui" || ctx.ui.getEditorText() === "";
+		return deliveryReady(ctx);
 	}
 
 	private holdsIdentity(registration: LiveClientRegistration, identity: ParticipantIdentity): boolean {
