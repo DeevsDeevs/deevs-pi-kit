@@ -1,179 +1,84 @@
 # deevs-pi-kit
 
-Portable Pi package with bounded Jobs, process-isolated curated Subagents, trusted workflows, autonomous Missions, session Cron, durable Chains, markdown wiki helpers, arXiv tools, session todos, and focused skills.
+A [Pi](https://github.com/earendil-works/pi) package for work you can walk away from: bounded background jobs, isolated subagents, autonomous missions, handoffs that survive a session, and persistent collaborators (Pi, Claude Code or Codex) that mail each other from their own [Herdr](https://herdr.dev) tabs. Pi does the thinking; Herdr owns every process that outlives a turn.
+
+## Requirements
+
+- Pi 0.82 or newer and Node 22.19 or newer.
+- Herdr, for Runtime collaborators. Everything else works in plain Pi.
+- The Claude Code or Codex CLI, only for collaborators on that driver.
 
 ## Install
 
 ```bash
-pi install git:github.com/DeevsDeevs/deevs-pi-kit
-pi install git:github.com/DeevsDeevs/deevs-pi-kit -l   # project-local
-pi install .                                           # from a local checkout
+pi install git:github.com/DeevsDeevs/deevs-pi-kit        # every project
+pi install git:github.com/DeevsDeevs/deevs-pi-kit -l     # this project only
+pi update                                                # later upgrades
 ```
 
-Reload Pi after installing or editing:
+Run `/reload` in Pi after installing or updating. `pi config` toggles individual extensions and skills.
+
+The driver-agnostic skills (`grill-me`, `diagnose`, `codebase-orientation`, `validation-review`, `concept-diagrams`, `datadog-pup`) also work in Claude Code and Codex: symlink `skills/<name>` from the installed checkout into `~/.agents/skills` for Codex and `~/.claude/skills` for Claude Code.
+
+## Quickstart: a collaborator
 
 ```text
-/reload
+/runtime start                     # the daemon, in its own Herdr workspace
+/runtime collaborate demo lead     # your name in this project's collaboration
+/runtime auto on                   # optional: no confirmation dialogs
+> Start a read-only Codex collaborator called reviewer on gpt-5.6-terra and ask it to review HEAD.
 ```
 
-## Contents
-
-```text
-extensions/jobs/        Bounded non-agent commands (`job_*`)
-extensions/subagents/   Owned curated personas and isolated runtime (`subagent*`)
-extensions/workflow/    Trusted-project JavaScript workflows (`workflow`)
-extensions/mission/     Autonomous single-controller objectives (`mission_*`)
-extensions/cron/        Process-local session schedules (`cron`, `/cron`)
-extensions/chains/      Durable markdown handoffs (`chain_*`)
-extensions/wiki/        Curated markdown wiki helpers (`wiki_*`)
-extensions/arxiv/       arXiv search, lookup, and BibTeX tools
-extensions/todos/       Session-scoped todo list (`todo_list`)
-extensions/ask-user/    Interactive clarification UI (`ask_user`)
-extensions/codex-fast/  OpenAI Codex Fast mode service tier (`/codex-fast`)
-extensions/notifier/    Ready-for-input terminal notifications
-extensions/herdr-compat/ Experimental Shift+Enter compatibility for Pi inside Herdr
-extensions/runtime/     Durable collaborator identity, mail and Herdr agent lifecycle
-skills/                 Agent behavior guidance
-```
+Pi opens the tab with `collaborator_manage`, mails it with `collaborator_send`, and the reply lands in your session on its own. A `workspace-write` collaborator works in its own worktree on `runtime/collab/demo/<name>`; review and merge that branch with Git, then `collaborator_workspace cleanup`. The daemon's guarantees and limits are in [PROTOCOL.md](extensions/runtime/PROTOCOL.md); what the model is told to do is in [skills/collaborators](skills/collaborators/SKILL.md).
 
 ## Extensions
 
-### Jobs
-
-Run bounded non-interactive commands with capped output, readiness checks, hard timeouts, durable terminal events, and process-tree cancellation. Persistent shells, servers, REPLs, panes, and reliable unattended schedules belong in Herdr.
-
-Tools: `job_start`, `job_wait`, `job_read`, `job_stop`. After starting background work, continue runnable independent work; terminal delivery wakes idle Pi automatically. Wait only at a result dependency, cancellation, or final-settlement gate.
-
-Command: `/jobs` (`/jobs <id>`, `/jobs stop <id>`, `/jobs clear [id]`). On upgrade, legacy `~/.pi/agent/process-state` records are detected and reported but never adopted or killed; inspect old tmux sessions and hand persistent work to Herdr before removing those records.
-
-### Subagents
-
-Run focused staff agents in the background. Built-in agents include `explorer`, `architect`, `reviewer`, `tester`, `logic-hunter`, `devops`, `python-dev`, `cpp-dev`, `rust-dev`, and `anti-slop`.
-
-Tools: `subagent`, `subagent_wait`. Command: `/agents [run-or-group-id]`, `/agents stop <id>`, `/agents resume <id> <task>`, or `/agents clear [id]`. Background runs wake idle Pi when settled; continue independent parent work and collect results only when they become the next dependency.
-
-Subagents are read-only unless `allowWrite: true` is requested and the user confirms the run in the TUI. Read-only personas receive `safe_read`, `safe_list`, and `safe_search`—never unrestricted `bash`. The process-isolated executor supports parallel groups, hard cancellation, exact per-run usage, detached recovery, persistent agent identity, and resume into the exact private Pi session. Omitted turn/token/cost limits are unbounded; wall time defaults to six hours and is capped at 24 hours. Explicit orchestrator limits always win. Project model/concurrency settings remain in `.pi/subagents.json`.
-
-### Workflows
-
-Run foreground JavaScript function bodies in a terminable worker with `await agent({ agent, task })`. Workflow has no background/wait pair: use a background Subagent group when the parent can continue independently. Workflows require a trusted project, force child agents read-only, cap concurrency, aggregate real usage, and settle children before returning. Concurrent Workflows share one bounded below-editor dashboard: a single run shows agent detail, while multiple runs collapse to capped per-Workflow progress rows. Trusted workflow JavaScript is **not** a security sandbox.
-
-Tool: `workflow`.
-
-### Mission
-
-Create a single-controller workspace objective with `agent_settled` autonomous continuation, user-priority admission, wall/turn/token/cost limits, objective versions, typed review candidates, persisted accepted findings and reviewed-head anchors, exact clean-candidate correction scopes, requirement/path-linked blocker/major findings, one-at-a-time correction-limit extensions, trusted completion latches, child-settlement and Chain completion vetoes, and durable state under `.missions/`. A stopped or broken Pi session can hand control to a new same-cwd session through an explicit, confirmed takeover; Missions never use collaborative multi-writer merging. In a non-Git workspace containing several repositories, pass explicit cwd-relative Mission `paths`; review and mutation fingerprints then cover each selected Git root independently. Path-less Missions cover the whole current repository, so concurrent sessions should use explicit paths.
-
-Tools: `mission_get`, `mission_takeover`, `mission_resume`, `mission_create`, `mission_update`, `mission_progress`, `mission_search`, `mission_complete`.
-
-Commands: `/mission <objective> [--name short-title] [--req criterion] [--path cwd-relative-scope] [--budget 200k] [--cost $2] [--chain name]` (`--path` is repeatable), `/mission status`, `/mission takeover [mission-id-or-slug]`, `/mission pause`, `/mission resume`, `/mission clear`, `/mission complete` (trusted candidate authorization), and `/mission end`/`stop`.
-
-Canonical Mission state is a validated, revisioned snapshot in `.missions/.state/<slug>.json`; Pi custom session entries remain transcript mirrors. Every mutation verifies the controlling session under an exclusive local-filesystem lock. Takeover imports exact same-cwd legacy session state when needed, carries usage/progress, preserves an unchanged adjudicated candidate, and resumes immediately when limits permit. It does not stop the old Pi process or its children, so confirmation requires that the old session is already stopped. Requirements use stable indexes, validation uses command/exit-code records, blockers use explicit IDs, and reviewer verdicts come from a schema-validated child tool. Candidate fingerprints bind bounded final worktree content rather than HEAD/diff representation, so committing an unchanged reviewed tree does not trigger a redundant review. `mission.md` and `log.md` are generated human/search projections. See [`extensions/mission/README.md`](extensions/mission/README.md).
-
-### Cron
-
-Schedule a prompt for the current Pi session with a standard five-field local-time cron expression. Use it for user-requested reminders and recurring timed checks/reports, or a near-term autonomous one-shot return when wall-clock delay is the real dependency and no completion event exists. Do not poll Jobs, Subagents, or Workflows; their terminal events already wake idle Pi. Tasks persist by exact Pi session id, fire only while that session process is idle, boundedly coalesce missed recurring occurrences on resume, and advance only after Pi admits the generated `<cron-fire>` follow-up.
-
-Tool: `cron` with `create`, `list`, and `delete` actions. Command: `/cron` or `/cron delete <id>`.
-
-Cron is process-local: it cannot wake a closed Pi process or machine. Use Herdr/OS scheduling for reliable unattended wakeups. See [`extensions/cron/README.md`](extensions/cron/README.md).
-
-### Chains
-
-Save and search durable multi-session handoffs under `.chains/`.
-
-Tools: `chain_save`, `chain_load`, `chain_fork`, `chain_context`, `chain_list`, `chain_search`.
-
-Commands: `/chains`, `/chain-link`, `/chain-load`, `/chain-fork`, `/chain-list`, `/chain-search`, `/chain-waive <reason>`.
-
-Pi session entries track active `saved` versus `checkpoint due` state across resume and typed durable milestones. At 80% context usage, substantive tools are blocked until `chain_save`; the checkpoint is session metadata even for read-only tasks. A successful pressure checkpoint triggers Pi compaction and a follow-up turn that reloads the Chain and continues. If saving fails, settlement, cancellation, status, clarification, and collaborator-reporting tools remain available. See [`extensions/chains/README.md`](extensions/chains/README.md).
-
-### Wiki
-
-Maintain curated markdown knowledge bases with deterministic linting, graph checks, search, and context packing.
-
-Tools: `wiki_init`, `wiki_status`, `wiki_lint`, `wiki_graph`, `wiki_search`, `wiki_context`.
-
-Commands: `/wiki:init`, `/wiki:status`, `/wiki:lint`, `/wiki:graph`, `/wiki:search`, `/wiki:context`. See [`extensions/wiki/README.md`](extensions/wiki/README.md).
-
-### arXiv
-
-Search the official arXiv API, fetch exact paper metadata, and generate BibTeX.
-
-Tools: `arxiv_search`, `arxiv_get`, `arxiv_bibtex`.
-
-Commands: `/arxiv:search`, `/arxiv:get`, `/arxiv:bibtex`. See [`extensions/arxiv/README.md`](extensions/arxiv/README.md).
-
-### Todos
-
-Track compact current-session plans for non-trivial work.
-
-Tool: `todo_list`.
-
-Commands: `/todos`, `/todos clear`. See [`extensions/todos/README.md`](extensions/todos/README.md).
-
-### Ask user
-
-Collect focused clarifications or decisions through an interactive overlay.
-
-Tool: `ask_user`.
-
-Use it only after checking files, docs, and commands that could answer the question.
-
-### Codex Fast
-
-Enable OpenAI Codex Fast mode by injecting `service_tier: "priority"` into eligible ChatGPT-auth `openai-codex` requests. It does not change the selected model or thinking level.
-
-Commands: `/codex-fast`, `/codex-fast status`, `/codex-fast on`, `/codex-fast off`, `/codex-fast auto`, `/codex-fast toggle`.
-
-Optional config: `.pi/codex-fast.json` or `~/.pi/agent/extensions/codex-fast.json` with `{ "enabled": false, "showStatus": true }`.
-
-Requires `/login` → ChatGPT Plus/Pro (Codex), and applies to any `openai-codex-responses` model instead of a version allowlist.
-
-### Notifier
-
-Send a ready-for-input terminal notification on agent completion.
-
-Commands: `/notifier:test`, `/notifier:settings`.
-
-Project settings persist to `.pi/notifier.json`.
-
-### Herdr compatibility
-
-When Pi runs inside Herdr (`HERDR_ENV=1`), normalize legacy and Kitty Alt+Enter sequences produced by Shift+Enter compatibility mappings into a newline. This is experimental: after a terminal multiplexer collapses Shift+Enter into Alt+Enter, genuine Alt+Enter cannot be distinguished and is also treated as a newline.
-
-### Hosted runtime
-
-Runtime is a local daemon that owns durable collaborator identity and mail across restarts, delivering mail into an idle Pi session on its own heartbeat instead of prompting or focusing any pane. It hosts persistent Pi, Claude Code and Codex collaborators as real interactive agents in no-focus Herdr tabs, each holding a participant identity lease, and each writer working in its own Git worktree on `runtime/collab/<protocol>/<participantId>`.
-
-Identity is the registration ID and key Runtime minted plus `herdr agent get <name>` — for a Pi session, its session file header. Panes, tabs and terminals are never re-verified; the stored tab ID exists only so stop can close the exact tab Runtime opened. Every start, stand-down, stop, release, takeover and worktree cleanup needs one confirmed interactive step, unless the orchestrating Pi session has run `/runtime auto on`, which is its standing confirmation for start, stand-down, stop and cleanup inside its own project; collaborator prose never authorizes any of them. Writers run unattended: Claude in its auto permission mode, Codex with approvals off inside its workspace-write sandbox; read-only natives get the same mail tools, Claude confined to Read, Glob and Grep with every settings file ignored, Codex in its read-only sandbox. A tab Herdr reports `blocked` on a human prompt shows in `collaborator_list` and is announced once to the Pi session that launched it. A failing launch step stops what it started and reports the error; nothing half-launched is kept. Unread mail for a Claude/Codex tab wakes it with one short `herdr agent prompt` naming the sender, at most three times per message and no more than once per 30 seconds for the same message, never while Herdr reports the tab blocked on a human prompt (a busy tab queues it) — never a body, and never proof that the agent acted on it. Runtime never commits or merges: review a writer's branch and integrate it with ordinary Git.
-
-Tools: `collaborator_list` for discovery, `collaborator_manage` for participant and process lifecycle, `collaborator_workspace` to list worktrees and confirm exact cleanup, plus four shared MCP mail tools (`collaborator_peers`, `collaborator_inbox`, `collaborator_send`, `collaborator_reply`) used by Pi, Claude Code and Codex alike through one stdio interface. The tool descriptions are the whole contract: no namespace or operation IDs, no skill to load, one line of startup context.
-
-Commands: `/runtime start`, `/runtime status`, `/runtime register`, `/runtime collaborate <protocol> <id>`, `/runtime participants`, `/runtime stand-down`, `/runtime leave`, `/runtime takeover <protocol> <id>`, and `/runtime auto on|off`. Collaborator starts are a `collaborator_manage` operation, not a command.
-
-See [`extensions/runtime/PROTOCOL.md`](extensions/runtime/PROTOCOL.md) for the wire protocol, method map, identity rules and limits.
+| Extension | Does | Tools and commands | More |
+|---|---|---|---|
+| runtime | Daemon owning collaborator identity, mail and Herdr tab lifecycle | `collaborator_list`, `collaborator_manage`, `collaborator_workspace`, four MCP mail tools; `/runtime status\|start\|register\|collaborate\|participants\|stand-down\|leave\|takeover\|auto` | [PROTOCOL](extensions/runtime/PROTOCOL.md) |
+| jobs | Bounded non-interactive commands: capped output, hard timeout, process-tree cancellation | `job_start`, `job_wait`, `job_read`, `job_stop`; `/jobs` | |
+| subagents | Curated read-only personas (explorer, architect, reviewer, tester, logic-hunter, devops, python-dev, cpp-dev, rust-dev, anti-slop) in isolated Pi processes; writing needs `allowWrite` and your confirmation | `subagent`, `subagent_wait`; `/agents` | [README](extensions/subagents/README.md) |
+| workflow | Foreground JavaScript that fans work out to read-only child agents, trusted projects only | `workflow` | |
+| mission | Single-controller autonomous objectives with limits, reviewed candidates and confirmed takeover; state under `.missions/` | `mission_*`; `/mission` | [README](extensions/mission/README.md) |
+| cron | Five-field schedules for this Pi session, fired while it is idle | `cron`; `/cron` | [README](extensions/cron/README.md) |
+| chains | Markdown handoffs under `.chains/`; a checkpoint is forced at 80% context | `chain_*`; `/chains`, `/chain-link`, `/chain-load`, `/chain-fork`, `/chain-list`, `/chain-search`, `/chain-waive` | [README](extensions/chains/README.md) |
+| wiki | Curated markdown knowledge base: lint, graph, search, context packing | `wiki_*`; `/wiki:*` | [README](extensions/wiki/README.md) |
+| arxiv | arXiv search, exact metadata, BibTeX | `arxiv_*`; `/arxiv:*` | [README](extensions/arxiv/README.md) |
+| todos | Session todo list | `todo_list`; `/todos` | [README](extensions/todos/README.md) |
+| ask-user | Clarification overlay, used after files and docs have been checked | `ask_user` | |
+| codex-fast | OpenAI Codex Fast service tier on ChatGPT-auth requests | `/codex-fast`; `.pi/codex-fast.json` | |
+| notifier | Ready-for-input terminal notification | `/notifier:test`, `/notifier:settings`; `.pi/notifier.json` | |
+| herdr-compat | Shift+Enter as newline inside Herdr (experimental) | | |
 
 ## Skills
 
-Skills provide progressive guidance for when and how to use the tools:
-
-```text
-background-tasks  subagents       chain-system    wiki
-concept-diagrams  arxiv           todos           ask-user
-datadog-pup       grill-me        diagnose        codebase-orientation
-validation-review missions       collaborators
-```
+| Skill | Fires when |
+|---|---|
+| collaborators | Starting, mailing, inspecting or stopping collaborators |
+| background-tasks | Choosing between a Job, session Cron and a Herdr-owned process |
+| subagents | Delegating exploration, review, testing or a language-specific pass |
+| missions | Creating, continuing or taking over an autonomous objective |
+| chain-system | Saving, loading or searching handoffs across sessions |
+| todos | Tracking multi-step work in the current session |
+| wiki | Building or querying a curated markdown wiki |
+| arxiv | Finding, triaging or citing papers |
+| ask-user | A clarification would change scope, safety or acceptance |
+| codebase-orientation | Mapping an unfamiliar area before editing |
+| concept-diagrams | A source-grounded diagram would explain more than prose |
+| diagnose | Debugging a failure, flake, hang or regression to its root cause |
+| grill-me | Pressure-testing a plan, design or scope one question at a time |
+| validation-review | Verifying or reviewing a change before merge |
+| datadog-pup | Operating Datadog through the pup CLI |
 
 ## Development
 
 ```bash
 npm install
-npm run lint:anti-slop && npm run typecheck && npm test
-npm run smoke:runtime-release        # daemon, participant, mail and MCP gate against real Herdr
-npm run smoke:collaborator-release   # confirmed collaborator launch, mail hint, stop and worktree gate
-npm run smoke:native-release         # deterministic interactive-target and Git worktree gate
+npm run check                        # lint, typecheck, tests, mode smokes, audit, pack
+npm run smoke:runtime-release        # daemon, participant, mail and MCP against real Herdr
+npm run smoke:collaborator-release   # collaborator launch, mail, stop and worktree
+npm run smoke:native-release         # interactive targets and Git worktrees, no Herdr
+npm run bench:context                # tokens each surface costs, see bench/README.md
 ```
 
-`npm run check` additionally runs the RPC/print/JSON mode smokes, the lockfile audit, and a package dry run. The release gates are kept
-out of it because they start real Herdr and Pi processes.
+The release smokes start real Herdr and Pi processes, so `check` leaves them out.
