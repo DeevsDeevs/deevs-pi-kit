@@ -143,12 +143,14 @@ async function main() {
 		herdr("agent", "prompt", leadName, `Start collaborators in protocol ${lane} with callerParticipantId lead: ${request}`);
 		const live = await waitParticipants(client, auth, lane, plan.map(c => c.id), 300_000);
 		if (!live) throw new Error("collaborators did not become held and live");
-		const targets = Object.values(readState().targets);
+		const state = readState();
 		for (const c of plan) {
 			const status = live.find(p => p.participantId === c.id);
-			// Old dead targets keep the same participantKey, so only the one at the current generation is this collaborator.
-			const target = targets.find(t => t.participantKey === status.participantKey && t.holderGeneration === status.generation);
+			// The participant names its current holder; a Pi holder is found in Herdr by its session file, a native one by agent name.
+			const target = state.targets[state.participants[status.participantKey]?.holderTargetKey];
 			if (!target) throw new Error(`no Runtime target for ${c.id}`);
+			if (!target.agentName) target.agentName = herdr("agent", "list").result.agents.find(a => a.agent_session?.value === target.piSessionFile)?.name;
+			if (!target.agentName) throw new Error(`no Herdr agent for ${c.id}`);
 			const agent = await waitAgentSession(target.agentName, 10_000);
 			record.collaborators.push({
 				...c,
