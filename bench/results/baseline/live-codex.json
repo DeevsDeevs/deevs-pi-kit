@@ -1,0 +1,190 @@
+{
+	"lane": "codex",
+	"startedAt": 1789482543314,
+	"collaborators": [
+		{
+			"id": "c1",
+			"driver": "codex",
+			"model": "gpt-5.6-terra",
+			"profile": "read-only",
+			"participantKey": "participant_b5263f6cc3fd34ec0910c134e21e9ca806e8f56556d09900a76daacb05c60433",
+			"agentName": "collab-1c91401d9729594363136e44b",
+			"cwd": "/home/deevs/agents/pi-kit-bench/arena",
+			"transcript": "/home/deevs/.codex/sessions/2026/09/15/rollout-2026-09-15T16-29-25-01a0a579-0027-7bc0-99a3-705783ec296c.jsonl",
+			"transcriptModel": "gpt-5.6-terra",
+			"transcriptEntries": 34
+		}
+	],
+	"mails": [
+		{
+			"statusAtSend": "idle",
+			"seqAtSend": 921,
+			"scenario": "pong",
+			"mailId": "pong",
+			"collaborator": "c1",
+			"eventId": "evt_5469d69f-f2e2-40b0-b57e-660f52d19834",
+			"sentAt": 1789482582486,
+			"bytes": 40,
+			"body": "Reply with exactly the single word: pong",
+			"tWorking": 421,
+			"workingStatus": "working",
+			"replyEventId": "evt_f89ce3ea-edde-48cf-8b64-62439d6ca4fb",
+			"replyBody": "pong",
+			"tReply": 11608,
+			"correlated": "reply",
+			"settledAt": 1789482594094,
+			"wakes": 1,
+			"outcome": "reply",
+			"score": {
+				"toolCalls": 3,
+				"stray": 1,
+				"tools": {
+					"exec": 1,
+					"collaborator_inbox": 1,
+					"collaborator_reply": 1
+				},
+				"input": 46304,
+				"output": 240,
+				"wakes": 1
+			}
+		},
+		{
+			"statusAtSend": "working",
+			"seqAtSend": 923,
+			"scenario": "count-root",
+			"mailId": "count-root",
+			"collaborator": "c1",
+			"eventId": "evt_933817e7-7d97-473f-a995-5702a179dc15",
+			"sentAt": 1789482594123,
+			"bytes": 145,
+			"body": "How many entries are in the root directory of this repository, not counting .git and not recursing? Reply with just that number and nothing else.",
+			"tWorking": 19515,
+			"workingStatus": "working",
+			"replyEventId": "evt_d02028ea-c785-4ba3-8cfe-2e0f3f53bc0e",
+			"replyBody": "2",
+			"tReply": 36372,
+			"correlated": "reply",
+			"settledAt": 1789482630495,
+			"wakes": 1,
+			"outcome": "reply",
+			"score": {
+				"toolCalls": 3,
+				"stray": 0,
+				"tools": {
+					"collaborator_inbox": 1,
+					"exec": 1,
+					"collaborator_reply": 1
+				},
+				"input": 47770,
+				"output": 223,
+				"wakes": 1
+			}
+		},
+		{
+			"statusAtSend": "working",
+			"seqAtSend": 925,
+			"scenario": "chain",
+			"mailId": "chain",
+			"collaborator": "c1",
+			"eventId": "evt_4c51f60b-6312-4843-8a5f-ac204ba0372a",
+			"sentAt": 1789482630515,
+			"bytes": 41,
+			"body": "Reply with exactly the single word: ready",
+			"tWorking": 17936,
+			"workingStatus": "working",
+			"replyEventId": "evt_bc49d857-c3a7-4979-9d88-afba96288a92",
+			"replyBody": "ready",
+			"tReply": 27135,
+			"correlated": "reply",
+			"settledAt": 1789482657650,
+			"wakes": 2,
+			"outcome": "reply",
+			"score": {
+				"toolCalls": 2,
+				"stray": 0,
+				"tools": {
+					"collaborator_inbox": 1,
+					"collaborator_reply": 1
+				},
+				"input": 48955,
+				"output": 167,
+				"wakes": 1
+			}
+		},
+		{
+			"statusAtSend": "working",
+			"seqAtSend": 927,
+			"scenario": "chain",
+			"mailId": "chain+chain",
+			"collaborator": "c1",
+			"eventId": "evt_6709b697-095b-4580-bb38-6d8b3506e9f1",
+			"sentAt": 1789482657665,
+			"bytes": 44,
+			"body": "Now reply with exactly the single word: done",
+			"tWorking": 25988,
+			"workingStatus": "working",
+			"replyEventId": "evt_d9fad139-9546-4ad9-8da6-3d0b1121d76e",
+			"replyBody": "done",
+			"tReply": 34475,
+			"correlated": "reply",
+			"settledAt": 1789482692140,
+			"wakes": 1,
+			"outcome": "reply",
+			"score": {
+				"toolCalls": 2,
+				"stray": 0,
+				"tools": {
+					"collaborator_inbox": 1,
+					"collaborator_reply": 1
+				},
+				"input": 49922,
+				"output": 170,
+				"wakes": 1
+			}
+		}
+	],
+	"scenarios": [
+		{
+			"id": "pong",
+			"collaborator": "c1",
+			"expect": "reply",
+			"mails": [
+				"pong"
+			],
+			"replies": 1,
+			"wakes": 1,
+			"outcome": "pass",
+			"matched": true
+		},
+		{
+			"id": "count-root",
+			"collaborator": "c1",
+			"expect": "reply",
+			"mails": [
+				"count-root"
+			],
+			"replies": 1,
+			"wakes": 1,
+			"outcome": "pass",
+			"matched": true
+		},
+		{
+			"id": "chain",
+			"collaborator": "c1",
+			"expect": "reply",
+			"mails": [
+				"chain",
+				"chain+chain"
+			],
+			"replies": 2,
+			"wakes": 3,
+			"outcome": "pass",
+			"matched": true,
+			"followMatched": true
+		}
+	],
+	"findings": [
+		"collab-1c91401d9729594363136e44b never reported an agent session; its transcript cannot be scored"
+	],
+	"finishedAt": 1789482698602
+}
