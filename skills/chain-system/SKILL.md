@@ -1,6 +1,6 @@
 ---
 name: chain-system
-description: Save, fork, search and load .chains links: work context across sessions, handoff to subagents, prior decisions and next steps.
+description: "Save, fork, search and load .chains links: work context across sessions, handoff to subagents, prior decisions and next steps."
 ---
 
 # Chain System

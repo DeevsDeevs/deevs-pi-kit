@@ -1,6 +1,6 @@
 ---
 name: diagnose
-description: Disciplined debugging loop for broken behaviour, failing builds, flaky commands, hung processes or regressions. Use when asked to debug or find a root cause.
+description: "Disciplined debugging loop for broken behaviour, failing builds, flaky commands, hung processes or regressions. Use when asked to debug or find a root cause."
 ---
 
 # Diagnose

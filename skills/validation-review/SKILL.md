@@ -1,6 +1,6 @@
 ---
 name: validation-review
-description: Bounded test and review pass for completed or proposed changes: verify, review before merge, check requirements, run e2e or smoke tests.
+description: "Bounded test and review pass for completed or proposed changes: verify, review before merge, check requirements, run e2e or smoke tests."
 ---
 
 # Validation Review

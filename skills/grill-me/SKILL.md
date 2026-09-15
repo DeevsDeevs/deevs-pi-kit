@@ -1,6 +1,6 @@
 ---
 name: grill-me
-description: One-question-at-a-time pressure test of a plan, design, API or scope. Use when the user says 'grill me' or wants assumptions challenged before implementing.
+description: "One-question-at-a-time pressure test of a plan, design, API or scope. Use when the user says 'grill me' or wants assumptions challenged before implementing."
 ---
 
 # Grill Me

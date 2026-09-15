@@ -1,6 +1,6 @@
 ---
 name: codebase-orientation
-description: Map an unfamiliar code area before editing: 'orient me', 'zoom out', 'where does this fit', multi-file or subsystem relationships.
+description: "Map an unfamiliar code area before editing: 'orient me', 'zoom out', 'where does this fit', multi-file or subsystem relationships."
 ---
 
 # Codebase Orientation

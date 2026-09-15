@@ -1,6 +1,6 @@
 ---
 name: collaborators
-description: Start, mail, inspect and stop persistent Runtime collaborators (Pi, Claude Code, Codex) with drivers, models, personas and profiles. Use for teammate agents or multi-turn agent coordination.
+description: "Start, mail, inspect and stop persistent Runtime collaborators (Pi, Claude Code, Codex) with drivers, models, personas and profiles. Use for teammate agents or multi-turn agent coordination."
 ---
 
 # Runtime Collaborators
