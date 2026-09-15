@@ -26,6 +26,7 @@ import {
 
 const MAX_IN_FLIGHT = 12;
 const INBOX_PAGE = 50;
+const INBOX_PAGE_BYTES = 96 * 1024;
 
 export type MessagingInput =
 	| { method: "peers" }
@@ -199,15 +200,19 @@ export class RuntimeMessaging {
 	/** Delivery is the read: whatever this page returns is marked read in the same state write. */
 	private inbox(grant: HostedMessagingGrant): MessagingInboxView {
 		const unread = unreadMailEvents(this.store.read(), grant.participantKey);
-		const messages = unread.slice(0, INBOX_PAGE).map((event): MessagingInboxMessageView => ({
-			eventId: event.eventId,
-			from: this.requireParticipant(event.source.id).participantId,
-			body: event.body,
-		}));
+		const messages: MessagingInboxMessageView[] = [];
+		let bytes = 0;
+		for (const event of unread) {
+			const message = { eventId: event.eventId, from: this.requireParticipant(event.source.id).participantId, body: event.body };
+			bytes += Buffer.byteLength(JSON.stringify(message));
+			// A page is marked read before it is sent, so it must stay under the response cap or the mail is lost.
+			if (messages.length === INBOX_PAGE || (messages.length > 0 && bytes > INBOX_PAGE_BYTES)) break;
+			messages.push(message);
+		}
 		if (messages.length > 0) {
 			this.store.apply({ type: "messaging.read", namespaceId: grant.namespaceId, eventIds: messages.map((message) => message.eventId), at: this.now() });
 		}
-		return { messages, truncated: unread.length > INBOX_PAGE };
+		return { messages, truncated: unread.length > messages.length };
 	}
 
 	private peers(grant: HostedMessagingGrant): MessagingPeersResult {
