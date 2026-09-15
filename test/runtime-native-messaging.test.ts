@@ -18,9 +18,9 @@ function input(driver: HostedNativeCollaboratorDriver) {
 
 type NativeInput = ReturnType<typeof input>;
 
-function launch(config: NativeInput): { argv: string[]; args: string[]; descriptorPath: string; serverName: string } {
+function launch(config: NativeInput, profile: "workspace-write" | "read-only" = "workspace-write"): { argv: string[]; args: string[]; descriptorPath: string; serverName: string } {
 	const mcp = nativeMessagingConfiguration(config);
-	const input = { profile: "workspace-write" as const, cwd: config.root, model: config.model, mcp };
+	const input = { profile, cwd: config.root, model: config.model, mcp };
 	const argv = driverLaunchArgv({ driver: config.driver, agentName: "collab-native", paneId: "pane_native", input });
 	return { argv, args: argv.slice(argv.indexOf("--") + 1), descriptorPath: mcp.descriptorPath, serverName: mcp.serverName };
 }
@@ -58,6 +58,30 @@ it.each(["claude-code", "codex"] as const)("compiles %s native configuration wit
 		expect(compiled.args.slice(0, 2)).toEqual(["--sandbox", "workspace-write"]);
 		expect(compiled.args[compiled.args.indexOf("--config") + 1]).toBe(`mcp_servers.${compiled.serverName}={command=${JSON.stringify(realpathSync(process.execPath))},args=${JSON.stringify([resolve("extensions/runtime/mcp/main.mjs"), compiled.descriptorPath])}}`);
 		expect(compiled.args.at(-2)).toBe("--");
+	}
+});
+
+it.each(["claude-code", "codex"] as const)("gives a read-only %s collaborator the mail tools and nothing that writes", driver => {
+	const config = input(driver);
+	const compiled = launch(config, "read-only");
+	const writer = launch(config);
+	expect(compiled.args).not.toContain("--safe-mode");
+	expect(compiled.args.join(" ")).not.toContain("--permission-mode auto");
+	expect(compiled.args.join(" ")).not.toContain("workspace-write");
+	expect(compiled.args[compiled.args.indexOf("--model") + 1]).toBe(config.model);
+	if (driver === "claude-code") {
+		expect(compiled.args.join(" ")).toContain("--permission-mode dontAsk --setting-sources  --strict-mcp-config");
+		const tools = compiled.args[compiled.args.indexOf("--tools") + 1]!.split(",");
+		expect(tools.slice(0, 3)).toEqual(["Read", "Glob", "Grep"]);
+		expect(tools.slice(3)).toEqual(toolDefinitions.map(tool => `mcp__${compiled.serverName}__${tool.name}`));
+		expect(compiled.args[compiled.args.indexOf("--allowedTools") + 1]).toBe(`mcp__${compiled.serverName}`);
+		expect(compiled.args[compiled.args.indexOf("--mcp-config") + 1]).toBe(writer.args[writer.args.indexOf("--mcp-config") + 1]);
+		expect(compiled.args[compiled.args.indexOf("--append-system-prompt") + 1]).toBe(writer.args.at(-1));
+	} else {
+		expect(compiled.args.join(" ")).toContain("--ask-for-approval never --sandbox read-only --disable hooks");
+		expect(compiled.args.join("\n")).toContain("trust_level");
+		expect(compiled.args).toContain(writer.args[writer.args.indexOf("--config") + 1]);
+		expect(compiled.args.at(-1)).toBe(writer.args.at(-1));
 	}
 });
 

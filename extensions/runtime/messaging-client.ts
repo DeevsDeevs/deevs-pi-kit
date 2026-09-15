@@ -2,7 +2,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { HostedRuntimeClientError } from "./client.ts";
 import type { InboxReader } from "./mcp/pi.ts";
 import { isJsonObject, type JsonValue } from "./schemas/json.ts";
-import { isHeld, isWriter } from "./schemas/state.ts";
+import { isHeld } from "./schemas/state.ts";
 import { auth, strictObject, text, type ClientParticipantStatus, type LiveClientRegistration, type MailHint } from "./responses.ts";
 import type { RuntimeSession } from "./runtime-session.ts";
 import type { ManagedAgentControl, ParticipantIdentity } from "./session-record.ts";
@@ -149,6 +149,5 @@ function managedParticipantConfigured(control: ManagedAgentControl, participant:
 		&& isHeld(participant.state)
 		&& participant.holderLive
 		&& participant.generation === control.holderGeneration
-		&& isWriter(participant.profile)
 		&& participant.driver === control.driver;
 }

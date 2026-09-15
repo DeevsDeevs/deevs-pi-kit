@@ -1,6 +1,6 @@
 import { HostedRuntimeClientError } from "./client.ts";
 import { collapsePrompt, shellQuote } from "./herdr.ts";
-import type { HostedCollaboratorDriver, HostedCollaboratorProfile, HostedNativeCollaboratorDriver } from "./schemas/state.ts";
+import { type HostedCollaboratorDriver, type HostedCollaboratorProfile, type HostedNativeCollaboratorDriver, isWriter } from "./schemas/state.ts";
 import type { NativeMessagingConfiguration } from "./mcp/native.ts";
 import { toolDefinitions } from "./mcp/tools.ts";
 import type { CollaboratorPersona, ManagedAgentSession } from "./session-record.ts";
@@ -130,23 +130,27 @@ function piCommand(input: DriverCommandInput): string[] {
 
 function claudeCommand(input: DriverCommandInput): string[] {
 	const model = modelArguments(input.model);
-	if (input.mcp) {
-		const servers = JSON.stringify({ mcpServers: { [input.mcp.serverName]: input.mcp.server } });
-		return ["--mcp-config", servers, "--permission-mode", "auto", ...model, "--append-system-prompt", input.mcp.context];
-	}
-	const persona = input.persona ? ["--append-system-prompt", collapsePrompt(input.persona.prompt)] : [];
-	return ["--safe-mode", "--permission-mode", "dontAsk", "--tools", CLAUDE_READ_ONLY_TOOLS, ...model, ...persona];
+	const mcp = input.mcp;
+	const context = mcp ? mcp.context : input.persona ? collapsePrompt(input.persona.prompt) : undefined;
+	const prompt = context ? ["--append-system-prompt", context] : [];
+	const servers = mcp ? ["--mcp-config", JSON.stringify({ mcpServers: { [mcp.serverName]: mcp.server } })] : [];
+	if (isWriter(input.profile)) return [...servers, "--permission-mode", "auto", ...model, ...prompt];
+	// Read-only ignores every settings file and foreign MCP server, allows only the mail server, and keeps the file tools.
+	const tools = [CLAUDE_READ_ONLY_TOOLS, ...(mcp ? MESSAGING_TOOLS.map(tool => `mcp__${mcp.serverName}__${tool}`) : [])].join(",");
+	const allowed = mcp ? ["--allowedTools", `mcp__${mcp.serverName}`] : [];
+	return ["--permission-mode", "dontAsk", "--setting-sources", "", "--strict-mcp-config", "--tools", tools, ...allowed, ...servers, ...model, ...prompt];
 }
 
 function codexCommand(input: DriverCommandInput): string[] {
 	const model = modelArguments(input.model);
-	if (input.mcp) {
-		const server = `mcp_servers.${input.mcp.serverName}=${codexServerValue(input.mcp)}`;
-		return ["--sandbox", "workspace-write", "--ask-for-approval", "never", "--config", server, ...model, "--", `${NATIVE_STARTUP_MESSAGE} ${input.mcp.context}`];
-	}
+	const mcp = input.mcp;
+	const server = mcp ? ["--config", `mcp_servers.${mcp.serverName}=${codexServerValue(mcp)}`] : [];
+	const startup = mcp
+		? ["--", `${NATIVE_STARTUP_MESSAGE} ${mcp.context}`]
+		: input.persona ? ["--config", `developer_instructions=${JSON.stringify(input.persona.prompt)}`] : [];
+	if (isWriter(input.profile)) return ["--sandbox", "workspace-write", "--ask-for-approval", "never", ...server, ...model, ...startup];
 	const trustedProject = `projects={ ${JSON.stringify(input.cwd)} = { trust_level = "trusted" } }`;
-	const persona = input.persona ? ["--config", `developer_instructions=${JSON.stringify(input.persona.prompt)}`] : [];
-	return ["--ask-for-approval", "never", "--sandbox", "read-only", "--disable", "hooks", "--config", trustedProject, ...model, ...persona];
+	return ["--ask-for-approval", "never", "--sandbox", "read-only", "--disable", "hooks", "--config", trustedProject, ...server, ...model, ...startup];
 }
 
 function codexServerValue(mcp: NativeMessagingConfiguration): string {
