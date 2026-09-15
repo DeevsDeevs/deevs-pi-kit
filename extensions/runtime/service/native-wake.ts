@@ -17,9 +17,11 @@ interface PendingWake {
 	text: string;
 }
 
-interface WakeTally {
+/** The last wake attempted for a target: the cooldown and the cap apply only while that same message is the newest unread one. */
+interface WakeAttempt {
 	eventId: string;
-	count: number;
+	at: number;
+	delivered: number;
 }
 
 /**
@@ -33,8 +35,7 @@ export class NativeWakeSweeper {
 	private readonly store: HostedStateStore;
 	private readonly host: HostedHostVerifier;
 	private readonly now: () => number;
-	private readonly lastPromptedAt = new Map<string, number>();
-	private readonly tallies = new Map<string, WakeTally>();
+	private readonly attempts = new Map<string, WakeAttempt>();
 	private sweeping = false;
 
 	constructor(store: HostedStateStore, host: HostedHostVerifier, now: () => number = Date.now) {
@@ -62,7 +63,6 @@ export class NativeWakeSweeper {
 		const state = this.store.read();
 		return Object.values(state.targets)
 			.filter(isAgentTarget)
-			.filter((target) => this.cooldownElapsed(target.targetKey))
 			.flatMap((target) => this.pendingWake(state, target) ?? []);
 	}
 
@@ -73,8 +73,8 @@ export class NativeWakeSweeper {
 		const newest = unreadMailEvents(state, target.participantKey).at(-1);
 		const from = newest ? state.participants[newest.source.id]?.participantId : undefined;
 		if (newest === undefined || from === undefined) return undefined;
-		const tally = this.tallies.get(target.targetKey);
-		if (tally?.eventId === newest.eventId && tally.count >= MAX_WAKES_PER_MESSAGE) return undefined;
+		const last = this.attempts.get(target.targetKey);
+		if (last?.eventId === newest.eventId && (last.delivered >= MAX_WAKES_PER_MESSAGE || this.now() - last.at < WAKE_COOLDOWN_MS)) return undefined;
 		return { targetKey: target.targetKey, agentName: target.agentName, eventId: newest.eventId, text: wakeText(from) };
 	}
 
@@ -82,22 +82,18 @@ export class NativeWakeSweeper {
 		try {
 			const live = await this.host.getAgent(wake.agentName);
 			if (!RESTING_STATUSES.has(live.agentStatus)) return;
-			// The cooldown is recorded before delivery, so an undelivered prompt still waits its full turn.
-			this.lastPromptedAt.set(wake.targetKey, this.now());
+			// The attempt is recorded before delivery, so an undelivered prompt still waits its full turn.
+			const last = this.attempts.get(wake.targetKey);
+			const attempt = { eventId: wake.eventId, at: this.now(), delivered: last?.eventId === wake.eventId ? last.delivered : 0 };
+			this.attempts.set(wake.targetKey, attempt);
 			await this.host.promptAgent?.(wake.agentName, wake.text);
-			const tally = this.tallies.get(wake.targetKey);
-			const count = tally?.eventId === wake.eventId ? tally.count + 1 : 1;
-			this.tallies.set(wake.targetKey, { eventId: wake.eventId, count });
+			attempt.delivered += 1;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "unknown failure";
 			process.stderr.write(`${JSON.stringify({ status: "wake_skipped", agent: wake.agentName, message: message.slice(0, 200) })}\n`);
 		}
 	}
 
-	private cooldownElapsed(targetKey: string): boolean {
-		const last = this.lastPromptedAt.get(targetKey);
-		return last === undefined || this.now() - last >= WAKE_COOLDOWN_MS;
-	}
 }
 
 /** Without an issued namespace the tab has no `collaborator_inbox` to call, so a wake could only waste its turn. */
