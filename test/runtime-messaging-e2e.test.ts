@@ -21,7 +21,7 @@ afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) awai
 type Auth = { registrationId: string; registrationKey: string; targetKey: string };
 type Participant = { participantKey: string; generation: string };
 type Call = { name: string; arguments: Record<string, string> };
-type Message = { eventId: string; from: string; body: string };
+type Message = { eventId: string; from: string; body: string; inReplyTo?: string };
 type Result = { isError: boolean; content: Array<{ type: string; text: string }>; structuredContent: { eventId?: string; me?: string; binding?: { kind: string; sessionId: string; sessionFile: string; cwd: string }; peers?: Array<{ participantId: string; live: boolean }>; messages?: Message[]; truncated?: boolean } };
 
 async function setup(recipientReady = true) {
@@ -243,7 +243,7 @@ it("delivers a full body, records readAt, and correlates a reply", async () => {
 	expect(replied!.isError).toBe(false);
 	const replyEventId = replied!.structuredContent.eventId!;
 	const [seen] = await mcp(test.issued.descriptorPath, [inbox()]);
-	expect(seen!.structuredContent.messages).toEqual([{ eventId: replyEventId, from: "recipient", body: "Reply." }]);
+	expect(seen!.structuredContent.messages).toEqual([{ eventId: replyEventId, from: "recipient", body: "Reply.", inReplyTo: eventId }]);
 	expect(test.readState().events[replyEventId]).toMatchObject({ inReplyToEventId: eventId });
 	expect(Object.keys(test.readState().events)).toHaveLength(2);
 });

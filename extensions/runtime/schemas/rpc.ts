@@ -129,6 +129,7 @@ const InboxMessageResult = Type.Object({
 	eventId: IdText,
 	from: ParticipantNameText,
 	body: boundedText(HOSTED_MAILBOX_MAX_BODY_BYTES),
+	inReplyTo: Type.Optional(IdText),
 });
 
 const MessagingInboxResult = Type.Object({ messages: Type.Array(InboxMessageResult), truncated: Type.Boolean() });
