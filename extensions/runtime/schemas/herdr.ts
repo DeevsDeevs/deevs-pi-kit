@@ -19,7 +19,7 @@ export const HerdrWorkspaceCreatedSchema = Type.Object({
 	root_pane: HerdrPaneSchema,
 });
 
-const HerdrAgentStatusSchema = Type.Union([
+export const HerdrAgentStatusSchema = Type.Union([
 	Type.Literal("idle"),
 	Type.Literal("working"),
 	Type.Literal("blocked"),

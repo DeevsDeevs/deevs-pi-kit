@@ -132,7 +132,7 @@ function claudeCommand(input: DriverCommandInput): string[] {
 	const model = modelArguments(input.model);
 	if (input.mcp) {
 		const servers = JSON.stringify({ mcpServers: { [input.mcp.serverName]: input.mcp.server } });
-		return ["--mcp-config", servers, ...model, "--append-system-prompt", input.mcp.context];
+		return ["--mcp-config", servers, "--permission-mode", "auto", ...model, "--append-system-prompt", input.mcp.context];
 	}
 	const persona = input.persona ? ["--append-system-prompt", collapsePrompt(input.persona.prompt)] : [];
 	return ["--safe-mode", "--permission-mode", "dontAsk", "--tools", CLAUDE_READ_ONLY_TOOLS, ...model, ...persona];
@@ -142,7 +142,7 @@ function codexCommand(input: DriverCommandInput): string[] {
 	const model = modelArguments(input.model);
 	if (input.mcp) {
 		const server = `mcp_servers.${input.mcp.serverName}=${codexServerValue(input.mcp)}`;
-		return ["--sandbox", "workspace-write", "--config", server, ...model, "--", `${NATIVE_STARTUP_MESSAGE} ${input.mcp.context}`];
+		return ["--sandbox", "workspace-write", "--ask-for-approval", "never", "--config", server, ...model, "--", `${NATIVE_STARTUP_MESSAGE} ${input.mcp.context}`];
 	}
 	const trustedProject = `projects={ ${JSON.stringify(input.cwd)} = { trust_level = "trusted" } }`;
 	const persona = input.persona ? ["--config", `developer_instructions=${JSON.stringify(input.persona.prompt)}`] : [];

@@ -37,7 +37,10 @@ it.each(["claude-code", "codex"] as const)("compiles %s native configuration wit
 	expect(compiled.descriptorPath.startsWith(`${config.root}/messaging-`)).toBe(true);
 	expect(compiled.serverName).toMatch(/^pi_kit_[a-f0-9]{24}$/);
 	for (const tool of toolDefinitions) expect(`mcp__${compiled.serverName}__${tool.name}`.length).toBeLessThanOrEqual(64);
-	for (const flag of ["--safe-mode", "--restricted", "--tools", "--allowedTools", "--permission-mode", "--strict-mcp-config", "--ask-for-approval", "--disable", "--dangerously-bypass-permissions", "--dangerously-bypass-approvals-and-sandbox"]) expect(compiled.args).not.toContain(flag);
+	for (const flag of ["--safe-mode", "--restricted", "--tools", "--allowedTools", "--strict-mcp-config", "--disable", "--dangerously-bypass-permissions", "--dangerously-bypass-approvals-and-sandbox"]) expect(compiled.args).not.toContain(flag);
+	// A writer runs unattended: Claude classifies instead of prompting, Codex never asks and lets the sandbox answer.
+	const unattended = driver === "claude-code" ? "--permission-mode auto" : "--ask-for-approval never";
+	expect(compiled.args.join(" ")).toContain(unattended);
 	expect(compiled.args[compiled.args.indexOf("--model") + 1]).toBe(config.model);
 	expect(compiled.args.join("\n")).not.toContain("developer_instructions=");
 	expect(compiled.args.join("\n")).not.toContain("trust_level");

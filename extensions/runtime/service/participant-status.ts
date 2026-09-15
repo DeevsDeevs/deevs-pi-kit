@@ -7,6 +7,7 @@ import {
 	isPiTarget,
 } from "../schemas/state.ts";
 import { RuntimeError } from "../errors.ts";
+import type { HerdrAgentStatus } from "../schemas/herdr.ts";
 import type { RuntimeRegistrationManager } from "./registration.ts";
 import type { HostedStateStore } from "./state.ts";
 
@@ -19,6 +20,8 @@ export interface HostedParticipantStatus {
 	generation: string;
 	holderTargetKey?: string;
 	holderLive: boolean;
+	/** Herdr's view of a live native holder's tab: `blocked` means it is waiting on a human. */
+	agentStatus?: HerdrAgentStatus;
 	driver?: HostedCollaboratorDriver;
 	profile?: "read-only" | "workspace-write";
 	unreadMail?: number;
@@ -62,6 +65,8 @@ export function participantStatus(
 	if (isAgentTarget(holder)) {
 		status.driver = holder.driver;
 		status.profile = holder.profile;
+		const agentStatus = holderTargetKey ? registrations.agentStatus(holderTargetKey) : undefined;
+		if (agentStatus) status.agentStatus = agentStatus;
 	}
 	if (includeQueue) status.unreadMail = unreadMail(store, participant.participantKey);
 	return status;

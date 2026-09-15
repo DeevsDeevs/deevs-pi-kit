@@ -111,9 +111,8 @@ export class MessagingClient {
 		if (!this.session.scope(ctx, registration)()) return false;
 		if (!isHeld(this.session.store.identity?.disposition)) return false;
 		if (!this.session.pi.getActiveTools().includes("collaborator_inbox")) return false;
-		if (ctx.mode !== "tui" || !ctx.hasUI) return false;
-		if (!ctx.isIdle() || ctx.hasPendingMessages()) return false;
-		return ctx.ui.getEditorText() === "";
+		if (!ctx.hasUI || !ctx.isIdle() || ctx.hasPendingMessages()) return false;
+		return ctx.mode !== "tui" || ctx.ui.getEditorText() === "";
 	}
 
 	private holdsIdentity(registration: LiveClientRegistration, identity: ParticipantIdentity): boolean {

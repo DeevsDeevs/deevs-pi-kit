@@ -127,7 +127,8 @@ export class CollaboratorService {
 		signal: AbortSignal | undefined,
 	): Promise<CollaboratorManageResult[]> {
 		throwIfAborted(signal);
-		assertInteractiveHerdrStart(ctx);
+		const auto = this.session.store.auto;
+		assertInteractiveHerdrStart(ctx, auto);
 		const identity = this.session.store.identity;
 		if (isEnded(identity?.disposition)) {
 			throw new HostedRuntimeClientError("conflict", "Current collaborator identity has ended; explicit revival is required.");
@@ -143,7 +144,7 @@ export class CollaboratorService {
 		throwIfAborted(signal);
 		const held = this.heldCaller(participants, protocol, callerParticipantId, registration);
 		const acquires = held === undefined;
-		const confirmed = await confirmStart({ ctx, protocol, callerParticipantId, acquires, candidates, participants, signal });
+		const confirmed = auto || await confirmStart({ ctx, protocol, callerParticipantId, acquires, candidates, participants, signal });
 		throwIfAborted(signal);
 		if (!confirmed) return candidates.map((candidate) => ({ participant: `${protocol}/${candidate.participantId}`, status: "declined" }));
 		const caller = held ?? await this.acquireCaller(protocol, callerParticipantId, registration);
@@ -211,7 +212,8 @@ export class CollaboratorService {
 	): Promise<CollaboratorManageResult[]> {
 		return this.exclusively(async () => {
 			throwIfAborted(signal);
-			if (!ctx.hasUI) {
+			const auto = this.session.store.auto;
+			if (!auto && !ctx.hasUI) {
 				throw new HostedRuntimeClientError("host_unavailable", "Collaborator lifecycle confirmation requires an interactive Pi session.");
 			}
 			if (!ctx.isProjectTrusted()) {
@@ -224,7 +226,7 @@ export class CollaboratorService {
 			const actionable = targets.filter((participant) => !skipped.includes(participant));
 			const vacated = skipped.map((participant) => settled(protocol, participant, "already_vacant"));
 			if (actionable.length === 0) return vacated;
-			if (!await confirmChange(action, protocol, actionable, ctx, signal)) {
+			if (!auto && !await confirmChange(action, protocol, actionable, ctx, signal)) {
 				return [...vacated, ...actionable.map((participant) => settled(protocol, participant, "declined"))];
 			}
 			const changed = await Promise.all(actionable.map((participant) =>
@@ -316,12 +318,13 @@ export class CollaboratorService {
 		if (input.action === "list") {
 			return parseWorktreeList(await this.client.call("worktree.list", auth(registration)));
 		}
-		if (!ctx.hasUI) throw new HostedRuntimeClientError("host_unavailable", "Worktree cleanup requires an interactive trusted Pi session.");
+		const auto = this.session.store.auto;
+		if (!auto && !ctx.hasUI) throw new HostedRuntimeClientError("host_unavailable", "Worktree cleanup requires an interactive trusted Pi session.");
 		const participantId = collaboratorName(input.participantId, "participant ID");
 		const detail = `Force-remove the worktree of ${identity.protocol}/${participantId}`
 			+ ` and delete branch runtime/collab/${identity.protocol}/${participantId}?`
 			+ " Uncommitted or unmerged work in it is lost.";
-		if (!await ctx.ui.confirm("Remove collaborator worktree?", detail, { signal })) return { declined: true };
+		if (!auto && !await ctx.ui.confirm("Remove collaborator worktree?", detail, { signal })) return { declined: true };
 		const params = {
 			...auth(registration),
 			callerParticipantKey: identity.participantKey,
@@ -365,8 +368,8 @@ function assertHerdrWorkspace(): void {
 	}
 }
 
-function assertInteractiveHerdrStart(ctx: ExtensionContext): void {
-	if (!ctx.hasUI) {
+function assertInteractiveHerdrStart(ctx: ExtensionContext, auto: boolean): void {
+	if (!auto && !ctx.hasUI) {
 		throw new HostedRuntimeClientError("host_unavailable", "Collaborator start confirmation requires an interactive Pi session.");
 	}
 	if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Collaborator start requires a trusted project.");

@@ -15,7 +15,7 @@ import type { RuntimeSession } from "./runtime-session.ts";
 import type { ParticipantIdentity } from "./session-record.ts";
 
 const USAGE = "Usage: /runtime [status|start|register|collaborate <protocol> <id>"
-	+ "|participants|stand-down|leave|takeover <protocol> <id>]";
+	+ "|participants|stand-down|leave|takeover <protocol> <id>|auto on|off]";
 
 export interface RuntimeCommandServices {
 	session: RuntimeSession;
@@ -39,6 +39,7 @@ const HANDLERS = new Map<string, RuntimeCommandHandler>([
 	["stand-down", (input) => runRelinquish(input, "stand-down")],
 	["leave", (input) => runRelinquish(input, "leave")],
 	["takeover", runTakeover],
+	["auto", runAuto],
 ]);
 
 /** Dispatches one /runtime subcommand and reports every failure as a typed notification. */
@@ -57,7 +58,23 @@ async function runStatus({ services, ctx }: RuntimeCommandInput): Promise<void> 
 	const hello = strictObject(await services.session.client.hello(), "Runtime hello");
 	const registration = services.session.liveRegistration;
 	const lease = registration ? `registered until ${new Date(registration.leaseUntil).toISOString()}` : "not registered";
-	ctx.ui.notify(`Runtime ${String(hello.runtimeId)}; Pi ${lease}.`, "info");
+	const auto = services.session.store.auto ? "; auto mode on" : "";
+	ctx.ui.notify(`Runtime ${String(hello.runtimeId)}; Pi ${lease}${auto}.`, "info");
+}
+
+/** Auto mode is this session's standing confirmation for collaborator lifecycle changes inside its own project. */
+function runAuto({ services, args, ctx }: RuntimeCommandInput): Promise<void> {
+	const [setting, ...extra] = args;
+	if ((setting !== "on" && setting !== "off") || extra.length) {
+		throw new HostedRuntimeClientError("invalid_request", "Usage: /runtime auto on|off");
+	}
+	if (setting === "on" && !ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Auto mode requires a trusted project.");
+	services.session.store.persistAuto(setting === "on");
+	const effect = setting === "on"
+		? "collaborator starts, stand-downs, stops and worktree cleanups in this project run without confirmation."
+		: "collaborator lifecycle changes ask for confirmation again.";
+	ctx.ui.notify(`Runtime auto mode ${setting}: ${effect}`, "info");
+	return Promise.resolve();
 }
 
 async function runStart({ services, ctx }: RuntimeCommandInput): Promise<void> {
