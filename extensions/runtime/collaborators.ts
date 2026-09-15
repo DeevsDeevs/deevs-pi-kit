@@ -147,7 +147,7 @@ export class CollaboratorService {
 		const registration = await this.session.requireRegistration(ctx);
 		const participants = await this.session.listParticipants(registration);
 		throwIfAborted(signal);
-		const held = this.heldCaller(participants, protocol, callerParticipantId, registration);
+		const held = await this.heldCaller(participants, protocol, callerParticipantId, registration, ctx, auto, signal);
 		const acquires = held === undefined;
 		const confirmed = auto || await confirmStart({ ctx, protocol, callerParticipantId, acquires, candidates, participants, signal });
 		throwIfAborted(signal);
@@ -158,12 +158,15 @@ export class CollaboratorService {
 	}
 
 	/** The caller participant this Pi target already holds, or undefined when the start must acquire it. */
-	private heldCaller(
+	private async heldCaller(
 		participants: ClientParticipantStatus[],
 		protocol: string,
 		participantId: string,
 		registration: LiveClientRegistration,
-	): ClientParticipantStatus | undefined {
+		ctx: ExtensionContext,
+		auto: boolean,
+		signal: AbortSignal | undefined,
+	): Promise<ClientParticipantStatus | undefined> {
 		const caller = findParticipant(participants, protocol, participantId);
 		if (!caller) return undefined;
 		if (isEnded(caller.state)) {
@@ -171,13 +174,36 @@ export class CollaboratorService {
 		}
 		if (!isHeld(caller.state)) return undefined;
 		if (caller.holderTargetKey !== registration.targetKey) {
-			const detail = `Current collaborator identity ${protocol}/${participantId} is held by another Pi target.`;
-			throw new HostedRuntimeClientError("conflict", detail);
+			if (caller.holderLive) {
+				throw new HostedRuntimeClientError("conflict", `Current collaborator identity ${protocol}/${participantId} is held by another live Pi target.`);
+			}
+			return this.takeOverCaller(protocol, participantId, caller, registration, ctx, auto, signal);
 		}
 		const known = this.session.store.identity;
 		const recorded = known?.participantKey === caller.participantKey && known.generation === caller.generation;
 		if (!recorded) this.session.store.persistHeld(protocol, participantId, caller);
 		return caller;
+	}
+
+	/** A lead whose previous tab is gone leaves its name held by a dead target; the next lead takes it over instead of failing. */
+	private async takeOverCaller(
+		protocol: string,
+		participantId: string,
+		caller: ClientParticipantStatus,
+		registration: LiveClientRegistration,
+		ctx: ExtensionContext,
+		auto: boolean,
+		signal: AbortSignal | undefined,
+	): Promise<ClientParticipantStatus> {
+		const detail = `${protocol}/${participantId} is held by a Pi session that is no longer live. Take over generation ${caller.generation}?`;
+		if (!auto && !await ctx.ui.confirm("Take over collaborator identity?", detail, { signal })) {
+			throw new HostedRuntimeClientError("conflict", `${protocol}/${participantId} stays held by its offline Pi session.`);
+		}
+		const params = { ...auth(registration), participantKey: caller.participantKey, expectedGeneration: caller.generation, confirmed: true };
+		const participant = parseParticipant(await this.client.call("participant.takeover", params));
+		this.session.store.persistHeld(protocol, participantId, participant);
+		ctx.ui.notify(`Took over ${protocol}/${participantId} from its offline Pi session.`, "info");
+		return participant;
 	}
 
 	private async acquireCaller(

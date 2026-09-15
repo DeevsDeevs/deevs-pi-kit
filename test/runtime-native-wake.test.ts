@@ -145,19 +145,19 @@ describe("native wake", () => {
 		expect(test.host.prompts).toEqual([{ agentName: "collab-native", text: EXPECTED_PROMPT }]);
 	});
 
-	it("prompts a finished, unattended tab exactly like an idle one", async () => {
-		const test = setup();
-		test.host.status = "done";
-		await test.sweeper.sweep();
-		expect(test.host.prompts).toEqual([{ agentName: "collab-native", text: EXPECTED_PROMPT }]);
-	});
-
-	it("does not prompt while the agent reports working, blocked, unknown or nothing", async () => {
-		const test = setup();
-		for (const status of ["working", "blocked", "unknown", undefined] as const) {
+	it("prompts a finished, busy or undetected tab exactly like an idle one, since the CLIs queue typed input", async () => {
+		for (const status of ["done", "working", "unknown", undefined] as const) {
+			const test = setup();
 			test.host.status = status;
 			await test.sweeper.sweep();
+			expect(test.host.prompts).toEqual([{ agentName: "collab-native", text: EXPECTED_PROMPT }]);
 		}
+	});
+
+	it("does not prompt a tab blocked on a human prompt", async () => {
+		const test = setup();
+		test.host.status = "blocked";
+		await test.sweeper.sweep();
 		expect(test.host.prompts).toEqual([]);
 	});
 
