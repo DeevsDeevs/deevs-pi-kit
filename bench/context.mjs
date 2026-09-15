@@ -1,17 +1,28 @@
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { getEncoding } from "js-tiktoken";
 
 const repo = dirname(dirname(fileURLToPath(import.meta.url)));
 const results = join(repo, "bench", "results");
 const budgetFile = join(repo, "bench", "context-budget.json");
+const claudeCacheFile = join(repo, "bench", "claude-tokens.json");
+const encoding = getEncoding("o200k_base");
 
 const size = text => Buffer.byteLength(text ?? "", "utf8");
-const tokens = bytes => Math.ceil(bytes / 4);
+/** o200k_base is what the terra/astra/Codex side tokenizes with; Claude counts come from the CLI, see claudeTokens. */
+const tokens = text => encoding.encode(text ?? "").length;
 const read = path => readFileSync(join(repo, path), "utf8");
+const hash = text => createHash("sha256").update(text).digest("hex").slice(0, 16);
+
+function item(name, text) {
+	return { item: name, text, bytes: size(text), tokens: tokens(text) };
+}
 
 function surface(name, items) {
-	return { surface: name, items, total: items.reduce((sum, item) => sum + item.bytes, 0) };
+	return { surface: name, items, total: items.reduce((sum, entry) => sum + entry.tokens, 0) };
 }
 
 async function registeredTools() {
@@ -41,7 +52,7 @@ function toolSurface(tools) {
 	const items = [];
 	for (const tool of tools) {
 		for (const part of ["description", "promptSnippet", "promptGuidelines", "schema"]) {
-			if (tool[part]) items.push({ item: `${tool.name}.${part}`, bytes: size(tool[part]) });
+			if (tool[part]) items.push(item(`${tool.name}.${part}`, tool[part]));
 		}
 	}
 	return surface("piTools", items);
@@ -60,13 +71,6 @@ function skillFiles() {
 				body: match ? skill.text.slice(match[0].length) : skill.text,
 			};
 		});
-}
-
-function nativeSurface(configuration, startupMessage) {
-	return surface("nativeContext", [
-		{ item: "nativeMessagingConfiguration.context", bytes: size(configuration) },
-		{ item: "NATIVE_STARTUP_MESSAGE", bytes: size(startupMessage) },
-	]);
 }
 
 const sentences = text => text.split(/(?<=[.!?])\s+|\n+/u).map(line => line.trim()).filter(line => line.length > 0);
@@ -99,7 +103,7 @@ function duplication(skillBody, sources) {
 				hits.get(source).push(shingle);
 			}
 		}
-		if (hits.size > 0) findings.push({ sentence, matches: [...hits].map(([source, phrases]) => ({ source, shingles: phrases })) });
+		if (hits.size > 0) findings.push({ sentence, tokens: tokens(sentence), matches: [...hits].map(([source, phrases]) => ({ source, shingles: phrases })) });
 	}
 	return findings;
 }
@@ -116,19 +120,16 @@ export async function measure() {
 	const collaborators = skills.find(skill => skill.name === "collaborators");
 	const surfaces = [
 		toolSurface(tools),
-		surface("skillIndex", skills.map(skill => ({ item: skill.name, bytes: size(skill.index) }))),
-		surface("skillBodies", skills.map(skill => ({ item: skill.name, bytes: size(skill.body) }))),
-		surface("nativeCatalog", toolDefinitions.map(tool => ({ item: tool.name, bytes: size(JSON.stringify(tool)) }))),
-		nativeSurface(native.context, NATIVE_STARTUP_MESSAGE),
-		surface("docs", [
-			{ item: "README.md", bytes: size(readme) },
-			{ item: "extensions/runtime/PROTOCOL.md", bytes: size(protocol) },
-		]),
+		surface("skillIndex", skills.map(skill => item(skill.name, skill.index))),
+		surface("skillBodies", skills.map(skill => item(skill.name, skill.body))),
+		surface("nativeCatalog", toolDefinitions.map(tool => item(tool.name, JSON.stringify(tool)))),
+		surface("nativeContext", [item("nativeMessagingConfiguration.context", native.context), item("NATIVE_STARTUP_MESSAGE", NATIVE_STARTUP_MESSAGE)]),
+		surface("docs", [item("README.md", readme), item("extensions/runtime/PROTOCOL.md", protocol)]),
 	];
 	const toolProse = Object.fromEntries(tools.map(tool => [`tool:${tool.name}`, [tool.description, tool.promptGuidelines].join("\n")]));
 	return {
 		generatedAt: new Date().toISOString(),
-		tokenApproximation: "tokens = ceil(bytes / 4)",
+		tokenizers: { tokens: "o200k_base (js-tiktoken)", claudeTokens: "claude -p prompt-size delta, cached in bench/claude-tokens.json" },
 		surfaces,
 		duplication: duplication(collaborators.body, {
 			"README.md#hosted-runtime": readmeRuntimeSection(readme),
@@ -138,48 +139,81 @@ export async function measure() {
 	};
 }
 
+/** Claude has no public tokenizer: the CLI reports the prompt size, so one call per text against a baseline gives its exact count. */
+function claudePromptTokens(appendedSystemPrompt) {
+	const args = ["-p", "--model", "sonnet", "--max-turns", "1", "--tools", "", "--strict-mcp-config", "--setting-sources", "", "--output-format", "json"];
+	if (appendedSystemPrompt) args.push("--append-system-prompt", appendedSystemPrompt);
+	const usage = JSON.parse(execFileSync("claude", [...args, "Reply with exactly: ok"], { encoding: "utf8", maxBuffer: 1 << 24 })).modelUsage["claude-sonnet-5"];
+	return usage.inputTokens + usage.cacheCreationInputTokens + usage.cacheReadInputTokens;
+}
+
+export function claudeTokens(report, { refresh = false } = {}) {
+	const cache = existsSync(claudeCacheFile) ? JSON.parse(readFileSync(claudeCacheFile, "utf8")) : {};
+	const items = report.surfaces.flatMap(entry => entry.items).filter(entry => entry.text);
+	const missing = items.filter(entry => !(hash(entry.text) in cache));
+	if (refresh && missing.length > 0) {
+		const baseline = claudePromptTokens("");
+		for (const entry of missing) cache[hash(entry.text)] = claudePromptTokens(entry.text) - baseline;
+		writeFileSync(claudeCacheFile, `${JSON.stringify(cache, null, "\t")}\n`);
+	}
+	for (const entry of items) entry.claudeTokens = cache[hash(entry.text)];
+	for (const entry of report.surfaces) {
+		entry.claudeTotal = entry.items.every(each => each.claudeTokens !== undefined) ? entry.items.reduce((sum, each) => sum + each.claudeTokens, 0) : undefined;
+	}
+	return items.filter(entry => entry.claudeTokens === undefined).length;
+}
+
 export function budgetViolations(report, budget) {
 	const totals = Object.fromEntries(report.surfaces.map(entry => [entry.surface, entry.total]));
 	totals.collaboratorsSkillBody = report.surfaces
 		.find(entry => entry.surface === "skillBodies").items
-		.find(item => item.item === "collaborators").bytes;
+		.find(entry => entry.item === "collaborators").tokens;
 	return Object.entries(budget)
 		.filter(([key]) => key in totals)
 		.filter(([key, ceiling]) => totals[key] > ceiling)
-		.map(([key, ceiling]) => `${key}: ${totals[key]} bytes exceeds ceiling ${ceiling} bytes`);
+		.map(([key, ceiling]) => `${key}: ${totals[key]} tokens exceeds ceiling ${ceiling} tokens`);
 }
 
 export function readBudget() {
 	return JSON.parse(readFileSync(budgetFile, "utf8"));
 }
 
+const cell = value => value === undefined ? "?" : String(value);
+
 function table(report) {
-	const rows = [["surface", "item", "bytes", "tokens"]];
+	const rows = [];
 	for (const entry of report.surfaces) {
-		for (const item of entry.items) rows.push([entry.surface, item.item, String(item.bytes), String(tokens(item.bytes))]);
-		rows.push([entry.surface, "**subtotal**", `**${entry.total}**`, `**${tokens(entry.total)}**`]);
+		for (const each of entry.items) rows.push([entry.surface, each.item, cell(each.tokens), cell(each.claudeTokens), cell(each.bytes)]);
+		rows.push([entry.surface, "**subtotal**", `**${entry.total}**`, `**${cell(entry.claudeTotal)}**`, `**${entry.items.reduce((sum, each) => sum + each.bytes, 0)}**`]);
 	}
 	const total = report.surfaces.reduce((sum, entry) => sum + entry.total, 0);
-	rows.push(["all", "**total**", `**${total}**`, `**${tokens(total)}**`]);
-	const header = `| ${rows[0].join(" | ")} |\n| --- | --- | ---: | ---: |`;
-	return [header, ...rows.slice(1).map(row => `| ${row.join(" | ")} |`)].join("\n");
+	const claude = report.surfaces.every(entry => entry.claudeTotal !== undefined) ? report.surfaces.reduce((sum, entry) => sum + entry.claudeTotal, 0) : undefined;
+	rows.push(["all", "**total**", `**${total}**`, `**${cell(claude)}**`, ""]);
+	return ["| surface | item | o200k tokens | claude tokens | bytes |", "| --- | --- | ---: | ---: | ---: |", ...rows.map(row => `| ${row.join(" | ")} |`)].join("\n");
 }
 
 function printDuplication(report) {
-	console.log(`\n## Duplication: ${report.duplication.length} collaborators-skill sentences repeated elsewhere\n`);
+	const wasted = report.duplication.reduce((sum, finding) => sum + finding.tokens, 0);
+	console.log(`\n## Duplication: ${report.duplication.length} collaborators-skill sentences (${wasted} o200k tokens) repeated elsewhere\n`);
 	for (const finding of report.duplication) {
-		console.log(`- ${finding.sentence}`);
+		console.log(`- (${finding.tokens} tokens) ${finding.sentence}`);
 		for (const match of finding.matches) console.log(`  - also in ${match.source}: "${match.shingles[0]}"`);
 	}
 }
 
+function stripText(report) {
+	return { ...report, surfaces: report.surfaces.map(entry => ({ ...entry, items: entry.items.map(({ text, ...rest }) => rest) })) };
+}
+
 async function main() {
 	const report = await measure();
-	console.log("# Static context cost (tokens approximated as ceil(bytes / 4))\n");
+	const uncounted = claudeTokens(report, { refresh: process.argv.includes("--claude") });
+	console.log("# Static context cost\n");
 	console.log(table(report));
+	if (uncounted > 0) console.log(`\n${uncounted} items have no Claude count yet; run with --claude to measure them through the CLI (cached by content hash).`);
 	printDuplication(report);
 	mkdirSync(results, { recursive: true });
-	writeFileSync(join(results, "context.json"), `${JSON.stringify(report, null, 2)}\n`);
+	writeFileSync(join(results, "context.json"), `${JSON.stringify(stripText(report), null, 2)}\n`);
 	console.log(`\nWrote ${join(results, "context.json")}`);
 	if (!process.argv.includes("--check")) return;
 	const failures = budgetViolations(report, readBudget());
