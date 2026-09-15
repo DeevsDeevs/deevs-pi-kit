@@ -1,6 +1,6 @@
 ---
 name: missions
-description: Create, continue, take over, update, checkpoint, review, and complete durable Missions. Use when the user asks for a continuing autonomous objective, resumes Mission work, references a Mission owned by another or broken Pi session, or asks to finish/audit a Mission.
+description: Create, continue, take over, checkpoint, review and complete durable Missions: continuing autonomous objectives, including ones owned by another or broken Pi session.
 ---
 
 # Missions

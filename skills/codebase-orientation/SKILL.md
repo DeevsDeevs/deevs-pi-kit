@@ -1,6 +1,6 @@
 ---
 name: codebase-orientation
-description: Map an unfamiliar code area before editing. Use when the user asks to "orient me", "zoom out", "map this area", asks where something fits, or when a safe next action requires understanding multi-file, module, crate, or subsystem relationships.
+description: Map an unfamiliar code area before editing: 'orient me', 'zoom out', 'where does this fit', multi-file or subsystem relationships.
 ---
 
 # Codebase Orientation

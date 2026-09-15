@@ -1,6 +1,6 @@
 ---
 name: todos
-description: Use Pi's `todo_list` tool to plan and track non-trivial current-session work. Use for multi-step implementation, debugging, validation, research, or coordinating subagents; avoid for one-shot answers.
+description: Track non-trivial current-session work with todo_list: multi-step implementation, debugging, validation, research, subagent coordination. Not for one-shot answers.
 ---
 
 # Managed Todos

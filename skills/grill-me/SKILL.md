@@ -1,6 +1,6 @@
 ---
 name: grill-me
-description: Run a one-question-at-a-time decision pressure test for plans, designs, APIs, refactors, or product scope. Use when the user says "grill me", wants assumptions challenged, needs tradeoffs resolved, or is about to start implementation from an uncertain plan.
+description: One-question-at-a-time pressure test of a plan, design, API or scope. Use when the user says 'grill me' or wants assumptions challenged before implementing.
 ---
 
 # Grill Me

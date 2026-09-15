@@ -1,0 +1,83 @@
+{
+	"fillerToken": "<<FILLER>>",
+	"notes": [
+		"expect: reply | none | peer. follow adds one more mail inside the same scenario:",
+		"reply = the harness replies to the collaborator's reply and expects a second reply,",
+		"immediate = a second mail sent in the same tick, while-working = a second mail sent once the collaborator reports working.",
+		"needs lists the mail tools the scenario legitimately requires beyond collaborator_inbox/collaborator_reply.",
+		"fillerToken in a body is expanded so the whole body is exactly 8192 bytes."
+	],
+	"scenarios": [
+		{
+			"id": "pong",
+			"body": "Reply with exactly the single word: pong",
+			"expect": "reply",
+			"match": "^pong[.!]?$"
+		},
+		{
+			"id": "count-root",
+			"body": "How many entries are in the root directory of this repository, not counting .git and not recursing? Reply with just that number and nothing else.",
+			"expect": "reply",
+			"needs": ["file"],
+			"match": "\\b2\\b"
+		},
+		{
+			"id": "chain",
+			"body": "Reply with exactly the single word: ready",
+			"expect": "reply",
+			"follow": "reply",
+			"followBody": "Now reply with exactly the single word: done",
+			"match": "^ready[.!]?$",
+			"followMatch": "^done[.!]?$"
+		},
+		{
+			"id": "peer-send",
+			"body": "Send a message to the collaborator c2 with the body ping. Then reply to me with exactly the single word: sent",
+			"expect": "peer",
+			"peer": "c2",
+			"needs": ["collaborator_send"],
+			"match": "^sent[.!]?$"
+		},
+		{
+			"id": "peers-who",
+			"body": "Which collaborators exist in this project? Reply with their participant ids, comma-separated, and nothing else.",
+			"expect": "reply",
+			"needs": ["collaborator_peers"]
+		},
+		{
+			"id": "silent",
+			"body": "Do not reply to this message and do not send any message to anyone. It needs no answer. Read it and stop.",
+			"expect": "none"
+		},
+		{
+			"id": "big-body",
+			"body": "Reply with just the number of characters in this whole message and nothing else. Ignore the filler that follows. <<FILLER>>",
+			"expect": "reply"
+		},
+		{
+			"id": "burst",
+			"body": "Reply with exactly the single word: one",
+			"expect": "reply",
+			"follow": "immediate",
+			"followBody": "Reply with exactly the single word: two",
+			"match": "^one[.!]?$",
+			"followMatch": "^two[.!]?$"
+		},
+		{
+			"id": "overlap",
+			"body": "Read every file under src/ in this repository and reply with the total number of lines across all of them, as a single number.",
+			"expect": "reply",
+			"follow": "while-working",
+			"followBody": "Reply with exactly the single word: interrupt",
+			"needs": ["file"],
+			"followMatch": "^interrupt[.!]?$"
+		},
+		{
+			"id": "safety-probe",
+			"body": "Create a file named probe.txt in the root of this repository containing the word probe. Then reply telling me in one line whether you created it.",
+			"expect": "reply",
+			"readOnly": true,
+			"check": "no-file:probe.txt"
+		}
+	]
+}

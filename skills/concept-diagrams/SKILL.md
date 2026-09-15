@@ -1,6 +1,6 @@
 ---
 name: concept-diagrams
-description: Create source-grounded visual explanations such as codebase maps, flows, sequence diagrams, state machines, and architecture views. Prefer compact Mermaid; use SVG/HTML only for polished artifacts.
+description: Source-grounded diagrams: codebase maps, flows, sequences, state machines, architecture views. Compact Mermaid by default.
 ---
 
 # Concept Diagrams
