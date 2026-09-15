@@ -18,7 +18,7 @@ import { startRuntimeService } from "./service-launch.ts";
 import { HostedSessionStore, type ParticipantIdentity } from "./session-record.ts";
 
 // ponytail: two-second host verification is fine for small teams; add Runtime subscriptions if concurrent Pi count makes it measurable.
-const HEARTBEAT_MS = 2_000;
+const HEARTBEAT_MS = 500;
 
 /** Everything the session lifecycle hands back to the collaborator, delivery and messaging services. */
 export interface RuntimeSessionHooks {
