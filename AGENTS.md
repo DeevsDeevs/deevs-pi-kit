@@ -10,6 +10,7 @@ This repository is a portable pi package. Keep it minimal and intentional.
 - Extensions live in `extensions/<name>/index.ts`; the `pi.extensions` manifest globs `./extensions/*/index.ts` only.
 - One production dependency, `typebox`, pinned to the exact version Pi ships: the Runtime daemon and the MCP server run as standalone Node processes from the installed checkout and cannot borrow Pi's bundled copy. Everything else is peer or dev only; justify any addition.
 - Document user-facing resources in `README.md` when they are added.
+- Never add AI attribution to commits or PRs: no `Co-Authored-By: Claude`, no session links, no "Generated with" footers. The author is the user alone.
 - Validate with `npm run check` (typecheck, tests, RPC/print/JSONL mode smoke, supply-chain audit, pack).
 
 ## Control-plane invariant
