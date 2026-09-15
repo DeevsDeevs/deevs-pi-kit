@@ -22,7 +22,7 @@ const PROFILE_TOOLS: ProfileToolTable = {
 const CLAUDE_READ_ONLY_TOOLS = "Read,Glob,Grep";
 const MAX_LAUNCH_COMMAND_BYTES = 4000;
 const LAUNCH_TIMEOUT_MS = "30000";
-const NATIVE_STARTUP_MESSAGE = "Acknowledge in one line and wait for input.";
+export const NATIVE_STARTUP_MESSAGE = "Acknowledge in one line and wait for input.";
 
 type HerdrAgentKind = "pi" | "claude" | "codex";
 
