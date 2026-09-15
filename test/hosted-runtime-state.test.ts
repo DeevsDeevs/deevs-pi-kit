@@ -7,6 +7,7 @@ import type { HostedRuntimeState, HostedTarget } from "../extensions/runtime/sch
 import { RuntimeError } from "../extensions/runtime/errors.ts";
 import {
 	HostedStateStorageError,
+	HostedStateStore,
 	deriveParticipantKey,
 	emptyHostedRuntimeState,
 	loadOrCreateRuntimeInstance,
@@ -210,5 +211,58 @@ describe("hosted runtime state persistence", () => {
 		const pruned = reduceHostedState(state, { type: "retention.prune", before: 101 + HOSTED_ACK_RETENTION_MS });
 		expect(pruned.messaging[namespaceId]?.status).toBe("expired");
 		expect(pruned.events.evt_1).toBeUndefined();
+	});
+
+	it("drops read mail after its own shorter window even while the sender's grant still lists it", () => {
+		const state = structuredClone(populatedState());
+		state.messaging["msg_00000000-0000-0000-0000-000000000002"] = {
+			namespaceId: "msg_00000000-0000-0000-0000-000000000002",
+			secretDigest: "a".repeat(64),
+			participantKey: SENDER,
+			holderGeneration: "lease_sender",
+			targetKey: "pi_session-1",
+			configurationHash: "b".repeat(64),
+			createdAt: 100,
+			expiresAt: 100 + HOSTED_ACK_RETENTION_MS,
+			status: "active",
+			operations: { "op-1": "evt_1" },
+		};
+		expect(reduceHostedState(state, { type: "retention.prune", before: 0, readBefore: 1_000 }).events.evt_1).toBeDefined();
+		state.events.evt_1!.readAt = 500;
+		expect(reduceHostedState(state, { type: "retention.prune", before: 0, readBefore: 500 }).events.evt_1).toBeDefined();
+		const pruned = reduceHostedState(state, { type: "retention.prune", before: 0, readBefore: 501 });
+		expect(pruned.events.evt_1).toBeUndefined();
+		expect(pruned.messaging["msg_00000000-0000-0000-0000-000000000002"]?.operations).toEqual({ "op-1": "evt_1" });
+	});
+});
+
+describe("hosted runtime state pressure", () => {
+	const size = (state: HostedRuntimeState) => Buffer.byteLength(`${JSON.stringify(state, null, 2)}\n`);
+	const send = (sendId: string, at: number) => ({
+		type: "mailbox.send" as const,
+		senderParticipantKey: SENDER,
+		expectedSenderGeneration: "lease_sender",
+		senderTargetKey: "pi_session-1",
+		recipientParticipantKey: RECIPIENT,
+		sendId,
+		eventId: `evt_${sendId}`,
+		body: "pressure",
+		at,
+	});
+
+	it("sheds read mail older than an hour before refusing a write at the cap, and refuses once nothing is left to shed", () => {
+		const root = temporaryRoot();
+		const read = structuredClone(populatedState());
+		read.events.evt_1!.readAt = 200;
+		writeHostedRuntimeState(root, read);
+		const now = 200 + 2 * 60 * 60 * 1_000;
+		const afterSend = reduceHostedState(read, send("send_2", now));
+		const evicted = reduceHostedState(afterSend, { type: "retention.prune", before: 0, readBefore: now - 60 * 60 * 1_000 });
+		expect(size(afterSend)).toBeGreaterThan(size(evicted) + 1);
+		const store = new HostedStateStore(root, { now: () => now, maxBytes: size(evicted) + 1 });
+		store.apply(send("send_2", now));
+		expect(readHostedRuntimeState(root).events).toEqual({ evt_send_2: expect.objectContaining({ body: "pressure" }) });
+		expect(() => store.apply(send("send_3", now))).toThrow(expect.objectContaining({ full: true, uncertain: false }));
+		expect(store.read().events.evt_send_2).toBeDefined();
 	});
 });

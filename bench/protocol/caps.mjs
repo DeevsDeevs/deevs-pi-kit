@@ -55,15 +55,20 @@ await run("caps", async ({ metrics, check }) => {
 	const filler = "y".repeat(HOSTED_MAILBOX_MAX_BODY_BYTES);
 	const filled = [];
 	for (let index = 0; index < 51; index++) filled.push((await withRetry(() => send(filler))).eventId);
-	metrics.oversizedResponse = await expectError(() => bench.control.call("messaging.inbox", recipient.namespace));
-	const afterOversized = await withRetry(() => bench.control.call("messaging.inbox", recipient.namespace));
-	metrics.oversizedResponse.pageMessages = 51;
-	metrics.oversizedResponse.nextInboxMessages = afterOversized.messages.length;
-	metrics.oversizedResponse.markedReadButNeverDelivered = filled.length - afterOversized.messages.length;
-	metrics.oversizedResponse.note = "inbox marks the page read in the same state write, so a page that cannot be encoded is lost mail";
-	metrics.oversizedResponse.mailLost = metrics.oversizedResponse.markedReadButNeverDelivered;
-	metrics.oversizedResponse.stillServing = await alive("oversized response");
-	check(metrics.oversizedResponse.code === "conflict", `oversized response answered ${metrics.oversizedResponse.code}`);
+	// The inbox pages by bytes (50 messages or 96 KiB), so every one of the 51 bodies must arrive, none marked read and dropped.
+	const pages = [];
+	const delivered = new Set();
+	for (let reads = 0; reads < 60; reads++) {
+		const page = await withRetry(() => bench.control.call("messaging.inbox", recipient.namespace));
+		pages.push(page.messages.length);
+		for (const message of page.messages) delivered.add(message.eventId);
+		if (page.messages.length === 0) break;
+		if (!page.truncated) { const last = await withRetry(() => bench.control.call("messaging.inbox", recipient.namespace)); pages.push(last.messages.length); break; }
+	}
+	metrics.oversizedResponse = { pages, delivered: delivered.size, mailLost: filled.filter(id => !delivered.has(id)).length };
+	metrics.oversizedResponse.note = "a page of near-max bodies stays under the 128 KiB response cap, so nothing is marked read without being delivered";
+	metrics.oversizedResponse.stillServing = await alive("byte-paged inbox");
+	check(metrics.oversizedResponse.mailLost === 0, `byte-paged inbox lost ${metrics.oversizedResponse.mailLost} of 51 near-max messages (pages ${pages.join("/")})`);
 
 	// 4. Growth to the 8 MiB state cap, with near-max bodies so it is reached in seconds.
 	metrics.stateCap = await grow(bench, send, filler, RECORD_BUDGET_SEC);
