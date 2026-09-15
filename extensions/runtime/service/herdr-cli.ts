@@ -15,10 +15,19 @@ import {
 } from "../schemas/herdr.ts";
 import { canonicalFile, verifyPiSessionHeader, type HostedHostVerifier, type HostedLiveAgent } from "./identity.ts";
 
+/** Every heartbeat and sweep asks after the same few agents; one answer per agent per second is fresh enough. */
+const AGENT_CACHE_MS = 1_000;
+
 export class HerdrCliHostVerifier implements HostedHostVerifier {
-	async getAgent(agentName: string): Promise<HostedLiveAgent> {
-		const result = await runHerdr(["agent", "get", agentName]);
-		return liveAgent(decodeAgents(HerdrLiveAgentResultSchema, result).agent);
+	private readonly agents = new Map<string, { at: number; live: Promise<HostedLiveAgent> }>();
+
+	getAgent(agentName: string): Promise<HostedLiveAgent> {
+		const cached = this.agents.get(agentName);
+		if (cached && Date.now() - cached.at < AGENT_CACHE_MS) return cached.live;
+		const live = runHerdr(["agent", "get", agentName]).then((result) => liveAgent(decodeAgents(HerdrLiveAgentResultSchema, result).agent));
+		this.agents.set(agentName, { at: Date.now(), live });
+		live.catch(() => this.agents.delete(agentName));
+		return live;
 	}
 
 	/** The one native wake: Herdr's own prompt API, with no --wait and no proof that the agent acted on it. */

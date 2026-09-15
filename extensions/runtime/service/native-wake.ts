@@ -1,13 +1,11 @@
 import { type HostedAgentTarget, type HostedRuntimeState, isAgentTarget, isHeld } from "../schemas/state.ts";
-import type { HostedHostVerifier, HostedLiveAgent } from "./identity.ts";
+import type { HostedHostVerifier } from "./identity.ts";
 import { unreadMailEvents } from "./messaging.ts";
 import type { HostedStateStore } from "./state.ts";
 
 const WAKE_COOLDOWN_MS = 30_000;
 /** A tab that ignores the same mail three times is not going to read it; more prompts only burn its context. */
 const MAX_WAKES_PER_MESSAGE = 3;
-/** A tab that is not busy: `done` is a finished turn nobody has looked at yet, and a prompt is exactly how one follows it up. */
-const RESTING_STATUSES = new Set<HostedLiveAgent["agentStatus"]>(["idle", "done"]);
 
 /** One native tab holding a participant with unread mail, and the prompt that would wake it. */
 interface PendingWake {
@@ -27,9 +25,10 @@ interface WakeAttempt {
 /**
  * A native collaborator has no heartbeat to carry a mail hint, so the daemon nudges its tab instead:
  * at most one short prompt per target per 30 s and three per newest message, only for a tab that was issued
- * a mail namespace, only while `herdr agent get` reports `idle` or `done`, and only while the mail is still
- * unread. The prompt names the sender; it never carries a body, never proves the agent acted, and may land
- * on a partially typed line.
+ * a mail namespace, never while `herdr agent get` reports it `blocked` on a human prompt, and only while the
+ * mail is still unread. Claude Code and Codex queue a prompt typed during a turn, so a busy tab is woken too.
+ * The prompt names the sender; it never carries a body, never proves the agent acted, and may land on a
+ * partially typed line.
  */
 export class NativeWakeSweeper {
 	private readonly store: HostedStateStore;
@@ -81,7 +80,7 @@ export class NativeWakeSweeper {
 	private async prompt(wake: PendingWake): Promise<void> {
 		try {
 			const live = await this.host.getAgent(wake.agentName);
-			if (!RESTING_STATUSES.has(live.agentStatus)) return;
+			if (live.agentStatus === "blocked") return;
 			// The attempt is recorded before delivery, so an undelivered prompt still waits its full turn.
 			const last = this.attempts.get(wake.targetKey);
 			const attempt = { eventId: wake.eventId, at: this.now(), delivered: last?.eventId === wake.eventId ? last.delivered : 0 };
