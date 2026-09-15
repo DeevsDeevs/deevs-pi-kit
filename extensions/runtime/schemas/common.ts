@@ -25,7 +25,7 @@ export function boundedText(maxBytes: number): TRefineAdd<TString> {
 /** The one syntax for every collaborator name, Herdr agent name and driver-owned model in the package. */
 export const PARTICIPANT_NAME = /^[a-z][a-z0-9_-]{0,63}$/;
 export const AGENT_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-export const COLLABORATOR_MODEL = /^[A-Za-z0-9][A-Za-z0-9._/*:-]{0,199}$/;
+export const COLLABORATOR_MODEL = /^[A-Za-z0-9][A-Za-z0-9._/*:[\]-]{0,199}$/;
 
 export const IdText = boundedText(MAX_ID_BYTES);
 export const PathText = boundedText(MAX_PATH_BYTES);
