@@ -69,7 +69,7 @@ function agentTarget(): HostedAgentTarget {
 }
 
 /** One held native collaborator and one held Pi peer, each with exactly one unread message from the caller. */
-function setup() {
+function setup(issued = true) {
 	const root = mkdtempSync(join(tmpdir(), "native-wake-"));
 	roots.push(root);
 	const store = new HostedStateStore(root);
@@ -79,12 +79,31 @@ function setup() {
 	acquire(store, CALLER, "caller", "pi_caller");
 	acquire(store, PEER, "peer", "pi_peer");
 	acquire(store, NATIVE, "native", "agent_native");
+	const namespaceId = issued ? issueNamespace(store) : undefined;
 	mail(store, NATIVE, NATIVE_EVENT);
 	mail(store, PEER, PEER_EVENT);
 	let now = 1000;
 	const host = new RecordingHost();
 	const sweeper = new NativeWakeSweeper(store, host, () => now);
-	return { store, host, sweeper, advance(ms: number) { now += ms; }, at() { return now; } };
+	return { store, host, sweeper, namespaceId, advance(ms: number) { now += ms; }, at() { return now; } };
+}
+
+/** Issues the native collaborator's mail namespace exactly as the launching Pi session does after the bind. */
+function issueNamespace(store: HostedStateStore): string {
+	const grant: HostedMessagingGrant = {
+		namespaceId: `msg_${randomUUID()}`,
+		secretDigest: "a".repeat(64),
+		participantKey: NATIVE,
+		holderGeneration: "lease_native",
+		targetKey: "agent_native",
+		configurationHash: messagingConfigurationHash(agentTarget()),
+		createdAt: 900,
+		expiresAt: 900 + HOSTED_ACK_RETENTION_MS,
+		status: "active",
+		operations: {},
+	};
+	store.apply({ type: "messaging.issue", grant });
+	return grant.namespaceId;
 }
 
 function acquire(store: HostedStateStore, participantKey: string, participantId: string, targetKey: string): void {
@@ -115,21 +134,8 @@ function mail(store: HostedStateStore, recipientParticipantKey: string, eventId:
 }
 
 /** Marks the native collaborator's message read exactly as its own MCP receipt would. */
-function markRead(store: HostedStateStore, at: number): void {
-	const grant: HostedMessagingGrant = {
-		namespaceId: `msg_${randomUUID()}`,
-		secretDigest: "a".repeat(64),
-		participantKey: NATIVE,
-		holderGeneration: "lease_native",
-		targetKey: "agent_native",
-		configurationHash: messagingConfigurationHash(agentTarget()),
-		createdAt: 900,
-		expiresAt: 900 + HOSTED_ACK_RETENTION_MS,
-		status: "active",
-		operations: {},
-	};
-	store.apply({ type: "messaging.issue", grant });
-	store.apply({ type: "messaging.read", namespaceId: grant.namespaceId, eventIds: [NATIVE_EVENT], at });
+function markRead(store: HostedStateStore, namespaceId: string, at: number): void {
+	store.apply({ type: "messaging.read", namespaceId, eventIds: [NATIVE_EVENT], at });
 }
 
 describe("native wake", () => {
@@ -176,10 +182,30 @@ describe("native wake", () => {
 	it("stops once the message is read", async () => {
 		const test = setup();
 		await test.sweeper.sweep();
-		markRead(test.store, test.at());
+		markRead(test.store, test.namespaceId!, test.at());
 		test.advance(30_000);
 		await test.sweeper.sweep();
 		expect(test.host.prompts).toHaveLength(1);
+	});
+
+	it("never prompts a tab that was not issued a mail namespace", async () => {
+		const test = setup(false);
+		await test.sweeper.sweep();
+		test.advance(30_000);
+		await test.sweeper.sweep();
+		expect(test.host.prompts).toEqual([]);
+	});
+
+	it("gives up on one message after three prompts and starts over for newer mail", async () => {
+		const test = setup();
+		for (let round = 0; round < 5; round += 1) {
+			await test.sweeper.sweep();
+			test.advance(30_000);
+		}
+		expect(test.host.prompts).toHaveLength(3);
+		mail(test.store, NATIVE, "evt_native_2");
+		await test.sweeper.sweep();
+		expect(test.host.prompts).toHaveLength(4);
 	});
 
 	it("sweeps on a publication trigger without throwing out of it", async () => {

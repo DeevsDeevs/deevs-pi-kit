@@ -94,7 +94,7 @@ export class CollaboratorLauncher {
 		try {
 			if (worktreePath) await waitForHerdrPaneCwd(this.pi, tab, launchCwd, start.signal);
 			this.session.requireCurrentScope(request.current);
-			const mcp = spec.bind && worktreePath ? await this.native.messagingConfiguration(plan, candidate.persona?.prompt) : undefined;
+			const mcp = spec.bind ? await this.native.messagingConfiguration(plan, candidate.persona?.prompt) : undefined;
 			if (mcp) notifyNativePrompt(start.ctx, tab.paneId);
 			if (!spec.bind) sessionFile = this.createCollaboratorSession(start.projectRoot, launchCwd, candidate);
 			const input = { profile: candidate.profile, cwd: launchCwd, sessionFile, model: candidate.model, persona: candidate.persona, mcp };

@@ -86,8 +86,8 @@ function registerCollaboratorManageTool(pi: ExtensionAPI, hosted: HostedRuntimeI
 					persona: Type.Optional(Type.String()),
 					profile: Type.Optional(Type.Union(PROFILE_LITERALS)),
 				}), { minItems: 1, maxItems: 12 }),
-				protocol: Type.Optional(Type.String()),
-				callerParticipantId: Type.Optional(Type.String()),
+				protocol: Type.Optional(Type.String({ description: "Collaboration name for this project, e.g. review; needed until /runtime collaborate ran." })),
+				callerParticipantId: Type.Optional(Type.String({ description: "Your own participant name in that collaboration, e.g. lead; needed until /runtime collaborate ran." })),
 			}),
 			Type.Object({
 				action: Type.Union([Type.Literal("stand_down"), Type.Literal("stop")]),

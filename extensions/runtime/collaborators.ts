@@ -133,6 +133,10 @@ export class CollaboratorService {
 		if (isEnded(identity?.disposition)) {
 			throw new HostedRuntimeClientError("conflict", "Current collaborator identity has ended; explicit revival is required.");
 		}
+		if (!identity && !(input.protocol && input.callerParticipantId)) {
+			const detail = "Pass protocol (this project's collaboration name) and callerParticipantId (your own name in it), or run /runtime collaborate <protocol> <id> first.";
+			throw new HostedRuntimeClientError("invalid_request", detail);
+		}
 		const protocol = collaboratorName(identity?.protocol ?? input.protocol, "protocol");
 		const callerParticipantId = collaboratorName(identity?.participantId ?? input.callerParticipantId, "caller participant ID");
 		if (identity && requestsOtherIdentity(input, protocol, callerParticipantId)) {
