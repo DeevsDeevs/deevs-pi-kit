@@ -14,6 +14,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "audit": "node scripts/audit.mjs",
+    "bench:context": "node --experimental-strip-types bench/context.mjs",
     "smoke:modes": "node scripts/smoke-modes.mjs",
     "smoke:runtime-release": "node --experimental-strip-types scripts/smoke-runtime-release.mjs",
     "smoke:collaborator-release": "node --experimental-strip-types scripts/smoke-collaborator-release.mjs",
