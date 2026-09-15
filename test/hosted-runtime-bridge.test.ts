@@ -186,7 +186,9 @@ describe("authoritative Herdr agent bind", () => {
 			const acquired = await client.call("participant.acquire", { ...auth, protocol: "review", participantId: "main" }) as { participant: { participantKey: string; generation: string } };
 			const bound = await client.call("bridge.bind", { ...auth, ...bindInput(acquired.participant.participantKey, acquired.participant.generation) }) as Record<string, unknown>;
 			expect(bound).toMatchObject({ targetKey: deriveAgentTargetKey(projectRoot, AGENT_NAME), holderGeneration: "lease_agent_socket", profile: "read-only", cwd: projectRoot });
-			expect(await client.call("bridge.heartbeat", { registrationId: bound.registrationId, registrationKey: bound.registrationKey })).toMatchObject({ targetKey: bound.targetKey });
+			host.agents.set(AGENT_NAME, { ...codexAgent(projectRoot), agentStatus: "blocked" });
+			const heartbeat = await client.call("bridge.heartbeat", { registrationId: bound.registrationId, registrationKey: bound.registrationKey });
+			expect(heartbeat).toMatchObject({ targetKey: bound.targetKey, agentStatus: "blocked" });
 		} finally {
 			await server.close();
 		}

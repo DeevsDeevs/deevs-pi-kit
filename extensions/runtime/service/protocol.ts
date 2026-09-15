@@ -185,10 +185,13 @@ const HOSTED_METHODS = new Map<string, HostedMethodHandler>([
 	["pi.heartbeat", method(RegistrationAuthParams, heartbeatPi)],
 	["pi.unregister", method(RegistrationAuthParams, (call, params) => unregister(call, params))],
 	["bridge.bind", method(BridgeBindParams, bindAgent)],
-	["bridge.heartbeat", method(RegistrationAuthParams, async (call, params) => success(
-		call.id,
-		registrationResult(await call.context.registrations.heartbeat(params.registrationId, params.registrationKey)),
-	))],
+	["bridge.heartbeat", method(RegistrationAuthParams, async (call, params) => {
+		const registration = await call.context.registrations.heartbeat(params.registrationId, params.registrationKey);
+		const heartbeat: JsonObject = registrationResult(registration);
+		const agentStatus = call.context.registrations.agentStatus(registration.targetKey);
+		if (agentStatus) heartbeat.agentStatus = agentStatus;
+		return success(call.id, heartbeat);
+	})],
 	["bridge.unregister", method(RegistrationAuthParams, (call, params) => unregister(call, params))],
 	["worktree.list", method(RegistrationAuthParams, async (call, params) => success(
 		call.id,

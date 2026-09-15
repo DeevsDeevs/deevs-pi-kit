@@ -4,6 +4,7 @@ import type { CustomEntry } from "@earendil-works/pi-coding-agent";
 import type { HostedRuntimeClient } from "./client.ts";
 import { HostedRuntimeClientError } from "./client.ts";
 import { schemaError } from "./schemas/common.ts";
+import type { HerdrAgentStatus } from "./schemas/herdr.ts";
 import { isJsonBoolean, isJsonObject, isJsonString, type JsonObject, type JsonValue } from "./schemas/json.ts";
 import {
 	HeartbeatResult,
@@ -38,6 +39,7 @@ interface RegistrationAuth {
 export interface HostedHeartbeat {
 	registration: LiveClientRegistration;
 	mail?: MailHint;
+	agentStatus?: HerdrAgentStatus;
 }
 
 export function auth(registration: LiveClientRegistration): RegistrationAuth {
@@ -58,6 +60,7 @@ export function parseHeartbeat(value: RuntimeResponse): HostedHeartbeat {
 	const result = decode(HeartbeatResult, value, "Runtime heartbeat");
 	const heartbeat: HostedHeartbeat = { registration: result };
 	if (result.mail) heartbeat.mail = result.mail;
+	if (result.agentStatus) heartbeat.agentStatus = result.agentStatus;
 	return heartbeat;
 }
 
