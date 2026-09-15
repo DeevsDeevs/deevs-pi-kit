@@ -1,6 +1,6 @@
 ---
 name: datadog-pup
-description: Inspect and operate Datadog with the pup CLI: logs, metrics, monitors, APM, incidents, dashboards, SLOs, Live Debugger, Service Catalog.
+description: "Inspect and operate Datadog with the pup CLI: logs, metrics, monitors, APM, incidents, dashboards, SLOs, Live Debugger, Service Catalog."
 ---
 
 # Datadog via Pup

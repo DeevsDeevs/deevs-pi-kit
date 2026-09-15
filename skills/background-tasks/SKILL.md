@@ -1,6 +1,6 @@
 ---
 name: background-tasks
-description: Pick between Pi Kit Jobs, session Cron and Herdr-owned persistent processes for background work; never detach shells.
+description: "Pick between Pi Kit Jobs, session Cron and Herdr-owned persistent processes for background work; never detach shells."
 ---
 
 # Background Tasks

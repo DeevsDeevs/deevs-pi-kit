@@ -1,6 +1,6 @@
 ---
 name: concept-diagrams
-description: Source-grounded diagrams: codebase maps, flows, sequences, state machines, architecture views. Compact Mermaid by default.
+description: "Source-grounded diagrams: codebase maps, flows, sequences, state machines, architecture views. Compact Mermaid by default."
 ---
 
 # Concept Diagrams

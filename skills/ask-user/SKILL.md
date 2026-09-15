@@ -1,6 +1,6 @@
 ---
 name: ask-user
-description: Ask the user 1-5 concrete clarifications through ask_user only when the answers change scope, safety, implementation or acceptance; gather evidence first.
+description: "Ask the user 1-5 concrete clarifications through ask_user only when the answers change scope, safety, implementation or acceptance; gather evidence first."
 ---
 
 # Ask User

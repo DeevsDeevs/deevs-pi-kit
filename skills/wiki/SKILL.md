@@ -1,6 +1,6 @@
 ---
 name: wiki
-description: Build, query and maintain curated markdown wikis with schema, index and log discipline: project or domain wikis, durable research notes, source ingestion.
+description: "Build, query and maintain curated markdown wikis with schema, index and log discipline: project or domain wikis, durable research notes, source ingestion."
 ---
 
 # Wiki

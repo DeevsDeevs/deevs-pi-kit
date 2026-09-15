@@ -1,6 +1,6 @@
 ---
 name: missions
-description: Create, continue, take over, checkpoint, review and complete durable Missions: continuing autonomous objectives, including ones owned by another or broken Pi session.
+description: "Create, continue, take over, checkpoint, review and complete durable Missions: continuing autonomous objectives, including ones owned by another or broken Pi session."
 ---
 
 # Missions

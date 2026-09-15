@@ -1,6 +1,6 @@
 ---
 name: subagents
-description: Run curated Pi Kit personas as bounded subagents: exploration, bug hunting, review, testing, architecture, devops, language review, anti-slop passes.
+description: "Run curated Pi Kit personas as bounded subagents: exploration, bug hunting, review, testing, architecture, devops, language review, anti-slop passes."
 ---
 
 # Subagents
