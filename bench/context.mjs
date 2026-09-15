@@ -89,11 +89,6 @@ const shingles = sentence => {
 	return words.slice(0, Math.max(0, words.length - 7)).map((_, index) => words.slice(index, index + 8).join(" "));
 };
 
-function readmeRuntimeSection(readme) {
-	const match = /^### Hosted runtime$[\s\S]*?(?=^#{2,3} )/mu.exec(readme);
-	return match ? match[0] : "";
-}
-
 function duplication(skillBody, sources) {
 	const seen = new Map();
 	for (const [source, text] of Object.entries(sources)) {
@@ -142,7 +137,7 @@ export async function measure() {
 		tokenizers: { tokens: "o200k_base (js-tiktoken)", claudeTokens: "claude -p prompt-size delta, cached in bench/claude-tokens.json" },
 		surfaces,
 		duplication: duplication(collaborators.body, {
-			"README.md#hosted-runtime": readmeRuntimeSection(readme),
+			"README.md": readme,
 			"extensions/runtime/PROTOCOL.md": protocol,
 			...toolProse,
 		}),
