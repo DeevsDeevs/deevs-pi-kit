@@ -32,8 +32,9 @@ export const tools = [
 	},
 ];
 
+/** Length bounds stay server-side in `tools`; the model only needs the field names and types. */
 export const toolDefinitions = tools.map(({ properties, required, readOnlyHint, ...tool }) => ({
 	...tool,
-	inputSchema: { type: "object", properties, required, additionalProperties: false },
+	inputSchema: { type: "object", properties: Object.fromEntries(Object.entries(properties).map(([key, { type }]) => [key, { type }])), required, additionalProperties: false },
 	annotations: { readOnlyHint, destructiveHint: false, idempotentHint: readOnlyHint, openWorldHint: false },
 }));

@@ -48,14 +48,24 @@ async function registeredTools() {
 	}));
 }
 
+/** Rendered the way Pi's system prompt and tool list carry them: snippet and guideline lines, schema JSON. */
 function toolSurface(tools) {
 	const items = [];
 	for (const tool of tools) {
-		for (const part of ["description", "promptSnippet", "promptGuidelines", "schema"]) {
-			if (tool[part]) items.push(item(`${tool.name}.${part}`, tool[part]));
-		}
+		items.push(item(`${tool.name}.description`, tool.description));
+		if (tool.promptSnippet) items.push(item(`${tool.name}.promptSnippet`, `- ${tool.name}: ${tool.promptSnippet}`));
+		if (tool.promptGuidelines) items.push(item(`${tool.name}.promptGuidelines`, tool.promptGuidelines.split("\n").map(line => `- ${line}`).join("\n")));
+		items.push(item(`${tool.name}.schema`, tool.schema));
 	}
 	return surface("piTools", items);
+}
+
+const INSTALLED_SKILLS = "/home/deevs/.pi/agent/git/github.com/DeevsDeevs/deevs-pi-kit/skills";
+
+/** The exact `<skill>` block Pi's formatSkillsForPrompt emits, location included. */
+function skillIndexEntry(skill) {
+	const [name, description] = skill.index.split("\n");
+	return `  <skill>\n    <name>${name}</name>\n    <description>${description}</description>\n    <location>${INSTALLED_SKILLS}/${skill.name}/SKILL.md</location>\n  </skill>`;
 }
 
 function skillFiles() {
@@ -120,7 +130,7 @@ export async function measure() {
 	const collaborators = skills.find(skill => skill.name === "collaborators");
 	const surfaces = [
 		toolSurface(tools),
-		surface("skillIndex", skills.map(skill => item(skill.name, skill.index))),
+		surface("skillIndex", skills.map(skill => item(skill.name, skillIndexEntry(skill)))),
 		surface("skillBodies", skills.map(skill => item(skill.name, skill.body))),
 		surface("nativeCatalog", toolDefinitions.map(tool => item(tool.name, JSON.stringify(tool)))),
 		surface("nativeContext", [item("nativeMessagingConfiguration.context", native.context), item("NATIVE_STARTUP_MESSAGE", NATIVE_STARTUP_MESSAGE)]),

@@ -1,6 +1,6 @@
 ---
 name: chain-system
-description: Create, fork, search, list, and load multi-session chain links under .chains. Use when saving work context, resuming a project from previous sessions, passing context to subagents, or finding prior decisions/next steps.
+description: Save, fork, search and load .chains links: work context across sessions, handoff to subagents, prior decisions and next steps.
 ---
 
 # Chain System

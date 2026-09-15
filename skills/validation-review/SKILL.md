@@ -1,6 +1,6 @@
 ---
 name: validation-review
-description: Run a bounded test and review pass for completed or proposed changes. Use when the user asks to test, verify, review before merge, check requirements, run e2e/smoke tests, or make sure a change is not sloppy.
+description: Bounded test and review pass for completed or proposed changes: verify, review before merge, check requirements, run e2e or smoke tests.
 ---
 
 # Validation Review

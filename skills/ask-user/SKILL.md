@@ -1,6 +1,6 @@
 ---
 name: ask-user
-description: Use the interactive ask_user UI when 1-5 concrete clarifications or decisions materially affect implementation, scope, safety, or acceptance criteria. Gather evidence first; do not ask what tools can answer.
+description: Ask the user 1-5 concrete clarifications through ask_user only when the answers change scope, safety, implementation or acceptance; gather evidence first.
 ---
 
 # Ask User

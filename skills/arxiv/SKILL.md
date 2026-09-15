@@ -1,6 +1,6 @@
 ---
 name: arxiv
-description: Search, triage, and cite arXiv papers. Use when the user asks for arXiv/preprint/academic paper discovery, recent ML/AI/science papers, paper metadata, abstracts, or BibTeX. Prefer arxiv_* tools over ad-hoc curl.
+description: Search, triage and cite arXiv papers with the arxiv_* tools. Use for preprint or paper discovery, metadata, abstracts, BibTeX.
 ---
 
 # arXiv Research

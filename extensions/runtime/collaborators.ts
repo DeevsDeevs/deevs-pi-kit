@@ -47,9 +47,10 @@ export interface CollaboratorManageResult {
 	error?: string;
 }
 
-export type CollaboratorWorktreeInput =
-	| { action: "list" }
-	| { action: "cleanup"; participantId: string };
+export interface CollaboratorWorktreeInput {
+	action: "list" | "cleanup";
+	participantId?: string;
+}
 
 export type CollaboratorWorktreeResult = ClientWorktreeList | ClientWorktreeRemoval | { declined: true };
 
