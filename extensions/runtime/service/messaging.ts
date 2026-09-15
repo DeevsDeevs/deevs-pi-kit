@@ -203,7 +203,8 @@ export class RuntimeMessaging {
 		const messages: MessagingInboxMessageView[] = [];
 		let bytes = 0;
 		for (const event of unread) {
-			const message = { eventId: event.eventId, from: this.requireParticipant(event.source.id).participantId, body: event.body };
+			const message: MessagingInboxMessageView = { eventId: event.eventId, from: this.requireParticipant(event.source.id).participantId, body: event.body };
+			if (event.inReplyToEventId) message.inReplyTo = event.inReplyToEventId;
 			bytes += Buffer.byteLength(JSON.stringify(message));
 			// A page is marked read before it is sent, so it must stay under the response cap or the mail is lost.
 			if (messages.length === INBOX_PAGE || (messages.length > 0 && bytes > INBOX_PAGE_BYTES)) break;
