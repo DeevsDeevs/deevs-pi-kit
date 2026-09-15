@@ -188,6 +188,25 @@ it("lists the recipient's unread mail with bodies, oldest first, and caps the li
 	expect(rest!.structuredContent.truncated).toBe(false);
 });
 
+it("pages a heavy inbox by bytes so no marked-read page can exceed the response cap", async () => {
+	const test = await setup();
+	const recipient = await test.issue(test.recipientParticipant);
+	const body = "x".repeat(16 * 1024);
+	// 51 maximal bodies: a 50-message page would be ~800 KiB against a 128 KiB response cap.
+	await mcp(test.issued.descriptorPath, Array.from({ length: 51 }, () => send(body)));
+	const delivered: string[] = [];
+	for (let pages = 0; pages < 20 && delivered.length < 51; pages += 1) {
+		const [page] = await mcp(recipient.descriptorPath, [inbox()]);
+		expect(page!.isError).toBe(false);
+		expect(page!.structuredContent.messages!.length).toBeGreaterThan(0);
+		expect(page!.structuredContent.truncated).toBe(delivered.length + page!.structuredContent.messages!.length < 51);
+		delivered.push(...page!.structuredContent.messages!.map(message => message.eventId));
+	}
+	expect(new Set(delivered).size).toBe(51);
+	const [empty] = await mcp(recipient.descriptorPath, [inbox()]);
+	expect(empty!.structuredContent).toEqual({ messages: [], truncated: false });
+});
+
 it("marks every returned message read, so a repeated inbox call returns nothing", async () => {
 	const test = await setup();
 	const recipient = await test.issue(test.recipientParticipant);
