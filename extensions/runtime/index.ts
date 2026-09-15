@@ -34,7 +34,7 @@ export default function runtimeExtension(pi: ExtensionAPI): void {
 	registerRuntimeEventRenderer(pi);
 	runtimeDelivery.initialize(pi);
 	const hosted = new HostedRuntimeIntegration(pi);
-	registerMessagingMcp(pi, fileURLToPath(import.meta.url), ctx => hosted.messagingDescriptor(ctx));
+	hosted.deliverMailWith(registerMessagingMcp(pi, fileURLToPath(import.meta.url), ctx => hosted.messagingDescriptor(ctx)));
 	pi.registerCommand("runtime", {
 		description: "Start, inspect, register, or configure the durable Runtime service",
 		handler: (args, ctx) => hosted.command(args, ctx),

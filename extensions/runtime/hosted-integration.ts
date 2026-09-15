@@ -10,6 +10,7 @@ import {
 	type CollaboratorWorktreeResult,
 } from "./collaborators.ts";
 import { isHeld } from "./schemas/state.ts";
+import type { InboxReader } from "./mcp/pi.ts";
 import { MessagingClient } from "./messaging-client.ts";
 import { NativeAgentService } from "./native-agents.ts";
 import type { ClientParticipantStatus, HostedHeartbeat, LiveClientRegistration } from "./responses.ts";
@@ -96,9 +97,12 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 		if (isHeld(this.store.identity?.disposition)) await this.messaging.provision(registration, ctx);
 	}
 
+	deliverMailWith(reader: InboxReader): void {
+		this.messaging.deliverWith(reader);
+	}
+
 	afterHeartbeat(registration: LiveClientRegistration, ctx: ExtensionContext, heartbeat: HostedHeartbeat): Promise<void> {
-		this.messaging.offerMailHint(registration, ctx, heartbeat.mail);
-		return Promise.resolve();
+		return this.messaging.deliverMail(registration, ctx, heartbeat.mail);
 	}
 
 	afterHeartbeatSettled(): Promise<void> {

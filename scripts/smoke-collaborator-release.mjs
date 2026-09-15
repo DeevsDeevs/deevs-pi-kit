@@ -215,7 +215,7 @@ try {
 	assert.equal(sessionEntries(beta.agent_session.value)[0].cwd, worktree);
 	assert.equal(participant("gamma").worktreePath, undefined, "a read-only collaborator was given a worktree");
 
-	// Mail from the caller reaches the collaborator as a heartbeat hint, never as a pushed body.
+	// Mail from the caller reaches the idle collaborator as one delivered follow-up carrying the body, read on delivery.
 	const client = new HostedRuntimeClient(runtime.socketPath, 10_000);
 	const alphaRegistration = await client.call("pi.register", { projectRoot, piSessionId: alphaSessionId, piSessionFile: alphaSessionFile });
 	const alphaHeld = participant("alpha");
@@ -230,7 +230,8 @@ try {
 	const hint = await waitFor(() => sessionEntries(beta.agent_session.value)
 		.find((entry) => entry.type === "custom_message" && entry.customType === mailEntry), "beta's heartbeat did not carry the mail hint");
 	assert.equal(hint.details.eventId, sent.eventId);
-	assert.ok(!String(hint.content).includes(mailBody), "the hint pushed the message body into the collaborator");
+	assert.ok(String(hint.content).includes(mailBody), "the delivery did not carry the message body");
+	await waitFor(() => readState().events[sent.eventId]?.readAt !== undefined, "delivery did not mark the message read");
 
 	// Stand down one collaborator, stop the other, then clean up the stopped writer's worktree.
 	await driveTool(alphaPi, "runstanddown", "Stand down Runtime collaborator");

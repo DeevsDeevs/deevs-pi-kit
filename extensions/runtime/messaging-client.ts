@@ -1,5 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { HostedRuntimeClientError } from "./client.ts";
+import type { InboxReader } from "./mcp/pi.ts";
+import { isJsonObject, type JsonValue } from "./schemas/json.ts";
 import { isHeld, isWriter } from "./schemas/state.ts";
 import { auth, strictObject, text, type ClientParticipantStatus, type LiveClientRegistration, type MailHint } from "./responses.ts";
 import type { RuntimeSession } from "./runtime-session.ts";
@@ -8,14 +10,19 @@ import { messagingDescriptorPath } from "./service/messaging.ts";
 
 const HOSTED_MESSAGING_MAIL = "deevs.hosted-runtime.messaging-mail.v1";
 
-/** Issues private MCP messaging descriptors and offers idle mail hints; it never acquires identity. */
+/** Issues private MCP messaging descriptors and delivers mail into an idle session; it never acquires identity. */
 export class MessagingClient {
 	private readonly session: RuntimeSession;
 	private readonly hintedMail = new Set<string>();
 	private readonly managedIssued = new Set<string>();
+	private readInbox: InboxReader | undefined;
 
 	constructor(session: RuntimeSession) {
 		this.session = session;
+	}
+
+	deliverWith(reader: InboxReader): void {
+		this.readInbox = reader;
 	}
 
 	clearManagedIssuance(): void {
@@ -72,18 +79,32 @@ export class MessagingClient {
 		this.managedIssued.add(control.targetKey);
 	}
 
-	/** Best-effort idle hint. Not submission, body retrieval, read receipt or native admission; never replayed. */
-	offerMailHint(registration: LiveClientRegistration, ctx: ExtensionContext, mail: MailHint | undefined): void {
+	/**
+	 * Best-effort delivery into an idle session: the extension reads the inbox itself (which marks it read) and hands
+	 * the bodies to the model as one follow-up, so its first action can be the reply. Never replayed after loss.
+	 */
+	async deliverMail(registration: LiveClientRegistration, ctx: ExtensionContext, mail: MailHint | undefined): Promise<void> {
 		if (!mail || this.hintedMail.has(mail.eventId)) return;
 		if (!this.hintReady(registration, ctx)) return;
-		// One hint per message per session; the set stays as small as this session's mail.
+		// One delivery per hinted message per session; the set stays as small as this session's mail.
 		this.hintedMail.add(mail.eventId);
-		const content = "You have collaborator mail: call collaborator_inbox, act on it, and answer with collaborator_reply if it asks for one."
-			+ " Report only the outcome, never the tool steps.";
+		const content = await this.mailContent(ctx);
 		this.session.pi.sendMessage(
 			{ customType: HOSTED_MESSAGING_MAIL, content, display: false, details: mail },
 			{ triggerTurn: true, deliverAs: "followUp" },
 		);
+	}
+
+	/** Falls back to a one-line hint when the inbox cannot be read, so the model still knows to look. */
+	private async mailContent(ctx: ExtensionContext): Promise<string> {
+		const hint = "You have collaborator mail: call collaborator_inbox, act on it, and answer with collaborator_reply if it asks for one."
+			+ " Report only the outcome, never the tool steps.";
+		let inbox: JsonValue | undefined;
+		try { inbox = await this.readInbox?.(ctx); } catch { return hint; }
+		const messages = isJsonObject(inbox) && Array.isArray(inbox.messages) ? inbox.messages.filter(isJsonObject) : [];
+		if (messages.length === 0) return hint;
+		const delivered = messages.map((message) => `Mail from ${String(message.from)} (eventId ${String(message.eventId)}):\n${String(message.body)}`);
+		return `${delivered.join("\n\n")}\n\nAct on it and answer with collaborator_reply if it asks for one. Report only the outcome, never the tool steps.`;
 	}
 
 	private hintReady(registration: LiveClientRegistration, ctx: ExtensionContext): boolean {
