@@ -42,7 +42,7 @@ describe("runtime documentation", () => {
 
 	it("keeps the reduced docs within their line budgets", () => {
 		expect(lineCount(read("extensions/runtime/PROTOCOL.md"))).toBeLessThanOrEqual(120);
-		expect(lineCount(section(read("README.md"), "### Hosted runtime"))).toBeLessThanOrEqual(20);
+		expect(lineCount(section(read("README.md"), "## Quickstart: a collaborator"))).toBeLessThanOrEqual(12);
 		expect(lineCount(read("skills/collaborators/SKILL.md"))).toBeLessThan(40);
 	});
 
