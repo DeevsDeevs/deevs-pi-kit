@@ -188,6 +188,16 @@ describe("native wake", () => {
 		expect(test.host.prompts).toHaveLength(1);
 	});
 
+	it("wakes again at once for newer mail after the previous message was read", async () => {
+		const test = setup();
+		await test.sweeper.sweep();
+		markRead(test.store, test.namespaceId!, test.at());
+		test.advance(1_000);
+		mail(test.store, NATIVE, "evt_native_2");
+		await test.sweeper.sweep();
+		expect(test.host.prompts).toHaveLength(2);
+	});
+
 	it("never prompts a tab that was not issued a mail namespace", async () => {
 		const test = setup(false);
 		await test.sweeper.sweep();
