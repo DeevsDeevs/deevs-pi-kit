@@ -18,7 +18,7 @@ import { NativeWakeSweeper } from "./native-wake.ts";
 import type { HostedHostVerifier } from "./identity.ts";
 import { RuntimeRegistrationManager, type RegistrationManagerOptions } from "./registration.ts";
 import { isNodeError, RuntimeError } from "../errors.ts";
-import { HOSTED_ACK_RETENTION_MS } from "../schemas/common.ts";
+import { HOSTED_ACK_RETENTION_MS, HOSTED_READ_RETENTION_MS } from "../schemas/common.ts";
 import { HostedStateStore, loadOrCreateRuntimeInstance } from "./state.ts";
 import { RuntimeWorktrees } from "./worktree.ts";
 
@@ -64,7 +64,7 @@ interface SocketIdentity {
 
 export async function startRuntimeServer(options: RuntimeServerOptions): Promise<RuntimeServerHandle> {
 	const instance = loadOrCreateRuntimeInstance(options.root);
-	const store = new HostedStateStore(options.root);
+	const store = new HostedStateStore(options.root, { now: options.participant?.now });
 	const host = options.host ?? new HerdrCliHostVerifier();
 	let participants: HostedParticipantCoordinator | undefined;
 	const registrations = new RuntimeRegistrationManager(store, host, {
@@ -133,7 +133,7 @@ async function serve(
 function startRetentionSweep(store: HostedStateStore, options: RuntimeServerOptions): NodeJS.Timeout {
 	const now = options.participant?.now ?? Date.now;
 	const sweep = setInterval(() => {
-		try { store.apply({ type: "retention.prune", before: Math.max(0, now() - HOSTED_ACK_RETENTION_MS) }); } catch {}
+		try { store.apply({ type: "retention.prune", before: Math.max(0, now() - HOSTED_ACK_RETENTION_MS), readBefore: Math.max(0, now() - HOSTED_READ_RETENTION_MS) }); } catch {}
 	}, options.retentionSweepMs ?? RETENTION_SWEEP_MS);
 	sweep.unref?.();
 	return sweep;

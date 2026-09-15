@@ -4,6 +4,10 @@ import { Value } from "typebox/value";
 export const HOSTED_PROTOCOL_VERSION = 1 as const;
 export const HOSTED_STATE_MAX_BYTES = 8 * 1024 * 1024;
 export const HOSTED_ACK_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
+/** Delivered mail has no reader after a day; its ids stay in the sender's operation map for retries. */
+export const HOSTED_READ_RETENTION_MS = 24 * 60 * 60 * 1_000;
+/** When a write would cross the state cap, read mail older than this is evicted before the write is refused. */
+export const HOSTED_PRESSURE_READ_GRACE_MS = 60 * 60 * 1_000;
 export const HOSTED_MAILBOX_MAX_BODY_BYTES = 16 * 1024;
 export const HOSTED_MAX_STATE_RECORDS = 10_000;
 

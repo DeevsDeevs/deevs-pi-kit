@@ -3,10 +3,13 @@ import { RuntimeError } from "../../errors.ts";
 export class HostedStateStorageError extends RuntimeError {
 	/** True when the write may have reached disk, so the store must be recovered before it is trusted again. */
 	readonly uncertain: boolean;
+	/** True when nothing reached disk because the state would exceed its byte cap. */
+	readonly full: boolean;
 
-	constructor(message: string, uncertain = false) {
+	constructor(message: string, uncertain = false, full = false) {
 		super("storage_error", message);
 		this.uncertain = uncertain;
+		this.full = full;
 	}
 }
 

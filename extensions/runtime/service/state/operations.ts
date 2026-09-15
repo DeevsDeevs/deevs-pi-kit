@@ -62,4 +62,4 @@ export type HostedStateOperation =
 			body: string;
 			at: number;
 	  }
-	| { type: "retention.prune"; before: number };
+	| { type: "retention.prune"; before: number; readBefore?: number };

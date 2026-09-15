@@ -30,7 +30,7 @@ function headline(run) {
 	switch (run.name) {
 		case "burst": return `${metrics.sends} sends, ${metrics.sendsPerSec}/s, ack p50/p95/p99 ${percentileText(metrics.ackLatencyMs)} ms, state ${kib(metrics.stateBytesBefore)}→${kib(metrics.stateBytesAfter)}, rss ${kib(metrics.rssBytesAfter)}`;
 		case "inbox-race": return `${metrics.distinctDelivered}/${metrics.messages} delivered, ${metrics.duplicates} duplicates, inbox p50/p95/p99 ${percentileText(metrics.inboxLatencyMs)} ms in ${metrics.totalSec}s`;
-		case "caps": return `body ${metrics.oversizedBody?.code}, line ${metrics.oversizedRequest?.code}, response ${metrics.oversizedResponse?.code} (${metrics.oversizedResponse?.mailLost} lost), state cap at ${metrics.stateCap?.messages} near-max bodies, records ${metrics.recordCap?.records}/${metrics.caps?.stateRecords}`;
+		case "caps": return `body ${metrics.oversizedBody?.code}, line ${metrics.oversizedRequest?.code}, inbox pages ${metrics.oversizedResponse?.pages?.join("/")} (${metrics.oversizedResponse?.mailLost} lost), state cap at ${metrics.stateCap?.messages} near-max bodies, records ${metrics.recordCap?.records}/${metrics.caps?.stateRecords}`;
 		case "restart": return `${metrics.deliveredMessages} delivered, ${metrics.duplicatedOperations} dup, ${metrics.missingOperations} lost, ${metrics.retriesNeeded} retries, ${metrics.lostAcks} committed acks lost to SIGKILL`;
 		case "fanout": return (metrics.phases ?? []).map((phase) => `n=${phase.nativeTargets}: ${phase.shimPerSec} shim/s, hb p95 ${phase.heartbeatLatencyMs?.p95} ms, ${phase.daemonCpuSec} cpu-s, rss ${kib(phase.daemonRssBytes)}`).join(" | ");
 		default: return "";

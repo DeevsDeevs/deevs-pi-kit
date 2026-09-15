@@ -16,7 +16,7 @@ import {
 import { basename, join } from "node:path";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { HOSTED_STATE_MAX_BYTES } from "../../schemas/common.ts";
+import { HOSTED_PRESSURE_READ_GRACE_MS, HOSTED_STATE_MAX_BYTES } from "../../schemas/common.ts";
 import type { HostedRuntimeInstance, HostedRuntimeState } from "../../schemas/state.ts";
 import type { HostedStateOperation } from "./operations.ts";
 import { isNodeError } from "../../errors.ts";
@@ -41,13 +41,22 @@ interface RuntimeStatePaths {
 	state: string;
 }
 
+export interface HostedStateStoreOptions {
+	now?: () => number;
+	maxBytes?: number;
+}
+
 export class HostedStateStore {
 	readonly root: string;
+	private readonly now: () => number;
+	private readonly maxBytes: number;
 	private state: HostedRuntimeState;
 	private uncertain = false;
 
-	constructor(root: string) {
+	constructor(root: string, options: HostedStateStoreOptions = {}) {
 		this.root = root;
+		this.now = options.now ?? Date.now;
+		this.maxBytes = options.maxBytes ?? HOSTED_STATE_MAX_BYTES;
 		this.state = readHostedRuntimeState(root);
 		// A process restart alone does not flush a previously uncertain rename.
 		try {
@@ -66,13 +75,25 @@ export class HostedStateStore {
 	apply(operation: HostedStateOperation): HostedRuntimeState {
 		const next = reduceHostedState(this.read(), operation);
 		if (next === this.state) return this.state;
-		try { writeHostedRuntimeState(this.root, next); }
+		try {
+			this.write(next);
+		} catch (error) {
+			// A write that crosses the cap first sheds read mail nobody will read again; only then is it refused.
+			if (!(error instanceof HostedStateStorageError && error.full)) throw error;
+			const shed = reduceHostedState(next, { type: "retention.prune", before: 0, readBefore: this.now() - HOSTED_PRESSURE_READ_GRACE_MS });
+			if (shed === next) throw error;
+			this.write(shed);
+		}
+		return this.state;
+	}
+
+	private write(next: HostedRuntimeState): void {
+		try { writeHostedRuntimeState(this.root, next, this.maxBytes); }
 		catch (error) {
 			if (error instanceof HostedStateStorageError && error.uncertain) this.uncertain = true;
 			throw error;
 		}
 		this.state = next;
-		return next;
 	}
 }
 
@@ -122,9 +143,9 @@ export function validateHostedRuntimeState<Source>(value: Source): HostedRuntime
 }
 
 /** The socket proves request params and the load proves the store; a reducer's own output is trusted. */
-export function writeHostedRuntimeState(root: string, state: HostedRuntimeState): void {
+export function writeHostedRuntimeState(root: string, state: HostedRuntimeState, maxBytes = HOSTED_STATE_MAX_BYTES): void {
 	prepareRoot(root);
-	writeAtomicJson(root, runtimeStatePaths(root).state, state, HOSTED_STATE_MAX_BYTES);
+	writeAtomicJson(root, runtimeStatePaths(root).state, state, maxBytes);
 }
 
 function prepareRoot(root: string): void {
@@ -156,7 +177,7 @@ function readJson(path: string, maxBytes: number): PersistedStateValue | undefin
 
 function writeAtomicJson(root: string, path: string, value: HostedRuntimeState | HostedRuntimeInstance, maxBytes: number): void {
 	const content = `${JSON.stringify(value, null, 2)}\n`;
-	if (Buffer.byteLength(content) > maxBytes) throw new HostedStateStorageError(`Runtime state exceeds ${maxBytes} bytes.`);
+	if (Buffer.byteLength(content) > maxBytes) throw new HostedStateStorageError(`Runtime state exceeds ${maxBytes} bytes.`, false, true);
 	const temporary = join(root, `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`);
 	let fd: number | undefined;
 	let renamed = false;
