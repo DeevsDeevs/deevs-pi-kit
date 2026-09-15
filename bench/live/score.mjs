@@ -44,6 +44,7 @@ function score(lane) {
 			toolCalls: Object.values(tools).reduce((total, count) => total + count, 0),
 			stray: Object.entries(tools).filter(([tool]) => !permitted.has(tool)).reduce((total, [, count]) => total + count, 0),
 			tools,
+			context: Math.max(0, ...slice.map(row => row.input ?? 0)),
 			input: slice.reduce((total, row) => total + (row.input ?? 0), 0),
 			output: slice.reduce((total, row) => total + (row.output ?? 0), 0),
 			wakes: countWakes(rows, mail.sentAt, end),
@@ -54,7 +55,7 @@ function score(lane) {
 }
 
 function table(record) {
-	const header = ["mail", "collab", "model", "expect", "out", "t_work", "t_reply", "wakes", "tools", "stray", "in", "out_tok"];
+	const header = ["mail", "collab", "model", "expect", "out", "t_work", "t_reply", "wakes", "tools", "stray", "ctx", "in_total", "out_tok"];
 	const byId = new Map(record.scenarios.map(entry => [entry.id, entry]));
 	const rows = record.mails.map((mail) => {
 		const collaborator = record.collaborators.find(candidate => candidate.id === mail.collaborator);
@@ -70,6 +71,7 @@ function table(record) {
 			String(mail.score.wakes),
 			String(mail.score.toolCalls),
 			String(mail.score.stray),
+			String(mail.score.context ?? "-"),
 			String(mail.score.input),
 			String(mail.score.output),
 		];
