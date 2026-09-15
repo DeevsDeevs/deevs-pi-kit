@@ -298,15 +298,15 @@ it("uses the default Runtime registrar, real registration and private issuance t
 	const oldArguments = await pi.call({ name: "collaborator_send", arguments: { messages: [] } } as never);
 	expect(oldArguments.isError).toBe(true);
 	expect(Object.keys(test.readState().events)).toHaveLength(1);
-	const [incoming] = await mcp(recipient.descriptorPath, [send("No synthetic empty-editor authority.", "sender")]);
+	const [incoming] = await mcp(recipient.descriptorPath, [send("Delivered into an idle RPC session.", "sender")]);
 	expect(incoming!.isError).toBe(false);
 	await new Promise(resolve => setTimeout(resolve, 2500));
-	// RPC mode has no authoritative empty editor, so its heartbeat hint is never delivered.
-	expect(test.readState().events[incoming!.structuredContent.eventId!]).toMatchObject({ type: "mailbox.message" });
-	expect(test.readState().events[incoming!.structuredContent.eventId!]).not.toHaveProperty("readAt");
+	// An idle RPC session has no editor to guard, so its heartbeat delivers the body and marks the mail read.
+	expect(test.readState().events[incoming!.structuredContent.eventId!]).toMatchObject({ type: "mailbox.message", readAt: 1000 });
 	await pi.close();
 	const transcript = readFileSync(sessionFile, "utf8");
-	expect(transcript).not.toContain("deevs.hosted-runtime.messaging-mail.v1");
+	expect(transcript).toContain("deevs.hosted-runtime.messaging-mail.v1");
+	expect(transcript).toContain("Delivered into an idle RPC session.");
 	const descriptor = JSON.parse(readFileSync(messagingDescriptorPath(test.runtimeRoot, grant.targetKey), "utf8"));
 	expect(transcript).not.toContain(descriptor.secret);
 	expect(transcript).toContain('"toolName":"collaborator_send"');

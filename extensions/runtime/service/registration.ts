@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { type HostedAgentTarget, type HostedTarget, isAgentTarget } from "../schemas/state.ts";
 import { assertAgentInProject, canonicalDirectory, canonicalFile, heldByTarget, verifyPiSessionHeader } from "./identity.ts";
 import { RuntimeError } from "../errors.ts";
+import type { HerdrAgentStatus } from "../schemas/herdr.ts";
 import type { HostedHostVerifier } from "./identity.ts";
 import { HostedStateStore, piTargetKey } from "./state.ts";
 import { isProjectWorktree } from "./worktree.ts";
@@ -41,6 +42,7 @@ export class RuntimeRegistrationManager {
 	private readonly options: RegistrationManagerOptions;
 	private readonly registrations = new Map<string, HostedLiveRegistration>();
 	private readonly byTarget = new Map<string, string>();
+	private readonly agentStatuses = new Map<string, HerdrAgentStatus>();
 	private readonly verifications = new Map<string, Promise<HostedLiveRegistration>>();
 	private closed = false;
 
@@ -119,6 +121,11 @@ export class RuntimeRegistrationManager {
 		return this.byTarget.has(targetKey);
 	}
 
+	/** Herdr's status at this target's last successful verification, so a blocked tab is visible without a new query. */
+	agentStatus(targetKey: string): HerdrAgentStatus | undefined {
+		return this.hasLiveTarget(targetKey) ? this.agentStatuses.get(targetKey) : undefined;
+	}
+
 	close(): void {
 		this.closed = true;
 		this.registrations.clear();
@@ -174,6 +181,7 @@ export class RuntimeRegistrationManager {
 			case "agent": {
 				const live = await this.host.getAgent(target.agentName);
 				assertAgentInProject(live, target);
+				if (live.agentStatus) this.agentStatuses.set(target.targetKey, live.agentStatus);
 				if (!heldByTarget(this.store, target)) {
 					throw new RuntimeError("registration_stale", "Herdr agent participant generation is no longer held.");
 				}

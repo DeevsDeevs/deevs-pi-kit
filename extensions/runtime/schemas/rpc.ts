@@ -11,6 +11,7 @@ import {
 } from "./common.ts";
 export type { JsonObject, JsonValue } from "./json.ts";
 import type { JsonValue } from "./json.ts";
+import { HerdrAgentStatusSchema } from "./herdr.ts";
 import {
 	HostedCollaboratorDriverSchema,
 	HostedCollaboratorProfileSchema,
@@ -148,6 +149,7 @@ export const ParticipantStatusResult = Type.Object({
 	generation: IdText,
 	holderTargetKey: Type.Optional(IdText),
 	holderLive: Type.Boolean(),
+	agentStatus: Type.Optional(HerdrAgentStatusSchema),
 	driver: Type.Optional(HostedCollaboratorDriverSchema),
 	profile: Type.Optional(HostedCollaboratorProfileSchema),
 	unreadMail: Type.Optional(Count),

@@ -22,6 +22,7 @@ export class HostedSessionStore {
 	private identityState?: ParticipantIdentity;
 	private launchState?: CollaboratorLaunch;
 	private worktreeState?: CollaboratorWorktree;
+	private autoState = false;
 	private readonly agentControls = new Map<string, ManagedAgentControl>();
 
 	constructor(pi: ExtensionAPI) {
@@ -44,6 +45,11 @@ export class HostedSessionStore {
 		return this.agentControls;
 	}
 
+	/** Whether this session runs collaborator lifecycle changes in its project without confirmation dialogs. */
+	get auto(): boolean {
+		return this.autoState;
+	}
+
 	agent(targetKey: string): ManagedAgentControl | undefined {
 		return this.agentControls.get(targetKey);
 	}
@@ -53,6 +59,7 @@ export class HostedSessionStore {
 		this.identityState = restored.identity;
 		this.launchState = restored.launch;
 		this.worktreeState = restored.worktree;
+		this.autoState = restored.auto;
 		this.agentControls.clear();
 		for (const control of restored.agents) this.agentControls.set(control.targetKey, control);
 	}
@@ -73,6 +80,11 @@ export class HostedSessionStore {
 		});
 	}
 
+	persistAuto(auto: boolean): void {
+		this.autoState = auto;
+		this.persist();
+	}
+
 	persistAgent(control: ManagedAgentControl): void {
 		this.agentControls.set(control.targetKey, control);
 		this.persist();
@@ -89,6 +101,7 @@ export class HostedSessionStore {
 		if (this.launchState) record.launch = this.launchState;
 		if (this.worktreeState) record.worktree = this.worktreeState;
 		if (this.agentControls.size > 0) record.agents = [...this.agentControls.values()];
+		if (this.autoState) record.auto = true;
 		this.pi.appendEntry(HOSTED_SESSION_ENTRY, record);
 	}
 }
