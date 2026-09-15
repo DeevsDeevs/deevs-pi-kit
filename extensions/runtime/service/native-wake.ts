@@ -1,9 +1,11 @@
 import { type HostedAgentTarget, type HostedRuntimeState, isAgentTarget, isHeld } from "../schemas/state.ts";
-import type { HostedHostVerifier } from "./identity.ts";
+import type { HostedHostVerifier, HostedLiveAgent } from "./identity.ts";
 import { unreadMailEvents } from "./messaging.ts";
 import type { HostedStateStore } from "./state.ts";
 
 const WAKE_COOLDOWN_MS = 30_000;
+/** A tab that is not busy: `done` is a finished turn nobody has looked at yet, and a prompt is exactly how one follows it up. */
+const RESTING_STATUSES = new Set<HostedLiveAgent["agentStatus"]>(["idle", "done"]);
 
 /** One native tab holding a participant with unread mail, and the prompt that would wake it. */
 interface PendingWake {
@@ -14,7 +16,7 @@ interface PendingWake {
 
 /**
  * A native collaborator has no heartbeat to carry a mail hint, so the daemon nudges its tab instead:
- * at most one short prompt per target per 30 s, only while `herdr agent get` reports `idle`, and only
+ * at most one short prompt per target per 30 s, only while `herdr agent get` reports `idle` or `done`, and only
  * while the mail is still unread. The prompt names the sender; it never carries a body, never proves the
  * agent acted, and may land on a partially typed line.
  */
@@ -66,7 +68,7 @@ export class NativeWakeSweeper {
 	private async prompt(wake: PendingWake): Promise<void> {
 		try {
 			const live = await this.host.getAgent(wake.agentName);
-			if (live.agentStatus !== "idle") return;
+			if (!RESTING_STATUSES.has(live.agentStatus)) return;
 			// The cooldown is recorded before delivery, so an undelivered prompt still waits its full turn.
 			this.lastPromptedAt.set(wake.targetKey, this.now());
 			await this.host.promptAgent?.(wake.agentName, wake.text);
