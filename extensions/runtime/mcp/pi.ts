@@ -11,6 +11,8 @@ import { toolDefinitions } from "./tools.ts";
 const toolNames = new Set(toolDefinitions.map(tool => tool.name));
 
 type DescriptorResolver = (ctx: ExtensionContext) => Promise<string>;
+/** Reads this session's unread mail through the same MCP path the model's tool uses, marking it read. */
+export type InboxReader = (ctx: ExtensionContext) => Promise<JsonObject | undefined>;
 
 interface McpConnection {
 	path: string;
@@ -173,7 +175,7 @@ function registerMessagingEvents(pi: ExtensionAPI, session: MessagingSession): v
 	pi.on("session_shutdown", () => session.shutdown());
 }
 
-export function registerMessagingMcp(pi: ExtensionAPI, sourcePath: string, descriptorPath: DescriptorResolver): void {
+export function registerMessagingMcp(pi: ExtensionAPI, sourcePath: string, descriptorPath: DescriptorResolver): InboxReader {
 	const session = new MessagingSession(pi, sourcePath);
 	for (const tool of toolDefinitions) {
 		pi.registerTool({
@@ -189,6 +191,7 @@ export function registerMessagingMcp(pi: ExtensionAPI, sourcePath: string, descr
 		});
 	}
 	registerMessagingEvents(pi, session);
+	return async (ctx) => (await executeMessagingTool(session, descriptorPath, "collaborator_inbox", {}, undefined, ctx)).details;
 }
 
 const CALL_LABELS = {
