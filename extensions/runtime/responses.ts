@@ -31,7 +31,7 @@ export type {
 export type RuntimeResponse = Awaited<ReturnType<HostedRuntimeClient["call"]>>;
 export type RestoredSessionData = CustomEntry["data"];
 
-interface RegistrationAuth {
+export interface RegistrationAuth {
 	registrationId: string;
 	registrationKey: string;
 }

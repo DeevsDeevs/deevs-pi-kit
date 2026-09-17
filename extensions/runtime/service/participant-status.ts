@@ -24,6 +24,8 @@ export interface HostedParticipantStatus {
 	agentStatus?: HerdrAgentStatus;
 	driver?: HostedCollaboratorDriver;
 	profile?: "read-only" | "workspace-write";
+	repo?: string;
+	repoRoot?: string;
 	unreadMail?: number;
 	lastTransition: HostedParticipant["transition"];
 }
@@ -61,6 +63,8 @@ export function participantStatus(
 		lastTransition: participant.transition,
 	};
 	if (holderTargetKey) status.holderTargetKey = holderTargetKey;
+	if (participant.repo) status.repo = participant.repo;
+	if (participant.repoRoot) status.repoRoot = participant.repoRoot;
 	if (isPiTarget(holder)) status.driver = "pi";
 	if (isAgentTarget(holder)) {
 		status.driver = holder.driver;

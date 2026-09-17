@@ -351,7 +351,7 @@ function messagingBinding(target: HostedTarget): MessagingBinding {
 		kind: "pi",
 		sessionId: target.piSessionId,
 		sessionFile: target.piSessionFile,
-		cwd: target.worktreePath ?? target.projectRoot,
+		cwd: target.worktreePath ?? target.repoRoot ?? target.projectRoot,
 	};
 }
 

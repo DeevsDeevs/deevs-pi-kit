@@ -26,6 +26,7 @@ const WORKTREE = {
 	expectedCallerGeneration: IdText,
 	protocol: ParticipantNameText,
 	participantId: ParticipantNameText,
+	repo: Type.Optional(PathText),
 };
 
 /** Base64 keeps a 16 KiB body under the unchanged 64 KiB RPC request cap. */
@@ -47,6 +48,7 @@ export const ParticipantAuthParams = Type.Object({ ...AUTH, participantKey: IdTe
 
 export const PiRegisterParams = Type.Object({
 	projectRoot: PathText,
+	repo: Type.Optional(PathText),
 	worktreePath: Type.Optional(PathText),
 	piSessionId: IdText,
 	piSessionFile: PathText,
@@ -62,6 +64,7 @@ export const BridgeBindParams = Type.Object({
 	callerParticipantKey: IdText,
 	expectedCallerGeneration: IdText,
 	expectedParticipantGeneration: Type.Optional(IdText),
+	repo: Type.Optional(PathText),
 }, STRICT_OBJECT);
 
 export const WorktreeEnsureParams = Type.Object({ ...AUTH, ...WORKTREE }, STRICT_OBJECT);
@@ -154,6 +157,8 @@ export const ParticipantStatusResult = Type.Object({
 	agentStatus: Type.Optional(HerdrAgentStatusSchema),
 	driver: Type.Optional(HostedCollaboratorDriverSchema),
 	profile: Type.Optional(HostedCollaboratorProfileSchema),
+	repo: Type.Optional(PathText),
+	repoRoot: Type.Optional(PathText),
 	unreadMail: Type.Optional(Count),
 	lastTransition: Type.Object({ cause: IdText }),
 });
@@ -164,6 +169,7 @@ export const WorktreeListResult = Type.Object({
 		participantId: ParticipantNameText,
 		path: PathText,
 		branchRef: PathText,
+		repoRoot: PathText,
 		participantState: Type.Optional(HostedParticipantStateSchema),
 		recorded: Type.Boolean(),
 	})),

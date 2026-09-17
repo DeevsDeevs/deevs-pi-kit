@@ -10,7 +10,8 @@ import {
 import { boundAgentNames, draftAgentBind, type BindAgentInput } from "./bind-request.ts";
 import type { HostedHostVerifier } from "./identity.ts";
 import { RuntimeRegistrationManager, type HostedLiveRegistration } from "./registration.ts";
-import { HostedStateStore } from "./state.ts";
+import { deriveParticipantKey, HostedStateStore } from "./state.ts";
+import { resolveRepoRoot } from "./worktree.ts";
 
 export interface BoundAgentResult {
 	registration: HostedLiveRegistration;
@@ -55,6 +56,9 @@ export class RuntimeAgentBinder {
 		const projectRoot = realpathSync(callerTarget.projectRoot);
 		const names = boundAgentNames(input);
 		const verified = await this.host.getAgent(names.agentName);
+		const participant = this.store.read().participants[deriveParticipantKey(projectRoot, names.protocol, names.participantId)];
+		const repo = input.repo ?? participant?.repo;
+		const repoRoot = repo === undefined ? undefined : await resolveRepoRoot(projectRoot, repo, names.participantId);
 		const bind = await draftAgentBind({
 			store: this.store,
 			caller,
@@ -62,6 +66,8 @@ export class RuntimeAgentBinder {
 			names,
 			verified,
 			projectRoot,
+			repo,
+			repoRoot,
 			at: this.now(),
 			createGeneration: () => this.options.createGeneration?.() ?? `lease_${randomUUID()}`,
 		});
@@ -83,6 +89,6 @@ function boundResult(registration: HostedLiveRegistration, target: HostedAgentTa
 		driver: target.driver,
 		profile: target.profile,
 		projectRoot: target.projectRoot,
-		cwd: target.worktreePath ?? target.projectRoot,
+		cwd: target.worktreePath ?? target.repoRoot ?? target.projectRoot,
 	};
 }

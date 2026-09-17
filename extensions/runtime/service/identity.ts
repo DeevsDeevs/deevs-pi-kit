@@ -37,7 +37,7 @@ export function assertAgentInProject(agent: HostedLiveAgent, target: HostedAgent
 	let hostCwd: string;
 	try { hostCwd = canonicalDirectory(agent.cwd, "Herdr cwd"); }
 	catch { throw new RuntimeError("identity_mismatch", "Herdr agent cwd is unavailable or not canonical."); }
-	if (hostCwd !== (target.worktreePath ?? target.projectRoot)) {
+	if (hostCwd !== (target.worktreePath ?? target.repoRoot ?? target.projectRoot)) {
 		throw new RuntimeError("identity_mismatch", "Herdr agent cwd does not match its authorized project or worktree root.");
 	}
 }

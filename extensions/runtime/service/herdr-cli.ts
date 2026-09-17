@@ -39,7 +39,7 @@ export class HerdrCliHostVerifier implements HostedHostVerifier {
 		switch (target.kind) {
 			case "agent": return this.closeAgentTarget(target);
 			case "pi": {
-				const cwd = target.worktreePath ?? target.projectRoot;
+				const cwd = target.worktreePath ?? target.repoRoot ?? target.projectRoot;
 				return this.closeCollaboratorTab(target.piSessionFile, target.piSessionId, cwd, runtimeRoot);
 			}
 			default: {

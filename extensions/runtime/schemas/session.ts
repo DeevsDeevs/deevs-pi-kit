@@ -27,7 +27,8 @@ export const CollaboratorLaunchSchema = Type.Object({
 
 export const CollaboratorWorktreeSchema = Type.Object({
 	projectRoot: PathText,
-	worktreePath: PathText,
+	repo: Type.Optional(PathText),
+	worktreePath: Type.Optional(PathText),
 }, STRICT_OBJECT);
 
 export const ManagedAgentSessionSchema = Type.Object({

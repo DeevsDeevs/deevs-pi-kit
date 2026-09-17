@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
+import { join } from "node:path";
 import { Value } from "typebox/value";
 import type { CustomEntry, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { asRecord, type RestoredSessionData } from "./responses.ts";
@@ -133,13 +134,19 @@ function parseLaunch(value: RestoredSessionData): CollaboratorLaunch | undefined
 	return createHash("sha256").update(persona.prompt).digest("hex") === persona.promptHash ? value : undefined;
 }
 
+/** The record is trusted only while this session still sits where it says: in its worktree, or in its repo without one. */
 function parseWorktree(value: RestoredSessionData, ctx: ExtensionContext): CollaboratorWorktree | undefined {
 	if (!Value.Check(CollaboratorWorktreeSchema, value)) return undefined;
 	try {
-		const worktreePath = realpathSync(value.worktreePath);
 		const projectRoot = realpathSync(value.projectRoot);
-		if (worktreePath !== realpathSync(ctx.cwd) || worktreePath === projectRoot) return undefined;
-		return { projectRoot, worktreePath };
+		const cwd = realpathSync(ctx.cwd);
+		const worktreePath = value.worktreePath === undefined ? undefined : realpathSync(value.worktreePath);
+		const expected = worktreePath ?? (value.repo === undefined ? undefined : realpathSync(join(projectRoot, value.repo)));
+		if (expected === undefined || cwd !== expected || cwd === projectRoot) return undefined;
+		const worktree: CollaboratorWorktree = { projectRoot };
+		if (value.repo !== undefined) worktree.repo = value.repo;
+		if (worktreePath !== undefined) worktree.worktreePath = worktreePath;
+		return worktree;
 	} catch {
 		return undefined;
 	}

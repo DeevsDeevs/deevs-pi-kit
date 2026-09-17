@@ -43,6 +43,7 @@ interface BindLaunchedRequest {
 	callerParticipantKey: string;
 	expectedCallerGeneration: string;
 	expectedParticipantGeneration?: string;
+	repo?: string;
 	messagingConfigured: boolean;
 }
 
@@ -55,6 +56,7 @@ interface AgentBindRequest {
 	callerParticipantKey: string;
 	expectedCallerGeneration: string;
 	expectedParticipantGeneration?: string;
+	repo?: string;
 }
 
 /** Starts, binds and re-verifies collaborators as real Herdr agents. */
@@ -310,6 +312,7 @@ function bindRequestFor(request: BindLaunchedRequest): AgentBindRequest {
 		expectedCallerGeneration: request.expectedCallerGeneration,
 	};
 	if (request.expectedParticipantGeneration) bind.expectedParticipantGeneration = request.expectedParticipantGeneration;
+	if (request.repo !== undefined) bind.repo = request.repo;
 	return bind;
 }
 

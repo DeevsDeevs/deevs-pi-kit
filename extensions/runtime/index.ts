@@ -18,7 +18,8 @@ function collaboratorLines(participants: ClientParticipantStatus[]): string {
 	return participants.map((participant) => {
 		const agent = participant.agentStatus ? `, ${participant.agentStatus}` : "";
 		const liveness = isHeld(participant.state) ? ` (${participant.holderLive ? "live" : "offline"}${agent})` : "";
-		return `${participant.protocol}/${participant.participantId}: ${participant.state}${liveness}`;
+		const repo = participant.repo ? `, repo ${participant.repo}` : "";
+		return `${participant.protocol}/${participant.participantId}: ${participant.state}${liveness}${repo}`;
 	}).join("\n");
 }
 
@@ -78,6 +79,7 @@ function registerCollaboratorManageTool(pi: ExtensionAPI, hosted: HostedRuntimeI
 				model: Type.Optional(Type.String()),
 				persona: Type.Optional(Type.String()),
 				profile: Type.Optional(Type.Union(PROFILE_LITERALS)),
+				repo: Type.Optional(Type.String({ description: "Cwd-relative Git repository to work in; writers need it when this folder is not itself a repository" })),
 			}), { minItems: 1, maxItems: 12 }),
 			protocol: Type.Optional(Type.String({ description: "Collaboration name, e.g. review" })),
 			callerParticipantId: Type.Optional(Type.String({ description: "Your own name in it, e.g. lead" })),
@@ -100,6 +102,7 @@ function registerCollaboratorWorkspaceTool(pi: ExtensionAPI, hosted: HostedRunti
 		parameters: Type.Object({
 			action: Type.Union([Type.Literal("list"), Type.Literal("cleanup")]),
 			participantId: Type.Optional(Type.String()),
+			repo: Type.Optional(Type.String()),
 		}),
 		async execute(_toolCallId, params: CollaboratorWorktreeInput, signal, _onUpdate, ctx) {
 			const result = await hosted.manageWorktrees(params, ctx, signal);

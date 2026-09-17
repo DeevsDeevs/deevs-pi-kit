@@ -38,6 +38,8 @@ const HostedPiTargetSchema = Type.Object({
 	projectRoot: PathText,
 	piSessionId: IdText,
 	piSessionFile: PathText,
+	repo: Type.Optional(PathText),
+	repoRoot: Type.Optional(PathText),
 	worktreePath: Type.Optional(PathText),
 	createdAt: Timestamp,
 }, STRICT_OBJECT);
@@ -52,6 +54,8 @@ const HostedAgentTargetSchema = Type.Object({
 	holderGeneration: IdText,
 	profile: HostedCollaboratorProfileSchema,
 	herdr: HostedHerdrLocatorSchema,
+	repo: Type.Optional(PathText),
+	repoRoot: Type.Optional(PathText),
 	worktreePath: Type.Optional(PathText),
 	createdAt: Timestamp,
 }, STRICT_OBJECT);
@@ -87,6 +91,8 @@ const HostedParticipantSchema = Type.Object({
 	state: HostedParticipantStateSchema,
 	generation: IdText,
 	holderTargetKey: Type.Optional(IdText),
+	repo: Type.Optional(PathText),
+	repoRoot: Type.Optional(PathText),
 	worktreePath: Type.Optional(PathText),
 	outSeq: keyedRecord(Sequence),
 	transition: HostedParticipantTransitionSchema,
@@ -128,7 +134,7 @@ export const HostedMessagingGrantSchema = Type.Object({
 	operations: keyedRecord(IdText),
 }, STRICT_OBJECT);
 
-export const HOSTED_STATE_VERSION = 23;
+export const HOSTED_STATE_VERSION = 24;
 
 export const HostedRuntimeStateSchema = Type.Object({
 	version: Type.Literal(HOSTED_STATE_VERSION),

@@ -22,7 +22,7 @@ const DEDUPE_KEY = `mailbox:${SENDER}:send_1`;
 
 function populatedState(): HostedRuntimeState {
 	return {
-		version: 23,
+		version: 24,
 		messaging: {
 			[NAMESPACE]: {
 				namespaceId: NAMESPACE,

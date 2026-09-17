@@ -83,8 +83,8 @@ export function clearParticipantWorktree(state: HostedRuntimeState, operation: C
 	if (isHeld(current.state)) {
 		throw new RuntimeError("conflict", "A held participant keeps its worktree until it stands down.");
 	}
-	if (!current.worktreePath) return state;
-	const { worktreePath: _cleared, ...participant } = current;
+	if (!current.worktreePath && !current.repoRoot) return state;
+	const { worktreePath: _worktree, repo: _name, repoRoot: _repo, ...participant } = current;
 	return replaceParticipant(state, participant);
 }
 
@@ -118,6 +118,8 @@ function newParticipant(operation: AcquireOperation, target: HostedTarget): Host
 		createdAt: operation.at,
 		updatedAt: operation.at,
 	};
+	if (target.repo) participant.repo = target.repo;
+	if (target.repoRoot) participant.repoRoot = target.repoRoot;
 	if (target.worktreePath) participant.worktreePath = target.worktreePath;
 	return participant;
 }
@@ -197,10 +199,11 @@ function transitionParticipant(
 }
 
 function withTargetWorktree(participant: HostedParticipant, target: HostedTarget): HostedParticipant {
-	if (participant.worktreePath === target.worktreePath) return participant;
-	if (!target.worktreePath) {
-		const { worktreePath: _cleared, ...cleared } = participant;
-		return cleared;
-	}
-	return { ...participant, worktreePath: target.worktreePath };
+	if (participant.worktreePath === target.worktreePath && participant.repoRoot === target.repoRoot) return participant;
+	const { worktreePath: _worktree, repo: _name, repoRoot: _repo, ...cleared } = participant;
+	const synced: HostedParticipant = cleared;
+	if (target.repo) synced.repo = target.repo;
+	if (target.repoRoot) synced.repoRoot = target.repoRoot;
+	if (target.worktreePath) synced.worktreePath = target.worktreePath;
+	return synced;
 }

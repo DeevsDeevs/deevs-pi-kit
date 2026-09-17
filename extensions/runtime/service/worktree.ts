@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdirSync, realpathSync } from "node:fs";
+import { mkdirSync, readdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { RuntimeError } from "../errors.ts";
 import { PARTICIPANT_NAME } from "../schemas/common.ts";
@@ -16,6 +16,7 @@ interface RuntimeWorktree {
 	participantId: string;
 	path: string;
 	branchRef: string;
+	repoRoot: string;
 }
 
 interface WorktreeAuthority {
@@ -26,6 +27,7 @@ interface WorktreeAuthority {
 interface EnsureWorktreeInput extends WorktreeAuthority {
 	protocol: string;
 	participantId: string;
+	repo?: string;
 }
 
 interface RemoveWorktreeInput extends EnsureWorktreeInput {
@@ -57,7 +59,11 @@ export class RuntimeWorktrees {
 		if (isHeld(participant?.state)) {
 			throw new RuntimeError("conflict", "Participant already has a live holder; stop it before reusing its worktree.");
 		}
-		const existing = (await listWorktrees(projectRoot)).find((worktree) => isWorktreeOf(worktree, input));
+		const repoRoot = await this.repoRoot(projectRoot, input, participant);
+		if (participant?.worktreePath && participant.repoRoot && participant.repoRoot !== repoRoot) {
+			throw new RuntimeError("conflict", `Worktree of ${input.protocol}/${input.participantId} is in ${participant.repoRoot}; clean it up before choosing another repo.`);
+		}
+		const existing = (await listWorktrees(repoRoot)).find((worktree) => isWorktreeOf(worktree, input));
 		if (existing) {
 			this.assertWorktreeIsOwn(existing.path, participantKey);
 			if (participant?.worktreePath && participant.worktreePath !== existing.path) {
@@ -67,18 +73,24 @@ export class RuntimeWorktrees {
 		}
 		const path = join(this.root, "workspaces", `${projectScope(projectRoot)}__${input.protocol}__${input.participantId}`);
 		mkdirSync(join(this.root, "workspaces"), { recursive: true, mode: 0o700 });
-		await addWorktree(projectRoot, collaboratorBranch(input), path);
-		return { protocol: input.protocol, participantId: input.participantId, path: realpathSync(path), branchRef: branchRef(input) };
+		await addWorktree(repoRoot, collaboratorBranch(input), path);
+		return { protocol: input.protocol, participantId: input.participantId, path: realpathSync(path), branchRef: branchRef(input), repoRoot };
 	}
 
 	async list(caller: HostedLiveRegistration): Promise<WorktreeListing[]> {
 		const projectRoot = this.projectRoot(caller);
 		const participants = Object.values(this.store.read().participants).filter((participant) => participant.projectRoot === projectRoot);
-		const listings = (await listWorktrees(projectRoot)).map((worktree): WorktreeListing => {
-			const participant = participants.find((candidate) => candidate.worktreePath === worktree.path);
-			if (!participant) return { ...worktree, recorded: false };
-			return { ...worktree, participantState: participant.state, recorded: true };
-		});
+		const repos = new Set(participants.flatMap((participant) => participant.repoRoot ? [participant.repoRoot] : []));
+		if (await gitTopLevel(projectRoot) === projectRoot) repos.add(projectRoot);
+		for (const name of await repositoriesUnder(projectRoot)) repos.add(realpathSync(join(projectRoot, name)));
+		const listings: WorktreeListing[] = [];
+		for (const repo of repos) {
+			for (const worktree of await listWorktrees(repo)) {
+				const participant = participants.find((candidate) => candidate.worktreePath === worktree.path);
+				if (!participant) listings.push({ ...worktree, recorded: false });
+				else listings.push({ ...worktree, participantState: participant.state, recorded: true });
+			}
+		}
 		for (const participant of participants) {
 			if (!participant.worktreePath || listings.some((listing) => listing.path === participant.worktreePath)) continue;
 			listings.push({
@@ -86,6 +98,7 @@ export class RuntimeWorktrees {
 				participantId: participant.participantId,
 				path: participant.worktreePath,
 				branchRef: branchRef(participant),
+				repoRoot: participant.repoRoot ?? projectRoot,
 				participantState: participant.state,
 				recorded: true,
 			});
@@ -99,16 +112,24 @@ export class RuntimeWorktrees {
 		}
 		const projectRoot = this.authorize(caller, input);
 		const participantKey = this.participantKey(projectRoot, input);
-		if (isHeld(this.store.read().participants[participantKey]?.state)) {
+		const participant = this.store.read().participants[participantKey];
+		if (isHeld(participant?.state)) {
 			throw new RuntimeError("conflict", "Stop the collaborator before removing its worktree.");
 		}
-		const worktree = (await listWorktrees(projectRoot)).find((candidate) => isWorktreeOf(candidate, input));
+		const repoRoot = await this.repoRoot(projectRoot, input, participant);
+		const worktree = (await listWorktrees(repoRoot)).find((candidate) => isWorktreeOf(candidate, input));
 		if (!worktree) throw new RuntimeError("not_found", "Participant has no Runtime worktree in this project.");
 		this.assertWorktreeIsOwn(worktree.path, participantKey);
-		if (this.store.read().participants[participantKey]) this.store.apply({ type: "participant.worktree.clear", participantKey });
-		await git(projectRoot, ["worktree", "remove", "--force", worktree.path]);
-		await git(projectRoot, ["branch", "-D", collaboratorBranch(input)]);
+		if (participant) this.store.apply({ type: "participant.worktree.clear", participantKey });
+		await git(repoRoot, ["worktree", "remove", "--force", worktree.path]);
+		await git(repoRoot, ["branch", "-D", collaboratorBranch(input)]);
 		return { removed: true };
+	}
+
+	/** An explicit repo wins; otherwise the participant's recorded repo, so a restart needs none; otherwise the project root itself. */
+	private repoRoot(projectRoot: string, input: EnsureWorktreeInput, participant: HostedParticipant | undefined): Promise<string> {
+		if (input.repo === undefined && participant?.repoRoot) return Promise.resolve(participant.repoRoot);
+		return resolveRepoRoot(projectRoot, input.repo, input.participantId);
 	}
 
 	/** A Git worktree recorded on another participant belongs to that identity, whatever its branch says. */
@@ -192,24 +213,61 @@ async function branchExists(projectRoot: string, branch: string): Promise<boolea
 	}
 }
 
-async function listWorktrees(projectRoot: string): Promise<RuntimeWorktree[]> {
+async function listWorktrees(repoRoot: string): Promise<RuntimeWorktree[]> {
 	const worktrees: RuntimeWorktree[] = [];
 	let path: string | undefined;
-	for (const line of (await git(projectRoot, ["worktree", "list", "--porcelain"])).split("\n")) {
+	for (const line of (await git(repoRoot, ["worktree", "list", "--porcelain"])).split("\n")) {
 		if (line.startsWith("worktree ")) path = line.slice("worktree ".length);
 		if (!line.startsWith("branch ") || !path) continue;
-		const worktree = parseWorktreeBranch(line.slice("branch ".length), path);
+		const worktree = parseWorktreeBranch(line.slice("branch ".length), path, repoRoot);
 		if (worktree) worktrees.push(worktree);
 		path = undefined;
 	}
 	return worktrees;
 }
 
-function parseWorktreeBranch(branch: string, path: string): RuntimeWorktree | undefined {
+function parseWorktreeBranch(branch: string, path: string, repoRoot: string): RuntimeWorktree | undefined {
 	if (!branch.startsWith(BRANCH_PREFIX)) return undefined;
 	const [protocol, participantId, ...rest] = branch.slice(BRANCH_PREFIX.length).split("/");
 	if (!protocol || !participantId || rest.length > 0) return undefined;
-	return { protocol, participantId, path, branchRef: branch };
+	return { protocol, participantId, path, branchRef: branch, repoRoot };
+}
+
+/**
+ * The repository a collaborator works in: `<projectRoot>/<repo>` when given, else the project root, either
+ * way the top level of a Git repository. The link may live under the root while its target lies elsewhere.
+ */
+export async function resolveRepoRoot(projectRoot: string, repo: string | undefined, participantId: string): Promise<string> {
+	if (repo === undefined) {
+		if (await gitTopLevel(projectRoot) === projectRoot) return projectRoot;
+		const candidates = await repositoriesUnder(projectRoot);
+		const listed = candidates.length ? ` Repositories here: ${candidates.join(", ")}.` : "";
+		throw new RuntimeError("invalid_request", `${projectRoot} is not a Git repository; pass repo for ${participantId}.${listed}`);
+	}
+	const segments = repo.split("/");
+	if (segments.some((segment) => segment === "" || segment === "." || segment === ".." || segment.includes("\\"))) {
+		throw new RuntimeError("invalid_request", `repo for ${participantId} must be a relative path inside the project root.`);
+	}
+	let repoRoot: string;
+	try { repoRoot = realpathSync(join(projectRoot, repo)); } catch { throw new RuntimeError("invalid_request", `repo ${repo} for ${participantId} does not exist.`); }
+	if (await gitTopLevel(repoRoot) !== repoRoot) throw new RuntimeError("invalid_request", `repo ${repo} for ${participantId} is not the top level of a Git repository.`);
+	return repoRoot;
+}
+
+// ponytail: one level deep; nested repositories are reachable by an explicit repo path.
+export async function repositoriesUnder(projectRoot: string): Promise<string[]> {
+	const names: string[] = [];
+	for (const entry of readdirSync(projectRoot, { withFileTypes: true })) {
+		if (entry.name.startsWith(".") || !(entry.isDirectory() || entry.isSymbolicLink())) continue;
+		let path: string;
+		try { path = realpathSync(join(projectRoot, entry.name)); } catch { continue; }
+		if (await gitTopLevel(path) === path) names.push(entry.name);
+	}
+	return names.sort();
+}
+
+async function gitTopLevel(cwd: string): Promise<string | undefined> {
+	try { return realpathSync((await git(cwd, ["rev-parse", "--show-toplevel"])).trim()); } catch { return undefined; }
 }
 
 export async function isProjectWorktree(path: string, projectRoot: string): Promise<boolean> {

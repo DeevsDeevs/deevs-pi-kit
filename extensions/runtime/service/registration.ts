@@ -5,12 +5,13 @@ import { RuntimeError } from "../errors.ts";
 import type { HerdrAgentStatus } from "../schemas/herdr.ts";
 import type { HostedHostVerifier } from "./identity.ts";
 import { HostedStateStore, piTargetKey } from "./state.ts";
-import { isProjectWorktree } from "./worktree.ts";
+import { isProjectWorktree, resolveRepoRoot } from "./worktree.ts";
 
 const REGISTRATION_LEASE_MS = 30_000;
 
 export interface RegisterPiInput {
 	projectRoot: string;
+	repo?: string;
 	worktreePath?: string;
 	piSessionId: string;
 	piSessionFile: string;
@@ -55,11 +56,13 @@ export class RuntimeRegistrationManager {
 	async register(input: RegisterPiInput): Promise<HostedLiveRegistration> {
 		const projectRoot = canonicalDirectory(input.projectRoot, "project root");
 		const piSessionFile = canonicalFile(input.piSessionFile, "Pi session file");
+		const repoRoot = input.repo === undefined ? undefined : await resolveRepoRoot(projectRoot, input.repo, input.piSessionId);
 		const worktreePath = input.worktreePath === undefined ? undefined : canonicalDirectory(input.worktreePath, "collaborator worktree");
-		if (worktreePath !== undefined && (worktreePath === projectRoot || !await isProjectWorktree(worktreePath, projectRoot))) {
-			throw new RuntimeError("identity_mismatch", "Collaborator cwd is not a separate Git worktree of its project.");
+		const base = repoRoot ?? projectRoot;
+		if (worktreePath !== undefined && (worktreePath === base || !await isProjectWorktree(worktreePath, base))) {
+			throw new RuntimeError("identity_mismatch", "Collaborator cwd is not a separate Git worktree of its repository.");
 		}
-		verifyPiSessionHeader(piSessionFile, input.piSessionId, worktreePath ?? projectRoot);
+		verifyPiSessionHeader(piSessionFile, input.piSessionId, worktreePath ?? base);
 		this.ensureOpen();
 		const targetKey = piTargetKey(input.piSessionId);
 		const target: HostedTarget = {
@@ -70,6 +73,10 @@ export class RuntimeRegistrationManager {
 			piSessionFile,
 			createdAt: this.now(),
 		};
+		if (repoRoot && input.repo) {
+			target.repo = input.repo;
+			target.repoRoot = repoRoot;
+		}
 		if (worktreePath) target.worktreePath = worktreePath;
 		this.store.apply({ type: "target.ensure", target });
 		return this.install(targetKey);
@@ -176,7 +183,7 @@ export class RuntimeRegistrationManager {
 	private async assertTargetLive(target: HostedTarget): Promise<void> {
 		switch (target.kind) {
 			case "pi":
-				verifyPiSessionHeader(target.piSessionFile, target.piSessionId, target.worktreePath ?? target.projectRoot);
+				verifyPiSessionHeader(target.piSessionFile, target.piSessionId, target.worktreePath ?? target.repoRoot ?? target.projectRoot);
 				return;
 			case "agent": {
 				const live = await this.host.getAgent(target.agentName);

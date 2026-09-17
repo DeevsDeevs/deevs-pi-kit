@@ -203,7 +203,8 @@ export class RuntimeSession {
 			piSessionId: ctx.sessionManager.getSessionId(),
 			piSessionFile: realpathSync(sessionFile),
 		};
-		if (worktree) params.worktreePath = worktree.worktreePath;
+		if (worktree?.repo !== undefined) params.repo = worktree.repo;
+		if (worktree?.worktreePath !== undefined) params.worktreePath = worktree.worktreePath;
 		return params;
 	}
 
@@ -254,6 +255,7 @@ interface RegisterPiParams {
 	projectRoot: string;
 	piSessionId: string;
 	piSessionFile: string;
+	repo?: string;
 	worktreePath?: string;
 }
 

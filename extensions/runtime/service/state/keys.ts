@@ -45,8 +45,8 @@ export function messagingConfigurationHash(target: HostedTarget): string {
 
 function targetIdentity(target: HostedTarget): Array<string | null> {
 	switch (target.kind) {
-		case "pi": return [target.projectRoot, target.piSessionId, target.piSessionFile, target.worktreePath ?? null];
-		case "agent": return [target.projectRoot, target.agentName, target.driver, target.worktreePath ?? null];
+		case "pi": return [target.projectRoot, target.piSessionId, target.piSessionFile, target.repo ?? null, target.repoRoot ?? null, target.worktreePath ?? null];
+		case "agent": return [target.projectRoot, target.agentName, target.driver, target.repo ?? null, target.repoRoot ?? null, target.worktreePath ?? null];
 		default: {
 			const unreachable: never = target;
 			throw new Error(`Unsupported runtime target ${JSON.stringify(unreachable)}.`);

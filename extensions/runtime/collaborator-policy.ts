@@ -24,6 +24,7 @@ export interface CollaboratorCandidate {
 	model?: string;
 	persona?: string;
 	profile?: HostedCollaboratorProfile;
+	repo?: string;
 }
 
 export interface ResolvedCollaboratorCandidate {
@@ -32,6 +33,9 @@ export interface ResolvedCollaboratorCandidate {
 	model?: string;
 	profile?: HostedCollaboratorProfile;
 	persona?: CollaboratorPersona;
+	repo?: string;
+	/** Resolved by the start path once the project root is known; absent when the collaborator works at the root. */
+	repoRoot?: string;
 }
 
 export interface CollaboratorToolBlock {
@@ -53,6 +57,7 @@ export function resolveCollaboratorCandidate(candidate: CollaboratorCandidate): 
 	if (model) resolved.model = model;
 	if (profile) resolved.profile = profile;
 	if (persona) resolved.persona = persona.persona;
+	if (candidate.repo !== undefined) resolved.repo = candidate.repo;
 	return resolved;
 }
 
@@ -91,6 +96,7 @@ export function collaboratorConfiguration(candidate: ResolvedCollaboratorCandida
 		candidate.model ? `model ${candidate.model}` : `model ${candidate.driver} default`,
 		candidate.persona ? `persona ${candidate.persona.name}` : "persona none",
 		candidate.profile ? `profile ${candidate.profile}` : "profile none",
+		...(candidate.repo ? [`repo ${candidate.repo}`] : []),
 	].join(", ");
 	if (!usesNativeUserConfiguration(candidate)) return configuration;
 	return `${configuration}, normal native configuration/hooks/permissions (not an edit-only tool boundary)`;

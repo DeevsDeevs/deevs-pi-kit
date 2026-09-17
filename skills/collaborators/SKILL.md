@@ -9,7 +9,7 @@ Collaborators are persistent interactive peers in real Herdr tabs (Pi, Claude Co
 
 ## Loop
 
-1. `collaborator_manage` starts, stands down and stops collaborators from the user's or your own intent. A first start needs `protocol` (a name for this project's collaboration) and `callerParticipantId` (your own name in it) unless `/runtime collaborate` ran. Each call is one confirmation dialog, none after `/runtime auto on`. Pick driver (default Pi), model, persona and profile (`read-only` default, `workspace-write` for writers) per participant.
+1. `collaborator_manage` starts, stands down and stops collaborators from the user's or your own intent. A first start needs `protocol` (a name for this project's collaboration) and `callerParticipantId` (your own name in it) unless `/runtime collaborate` ran. Each call is one confirmation dialog, none after `/runtime auto on`. Pick driver (default Pi), model, persona and profile (`read-only` default, `workspace-write` for writers) per participant. In a folder of repositories give each one a cwd-relative `repo`; writers need it, and `collaborator_list` shows it.
 2. A failing start stops what it started and reports the error; retry it instead of hunting for orphans.
 3. Mail: `collaborator_inbox` (unread mail with bodies, marked read on return), `collaborator_reply` to an eventId, `collaborator_send` to a participantId, `collaborator_peers` for who is here. Mail arrives on its own while you are idle; a retried send is a second message. Do not call `collaborator_list` to validate a recipient.
 4. Writers work in their own Git worktree on branch `runtime/collab/<protocol>/<participantId>`; `collaborator_workspace list` shows them. Review with `safe_diff` or Git and integrate yourself: Runtime never commits or merges.

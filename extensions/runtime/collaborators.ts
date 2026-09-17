@@ -11,7 +11,9 @@ import {
 	type CollaboratorToolBlock,
 	type ResolvedCollaboratorCandidate,
 } from "./collaborator-policy.ts";
+import { RuntimeError } from "./errors.ts";
 import { throwIfAborted } from "./herdr.ts";
+import { resolveRepoRoot } from "./service/worktree.ts";
 import { type HostedCollaboratorProfile, isEnded, isHeld, isVacant, isWriter } from "./schemas/state.ts";
 import type { NativeAgentService } from "./native-agents.ts";
 import {
@@ -26,6 +28,7 @@ import {
 	type ClientWorktreeList,
 	type ClientWorktreeRemoval,
 	type LiveClientRegistration,
+	type RegistrationAuth,
 } from "./responses.ts";
 import type { RuntimeSession } from "./runtime-session.ts";
 
@@ -47,9 +50,19 @@ export interface CollaboratorManageResult {
 	error?: string;
 }
 
+interface WorktreeRemoveParams extends RegistrationAuth {
+	callerParticipantKey: string;
+	expectedCallerGeneration: string;
+	protocol: string;
+	participantId: string;
+	repo?: string;
+	discardConfirmed: true;
+}
+
 export interface CollaboratorWorktreeInput {
 	action: "list" | "cleanup";
 	participantId?: string;
+	repo?: string;
 }
 
 export type CollaboratorWorktreeResult = ClientWorktreeList | ClientWorktreeRemoval | { declined: true };
@@ -95,7 +108,7 @@ export class CollaboratorService {
 	/** A workspace-write collaborator falls back to read-only until its worktree and held identity are both proven. */
 	private effectiveProfile(configured: HostedCollaboratorProfile): HostedCollaboratorProfile {
 		if (!isWriter(configured)) return configured;
-		if (!this.session.store.worktree) return "read-only";
+		if (!this.session.store.worktree?.worktreePath) return "read-only";
 		return isHeld(this.session.store.identity?.disposition) ? "workspace-write" : "read-only";
 	}
 
@@ -146,6 +159,8 @@ export class CollaboratorService {
 		const candidates = input.participants.map((participant) => resolveCollaboratorCandidate(participant));
 		const registration = await this.session.requireRegistration(ctx);
 		const participants = await this.session.listParticipants(registration);
+		const projectRoot = realpathSync(ctx.cwd);
+		await Promise.all(candidates.map((candidate) => resolveCandidateRepo(candidate, projectRoot, findParticipant(participants, protocol, candidate.participantId))));
 		throwIfAborted(signal);
 		const held = await this.heldCaller(participants, protocol, callerParticipantId, registration, ctx, auto, signal);
 		const acquires = held === undefined;
@@ -153,7 +168,7 @@ export class CollaboratorService {
 		throwIfAborted(signal);
 		if (!confirmed) return candidates.map((candidate) => ({ participant: `${protocol}/${candidate.participantId}`, status: "declined" }));
 		const caller = held ?? await this.acquireCaller(protocol, callerParticipantId, registration);
-		const start: CollaboratorStart = { ctx, protocol, registration, caller, projectRoot: realpathSync(ctx.cwd), signal };
+		const start: CollaboratorStart = { ctx, protocol, registration, caller, projectRoot, signal };
 		return this.launchAll(start, candidates, participants);
 	}
 
@@ -356,7 +371,7 @@ export class CollaboratorService {
 			+ ` and delete branch runtime/collab/${identity.protocol}/${participantId}?`
 			+ " Uncommitted or unmerged work in it is lost.";
 		if (!auto && !await ctx.ui.confirm("Remove collaborator worktree?", detail, { signal })) return { declined: true };
-		const params = {
+		const params: WorktreeRemoveParams = {
 			...auth(registration),
 			callerParticipantKey: identity.participantKey,
 			expectedCallerGeneration: identity.generation,
@@ -364,6 +379,7 @@ export class CollaboratorService {
 			participantId,
 			discardConfirmed: true,
 		};
+		if (input.repo !== undefined) params.repo = input.repo;
 		return parseWorktreeRemoval(await this.client.call("worktree.remove", params));
 	}
 }
@@ -390,7 +406,25 @@ function hasStartOnlyFields(participant: CollaboratorCandidate): boolean {
 	return participant.driver !== undefined
 		|| participant.model !== undefined
 		|| participant.persona !== undefined
-		|| participant.profile !== undefined;
+		|| participant.profile !== undefined
+		|| participant.repo !== undefined;
+}
+
+/** A writer needs a repository before any dialog or tab; a restart reuses the repo the daemon recorded. */
+async function resolveCandidateRepo(
+	candidate: ResolvedCollaboratorCandidate,
+	projectRoot: string,
+	existing: ClientParticipantStatus | undefined,
+): Promise<void> {
+	if (candidate.repo === undefined && existing?.repo !== undefined) candidate.repo = existing.repo;
+	if (candidate.repo === undefined && !isWriter(candidate.profile)) return;
+	try {
+		const repoRoot = await resolveRepoRoot(projectRoot, candidate.repo, candidate.participantId);
+		if (repoRoot !== projectRoot) candidate.repoRoot = repoRoot;
+	} catch (error) {
+		if (error instanceof RuntimeError) throw new HostedRuntimeClientError(error.code, error.message);
+		throw error;
+	}
 }
 
 function assertHerdrWorkspace(): void {

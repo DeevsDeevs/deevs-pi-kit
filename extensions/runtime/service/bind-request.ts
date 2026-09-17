@@ -24,6 +24,7 @@ export interface BindAgentInput {
 	callerParticipantKey: string;
 	expectedCallerGeneration: string;
 	expectedParticipantGeneration?: string;
+	repo?: string;
 }
 
 /** The validated identifiers a bind request carries, parsed once before any target is built. */
@@ -41,6 +42,8 @@ interface AgentBindDraft {
 	names: BoundAgentNames;
 	verified: HostedLiveAgent;
 	projectRoot: string;
+	repo: string | undefined;
+	repoRoot: string | undefined;
 	at: number;
 	createGeneration: () => string;
 }
@@ -58,14 +61,16 @@ export async function draftAgentBind(draft: AgentBindDraft): Promise<HostedAgent
 	const { input, names, verified, projectRoot } = draft;
 	if (verified.name !== names.agentName) throw new RuntimeError("identity_mismatch", "Herdr resolved another agent name.");
 	const cwd = agentCwd(verified);
-	const worktreePath = cwd === projectRoot ? undefined : cwd;
-	if (worktreePath !== undefined && !await isWritableWorktree(worktreePath, projectRoot, input.profile)) {
-		throw new RuntimeError("identity_mismatch", "Herdr agent cwd is neither the project root nor a workspace-write worktree of it.");
+	const repoRoot = draft.repoRoot;
+	if (repoRoot !== undefined && cwd === projectRoot) throw new RuntimeError("identity_mismatch", "Herdr agent cwd is the project root, not its repo.");
+	const worktreePath = cwd === projectRoot || cwd === repoRoot ? undefined : cwd;
+	if (worktreePath !== undefined && !await isWritableWorktree(worktreePath, repoRoot ?? projectRoot, input.profile)) {
+		throw new RuntimeError("identity_mismatch", "Herdr agent cwd is neither the project root, its repo, nor a workspace-write worktree of that repo.");
 	}
-	return bindRecord(draft, agentTarget(draft, worktreePath));
+	return bindRecord(draft, agentTarget(draft, repoRoot, worktreePath));
 }
 
-function agentTarget(draft: AgentBindDraft, worktreePath: string | undefined): HostedAgentTarget {
+function agentTarget(draft: AgentBindDraft, repoRoot: string | undefined, worktreePath: string | undefined): HostedAgentTarget {
 	const { input, names, projectRoot } = draft;
 	const targetKey = deriveAgentTargetKey(projectRoot, names.agentName);
 	const existing = draft.store.read().targets[targetKey];
@@ -84,6 +89,10 @@ function agentTarget(draft: AgentBindDraft, worktreePath: string | undefined): H
 		herdr: agentTab(draft.verified),
 		createdAt: existing?.createdAt ?? draft.at,
 	};
+	if (repoRoot && draft.repo) {
+		target.repo = draft.repo;
+		target.repoRoot = repoRoot;
+	}
 	if (worktreePath) target.worktreePath = worktreePath;
 	return target;
 }
@@ -111,9 +120,9 @@ function agentTab(agent: HostedLiveAgent): HostedHerdrLocator {
 	return { tabId, workspaceId };
 }
 
-async function isWritableWorktree(worktreePath: string, projectRoot: string, profile: HostedCollaboratorProfile): Promise<boolean> {
+async function isWritableWorktree(worktreePath: string, repoRoot: string, profile: HostedCollaboratorProfile): Promise<boolean> {
 	if (!isWriter(profile)) return false;
-	return isProjectWorktree(worktreePath, projectRoot);
+	return isProjectWorktree(worktreePath, repoRoot);
 }
 
 function agentCwd(agent: HostedLiveAgent): string {

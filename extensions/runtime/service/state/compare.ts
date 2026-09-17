@@ -5,6 +5,8 @@ export function sameTarget(left: HostedTarget, right: HostedTarget): boolean {
 	if (isPiTarget(left) && isPiTarget(right)) {
 		return left.piSessionId === right.piSessionId
 			&& left.piSessionFile === right.piSessionFile
+			&& left.repo === right.repo
+			&& left.repoRoot === right.repoRoot
 			&& left.worktreePath === right.worktreePath;
 	}
 	if (isAgentTarget(left) && isAgentTarget(right)) {
@@ -13,6 +15,8 @@ export function sameTarget(left: HostedTarget, right: HostedTarget): boolean {
 			&& left.participantKey === right.participantKey
 			&& left.holderGeneration === right.holderGeneration
 			&& left.profile === right.profile
+			&& left.repo === right.repo
+			&& left.repoRoot === right.repoRoot
 			&& left.worktreePath === right.worktreePath;
 	}
 	return false;

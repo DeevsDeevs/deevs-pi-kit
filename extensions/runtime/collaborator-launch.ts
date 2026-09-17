@@ -14,7 +14,7 @@ import { DRIVERS, driverLaunchArgv, type DriverSpec } from "./drivers.ts";
 import { createCollaboratorTab, throwIfAborted, waitForHerdrPaneCwd, type CollaboratorTab } from "./herdr.ts";
 import { isVacant, isWriter } from "./schemas/state.ts";
 import type { ManagedAgentPlan, NativeAgentService } from "./native-agents.ts";
-import { auth, strictObject, text, type ClientParticipantStatus, type LiveClientRegistration } from "./responses.ts";
+import { auth, strictObject, text, type ClientParticipantStatus, type LiveClientRegistration, type RegistrationAuth } from "./responses.ts";
 import type { RuntimeSession } from "./runtime-session.ts";
 import type { CollaboratorLaunch, ManagedAgentSession } from "./session-record.ts";
 import { COLLABORATOR_ENV, HOSTED_SESSION_ENTRY, type HostedSessionRecord } from "./session-restore.ts";
@@ -36,6 +36,14 @@ interface CollaboratorLaunchRequest {
 	spec: DriverSpec;
 	plan: ManagedAgentPlan;
 	current: () => boolean;
+}
+
+interface WorktreeEnsureParams extends RegistrationAuth {
+	callerParticipantKey: string;
+	expectedCallerGeneration: string;
+	protocol: string;
+	participantId: string;
+	repo?: string;
 }
 
 /** What `herdr agent start` produced for one launch, before Runtime binds it. */
@@ -85,14 +93,14 @@ export class CollaboratorLauncher {
 		const { start, candidate, existing, spec, plan } = request;
 		throwIfAborted(start.signal);
 		const worktreePath = isWriter(candidate.profile)
-			? await this.ensureWorktree(start, candidate.participantId)
+			? await this.ensureWorktree(start, candidate)
 			: undefined;
-		const launchCwd = worktreePath ?? start.projectRoot;
+		const launchCwd = worktreePath ?? candidate.repoRoot ?? start.projectRoot;
 		if (standingDown(existing)) await this.replaceStoodDown(existing, start.registration);
 		const tab = await createCollaboratorTab(this.pi, launchCwd, candidate.participantId, tabEnvironment(spec, start, candidate));
 		let sessionFile: string | undefined;
 		try {
-			if (worktreePath) await waitForHerdrPaneCwd(this.pi, tab, launchCwd, start.signal);
+			if (launchCwd !== start.projectRoot) await waitForHerdrPaneCwd(this.pi, tab, launchCwd, start.signal);
 			this.session.requireCurrentScope(request.current);
 			const mcp = spec.bind ? await this.native.messagingConfiguration(plan, candidate.persona?.prompt) : undefined;
 			if (mcp) notifyNativePrompt(start.ctx, tab.paneId);
@@ -130,6 +138,7 @@ export class CollaboratorLauncher {
 			callerParticipantKey: start.caller.participantKey,
 			expectedCallerGeneration: start.caller.generation,
 			expectedParticipantGeneration: existing?.generation,
+			repo: candidate.repo,
 			messagingConfigured: started.messagingConfigured,
 		});
 	}
@@ -142,14 +151,15 @@ export class CollaboratorLauncher {
 		} catch {}
 	}
 
-	private async ensureWorktree(start: CollaboratorStart, participantId: string): Promise<string> {
-		const params = {
+	private async ensureWorktree(start: CollaboratorStart, candidate: ResolvedCollaboratorCandidate): Promise<string> {
+		const params: WorktreeEnsureParams = {
 			...auth(start.registration),
 			callerParticipantKey: start.caller.participantKey,
 			expectedCallerGeneration: start.caller.generation,
 			protocol: start.protocol,
-			participantId,
+			participantId: candidate.participantId,
 		};
+		if (candidate.repo !== undefined) params.repo = candidate.repo;
 		return text(strictObject(await this.client.call("worktree.ensure", params), "Collaborator worktree").path);
 	}
 
@@ -161,7 +171,11 @@ export class CollaboratorLauncher {
 		mkdirSync(directory, { recursive: true, mode: 0o700 });
 		const sessionFile = join(directory, `${timestamp.replace(/[:.]/g, "-")}_${sessionId}.jsonl`);
 		const record: HostedSessionRecord = { version: 3, launch: piCollaboratorLaunch(candidate) };
-		if (sessionCwd !== projectRoot) record.worktree = { projectRoot, worktreePath: sessionCwd };
+		if (sessionCwd !== projectRoot) {
+			record.worktree = { projectRoot };
+			if (candidate.repo !== undefined) record.worktree.repo = candidate.repo;
+			if (sessionCwd !== candidate.repoRoot) record.worktree.worktreePath = sessionCwd;
+		}
 		const entries: Array<SessionHeader | CustomEntry<HostedSessionRecord>> = [
 			{ type: "session", version: CURRENT_SESSION_VERSION, id: sessionId, timestamp, cwd: sessionCwd },
 			{ type: "custom", customType: HOSTED_SESSION_ENTRY, data: record, id: randomUUID(), parentId: null, timestamp },
