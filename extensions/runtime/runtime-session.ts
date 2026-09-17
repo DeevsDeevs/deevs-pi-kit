@@ -145,7 +145,7 @@ export class RuntimeSession {
 	requireParticipantIdentity(): ParticipantIdentity {
 		const identity = this.store.identity;
 		if (!identity) {
-			throw new HostedRuntimeClientError("not_found", "This Pi session has no collaborator identity. Use /runtime collaborate first.");
+			throw new HostedRuntimeClientError("not_found", "This Pi session has no collaborator identity yet; a collaborator_manage start with protocol and callerParticipantId creates it.");
 		}
 		return identity;
 	}

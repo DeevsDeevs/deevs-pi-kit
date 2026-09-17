@@ -8,6 +8,7 @@ import {
 	type ExtensionContext,
 	type SessionHeader,
 } from "@earendil-works/pi-coding-agent";
+import { inheritClaudeTrust } from "./claude-trust.ts";
 import { HostedRuntimeClient, HostedRuntimeClientError } from "./client.ts";
 import type { ResolvedCollaboratorCandidate } from "./collaborator-policy.ts";
 import { DRIVERS, driverLaunchArgv, type DriverSpec } from "./drivers.ts";
@@ -96,6 +97,7 @@ export class CollaboratorLauncher {
 			? await this.ensureWorktree(start, candidate)
 			: undefined;
 		const launchCwd = worktreePath ?? candidate.repoRoot ?? start.projectRoot;
+		if (spec.kind === "claude" && worktreePath) inheritClaudeTrust(worktreePath, candidate.repoRoot ?? start.projectRoot);
 		if (standingDown(existing)) await this.replaceStoodDown(existing, start.registration);
 		const tab = await createCollaboratorTab(this.pi, launchCwd, candidate.participantId, tabEnvironment(spec, start, candidate));
 		let sessionFile: string | undefined;

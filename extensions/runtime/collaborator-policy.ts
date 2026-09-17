@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
-import { lstatSync, realpathSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { Value } from "typebox/value";
+import { Type } from "@earendil-works/pi-ai";
 import type { CustomToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { findAgent, loadBuiltinAgents } from "../subagents/agents.ts";
 import { HostedRuntimeClientError } from "./client.ts";
@@ -53,6 +55,7 @@ export function resolveCollaboratorCandidate(candidate: CollaboratorCandidate): 
 	const profile = requestedProfile ?? (persona ? "read-only" : spec.defaultProfile);
 	const model = requestedModel ?? (spec.personaModel ? collaboratorModel(persona?.model) : undefined);
 	assertUnambiguousCollaboratorModel(spec.qualifiedModel, model);
+	if (driver === "codex" && model) assertKnownCodexModel(model);
 	const resolved: ResolvedCollaboratorCandidate = { participantId, driver };
 	if (model) resolved.model = model;
 	if (profile) resolved.profile = profile;
@@ -165,6 +168,19 @@ function collaboratorModel(value: string | undefined): string | undefined {
 		throw new HostedRuntimeClientError("invalid_request", `model must match ${COLLABORATOR_MODEL}.`);
 	}
 	return value;
+}
+
+const CODEX_MODELS_CACHE = join(homedir(), ".codex", "models_cache.json");
+const CodexModelCache = Type.Object({ models: Type.Array(Type.Object({ slug: Type.String() })) });
+
+/** Codex accepts any --model and fails only at its first request; its own catalog cache catches a wrong name before a tab opens. */
+export function assertKnownCodexModel(model: string, cachePath = CODEX_MODELS_CACHE): void {
+	let cache: unknown;
+	try { cache = JSON.parse(readFileSync(cachePath, "utf8")); } catch { return; }
+	if (!Value.Check(CodexModelCache, cache)) return;
+	const slugs = cache.models.map((entry) => entry.slug);
+	if (slugs.includes(model)) return;
+	throw new HostedRuntimeClientError("invalid_request", `Unknown Codex model ${model}; Codex knows ${slugs.join(", ")}.`);
 }
 
 function assertUnambiguousCollaboratorModel(qualified: boolean, model: string | undefined): void {

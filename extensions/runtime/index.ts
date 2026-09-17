@@ -76,8 +76,8 @@ function registerCollaboratorManageTool(pi: ExtensionAPI, hosted: HostedRuntimeI
 			participants: Type.Array(Type.Object({
 				participantId: Type.String(),
 				driver: Type.Optional(Type.Union(DRIVER_LITERALS)),
-				model: Type.Optional(Type.String()),
-				persona: Type.Optional(Type.String()),
+				model: Type.Optional(Type.String({ description: "Per driver: codex gpt-6-astra, claude-code opus, pi provider/model" })),
+				persona: Type.Optional(Type.String({ description: "Built-in persona name" })),
 				profile: Type.Optional(Type.Union(PROFILE_LITERALS)),
 				repo: Type.Optional(Type.String({ description: "Cwd-relative Git repository to work in; writers need it when this folder is not itself a repository" })),
 			}), { minItems: 1, maxItems: 12 }),
