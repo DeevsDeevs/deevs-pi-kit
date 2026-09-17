@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { type HostedMailboxMessageEvent, type HostedParticipant, type HostedTarget, isEnded, isHeld } from "../schemas/state.ts";
+import { type HostedMailboxMessageEvent, type HostedParticipant, type HostedTarget, isEnded, isHeld, isVacant } from "../schemas/state.ts";
 import type { HostedStateOperation } from "./state/operations.ts";
 import { RuntimeError } from "../errors.ts";
 import {
@@ -228,7 +228,8 @@ export class HostedParticipantCoordinator {
 			const holderTargetKey = this.stoppableHolder(participant, registration, expectedGeneration);
 			this.stoppingTargets.add(holderTargetKey);
 			stoppingTargetKey = holderTargetKey;
-			const target = requireTarget(this.store, holderTargetKey);
+			const target = this.store.read().targets[holderTargetKey];
+			if (!target) return this.dormantStopped(participant, holderTargetKey, expectedGeneration, "already_stopped");
 			if (target.projectRoot !== caller.projectRoot) {
 				throw new RuntimeError("conflict", "Collaborator target belongs to another project.");
 			}
@@ -251,11 +252,23 @@ export class HostedParticipantCoordinator {
 		if (!this.options.stopTarget) return unmanaged();
 		const stopped = await this.options.stopTarget(target);
 		if (stopped === "unmanaged") return unmanaged();
+		const outcome = stopped === "closed" ? "stopped" : "already_stopped";
+		if (isVacant(participant.state)) return this.dormantStopped(participant, target.targetKey, expectedGeneration, outcome);
 		this.settleStopped(participant, target.targetKey, expectedGeneration);
 		await this.options.onStopped?.(target, expectedGeneration);
 		const current = requireParticipant(this.store, participant.participantKey, participant.projectRoot);
-		const outcome = stopped === "closed" ? "stopped" : "already_stopped";
 		return { participant: this.status(current), outcome };
+	}
+
+	/** A stood-down participant's dormant tab is closed and its cause becomes "stop", so a start no longer tries to replace it. */
+	private dormantStopped(
+		participant: HostedParticipant,
+		targetKey: string,
+		expectedGeneration: string,
+		outcome: "stopped" | "already_stopped",
+	): StoppedParticipant {
+		this.store.apply({ type: "participant.dormant_stopped", participantKey: participant.participantKey, targetKey, expectedGeneration, at: this.now() });
+		return { participant: this.status(requireParticipant(this.store, participant.participantKey, participant.projectRoot)), outcome };
 	}
 
 	private stoppableHolder(
@@ -263,10 +276,11 @@ export class HostedParticipantCoordinator {
 		registration: HostedLiveRegistration,
 		expectedGeneration: string,
 	): string {
-		if (!isHeld(participant.state) || participant.generation !== expectedGeneration) {
+		const dormant = isVacant(participant.state) && participant.transition.cause === "stand_down" && participant.generation === expectedGeneration;
+		if (!dormant && (!isHeld(participant.state) || participant.generation !== expectedGeneration)) {
 			throw new RuntimeError("conflict", "Participant state or generation changed before confirmed stop.");
 		}
-		const holderTargetKey = participant.holderTargetKey;
+		const holderTargetKey = dormant ? participant.transition.previousHolderTargetKey : participant.holderTargetKey;
 		if (!holderTargetKey) throw new RuntimeError("conflict", "Participant has no stoppable collaborator target.");
 		if (holderTargetKey === registration.targetKey) {
 			throw new RuntimeError("conflict", "A Pi target cannot stop its own Herdr tab.");

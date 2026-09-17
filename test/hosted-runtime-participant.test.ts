@@ -152,6 +152,16 @@ describe("hosted participant coordinator", () => {
 		await expect(retry).rejects.toMatchObject({ code: "conflict" });
 	});
 
+	it("closes the dormant tab of a stood-down participant so a start can replace it", async () => {
+		const test = setup();
+		const { main, fable, fableParticipant } = await acquirePair(test);
+		const vacant = test.participants.standDownConfirmed(main, fableParticipant.participantKey, fableParticipant.generation);
+		const stopped = await test.participants.stopConfirmed(main, fableParticipant.participantKey, vacant.generation);
+		expect(stopped).toMatchObject({ outcome: "stopped", participant: { state: "vacant", generation: vacant.generation, lastTransition: { cause: "stop" } } });
+		expect(test.stoppedTargets).toEqual([fable.targetKey]);
+		await expect(test.participants.stopConfirmed(main, fableParticipant.participantKey, vacant.generation)).rejects.toMatchObject({ code: "conflict" });
+	});
+
 	it("refuses to stop a target that now holds another participant", async () => {
 		const test = setup();
 		const { main, fable, fableParticipant } = await acquirePair(test);

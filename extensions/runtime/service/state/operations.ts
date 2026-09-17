@@ -50,6 +50,8 @@ export type HostedStateOperation =
 	  }
 	| { type: "participant.release"; participantKey: string; targetKey: string; generation: string; at: number }
 	| { type: "participant.worktree.clear"; participantKey: string }
+	/** A stood-down participant's dormant tab was closed; its generation stays, only the cause becomes "stop". */
+	| { type: "participant.dormant_stopped"; participantKey: string; targetKey: string; expectedGeneration: string; at: number }
 	| { type: "participant.takeover"; participantKey: string; targetKey: string; generation: string; at: number }
 	| {
 			type: "mailbox.send";

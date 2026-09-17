@@ -12,6 +12,7 @@ import { deriveParticipantKey } from "./keys.ts";
 
 type AcquireOperation = Extract<HostedStateOperation, { type: "participant.acquire" }>;
 type StandDownOperation = Extract<HostedStateOperation, { type: "participant.stand_down" }>;
+type DormantStopOperation = Extract<HostedStateOperation, { type: "participant.dormant_stopped" }>;
 type ReleaseOperation = Extract<HostedStateOperation, { type: "participant.release" }>;
 type TakeoverOperation = Extract<HostedStateOperation, { type: "participant.takeover" }>;
 type ClearWorktreeOperation = Extract<HostedStateOperation, { type: "participant.worktree.clear" }>;
@@ -53,6 +54,25 @@ export function standDownParticipant(state: HostedRuntimeState, operation: Stand
 		throw new RuntimeError("conflict", "Participant generation changed before stand-down.");
 	}
 	return applyParticipantTransition(state, current, operation, operation.cause ?? "stand_down", "vacant");
+}
+
+export function stopDormantParticipant(state: HostedRuntimeState, operation: DormantStopOperation): HostedRuntimeState {
+	const current = state.participants[operation.participantKey];
+	if (!current) throw new RuntimeError("conflict", "Participant is absent.");
+	if (!isDormant(current, operation.expectedGeneration, operation.targetKey)) {
+		throw new RuntimeError("conflict", "Participant is not stood down at that generation by that target.");
+	}
+	if (current.transition.cause === "stop") return state;
+	const transition: HostedParticipantTransition = { ...current.transition, cause: "stop", at: operation.at };
+	return replaceParticipant(state, { ...current, transition, updatedAt: operation.at });
+}
+
+/** Vacant by a stand-down or stop at exactly this generation, previously held by exactly this target. */
+export function isDormant(participant: HostedParticipant, generation: string, targetKey: string): boolean {
+	return isVacant(participant.state)
+		&& (participant.transition.cause === "stand_down" || participant.transition.cause === "stop")
+		&& participant.generation === generation
+		&& participant.transition.previousHolderTargetKey === targetKey;
 }
 
 export function releaseParticipant(state: HostedRuntimeState, operation: ReleaseOperation): HostedRuntimeState {

@@ -6,6 +6,7 @@ import { expireMessagingGrant, issueMessagingGrant, markMessagingEventRead, publ
 import {
 	acquireParticipant,
 	clearParticipantWorktree,
+	stopDormantParticipant,
 	releaseParticipant,
 	standDownParticipant,
 	takeoverParticipant,
@@ -29,6 +30,7 @@ const reducers: HostedStateReducers = {
 	"participant.stand_down": standDownParticipant,
 	"participant.release": releaseParticipant,
 	"participant.worktree.clear": clearParticipantWorktree,
+	"participant.dormant_stopped": stopDormantParticipant,
 	"participant.takeover": takeoverParticipant,
 	"mailbox.send": sendMailboxMessage,
 	"retention.prune": pruneRetention,
