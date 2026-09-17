@@ -8,7 +8,7 @@ import type { CollaboratorPersona, ManagedAgentSession } from "./session-record.
 const MESSAGING_TOOLS = toolDefinitions.map(tool => tool.name);
 const COLLABORATOR_METADATA_TOOLS = ["collaborator_list", ...MESSAGING_TOOLS, "chain_save", "chain_load", "chain_context"] as const;
 const READ_ONLY_COLLABORATOR_TOOLS = ["read", "grep", "find", "ls", "safe_diff", ...COLLABORATOR_METADATA_TOOLS] as const;
-const WORKSPACE_WRITE_COLLABORATOR_TOOLS = [...READ_ONLY_COLLABORATOR_TOOLS, "edit", "write"] as const;
+const WORKSPACE_WRITE_COLLABORATOR_TOOLS = [...READ_ONLY_COLLABORATOR_TOOLS, "edit", "write", "bash"] as const;
 /** One owner contract per collaborator profile: every profile has an allowlist, none falls through. */
 interface ProfileToolTable {
 	"read-only": readonly string[];
