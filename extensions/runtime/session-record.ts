@@ -1,3 +1,5 @@
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ClientParticipantStatus } from "./responses.ts";
 import type {
@@ -59,7 +61,7 @@ export class HostedSessionStore {
 		this.identityState = restored.identity;
 		this.launchState = restored.launch;
 		this.worktreeState = restored.worktree;
-		this.autoState = restored.auto;
+		this.autoState = readProjectAuto(ctx) ?? restored.auto;
 		this.agentControls.clear();
 		for (const control of restored.agents) this.agentControls.set(control.targetKey, control);
 	}
@@ -80,8 +82,16 @@ export class HostedSessionStore {
 		});
 	}
 
-	persistAuto(auto: boolean): void {
+	/** Auto mode is a project setting, `.pi/runtime.json`, so every later session in the project starts with it; the session record mirrors it. */
+	persistAuto(auto: boolean, ctx: ExtensionContext): void {
 		this.autoState = auto;
+		const path = projectAutoPath(ctx);
+		if (auto) {
+			mkdirSync(join(ctx.cwd, ".pi"), { recursive: true });
+			writeFileSync(path, `${JSON.stringify({ auto: true }, null, 2)}\n`);
+		} else {
+			rmSync(path, { force: true });
+		}
 		this.persist();
 	}
 
@@ -104,4 +114,16 @@ export class HostedSessionStore {
 		if (this.autoState) record.auto = true;
 		this.pi.appendEntry(HOSTED_SESSION_ENTRY, record);
 	}
+}
+
+function projectAutoPath(ctx: Pick<ExtensionContext, "cwd">): string {
+	return join(ctx.cwd, ".pi", "runtime.json");
+}
+
+/** Only a trusted project's file counts; anything but a literal `true` is off. */
+function readProjectAuto(ctx: ExtensionContext): boolean | undefined {
+	if (!ctx.isProjectTrusted()) return undefined;
+	let raw: string;
+	try { raw = readFileSync(projectAutoPath(ctx), "utf8"); } catch { return undefined; }
+	try { return JSON.parse(raw)?.auto === true; } catch { return false; }
 }

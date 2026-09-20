@@ -69,9 +69,9 @@ function runAuto({ services, args, ctx }: RuntimeCommandInput): Promise<void> {
 		throw new HostedRuntimeClientError("invalid_request", "Usage: /runtime auto on|off");
 	}
 	if (setting === "on" && !ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Auto mode requires a trusted project.");
-	services.session.store.persistAuto(setting === "on");
+	services.session.store.persistAuto(setting === "on", ctx);
 	const effect = setting === "on"
-		? "collaborator starts, stand-downs, stops and worktree cleanups in this project run without confirmation."
+		? "collaborator starts, stand-downs, stops and worktree cleanups in this project run without confirmation, in this and every later session here (.pi/runtime.json)."
 		: "collaborator lifecycle changes ask for confirmation again.";
 	ctx.ui.notify(`Runtime auto mode ${setting}: ${effect}`, "info");
 	return Promise.resolve();

@@ -28,7 +28,7 @@ Open Pi inside Herdr in a trusted project and ask:
 > Start a read-only Codex collaborator called reviewer on gpt-5.6-terra and ask it to review HEAD.
 ```
 
-Nothing to set up first. Pi starts the daemon in its own Herdr workspace on the first call, names this project's collaboration and itself, opens the tab with `collaborator_manage` and mails it with `collaborator_send`; the reply lands in your session on its own. Each start, stop and cleanup shows one confirmation dialog until you run `/runtime auto on`. A `workspace-write` collaborator works in its own worktree on `runtime/collab/<protocol>/<name>`; review and merge that branch with Git, then `collaborator_workspace cleanup`. The daemon's guarantees and limits are in [PROTOCOL.md](extensions/runtime/PROTOCOL.md); what the model is told to do is in [skills/collaborators](skills/collaborators/SKILL.md).
+Nothing to set up first. Pi starts the daemon in its own Herdr workspace on the first call, names this project's collaboration and itself, opens the tab with `collaborator_manage` and mails it with `collaborator_send`; the reply lands in your session on its own. Each start, stop and cleanup shows one confirmation dialog until you run `/runtime auto on`, which is remembered for the project in `.pi/runtime.json`. A `workspace-write` collaborator works in its own worktree on `runtime/collab/<protocol>/<name>`; review and merge that branch with Git, then `collaborator_workspace cleanup`. The daemon's guarantees and limits are in [PROTOCOL.md](extensions/runtime/PROTOCOL.md); what the model is told to do is in [skills/collaborators](skills/collaborators/SKILL.md).
 
 ## Extensions
 
