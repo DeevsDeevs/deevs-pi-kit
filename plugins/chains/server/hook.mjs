@@ -97,7 +97,7 @@ export function checkpointDue(input, now = Date.now()) {
 function pressureReason(percent) {
 	return `Context is at ${percent}%. Save the required Chain checkpoint with chain_save before using other tools: `
 		+ "the current request, decisions, files changed or read, blockers, pending tasks, and a structured nextStep. "
-		+ "If no Chain is active, choose a concise task-specific chain name. After saving, continue; compaction will hand the link back.";
+		+ "If no Chain is active, choose a concise task-specific chain name. After saving, continue; compaction will hand the link back";
 }
 
 async function sessionStart(input) {
