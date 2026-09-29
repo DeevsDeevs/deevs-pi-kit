@@ -20,6 +20,15 @@ Run `/reload` in Pi after installing or updating. `pi config` toggles individual
 
 The six stand-alone skills listed below also work in Claude Code and Codex: symlink `skills/<name>` from the installed checkout into `~/.agents/skills` for Codex and `~/.claude/skills` for Claude Code.
 
+Chains also ships as a plugin for Claude Code and Codex, reading and writing the same `.chains/` as Pi, with the same 80% checkpoint and post-compaction resume enforced by hooks:
+
+```bash
+claude plugin marketplace add DeevsDeevs/deevs-pi-kit && claude plugin install chains@deevs-pi-kit
+codex plugin marketplace add DeevsDeevs/deevs-pi-kit && codex plugin add chains@deevs-pi-kit
+```
+
+Upgrade with `claude plugin marketplace update deevs-pi-kit` or `codex plugin marketplace upgrade deevs-pi-kit`. The plugin needs Node 22.19 or newer on `PATH`.
+
 ## Quickstart: a collaborator
 
 Open Pi inside Herdr in a trusted project and ask:
@@ -60,6 +69,7 @@ npm run smoke:runtime-release        # daemon, participant, mail and MCP against
 npm run smoke:collaborator-release   # collaborator launch, mail, stop and worktree
 npm run smoke:native-release         # interactive targets and Git worktrees, no Herdr
 npm run bench:context                # tokens each surface costs, see bench/README.md
+npm run sync:chains-plugin           # copy the chain core into plugins/chains after editing it
 ```
 
 The release smokes start real Herdr and Pi processes, so `check` leaves them out.

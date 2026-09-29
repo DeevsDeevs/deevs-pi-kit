@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { showTextViewer } from "../shared/text-viewer.ts";
 import { validateBranchName, validateChainName, validateLinkName, type ChainService } from "./service.ts";
-import { formatList, formatLoad, formatRankedSearch, formatSearch } from "./tools.ts";
+import { formatList, formatLoad, formatRankedSearch, formatSearch } from "./format.ts";
 import { chainCheckpoints } from "./checkpoint.ts";
 import { FULL_SCREEN_OVERLAY } from "../shared/dashboard.ts";
 import { ChainsDashboard } from "./ui.ts";
