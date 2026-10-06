@@ -2,7 +2,7 @@
 // inside that container (POLYGON_IN_CONTAINER) it runs the scenarios in a worker pool and writes the summary.
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync, appendFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync, appendFileSync } from "node:fs";
 import { availableParallelism, homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -12,6 +12,7 @@ import { sandbox } from "./sandbox.mjs";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
 const LOGIN_VOLUME = "pi-kit-polygon-login";
+const LOGINS = [".pi/agent/auth.json", ".claude/.credentials.json", ".codex/auth.json"];
 const { values: opts } = parseArgs({ options: {
 	only: { type: "string" }, gate: { type: "string" }, slow: { type: "boolean" }, live: { type: "boolean" },
 	list: { type: "boolean" }, login: { type: "boolean" }, kit: { type: "string", default: ROOT }, pi: { type: "string" },
@@ -121,6 +122,10 @@ async function runOne(s, run) {
 }
 
 async function inside() {
+	if (opts.live && !LOGINS.some((file) => { try { return statSync(join("/login", file)).size > 0; } catch { return false; } })) {
+		console.error(`polygon: --live refused: the ${LOGIN_VOLUME} volume holds no Pi, Claude or Codex login, so live scenarios would run on the puppet. Run npm run polygon -- --login once first.`);
+		process.exit(1);
+	}
 	const run = process.env.POLYGON_RUN_ID;
 	const chosen = select(await scenarios());
 	const selected = chosen.filter((s) => !isSkipped(s));

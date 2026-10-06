@@ -55,4 +55,4 @@ export default {
 
 ## Live tier
 
-`npm run polygon -- --login` opens a shell in the image whose `HOME` is the `pi-kit-polygon-login` Podman volume; log in to Pi, Claude and Codex there once, with copy-paste or device-code flows (`codex login --device-auth`) since the container has no browser. `--live` mounts that volume read-only at `/login` and runs only the scenarios marked `live: true`, four at a time. Your real `~/.pi`, `~/.claude` and `~/.codex` are never mounted; `--kit installed` mounts only the kit checkout under `~/.pi/agent/git`, read-only.
+`npm run polygon -- --login` opens a shell in the image whose `HOME` is the `pi-kit-polygon-login` Podman volume; log in to Pi, Claude and Codex there once, with copy-paste or device-code flows (`codex login --device-auth`) since the container has no browser. `--live` mounts that volume read-only at `/login` and runs only the scenarios marked `live: true`, four at a time; it refuses to run while the volume holds no Pi, Claude or Codex login. Your real `~/.pi`, `~/.claude` and `~/.codex` are never mounted; `--kit installed` mounts only the kit checkout under `~/.pi/agent/git`, read-only.
