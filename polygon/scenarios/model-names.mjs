@@ -9,6 +9,7 @@ const agent = (id, name, model, on) => ({ id, on, tool: "Agent", args: { descrip
 export default {
 	name: "model-names",
 	gate: "M1",
+	live: true,
 	pending: "M4 Claude workers: opus must reach the Anthropic wire",
 	timeoutMs: 150_000,
 	async run(t) {

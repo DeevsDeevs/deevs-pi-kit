@@ -1,25 +1,37 @@
 ARG NODE_IMAGE=docker.io/library/node:24-bookworm-slim
 
-FROM ${NODE_IMAGE} AS herdr
+FROM ${NODE_IMAGE} AS fetch
 ARG HERDR_VERSION=0.9.0
 ARG HERDR_SHA256=4fa1a01158dd8043da92d31b270780b0dcc10603038d9b61cac4d81ab63fb71f
+ARG PI_VERSION
+ARG PI_RUNTIME=bun
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
  && curl -fsSL --retry 3 -o /herdr "https://github.com/herdrdev/herdr/releases/download/v${HERDR_VERSION}/herdr-linux-x86_64" \
  && echo "${HERDR_SHA256}  /herdr" | sha256sum -c - \
  && chmod 755 /herdr
+# Pi's Bun-compiled release, the build users run; `--pi-runtime node` leaves /opt/pi empty and installs Pi from npm instead.
+RUN mkdir -p /opt/pi && if [ "${PI_RUNTIME}" = bun ]; then cd /tmp \
+ && curl -fsSL --retry 3 -O "https://github.com/earendil-works/pi/releases/download/v${PI_VERSION}/SHA256SUMS" \
+ -O "https://github.com/earendil-works/pi/releases/download/v${PI_VERSION}/pi-linux-x64.tar.gz" \
+ && grep " pi-linux-x64.tar.gz$" SHA256SUMS | sha256sum -c - \
+ && tar xzf pi-linux-x64.tar.gz -C /opt; fi
 
 FROM ${NODE_IMAGE}
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates git python3 tini ripgrep fd-find procps \
  && ln -s /usr/bin/fdfind /usr/local/bin/fd \
  && rm -rf /var/lib/apt/lists/*
-COPY --from=herdr /herdr /usr/local/bin/herdr
+COPY --from=fetch /herdr /usr/local/bin/herdr
+COPY --from=fetch /opt/pi /opt/pi
+ENV PATH=/opt/pi:$PATH
 ARG PI_VERSION
+ARG PI_RUNTIME=bun
 ARG CLAUDE_VERSION=latest
 ARG CODEX_VERSION=latest
 RUN npm install -g --no-audit --no-fund \
-    "@earendil-works/pi-coding-agent@${PI_VERSION}" \
+    $([ "${PI_RUNTIME}" = node ] && echo "@earendil-works/pi-coding-agent@${PI_VERSION}") \
     "@anthropic-ai/claude-code@${CLAUDE_VERSION}" \
     "@openai/codex@${CODEX_VERSION}" \
- && npm cache clean --force
+ && npm cache clean --force \
+ && pi --version
 ENTRYPOINT ["/usr/bin/tini", "--"]

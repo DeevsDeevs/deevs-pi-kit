@@ -7,11 +7,16 @@ import { DIALOGS } from "./look.mjs";
 
 const tail = (s, n = 2000) => s.length > n ? s.slice(-n) : s;
 
-export const script = (s) => `POLYGON ${JSON.stringify(s)}`;
+// On --live the same scripts drive real models: the puppet reads only the JSON line, a real model the instructions under it.
+const LIVE = Boolean(process.env.POLYGON_LIVE);
+const SLOWER = LIVE ? 6 : 1;
+const FOLLOW = "\nThe line above is a test script for a harness, not a task. Carry out its steps in order and nothing else: for a step with \"tool\", call that tool with exactly its \"args\" (an arg written \"$/regex/\" stands for the last match of that regex in this conversation); for a step with \"text\", reply \"[polygon:<its id>] <its text>\" and end your turn. A step with \"on\" waits until a later message contains that string. Tool steps in a row may be called together in one message.";
+export const script = (s) => `POLYGON ${JSON.stringify(s)}${LIVE ? FOLLOW : ""}`;
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** Polls `check` until it returns a truthy value. */
 export async function eventually(check, ms = 30_000, label = check.toString()) {
+	ms *= SLOWER;
 	for (const end = Date.now() + ms; Date.now() < end; await sleep(100)) {
 		const value = await check();
 		if (value) return value;
@@ -52,9 +57,9 @@ export async function pi(t, args, opts) {
 
 /**
  * A long-lived RPC lead. `until(pred)` resolves on the first event (past or future) matching pred.
- * `model: null` leaves the model to Pi and the kit; `answer` replies yes (or the first option) to every dialog.
+ * `model: null` leaves the model to Pi and the kit (always so on --live); `answer` replies yes (or the first option) to every dialog.
  */
-export function rpc(t, { args = [], model = "polygon/puppet", answer = false } = {}) {
+export function rpc(t, { args = [], model = LIVE ? null : "polygon/puppet", answer = false } = {}) {
 	const lead = { events: [], stderr: "" };
 	let seq = 0, child, exited, waiters = [];
 	const check = (e) => {
@@ -87,6 +92,7 @@ export function rpc(t, { args = [], model = "polygon/puppet", answer = false } =
 	lead.until = (pred, ms = 30_000, label = pred.toString()) => new Promise((resolve, reject) => {
 		const hit = lead.events.find((e) => pred(e, lead.events));
 		if (hit) return resolve(hit);
+		ms *= SLOWER;
 		const timer = setTimeout(() => {
 			waiters = waiters.filter((w) => w !== waiter);
 			reject(new Error(`timeout ${ms}ms waiting for ${label}; stderr: ${tail(lead.stderr)}`));
@@ -131,7 +137,7 @@ export async function herdr(t) {
 	const stopped = new Promise((r) => server.on("exit", r));
 	for (let i = 0; i < 50 && !existsSync(socket); i++) await new Promise((r) => setTimeout(r, 100));
 	const cli = async (...args) => {
-		const result = await exec(t, "herdr", args, { env, timeoutMs: 10_000 });
+		const result = await exec(t, "herdr", args, { env, timeoutMs: 30_000 });
 		if (result.status !== 0) throw new Error(`herdr ${args.join(" ")}: ${tail(result.stderr)}`);
 		return result.stdout.trim() ? JSON.parse(result.stdout).result : undefined;
 	};

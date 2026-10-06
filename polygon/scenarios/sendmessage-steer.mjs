@@ -7,6 +7,7 @@ const MARK = "polygon-steer-mark";
 export default {
 	name: "sendmessage-steer",
 	gate: "M2",
+	live: true,
 	async run(t) {
 		const lead = rpc(t);
 		const child = { agent: "child", steps: [

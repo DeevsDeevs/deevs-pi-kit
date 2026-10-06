@@ -36,14 +36,16 @@ const reply = (step) => step.id ? `[polygon:${step.id}] ${step.text ?? ""}` : st
 /**
  * `marks` is the scenario's live list of strings to look for; each request logs the ones its raw body contains.
  * `scripts` maps a model id to its fallback script; scenarios fill it through `t.scripts`.
+ * `live` passes the openai-codex and Anthropic wires through to the real APIs, still logging each model request
+ * (agent from its script, model, tools, marks and the upstream HTTP status), so the live tier keeps the request log.
  */
-export function startPuppet(logFile, marks = [], scripts = {}) {
-	const log = (wire, url, request, step, messages) => {
+export function startPuppet(logFile, marks = [], scripts = {}, { live = false } = {}) {
+	const log = (wire, url, request, step, messages, status) => {
 		const raw = JSON.stringify(request);
 		appendFileSync(logFile, JSON.stringify({
 			at: Date.now(), wire, url, agent: step.agent ?? null, step: step.id ?? null, tool: step.tool ?? null, model: request.model,
 			messages: messages.length, images: images(messages), tools: (request.tools ?? []).map((t) => t.function?.name ?? t.name ?? t.type),
-			serviceTier: request.service_tier ?? null, marks: marks.filter((m) => raw.includes(m)),
+			serviceTier: request.service_tier ?? null, marks: marks.filter((m) => raw.includes(m)), ...(status ? { status } : {}),
 		}) + "\n");
 	};
 	const server = createServer((req, res) => {
@@ -52,6 +54,18 @@ export function startPuppet(logFile, marks = [], scripts = {}) {
 		req.on("end", () => {
 			// Pi's openai-codex SSE transport sends its body zstd-compressed, as the Codex backend accepts.
 			const body = req.headers["content-encoding"] === "zstd" ? zstdDecompressSync(Buffer.concat(chunks)) : Buffer.concat(chunks);
+			if (live && !req.url.includes("/chat/completions")) {
+				const upstream = req.url.startsWith("/codex/") ? `https://chatgpt.com/backend-api${req.url}` : `https://api.anthropic.com${req.url}`;
+				const logged = req.url.includes("/responses") || (req.url.includes("/messages") && !req.url.includes("count_tokens"));
+				return forward(req, res, Buffer.concat(chunks), upstream, (status) => {
+					if (!logged) return;
+					const request = JSON.parse(body.toString());
+					const messages = req.url.includes("/responses") ? responseMessages(request) : request.messages ?? [];
+					// The step is the script's next one as the puppet would read it; a real model's own tool call ids never mark a step said.
+					const { agent, id } = nextStep(messages);
+					log("live", req.url, request, { agent, id }, messages, status);
+				});
+			}
 			const request = JSON.parse(body.toString() || "{}");
 			if (req.url.includes("/responses")) return responses(res, request, log, req.url);
 			const wire = req.url.includes("/chat/completions") ? "chat" : req.url.includes("/messages") ? "anthropic" : null;
@@ -100,12 +114,16 @@ function anthropic(res, request, step) {
 }
 
 // OpenAI Responses (Codex): input items are mapped onto the message shape nextStep reads.
-function responses(res, request, log, url) {
+function responseMessages(request) {
 	const items = typeof request.input === "string" ? [{ type: "message", role: "user", content: request.input }] : request.input ?? [];
-	const messages = items.map((i) => i.type === "function_call" ? { role: "assistant", content: `toolCall:${i.call_id}` }
+	return items.map((i) => i.type === "function_call" ? { role: "assistant", content: `toolCall:${i.call_id}` }
 		: i.type === "function_call_output" ? { role: "tool", content: typeof i.output === "string" ? i.output : JSON.stringify(i.output) }
 		: i.type === "message" || i.role ? { role: i.role, content: typeof i.content === "string" ? i.content : i.content ?? [] }
 		: { role: "other", content: "" });
+}
+
+function responses(res, request, log, url) {
+	const messages = responseMessages(request);
 	const step = nextStep(messages);
 	log("responses", url, request, step, messages);
 	res.writeHead(200, { "content-type": "text/event-stream" });
@@ -119,4 +137,26 @@ function responses(res, request, log, url) {
 	ev("response.output_item.done", { output_index: 0, item });
 	ev("response.completed", { response: { id: "resp_polygon", object: "response", status: "completed", model: request.model, output: [item], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2, input_tokens_details: { cached_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } } } });
 	res.end();
+}
+
+const HOP = new Set(["host", "connection", "keep-alive", "content-length", "transfer-encoding", "accept-encoding"]);
+
+/** Streams one request to the real API and its answer back; the caller logs the upstream status. */
+async function forward(req, res, body, url, onStatus) {
+	const abort = new AbortController();
+	res.on("close", () => abort.abort());
+	try {
+		const up = await fetch(url, {
+			method: req.method, signal: abort.signal, redirect: "manual",
+			headers: Object.entries(req.headers).filter(([k]) => !HOP.has(k)),
+			body: ["GET", "HEAD"].includes(req.method) ? undefined : body,
+		});
+		onStatus(up.status);
+		res.writeHead(up.status, [...up.headers].filter(([k]) => !HOP.has(k) && k !== "content-encoding").flat());
+		if (up.body) for await (const chunk of up.body) res.write(chunk);
+		res.end();
+	} catch (error) {
+		if (!res.headersSent) res.writeHead(502, { "content-type": "text/plain" });
+		res.end(String(error));
+	}
 }

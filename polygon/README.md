@@ -9,6 +9,7 @@ npm run polygon -- --gate M0 --slow      # a milestone gate, slow scenarios incl
 npm run polygon -- --kit clone           # git clone --local HEAD + npm install --omit=dev --legacy-peer-deps, as Pi installs it
 npm run polygon -- --kit installed       # the checkout `pi update` produced, read-only
 npm run polygon -- --pi 1.0.1            # another Pi release than devDependencies pins
+npm run polygon -- --pi-runtime node     # Pi from npm on Node instead of the Bun release binary
 npm run polygon -- --list
 ```
 
@@ -16,7 +17,7 @@ Results land in `polygon/results/<run>/` (`latest` points at the newest): `summa
 
 ## Sandbox
 
-`Containerfile` holds Node 24, git, python3, tini, ripgrep, fd, Pi at the kit's devDependencies version, the latest Claude Code and Codex, and Herdr's official static release binary, checked against its published SHA-256. The image tag is a hash of the Containerfile and build args, built only when missing; `podman image rm` it to pick up newer Claude or Codex releases.
+`Containerfile` holds Node 24, git, python3, tini, ripgrep, fd, the latest Claude Code and Codex, Herdr's official static release binary checked against its published SHA-256, and Pi at the kit's devDependencies version as its Bun-compiled release binary (`pi-linux-x64.tar.gz`, checked against the release's `SHA256SUMS`), the build users run. `--pi-runtime node` installs Pi from npm and runs it on Node instead, for comparison; `durable-load` asserts which runtime, and so which SQLite driver, the engine got. The image tag is a hash of the Containerfile and build args, built only when missing; `podman image rm` it to pick up newer Claude or Codex releases.
 
 One container runs per polygon run. The kit is mounted read-only at `/kit` (a symlinked `node_modules` is mounted at its real path), `polygon/` at `/polygon`, and the run's results at `/results`. Each scenario gets its own `HOME` under `/results/<name>/home`, with Pi, Claude and Codex config dirs inside it, an env built from scratch, a git identity, and a `POLYGON_RUN` tag. Teardown closes the drivers, then SIGKILLs every process still carrying the tag; any such process fails the scenario.
 
@@ -42,7 +43,7 @@ Drop `polygon/scenarios/<name>.mjs`:
 export default {
 	name: "jobs-basic", gate: "M0",        // gate may be an array; slow: true keeps it out of the default run
 	                                        // pending: "<step>" skips it (listed as PENDING) unless named in --only
-	async run(t) {                          // t: home, repo, kit, env, git(), dir, requestLog, marks
+	async run(t) {                          // t: home, repo, kit, env, git(), dir, requestLog, marks, live, piRuntime
 		const lead = rpc(t);                  // drive.mjs: send, prompt, script, until, kill9, restart
 		await lead.script({ agent: "lead", steps: [...] });
 		await lead.until((e) => e.type === "agent_settled");
@@ -59,4 +60,15 @@ export default {
 
 ## Live tier
 
-`npm run polygon -- --login` opens a shell in the image whose `HOME` is the `pi-kit-polygon-login` Podman volume; log in to Pi, Claude and Codex there once, with copy-paste or device-code flows (`codex login --device-auth`) since the container has no browser. `--live` mounts that volume read-only at `/login` and runs only the scenarios marked `live: true`, four at a time; it refuses to run while the volume holds no Pi, Claude or Codex login. Your real `~/.pi`, `~/.claude` and `~/.codex` are never mounted; `--kit installed` mounts only the kit checkout under `~/.pi/agent/git`, read-only.
+The polygon has its own logins, in the `pi-kit-polygon-login` Podman volume. Your real `~/.pi`, `~/.claude` and `~/.codex` are never mounted; `--kit installed` mounts only the kit checkout under `~/.pi/agent/git`, read-only.
+
+```bash
+npm run polygon -- --login               # once: Pi /login (ChatGPT, openai-codex), claude auth login, codex login --device-auth
+npm run polygon -- --live --smoke        # agent-background and model-inherit on real models, about 15 requests
+npm run polygon -- --live [--gate M1]    # every scenario marked live: true, four at a time
+npm run polygon -- --live --max-requests 100
+```
+
+`--login` runs the three logins in one interactive container on the host network, so a browser's OAuth callback to `localhost` reaches it; afterwards, check that your own logins still work. Each `--live` run then starts one serial freshen container, the only thing that ever mounts the volume: it refreshes Pi's token when it expires within 2 h (`pi auth print-bearer-token`, no model call) and Claude's and Codex's with one tiny request each, then stages a copy whose refresh tokens are invalid placeholders. Every scenario `HOME` gets that copy, so the worst a scenario can do is fail, never log the polygon out; the copies are deleted at teardown. An empty volume stops the run with a pointer to `--login`.
+
+On `--live`, scripts carry a line telling a real model to follow them, Pi's lead is the kit's `lead` model on `openai-codex`, waits stretch sixfold, and the puppet passes the `openai-codex` and Anthropic wires through to the real APIs, still logging every model request with its HTTP status. That log is the request guard: scheduling stops at `--max-requests` (default 400, the freshen requests included) or at the first HTTP 429, which marks that scenario `quota` rather than `fail`; a 401 or 403 fails a scenario at once. Codex CLI requests go to ChatGPT directly and are not counted yet.
