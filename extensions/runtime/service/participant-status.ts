@@ -8,7 +8,7 @@ import {
 } from "../schemas/state.ts";
 import { RuntimeError } from "../errors.ts";
 import type { HerdrAgentStatus } from "../schemas/herdr.ts";
-import type { RuntimeRegistrationManager } from "./registration.ts";
+import type { LiveTargets } from "./live.ts";
 import type { HostedStateStore } from "./state.ts";
 
 export interface HostedParticipantStatus {
@@ -47,7 +47,7 @@ export function requireParticipant(store: HostedStateStore, participantKey: stri
 
 export function participantStatus(
 	store: HostedStateStore,
-	registrations: RuntimeRegistrationManager,
+	live: LiveTargets,
 	participant: HostedParticipant,
 	includeQueue = true,
 ): HostedParticipantStatus {
@@ -60,7 +60,7 @@ export function participantStatus(
 		participantId: participant.participantId,
 		state: participant.state,
 		generation: participant.generation,
-		holderLive: isHeld(participant.state) && holderTargetKey !== undefined && registrations.hasLiveTarget(holderTargetKey),
+		holderLive: isHeld(participant.state) && holderTargetKey !== undefined && live.hasLiveTarget(holderTargetKey),
 		lastTransition: participant.transition,
 	};
 	if (holderTargetKey) status.holderTargetKey = holderTargetKey;
@@ -70,7 +70,7 @@ export function participantStatus(
 	if (isAgentTarget(holder)) {
 		status.driver = holder.driver;
 		status.profile = holder.profile;
-		const agentStatus = holderTargetKey ? registrations.agentStatus(holderTargetKey) : undefined;
+		const agentStatus = holderTargetKey ? live.agentStatus(holderTargetKey) : undefined;
 		if (agentStatus) status.agentStatus = agentStatus;
 	}
 	if (includeQueue) Object.assign(status, mailQueue(store, participant.participantKey));

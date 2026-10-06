@@ -186,7 +186,7 @@ export async function setup(options = {}) {
 }
 
 export function auth(target) {
-	return { registrationId: target.reg.registrationId, registrationKey: target.reg.registrationKey };
+	return { targetKey: target.reg.targetKey };
 }
 
 export function body(text) {

@@ -1,9 +1,9 @@
 import { RuntimeAgentBinder } from "../../extensions/runtime/service/bridge.ts";
-import type { HostedHostVerifier, HostedLiveAgent } from "../../extensions/runtime/service/identity.ts";
+import type { HostedHostVerifier, HostedLiveAgent } from "../../extensions/runtime/service/herdr-cli.ts";
 import { RuntimeMessaging } from "../../extensions/runtime/service/messaging.ts";
 import { HostedParticipantCoordinator } from "../../extensions/runtime/service/participant.ts";
 import type { HostedProtocolContext } from "../../extensions/runtime/service/protocol.ts";
-import { RuntimeRegistrationManager } from "../../extensions/runtime/service/registration.ts";
+import { LiveTargets } from "../../extensions/runtime/service/live.ts";
 import { HostedStateStore } from "../../extensions/runtime/service/state.ts";
 import { RuntimeWorktrees } from "../../extensions/runtime/service/worktree.ts";
 
@@ -18,15 +18,15 @@ export function protocolContext(
 	root: string,
 	store: HostedStateStore,
 	host: HostedHostVerifier = new AbsentHost(),
-	registrations: RuntimeRegistrationManager = new RuntimeRegistrationManager(store, host),
-	participants: HostedParticipantCoordinator = new HostedParticipantCoordinator(store, registrations),
-	bridges: RuntimeAgentBinder = new RuntimeAgentBinder(store, registrations, host),
+	live: LiveTargets = new LiveTargets(store, host),
+	participants: HostedParticipantCoordinator = new HostedParticipantCoordinator(store, live),
+	bridges: RuntimeAgentBinder = new RuntimeAgentBinder(store, live, host),
 ): HostedProtocolContext {
 	return {
 		runtimeId: "rt_test",
-		registrations,
+		live,
 		participants,
-		messaging: new RuntimeMessaging(store, registrations, participants, `${root}/runtime.sock`),
+		messaging: new RuntimeMessaging(store, live, participants, `${root}/runtime.sock`),
 		bridges,
 		worktrees: new RuntimeWorktrees(root, store),
 	};

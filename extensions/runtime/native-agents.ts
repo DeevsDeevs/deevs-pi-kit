@@ -251,9 +251,6 @@ export class NativeAgentService {
 			const heartbeat = parseHeartbeat(await this.session.client.call("bridge.heartbeat", auth(known)));
 			if (!live()) return undefined;
 			if (heartbeat.agentStatus) this.agentStatuses.set(targetKey, heartbeat.agentStatus);
-			if (heartbeat.registration.registrationId !== known.registrationId || heartbeat.registration.registrationKey !== known.registrationKey) {
-				throw new HostedRuntimeClientError("identity_mismatch", "Native heartbeat replaced its registration authority.");
-			}
 			registration = heartbeat.registration;
 		} else {
 			const bound = await this.rebindManagedAgent(control);

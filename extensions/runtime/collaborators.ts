@@ -1,5 +1,8 @@
 import { realpathSync } from "node:fs";
-import type { ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { getAgentDir, type ExtensionContext, type ToolCallEvent } from "@earendil-works/pi-coding-agent";
+import { loadKitConfig, readCodexCatalog, type ModelContext } from "../shared/models.ts";
 import { HostedRuntimeClient, HostedRuntimeClientError } from "./client.ts";
 import { CollaboratorLauncher, standingDown, type CollaboratorStart } from "./collaborator-launch.ts";
 import {
@@ -34,6 +37,9 @@ import {
 import type { RuntimeSession } from "./runtime-session.ts";
 
 const COLLABORATOR_BATCH_LIMIT = 12;
+/** The lead is main and its collaborators share one protocol per project, so neither needs naming. */
+export const LEAD = "main";
+const DEFAULT_PROTOCOL = "collab";
 /** The foreground-wait rail: a stand-down never holds the lead longer than this for a final reply. */
 const STAND_DOWN_GRACE_MS = 120_000;
 const STAND_DOWN_POLL_MS = 1_000;
@@ -87,6 +93,8 @@ export class CollaboratorService {
 	private readonly native: NativeAgentService;
 	private readonly launcher: CollaboratorLauncher;
 	private manageActive = false;
+	/** The tab each collaborator was started in: stand-down and stop close it, whatever Herdr reports about its agent. */
+	private readonly tabs = new Map<string, string>();
 
 	constructor(session: RuntimeSession, native: NativeAgentService) {
 		this.session = session;
@@ -122,7 +130,7 @@ export class CollaboratorService {
 		}
 		if (input.action === "start") return this.exclusively(async () => this.startCollaborators(input, ctx, signal));
 		if (input.callerParticipantId || input.participants.some(hasStartOnlyFields)) {
-			const detail = "Only collaborator starts accept caller identity, driver, model, persona, or profile fields.";
+			const detail = "Only collaborator starts accept caller identity, model, persona, or profile fields.";
 			throw new HostedRuntimeClientError("invalid_request", detail);
 		}
 		return this.changeCollaborators(input.action, input.protocol, input.participants, ctx, signal);
@@ -151,17 +159,18 @@ export class CollaboratorService {
 		if (isEnded(identity?.disposition)) {
 			throw new HostedRuntimeClientError("conflict", "Current collaborator identity has ended; explicit revival is required.");
 		}
-		if (!identity && !(input.protocol && input.callerParticipantId)) {
-			const detail = "Pass protocol (this project's collaboration name) and callerParticipantId (your own name in it), or run /runtime collaborate <protocol> <id> first.";
-			throw new HostedRuntimeClientError("invalid_request", detail);
-		}
-		const protocol = collaboratorName(identity?.protocol ?? input.protocol, "protocol");
-		const callerParticipantId = collaboratorName(identity?.participantId ?? input.callerParticipantId, "caller participant ID");
+		const protocol = collaboratorName(identity?.protocol ?? input.protocol ?? DEFAULT_PROTOCOL, "protocol");
+		const callerParticipantId = collaboratorName(identity?.participantId ?? input.callerParticipantId ?? LEAD, "caller participant ID");
 		if (identity && requestsOtherIdentity(input, protocol, callerParticipantId)) {
 			throw new HostedRuntimeClientError("conflict", `Current collaborator identity is ${protocol}/${callerParticipantId}.`);
 		}
-		const piCodexModels = ctx.modelRegistry.getAll().filter((model) => model.provider === "openai-codex").map((model) => model.id);
-		const candidates = input.participants.map((participant) => resolveCollaboratorCandidate(participant, piCodexModels));
+		const models: ModelContext = {
+			config: await loadKitConfig(ctx.cwd, getAgentDir()),
+			registry: ctx.modelRegistry,
+			lead: ctx.model ? { model: ctx.model, level: this.session.pi.getThinkingLevel() } : undefined,
+			codex: readCodexCatalog(process.env.CODEX_HOME ?? join(homedir(), ".codex")),
+		};
+		const candidates = input.participants.map((participant) => resolveCollaboratorCandidate(participant, models));
 		const registration = await this.session.requireRegistration(ctx);
 		const participants = await this.session.listParticipants(registration);
 		const projectRoot = realpathSync(ctx.cwd);
@@ -247,7 +256,9 @@ export class CollaboratorService {
 			const participant = `${start.protocol}/${candidate.participantId}`;
 			try {
 				const existing = findParticipant(participants, start.protocol, candidate.participantId);
-				return { participant, status: "started" as const, paneId: await this.launcher.launch(start, candidate, existing) };
+				const tab = await this.launcher.launch(start, candidate, existing);
+				this.tabs.set(candidate.participantId, tab.tabId);
+				return { participant, status: "started" as const, paneId: tab.paneId };
 			} catch (error) {
 				return { participant, status: outcome(start.signal), error: error instanceof Error ? error.message : String(error) };
 			}
@@ -374,9 +385,18 @@ export class CollaboratorService {
 		}
 		const control = participant.holderTargetKey ? this.session.store.agent(participant.holderTargetKey) : undefined;
 		if (control && outcome !== "unmanaged") this.native.markStopped(control);
+		await this.closeTab(participant.participantId);
 		return outcome;
 	}
 
+
+	// ponytail: tab IDs live in this lead's memory; after a lead restart the daemon's own close is the only one.
+	private async closeTab(participantId: string): Promise<void> {
+		const tabId = this.tabs.get(participantId);
+		if (!tabId) return;
+		this.tabs.delete(participantId);
+		await this.session.pi.exec("herdr", ["tab", "close", tabId], { timeout: 5_000 }).catch(() => undefined);
+	}
 
 	async manageWorktrees(input: CollaboratorWorktreeInput, ctx: ExtensionContext, signal?: AbortSignal): Promise<CollaboratorWorktreeResult> {
 		throwIfAborted(signal);
@@ -433,8 +453,7 @@ function requestsOtherIdentity(input: CollaboratorManageInput, protocol: string,
 }
 
 function hasStartOnlyFields(participant: CollaboratorCandidate): boolean {
-	return participant.driver !== undefined
-		|| participant.model !== undefined
+	return participant.model !== undefined
 		|| participant.persona !== undefined
 		|| participant.profile !== undefined
 		|| participant.repo !== undefined;

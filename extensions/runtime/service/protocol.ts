@@ -12,7 +12,6 @@ import {
 	MailboxSendParams,
 	MessagingIssueParams,
 	MessagingNamespaceParams,
-	MessagingReplyParams,
 	MessagingSendParams,
 	ParticipantAcquireParams,
 	ParticipantAuthParams,
@@ -29,7 +28,7 @@ import {
 import { RuntimeAgentBinder, type BoundAgentResult } from "./bridge.ts";
 import { RuntimeMessaging, type MessagingInput } from "./messaging.ts";
 import { HostedParticipantCoordinator } from "./participant.ts";
-import { RuntimeRegistrationManager, type HostedLiveRegistration } from "./registration.ts";
+import { LiveTargets, type HostedCaller } from "./live.ts";
 import { RuntimeWorktrees } from "./worktree.ts";
 
 export const HOSTED_MAX_REQUEST_BYTES = 64 * 1024;
@@ -38,7 +37,7 @@ const MAX_MESSAGING_RESPONSE_BYTES = 128 * 1024;
 /** Every authority a started runtime serves; a process that cannot build one cannot dispatch at all. */
 export interface HostedProtocolContext {
 	runtimeId: string;
-	registrations: RuntimeRegistrationManager;
+	live: LiveTargets;
 	messaging: RuntimeMessaging;
 	participants: HostedParticipantCoordinator;
 	bridges: RuntimeAgentBinder;
@@ -136,16 +135,16 @@ function decodeMessagingBody(encoded: string): string {
 
 /** The Pi heartbeat renews the lease and carries the mail hint of this target's sole live namespace. */
 async function heartbeatPi(call: HostedCall, params: Static<typeof RegistrationAuthParams>): Promise<HostedResponse> {
-	const registration = await call.context.registrations.heartbeat(params.registrationId, params.registrationKey);
-	const mail = call.context.messaging.unread(registration);
-	const heartbeat: JsonObject = registrationResult(registration);
+	const caller = await call.context.live.heartbeat(params.targetKey);
+	const mail = call.context.messaging.unread(caller);
+	const heartbeat: JsonObject = { targetKey: caller.targetKey };
 	if (mail) heartbeat.mail = { namespaceId: mail.namespaceId, eventId: mail.eventId };
 	return success(call.id, heartbeat);
 }
 
 async function bindAgent(call: HostedCall, params: Static<typeof BridgeBindParams>): Promise<HostedResponse> {
-	const { registrationId, registrationKey, ...input } = params;
-	const caller = call.context.registrations.authorize(registrationId, registrationKey);
+	const { targetKey, ...input } = params;
+	const caller = call.context.live.caller(targetKey);
 	return success(call.id, boundAgentResult(await call.context.bridges.bind(caller, input)));
 }
 
@@ -166,7 +165,6 @@ const HOSTED_METHODS = new Map<string, HostedMethodHandler>([
 		call.id,
 		await call.context.messaging.issue(authorize(call, params), params.participantKey, params.expectedGeneration),
 	))],
-	["messaging.peers", method(MessagingNamespaceParams, (call, params) => callMessaging(call, params, { method: "peers" }))],
 	["messaging.inbox", method(MessagingNamespaceParams, (call, params) => callMessaging(call, params, { method: "inbox" }))],
 	["messaging.send", method(MessagingSendParams, (call, params) => callMessaging(call, params, {
 		method: "send",
@@ -174,23 +172,17 @@ const HOSTED_METHODS = new Map<string, HostedMethodHandler>([
 		participantId: params.participantId,
 		body: decodeMessagingBody(params.bodyBase64),
 	}))],
-	["messaging.reply", method(MessagingReplyParams, (call, params) => callMessaging(call, params, {
-		method: "reply",
-		operationId: params.operationId,
-		eventId: params.eventId,
-		body: decodeMessagingBody(params.bodyBase64),
-	}))],
 	["pi.register", method(PiRegisterParams, async (call, params) => success(
 		call.id,
-		registrationResult(await call.context.registrations.register(params)),
+		await call.context.live.register(params),
 	))],
 	["pi.heartbeat", method(RegistrationAuthParams, heartbeatPi)],
 	["pi.unregister", method(RegistrationAuthParams, (call, params) => unregister(call, params))],
 	["bridge.bind", method(BridgeBindParams, bindAgent)],
 	["bridge.heartbeat", method(RegistrationAuthParams, async (call, params) => {
-		const registration = await call.context.registrations.heartbeat(params.registrationId, params.registrationKey);
-		const heartbeat: JsonObject = registrationResult(registration);
-		const agentStatus = call.context.registrations.agentStatus(registration.targetKey);
+		const caller = await call.context.live.heartbeat(params.targetKey);
+		const heartbeat: JsonObject = { targetKey: caller.targetKey };
+		const agentStatus = call.context.live.agentStatus(caller.targetKey);
 		if (agentStatus) heartbeat.agentStatus = agentStatus;
 		return success(call.id, heartbeat);
 	})],
@@ -246,26 +238,17 @@ const HOSTED_METHODS = new Map<string, HostedMethodHandler>([
 export const HOSTED_METHOD_NAMES: readonly string[] = [...HOSTED_METHODS.keys()];
 
 function unregister(call: HostedCall, params: Static<typeof RegistrationAuthParams>): HostedResponse {
-	call.context.registrations.unregister(params.registrationId, params.registrationKey);
+	call.context.live.forget(params.targetKey);
 	return success(call.id, { unregistered: true });
 }
 
-function authorize(call: HostedCall, params: Static<typeof RegistrationAuthParams>): HostedLiveRegistration {
-	return call.context.registrations.authorize(params.registrationId, params.registrationKey);
-}
-
-function registrationResult(registration: HostedLiveRegistration) {
-	return {
-		targetKey: registration.targetKey,
-		registrationId: registration.registrationId,
-		registrationKey: registration.registrationKey,
-		leaseUntil: registration.leaseUntil,
-	};
+function authorize(call: HostedCall, params: Static<typeof RegistrationAuthParams>): HostedCaller {
+	return call.context.live.caller(params.targetKey);
 }
 
 function boundAgentResult(result: BoundAgentResult) {
 	return {
-		...registrationResult(result.registration),
+		targetKey: result.targetKey,
 		participantKey: result.participantKey,
 		holderGeneration: result.holderGeneration,
 		driver: result.driver,

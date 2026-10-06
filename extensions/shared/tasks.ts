@@ -15,6 +15,8 @@ export interface RosterEntry {
 	startedAt: number;
 	/** Resolves once stopped; an agent's report carries the worktree it kept. */
 	stop?: () => Promise<{ worktree?: { path: string; branch: string } } | undefined | void>;
+	/** Set by kinds that take messages through their own channel (collaborators); returns the result line. */
+	send?: (message: string, images: string[]) => Promise<string>;
 	/** The shell command that opens this task in its own CLI, for `/agents attach`. */
 	attach?: string;
 }

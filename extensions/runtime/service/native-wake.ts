@@ -1,40 +1,41 @@
 import { type HostedAgentTarget, type HostedRuntimeState, isAgentTarget, isHeld } from "../schemas/state.ts";
-import type { HostedHostVerifier } from "./identity.ts";
+import type { HostedHostVerifier } from "./herdr-cli.ts";
 import { unreadMailEvents } from "./messaging.ts";
 import type { HostedStateStore } from "./state.ts";
 
-const WAKE_COOLDOWN_MS = 30_000;
-/** A tab that ignores the same mail three times is not going to read it; more prompts only burn its context. */
-const MAX_WAKES_PER_MESSAGE = 3;
-
-/** One native tab holding a participant with unread mail, and the prompt that would wake it. */
+/** One native tab holding a participant with unread mail, and the prompt that carries it. */
 interface PendingWake {
-	targetKey: string;
 	agentName: string;
-	eventId: string;
+	namespaceId: string;
+	eventIds: string[];
 	text: string;
 }
 
-/** The last wake attempted for a target: the cooldown and the cap apply only while that same message is the newest unread one. */
-interface WakeAttempt {
-	eventId: string;
+/** What one prompt carried, and Herdr's status-change count when it was typed. */
+interface Prompted {
+	namespaceId: string;
+	eventIds: string[];
+	seq: number;
 	at: number;
-	delivered: number;
+	count: number;
 }
 
+const RETRY_MS = 30_000;
+/** A tab that ignores the same mail three times is not going to read it; more prompts only burn its context. */
+const MAX_PROMPTS = 3;
+
 /**
- * A native collaborator has no heartbeat to carry a mail hint, so the daemon nudges its tab instead:
- * at most one short prompt per target per 30 s and three per newest message, only for a tab that was issued
- * a mail namespace, never while `herdr agent get` reports it `blocked` on a human prompt, and only while the
- * mail is still unread. Claude Code and Codex queue a prompt typed during a turn, so a busy tab is woken too.
- * The prompt names the sender; it never carries a body, never proves the agent acted, and may land on a
- * partially typed line.
+ * A native collaborator has no heartbeat, so the daemon types its mail into its tab: every unread message in one
+ * `herdr agent prompt`, sent only while `herdr agent get` reports the tab idle, so messages sent during a turn
+ * coalesce into one delivery at its next idle. The messages are marked read once Herdr's status-change count shows
+ * the tab took a turn after the prompt; until then the prompt is repeated every 30 s, three times at most. A Herdr
+ * without that count gets read-on-prompt. A tab blocked on a human prompt is left alone.
  */
 export class NativeWakeSweeper {
 	private readonly store: HostedStateStore;
 	private readonly host: HostedHostVerifier;
 	private readonly now: () => number;
-	private readonly attempts = new Map<string, WakeAttempt>();
+	private readonly prompted = new Map<string, Prompted>();
 	private sweeping = false;
 
 	constructor(store: HostedStateStore, host: HostedHostVerifier, now: () => number = Date.now) {
@@ -62,44 +63,42 @@ export class NativeWakeSweeper {
 		const state = this.store.read();
 		return Object.values(state.targets)
 			.filter(isAgentTarget)
-			.flatMap((target) => this.pendingWake(state, target) ?? []);
-	}
-
-	private pendingWake(state: HostedRuntimeState, target: HostedAgentTarget): PendingWake | undefined {
-		const participant = state.participants[target.participantKey];
-		if (!isHeld(participant?.state) || participant.holderTargetKey !== target.targetKey) return undefined;
-		if (!hasMailNamespace(state, target.targetKey)) return undefined;
-		const newest = unreadMailEvents(state, target.participantKey).at(-1);
-		const from = newest ? state.participants[newest.source.id]?.participantId : undefined;
-		if (newest === undefined || from === undefined) return undefined;
-		const last = this.attempts.get(target.targetKey);
-		if (last?.eventId === newest.eventId && (last.delivered >= MAX_WAKES_PER_MESSAGE || this.now() - last.at < WAKE_COOLDOWN_MS)) return undefined;
-		return { targetKey: target.targetKey, agentName: target.agentName, eventId: newest.eventId, text: wakeText(from) };
+			.flatMap((target) => pendingWake(state, target) ?? []);
 	}
 
 	private async prompt(wake: PendingWake): Promise<void> {
 		try {
 			const live = await this.host.getAgent(wake.agentName);
-			if (live.agentStatus === "blocked") return;
-			// The attempt is recorded before delivery, so an undelivered prompt still waits its full turn.
-			const last = this.attempts.get(wake.targetKey);
-			const attempt = { eventId: wake.eventId, at: this.now(), delivered: last?.eventId === wake.eventId ? last.delivered : 0 };
-			this.attempts.set(wake.targetKey, attempt);
+			const last = this.prompted.get(wake.agentName);
+			if (last && live.stateSeq !== undefined && live.stateSeq > last.seq) {
+				this.prompted.delete(wake.agentName);
+				this.store.apply({ type: "messaging.read", namespaceId: last.namespaceId, eventIds: last.eventIds, at: this.now() });
+				return;
+			}
+			if (live.ready === false || live.agentStatus === "working" || live.agentStatus === "blocked") return;
+			const same = last?.eventIds.join() === wake.eventIds.join();
+			if (same && (last.count >= MAX_PROMPTS || this.now() - last.at < RETRY_MS)) return;
 			await this.host.promptAgent?.(wake.agentName, wake.text);
-			attempt.delivered += 1;
+			if (live.stateSeq === undefined) {
+				this.store.apply({ type: "messaging.read", namespaceId: wake.namespaceId, eventIds: wake.eventIds, at: this.now() });
+				return;
+			}
+			this.prompted.set(wake.agentName, { namespaceId: wake.namespaceId, eventIds: wake.eventIds, seq: live.stateSeq, at: this.now(), count: same ? last.count + 1 : 1 });
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "unknown failure";
 			process.stderr.write(`${JSON.stringify({ status: "wake_skipped", agent: wake.agentName, message: message.slice(0, 200) })}\n`);
 		}
 	}
-
 }
 
-/** Without an issued namespace the tab has no `collaborator_inbox` to call, so a wake could only waste its turn. */
-function hasMailNamespace(state: HostedRuntimeState, targetKey: string): boolean {
-	return Object.values(state.messaging).some(grant => grant.targetKey === targetKey && grant.status === "active");
-}
-
-function wakeText(from: string): string {
-	return `Mail from ${from}: call collaborator_inbox, do what it asks, answer with collaborator_reply.`;
+function pendingWake(state: HostedRuntimeState, target: HostedAgentTarget): PendingWake | undefined {
+	const participant = state.participants[target.participantKey];
+	if (!isHeld(participant?.state) || participant.holderTargetKey !== target.targetKey) return undefined;
+	// Without an issued namespace the tab has no SendMessage to answer with.
+	const grant = Object.values(state.messaging).find((candidate) => candidate.targetKey === target.targetKey && candidate.status === "active");
+	const unread = unreadMailEvents(state, target.participantKey);
+	if (!grant || unread.length === 0) return undefined;
+	// ponytail: Herdr submits the prompt as one line, so each body's whitespace collapses; a file path carries anything longer.
+	const text = unread.map((event) => `Message from ${state.participants[event.source.id]?.participantId ?? "unknown"}: ${event.body.replace(/\s+/gu, " ").trim()}`).join(" ");
+	return { agentName: target.agentName, namespaceId: grant.namespaceId, eventIds: unread.map((event) => event.eventId), text };
 }

@@ -1,10 +1,9 @@
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
+import { lstatSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { Value } from "typebox/value";
-import { Type } from "@earendil-works/pi-ai";
 import type { CustomToolCallEvent } from "@earendil-works/pi-coding-agent";
+import { resolveModel, type ModelContext } from "../shared/models.ts";
 import { findAgent, loadBuiltinAgents } from "../subagents/agents.ts";
 import { HostedRuntimeClientError } from "./client.ts";
 import { isNodeError } from "./errors.ts";
@@ -12,17 +11,15 @@ import { collaboratorProfileTools, DRIVERS } from "./drivers.ts";
 import { type HostedCollaboratorDriver, type HostedCollaboratorProfile, isWriter } from "./schemas/state.ts";
 import { HostedCollaboratorProfileSchema } from "./schemas/state.ts";
 import { isJsonString, type JsonValue } from "./schemas/json.ts";
-import { COLLABORATOR_MODEL, PARTICIPANT_NAME } from "./schemas/common.ts";
+import { PARTICIPANT_NAME } from "./schemas/common.ts";
 import type { CollaboratorPersona } from "./session-record.ts";
 
 const PATH_SEPARATOR = process.platform === "win32" ? "\\" : "/";
 const COLLABORATOR_PERSONAS = loadBuiltinAgents();
-const PI_COLLABORATOR_MODEL = /^[a-z0-9][a-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._/:-]*$/;
 const WRITE_TOOLS = new Set(["edit", "write"]);
 
 export interface CollaboratorCandidate {
 	participantId: string;
-	driver?: HostedCollaboratorDriver;
 	model?: string;
 	persona?: string;
 	profile?: HostedCollaboratorProfile;
@@ -45,24 +42,24 @@ export interface CollaboratorToolBlock {
 	reason: string;
 }
 
-/** `piCodexModels` is Pi's `openai-codex` catalog, the same ChatGPT backend Codex serves. */
-export function resolveCollaboratorCandidate(candidate: CollaboratorCandidate, piCodexModels: readonly string[] = []): ResolvedCollaboratorCandidate {
+/** The harness comes from the model spec (§3.2): `claude:` runs Claude Code, `codex:` runs Codex, anything else Pi. */
+export function resolveCollaboratorCandidate(candidate: CollaboratorCandidate, models: ModelContext): ResolvedCollaboratorCandidate {
 	const participantId = collaboratorName(candidate.participantId, "participant ID");
-	const driver = collaboratorDriver(candidate.driver);
-	const spec = DRIVERS[driver];
-	const requestedModel = collaboratorModel(candidate.model);
-	const requestedProfile = collaboratorProfile(candidate.profile);
 	const persona = candidate.persona ? resolvePersona(candidate.persona) : undefined;
-	const profile = requestedProfile ?? (persona ? "read-only" : spec.defaultProfile);
-	const model = requestedModel ?? (spec.personaModel ? collaboratorModel(persona?.model) : undefined);
-	assertUnambiguousCollaboratorModel(spec.qualifiedModel, model);
-	if (driver === "codex" && model) assertKnownCodexModel(model, piCodexModels);
-	const resolved: ResolvedCollaboratorCandidate = { participantId, driver };
-	if (model) resolved.model = model;
-	if (profile) resolved.profile = profile;
-	if (persona) resolved.persona = persona.persona;
-	if (candidate.repo !== undefined) resolved.repo = candidate.repo;
-	return resolved;
+	let resolved;
+	try {
+		resolved = resolveModel(candidate.model ?? persona?.model, models);
+	} catch (error) {
+		throw new HostedRuntimeClientError("invalid_request", error instanceof Error ? error.message : String(error));
+	}
+	const driver: HostedCollaboratorDriver = resolved.harness === "claude" ? "claude-code" : resolved.harness;
+	const model = resolved.harness === "pi" ? `${resolved.model.provider}/${resolved.model.id}` : resolved.model;
+	const profile = collaboratorProfile(candidate.profile) ?? (persona ? "read-only" : DRIVERS[driver].defaultProfile);
+	const result: ResolvedCollaboratorCandidate = { participantId, driver, model };
+	if (profile) result.profile = profile;
+	if (persona) result.persona = persona.persona;
+	if (candidate.repo !== undefined) result.repo = candidate.repo;
+	return result;
 }
 
 interface ResolvedPersona {
@@ -156,54 +153,6 @@ export function collaboratorName(value: string | undefined, name: string): strin
 		throw new HostedRuntimeClientError("invalid_request", `${name} must match ${PARTICIPANT_NAME}.`);
 	}
 	return value;
-}
-
-function collaboratorDriver(value: HostedCollaboratorDriver | undefined): HostedCollaboratorDriver {
-	if (value === undefined) return "pi";
-	if (Object.hasOwn(DRIVERS, value)) return value;
-	throw new HostedRuntimeClientError("invalid_request", "driver must be pi, claude-code, or codex.");
-}
-
-function collaboratorModel(value: string | undefined): string | undefined {
-	if (value !== undefined && !COLLABORATOR_MODEL.test(value)) {
-		throw new HostedRuntimeClientError("invalid_request", `model must match ${COLLABORATOR_MODEL}.`);
-	}
-	return value;
-}
-
-const CODEX_HOME = process.env.CODEX_HOME ?? join(homedir(), ".codex");
-const CodexModelCache = Type.Object({ models: Type.Array(Type.Object({ slug: Type.String() })) });
-const TOML_TOP_LEVEL_MODEL = /^\s*model\s*=\s*(["'])([^"']+)\1/;
-
-/**
- * Codex accepts any --model and fails only at its first request, so a wrong name is caught before a tab opens.
- * Its cache refreshes only when Codex runs, so the configured default and Pi's catalog count as known too.
- */
-export function assertKnownCodexModel(model: string, piCodexModels: readonly string[] = [], codexHome = CODEX_HOME): void {
-	let cache: unknown;
-	try { cache = JSON.parse(readFileSync(join(codexHome, "models_cache.json"), "utf8")); } catch { return; }
-	if (!Value.Check(CodexModelCache, cache)) return;
-	const known = new Set([...cache.models.map((entry) => entry.slug), ...configuredCodexModel(codexHome), ...piCodexModels]);
-	if (known.has(model)) return;
-	throw new HostedRuntimeClientError("invalid_request", `Unknown Codex model ${model}; Codex knows ${[...known].join(", ")}.`);
-}
-
-/** The top-level `model` key of Codex's config.toml: the lines before its first table header. */
-function configuredCodexModel(codexHome: string): string[] {
-	let config: string;
-	try { config = readFileSync(join(codexHome, "config.toml"), "utf8"); } catch { return []; }
-	for (const line of config.split("\n")) {
-		if (line.trimStart().startsWith("[")) return [];
-		const model = TOML_TOP_LEVEL_MODEL.exec(line)?.[2];
-		if (model) return [model];
-	}
-	return [];
-}
-
-function assertUnambiguousCollaboratorModel(qualified: boolean, model: string | undefined): void {
-	if (!qualified || model === undefined || PI_COLLABORATOR_MODEL.test(model)) return;
-	const detail = "Explicit Pi collaborator models must be provider-qualified, for example openai-codex/gpt-5.6-sol.";
-	throw new HostedRuntimeClientError("invalid_request", detail);
 }
 
 function collaboratorProfile(value: HostedCollaboratorProfile | undefined): HostedCollaboratorProfile | undefined {

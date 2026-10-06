@@ -96,6 +96,8 @@ export function startPuppet(logFile, marks = [], scripts = {}, { live = false } 
 			if (!wire) { res.writeHead(200, { "content-type": "application/json" }); return res.end("{}"); }
 			const messages = request.messages ?? [];
 			const step = autoSchema(nextStep(messages, scripts[request.model]), request);
+			// A tool "~suffix" is the offered tool ending in suffix: MCP tools carry a server name the script cannot know.
+			if (step.tool?.startsWith("~")) step.tool = (request.tools ?? []).map((t) => t.function?.name ?? t.name).find((n) => n?.endsWith(step.tool.slice(1))) ?? step.tool;
 			log(wire, req.url, request, step, messages);
 			if (wire === "anthropic") return anthropic(res, request, step);
 			chat(res, request, step);
@@ -134,10 +136,13 @@ function anthropic(res, request, step) {
 		ev("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
 		ev("content_block_delta", { index: 0, delta: { type: "text_delta", text: reply(step) } });
 	}
-	ev("content_block_stop", { index: 0 });
-	ev("message_delta", { delta: { stop_reason: step.tool ? "tool_use" : "end_turn", stop_sequence: null }, usage: { output_tokens: 1 } });
-	ev("message_stop", {});
-	res.end();
+	setTimeout(() => {
+		if (res.destroyed) return;
+		ev("content_block_stop", { index: 0 });
+		ev("message_delta", { delta: { stop_reason: step.tool ? "tool_use" : "end_turn", stop_sequence: null }, usage: { output_tokens: 1 } });
+		ev("message_stop", {});
+		res.end();
+	}, step.delayMs ?? 0);
 }
 
 // OpenAI Responses (Codex): input items are mapped onto the message shape nextStep reads.

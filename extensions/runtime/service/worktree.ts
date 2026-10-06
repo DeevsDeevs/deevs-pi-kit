@@ -4,7 +4,7 @@ import { addWorktree, git, gitTopLevel, repositoriesUnder } from "../../shared/w
 import { RuntimeError } from "../errors.ts";
 import { PARTICIPANT_NAME } from "../schemas/common.ts";
 import { type HostedParticipant, isHeld, isPiTarget } from "../schemas/state.ts";
-import type { HostedLiveRegistration } from "./registration.ts";
+import type { HostedCaller } from "./live.ts";
 import { deriveParticipantKey, HostedStateStore, projectScope } from "./state.ts";
 
 const BRANCH_PREFIX = "refs/heads/runtime/collab/";
@@ -50,7 +50,7 @@ export class RuntimeWorktrees {
 		this.store = store;
 	}
 
-	async ensure(caller: HostedLiveRegistration, input: EnsureWorktreeInput): Promise<RuntimeWorktree> {
+	async ensure(caller: HostedCaller, input: EnsureWorktreeInput): Promise<RuntimeWorktree> {
 		const projectRoot = this.authorize(caller, input);
 		const participantKey = this.participantKey(projectRoot, input);
 		const participant = this.store.read().participants[participantKey];
@@ -75,7 +75,7 @@ export class RuntimeWorktrees {
 		return { protocol: input.protocol, participantId: input.participantId, path: realpathSync(path), branchRef: branchRef(input), repoRoot };
 	}
 
-	async list(caller: HostedLiveRegistration): Promise<WorktreeListing[]> {
+	async list(caller: HostedCaller): Promise<WorktreeListing[]> {
 		const projectRoot = this.projectRoot(caller);
 		const participants = Object.values(this.store.read().participants).filter((participant) => participant.projectRoot === projectRoot);
 		const repos = new Set(participants.flatMap((participant) => participant.repoRoot ? [participant.repoRoot] : []));
@@ -104,7 +104,7 @@ export class RuntimeWorktrees {
 		return listings;
 	}
 
-	async remove(caller: HostedLiveRegistration, input: RemoveWorktreeInput): Promise<RemovedWorktree> {
+	async remove(caller: HostedCaller, input: RemoveWorktreeInput): Promise<RemovedWorktree> {
 		if (input.discardConfirmed !== true) {
 			throw new RuntimeError("invalid_request", "Worktree removal requires an explicit confirmed discard.");
 		}
@@ -137,7 +137,7 @@ export class RuntimeWorktrees {
 		if (owner) throw new RuntimeError("conflict", `Worktree ${path} belongs to ${owner.protocol}/${owner.participantId}.`);
 	}
 
-	private authorize(caller: HostedLiveRegistration, input: EnsureWorktreeInput): string {
+	private authorize(caller: HostedCaller, input: EnsureWorktreeInput): string {
 		const projectRoot = this.projectRoot(caller);
 		if (!PARTICIPANT_NAME.test(input.protocol) || !PARTICIPANT_NAME.test(input.participantId)) {
 			throw new RuntimeError("invalid_request", "Protocol and participant ID have invalid syntax.");
@@ -152,7 +152,7 @@ export class RuntimeWorktrees {
 		return projectRoot;
 	}
 
-	private projectRoot(caller: HostedLiveRegistration): string {
+	private projectRoot(caller: HostedCaller): string {
 		const target = this.store.read().targets[caller.targetKey];
 		if (!isPiTarget(target)) {
 			throw new RuntimeError("conflict", "Only an authenticated Pi target may manage collaborator worktrees.");
@@ -168,7 +168,7 @@ export class RuntimeWorktrees {
 function callerHoldsAuthority(
 	participant: HostedParticipant | undefined,
 	input: EnsureWorktreeInput,
-	caller: HostedLiveRegistration,
+	caller: HostedCaller,
 	projectRoot: string,
 ): boolean {
 	if (!participant || !isHeld(participant.state)) return false;

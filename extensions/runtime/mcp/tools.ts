@@ -1,40 +1,18 @@
-const text = (maxLength: number) => ({ type: "string", minLength: 1, maxLength });
-const BODY = text(16384);
+/** The one tool a native collaborator gets; messages to it arrive by themselves, so it has nothing to poll. */
+export const sendMessage = {
+	name: "SendMessage",
+	description: "Message the lead (to: \"main\") or another collaborator by name. Attach images by absolute path.",
+	inputSchema: {
+		type: "object",
+		properties: {
+			to: { type: "string" },
+			message: { type: "string" },
+			images: { type: "array", items: { type: "string" } },
+		},
+		required: ["to", "message"],
+		additionalProperties: false,
+	},
+	annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+};
 
-export const tools = [
-	{
-		name: "collaborator_peers",
-		description: "Who is in this project: you and the collaborators you can mail.",
-		properties: {},
-		required: [],
-		readOnlyHint: true,
-	},
-	{
-		name: "collaborator_inbox",
-		description: "Your unread mail with bodies, oldest first; what it returns is marked read. Answer with collaborator_reply.",
-		properties: {},
-		required: [],
-		readOnlyHint: false,
-	},
-	{
-		name: "collaborator_send",
-		description: "Mail a collaborator by participantId.",
-		properties: { participantId: text(64), body: BODY },
-		required: ["participantId", "body"],
-		readOnlyHint: false,
-	},
-	{
-		name: "collaborator_reply",
-		description: "Reply to a message you received, by its eventId.",
-		properties: { eventId: text(200), body: BODY },
-		required: ["eventId", "body"],
-		readOnlyHint: false,
-	},
-];
-
-/** Length bounds stay server-side in `tools`; the model only needs the field names and types. */
-export const toolDefinitions = tools.map(({ properties, required, readOnlyHint, ...tool }) => ({
-	...tool,
-	inputSchema: { type: "object", properties: Object.fromEntries(Object.entries(properties).map(([key, { type }]) => [key, { type }])), required, additionalProperties: false },
-	annotations: { readOnlyHint, destructiveHint: false, idempotentHint: readOnlyHint, openWorldHint: false },
-}));
+export const toolDefinitions = [sendMessage];

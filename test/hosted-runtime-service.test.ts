@@ -157,8 +157,8 @@ describe("hosted runtime Unix socket service", () => {
 	});
 });
 
-function auth(registration: { registrationId: string; registrationKey: string }) {
-	return { registrationId: registration.registrationId, registrationKey: registration.registrationKey };
+function auth(registration: { targetKey: string }) {
+	return { targetKey: registration.targetKey };
 }
 
 async function call(socketPath: string, method: string, params: Record<string, unknown>) {
@@ -174,8 +174,8 @@ async function register(socketPath: string, project: string, name: string) {
 	const piSessionFile = join(projectRoot, `${name}.jsonl`);
 	writeFileSync(piSessionFile, `${JSON.stringify({ type: "session", version: 3, id: piSessionId, cwd: projectRoot })}\n`);
 	const registered = await call(socketPath, "pi.register", { projectRoot, piSessionId, piSessionFile });
-	const { targetKey, registrationId, registrationKey } = registered.result as Record<"targetKey" | "registrationId" | "registrationKey", string>;
-	return { targetKey, registrationId, registrationKey };
+	const { targetKey } = registered.result as Record<"targetKey", string>;
+	return { targetKey };
 }
 
 function exchange(socketPath: string, lines: string[]): Promise<Array<Record<string, unknown>>> {

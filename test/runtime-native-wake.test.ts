@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HerdrAgentStatus } from "../extensions/runtime/schemas/herdr.ts";
 import type { HostedAgentTarget, HostedMessagingGrant, HostedTarget } from "../extensions/runtime/schemas/state.ts";
-import type { HostedHostVerifier, HostedLiveAgent } from "../extensions/runtime/service/identity.ts";
+import type { HostedHostVerifier, HostedLiveAgent } from "../extensions/runtime/service/herdr-cli.ts";
 import { NativeWakeSweeper } from "../extensions/runtime/service/native-wake.ts";
 import { HostedStateStore, deriveParticipantKey, messagingConfigurationHash } from "../extensions/runtime/service/state.ts";
 
@@ -15,7 +15,7 @@ const PEER = deriveParticipantKey(PROJECT_ROOT, "proof", "peer");
 const CALLER = deriveParticipantKey(PROJECT_ROOT, "proof", "caller");
 const NATIVE_EVENT = "evt_native";
 const PEER_EVENT = "evt_peer";
-const EXPECTED_PROMPT = "Mail from caller: call collaborator_inbox, do what it asks, answer with collaborator_reply.";
+const EXPECTED_PROMPT = "Message from caller: native wake proof";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -28,12 +28,13 @@ interface RecordedPrompt {
 /** Records every wake instead of touching Herdr, and reports whatever status the test chose. */
 class RecordingHost implements HostedHostVerifier {
 	status: HerdrAgentStatus | undefined = "idle";
+	stateSeq: number | undefined;
 	absent = false;
 	readonly prompts: RecordedPrompt[] = [];
 
 	async getAgent(agentName: string): Promise<HostedLiveAgent> {
 		if (this.absent) throw new Error("Herdr reports no such agent.");
-		return { name: agentName, cwd: PROJECT_ROOT, agentStatus: this.status };
+		return { name: agentName, cwd: PROJECT_ROOT, agentStatus: this.status, stateSeq: this.stateSeq };
 	}
 
 	async promptAgent(agentName: string, text: string): Promise<void> {
@@ -143,13 +144,25 @@ describe("native wake", () => {
 		expect(test.host.prompts).toEqual([{ agentName: "collab-native", text: EXPECTED_PROMPT }]);
 	});
 
-	it("prompts a finished, busy or undetected tab exactly like an idle one, since the CLIs queue typed input", async () => {
-		for (const status of ["done", "working", "unknown", undefined] as const) {
+	it("prompts a finished or undetected tab exactly like an idle one", async () => {
+		for (const status of ["done", "unknown", undefined] as const) {
 			const test = setup();
 			test.host.status = status;
 			await test.sweeper.sweep();
 			expect(test.host.prompts).toEqual([{ agentName: "collab-native", text: EXPECTED_PROMPT }]);
 		}
+	});
+
+	it("holds mail for a working tab and delivers it all in one prompt at its next idle", async () => {
+		const test = setup();
+		test.host.status = "working";
+		await test.sweeper.sweep();
+		mail(test.store, NATIVE, "evt_native_2");
+		await test.sweeper.sweep();
+		expect(test.host.prompts).toEqual([]);
+		test.host.status = "idle";
+		await test.sweeper.sweep();
+		expect(test.host.prompts).toEqual([{ agentName: "collab-native", text: `${EXPECTED_PROMPT} ${EXPECTED_PROMPT}` }]);
 	});
 
 	it("does not prompt a tab blocked on a human prompt", async () => {
@@ -166,30 +179,37 @@ describe("native wake", () => {
 		expect(test.host.prompts).toEqual([]);
 	});
 
-	it("prompts at most once per target per 30 s, then again while the mail is still unread", async () => {
+	it("marks what it prompted read, so the same message is never typed twice", async () => {
 		const test = setup();
 		await test.sweeper.sweep();
-		test.advance(29_999);
-		await test.sweeper.sweep();
-		expect(test.host.prompts).toHaveLength(1);
-		test.advance(1);
-		await test.sweeper.sweep();
-		expect(test.host.prompts).toHaveLength(2);
-	});
-
-	it("stops once the message is read", async () => {
-		const test = setup();
-		await test.sweeper.sweep();
-		markRead(test.store, test.namespaceId!, test.at());
 		test.advance(30_000);
 		await test.sweeper.sweep();
 		expect(test.host.prompts).toHaveLength(1);
+		expect(test.store.read().events[NATIVE_EVENT]?.readAt).toBe(1000);
 	});
 
-	it("wakes again at once for newer mail after the previous message was read", async () => {
+	it("with Herdr's status count, marks mail read only once the tab took a turn, and retries a dropped prompt", async () => {
+		const test = setup();
+		test.host.stateSeq = 4;
+		await test.sweeper.sweep();
+		test.advance(30_000);
+		await test.sweeper.sweep();
+		expect(test.host.prompts).toHaveLength(2);
+		expect(test.store.read().events[NATIVE_EVENT]?.readAt).toBeUndefined();
+		test.advance(30_000);
+		await test.sweeper.sweep();
+		test.advance(30_000);
+		await test.sweeper.sweep();
+		expect(test.host.prompts).toHaveLength(3);
+		test.host.stateSeq = 6;
+		await test.sweeper.sweep();
+		expect(test.store.read().events[NATIVE_EVENT]?.readAt).toBe(test.at());
+		expect(test.host.prompts).toHaveLength(3);
+	});
+
+	it("wakes again at once for newer mail", async () => {
 		const test = setup();
 		await test.sweeper.sweep();
-		markRead(test.store, test.namespaceId!, test.at());
 		test.advance(1_000);
 		mail(test.store, NATIVE, "evt_native_2");
 		await test.sweeper.sweep();
@@ -211,18 +231,6 @@ describe("native wake", () => {
 		test.advance(30_000);
 		await test.sweeper.sweep();
 		expect(test.host.prompts).toEqual([]);
-	});
-
-	it("gives up on one message after three prompts and starts over for newer mail", async () => {
-		const test = setup();
-		for (let round = 0; round < 5; round += 1) {
-			await test.sweeper.sweep();
-			test.advance(30_000);
-		}
-		expect(test.host.prompts).toHaveLength(3);
-		mail(test.store, NATIVE, "evt_native_2");
-		await test.sweeper.sweep();
-		expect(test.host.prompts).toHaveLength(4);
 	});
 
 	it("sweeps on a publication trigger without throwing out of it", async () => {

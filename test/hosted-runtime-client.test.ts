@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HostedRuntimeClient, HostedRuntimeClientError } from "../extensions/runtime/client.ts";
 import { HostedRuntimeIntegration } from "../extensions/runtime/hosted-integration.ts";
-import type { HostedHostVerifier, HostedLiveAgent } from "../extensions/runtime/service/identity.ts";
+import type { HostedHostVerifier, HostedLiveAgent } from "../extensions/runtime/service/herdr-cli.ts";
 import { startRuntimeServer, type RuntimeServerHandle } from "../extensions/runtime/service/server.ts";
 
 const roots: string[] = [];
@@ -31,12 +31,10 @@ describe("hosted runtime client vertical", () => {
 		writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: "session_1", timestamp: "2026-01-01T00:00:00.000Z", cwd: projectRoot })}\n`);
 		writeFileSync(fableSessionFile, `${JSON.stringify({ type: "session", version: 3, id: "session_2", timestamp: "2026-01-01T00:00:00.000Z", cwd: projectRoot })}\n`);
 		const host = new FakeHost({ name: "pi-main", cwd: projectRoot });
-		const registrationIds = ["reg_client", "reg_fable"];
-		const registrationKeys = ["secret_client", "secret_fable"];
 		const server = await startRuntimeServer({
 			root: join(root, "runtime"),
 			host,
-			registration: { now: () => 1_000, createId: () => registrationIds.shift()!, createKey: () => registrationKeys.shift()! },
+			registration: { now: () => 1_000},
 		});
 		servers.push(server);
 		const client = new HostedRuntimeClient(server.socketPath);
@@ -46,21 +44,21 @@ describe("hosted runtime client vertical", () => {
 			piSessionId: "session_1",
 			piSessionFile: sessionFile,
 		}) as Record<string, unknown>;
-		expect(registration).toMatchObject({ registrationId: "reg_client", registrationKey: "secret_client" });
-		const auth = { registrationId: "reg_client", registrationKey: "secret_client" };
+		expect(registration).toEqual({ targetKey: "pi_session_1" });
+		const auth = { targetKey: "pi_session_1" };
 		const sender = await client.call("participant.acquire", { ...auth, protocol: "review", participantId: "main" }) as { participant: { participantKey: string; generation: string } };
 		expect(sender).toMatchObject({ participant: { participantId: "main", holderLive: true }, revived: false });
 		const fableRegistration = await client.call("pi.register", { projectRoot, piSessionId: "session_2", piSessionFile: fableSessionFile }) as Record<string, unknown>;
-		const fableAuth = { registrationId: String(fableRegistration.registrationId), registrationKey: String(fableRegistration.registrationKey) };
+		const fableAuth = { targetKey: String(fableRegistration.targetKey) };
 		const recipient = await client.call("participant.acquire", { ...fableAuth, protocol: "review", participantId: "fable" }) as { participant: { participantKey: string } };
 		expect(await client.call("participant.list", auth)).toMatchObject({ participants: [{ participantId: "fable" }, { participantId: "main" }] });
 		await client.call("mailbox.send", { ...auth, senderParticipantKey: sender.participant.participantKey, expectedSenderGeneration: sender.participant.generation, recipientParticipantKey: recipient.participant.participantKey, sendId: "send_client", body: "Focused mail" });
-		expect(await client.call("pi.heartbeat", fableAuth)).toMatchObject({ registrationId: fableAuth.registrationId });
-		expect(await client.call("pi.heartbeat", auth)).toMatchObject({ registrationId: "reg_client" });
-		await expect(client.call("participant.list", { ...auth, registrationKey: "wrong" })).rejects.toMatchObject({ code: "registration_stale" });
+		expect(await client.call("pi.heartbeat", fableAuth)).toMatchObject(fableAuth);
+		expect(await client.call("pi.heartbeat", auth)).toMatchObject(auth);
+		await expect(client.call("participant.list", { targetKey: "pi_unknown" })).rejects.toMatchObject({ code: "registration_stale" });
 	});
 
-	it("unregisters a registration that finishes after Pi session shutdown", async () => {
+	it("leaves no live target behind a registration that finishes after Pi session shutdown", async () => {
 		const root = mkdtempSync(join(tmpdir(), "pi-kit-runtime-client-race-"));
 		roots.push(root);
 		const projectRoot = join(root, "project");
@@ -69,7 +67,7 @@ describe("hosted runtime client vertical", () => {
 		writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: "session_1", timestamp: "2026-01-01T00:00:00.000Z", cwd: projectRoot })}\n`);
 		const host = new FakeHost({ name: "pi-main", cwd: projectRoot });
 		const runtimeRoot = join(root, "runtime");
-		const server = await startRuntimeServer({ root: runtimeRoot, host, registration: { createId: () => "reg_race", createKey: () => "key_race" } });
+		const server = await startRuntimeServer({ root: runtimeRoot, host, registration: {} });
 		servers.push(server);
 		const pi = { exec: async () => ({ code: 0, stdout: "{}", stderr: "", killed: false }) };
 		const ctx = { cwd: projectRoot, isProjectTrusted: () => true, sessionManager: { getSessionFile: () => sessionFile, getSessionId: () => "session_1", getBranch: () => [] } };
@@ -78,7 +76,7 @@ describe("hosted runtime client vertical", () => {
 		await integration.sessionShutdown();
 		await starting;
 		const client = new HostedRuntimeClient(server.socketPath);
-		await expect(client.call("participant.list", { registrationId: "reg_race", registrationKey: "key_race" })).rejects.toMatchObject({ code: "registration_stale" });
+		await expect(client.call("pi.heartbeat", { targetKey: "pi_session_1" })).rejects.toMatchObject({ code: "registration_stale" });
 	});
 
 	it("returns a typed unavailable error for an absent socket", async () => {

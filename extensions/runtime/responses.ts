@@ -31,9 +31,9 @@ export type {
 export type RuntimeResponse = Awaited<ReturnType<HostedRuntimeClient["call"]>>;
 export type RestoredSessionData = CustomEntry["data"];
 
+/** Every lifecycle call names its caller by target key; the owner-only socket is the credential. */
 export interface RegistrationAuth {
-	registrationId: string;
-	registrationKey: string;
+	targetKey: string;
 }
 
 export interface HostedHeartbeat {
@@ -43,7 +43,7 @@ export interface HostedHeartbeat {
 }
 
 export function auth(registration: LiveClientRegistration): RegistrationAuth {
-	return { registrationId: registration.registrationId, registrationKey: registration.registrationKey };
+	return { targetKey: registration.targetKey };
 }
 
 /** One RPC result decode: the same schema the service answered with, checked before any field is read. */

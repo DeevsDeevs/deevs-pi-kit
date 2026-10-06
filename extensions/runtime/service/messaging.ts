@@ -12,7 +12,7 @@ import {
 } from "../schemas/state.ts";
 import { HostedParticipantCoordinator } from "./participant.ts";
 import { RuntimeError } from "../errors.ts";
-import { RuntimeRegistrationManager, type HostedLiveRegistration } from "./registration.ts";
+import { LiveTargets, type HostedCaller } from "./live.ts";
 import type { MessagingInboxMessageView, MessagingInboxView } from "../schemas/rpc.ts";
 import {
 	deriveParticipantKey,
@@ -20,7 +20,6 @@ import {
 	HostedStateStore,
 	messagingConfigurationHash,
 	messagingGrantIsLive,
-	messagingInboxEvent,
 } from "./state.ts";
 
 const MAX_IN_FLIGHT = 12;
@@ -28,14 +27,12 @@ const INBOX_PAGE = 50;
 const INBOX_PAGE_BYTES = 96 * 1024;
 
 export type MessagingInput =
-	| { method: "peers" }
 	| { method: "inbox" }
-	| { method: "send"; participantId: string; operationId: string; body: string }
-	| { method: "reply"; operationId: string; eventId: string; body: string };
+	| { method: "send"; participantId: string; operationId: string; body: string };
 
 interface VerifiedNamespace {
 	grant: HostedMessagingGrant;
-	registration: HostedLiveRegistration;
+	registration: HostedCaller;
 }
 
 interface MessagingMailHint {
@@ -48,32 +45,16 @@ interface MessagingIssued {
 	descriptorPath: string;
 }
 
-interface MessagingPeer {
-	participantId: string;
-	live: boolean;
-}
-
-type MessagingBinding =
-	| { kind: "pi"; sessionId: string; sessionFile: string; cwd: string }
-	| { kind: "agent" };
-
-/** `binding` exists for the Pi bridge's descriptor check; the bridge strips it before the model sees the result. */
-interface MessagingPeersResult {
-	me: string;
-	binding: MessagingBinding;
-	peers: MessagingPeer[];
-}
-
 interface MessagingEventResult {
 	eventId: string;
 }
 
-type MessagingResult = MessagingInboxView | MessagingPeersResult | MessagingEventResult;
+type MessagingResult = MessagingInboxView | MessagingEventResult;
 
 export class RuntimeMessaging {
 	private inFlight = 0;
 	private readonly store: HostedStateStore;
-	private readonly registrations: RuntimeRegistrationManager;
+	private readonly live: LiveTargets;
 	private readonly participants: HostedParticipantCoordinator;
 	private readonly socketPath: string;
 	private readonly now: () => number;
@@ -81,21 +62,21 @@ export class RuntimeMessaging {
 
 	constructor(
 		store: HostedStateStore,
-		registrations: RuntimeRegistrationManager,
+		live: LiveTargets,
 		participants: HostedParticipantCoordinator,
 		socketPath: string,
 		now: () => number = Date.now,
 		onPublished: () => void = () => {},
 	) {
 		this.store = store;
-		this.registrations = registrations;
+		this.live = live;
 		this.participants = participants;
 		this.socketPath = socketPath;
 		this.now = now;
 		this.onPublished = onPublished;
 	}
 
-	async issue(caller: HostedLiveRegistration, participantKey: string, expectedGeneration: string): Promise<MessagingIssued> {
+	async issue(caller: HostedCaller, participantKey: string, expectedGeneration: string): Promise<MessagingIssued> {
 		const state = this.store.read();
 		const held = (candidate: HostedParticipant) => isHeld(candidate.state) && candidate.holderTargetKey === caller.targetKey;
 		const callerParticipant = Object.values(state.participants).find(held);
@@ -104,9 +85,7 @@ export class RuntimeMessaging {
 		if (!issuanceScopeMatches(callerParticipant, participant, expectedGeneration)) throw issuanceMismatch();
 		const holderTargetKey = participant.holderTargetKey;
 		if (!holderTargetKey) throw issuanceMismatch();
-		const registration = await this.registrations.verifyTarget(holderTargetKey);
-		this.registrations.authorize(caller.registrationId, caller.registrationKey);
-		this.registrations.authorize(registration.registrationId, registration.registrationKey);
+		const registration = await this.live.verify(holderTargetKey);
 		const currentCaller = this.store.read().participants[callerParticipant.participantKey];
 		if (!stillHeldBy(currentCaller, callerParticipant.generation, caller.targetKey)) {
 			throw new RuntimeError("registration_stale", "Messaging controller changed during verification.");
@@ -163,7 +142,7 @@ export class RuntimeMessaging {
 	}
 
 	/** Best-effort idle hint for a Pi holder: the oldest unread message in its sole live namespace. */
-	unread(registration: HostedLiveRegistration): MessagingMailHint | undefined {
+	unread(registration: HostedCaller): MessagingMailHint | undefined {
 		const state = this.store.read();
 		const grant = liveTargetNamespace(state, registration);
 		if (!grant) return undefined;
@@ -179,10 +158,8 @@ export class RuntimeMessaging {
 		try {
 			const { grant, registration } = await this.verify(namespaceId, secret);
 			switch (input.method) {
-				case "peers": return this.peers(grant);
 				case "inbox": return this.inbox(grant);
 				case "send": return this.publish(registration, grant, input.operationId, this.recipientKey(grant, input.participantId), input.body);
-				case "reply": return this.publishReply(registration, grant, input.operationId, input.eventId, input.body);
 				default: {
 					const unsupported: never = input;
 					throw new RuntimeError("invalid_request", `Unsupported messaging method ${JSON.stringify(unsupported)}.`);
@@ -212,42 +189,14 @@ export class RuntimeMessaging {
 		return { messages, truncated: unread.length > messages.length };
 	}
 
-	private peers(grant: HostedMessagingGrant): MessagingPeersResult {
-		const state = this.store.read();
-		const sender = this.requireParticipant(grant.participantKey);
-		const target = state.targets[grant.targetKey];
-		if (!target) throw new RuntimeError("registration_stale", "Messaging target is absent.");
-		const peers = Object.values(state.participants)
-			.filter((candidate) => isPeerOf(sender, candidate))
-			.sort((left, right) => left.participantId.localeCompare(right.participantId))
-			.map((peer) => ({ participantId: peer.participantId, live: this.peerLive(peer) }));
-		return { me: sender.participantId, binding: messagingBinding(target), peers };
-	}
-
-	private peerLive(peer: HostedParticipant): boolean {
-		return isHeld(peer.state) && peer.holderTargetKey !== undefined && this.registrations.hasLiveTarget(peer.holderTargetKey);
-	}
-
-	private publishReply(
-		registration: HostedLiveRegistration,
-		grant: HostedMessagingGrant,
-		operationId: string,
-		eventId: string,
-		body: string,
-	): MessagingEventResult {
-		const inbound = messagingInboxEvent(this.store.read(), grant, eventId);
-		return this.publish(registration, grant, operationId, inbound.source.id, body, eventId);
-	}
-
 	private publish(
-		registration: HostedLiveRegistration,
+		registration: HostedCaller,
 		grant: HostedMessagingGrant,
 		operationId: string,
 		recipientParticipantKey: string,
 		body: string,
-		inReplyToEventId?: string,
 	): MessagingEventResult {
-		this.participants.sendMessaging(registration, grant.namespaceId, { operationId, recipientParticipantKey, body, inReplyToEventId });
+		this.participants.sendMessaging(registration, grant.namespaceId, { operationId, recipientParticipantKey, body });
 		const current = this.requireGrant(grant.namespaceId);
 		const eventId = Object.hasOwn(current.operations, operationId) ? current.operations[operationId] : undefined;
 		if (eventId === undefined) throw new RuntimeError("not_found", "Operation has no publication in this namespace.");
@@ -262,9 +211,8 @@ export class RuntimeMessaging {
 
 	private async verify(namespaceId: string, secret: string): Promise<VerifiedNamespace> {
 		this.authorize(namespaceId, secret);
-		const registration = await this.registrations.verifyTarget(this.requireGrant(namespaceId).targetKey);
+		const registration = await this.live.verify(this.requireGrant(namespaceId).targetKey);
 		this.authorize(namespaceId, secret);
-		this.registrations.authorize(registration.registrationId, registration.registrationKey);
 		return { grant: this.requireGrant(namespaceId), registration };
 	}
 
@@ -329,27 +277,11 @@ function reusableGrant(
 		&& messagingGrantIsLive(state, grant);
 }
 
-function isPeerOf(sender: HostedParticipant, candidate: HostedParticipant): boolean {
-	return candidate.projectRoot === sender.projectRoot
-		&& candidate.protocol === sender.protocol
-		&& candidate.participantKey !== sender.participantKey;
-}
-
-function messagingBinding(target: HostedTarget): MessagingBinding {
-	if (!isPiTarget(target)) return { kind: "agent" };
-	return {
-		kind: "pi",
-		sessionId: target.piSessionId,
-		sessionFile: target.piSessionFile,
-		cwd: target.worktreePath ?? target.repoRoot ?? target.projectRoot,
-	};
-}
-
 export function messagingDescriptorPath(root: string, targetKey: string): string {
 	return join(root, `messaging-${digest(targetKey)}.json`);
 }
 
-function liveTargetNamespace(state: HostedRuntimeState, registration: HostedLiveRegistration): HostedMessagingGrant | undefined {
+function liveTargetNamespace(state: HostedRuntimeState, registration: HostedCaller): HostedMessagingGrant | undefined {
 	const eligible = Object.values(state.messaging)
 		.filter(grant => grant.targetKey === registration.targetKey && messagingGrantIsLive(state, grant));
 	return eligible.length === 1 ? eligible[0] : undefined;
