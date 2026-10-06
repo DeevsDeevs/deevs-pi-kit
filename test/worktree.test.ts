@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { agentWorktreeAt, createAgentWorktree, finishAgentWorktree, resolveRepoRoot, sharedCwdWarning } from "../extensions/shared/worktree.ts";
+import { agentWorktreeAt, createAgentWorktree, finishAgentWorktree, resolveRepoRoot, sharesCwd } from "../extensions/shared/worktree.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -102,13 +102,12 @@ describe("resolveRepoRoot", () => {
 	});
 });
 
-describe("sharedCwdWarning", () => {
-	it("warns when another running agent writes in, above or below the cwd, not from its own worktree", () => {
-		const warning = "For parallel code-writing agents, dispatch each with isolation: \"worktree\".";
-		expect(sharedCwdWarning([], "/repo")).toBeUndefined();
-		expect(sharedCwdWarning([{ cwd: "/repo" }], "/repo")).toBe(warning);
-		expect(sharedCwdWarning([{ cwd: "/repo/pkg" }], "/repo")).toBe(warning);
-		expect(sharedCwdWarning([{ cwd: "/repo" }], "/repo/pkg")).toBe(warning);
-		expect(sharedCwdWarning([{ cwd: "/agent/pi-kit/worktrees/x/a1" }, { cwd: "/repo-other" }], "/repo")).toBeUndefined();
+describe("sharesCwd", () => {
+	it("is true when another running agent writes in, above or below the cwd, not from its own worktree", () => {
+		expect(sharesCwd([], "/repo")).toBe(false);
+		expect(sharesCwd([{ cwd: "/repo" }], "/repo")).toBe(true);
+		expect(sharesCwd([{ cwd: "/repo/pkg" }], "/repo")).toBe(true);
+		expect(sharesCwd([{ cwd: "/repo" }], "/repo/pkg")).toBe(true);
+		expect(sharesCwd([{ cwd: "/agent/pi-kit/worktrees/x/a1" }, { cwd: "/repo-other" }], "/repo")).toBe(false);
 	});
 });

@@ -62,6 +62,8 @@ interface AgentRecord {
 	/** Set only by `/agents stop`; SendMessage refuses such an agent. */
 	stoppedBy?: "user";
 	worktree?: AgentWorktree;
+	/** SendMessage text for a run its reporter has not placed yet; the reporter steers it in right after the prompt. */
+	pending?: string[];
 }
 type OutboxItem = TaskNotification & { silent?: boolean };
 interface ReporterInput {
@@ -76,6 +78,8 @@ interface ReporterInput {
 	startedAt: number;
 	outputFile: string;
 	worktree?: AgentWorktree;
+	/** Where a resumed run starts in its conversation, so its report counts only its own entries and tokens. */
+	from?: { entries: number; tokens: number };
 }
 
 interface Kit {
@@ -99,6 +103,8 @@ export interface Engine {
 
 interface Modules { D: D; openStorage(file: string): Promise<Durable.Storage> }
 interface Waiter { claimed: boolean; timedOut: boolean; resolve(n: TaskNotification): void }
+/** A reporter in this process. Messages steer its run only between the prompt's placement and `closing`; after that, SendMessage waits for the report and resumes. */
+interface Live { placed: boolean; closing: boolean; early: string[]; inflight: Promise<unknown>[]; done: Promise<TaskNotification | undefined> }
 interface Host {
 	/** The durable module stays loaded across /reload: a fresh copy would fail its own `instanceof` checks. */
 	modules?: Promise<Modules>;
@@ -107,12 +113,14 @@ interface Host {
 	running: number;
 	queue: { agentId: string; go(held: boolean): void }[];
 	waiters: Map<string, Waiter>;
+	live: Map<string, Live>;
 }
 
 const KEY = Symbol.for("pi-kit.agents");
 // SAFETY: this package exclusively owns the symbol-keyed slot and only ever stores the host in it.
 const slot = globalThis as typeof globalThis & { [KEY]?: Host };
-const host: Host = slot[KEY] ??= { engines: new Map(), running: 0, queue: [], waiters: new Map() };
+const host: Host = slot[KEY] ??= { engines: new Map(), running: 0, queue: [], waiters: new Map(), live: new Map() };
+host.live ??= new Map();
 
 tasks.addSource({
 	name: "agents",
@@ -160,15 +168,15 @@ export async function reinstall(): Promise<void> {
 	}
 }
 
-/** On quit: reap tool children, close each harness (work stays pending for the next start), release the locks. */
+/** On quit: close each harness, which aborts its tools and leaves work pending for the next start, then reap what survived and unlock. */
 export async function closeAll(): Promise<void> {
 	const engines = [...host.engines.values()];
 	host.engines.clear();
 	for (const pending of engines) {
 		const engine = await pending.catch(() => undefined);
 		if (!engine) continue;
-		await reap(engine.dir);
 		await engine.harness.close(CTX).catch(() => {});
+		await reap(engine.dir);
 		await unlock(join(engine.dir, "engine.lock"));
 	}
 }
@@ -202,28 +210,51 @@ export async function launch(engine: Engine, spec: LaunchSpec): Promise<{ output
 	return { outputFile, done };
 }
 
-/** SendMessage: a running agent gets a steer at its next tool round; any other is resumed on its own conversation and notifies again. */
+/**
+ * SendMessage: a running agent gets a steer at its next tool round, a queued one right after its prompt; a finished one is resumed
+ * on its own conversation by a new reporter and notifies again. Nothing is submitted to an idle conversation from here, since that
+ * would start a run outside its reporter and the throttle.
+ */
 export async function send(engine: Engine, agentId: string, message: string, toolUseId: string): Promise<"steered" | "resumed" | "refused"> {
-	const record = agentRecords(await engine.harness.snapshot(engine.kit.Agents, engine.root.id, CTX))[agentId]!;
+	const record = await agentRecord(engine, agentId);
 	if (record.stoppedBy === "user") return "refused";
-	const requestId = `send:${randomUUID()}`;
-	if (record.status === "running") {
-		const conversation = (await engine.harness.conversation(record.conversationId, CTX))!;
-		const submission = await conversation.submit({ type: "input", content: message, requestId, whenBusy: "steer" }, CTX);
-		// An idle conversation (the agent waits for a slot, or just answered) runs the message at once; that run gets its own report.
-		if ((await submission.status(CTX)).status === "queued") return "steered";
+	const conversation = (await engine.harness.conversation(record.conversationId, CTX))!;
+	const live = host.live.get(agentId);
+	if (live && !live.closing) {
+		if (!live.placed) {
+			live.early.push(message);
+			return "steered";
+		}
+		const admitted = conversation.submit({ type: "input", content: message, requestId: `send:${randomUUID()}`, whenBusy: "steer" }, CTX);
+		live.inflight.push(admitted.catch(() => undefined));
+		await admitted;
+		return "steered";
 	}
-	const worktree = record.worktree && await reopenWorktree(record.worktree);
-	await engine.root.commit(async (tx) => {
+	if (live) await live.done;
+	const latest = await agentRecord(engine, agentId);
+	const worktree = latest.status !== "running" && latest.worktree ? await reopenWorktree(latest.worktree) : undefined;
+	const { D } = await host.modules!;
+	const from = { entries: (await scan(conversation, CTX)).length, tokens: totalTokens(await engine.harness.snapshot(D.UsageDoc, record.conversationId, CTX)) };
+	const outcome = await engine.root.commit(async (tx) => {
 		const current = agentRecords(await tx.doc(engine.kit.Agents, engine.root.id))[agentId]!;
+		// Its reporter has not started yet (just launched, or just reopened): it steers the message in after the prompt.
+		if (current.status === "running") {
+			(current.pending ??= []).push(message);
+			return "steered" as const;
+		}
 		current.status = "running";
 		current.stopped = false;
 		if (worktree) current.worktree = worktree;
-		const input: ReporterInput = { agentId, session: engine.session, conversationId: record.conversationId, prompt: message, requestId, description: record.description, toolUseId, limits: {}, startedAt: Date.now(), outputFile: join(engine.dir, "out", `${agentId}.md`), worktree };
+		const input: ReporterInput = { agentId, session: engine.session, conversationId: record.conversationId, prompt: message, requestId: `send:${randomUUID()}`, description: record.description, toolUseId, limits: {}, startedAt: Date.now(), outputFile: join(engine.dir, "out", `${agentId}.md`), worktree: current.worktree, from };
 		await tx.createTask(engine.kit.Reporter, input, BACKGROUND);
+		return "resumed" as const;
 	}, CTX);
-	tasks.update(agentId, { status: "running" });
-	return "resumed";
+	if (outcome === "resumed") tasks.update(agentId, { status: "running" });
+	return outcome;
+}
+
+async function agentRecord(engine: Engine, agentId: string): Promise<AgentRecord> {
+	return agentRecords(await engine.harness.snapshot(engine.kit.Agents, engine.root.id, CTX))[agentId]!;
 }
 
 /** A resumed agent works in its worktree again; one removed as unchanged comes back on its branch at today's HEAD. */
@@ -265,7 +296,8 @@ export async function settle(agentId: string, done: Promise<TaskNotification>, m
 	return "background";
 }
 
-export async function stop(engine: Engine, agentId: string, by?: "user"): Promise<void> {
+/** Aborts the agent and resolves with its report once its reporter in this process has committed it. */
+export async function stop(engine: Engine, agentId: string, by?: "user"): Promise<TaskNotification | undefined> {
 	let conversationId: ConversationId | undefined;
 	await engine.root.commit(async (tx) => {
 		const record = agentRecords(await tx.doc(engine.kit.Agents, engine.root.id))[agentId];
@@ -277,6 +309,7 @@ export async function stop(engine: Engine, agentId: string, by?: "user"): Promis
 	const queued = host.queue.findIndex((entry) => entry.agentId === agentId);
 	if (queued >= 0) host.queue.splice(queued, 1)[0]!.go(false);
 	if (conversationId !== undefined) await (await engine.harness.conversation(conversationId, CTX))?.abort(CTX);
+	return host.live.get(agentId)?.done;
 }
 
 async function open(session: string, cwd: string): Promise<Engine> {
@@ -359,7 +392,7 @@ function buildKit(D: D, owner: string, project: string): Kit {
 		beforeTool: async (call, api, context) => {
 			if (call.name !== "bash") return undefined;
 			const cwd = (await api.snapshot(D.AgentDoc, api.conversationId, context))?.cwd ?? process.cwd();
-			const blocked = guardBashCall(String(call.arguments.command ?? ""), cwd, agentWorktreeAt(cwd, getAgentDir()) ?? project);
+			const blocked = guardBashCall(String(call.arguments.command ?? ""), cwd, agentWorktreeAt(cwd, getAgentDir()) ?? project, project);
 			return blocked ? { block: blocked.reason } : undefined;
 		},
 	});
@@ -392,73 +425,102 @@ async function report(D: D, docs: Pick<Kit, "Outbox" | "Agents">, input: Reporte
 	const engine = (await host.engines.get(input.session))!;
 	const conversation = (await engine.harness.conversation(input.conversationId, context))!;
 	const record = async () => agentRecords(await runtime.snapshot(docs.Agents, runtime.conversationId, context))[input.agentId];
-	let settled: Durable.SettledSubmissionRecord | undefined;
-	let limited: string | undefined;
-	const held = await acquire(input.agentId);
+	let finished: (n: TaskNotification | undefined) => void = () => {};
+	const live: Live = { placed: false, closing: false, early: [], inflight: [], done: new Promise((resolve) => { finished = resolve; }) };
+	host.live.set(input.agentId, live);
+	let n: OutboxItem | undefined;
+	let claimed = false;
 	try {
-		if (held && !(await record())?.stopped) {
-			const submission = await conversation.submit({ type: "input", content: input.prompt, requestId: input.requestId }, context);
-			const unwatch = watchLimits(D, engine, input, (limit) => {
-				limited = limit;
-				void conversation.abort(CTX);
-			});
-			settled = await submission.wait(context).finally(unwatch);
+		let settled: Durable.SettledSubmissionRecord | undefined;
+		let limited: string | undefined;
+		const held = await acquire(input.agentId);
+		try {
+			if (held && !(await record())?.stopped) {
+				const submission = await conversation.submit({ type: "input", content: input.prompt, requestId: input.requestId }, context);
+				live.placed = true;
+				const pending = live.early.splice(0);
+				if ((await record())?.pending) pending.push(...await engine.root.commit(async (tx) => {
+					const current = agentRecords(await tx.doc(docs.Agents, engine.root.id))[input.agentId];
+					const messages = current?.pending ?? [];
+					if (current) delete current.pending;
+					return messages;
+				}, context));
+				for (const message of pending) live.inflight.push(conversation.submit({ type: "input", content: message, requestId: `send:${randomUUID()}`, whenBusy: "steer" }, context));
+				const turns = input.limits.maxTurns ? (await scan(conversation, context)).slice(input.from?.entries ?? 0).filter((entry) => entry.kind === "pi.assistant").length : 0;
+				const unwatch = watchLimits(D, engine, input, turns, (limit) => {
+					limited = limit;
+					void conversation.abort(CTX);
+				});
+				settled = await submission.wait(context).finally(unwatch);
+			}
+			// A steer that missed the last tool round runs on after the answer, in this slot; the report carries the last answer.
+			await conversation.waitForIdle(context);
+			live.closing = true;
+			await Promise.all(live.inflight);
+			await conversation.waitForIdle(context);
+		} finally {
+			if (held) release();
 		}
+		const transcript = await scan(conversation, context);
+		const run = transcript.slice(input.from?.entries ?? 0);
+		const tokens = totalTokens(await runtime.snapshot(D.UsageDoc, input.conversationId, context)) - (input.from?.tokens ?? 0);
+		const lastText = run.filter((entry) => entry.kind === "pi.assistant").map((entry) => text(entry.model?.[0])).filter(Boolean).at(-1) ?? "";
+		if (settled?.status === "done") limited = undefined;
+		const output = settled?.status === "done" || limited ? lastText : "";
+		const status = settled?.status === "done" ? "completed"
+			: limited ? (output ? "completed" : "failed")
+			: settled === undefined || settled.status === "unanswered" && settled.reason === "aborted" ? "killed" : "failed";
+		const kept = input.worktree && existsSync(input.worktree.path) ? await finishAgentWorktree(input.worktree).catch(() => input.worktree) : undefined;
+		const outcome: OutboxItem = {
+			notificationId: `${input.agentId}:${String(runtime.taskId)}`,
+			taskId: input.agentId,
+			kind: "agent",
+			ownerSession: input.session,
+			toolUseId: input.toolUseId,
+			outputFile: input.outputFile,
+			status,
+			summary: limited
+				? `Agent "${input.description}" stopped at its ${limited} limit (partial result)`
+				: agentSummary(input.description, status, { error: failure(settled), byUser: (await record())?.stoppedBy === "user" }),
+			result: output,
+			usage: {
+				subagentTokens: tokens,
+				toolUses: run.filter((entry) => entry.kind === "pi.tool-result").length,
+				durationMs: Date.now() - input.startedAt,
+			},
+		};
+		if (limited) outcome.limited = limited;
+		if (kept) outcome.worktree = { path: kept.path, branch: kept.branch };
+		await writeFile(input.outputFile, `${transcriptLog(transcript)}\n\n${output}\n`).catch(() => {});
+		const waiter = host.waiters.get(input.agentId);
+		await runtime.commit(async (tx) => {
+			const current = agentRecords(await tx.doc(docs.Agents, runtime.conversationId))[input.agentId];
+			if (current) {
+				current.status = outcome.status;
+				// Messages for a run that never started wait for the next resume.
+				if (live.early.length) current.pending = [...current.pending ?? [], ...live.early];
+			}
+			if (waiter && !waiter.timedOut) waiter.claimed = true;
+			claimed = Boolean(waiter?.claimed);
+			(await tx.doc(docs.Outbox, runtime.conversationId)).items.push(json({ ...outcome, silent: claimed || undefined }));
+			return { status: "terminal", outcome: { status: "completed", result: null } };
+		}, context);
+		tasks.update(input.agentId, { status: outcome.status });
+		n = outcome;
 	} finally {
-		if (held) release();
+		if (host.live.get(input.agentId) === live) host.live.delete(input.agentId);
+		finished(n);
 	}
-	// A steer that missed the last tool round runs on after the answer; the report waits for it and carries the last answer.
-	await conversation.waitForIdle(context);
-	const transcript = await scan(conversation, context);
-	const usage = (await runtime.snapshot(D.UsageDoc, input.conversationId, context))?.models ?? {};
-	const lastText = text(transcript.filter((entry) => entry.kind === "pi.assistant").at(-1)?.model?.[0]);
-	if (settled?.status === "done") limited = undefined;
-	const output = settled?.status === "done" || limited ? lastText : "";
-	const status = settled?.status === "done" ? "completed"
-		: limited ? (output ? "completed" : "failed")
-		: settled === undefined || settled.status === "unanswered" && settled.reason === "aborted" ? "killed" : "failed";
-	const kept = input.worktree && existsSync(input.worktree.path) ? await finishAgentWorktree(input.worktree).catch(() => input.worktree) : undefined;
-	const n: OutboxItem = {
-		notificationId: `${input.agentId}:${String(runtime.taskId)}`,
-		taskId: input.agentId,
-		kind: "agent",
-		ownerSession: input.session,
-		toolUseId: input.toolUseId,
-		outputFile: input.outputFile,
-		status,
-		summary: limited
-			? `Agent "${input.description}" stopped at its ${limited} limit (partial result)`
-			: agentSummary(input.description, status, { error: failure(settled), byUser: (await record())?.stoppedBy === "user" }),
-		result: output,
-		usage: {
-			subagentTokens: Object.values(usage).reduce((sum, model) => sum + (model.totalTokens ?? 0), 0),
-			toolUses: transcript.filter((entry) => entry.kind === "pi.tool-result").length,
-			durationMs: Date.now() - input.startedAt,
-		},
-	};
-	if (limited) n.limited = limited;
-	if (kept) n.worktree = { path: kept.path, branch: kept.branch };
-	await writeFile(input.outputFile, `${transcriptLog(transcript)}\n\n${output}\n`).catch(() => {});
-	const waiter = host.waiters.get(input.agentId);
-	await runtime.commit(async (tx) => {
-		const record = agentRecords(await tx.doc(docs.Agents, runtime.conversationId))[input.agentId];
-		if (record) record.status = n.status;
-		if (waiter && !waiter.timedOut) waiter.claimed = true;
-		(await tx.doc(docs.Outbox, runtime.conversationId)).items.push(json({ ...n, silent: waiter?.claimed || undefined }));
-		return { status: "terminal", outcome: { status: "completed", result: null } };
-	}, context);
-	tasks.update(input.agentId, { status: n.status });
-	if (waiter?.claimed) {
-		host.waiters.delete(input.agentId);
-		waiter.resolve(n);
-	} else await tasks.notify(n);
+	if (!claimed) return tasks.notify(n);
+	host.waiters.get(input.agentId)?.resolve(n);
+	host.waiters.delete(input.agentId);
 }
 
 /** `maxTurns`, `maxTokens` and `timeout` exist only when the user asked; the first one reached stops the agent. */
-function watchLimits(D: D, engine: Engine, input: ReporterInput, hit: (limit: string) => void): () => void {
+/** `turns` already taken counts toward `maxTurns`, so a run reopened after Pi exits keeps its count. */
+function watchLimits(D: D, engine: Engine, input: ReporterInput, turns: number, hit: (limit: string) => void): () => void {
 	const { maxTurns, maxTokens, timeout } = input.limits;
 	if (!maxTurns && !maxTokens && !timeout) return () => {};
-	let turns = 0;
 	let fired = false;
 	const fire = (limit: string) => {
 		if (fired) return;
@@ -471,8 +533,7 @@ function watchLimits(D: D, engine: Engine, input: ReporterInput, hit: (limit: st
 			if (change.type !== "entry" || change.value.conversationId !== input.conversationId || change.value.kind !== "pi.assistant") continue;
 			if (maxTurns && ++turns >= maxTurns) fire(`${maxTurns}-turn`);
 			if (maxTokens) void engine.harness.snapshot(D.UsageDoc, input.conversationId, CTX).then((usage) => {
-				const tokens = Object.values(usage?.models ?? {}).reduce((sum, model) => sum + (model.totalTokens ?? 0), 0);
-				if (tokens >= maxTokens) fire(`${maxTokens}-token`);
+				if (totalTokens(usage) >= maxTokens) fire(`${maxTokens}-token`);
 			});
 		}
 	});
@@ -480,6 +541,10 @@ function watchLimits(D: D, engine: Engine, input: ReporterInput, hit: (limit: st
 		clearTimeout(timer);
 		unsubscribe();
 	};
+}
+
+function totalTokens(usage: { models?: Record<string, { totalTokens?: number }> } | undefined): number {
+	return Object.values(usage?.models ?? {}).reduce((sum, model) => sum + (model.totalTokens ?? 0), 0);
 }
 
 function acquire(agentId: string): Promise<boolean> {

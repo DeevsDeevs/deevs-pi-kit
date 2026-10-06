@@ -45,7 +45,7 @@ describe("pi-kit.json", () => {
 		write("subagents.json", { allowedModels: ["openai-codex/gpt-5.6-sol"], defaultModel: "luna", parallelMaxConcurrency: 1 });
 		write("runtime.json", { auto: true });
 		await migrateLegacyConfig(project);
-		expect(kit()).toEqual({ codexFast: false, models: { default: "luna", sol: "x" }, notifier: { title: "Done", command: ["notify-send", "{title}"] }, autonomy: "auto" });
+		expect(kit()).toEqual({ codexFast: false, models: { default: "luna", sol: "x" }, notifier: { title: "Done", command: ["notify-send", "{title}"] }, autonomy: true });
 		for (const name of ["codex-fast.json", "notifier.json", "subagents.json", "runtime.json"]) expect(existsSync(join(project, ".pi", name))).toBe(false);
 	});
 

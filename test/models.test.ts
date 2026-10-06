@@ -233,7 +233,7 @@ describe("loadKitConfig", () => {
 
 	it("merges per name, project over global over defaults, and rereads on every load", async () => {
 		const { cwd, agentDir } = dirs();
-		writeFileSync(join(agentDir, "pi-kit.json"), JSON.stringify({ models: { deep: "astra:max", sol: "openai-codex/gpt-5.6-sol" }, lead: "astra", autonomy: "auto" }));
+		writeFileSync(join(agentDir, "pi-kit.json"), JSON.stringify({ models: { deep: "astra:max", sol: "openai-codex/gpt-5.6-sol" }, lead: "astra", autonomy: true }));
 		writeFileSync(join(cwd, ".pi", "pi-kit.json"), JSON.stringify({ models: { deep: "openai-codex/gpt-*-sol:xhigh" } }));
 		const config = await loadKitConfig(cwd, agentDir);
 		expect(config.models).toEqual({ ...KIT_DEFAULTS.models, sol: "openai-codex/gpt-5.6-sol", deep: "openai-codex/gpt-*-sol:xhigh" });

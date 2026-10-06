@@ -39,7 +39,7 @@ Open Pi inside Herdr in a trusted project and ask:
 > Start a read-only Codex collaborator called reviewer on gpt-5.6-terra and ask it to review HEAD.
 ```
 
-Nothing to set up first. Pi starts the daemon in its own Herdr workspace on the first call, names this project's collaboration and itself, opens the tab with `collaborator_manage` and mails it with `collaborator_send`; the reply lands in your session on its own. Starts, stops and cleanups run without a dialog unless [autonomy](#settings) is `ask`. A `workspace-write` collaborator works in its own worktree on `runtime/collab/<protocol>/<name>`; review and merge that branch with Git, then `collaborator_workspace cleanup`. The daemon's guarantees and limits are in [PROTOCOL.md](extensions/runtime/PROTOCOL.md); what the model is told to do is in [skills/collaborators](skills/collaborators/SKILL.md).
+Nothing to set up first. Pi starts the daemon in its own Herdr workspace on the first call, names this project's collaboration and itself, opens the tab with `collaborator_manage` and mails it with `collaborator_send`; the reply lands in your session on its own. Starts, stops and cleanups run without a dialog unless [autonomy](#settings) is `false`. A `workspace-write` collaborator works in its own worktree on `runtime/collab/<protocol>/<name>`; review and merge that branch with Git, then `collaborator_workspace cleanup`. The daemon's guarantees and limits are in [PROTOCOL.md](extensions/runtime/PROTOCOL.md); what the model is told to do is in [skills/collaborators](skills/collaborators/SKILL.md).
 
 ## Extensions
 
@@ -66,7 +66,7 @@ The kit's only settings file is `pi-kit.json`: `~/.pi/agent/pi-kit.json` for eve
 {
   "models": { "deep": "astra:max", "sol": "openai-codex/gpt-*-sol" },
   "lead": "sol",
-  "autonomy": "auto",
+  "autonomy": true,
   "guard": { "rmRf": true, "block": ["terraform destroy", "npm publish"] },
   "codexFast": false,
   "notifier": { "bell": false, "command": ["notify-send", "{title}", "{body}"] }
@@ -74,7 +74,7 @@ The kit's only settings file is `pi-kit.json`: `~/.pi/agent/pi-kit.json` for eve
 ```
 
 - `models` and `lead` name models by pattern (`openai-codex/gpt-*-sol` is the newest sol); a project's names add to the global ones. A new session started without `--model` or `--provider` switches to `lead` at your thinking level (`"sol:xhigh"` sets one); restored sessions keep their model, and `"lead": null` turns this off.
-- `autonomy`: orchestration never waits on a dialog. `"ask"` brings one confirmation back for each collaborator change; a project's value counts once the project is trusted.
+- `autonomy`: `true` (the default): orchestration never waits on a dialog. `false` brings one confirmation back for each collaborator change. A project's value counts once the project is trusted. The old `"auto"` and `"ask"` read as `true` and `false` and are rewritten once.
 - `guard`: `"detached"`, `"forcePush"` or `"rmRf": false` in the global file turns one rule off; a project file can only add `block` patterns, and both lists add up.
 - `codexFast`: `true` sends `service_tier: "priority"` on ChatGPT-auth `openai-codex` requests.
 - `notifier`: `enabled`, `title`, `body`, `terminal`, `bell`, `terminalRequiresTty`, `minIntervalMs`, `command` (an argv with `{title}`, `{body}`, `{cwd}`, `{project}`) and `jsonl`; an untrusted project's `command` and `jsonl` are ignored.

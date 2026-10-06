@@ -79,8 +79,9 @@ export function guardArgv(argv: string[], options: GuardOptions = { cwd: process
 }
 
 /** A Pi `tool_call` result for a bash command run in `cwd`, under the rules configured for the project at `root`. */
-export function guardBashCall(command: string, cwd: string, root = cwd): { block: true; reason: string } | undefined {
-	const reason = guardShell(command, { cwd, root, config: loadGuardConfig(root) });
+/** `project` holds the pi-kit.json whose `guard` applies; an isolated agent's rm root is its worktree, where `.pi/` is usually absent. */
+export function guardBashCall(command: string, cwd: string, root = cwd, project = root): { block: true; reason: string } | undefined {
+	const reason = guardShell(command, { cwd, root, config: loadGuardConfig(project) });
 	return reason ? { block: true, reason } : undefined;
 }
 

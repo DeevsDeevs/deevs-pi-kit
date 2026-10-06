@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { formatSkillsForPrompt, getAgentDir, loadProjectContextFiles, loadSkills } from "@earendil-works/pi-coding-agent";
+import { agentTypeNotFound } from "../shared/tasks.ts";
 import { loadBuiltinAgents } from "./agents.ts";
 
 export const PI_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write"] as const;
@@ -57,7 +58,7 @@ export function findAgentType(requested: string | undefined): AgentType {
 	const key = normalize(requested ?? GENERAL_PURPOSE.name);
 	const name = ALIASES.get(key) ?? key;
 	const found = types.find((type) => normalize(type.name) === name);
-	if (!found) throw new Error(`Agent type '${requested}' not found. Available agents: ${types.map((type) => type.name).join(", ")}`);
+	if (!found) throw new Error(agentTypeNotFound(String(requested), types.map((type) => type.name)));
 	return found;
 }
 
