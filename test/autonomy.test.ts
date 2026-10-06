@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { isAutonomous } from "../extensions/shared/autonomy.ts";
 
 let agentDir: string;
@@ -42,11 +42,15 @@ describe("autonomy", () => {
 		expect(await isAutonomous(ctx())).toBe(false);
 	});
 
-	it("reads any value but \"auto\", or a file that does not parse, as ask", async () => {
+	it("reads an invalid value, or a file that does not parse, as absent", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		writeGlobal(JSON.stringify({ autonomy: "ask" }));
 		for (const text of [JSON.stringify({ autonomy: false }), JSON.stringify({ autonomy: "on" }), "{\"autonomy\": \"auto\",}"]) {
 			writeProject("pi-kit.json", text);
 			expect(await isAutonomous(ctx())).toBe(false);
 		}
+		expect(warn).toHaveBeenCalledTimes(3);
+		warn.mockRestore();
 	});
 
 	it("moves /runtime auto on from .pi/runtime.json into .pi/pi-kit.json once, keeping other keys", async () => {

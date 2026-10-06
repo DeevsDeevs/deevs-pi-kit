@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, Model, ThinkingLevelMap } from "@earendil-works/pi-ai";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { KIT_DEFAULTS, loadKitConfig, modelLabel, newest, readCodexCatalog, resolveLead, resolveModel, type KitConfig, type ModelCatalog, type ModelContext } from "../extensions/shared/models.ts";
 
 const ALL_LEVELS: ThinkingLevelMap = { xhigh: "xhigh", max: "max" };
@@ -234,13 +234,15 @@ describe("loadKitConfig", () => {
 		expect(KIT_DEFAULTS.models).not.toHaveProperty("deep");
 	});
 
-	it("names the file and the field that is wrong", async () => {
+	it("keeps the valid names over the defaults and warns with the file and the field that is wrong", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		const { cwd, agentDir } = dirs();
-		writeFileSync(join(cwd, ".pi", "pi-kit.json"), JSON.stringify({ models: { opus: ["anthropic/claude-opus-*", "claude:opus"] } }));
-		await expect(loadKitConfig(cwd, agentDir)).rejects.toThrow(`${join(cwd, ".pi", "pi-kit.json")}: /models/opus must be string`);
-		writeFileSync(join(cwd, ".pi", "pi-kit.json"), "{}");
+		writeFileSync(join(cwd, ".pi", "pi-kit.json"), JSON.stringify({ models: { opus: ["anthropic/claude-opus-*", "claude:opus"], deep: "luna" } }));
 		writeFileSync(join(agentDir, "pi-kit.json"), "{ nope");
-		await expect(loadKitConfig(cwd, agentDir)).rejects.toThrow(join(agentDir, "pi-kit.json"));
+		expect(await loadKitConfig(cwd, agentDir)).toEqual({ ...KIT_DEFAULTS, models: { ...KIT_DEFAULTS.models, deep: "luna" } });
+		expect(warn).toHaveBeenCalledWith(expect.stringContaining(`${join(cwd, ".pi", "pi-kit.json")}: /models/opus must be string`));
+		expect(warn).toHaveBeenCalledWith(expect.stringContaining(join(agentDir, "pi-kit.json")));
+		warn.mockRestore();
 	});
 });
 

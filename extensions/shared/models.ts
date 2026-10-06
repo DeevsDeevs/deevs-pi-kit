@@ -4,7 +4,7 @@ import { clampThinkingLevel, type Api, type Model, type ModelThinkingLevel } fro
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { kitPaths, readKitKey } from "./config.ts";
+import { kitValues } from "./config.ts";
 
 export type ModelCatalog = Pick<ModelRegistry, "getAll" | "getAvailable" | "find">;
 export type KitConfig = { models: Record<string, string>; lead: string | null };
@@ -45,10 +45,10 @@ const CodexCache = Type.Object({ models: Type.Array(Type.Object({ slug: Type.Str
 
 /** Project over global over kit defaults, per name. Callers load it again for every resolution, so an edit applies to the next call. */
 export async function loadKitConfig(cwd: string, agentDir: string): Promise<KitConfig> {
-	const files = kitPaths(cwd, agentDir).map((path) => ({ models: readKitKey(path, "models"), lead: readKitKey(path, "lead") }));
+	const leads = kitValues("lead", cwd, agentDir);
 	return {
-		models: Object.assign({}, KIT_DEFAULTS.models, ...files.map((file) => file.models)),
-		lead: files.reduce<string | null>((lead, file) => (file.lead === undefined ? lead : file.lead), KIT_DEFAULTS.lead),
+		models: Object.assign({}, KIT_DEFAULTS.models, ...kitValues("models", cwd, agentDir)),
+		lead: leads.reduce<string | null>((lead, file) => (file === undefined ? lead : file), KIT_DEFAULTS.lead),
 	};
 }
 

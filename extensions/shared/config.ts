@@ -20,6 +20,7 @@ const KEYS = {
 	}),
 };
 const KitFile = Type.Partial(Type.Object(KEYS));
+const JsonObject = Type.Object({});
 
 export type KitKey = keyof typeof KEYS;
 export type KitValue<K extends KitKey> = Static<(typeof KEYS)[K]>;
@@ -31,23 +32,43 @@ export function agentDir(): string {
 }
 
 /** The global, then the project pi-kit.json; every reader takes them fresh, so an edit applies to the next use. */
-export function kitPaths(cwd: string, dir = agentDir()): [global: string, project: string] {
+function kitPaths(cwd: string, dir = agentDir()): [global: string, project: string] {
 	return [join(dir, FILE), join(cwd, ".pi", FILE)];
 }
 
-/** One key of one pi-kit.json: undefined when the file or the key is absent; throws `<path>: <pointer> <message>` on a file that does not parse or a value off its schema. */
-export function readKitKey<K extends KitKey>(path: string, key: K): KitValue<K> | undefined {
-	// SAFETY: parseFile checked `key` against KEYS[key], so its value is KitValue<K> or absent.
-	const file = parseFile(path, Type.Object({ [key]: Type.Optional(KEYS[key]) })) as Partial<Record<K, KitValue<K>>> | undefined;
-	return file?.[key];
+/**
+ * `key` from the global and the project pi-kit.json, re-read on every call. A file that does not parse counts as absent, and a value off
+ * its schema keeps only its valid fields; each problem is warned about once, so a typo never silently drops the rest of the file.
+ */
+export function kitValues<K extends KitKey>(key: K, cwd: string, dir = agentDir()): [global: KitValue<K> | undefined, project: KitValue<K> | undefined] {
+	const [global, project] = kitPaths(cwd, dir).map((path) => readKitKey(path, key));
+	return [global, project];
 }
 
-/** `key` from the global and the project pi-kit.json; a file that does not parse or a value off its schema counts as absent. */
-export function kitValues<K extends KitKey>(key: K, cwd: string, dir = agentDir()): [global: KitValue<K> | undefined, project: KitValue<K> | undefined] {
-	const [global, project] = kitPaths(cwd, dir).map((path) => {
-		try { return readKitKey(path, key); } catch { return undefined; }
-	});
-	return [global, project];
+function readKitKey<K extends KitKey>(path: string, key: K): KitValue<K> | undefined {
+	let file;
+	try { file = parseFile(path, Type.Record(Type.String(), Type.Unknown())); } catch (error) {
+		warnOnce(error instanceof Error ? error.message : String(error));
+		return undefined;
+	}
+	const value = file?.[key];
+	if (value === undefined) return undefined;
+	if (Value.Check(KEYS[key], value)) return value;
+	const [first] = Value.Errors(KEYS[key], value);
+	warnOnce(`${path}: /${key}${first?.instancePath ?? ""} ${first?.message}`);
+	if (!Value.Check(JsonObject, value)) return undefined;
+	// SAFETY: every field of an object key is optional, so the fields that check alone make a valid KitValue<K>.
+	return Object.fromEntries(Object.entries(value).filter(([field, item]) => Value.Check(KEYS[key], { [field]: item }))) as KitValue<K>;
+}
+
+const WARNED = Symbol.for("pi-kit.config-warnings");
+// SAFETY: this package exclusively owns the symbol-keyed slot and only ever stores the set in it.
+const warned = ((globalThis as typeof globalThis & { [WARNED]?: Set<string> })[WARNED] ??= new Set());
+
+function warnOnce(problem: string): void {
+	if (warned.has(problem)) return;
+	warned.add(problem);
+	console.warn(`pi-kit: ${problem}; using the defaults for what is invalid.`);
 }
 
 /**
