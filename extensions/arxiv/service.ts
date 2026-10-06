@@ -1,3 +1,4 @@
+import { clampInt } from "../shared/terms.ts";
 import { buildBibtex, normalizeArxivId, parseArxivFeed } from "./parser.ts";
 import type { ArxivArgs } from "./tools.ts";
 import type { ArxivGetResult, ArxivSearchResult } from "./types.ts";
@@ -94,9 +95,4 @@ function normalizeIds(ids: string): string[] {
 		if (!/^\d{4}\.\d{4,5}(v\d+)?$|^[a-z-]+(\.[A-Z]{2})?\/\d{7}(v\d+)?$/i.test(id)) throw new Error(`Invalid arXiv id: ${id}`);
 	}
 	return normalized;
-}
-
-function clampInt(value: number, min: number, max: number): number {
-	const n = Number.isFinite(value) ? Math.floor(value) : min;
-	return Math.min(max, Math.max(min, n));
 }

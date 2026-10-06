@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { lstat, mkdir, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { utf8Head } from "../shared/bytes.ts";
-import { unicodeTerms } from "../shared/terms.ts";
+import { clampInt as clamp, lineMatcher, unicodeTerms, validateQuery } from "../shared/terms.ts";
 import { basenameId, extractTitle, pageId, parseMetadata, parseTaxonomyTags, parseWikiLinks, sameDirCandidate, stripFrontmatter } from "./parser.ts";
 import type {
 	WikiAmbiguousLink,
@@ -33,7 +33,6 @@ const DEFAULT_MAX_RESULTS = 20;
 const MAX_RESULTS = 100;
 const DEFAULT_MAX_BYTES = 65_536;
 const MAX_BYTES = 262_144;
-const MAX_QUERY_CHARS = 1000;
 const MAX_LOOKUP_TERMS = 32;
 const MAX_FILE_BYTES = 1_000_000;
 const DEFAULT_CONTEXT_PAGES = 5;
@@ -293,9 +292,7 @@ export class WikiService {
 	}
 
 	private async textSearch(root: string, query: string, mode: "text" | "regex", maxResults: number, contextLines: number, caseSensitive: boolean): Promise<WikiSearchResult> {
-		const pattern = mode === "regex" ? new RegExp(query, caseSensitive ? "" : "i") : undefined;
-		const needle = caseSensitive ? query : query.toLowerCase();
-		const matchesLine = (line: string) => pattern ? pattern.test(line) : (caseSensitive ? line : line.toLowerCase()).includes(needle);
+		const matchesLine = lineMatcher(query, mode === "regex", caseSensitive);
 		const matches: WikiSearchMatch[] = [];
 		for (const page of await this.pages(root)) {
 			const lines = (await readBounded(page.path)).split(/\r?\n/);
@@ -399,18 +396,6 @@ function validatePathInput(path: string): string {
 
 function within(child: string, parent: string): boolean {
 	return child === parent || child.startsWith(parent.endsWith(sep) ? parent : `${parent}${sep}`);
-}
-
-function validateQuery(query: string): string {
-	const value = query.trim();
-	if (!value) throw new Error("Search query is required.");
-	if (value.length > MAX_QUERY_CHARS) throw new Error(`Search query is too long; max ${MAX_QUERY_CHARS} characters.`);
-	return value;
-}
-
-function clamp(value: number, min: number, max: number): number {
-	if (!Number.isFinite(value)) return min;
-	return Math.max(min, Math.min(max, Math.floor(value)));
 }
 
 function summarizeIssues(issues: WikiIssue[]): Record<WikiIssueSeverity, number> {

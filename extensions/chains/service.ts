@@ -2,7 +2,7 @@ import type { Dirent } from "node:fs";
 import { lstat, mkdir, open, readdir, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { extractTitle, parseCreatedAt, parseMetadata, slugify, stripFrontmatter, truncateText, withMetadata } from "./parser.ts";
-import { unicodeTerms } from "../shared/terms.ts";
+import { clampInt as clamp, lineMatcher, unicodeTerms, validateQuery } from "../shared/terms.ts";
 import type {
 	ChainBranchInfo,
 	ChainContextInput,
@@ -28,7 +28,6 @@ const DEFAULT_MAX_BYTES = 65_536;
 const MAX_BYTES = 262_144;
 const DEFAULT_MAX_RESULTS = 20;
 const MAX_RESULTS = 100;
-const MAX_QUERY_CHARS = 1000;
 const MAX_LOOKUP_TERMS = 32;
 const MAX_FULL_LINK_BYTES = 1_000_000;
 const LOOKUP_HALF_LIFE_DAYS = 30;
@@ -146,7 +145,7 @@ export class ChainService {
 		const contextLines = clamp(input.contextLines ?? 1, 0, 5);
 		const chains = await this.chainNames(input.chain);
 		const regex = input.searchMode === "regex";
-		const matcher = createMatcher(query, regex, Boolean(input.caseSensitive));
+		const matcher = lineMatcher(query, regex, Boolean(input.caseSensitive));
 		const matches: ChainSearchMatch[] = [];
 
 		for (const chain of chains) {
@@ -438,18 +437,6 @@ function hasErrorCode(error: Error, code: string): boolean {
 	return "code" in error && error.code === code;
 }
 
-function clamp(value: number, min: number, max: number): number {
-	if (!Number.isFinite(value)) return min;
-	return Math.max(min, Math.min(Math.floor(value), max));
-}
-
-function validateQuery(value: string): string {
-	const query = value.trim();
-	if (!query) throw new Error("Missing query.");
-	if (query.length > MAX_QUERY_CHARS) throw new Error(`Query is too long; max ${MAX_QUERY_CHARS} characters.`);
-	return query;
-}
-
 interface LookupDocument {
 	link: ChainLinkInfo;
 	content: string;
@@ -504,21 +491,6 @@ function bestLookupSnippet(doc: LookupDocument, terms: string[]): string {
 		}
 	}
 	return snippet(doc.lines, bestIndex, 1);
-}
-
-function createMatcher(query: string, regex: boolean, caseSensitive: boolean): (line: string) => boolean {
-	if (regex) {
-		const flags = caseSensitive ? "" : "i";
-		let pattern: RegExp;
-		try {
-			pattern = new RegExp(query, flags);
-		} catch (error) {
-			throw new Error(`Invalid regex: ${error instanceof Error ? error.message : String(error)}`);
-		}
-		return (line) => pattern.test(line);
-	}
-	const needle = caseSensitive ? query : query.toLowerCase();
-	return (line) => (caseSensitive ? line : line.toLowerCase()).includes(needle);
 }
 
 function formatLinkBlock(label: string, link: ChainLinkInfo, content: string): string {
