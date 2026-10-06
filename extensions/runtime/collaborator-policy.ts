@@ -71,8 +71,8 @@ interface ResolvedPersona {
 function resolvePersona(requested: string): ResolvedPersona {
 	const personaName = collaboratorName(requested, "persona");
 	const definition = findAgent(COLLABORATOR_PERSONAS, personaName);
-	if (!definition || definition.disabled) {
-		throw new HostedRuntimeClientError("not_found", `Unknown or disabled collaborator persona ${personaName}.`);
+	if (!definition) {
+		throw new HostedRuntimeClientError("not_found", `Unknown collaborator persona ${personaName}.`);
 	}
 	const prompt = definition.body.trim();
 	if (!prompt || Buffer.byteLength(prompt) > 32 * 1024) {
