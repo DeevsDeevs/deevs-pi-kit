@@ -133,7 +133,7 @@ export async function herdr(t) {
 	const stopped = new Promise((r) => server.on("exit", r));
 	for (let i = 0; i < 50 && !existsSync(socket); i++) await new Promise((r) => setTimeout(r, 100));
 	const cli = async (...args) => {
-		const result = await exec(t, "herdr", args, { env, timeoutMs: 10_000 });
+		const result = await exec(t, "herdr", args, { env, timeoutMs: 30_000 });
 		if (result.status !== 0) throw new Error(`herdr ${args.join(" ")}: ${tail(result.stderr)}`);
 		return result.stdout.trim() ? JSON.parse(result.stdout).result : undefined;
 	};
