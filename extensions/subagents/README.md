@@ -34,4 +34,15 @@ Personas are `agents/*.md` with Claude Code's frontmatter (`name, description, t
 
 `engine/` is the only code that imports pi-durable. Each lead session has a store under `<agent dir>/pi-kit/agents/<project hash>/<session id>/` (`engine.sqlite`, `engine.lock`, `out/<agentId>.md`). Agents run Pi's own `read`, `grep`, `find`, `ls`, `bash`, `edit` and `write` with the kit guard on every `bash`. The engine survives `/reload`; when Pi exits, agents pause, and the next start of their session reaps orphaned tool processes (`PI_KIT_OWNER`), resumes them, and delivers each report once: the session file is the acknowledgement.
 
+## Claude Code and Codex workers
+
+A `claude:` or `codex:` model (`opus`, `sonnet`, `haiku` and `fable` are `claude:` names) runs the agent as `claude -p` or `codex exec` in its own process group, tagged with `PI_KIT_OWNER`, from `engine/cli.ts`. The lead gets the same launch result and notification as for a Pi agent, and `SendMessage` and `TaskStop` work alike.
+
+- Claude: `--permission-mode bypassPermissions --permission-prompts none`, the type's denied tools plus `Agent`, `Workflow`, `AskUserQuestion`, `ScheduleWakeup`, `CronCreate` and `SendUserMessage` in `--disallowedTools`, and the kit guard as a PreToolUse hook through `--settings`. A writer in a Git repository always gets a worktree.
+- Codex: `approval_policy=never` and `sandbox_mode=workspace-write` for writers, `read-only` otherwise, passed with `-c` on `exec` and `exec resume` alike. The guard is a PreToolUse hook passed with `-c`; `--dangerously-bypass-hook-trust` lets it run without a stored trust entry.
+- The CLI's session id is memoed at its first event. After Pi closed, the next start reaps the old process group and the worker resumes its session (`claude --resume`, `codex exec resume`); a worker that had not started yet starts again.
+- `SendMessage` to a running worker waits for its run to end, then resumes it with the message; it notifies once per run.
+- `maxTurns`, `maxTokens` and `timeout` apply to Pi models only.
+- `test/fixtures/cli/` holds event streams and `--help` texts recorded by the polygon's `claude-worker` and `codex-worker`; a unit test fails when the argv uses a flag the recorded release does not document. Re-record after a CLI update by copying them from `polygon/results/latest/`.
+
 A trusted project's old `.pi/subagents.json` moves into `.pi/pi-kit.json` once, keeping only `defaultModel` as `models.default`.

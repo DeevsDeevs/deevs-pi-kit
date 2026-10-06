@@ -61,11 +61,14 @@ export function findAgentType(requested: string | undefined): AgentType {
 	return found;
 }
 
-/** The agent's instructions: its persona or the general notes, the shared notes, the project's context files and skills, the cwd, and its worktree. */
-export function workerPrompt(type: AgentType, cwd: string, worktree?: { path: string; branch: string; repoRoot: string }): string {
+/**
+ * The agent's instructions: its persona or the general notes, the shared notes, the project's context files and skills, the cwd,
+ * and its worktree. A Claude or Codex worker (`cli`) loads its own context files and skills.
+ */
+export function workerPrompt(type: AgentType, cwd: string, worktree?: { path: string; branch: string; repoRoot: string }, cli = false): string {
 	const agentDir = getAgentDir();
-	const context = loadProjectContextFiles({ cwd, agentDir }).map((file) => `## ${file.path}\n\n${file.content}`);
-	const skills = formatSkillsForPrompt(loadSkills({ cwd, agentDir, skillPaths: [KIT_SKILLS], includeDefaults: true }).skills);
+	const context = cli ? [] : loadProjectContextFiles({ cwd, agentDir }).map((file) => `## ${file.path}\n\n${file.content}`);
+	const skills = cli ? "" : formatSkillsForPrompt(loadSkills({ cwd, agentDir, skillPaths: [KIT_SKILLS], includeDefaults: true }).skills);
 	return [
 		type.prompt,
 		NOTES,

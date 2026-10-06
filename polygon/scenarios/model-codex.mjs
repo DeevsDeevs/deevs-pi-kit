@@ -9,7 +9,6 @@ const agent = (id, name, model) => ({ id, tool: "Agent", args: { description: `c
 export default {
 	name: "model-codex",
 	gate: "M1",
-	pending: "M4 Codex workers run codex: models on the Responses wire",
 	timeoutMs: 150_000,
 	async run(t) {
 		// The lead runs openai-codex/gpt-6-sol on the puppet; Codex's cache lacks gpt-6.1-sol and its config.toml names it.

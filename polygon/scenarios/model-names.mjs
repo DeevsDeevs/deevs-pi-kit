@@ -9,7 +9,6 @@ const agent = (id, name, model, on) => ({ id, on, tool: "Agent", args: { descrip
 export default {
 	name: "model-names",
 	gate: "M1",
-	pending: "M4 Claude workers: opus must reach the Anthropic wire",
 	timeoutMs: 150_000,
 	async run(t) {
 		// Only the polygon catalog is logged in: the sandbox's openai-codex login would make bare ids such as gpt-6-luna ambiguous.
