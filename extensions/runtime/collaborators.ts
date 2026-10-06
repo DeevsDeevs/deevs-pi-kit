@@ -34,6 +34,9 @@ import {
 import type { RuntimeSession } from "./runtime-session.ts";
 
 const COLLABORATOR_BATCH_LIMIT = 12;
+/** The lead is main and its collaborators share one protocol per project, so neither needs naming. */
+export const LEAD = "main";
+const DEFAULT_PROTOCOL = "collab";
 /** The foreground-wait rail: a stand-down never holds the lead longer than this for a final reply. */
 const STAND_DOWN_GRACE_MS = 120_000;
 const STAND_DOWN_POLL_MS = 1_000;
@@ -151,12 +154,8 @@ export class CollaboratorService {
 		if (isEnded(identity?.disposition)) {
 			throw new HostedRuntimeClientError("conflict", "Current collaborator identity has ended; explicit revival is required.");
 		}
-		if (!identity && !(input.protocol && input.callerParticipantId)) {
-			const detail = "Pass protocol (this project's collaboration name) and callerParticipantId (your own name in it), or run /runtime collaborate <protocol> <id> first.";
-			throw new HostedRuntimeClientError("invalid_request", detail);
-		}
-		const protocol = collaboratorName(identity?.protocol ?? input.protocol, "protocol");
-		const callerParticipantId = collaboratorName(identity?.participantId ?? input.callerParticipantId, "caller participant ID");
+		const protocol = collaboratorName(identity?.protocol ?? input.protocol ?? DEFAULT_PROTOCOL, "protocol");
+		const callerParticipantId = collaboratorName(identity?.participantId ?? input.callerParticipantId ?? LEAD, "caller participant ID");
 		if (identity && requestsOtherIdentity(input, protocol, callerParticipantId)) {
 			throw new HostedRuntimeClientError("conflict", `Current collaborator identity is ${protocol}/${callerParticipantId}.`);
 		}

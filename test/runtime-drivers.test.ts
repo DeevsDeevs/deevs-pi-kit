@@ -52,7 +52,7 @@ it.each(DRIVER_NAMES)("rejects an oversized or control-character %s launch befor
 
 // 3950 escaped bytes of driver argv alone, which only exceeds the limit once the herdr agent start prefix is counted.
 it("counts the herdr prefix against the escaped command limit", () => {
-	const input = { ...representativeInput("pi"), model: `openai-codex/${"m".repeat(3617)}` };
+	const input = { ...representativeInput("pi"), model: `openai-codex/${"m".repeat(3700)}` };
 	expect(() => launchArgv("pi", input)).toThrow("4000-byte");
 });
 

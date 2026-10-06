@@ -4,8 +4,9 @@ import { once } from "node:events";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { HostedRuntimeClient } from "../client.ts";
+import { encodeMail } from "../mail-body.ts";
 import { isJsonObject } from "../schemas/json.ts";
-import { tools, toolDefinitions } from "./tools.ts";
+import { sendMessage, toolDefinitions } from "./tools.ts";
 
 const MAX_FRAME = 256 * 1024;
 const PROTOCOL_VERSION = "2025-11-25";
@@ -57,15 +58,13 @@ function initializeIsWellFormed(params) {
 	return typeof params.clientInfo.name === "string" && typeof params.clientInfo.version === "string";
 }
 
-function argumentsAreWellFormed(tool, params, args) {
-	if (Object.keys(params).some(key => !CALL_KEYS.includes(key)) || !isJsonObject(args)) return false;
-	if (Object.keys(args).some(key => !Object.hasOwn(tool.properties, key))) return false;
-	return !tool.required.some(key => !Object.hasOwn(args, key));
-}
+const isText = (value, max) => typeof value === "string" && value.length > 0 && Buffer.byteLength(value) <= max;
 
-function argumentIsWellFormed(tool, key, value) {
-	if (typeof value !== "string" || !value.length) return false;
-	return Buffer.byteLength(value) <= tool.properties[key].maxLength && Buffer.from(value).toString("utf8") === value;
+function argumentsAreWellFormed(params, args) {
+	if (Object.keys(params).some(key => !CALL_KEYS.includes(key)) || !isJsonObject(args)) return false;
+	if (Object.keys(args).some(key => !Object.hasOwn(sendMessage.inputSchema.properties, key))) return false;
+	if (!isText(args.to, 64) || !isText(args.message, 16384)) return false;
+	return args.images === undefined || (Array.isArray(args.images) && args.images.length <= 8 && args.images.every(path => isText(path, 4096)));
 }
 
 /** One connection's authority: the descriptor is read once, on the first tool call that needs it. */
@@ -82,14 +81,11 @@ function connect(path, authority) {
 }
 
 /** The model never sees namespace or operation IDs: the descriptor owns the namespace and every send is a fresh operation. */
-async function callTool(authority, tool, args) {
-	const method = `messaging.${tool.name.slice("collaborator_".length)}`;
-	const { body, ...otherArgs } = args;
-	const encoded = body === undefined
-		? args
-		: { ...otherArgs, operationId: randomUUID(), bodyBase64: Buffer.from(body).toString("base64") };
+async function callTool(authority, args) {
+	const bodyBase64 = Buffer.from(encodeMail(args.message, args.images)).toString("base64");
 	const { namespaceId, secret } = authority.credentials;
-	return await authority.client.call(method, { ...encoded, namespaceId, secret });
+	await authority.client.call("messaging.send", { participantId: args.to, operationId: randomUUID(), bodyBase64, namespaceId, secret });
+	return { sent: true, to: args.to };
 }
 
 function dispatch(path, state) {
@@ -119,16 +115,12 @@ function dispatch(path, state) {
 			return result({ tools: toolDefinitions });
 		}
 		if (request.method !== "tools/call") return error(-32601, "Method not found");
-		const tool = tools.find(candidate => candidate.name === params.name);
-		if (!tool) return error(-32602, "Unknown tool");
+		if (params.name !== sendMessage.name) return error(-32602, "Unknown tool");
 		try {
 			const args = params.arguments ?? {};
-			if (!argumentsAreWellFormed(tool, params, args)) throw new Error("Unexpected or missing tool arguments");
-			for (const [key, value] of Object.entries(args)) {
-				if (!argumentIsWellFormed(tool, key, value)) throw new Error("Invalid tool argument type, UTF-8, or byte limit");
-			}
+			if (!argumentsAreWellFormed(params, args)) throw new Error("Unexpected, missing or oversized tool arguments");
 			state.authority = connect(path, state.authority);
-			const value = await callTool(state.authority, tool, args);
+			const value = await callTool(state.authority, args);
 			return result({ isError: false, content: [{ type: "text", text: JSON.stringify(value) }], structuredContent: value });
 		} catch (cause) {
 			const failure = { code: cause.code ?? "invalid_arguments", message: cause.message };

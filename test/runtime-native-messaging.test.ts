@@ -46,7 +46,7 @@ it.each(["claude-code", "codex"] as const)("compiles %s native configuration wit
 	expect(compiled.args.join("\n")).not.toContain("trust_level");
 	const context = driver === "claude-code" ? compiled.args[compiled.args.indexOf("--append-system-prompt") + 1]! : compiled.args.at(-1)!;
 	expect(context).toContain("Selected persona context.");
-	expect(context).toContain("call collaborator_inbox, do what it asks, answer with collaborator_reply");
+	expect(context).toContain("tell main with SendMessage");
 	expect(context.length).toBeLessThan(400);
 	expect(escapedCommandBytes(compiled.argv)).toBeLessThanOrEqual(4000);
 	expect(launch({ ...config, personaPrompt: "Selected persona context." }).args).toEqual(compiled.args);

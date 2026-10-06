@@ -4,13 +4,15 @@ import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@earendil-wo
 import type { CollaboratorToolBlock } from "./collaborator-policy.ts";
 import {
 	CollaboratorService,
+	LEAD,
 	type CollaboratorManageInput,
 	type CollaboratorManageResult,
 	type CollaboratorWorktreeInput,
 	type CollaboratorWorktreeResult,
 } from "./collaborators.ts";
+import { tasks } from "../shared/tasks.ts";
 import { isHeld } from "./schemas/state.ts";
-import type { InboxReader } from "./mcp/pi.ts";
+import { COLLABORATOR_GUIDANCE } from "./mcp/native.ts";
 import { MessagingClient } from "./messaging-client.ts";
 import { NativeAgentService } from "./native-agents.ts";
 import type { ClientParticipantStatus, HostedHeartbeat, LiveClientRegistration } from "./responses.ts";
@@ -53,10 +55,6 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 		return this.session.sessionShutdown();
 	}
 
-	messagingDescriptor(ctx: ExtensionContext): Promise<string> {
-		return this.messaging.descriptor(ctx);
-	}
-
 	guardCollaboratorTool(toolName: string, input: ToolCallEvent["input"] | undefined, cwd: string): CollaboratorToolBlock | undefined {
 		return this.collaborators.guardTool(toolName, input, cwd);
 	}
@@ -65,20 +63,49 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 		return this.collaborators.list(ctx);
 	}
 
-	manageCollaborators(input: CollaboratorManageInput, ctx: ExtensionContext, signal?: AbortSignal): Promise<CollaboratorManageResult[]> {
-		return this.collaborators.manage(input, ctx, signal);
+	async manageCollaborators(input: CollaboratorManageInput, ctx: ExtensionContext, signal?: AbortSignal): Promise<CollaboratorManageResult[]> {
+		const results = await this.collaborators.manage(input, ctx, signal);
+		// A first start acquires main; its namespace must exist before a collaborator can mail it.
+		if (isHeld(this.store.identity?.disposition)) await this.messaging.descriptor(ctx).then(() => this.syncRoster(ctx)).catch(() => {});
+		return results;
+	}
+
+	/** Collaborators join the shared roster: the lead sees each one by name, a collaborator sees main. */
+	private async syncRoster(ctx: ExtensionContext): Promise<void> {
+		const identity = this.store.identity;
+		if (!identity || !isHeld(identity.disposition)) return;
+		const ownerSession = ctx.sessionManager.getSessionId();
+		const row = (name: string, description: string, held: boolean, stop?: () => Promise<void>) => tasks.register({
+			id: name,
+			kind: "collaborator",
+			name,
+			description,
+			status: held ? "running" : "completed",
+			ownerSession,
+			startedAt: Date.now(),
+			stop,
+			send: (message, images) => this.messaging.send(this.session.context ?? ctx, name, message, images),
+		});
+		if (this.store.launch) return row(LEAD, "the lead", true);
+		for (const participant of await this.collaborators.list(ctx)) {
+			if (participant.protocol !== identity.protocol || participant.participantId === identity.participantId) continue;
+			const standDown = { action: "stand_down" as const, protocol: identity.protocol, participants: [{ participantId: participant.participantId }] };
+			row(participant.participantId, `${participant.driver ?? "pi"} ${participant.profile ?? "read-only"}`, isHeld(participant.state),
+				async () => { await this.collaborators.manage(standDown, this.session.context ?? ctx); });
+		}
 	}
 
 	manageWorktrees(input: CollaboratorWorktreeInput, ctx: ExtensionContext, signal?: AbortSignal): Promise<CollaboratorWorktreeResult> {
 		return this.collaborators.manageWorktrees(input, ctx, signal);
 	}
 
-	/** Adds any collaborator persona prompt; durable events arrive through the heartbeat alone. */
+	/** A collaborator session gets the collaborator guidance and any persona prompt. */
 	beforeAgentStart(systemPrompt: string, ctx: ExtensionContext): BeforeAgentStartResult | undefined {
 		this.session.setContext(ctx);
-		const persona = this.store.launch?.persona;
-		if (!this.session.isActive || !persona) return undefined;
-		return { systemPrompt: `${systemPrompt}\n\n# Collaborator persona: ${persona.name}\n\n${persona.prompt}` };
+		const launch = this.store.launch;
+		if (!this.session.isActive || !launch) return undefined;
+		const persona = launch.persona ? `\n\n# Collaborator persona: ${launch.persona.name}\n\n${launch.persona.prompt}` : "";
+		return { systemPrompt: `${systemPrompt}\n\n# Collaborator\n\n${COLLABORATOR_GUIDANCE}${persona}` };
 	}
 
 	restoreSessionState(ctx: ExtensionContext): void {
@@ -88,11 +115,9 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 	}
 
 	async afterRegister(registration: LiveClientRegistration, ctx: ExtensionContext): Promise<void> {
-		if (isHeld(this.store.identity?.disposition)) await this.messaging.provision(registration, ctx);
-	}
-
-	deliverMailWith(reader: InboxReader): void {
-		this.messaging.deliverWith(reader);
+		if (!isHeld(this.store.identity?.disposition)) return;
+		await this.messaging.provision(registration, ctx);
+		await this.syncRoster(ctx);
 	}
 
 	afterHeartbeat(registration: LiveClientRegistration, ctx: ExtensionContext, heartbeat: HostedHeartbeat): Promise<void> {

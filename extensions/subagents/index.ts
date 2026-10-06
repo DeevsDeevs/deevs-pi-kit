@@ -102,7 +102,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "TaskStop",
 		label: "TaskStop",
-		description: "Stop a running background task: an agent, by its agentId or name, or a job, by its id.",
+		description: "Stop a running background task: an agent, by its agentId or name, a job, by its id, or a collaborator, by its name (a graceful stand-down).",
 		promptSnippet: "Stop a background agent or job that is no longer needed.",
 		parameters: Type.Object({ task_id: Type.String({ description: "The id or name of the task to stop" }) }),
 		async execute(_toolCallId, params: { task_id: string }, _signal, _onUpdate, ctx) {
@@ -119,20 +119,25 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		name: "SendMessage",
 		label: "SendMessage",
 		description: [
-			"Send a message to an agent you launched, by its agentId or name.",
-			"A running agent gets it at its next tool round and folds it into its current work. An agent that finished, failed or that you stopped resumes with its full context under the same agentId and notifies again. An agent the user stopped is not resumed.",
+			"Send a message to an agent you launched, by its agentId or name, or to a collaborator by its name (main is the lead).",
+			"A running agent gets it at its next tool round and folds it into its current work. An agent that finished, failed or that you stopped resumes with its full context under the same agentId and notifies again. An agent the user stopped is not resumed. A collaborator gets it at its next idle, merged with anything else sent meanwhile.",
 		].join("\n"),
-		promptSnippet: "Steer a running agent, or continue a finished one with its context.",
+		promptSnippet: "Steer a running agent, continue a finished one with its context, or message a collaborator.",
 		parameters: Type.Object({
-			to: Type.String({ description: "The agentId or name of the agent" }),
+			to: Type.String({ description: "The agentId or name of the agent, or a collaborator's name" }),
 			message: Type.String({ description: "The message" }),
 			summary: Type.Optional(Type.String({ description: "A 5-10 word preview of the message" })),
+			images: Type.Optional(Type.Array(Type.String(), { description: "Image files for a collaborator, by path" })),
 		}),
-		async execute(toolCallId, params: { to: string; message: string }, _signal, _onUpdate, ctx) {
+		async execute(toolCallId, params: { to: string; message: string; images?: string[] }, _signal, _onUpdate, ctx) {
 			const session = ctx.sessionManager.getSessionId();
 			const entry = tasks.find(params.to, session);
+			if (entry?.send) {
+				const text = await entry.send(params.message, (params.images ?? []).map((image) => resolve(ctx.cwd, image)));
+				return { content: [{ type: "text" as const, text }], details: { taskId: entry.id, kind: entry.kind } };
+			}
 			if (!entry || entry.kind !== "agent") {
-				const known = tasks.list(session).filter((task) => task.kind === "agent").map((task) => task.name ?? task.id);
+				const known = tasks.list(session).filter((task) => task.kind === "agent" || task.send).map((task) => task.name ?? task.id);
 				throw new Error(`No agent named '${params.to}'. Known agents: ${known.join(", ") || "none"}`);
 			}
 			const outcome = await send(await ensureEngine(ctx), entry.id, params.message, toolCallId);

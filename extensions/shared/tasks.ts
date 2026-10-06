@@ -14,6 +14,8 @@ export interface RosterEntry {
 	ownerSession: string;
 	startedAt: number;
 	stop?: () => Promise<void>;
+	/** Set by kinds that take messages through their own channel (collaborators); returns the result line. */
+	send?: (message: string, images: string[]) => Promise<string>;
 	/** The shell command that opens this task in its own CLI, for `/agents attach`. */
 	attach?: string;
 }

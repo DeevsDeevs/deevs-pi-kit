@@ -1,6 +1,10 @@
+import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { extname } from "node:path";
+import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { HostedRuntimeClientError } from "./client.ts";
-import type { InboxReader } from "./mcp/pi.ts";
+import { HostedRuntimeClient, HostedRuntimeClientError } from "./client.ts";
+import { decodeMail, encodeMail } from "./mail-body.ts";
 import { isJsonObject, type JsonValue } from "./schemas/json.ts";
 import { isHeld } from "./schemas/state.ts";
 import { auth, strictObject, text, type ClientParticipantStatus, type LiveClientRegistration, type MailHint } from "./responses.ts";
@@ -8,8 +12,16 @@ import type { RuntimeSession } from "./runtime-session.ts";
 import type { ManagedAgentControl, ParticipantIdentity } from "./session-record.ts";
 import { messagingDescriptorPath } from "./service/messaging.ts";
 
-const HOSTED_MESSAGING_MAIL = "deevs.hosted-runtime.messaging-mail.v1";
+export const COLLABORATOR_MESSAGE = "collaborator-message";
 const HOSTED_RUNTIME_NOTICE = "deevs.hosted-runtime.notice.v1";
+const IMAGE_TYPES = new Map([[".png", "image/png"], [".jpg", "image/jpeg"], [".jpeg", "image/jpeg"], [".gif", "image/gif"], [".webp", "image/webp"]]);
+
+/** A send's fields; an inbox read takes none. */
+interface MailParams {
+	participantId?: string;
+	operationId?: string;
+	bodyBase64?: string;
+}
 
 /** An idle session with nothing queued and, in the TUI, nothing half-typed: the only moment Runtime speaks up. */
 function deliveryReady(ctx: ExtensionContext): boolean {
@@ -22,14 +34,9 @@ export class MessagingClient {
 	private readonly session: RuntimeSession;
 	private readonly hintedMail = new Set<string>();
 	private readonly managedIssued = new Set<string>();
-	private readInbox: InboxReader | undefined;
 
 	constructor(session: RuntimeSession) {
 		this.session = session;
-	}
-
-	deliverWith(reader: InboxReader): void {
-		this.readInbox = reader;
 	}
 
 	clearManagedIssuance(): void {
@@ -86,20 +93,40 @@ export class MessagingClient {
 		this.managedIssued.add(control.targetKey);
 	}
 
+	/** Mails `to` (a participant name; main is the lead) from this session's own namespace; returns the delivery line. */
+	async send(ctx: ExtensionContext, to: string, message: string, images: readonly string[]): Promise<string> {
+		const body = Buffer.from(encodeMail(message, images)).toString("base64");
+		await this.mail(ctx, "send", { participantId: to, operationId: randomUUID(), bodyBase64: body });
+		return `Message sent to ${to}; it arrives at its next idle, merged with anything else sent meanwhile.`;
+	}
+
 	/**
-	 * Best-effort delivery into an idle session: the extension reads the inbox itself (which marks it read) and hands
-	 * the bodies to the model as one follow-up, so its first action can be the reply. Never replayed after loss.
+	 * Delivery into an idle session: every unread message (marked read by this read) goes to the model as one
+	 * `collaborator-message` that starts a turn, images as ImageContent. Never replayed after loss.
 	 */
 	async deliverMail(registration: LiveClientRegistration, ctx: ExtensionContext, mail: MailHint | undefined): Promise<void> {
 		if (!mail || this.hintedMail.has(mail.eventId)) return;
 		if (!this.hintReady(registration, ctx)) return;
 		// One delivery per hinted message per session; the set stays as small as this session's mail.
 		this.hintedMail.add(mail.eventId);
-		const content = await this.mailContent(ctx);
-		this.session.pi.sendMessage(
-			{ customType: HOSTED_MESSAGING_MAIL, content, display: false, details: mail },
-			{ triggerTurn: true, deliverAs: "followUp" },
-		);
+		const inbox = await this.mail(ctx, "inbox", {});
+		const messages = isJsonObject(inbox) && Array.isArray(inbox.messages) ? inbox.messages.filter(isJsonObject) : [];
+		if (messages.length === 0) return;
+		const content: (TextContent | ImageContent)[] = [];
+		for (const message of messages) {
+			const { text: body, images } = decodeMail(String(message.body));
+			content.push({ type: "text", text: `Message from ${String(message.from)}:\n${body}` }, ...images.flatMap(imageContent));
+		}
+		const from = [...new Set(messages.map((message) => String(message.from)))];
+		this.session.pi.sendMessage({ customType: COLLABORATOR_MESSAGE, content, display: true, details: { from } }, { triggerTurn: true, deliverAs: "followUp" });
+	}
+
+	/** One daemon call in this session's own mail namespace, with the credentials of its private descriptor. */
+	private async mail(ctx: ExtensionContext, method: "send" | "inbox", params: MailParams): Promise<JsonValue | undefined> {
+		const descriptor: JsonValue = JSON.parse(readFileSync(await this.descriptor(ctx), "utf8"));
+		if (!isJsonObject(descriptor)) throw new HostedRuntimeClientError("invalid_response", "Messaging descriptor is malformed.");
+		const client = new HostedRuntimeClient(text(descriptor.socketPath), 5_000, 128 * 1024);
+		return client.call(`messaging.${method}`, { ...params, namespaceId: text(descriptor.namespaceId), secret: text(descriptor.secret) });
 	}
 
 	/** A one-line Runtime notice for the model, delivered only when the session is idle; true once it went out. */
@@ -109,22 +136,9 @@ export class MessagingClient {
 		return true;
 	}
 
-	/** Falls back to a one-line hint when the inbox cannot be read, so the model still knows to look. */
-	private async mailContent(ctx: ExtensionContext): Promise<string> {
-		const hint = "You have collaborator mail: call collaborator_inbox, act on it, and answer with collaborator_reply if it asks for one."
-			+ " Report only the outcome, never the tool steps.";
-		let inbox: JsonValue | undefined;
-		try { inbox = await this.readInbox?.(ctx); } catch { return hint; }
-		const messages = isJsonObject(inbox) && Array.isArray(inbox.messages) ? inbox.messages.filter(isJsonObject) : [];
-		if (messages.length === 0) return hint;
-		const delivered = messages.map((message) => `Mail from ${String(message.from)} (eventId ${String(message.eventId)}):\n${String(message.body)}`);
-		return `${delivered.join("\n\n")}\n\nAct on it and answer with collaborator_reply if it asks for one. Report only the outcome, never the tool steps.`;
-	}
-
 	private hintReady(registration: LiveClientRegistration, ctx: ExtensionContext): boolean {
 		if (!this.session.scope(ctx, registration)()) return false;
 		if (!isHeld(this.session.store.identity?.disposition)) return false;
-		if (!this.session.pi.getActiveTools().includes("collaborator_inbox")) return false;
 		return deliveryReady(ctx);
 	}
 
@@ -150,4 +164,14 @@ function managedParticipantConfigured(control: ManagedAgentControl, participant:
 		&& participant.holderLive
 		&& participant.generation === control.holderGeneration
 		&& participant.driver === control.driver;
+}
+
+function imageContent(path: string): ImageContent[] {
+	const mimeType = IMAGE_TYPES.get(extname(path).toLowerCase());
+	if (!mimeType) return [];
+	try {
+		return [{ type: "image", data: readFileSync(path).toString("base64"), mimeType }];
+	} catch {
+		return [];
+	}
 }
