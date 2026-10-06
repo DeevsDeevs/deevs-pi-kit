@@ -41,8 +41,6 @@ export const KIT_DEFAULTS = {
 
 const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ModelThinkingLevel[];
 const DATED = /-\d{8}$/;
-/** Pi 1.0.4 signs in with ChatGPT under `openai`; `openai-codex` is the legacy provider. */
-const OPENAI_SUBSCRIPTION = new Set(["openai", "openai-codex"]);
 const CodexCache = Type.Object({ models: Type.Array(Type.Object({ slug: Type.String() })) });
 
 /** Project over global over kit defaults, per name. Callers load it again for every resolution, so an edit applies to the next call. */
@@ -57,13 +55,9 @@ export async function loadKitConfig(cwd: string, agentDir: string): Promise<KitC
 /** Codex's model cache and the top-level `model` of its config.toml; either may be missing. */
 export function readCodexCatalog(codexHome: string): CodexCatalog {
 	let cache;
-	try {
-		cache = JSON.parse(readFileSync(join(codexHome, "models_cache.json"), "utf8"));
-	} catch {}
+	try { cache = JSON.parse(readFileSync(join(codexHome, "models_cache.json"), "utf8")); } catch {}
 	let toml = "";
-	try {
-		toml = readFileSync(join(codexHome, "config.toml"), "utf8");
-	} catch {}
+	try { toml = readFileSync(join(codexHome, "config.toml"), "utf8"); } catch {}
 	const model = /^model\s*=\s*["']([^"'\n]+)["']/m.exec(toml.split(/^\s*\[/m)[0])?.[1];
 	return { slugs: Value.Check(CodexCache, cache) ? cache.models.map((entry) => entry.slug) : [], model };
 }
@@ -184,11 +178,11 @@ function claude(name: string, level: ModelThinkingLevel | undefined, registry: M
 	return { harness: "claude", model: name, level: effort, clampedFrom: effort === level ? undefined : level };
 }
 
-/** A slug from Pi's `openai-codex` catalog, Codex's cache or its config.toml; no slug takes the lead's id on an OpenAI subscription provider, else config.toml's. */
+/** A slug from Pi's `openai-codex` catalog, Codex's cache or its config.toml; no slug takes the lead's id on `openai` (Pi 1.0.4's ChatGPT login) or `openai-codex`, else config.toml's. */
 function codex(slug: string, level: ModelThinkingLevel | undefined, ctx: ModelContext): ResolvedModel | Miss {
 	const piIds = ctx.registry.getAll().filter((model) => model.provider === "openai-codex").map((model) => model.id);
 	const known = [...new Set([...piIds, ...(ctx.codex?.slugs ?? []), ...(ctx.codex?.model ? [ctx.codex.model] : [])])];
-	const leadId = ctx.lead && OPENAI_SUBSCRIPTION.has(ctx.lead.model.provider) ? ctx.lead.model.id : undefined;
+	const leadId = ["openai", "openai-codex"].includes(ctx.lead?.model.provider ?? "") ? ctx.lead?.model.id : undefined;
 	const chosen = slug ? newest(slug, known) : (leadId ?? ctx.codex?.model);
 	if (!chosen) return { reason: slug ? `Codex knows ${known.join(", ")}` : "the lead is not on openai or openai-codex and ~/.codex/config.toml names no model" };
 	return { harness: "codex", model: chosen, ...clamp(ctx.registry.find("openai-codex", chosen) ?? ctx.registry.find("openai", chosen), level) };
