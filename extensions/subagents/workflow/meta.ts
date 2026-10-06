@@ -89,8 +89,11 @@ function optionalString(value: MetaValue | undefined): string | undefined {
 
 class MetaReader {
 	at = 0;
+	readonly source: string;
 
-	constructor(private readonly source: string) {}
+	constructor(source: string) {
+		this.source = source;
+	}
 
 	skip(): void {
 		const blank = /(?:\s+|\/\/[^\n]*|\/\*[\s\S]*?\*\/)*/y;
