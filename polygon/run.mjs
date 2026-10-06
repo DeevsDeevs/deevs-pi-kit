@@ -15,7 +15,12 @@ const LOGIN_VOLUME = "pi-kit-polygon-login";
 const { values: opts } = parseArgs({ options: {
 	only: { type: "string" }, gate: { type: "string" }, slow: { type: "boolean" }, live: { type: "boolean" },
 	list: { type: "boolean" }, login: { type: "boolean" }, kit: { type: "string", default: ROOT }, pi: { type: "string" },
+	"pi-runtime": { type: "string", default: "bun" },
 } });
+if (!["bun", "node"].includes(opts["pi-runtime"])) {
+	console.error(`polygon: --pi-runtime is bun (Pi's release binary, the default) or node (Pi from npm).`);
+	process.exit(1);
+}
 
 async function scenarios() {
 	const dir = join(HERE, "scenarios");
@@ -35,7 +40,7 @@ const isSkipped = (s) => s.pending && !opts.only;
 
 function ensureImage() {
 	const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
-	const args = { PI_VERSION: opts.pi ?? pkg.devDependencies["@earendil-works/pi-coding-agent"], CLAUDE_VERSION: "latest", CODEX_VERSION: "latest" };
+	const args = { PI_VERSION: opts.pi ?? pkg.devDependencies["@earendil-works/pi-coding-agent"], PI_RUNTIME: opts["pi-runtime"], CLAUDE_VERSION: "latest", CODEX_VERSION: "latest" };
 	const containerfile = join(HERE, "Containerfile");
 	// ponytail: "latest" is resolved once per tag; remove the image to pick up new Claude/Codex releases.
 	const tag = createHash("sha256").update(readFileSync(containerfile)).update(JSON.stringify(args)).digest("hex").slice(0, 12);
@@ -100,6 +105,7 @@ async function runOne(s, run) {
 	const started = Date.now();
 	const t = await sandbox({ run, name: s.name, kit: "/kit", results: "/results" });
 	t.live = Boolean(opts.live);
+	t.piRuntime = opts["pi-runtime"];
 	let status = "pass", error;
 	let timer;
 	try {

@@ -9,6 +9,7 @@ npm run polygon -- --gate M0 --slow      # a milestone gate, slow scenarios incl
 npm run polygon -- --kit clone           # git clone --local HEAD + npm install --omit=dev --legacy-peer-deps, as Pi installs it
 npm run polygon -- --kit installed       # the checkout `pi update` produced, read-only
 npm run polygon -- --pi 1.0.1            # another Pi release than devDependencies pins
+npm run polygon -- --pi-runtime node     # Pi from npm on Node instead of the Bun release binary
 npm run polygon -- --list
 ```
 
@@ -16,7 +17,7 @@ Results land in `polygon/results/<run>/` (`latest` points at the newest): `summa
 
 ## Sandbox
 
-`Containerfile` holds Node 24, git, python3, tini, ripgrep, fd, Pi at the kit's devDependencies version, the latest Claude Code and Codex, and Herdr's official static release binary, checked against its published SHA-256. The image tag is a hash of the Containerfile and build args, built only when missing; `podman image rm` it to pick up newer Claude or Codex releases.
+`Containerfile` holds Node 24, git, python3, tini, ripgrep, fd, the latest Claude Code and Codex, Herdr's official static release binary checked against its published SHA-256, and Pi at the kit's devDependencies version as its Bun-compiled release binary (`pi-linux-x64.tar.gz`, checked against the release's `SHA256SUMS`), the build users run. `--pi-runtime node` installs Pi from npm and runs it on Node instead, for comparison; `durable-load` asserts which runtime, and so which SQLite driver, the engine got. The image tag is a hash of the Containerfile and build args, built only when missing; `podman image rm` it to pick up newer Claude or Codex releases.
 
 One container runs per polygon run. The kit is mounted read-only at `/kit` (a symlinked `node_modules` is mounted at its real path), `polygon/` at `/polygon`, and the run's results at `/results`. Each scenario gets its own `HOME` under `/results/<name>/home`, with Pi, Claude and Codex config dirs inside it, an env built from scratch, a git identity, and a `POLYGON_RUN` tag. Teardown closes the drivers, then SIGKILLs every process still carrying the tag; any such process fails the scenario.
 
