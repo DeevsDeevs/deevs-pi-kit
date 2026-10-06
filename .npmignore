@@ -4,6 +4,7 @@ node_modules/
 .chains/
 .missions/
 test/
+polygon/
 scripts/
 tools/
 AGENTS.md
