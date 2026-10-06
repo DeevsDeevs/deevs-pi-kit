@@ -57,7 +57,7 @@ export class ChainService {
 		const title = input.title?.trim() || extractTitle(rawContent, "chain-link.md");
 		const slug = slugify(input.slug || title);
 		const latest = await this.latest(chain, branch);
-		if (!input.parent && branch !== DEFAULT_BRANCH && !latest) throw new Error("First link on a non-main branch requires a parent link. Use /chain-fork or pass parent.");
+		if (!input.parent && branch !== DEFAULT_BRANCH && !latest) throw new Error("First link on a non-main branch requires a parent link. Use chain_fork or pass parent.");
 		const parent = input.parent ? validateLinkName(input.parent) : latest?.filename;
 		const dir = await this.ensureChainDir(chain, true);
 
@@ -86,7 +86,7 @@ export class ChainService {
 		const chain = validateChainName(input.chain);
 		const branch = input.branch ? validateBranchName(input.branch) : input.link ? undefined : DEFAULT_BRANCH;
 		const links = await this.links(chain, branch);
-		if (links.length === 0) throw new Error(`No chain links found for ${chain}${branch ? ` branch ${branch}` : ""}. Use /chain-list to see chains.`);
+		if (links.length === 0) throw new Error(`No chain links found for ${chain}${branch ? ` branch ${branch}` : ""}. Use chain_list to see chains.`);
 		const filename = input.link ? validateLinkName(input.link) : links[0]!.filename;
 		const link = links.find((item) => item.filename === filename) ?? (input.link ? await this.findLink(chain, filename) : null);
 		if (!link || (branch && link.branch !== branch)) throw new Error(`Chain link not found: ${chain}/${filename}${branch ? ` on branch ${branch}` : ""}`);
