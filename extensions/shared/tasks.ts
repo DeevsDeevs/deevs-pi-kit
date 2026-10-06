@@ -140,7 +140,7 @@ function inFlight(taskId: string, delivered: Set<string>): boolean {
 }
 
 /** Undelivered events of one monitor become one notification that acks all of their ids. */
-export function mergeEvents(pending: TaskNotification[]): [TaskNotification, string[]][] {
+function mergeEvents(pending: TaskNotification[]): [TaskNotification, string[]][] {
 	const out: [TaskNotification, string[]][] = [];
 	const open = new Map<string, [TaskNotification, string[]]>();
 	for (const n of pending) {
@@ -228,7 +228,7 @@ function showHeld(): void {
 }
 
 /** Neutralizes envelope markup inside interpolated text (A.5); syntax only. */
-export function escapeMarkup(text: string): string {
+function escapeMarkup(text: string): string {
 	return text
 		.replace(/<(\/?)(task-notification|system-reminder)/gi, "<\\$1$2")
 		.replace(/\[(Workflow harness)/gi, "[\\$1");
