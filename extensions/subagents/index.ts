@@ -1,334 +1,167 @@
-import { StringEnum, Type } from "@earendil-works/pi-ai";
-import { Text } from "@earendil-works/pi-tui";
-import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { limitsText, SubagentService, type SubagentGroup, type SubagentStartRequest, type SubagentWaitRequest } from "./service.ts";
-import type { DelegateRun } from "./runtime-types.ts";
-import { clearSubagentService, setSubagentService } from "./registry.ts";
-import { formatDuration, formatUsage } from "../shared/runtime-ui.ts";
+import { existsSync, statSync } from "node:fs";
+import { resolve } from "node:path";
+import { Type } from "@earendil-works/pi-ai";
+import type { Static } from "typebox";
+import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { loadKitConfig, modelLabel, resolveModel } from "../shared/models.ts";
+import { tasks, type TaskNotification } from "../shared/tasks.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
-import { loadBuiltinAgents } from "./agents.ts";
-import { toToolUsage, type RuntimeUsage } from "../shared/runtime-events.ts";
-import { utf8Tail } from "../shared/bytes.ts";
-import { FULL_SCREEN_OVERLAY } from "../shared/dashboard.ts";
-import { clampWaitMs } from "../shared/runtime-delivery.ts";
-import { AgentsDashboard } from "./ui.ts";
+import { agentTypes, agentTypesSection, findAgentType, workerPrompt } from "./definitions.ts";
+import { AGENT_SLOTS, closeAll, ensureEngine, launch, queuedAhead, reinstall, resumeSession, settle, writersIn, type Limits } from "./engine/index.ts";
 
-const ONLY_ON_REQUEST = "Set ONLY when the user explicitly asks for a limit; omitted means unbounded. A run stopped by it with no output counts as failed";
-const LimitSchema = {
-	turns: Type.Optional(Type.Integer({ minimum: 1, description: `Provider-turn limit. ${ONLY_ON_REQUEST}` })),
-	tokens: Type.Optional(Type.Integer({ minimum: 1, description: `Aggregate token limit; one provider call may overshoot. ${ONLY_ON_REQUEST}` })),
-	costUsd: Type.Optional(Type.Number({ exclusiveMinimum: 0, description: `USD cost limit; one provider call may overshoot. ${ONLY_ON_REQUEST}` })),
-};
+const FOREGROUND_MS = 120_000;
+const RESERVED_NAMES = new Set(["main", "user", "system"]);
+const ONLY_ON_REQUEST = "Set ONLY when the user explicitly asks for this limit; omitted means none.";
 
-const TaskSchema = Type.Object({
-	agent: Type.String({ description: "Curated Pi Kit persona name" }),
-	task: Type.String({ description: "Focused bounded task" }),
-	cwd: Type.Optional(Type.String({ description: "Working directory; defaults to the parent cwd" })),
-	context: Type.Optional(StringEnum(["fresh", "fork"] as const)),
-	model: Type.Optional(Type.String()),
-	tools: Type.Optional(Type.Array(Type.String(), { description: "Optional narrowing using persona-local names such as safe_read, safe_list, and safe_search" })),
-	allowWrite: Type.Optional(Type.Boolean({ description: "Explicitly enable edit/write for this run" })),
-	wallMs: Type.Optional(Type.Integer({ minimum: 1_000, maximum: 86_400_000, description: "Hard wall-clock limit; defaults to 6 hours and is capped at 24 hours" })),
-	...LimitSchema,
+const AgentSchema = Type.Object({
+	description: Type.String({ description: "A short (3-5 word) description of the task" }),
+	prompt: Type.String({ description: "The task for the agent to perform" }),
+	subagent_type: Type.Optional(Type.String({ description: "The agent type; general-purpose when omitted" })),
+	model: Type.Optional(Type.String({ description: "Omit normally: the agent runs your model and thinking level. Otherwise a configured name (astra, luna, opus) or provider/id[:level]; pass a model the user named exactly" })),
+	run_in_background: Type.Optional(Type.Boolean({ description: "Default true: return at once and get a notification when the agent finishes. false waits for the result, for at most 2 minutes" })),
+	name: Type.Optional(Type.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$", description: "A name to address the agent by; a later agent with the same name takes it over" })),
+	isolation: Type.Optional(Type.Literal("worktree", { description: "Run in a fresh git worktree of the repo" })),
+	cwd: Type.Optional(Type.String({ description: "Working directory, for one repo inside a multi-repo parent folder; defaults to yours" })),
+	maxTurns: Type.Optional(Type.Integer({ minimum: 1, description: `Model turns before the agent stops. ${ONLY_ON_REQUEST}` })),
+	maxTokens: Type.Optional(Type.Integer({ minimum: 1, description: `Tokens before the agent stops. ${ONLY_ON_REQUEST}` })),
+	timeout: Type.Optional(Type.Integer({ minimum: 1_000, description: `Milliseconds before the agent stops. ${ONLY_ON_REQUEST}` })),
 });
+type AgentParams = Static<typeof AgentSchema>;
 
-const SubagentSchema = Type.Object({
-	agent: Type.Optional(Type.String({ description: "Persona for a fresh single run" })),
-	task: Type.Optional(Type.String({ description: "Task for a fresh or resumed single run" })),
-	resume: Type.Optional(Type.String({ description: "Terminal run id whose persistent agent session should receive a new turn" })),
-	background: Type.Optional(Type.Boolean({ description: "Return after start; default true. False waits up to 2 minutes for terminal settlement, then returns the current status." })),
-	cwd: Type.Optional(Type.String()),
-	context: Type.Optional(StringEnum(["fresh", "fork"] as const)),
-	model: Type.Optional(Type.String()),
-	tools: Type.Optional(Type.Array(Type.String(), { description: "Optional narrowing using persona-local names such as safe_read, safe_list, and safe_search" })),
-	allowWrite: Type.Optional(Type.Boolean()),
-	wallMs: Type.Optional(Type.Integer({ minimum: 1_000, maximum: 86_400_000, description: "Hard wall-clock limit; defaults to 6 hours and is capped at 24 hours" })),
-	...LimitSchema,
-	tasks: Type.Optional(Type.Array(TaskSchema, { description: "Independent tasks for one bounded parallel group", maxItems: 16 })),
-	concurrency: Type.Optional(Type.Integer({ minimum: 1, description: "Parallel group concurrency" })),
-	failFast: Type.Optional(Type.Boolean()),
-});
-
-const WaitSchema = Type.Object({
-	ids: Type.Array(Type.String(), { minItems: 1, description: "Run or group ids" }),
-	waitMs: Type.Optional(Type.Number({ description: "Maximum wait for terminal state, capped at and defaulting to 120000; 0 for status only. A run still active then is returned with its current status and wakes idle Pi when it settles." })),
-	cancel: Type.Optional(Type.Boolean({ description: "Cancel these runs/groups before returning settlement" })),
-	maxBytes: Type.Optional(Type.Number({ description: "Maximum output bytes per run; default 65536" })),
-});
+const AGENT_DESCRIPTION = [
+	"Launch an agent that works on a task by itself, with its own context and tools, and reports back once.",
+	"",
+	"Agents run in the background by default: the call returns at once and a <task-notification> arrives in your conversation when the agent finishes. Do not poll, sleep or read its output file while it runs; keep working or answer the user. Do not do the same work yourself in parallel, and do not report a result before its notification arrives.",
+	"Launch independent agents in one message with several Agent calls so they run at the same time. Set run_in_background: false only when you cannot go on without the answer.",
+	"",
+	"The agent starts with none of your context. Write the prompt as a complete brief: the goal, what you already know, the files and constraints involved, and what to return. Say whether it should change code or only research. Never delegate your own understanding: synthesize what agents report before acting on it.",
+].join("\n");
 
 export default function subagentsExtension(pi: ExtensionAPI): void {
-	const service = new SubagentService(pi);
-	setSubagentService(service);
-	const usageClaims = new Set<string>();
-	let latestCtx: ExtensionContext | undefined;
-	const restoreUsageClaims = (ctx: ExtensionContext): void => {
-		usageClaims.clear();
-		for (const entry of ctx.sessionManager.getBranch() as readonly unknown[]) {
-			const record = entry as { type?: string; customType?: string; data?: { key?: string } };
-			if (record.type === "custom" && record.customType === "deevs.subagent-usage-claim.v1" && typeof record.data?.key === "string") usageClaims.add(record.data.key);
-		}
-	};
-	const claimUsage = (values: Array<DelegateRun | SubagentGroup>) => {
-		const runs = values.flatMap((value) => "children" in value ? value.children.flatMap((id) => {
-			const run = service.executor.find(id);
-			return run ? [run] : [];
-		}) : [value]);
-		const usage = runs.reduce((total, run) => {
-			const key = `${run.spec.id}:${run.spec.generation}`;
-			if (["starting", "running", "stopping"].includes(run.runtime.status) || usageClaims.has(key)) return total;
-			usageClaims.add(key);
-			pi.appendEntry("deevs.subagent-usage-claim.v1", { key });
-			return {
-				inputTokens: total.inputTokens + run.runtime.usage.inputTokens,
-				outputTokens: total.outputTokens + run.runtime.usage.outputTokens,
-				cacheReadTokens: total.cacheReadTokens + run.runtime.usage.cacheReadTokens,
-				cacheWriteTokens: total.cacheWriteTokens + run.runtime.usage.cacheWriteTokens,
-				costUsd: total.costUsd + run.runtime.usage.costUsd,
-			};
-		}, { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 } satisfies RuntimeUsage);
-		return toToolUsage(usage);
-	};
-	const setContext = (ctx: ExtensionContext): void => {
-		latestCtx = ctx;
-		service.setContext(ctx);
-	};
-	const updateStatus = (): void => {
-		if (!latestCtx) return;
-		const state = service.list();
-		const activeRuns = state.runs.filter((run) => ["starting", "running", "stopping"].includes(run.runtime.status)).length;
-		const activeGroups = state.groups.filter((group) => group.status === "running").length;
-		const label = activeRuns || activeGroups ? `${activeRuns ? `a${activeRuns}` : ""}${activeGroups ? `${activeRuns ? "/" : ""}g${activeGroups}` : ""}` : undefined;
-		latestCtx.ui.setStatus("subagents", label ? latestCtx.ui.theme?.fg("accent", label) ?? label : undefined);
-	};
-	const unsubscribe = service.executor.onChange(updateStatus);
+	tasks.install(pi);
 
 	pi.registerTool({
-		name: "subagent",
-		label: "Subagent",
-		description: "Start or resume one curated Pi Kit persona, or run a bounded independent parallel group. Read-only unless allowWrite is explicit.",
-		promptSnippet: "Delegate focused exploration, review, testing, architecture, or specialist work to owned Pi Kit personas.",
-		promptGuidelines: [
-			"Use fresh independent runs for review and refutation; resume only when continuity is required.",
-			"Keep scope concrete. Set turns, tokens or costUsd only when the user explicitly asks for a limit; wall time defaults to six hours.",
-			"Set allowWrite only when the task must edit files; no dialog confirms it.",
-			"After starting background runs, continue runnable independent work. Terminal events wake idle Pi automatically; wait only when the result is the next dependency, during cancellation, or at final settlement.",
-		],
-		parameters: SubagentSchema,
-		async execute(_toolCallId, params: SubagentStartRequest, signal, onUpdate, ctx) {
-			setContext(ctx);
-			if (signal?.aborted) throw signal.reason;
-			const unsubscribeUpdate = service.executor.onChange((run) => onUpdate?.({ content: [{ type: "text", text: formatStart(run) }], details: run }));
-			try {
-				const result = await service.start(params, ctx);
-				service.consumeTerminal([result], runtimeClaimant(ctx));
-				updateStatus();
-				return { content: [{ type: "text" as const, text: formatStart(result) }], details: result, usage: claimUsage([result]) };
-			} finally {
-				unsubscribeUpdate();
+		name: "Agent",
+		label: "Agent",
+		description: AGENT_DESCRIPTION,
+		promptSnippet: "Delegate a self-contained task to a background agent that reports back once.",
+		parameters: AgentSchema,
+		async execute(toolCallId, params: AgentParams, signal, _onUpdate, ctx) {
+			const type = findAgentType(params.subagent_type);
+			if (params.name && RESERVED_NAMES.has(params.name)) throw new Error(`The name '${params.name}' is reserved; pick another.`);
+			if ((params.isolation ?? type.isolation) === "worktree") throw new Error("Worktree isolation is not available yet; run without isolation.");
+			const cwd = resolve(ctx.cwd, params.cwd ?? ".");
+			if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`cwd ${cwd} is not a directory.`);
+			const level = pi.getThinkingLevel();
+			const resolved = resolveModel(params.model ?? type.model, {
+				config: await loadKitConfig(ctx.cwd, getAgentDir()),
+				registry: ctx.modelRegistry,
+				lead: ctx.model ? { model: ctx.model, level } : undefined,
+			}, type.effort);
+			if (resolved.harness !== "pi") throw new Error(`${modelLabel(resolved)} runs as a Claude Code or Codex worker, which the kit does not start yet; pick a Pi model.`);
+			const limits: Limits = { maxTurns: params.maxTurns, maxTokens: params.maxTokens, timeout: params.timeout };
+			const foreground = params.run_in_background === false;
+			const engine = await ensureEngine(ctx);
+			const writer = type.tools.includes("edit") || type.tools.includes("write");
+			const sharesCwd = writer && await writersIn(engine, cwd) > 0;
+			const queued = queuedAhead();
+			const { agentId, outputFile, done } = await launch(engine, {
+				description: params.description,
+				prompt: params.prompt,
+				name: params.name,
+				model: resolved.model,
+				level: resolved.level,
+				tools: type.tools,
+				instructions: workerPrompt(type, cwd),
+				cwd,
+				writer,
+				toolUseId: toolCallId,
+				limits,
+				foreground,
+			});
+			const launched = launchText(agentId, outputFile, modelLabel(resolved), limits, queued, sharesCwd);
+			if (!done) return { content: [{ type: "text" as const, text: launched }], details: { agentId, outputFile, status: "async_launched" } };
+			const outcome = await settle(agentId, done, FOREGROUND_MS, signal);
+			if (outcome === "background") return { content: [{ type: "text" as const, text: launched }], details: { agentId, outputFile, status: "async_launched" } };
+			if (outcome === "aborted") {
+				await tasks.find(agentId)?.stop?.();
+				throw new Error(`Agent "${params.description}" was stopped`);
 			}
-		},
-		renderCall(args: SubagentStartRequest, theme: Theme) {
-			const target = args.tasks?.length ? `${args.tasks.length} parallel` : args.resume ? `resume ${args.resume}` : args.agent ?? "invalid";
-			return new Text(theme.fg("toolTitle", theme.bold("subagent ")) + theme.fg("muted", target), 0, 0);
-		},
-		renderResult(result, { expanded }, theme) {
-			return new Text(renderDetails(result.details as DelegateRun | SubagentGroup | undefined, expanded, theme), 0, 0);
+			if (outcome.status !== "completed") throw new Error([outcome.summary, outcome.result].filter(Boolean).join("\n"));
+			return { content: [{ type: "text" as const, text: foregroundText(agentId, outcome, limits) }], details: { agentId, outputFile, status: outcome.status } };
 		},
 	});
 
 	pi.registerTool({
-		name: "subagent_wait",
-		label: "Wait for Subagent",
-		description: "Wait for, inspect, or cancel Subagent runs and groups without polling.",
-		promptSnippet: "Collect Subagent results at a dependency, cancellation, or final-settlement gate; use waitMs=0 only for status.",
-		promptGuidelines: ["Do not wait while runnable independent work remains; idle Pi is woken automatically when background work settles.", "Prefer one bounded wait over repeated status calls.", "Terminal settlement follows actual worker/child quiescence."],
-		parameters: WaitSchema,
-		async execute(_toolCallId, params: SubagentWaitRequest & { maxBytes?: number }, signal, onUpdate, ctx) {
-			setContext(ctx);
-			const unsubscribeUpdate = service.executor.onChange((run) => {
-				if (params.ids.includes(run.spec.id)) onUpdate?.({ content: [{ type: "text", text: formatWait(run, clampBytes(params.maxBytes)) }], details: { results: [run] } });
-			});
-			try {
-				const results = await service.wait({ ...params, waitMs: clampWaitMs(params.waitMs) }, signal);
-				service.consumeTerminal(results, runtimeClaimant(ctx));
-				updateStatus();
-				const maxBytes = clampBytes(params.maxBytes);
-				return { content: [{ type: "text" as const, text: results.map((item) => formatWait(item, maxBytes)).join("\n\n") }], details: { results }, usage: claimUsage(results) };
-			} finally {
-				unsubscribeUpdate();
-			}
-		},
-		renderCall(args: SubagentWaitRequest, theme: Theme) {
-			return new Text(theme.fg("toolTitle", theme.bold("subagent_wait ")) + theme.fg("muted", `${args.ids.length} id(s)${args.cancel ? " · cancel" : ""}`), 0, 0);
-		},
-		renderResult(result, { expanded }, theme) {
-			const details = result.details as { results?: Array<DelegateRun | SubagentGroup> } | undefined;
-			const text = details?.results?.map((item) => renderDetails(item, expanded, theme)).join("\n") ?? textContent(result.content);
-			return new Text(text, 0, 0);
+		name: "TaskStop",
+		label: "TaskStop",
+		description: "Stop a running background task: an agent, by its agentId or name, or a job, by its id.",
+		promptSnippet: "Stop a background agent or job that is no longer needed.",
+		parameters: Type.Object({ task_id: Type.String({ description: "The id or name of the task to stop" }) }),
+		async execute(_toolCallId, params: { task_id: string }, _signal, _onUpdate, ctx) {
+			const entry = tasks.find(params.task_id, ctx.sessionManager.getSessionId());
+			if (!entry) throw new Error(`No task found with ID: ${params.task_id}`);
+			if (entry.status !== "running" || !entry.stop) throw new Error(`Task ${entry.id} is not running (status: ${entry.status})`);
+			await entry.stop();
+			tasks.update(entry.id, { status: "killed" });
+			return { content: [{ type: "text" as const, text: `Successfully stopped task: ${entry.id} (${entry.description})` }], details: { taskId: entry.id, kind: entry.kind } };
 		},
 	});
 
 	pi.registerCommand("agents", {
-		description: "Browse, inspect, resume, stop, or clear Subagent runs",
-		getArgumentCompletions: (prefix) => service.list().runs.map((run) => run.spec.id).filter((id) => id.startsWith(prefix)).map((value) => ({ value, label: value })),
-		handler: async (args, context) => {
-			setContext(context);
-			const [action, id, ...rest] = args.trim().split(/\s+/).filter(Boolean);
-			if (action === "clear") {
-				context.ui.notify(`Cleared ${service.clearTerminal(id)} terminal Subagent record(s).`, "info");
-				return;
-			}
-			if (action === "stop" && id) {
-				const results = await service.wait({ ids: [id], cancel: true });
-				service.consumeTerminal(results, runtimeClaimant(context));
-			}
-			if (action === "resume" && id) {
-				const task = rest.join(" ").trim();
-				if (!task) return context.ui.notify("Usage: /agents resume <run-id> <task>", "warning");
-				const resumed = await service.start({ resume: id, task, background: true }, context);
-				await showTextViewer(context, "Subagent resumed", formatStart(resumed));
-				return;
-			}
-			const target = action === "stop" ? id : action;
-			if (!target && context.mode === "tui" && context.hasUI) {
-				let unsubscribeDashboard: () => void = () => {};
-				try {
-					await context.ui.custom<void>((tui, theme, _keybindings, done) => {
-						const render = () => tui.requestRender();
-						unsubscribeDashboard = service.executor.onChange(render);
-						return new AgentsDashboard(
-							service,
-							theme,
-							() => done(undefined),
-							render,
-							() => Math.max(4, tui.terminal.rows - 2),
-							(id) => void service.wait({ ids: [id], cancel: true }).then(() => { context.ui.notify(`Cancelled ${id}.`, "info"); render(); }).catch((error) => context.ui.notify(error instanceof Error ? error.message : String(error), "error")),
-							(id) => { context.ui.notify(`Cleared ${service.clearTerminal(id)} record.`, "info"); render(); },
-						);
-					}, { overlay: true, overlayOptions: FULL_SCREEN_OVERLAY });
-				} finally {
-					unsubscribeDashboard();
-				}
-				return;
-			}
-			await showTextViewer(context, "Subagents", formatAgentsBrowser(service, target ?? ""));
-		},
+		description: "List this session's background agents and jobs, and the agent types",
+		handler: async (_args, ctx) => showTextViewer(ctx, "Agents", rosterText(ctx)),
 	});
 
-	pi.on("session_start", async (_event, ctx) => {
-		setContext(ctx);
-		restoreUsageClaims(ctx);
-		await service.restore(ctx);
-		updateStatus();
+	pi.on("session_start", async (event, ctx) => {
+		if (event.reason === "reload") await reinstall();
+		await resumeSession(ctx).catch((error: unknown) => ctx.ui.notify(`Agents of this session did not resume: ${error instanceof Error ? error.message : String(error)}`, "error"));
 	});
-	pi.on("session_tree", async (_event, ctx) => {
-		setContext(ctx);
-		restoreUsageClaims(ctx);
-		await service.restore(ctx);
-		updateStatus();
+	pi.on("before_agent_start", (event) => {
+		event.systemPromptOptions.sections.agent_types = agentTypesSection();
 	});
-	pi.on("before_agent_start", (_event, ctx) => setContext(ctx));
-	pi.on("agent_settled", (_event, ctx) => {
-		setContext(ctx);
-		updateStatus();
-	});
-	pi.on("session_shutdown", () => {
-		unsubscribe();
-		service.dispose();
-		clearSubagentService(service);
-		usageClaims.clear();
-		latestCtx?.ui.setStatus("subagents", undefined);
-		latestCtx = undefined;
+	pi.on("session_shutdown", async (event) => {
+		if (event.reason === "quit") await closeAll();
 	});
 }
 
-function runtimeClaimant(ctx: ExtensionContext): string {
-	return ctx.sessionManager.getSessionFile() ?? `memory:${ctx.sessionManager.getSessionId()}`;
+function limitsLine(limits: Limits): string | undefined {
+	const set = [limits.maxTurns && `maxTurns ${limits.maxTurns}`, limits.maxTokens && `maxTokens ${limits.maxTokens}`, limits.timeout && `timeout ${limits.timeout} ms`].filter(Boolean);
+	return set.length ? `Limits: ${set.join(", ")}` : undefined;
 }
 
-function formatAgentsBrowser(service: SubagentService, id: string): string {
-	const state = service.list();
-	const personas = loadBuiltinAgents();
-	if (id) {
-		const run = state.runs.find((candidate) => candidate.spec.id === id);
-		if (run) return `${formatWait(run, 65_536)}\n\nAgent: ${run.spec.agentId}\nGeneration: ${run.spec.generation}\nSession: ${run.runtime.sessionFile ?? "pending"}\nArtifacts: ${run.spec.artifactsDir}`;
-		const group = state.groups.find((candidate) => candidate.id === id);
-		if (group) return `${formatWait(group, 65_536)}\nLaunch failures:\n${group.launchFailures.map((failure) => `- ${failure}`).join("\n") || "- none"}`;
-		const persona = personas.find((candidate) => candidate.name === id);
-		if (persona) return `${persona.name}\n${persona.description}\n\nAccess: ${persona.write ? "write-capable" : "read-only"}\nTools: ${persona.tools.join(", ") || "none"}`;
-		return `Unknown Subagent id or persona: ${id}`;
-	}
-	const active = state.runs.filter((run) => ["starting", "running", "stopping"].includes(run.runtime.status));
-	const recent = state.runs.filter((run) => !active.includes(run)).slice(0, 4);
-	const runLines = (run: DelegateRun): string[] => [
-		`${run.runtime.status} ${run.spec.persona} · ${formatDuration((run.runtime.endedAt ?? Date.now()) - run.runtime.startedAt)} · $${run.runtime.usage.costUsd.toFixed(4)}`,
-		`  ${run.spec.id} · ${browserTokens(run)} tok`,
-	];
-	const groups = state.groups.slice(0, 5).map((group) => `${group.status} ${group.id} · ${group.children.length} runs${group.pending.length ? ` · ${group.pending.length} pending` : ""}`);
-	const personaLines = Array.from({ length: Math.ceil(personas.length / 3) }, (_, index) => personas.slice(index * 3, index * 3 + 3).map((persona) => persona.name).join(" | "));
+function launchText(agentId: string, outputFile: string, model: string, limits: Limits, queued: boolean, sharesCwd: boolean): string {
 	return [
-		`Active (${active.length})`,
-		...(active.length ? active.flatMap(runLines) : ["none"]),
+		"Async agent launched successfully.",
+		`agentId: ${agentId} (internal ID; to continue this agent, use SendMessage with to: '${agentId}')`,
+		"The agent works in the background and you will be notified when it finishes. Until then you know nothing about its result: do not guess or report it; continue other work or answer the user.",
+		"Do not duplicate its work or edit the files it is working on.",
+		`output_file: ${outputFile}`,
+		"Do not read or tail output_file; it is written when the agent finishes. If the user asks for progress, say the agent is still running.",
+		`Model: ${model}`,
+		limitsLine(limits),
+		queued && `Queued: ${AGENT_SLOTS} agents are running; this one starts when a slot frees.`,
+		sharesCwd && 'For parallel code-writing agents, dispatch each with isolation: "worktree".',
+	].filter(Boolean).join("\n");
+}
+
+function foregroundText(agentId: string, n: TaskNotification, limits: Limits): string {
+	return [
+		n.result || "(Subagent completed but returned no output.)",
+		`agentId: ${agentId} (use SendMessage with to: '${agentId}' to continue this agent)`,
+		n.limited && `Limited: ${n.summary}`,
+		limitsLine(limits),
+		`<usage>subagent_tokens: ${n.usage?.subagentTokens ?? 0}\ntool_uses: ${n.usage?.toolUses ?? 0}\nduration_ms: ${n.usage?.durationMs ?? 0}</usage>`,
+	].filter(Boolean).join("\n");
+}
+
+function rosterText(ctx: ExtensionContext): string {
+	const entries = tasks.list(ctx.sessionManager.getSessionId());
+	return [
+		`Tasks (${entries.length})`,
+		...(entries.length ? entries.map((entry) => `${entry.status.padEnd(9)} ${entry.kind.padEnd(5)} ${entry.id}${entry.name ? ` (${entry.name})` : ""} · ${entry.description}`) : ["none"]),
 		"",
-		`Recent (${recent.length})`,
-		...(recent.length ? recent.flatMap(runLines) : ["none"]),
-		...(groups.length ? ["", "Groups", ...groups] : []),
-		"",
-		"Personas",
-		...personaLines,
-		"",
-		"Details: /agents <id|persona>",
-		"Cleanup: /agents clear",
+		"Agent types",
+		...agentTypes().map((type) => `- ${type.name}: ${type.tools.join(", ")}`),
 	].join("\n");
-}
-
-function formatStart(value: DelegateRun | SubagentGroup): string {
-	if (isGroup(value)) return `${value.id} [${value.status}] ${value.children.length} started, ${value.pending.length} pending`;
-	const duration = Date.now() - value.runtime.startedAt;
-	const header = [`${value.spec.id} [${value.runtime.status}] ${value.spec.persona} · ${formatDuration(duration)}`, limitsText(value.spec.limits)].filter(Boolean).join(" · ");
-	return value.runtime.output ? `${header}\n${value.runtime.output}` : header;
-}
-
-function formatWait(value: DelegateRun | SubagentGroup, maxBytes: number): string {
-	if (isGroup(value)) return `${value.id} [${value.status}] children=${value.children.join(",") || "none"} pending=${value.pending.length}`;
-	const header = [`${value.spec.id} [${value.runtime.status}] ${formatUsage(tokenTotal(value), value.runtime.usage.costUsd)}`, limitsText(value.spec.limits)].filter(Boolean).join(" · ");
-	const body = value.runtime.output || value.runtime.error || "(no output)";
-	return `${header}\n${truncateBytes(body, maxBytes)}`;
-}
-
-function renderDetails(value: DelegateRun | SubagentGroup | undefined, expanded: boolean, theme: Theme): string {
-	if (!value) return theme.fg("dim", "No structured Subagent result");
-	if (isGroup(value)) return `${theme.fg(value.status === "completed" ? "success" : value.status === "running" ? "warning" : "error", value.status)} ${theme.fg("accent", value.id)} ${value.children.length} child(ren)${expanded ? ` · pending ${value.pending.length} · active ${value.active.length}` : ""}`;
-	const statusColor = value.runtime.status === "completed" ? "success" : ["starting", "running", "stopping"].includes(value.runtime.status) ? "warning" : "error";
-	let text = `${theme.fg(statusColor, value.runtime.status)} ${theme.fg("accent", value.spec.persona)} ${theme.fg("muted", value.spec.id)}`;
-	text += ` · ${formatUsage(tokenTotal(value), value.runtime.usage.costUsd)}`;
-	if (expanded && value.runtime.output) text += `\n${value.runtime.output}`;
-	if (expanded && value.runtime.error) text += `\n${theme.fg("error", value.runtime.error)}`;
-	return text;
-}
-
-function isGroup(value: DelegateRun | SubagentGroup): value is SubagentGroup {
-	return "children" in value;
-}
-
-function tokenTotal(run: DelegateRun): number {
-	return run.runtime.usage.inputTokens + run.runtime.usage.outputTokens + run.runtime.usage.cacheWriteTokens;
-}
-
-function browserTokens(run: DelegateRun): string {
-	const tokens = tokenTotal(run);
-	return tokens >= 1_000_000 ? `${(tokens / 1_000_000).toFixed(1)}m` : tokens >= 1_000 ? `${(tokens / 1_000).toFixed(1)}k` : String(tokens);
-}
-
-function clampBytes(value: number | undefined): number {
-	return Number.isFinite(value) ? Math.max(1, Math.min(Math.floor(value!), 262_144)) : 65_536;
-}
-
-function truncateBytes(text: string, maxBytes: number): string {
-	if (Buffer.byteLength(text) <= maxBytes) return text;
-	return `[truncated from start]\n${utf8Tail(text, maxBytes)}`;
-}
-
-function textContent(content: Array<{ type: string; text?: string }>): string {
-	return content.find((part) => part.type === "text")?.text ?? "";
 }

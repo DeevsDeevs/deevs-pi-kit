@@ -9,6 +9,14 @@ const jsonl = (file) => readFileSync(file, "utf8").split("\n").filter(Boolean).m
 export const notifications = (events) => events.filter((e) => e.type === "message_end" && e.message?.role === "custom")
 	.map((e) => ({ customType: e.message.customType, details: e.message.details }));
 
+/** `<task-notification>` messages that reached the lead, with their tags read as protocol framing. */
+export const taskNotifications = (events) => events.filter((e) => e.type === "message_end" && e.message?.role === "custom" && e.message.customType === "task-notification")
+	.map((e) => {
+		const content = typeof e.message.content === "string" ? e.message.content : e.message.content.map((b) => b.text ?? "").join("");
+		const tag = (name) => new RegExp(`<${name}>([\\s\\S]*?)</${name}>`).exec(content)?.[1];
+		return { id: e.message.details?.notificationId, taskId: tag("task-id"), status: tag("status"), result: tag("result"), toolUseId: tag("tool-use-id"), limited: tag("limited"), usage: tag("usage") };
+	});
+
 export const toolCalls = (events) => events.filter((e) => e.type === "tool_execution_end")
 	.map((e) => ({ name: e.toolName, isError: e.isError, details: e.result?.details }));
 

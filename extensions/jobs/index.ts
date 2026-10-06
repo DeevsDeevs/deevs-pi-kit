@@ -7,7 +7,7 @@ import { formatDuration } from "../shared/runtime-ui.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
 import { claimJobManager, releaseJobManager } from "./registry.ts";
 import { FULL_SCREEN_OVERLAY } from "../shared/dashboard.ts";
-import { clampWaitMs } from "../shared/runtime-delivery.ts";
+import { tasks, type TaskStatus } from "../shared/tasks.ts";
 import { JobsDashboard } from "./ui.ts";
 
 const StartSchema = Type.Object({
@@ -23,9 +23,7 @@ const StartSchema = Type.Object({
 	stdin: Type.Optional(Type.String({ description: "Optional initial stdin; stdin closes after start" })),
 	maxBytes: Type.Optional(Type.Number({ description: "In-memory output cap" })),
 });
-const WaitSchema = Type.Object({ ids: Type.Array(Type.String(), { minItems: 1 }), waitMs: Type.Optional(Type.Number({ description: "Maximum wait, capped at and defaulting to 120000; 0 for status. A Job still active then is returned with its current status and wakes idle Pi when it settles." })) });
 const ReadSchema = Type.Object({ id: Type.String(), afterSeq: Type.Optional(Type.Number()), maxBytes: Type.Optional(Type.Number()), stream: Type.Optional(StringEnum(["stdout", "stderr", "combined"] as const)) });
-const StopSchema = Type.Object({ id: Type.String() });
 
 export default function jobsExtension(pi: ExtensionAPI): void {
 	const { manager, owner } = claimJobManager(pi);
@@ -35,42 +33,28 @@ export default function jobsExtension(pi: ExtensionAPI): void {
 		const active = manager.list().filter((job) => ["starting", "running", "stopping"].includes(job.runtime.status)).length;
 		ctx.ui.setStatus("jobs", active ? ctx.ui.theme?.fg("accent", `j${active}`) ?? `j${active}` : undefined);
 	};
-	const unsubscribe = manager.onChange(updateStatus);
+	const unsubscribe = manager.onChange((job) => {
+		tasks.update(job.spec.id, { status: rosterStatus(job) });
+		updateStatus();
+	});
 
 	pi.registerTool({
 		name: "job_start",
 		label: "Start Job",
 		description: "Start a bounded non-agent pipe job with capped output, readiness, hard timeout, and process-tree cancellation.",
 		promptSnippet: "Run a bounded non-interactive command; persistent or interactive processes belong in Herdr.",
-		promptGuidelines: ["Do not use Jobs for servers, REPLs, terminal panes, or unattended schedules.", "Use argv instead of shell command when shell features are unnecessary.", "After starting a Job, continue runnable independent work. Terminal events wake idle Pi automatically; wait only at a result dependency, cancellation, or final-settlement gate."],
+		promptGuidelines: ["Do not use Jobs for servers, REPLs, terminal panes, or unattended schedules.", "Use argv instead of shell command when shell features are unnecessary.", "After starting a Job, continue runnable independent work; a finished Job wakes idle Pi by itself. TaskStop stops a Job."],
 		parameters: StartSchema,
 		async execute(_toolCallId, params: JobStartInput, signal, _onUpdate, context) {
 			ctx = context;
 			const job = await manager.start(params, context, signal);
+			tasks.register({ id: job.spec.id, kind: "job", name: job.spec.name, description: job.spec.name, status: rosterStatus(job), ownerSession: context.sessionManager.getSessionId(), startedAt: job.runtime.startedAt, stop: async () => { await manager.stop(job.spec.id); } });
 			manager.consumeTerminal([job], runtimeClaimant(context));
 			updateStatus();
 			return { content: [{ type: "text" as const, text: formatJob(job) }], details: job };
 		},
 		renderCall(args: JobStartInput, theme: Theme) { return new Text(theme.fg("toolTitle", theme.bold("job_start ")) + theme.fg("muted", args.name), 0, 0); },
 		renderResult(result, { expanded }, theme) { return new Text(renderJob(result.details as JobRecord | undefined, expanded, theme), 0, 0); },
-	});
-
-	pi.registerTool({
-		name: "job_wait",
-		label: "Wait for Job",
-		description: "Wait for one or more Jobs to settle without polling.",
-		promptSnippet: "Collect bounded Job results only at a dependency, cancellation, or final-settlement gate.",
-		promptGuidelines: ["Do not wait while runnable independent work remains; idle Pi is woken automatically when the Job settles.", "Prefer one bounded wait over polling."],
-		parameters: WaitSchema,
-		async execute(_toolCallId, params: { ids: string[]; waitMs?: number }, signal, _onUpdate, context) {
-			ctx = context;
-			const jobs = await manager.wait(params.ids, clampWaitMs(params.waitMs), signal);
-			manager.consumeTerminal(jobs, runtimeClaimant(context));
-			updateStatus();
-			return { content: [{ type: "text" as const, text: jobs.map(formatJob).join("\n") }], details: { jobs } };
-		},
-		renderCall(args, theme) { return new Text(theme.fg("toolTitle", theme.bold("job_wait ")) + theme.fg("muted", `${args.ids.length} id(s)`), 0, 0); },
-		renderResult(result, { expanded }, theme) { return new Text(((result.details as { jobs?: JobRecord[] } | undefined)?.jobs ?? []).map((job) => renderJob(job, expanded, theme)).join("\n") || theme.fg("dim", "No Jobs"), 0, 0); },
 	});
 
 	pi.registerTool({
@@ -90,23 +74,6 @@ export default function jobsExtension(pi: ExtensionAPI): void {
 			const details = result.details as JobReadResult | undefined;
 			return new Text(details ? (expanded ? formatRead(details) : theme.fg("muted", `${details.job.spec.id} · ${details.chunks.length} chunk(s) · next ${details.nextSeq}`)) : theme.fg("dim", "No output"), 0, 0);
 		},
-	});
-
-	pi.registerTool({
-		name: "job_stop",
-		label: "Stop Job",
-		description: "Stop a Job process tree, escalating to SIGKILL after a grace period.",
-		promptSnippet: "Stop a bounded Job.",
-		parameters: StopSchema,
-		async execute(_toolCallId, params: { id: string }, _signal, _onUpdate, context) {
-			ctx = context;
-			const job = await manager.stop(params.id);
-			manager.consumeTerminal([job], runtimeClaimant(context));
-			updateStatus();
-			return { content: [{ type: "text" as const, text: formatJob(job) }], details: job };
-		},
-		renderCall(args, theme) { return new Text(theme.fg("toolTitle", theme.bold("job_stop ")) + theme.fg("muted", args.id), 0, 0); },
-		renderResult(result, { expanded }, theme) { return new Text(renderJob(result.details as JobRecord | undefined, expanded, theme), 0, 0); },
 	});
 
 	pi.registerCommand("jobs", {
@@ -169,6 +136,11 @@ export default function jobsExtension(pi: ExtensionAPI): void {
 		ctx?.ui.setStatus("jobs", undefined);
 		ctx = undefined;
 	});
+}
+
+function rosterStatus(job: JobRecord): TaskStatus {
+	const status = job.runtime.status;
+	return status === "completed" ? "completed" : status === "cancelled" ? "killed" : ["failed", "timeout", "lost"].includes(status) ? "failed" : "running";
 }
 
 function runtimeClaimant(ctx: ExtensionContext): string {

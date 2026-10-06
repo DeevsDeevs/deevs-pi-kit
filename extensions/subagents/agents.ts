@@ -22,12 +22,14 @@ function parseAgentFile(filePath: string): AgentDefinition {
 	const { frontmatter, body } = splitFrontmatter(raw);
 	const name = stringValue(frontmatter.name) || path.basename(filePath, ".md");
 	const description = stringValue(frontmatter.description) || firstNonEmptyLine(body) || name;
-	const tools = listValue(frontmatter.tools, ["read", "bash"]);
+	const tools = listValue(frontmatter.tools, ["read", "grep", "find", "ls", "bash"]);
 	const mode = modeValue(frontmatter.mode);
 	const write = booleanValue(frontmatter.write, false);
 	const model = stringValue(frontmatter.model);
 	const tags = listValue(frontmatter.tags, []);
 	const disabled = booleanValue(frontmatter.disabled, false);
+	const effort = stringValue(frontmatter.effort);
+	const isolation = frontmatter.isolation?.trim() === "worktree" ? "worktree" as const : undefined;
 
 	return {
 		name,
@@ -38,6 +40,8 @@ function parseAgentFile(filePath: string): AgentDefinition {
 		model: model === "inherit" ? undefined : model,
 		tags,
 		disabled,
+		effort,
+		isolation,
 		body: body.trim(),
 	};
 }
