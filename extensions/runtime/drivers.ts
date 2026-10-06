@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { HostedRuntimeClientError } from "./client.ts";
 import { collapsePrompt, shellQuote } from "./herdr.ts";
 import { type HostedCollaboratorDriver, type HostedCollaboratorProfile, type HostedNativeCollaboratorDriver, isWriter } from "./schemas/state.ts";
@@ -20,6 +21,7 @@ const PROFILE_TOOLS: ProfileToolTable = {
 	"workspace-write": WORKSPACE_WRITE_COLLABORATOR_TOOLS,
 };
 const CLAUDE_READ_ONLY_TOOLS = "Bash,Read,Glob,Grep";
+const GUARD_HOOK = fileURLToPath(new URL("../shared/guard-hook.mjs", import.meta.url));
 const MAX_LAUNCH_COMMAND_BYTES = 4000;
 const LAUNCH_TIMEOUT_MS = "30000";
 export const NATIVE_STARTUP_MESSAGE = "Acknowledge in one line and wait for input.";
@@ -125,11 +127,11 @@ function claudeCommand(input: DriverCommandInput): string[] {
 	const context = mcp ? mcp.context : input.persona ? collapsePrompt(input.persona.prompt) : undefined;
 	const prompt = context ? ["--append-system-prompt", context] : [];
 	const servers = mcp ? ["--mcp-config", JSON.stringify({ mcpServers: { [mcp.serverName]: mcp.server } })] : [];
-	if (isWriter(input.profile)) return [...servers, "--permission-mode", "auto", ...model, ...prompt];
-	// Read-only ignores every settings file and foreign MCP server and offers no edit or write tool; dontAsk denies anything not allowed, so Bash and reads anywhere are allowed explicitly.
-	const tools = [CLAUDE_READ_ONLY_TOOLS, ...(mcp ? MESSAGING_TOOLS.map(tool => `mcp__${mcp.serverName}__${tool}`) : [])].join(",");
-	const allowed = ["--allowedTools", [CLAUDE_READ_ONLY_TOOLS, ...(mcp ? [`mcp__${mcp.serverName}`] : [])].join(",")];
-	return ["--permission-mode", "dontAsk", "--setting-sources", "", "--strict-mcp-config", "--tools", tools, ...allowed, ...servers, ...model, ...prompt];
+	// Decision 15: no permission prompts, the kit guard as a PreToolUse hook on Bash; a reader's tool list has no Edit or Write.
+	const guard = `${shellQuote(mcp?.server.command ?? "node")} ${shellQuote(GUARD_HOOK)}`;
+	const settings = { skipDangerousModePermissionPrompt: true, hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: guard }] }] } };
+	const tools = isWriter(input.profile) ? [] : ["--tools", [CLAUDE_READ_ONLY_TOOLS, ...(mcp ? MESSAGING_TOOLS.map(tool => `mcp__${mcp.serverName}__${tool}`) : [])].join(",")];
+	return [...servers, "--permission-mode", "bypassPermissions", "--settings", JSON.stringify(settings), ...tools, ...model, ...prompt];
 }
 
 function codexCommand(input: DriverCommandInput): string[] {

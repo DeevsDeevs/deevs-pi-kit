@@ -38,8 +38,8 @@ it.each(["claude-code", "codex"] as const)("compiles %s native configuration wit
 	expect(compiled.serverName).toMatch(/^pi_kit_[a-f0-9]{24}$/);
 	for (const tool of toolDefinitions) expect(`mcp__${compiled.serverName}__${tool.name}`.length).toBeLessThanOrEqual(64);
 	for (const flag of ["--safe-mode", "--restricted", "--tools", "--allowedTools", "--strict-mcp-config", "--disable", "--dangerously-bypass-permissions", "--dangerously-bypass-approvals-and-sandbox"]) expect(compiled.args).not.toContain(flag);
-	// A writer runs unattended: Claude classifies instead of prompting, Codex never asks and lets the sandbox answer.
-	const unattended = driver === "claude-code" ? "--permission-mode auto" : "--ask-for-approval never";
+	// A writer runs unattended: Claude bypasses prompts behind the kit guard hook, Codex never asks and lets the sandbox answer.
+	const unattended = driver === "claude-code" ? "--permission-mode bypassPermissions" : "--ask-for-approval never";
 	expect(compiled.args.join(" ")).toContain(unattended);
 	expect(compiled.args[compiled.args.indexOf("--model") + 1]).toBe(config.model);
 	expect(compiled.args.join("\n")).not.toContain("developer_instructions=");
@@ -51,6 +51,7 @@ it.each(["claude-code", "codex"] as const)("compiles %s native configuration wit
 	expect(escapedCommandBytes(compiled.argv)).toBeLessThanOrEqual(4000);
 	expect(launch({ ...config, personaPrompt: "Selected persona context." }).args).toEqual(compiled.args);
 	if (driver === "claude-code") {
+		expect(JSON.parse(compiled.args[compiled.args.indexOf("--settings") + 1]!).hooks.PreToolUse[0].hooks[0].command).toContain("guard-hook.mjs");
 		const servers = JSON.parse(compiled.args[compiled.args.indexOf("--mcp-config") + 1]!).mcpServers;
 		expect(Object.keys(servers)).toEqual([compiled.serverName]);
 		expect(servers[compiled.serverName]).toEqual({ command: realpathSync(process.execPath), args: [resolve("extensions/runtime/mcp/main.mjs"), compiled.descriptorPath] });
@@ -70,12 +71,11 @@ it.each(["claude-code", "codex"] as const)("gives a read-only %s collaborator th
 	expect(compiled.args.join(" ")).not.toContain("workspace-write");
 	expect(compiled.args[compiled.args.indexOf("--model") + 1]).toBe(config.model);
 	if (driver === "claude-code") {
-		expect(compiled.args.join(" ")).toContain("--permission-mode dontAsk --setting-sources  --strict-mcp-config");
+		expect(compiled.args.join(" ")).toContain("--permission-mode bypassPermissions");
 		const tools = compiled.args[compiled.args.indexOf("--tools") + 1]!.split(",");
 		expect(tools.slice(0, 4)).toEqual(["Bash", "Read", "Glob", "Grep"]);
 		expect(tools.slice(4)).toEqual(toolDefinitions.map(tool => `mcp__${compiled.serverName}__${tool.name}`));
 		expect(tools).not.toContain("Edit");
-		expect(compiled.args[compiled.args.indexOf("--allowedTools") + 1]).toBe(`Bash,Read,Glob,Grep,mcp__${compiled.serverName}`);
 		expect(compiled.args[compiled.args.indexOf("--mcp-config") + 1]).toBe(writer.args[writer.args.indexOf("--mcp-config") + 1]);
 		expect(compiled.args[compiled.args.indexOf("--append-system-prompt") + 1]).toBe(writer.args.at(-1));
 	} else {
