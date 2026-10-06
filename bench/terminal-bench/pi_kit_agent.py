@@ -39,3 +39,13 @@ class PiKit(Pi):
             environment,
             command=f"mkdir -p ~/.pi/agent && printf '%s\\n' {shlex.quote(settings)} > ~/.pi/agent/settings.json && pi --version",
         )
+
+    async def run(self, instruction, environment, context) -> None:
+        # Subagents run on pi-durable outside the lead's session file; keep their stores with the
+        # logs so summarize.py bills their OpenRouter generations too.
+        # ponytail: skipped when the agent timeout cancels the run; copy on timeout if that matters.
+        try:
+            await super().run(instruction, environment, context)
+        finally:
+            logs = shlex.quote(str(self.environment_logs_dir / "pi-kit-agents"))
+            await self.exec_as_agent(environment, command=f"[ ! -d ~/.pi/agent/pi-kit ] || cp -r ~/.pi/agent/pi-kit {logs}")
