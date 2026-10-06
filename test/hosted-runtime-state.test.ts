@@ -17,6 +17,7 @@ import {
 	validateHostedRuntimeState,
 	writeHostedRuntimeState,
 } from "../extensions/runtime/service/state.ts";
+import { messagingConfigurationHash } from "../extensions/runtime/service/state/keys.ts";
 
 const roots: string[] = [];
 const PROJECT_ROOT = "/tmp/project";
@@ -193,7 +194,7 @@ describe("hosted runtime state persistence", () => {
 		expect(() => validateHostedRuntimeState(orphanMail)).toThrow(HostedStateStorageError);
 	});
 
-	it("never expires a grant by time, including one an older build stamped with an expiry", () => {
+	it("never expires a live grant by time, including one an older build stamped with an expiry", () => {
 		const state = populatedState();
 		const namespaceId = "msg_00000000-0000-0000-0000-000000000001";
 		state.messaging[namespaceId] = {
@@ -202,7 +203,7 @@ describe("hosted runtime state persistence", () => {
 			participantKey: SENDER,
 			holderGeneration: "lease_sender",
 			targetKey: "pi_session-1",
-			configurationHash: "b".repeat(64),
+			configurationHash: messagingConfigurationHash(state.targets["pi_session-1"]!),
 			createdAt: 100,
 			expiresAt: 100 + HOSTED_ACK_RETENTION_MS,
 			status: "active",
@@ -212,6 +213,34 @@ describe("hosted runtime state persistence", () => {
 		expect(pruned.messaging[namespaceId]?.status).toBe("active");
 		expect(pruned.events.evt_1).toBeDefined();
 		expect(validateHostedRuntimeState(pruned)).toEqual(pruned);
+	});
+
+	it("retires, after the window, a grant whose holder left and unread mail to a participant that ended", () => {
+		const grant = (state: HostedRuntimeState, generation: string) => ({
+			namespaceId: "msg_00000000-0000-0000-0000-000000000003",
+			secretDigest: "a".repeat(64),
+			participantKey: SENDER,
+			holderGeneration: generation,
+			targetKey: "pi_session-1",
+			configurationHash: messagingConfigurationHash(state.targets["pi_session-1"]!),
+			createdAt: 100,
+			status: "active" as const,
+			operations: { "op-1": "evt_1" },
+		});
+		const left = populatedState();
+		left.messaging["msg_00000000-0000-0000-0000-000000000003"] = grant(left, "lease_sender_before");
+		expect(reduceHostedState(left, { type: "retention.prune", before: 100 }).messaging["msg_00000000-0000-0000-0000-000000000003"]).toBeDefined();
+		const retired = reduceHostedState(left, { type: "retention.prune", before: 201 });
+		expect(retired.messaging).toEqual({});
+		expect(retired.events.evt_1).toBeUndefined();
+
+		const ended = structuredClone(populatedState());
+		ended.participants[RECIPIENT]!.state = "ended";
+		ended.messaging["msg_00000000-0000-0000-0000-000000000003"] = grant(ended, "lease_sender");
+		const dropped = reduceHostedState(ended, { type: "retention.prune", before: 201 });
+		expect(dropped.events.evt_1).toBeUndefined();
+		expect(dropped.messaging["msg_00000000-0000-0000-0000-000000000003"]?.operations).toEqual({});
+		expect(validateHostedRuntimeState(dropped)).toEqual(dropped);
 	});
 
 	it("drops read mail after its own shorter window, and its record in the sender's grant with it", () => {
