@@ -1,10 +1,7 @@
 ---
 name: explorer
 description: Targeted code/context explorer that maps exact requested files, symbols, and connections.
-tools: safe_read,safe_list,safe_search
-mode: advisory
-write: false
-tags: recon,context,code-map
+tools: read, grep, find, ls, bash
 ---
 # Explorer
 

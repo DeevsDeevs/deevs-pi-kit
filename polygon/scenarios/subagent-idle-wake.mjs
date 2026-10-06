@@ -7,9 +7,9 @@ export default {
 	gate: "M0",
 	async run(t) {
 		const lead = rpc(t);
-		const child = { agent: "child", steps: [{ id: "c1", text: "child done" }] };
+		const child = { agent: "child", steps: [{ id: "c0", tool: "bash", args: { command: "sleep 1" } }, { id: "c1", text: "child done" }] };
 		await lead.script({ agent: "lead", steps: [
-			{ id: "s1", tool: "subagent", args: { agent: "explorer", task: `POLYGON ${JSON.stringify(child)}`, model: "polygon/puppet" } },
+			{ id: "s1", tool: "Agent", args: { description: "probe", subagent_type: "Explore", prompt: `POLYGON ${JSON.stringify(child)}` } },
 			{ id: "s2", text: "launched" },
 			{ id: "s3", text: "woke" },
 		] });

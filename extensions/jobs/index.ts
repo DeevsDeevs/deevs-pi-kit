@@ -5,7 +5,6 @@ import type { JobReadInput, JobReadResult, JobRecord, JobStartInput } from "./ty
 import { guardBashCall } from "../shared/guard.ts";
 import { formatDuration } from "../shared/runtime-ui.ts";
 import { claimJobManager, releaseJobManager } from "./registry.ts";
-import { clampWaitMs } from "../shared/runtime-delivery.ts";
 import { tasks } from "../shared/tasks.ts";
 
 const StartSchema = Type.Object({
@@ -21,9 +20,7 @@ const StartSchema = Type.Object({
 	stdin: Type.Optional(Type.String({ description: "Optional initial stdin; stdin closes after start" })),
 	maxBytes: Type.Optional(Type.Number({ description: "In-memory output cap" })),
 });
-const WaitSchema = Type.Object({ ids: Type.Array(Type.String(), { minItems: 1 }), waitMs: Type.Optional(Type.Number({ description: "Maximum wait, capped at and defaulting to 120000; 0 for status. A Job still active then is returned with its current status and wakes idle Pi when it settles." })) });
 const ReadSchema = Type.Object({ id: Type.String(), afterSeq: Type.Optional(Type.Number()), maxBytes: Type.Optional(Type.Number()), stream: Type.Optional(StringEnum(["stdout", "stderr", "combined"] as const)) });
-const StopSchema = Type.Object({ id: Type.String() });
 
 export default function jobsExtension(pi: ExtensionAPI): void {
 	const { manager, owner } = claimJobManager();
@@ -40,7 +37,7 @@ export default function jobsExtension(pi: ExtensionAPI): void {
 		label: "Start Job",
 		description: "Start a bounded non-agent pipe job with capped output, readiness, hard timeout, and process-tree cancellation.",
 		promptSnippet: "Run a bounded non-interactive command; persistent or interactive processes belong in Herdr.",
-		promptGuidelines: ["Do not use Jobs for servers, REPLs, terminal panes, or unattended schedules.", "Use argv instead of shell command when shell features are unnecessary.", "After starting a Job, continue runnable independent work. Terminal events wake idle Pi automatically; wait only at a result dependency, cancellation, or final-settlement gate."],
+		promptGuidelines: ["Do not use Jobs for servers, REPLs, terminal panes, or unattended schedules.", "Use argv instead of shell command when shell features are unnecessary.", "After starting a Job, continue runnable independent work; a finished Job wakes idle Pi by itself. TaskStop stops a Job."],
 		parameters: StartSchema,
 		async execute(_toolCallId, params: JobStartInput, signal, _onUpdate, context) {
 			ctx = context;
@@ -50,23 +47,6 @@ export default function jobsExtension(pi: ExtensionAPI): void {
 		},
 		renderCall(args: JobStartInput, theme: Theme) { return new Text(theme.fg("toolTitle", theme.bold("job_start ")) + theme.fg("muted", args.name), 0, 0); },
 		renderResult(result, { expanded }, theme) { return new Text(renderJob(result.details as JobRecord | undefined, expanded, theme), 0, 0); },
-	});
-
-	pi.registerTool({
-		name: "job_wait",
-		label: "Wait for Job",
-		description: "Wait for one or more Jobs to settle without polling.",
-		promptSnippet: "Collect bounded Job results only at a dependency, cancellation, or final-settlement gate.",
-		promptGuidelines: ["Do not wait while runnable independent work remains; idle Pi is woken automatically when the Job settles.", "Prefer one bounded wait over polling."],
-		parameters: WaitSchema,
-		async execute(_toolCallId, params: { ids: string[]; waitMs?: number }, signal, _onUpdate, context) {
-			ctx = context;
-			const jobs = await manager.wait(params.ids, clampWaitMs(params.waitMs), signal);
-			updateStatus();
-			return { content: [{ type: "text" as const, text: jobs.map(formatJob).join("\n") }], details: { jobs } };
-		},
-		renderCall(args, theme) { return new Text(theme.fg("toolTitle", theme.bold("job_wait ")) + theme.fg("muted", `${args.ids.length} id(s)`), 0, 0); },
-		renderResult(result, { expanded }, theme) { return new Text(((result.details as { jobs?: JobRecord[] } | undefined)?.jobs ?? []).map((job) => renderJob(job, expanded, theme)).join("\n") || theme.fg("dim", "No Jobs"), 0, 0); },
 	});
 
 	pi.registerTool({
@@ -85,22 +65,6 @@ export default function jobsExtension(pi: ExtensionAPI): void {
 			const details = result.details as JobReadResult | undefined;
 			return new Text(details ? (expanded ? formatRead(details) : theme.fg("muted", `${details.job.spec.id} · ${details.chunks.length} chunk(s) · next ${details.nextSeq}`)) : theme.fg("dim", "No output"), 0, 0);
 		},
-	});
-
-	pi.registerTool({
-		name: "job_stop",
-		label: "Stop Job",
-		description: "Stop a Job process tree, escalating to SIGKILL after a grace period.",
-		promptSnippet: "Stop a bounded Job.",
-		parameters: StopSchema,
-		async execute(_toolCallId, params: { id: string }, _signal, _onUpdate, context) {
-			ctx = context;
-			const job = await manager.stop(params.id);
-			updateStatus();
-			return { content: [{ type: "text" as const, text: formatJob(job) }], details: job };
-		},
-		renderCall(args, theme) { return new Text(theme.fg("toolTitle", theme.bold("job_stop ")) + theme.fg("muted", args.id), 0, 0); },
-		renderResult(result, { expanded }, theme) { return new Text(renderJob(result.details as JobRecord | undefined, expanded, theme), 0, 0); },
 	});
 
 	pi.on("tool_call", (event, context) => isToolCallEventType("bash", event) ? guardBashCall(event.input.command, context.cwd) : undefined);

@@ -105,7 +105,7 @@ export class JobManager {
 		writeJson(spec.runtimePath, runtime);
 		this.records.set(id, record);
 		this.buffers.set(id, new JobBuffer(spec.maxBufferBytes));
-		tasks.register({ id, kind: "job", description: spec.name, status: "running", ownerSession, startedAt: runtime.startedAt, stop: async () => { await this.stop(id); } });
+		tasks.register({ id, kind: "job", name: spec.name, description: spec.name, status: "running", ownerSession, startedAt: runtime.startedAt, stop: async () => { await this.stop(id); } });
 
 		const childEnv = { ...process.env, ...input.env, DEEVS_PI_JOB_ID: id, DEEVS_PI_JOB_GENERATION: generation };
 		const child = input.argv

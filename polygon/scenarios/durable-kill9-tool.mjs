@@ -1,0 +1,45 @@
+import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { exec, rpc } from "../drive.mjs";
+import { entries, poll, procs, requests, toolCalls } from "../look.mjs";
+
+export const reports = (t) => entries(t).filter((e) => e.type === "custom_message" && e.customType === "task-notification");
+
+// kill -9 mid-bash, then mid-grep: bash is reported interrupted, the replay-safe grep runs again, one report lands.
+// grep blocks on a fifo; after the second kill its orphaned ripgrep and the re-run share the writer's EOF.
+export default {
+	name: "durable-kill9-tool",
+	gate: "M1",
+	timeoutMs: 120_000,
+	async run(t) {
+		const marker = join(t.repo, "bash-started");
+		const fifo = join(t.repo, "fifo");
+		await exec(t, "mkfifo", [fifo]);
+		const child = { agent: "child", steps: [
+			{ id: "b1", tool: "bash", args: { command: `touch ${marker}; sleep 30; echo slept` } },
+			{ id: "r1", tool: "grep", args: { pattern: "fifo-data", path: fifo } },
+			{ id: "c1", text: "child done" },
+		] };
+		const lead = rpc(t);
+		await lead.script({ agent: "lead", steps: [
+			{ id: "s1", tool: "Agent", args: { description: "survivor", prompt: `POLYGON ${JSON.stringify(child)}` } },
+			{ id: "s2", text: "launched" },
+		] });
+		await poll(() => existsSync(marker), 30_000, "the agent's bash to start");
+		await lead.restart();
+		await poll(() => requests(t).some((r) => r.agent === "child" && r.step === "r1"), 30_000, "the agent to call grep after the interrupted bash");
+		await new Promise((r) => setTimeout(r, 1_000));
+		await lead.restart();
+		await poll(() => procs(t).filter((p) => p.argv[0] === "rg").length >= 2, 30_000, "the re-run grep beside the orphaned one");
+		const writer = exec(t, "sh", ["-c", `echo fifo-data > ${fifo}`], { timeoutMs: 30_000 });
+		await poll(() => reports(t).length > 0, 45_000, "the agent's report in the session");
+		assert.equal((await writer).status, 0, "nothing read the fifo");
+		await new Promise((r) => setTimeout(r, 1_000));
+		assert.equal(reports(t).length, 1, "the report landed more than once");
+		const log = readFileSync(toolCalls(lead.events).find((c) => c.name === "Agent").details.outputFile, "utf8");
+		assert.match(log, /→ bash .*\n← error [^\n]*\n\[error\] Tool bash was interrupted/, "bash was not reported interrupted");
+		assert.match(log, /→ grep .*\n← (?!error)/, "grep did not re-run to a result");
+		assert.equal(requests(t).filter((r) => r.agent === "child" && r.step === "c1").length, 1);
+	},
+};

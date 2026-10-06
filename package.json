@@ -54,6 +54,7 @@
     "vitest": "^4.1.11"
   },
   "dependencies": {
+    "@earendil-works/pi-durable": "1.0.4",
     "runtime-typebox": "npm:typebox@1.3.27"
   }
 }

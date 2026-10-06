@@ -9,6 +9,8 @@ export interface AgentDefinition {
 	model?: string;
 	tags: string[];
 	disabled: boolean;
+	effort?: string;
+	isolation?: "worktree";
 	body: string;
 }
 

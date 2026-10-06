@@ -1,10 +1,7 @@
 ---
 name: cpp-dev
 description: C++ specialist for correctness, UB, memory ownership, concurrency, ABI, and performance.
-tools: safe_read,safe_list,safe_search
-mode: advisory
-write: false
-tags: cpp,c++,ub,performance
+tools: read, grep, find, ls, bash
 ---
 # C++ Dev
 
