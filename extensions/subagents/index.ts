@@ -17,7 +17,7 @@ import { promptWorkflow, WORKFLOW_DESCRIPTION, WORKFLOW_FIELDS, WORKFLOW_SNIPPET
 import { agentTypes, agentTypesSection, findAgentType, workerPrompt } from "./definitions.ts";
 import { nextFire } from "./engine/background.ts";
 import { formatLocalTime, parseCron } from "./engine/cron.ts";
-import { closeAll, ensureEngine, launch, launchWorkflow, queuedAhead, reinstall, resumeSession, send, settle, startJob, startMonitor, stop, workflowProgress, writerCwds, type Limits } from "./engine/index.ts";
+import { closeAll, ensureEngine, launch, launchWorkflow, queuedAhead, reinstall, resumeSession, send, settle, startJob, startMonitor, stop, userRequests, workflowProgress, writerCwds, type Limits } from "./engine/index.ts";
 import { lookAtPath, lookAtUrl } from "./engine/watch.ts";
 import { parseWorkflow } from "./workflow/meta.ts";
 import type { Progress } from "./workflow/run.ts";
@@ -106,10 +106,9 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		codex: readCodexCatalog(process.env.CODEX_HOME || join(homedir(), ".codex")),
 	});
 	remindSilentTurns(pi);
-	// The request that started the current turn, snapshotted by Workflow at launch; a later side question never reaches its agents.
-	let request: string | undefined;
-	pi.on("input", (event) => {
-		if (event.streamingBehavior === undefined && event.source !== "extension") request = event.text;
+	// A side question typed while the turn runs, or a message an extension sends, is not the request.
+	pi.on("input", (event, ctx) => {
+		if (event.streamingBehavior === undefined && event.source !== "extension") userRequests.set(ctx.sessionManager.getSessionId(), event.text);
 	});
 	let widget: NodeJS.Timeout | undefined;
 	promptWorkflow(pi);
@@ -191,6 +190,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			}
 			if (!resumed) await appendFile(join(dir, "journal.jsonl"), `${JSON.stringify({ type: "launched" })}\n`);
 			const taskId = newWorkflowTaskId();
+			const request = userRequests.get(session);
 			await launchWorkflow(await ensureEngine(ctx), {
 				taskId,
 				runId,
@@ -201,7 +201,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				args: coerceArgs(params.args),
 				cwd: ctx.cwd,
 				dir,
-				request: request !== undefined && request.length <= MAX_REQUEST_CHARS ? request : undefined,
+				request: request && request.length <= MAX_REQUEST_CHARS ? request : undefined,
 				lead: ctx.model && { provider: ctx.model.provider, id: ctx.model.id, level: pi.getThinkingLevel() },
 				startedAt: Date.now(),
 			}, meta.description);

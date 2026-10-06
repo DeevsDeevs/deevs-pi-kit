@@ -1,11 +1,10 @@
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { createFauxCore, fauxAssistantMessage, fauxToolCall, type FauxResponseStep } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { newAgentId } from "../extensions/shared/tasks.ts";
-import { checkSchema, closeAll, ensureEngine, launch } from "../extensions/subagents/engine/index.ts";
+import { checkSchema, closeAll, ensureEngine, launchWorkflow } from "../extensions/subagents/engine/index.ts";
 
 process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "pi-kit-so-"));
 const cwd = mkdtempSync(join(tmpdir(), "pi-kit-so-cwd-"));
@@ -20,29 +19,32 @@ const schema = { type: "object", properties: { n: { type: "integer" } }, require
 const call = (args: Parameters<typeof fauxToolCall>[1], id = "c") => fauxAssistantMessage(fauxToolCall("StructuredOutput", args, { id }), { stopReason: "toolUse" });
 const NUDGE = "[structured-output-enforce] You MUST call the StructuredOutput tool to complete this request. Call this tool now.";
 
-async function run(responses: FauxResponseStep[]) {
+let runs = 0;
+/** One workflow run whose single agent() call has the schema; resolves with its run record. */
+async function run(responses: FauxResponseStep[]): Promise<{ status: string; result: unknown; error?: string }> {
 	faux.setResponses(responses);
-	const { done } = await launch(await ensureEngine(ctx), {
-		agentId: newAgentId(), description: "d", prompt: "p", model: faux.getModel(), tools: ["read"], instructions: "", cwd,
-		writer: false, toolUseId: "t", limits: {}, foreground: true, schema,
-	});
-	return done!;
+	const dir = mkdtempSync(join(tmpdir(), "pi-kit-so-run-"));
+	const runId = `wf_so${++runs}xyz`;
+	const source = `export const meta = { name: "so", description: "d" };\nreturn await agent("p", { schema: ${JSON.stringify(schema)} });`;
+	await launchWorkflow(await ensureEngine(ctx), { taskId: `w${runs}`, runId, session: "s", toolUseId: "t", source, scriptPath: join(dir, "so.js"), cwd, dir, lead: { provider: "faux", id: "m", level: "off" }, startedAt: Date.now() }, "d");
+	const record = join(dir, `${runId}.json`);
+	await vi.waitFor(() => expect(existsSync(record)).toBe(true), { timeout: 10_000 });
+	return JSON.parse(readFileSync(record, "utf8"));
 }
 
 afterAll(closeAll);
 
-describe("StructuredOutput", () => {
+describe("StructuredOutput in a workflow agent()", () => {
 	it("refuses a schema agent() cannot use before anything starts", async () => {
 		expect(() => checkSchema(schema)).not.toThrow();
 		expect(() => checkSchema({ type: "array", items: {} })).toThrow(/^agent\(\{schema\}\) received an unusable JSON Schema — .*The subagent was not started/);
 		expect(() => checkSchema({ type: "object", properties: {}, required: ["n"] })).toThrow(/unusable JSON Schema — required names n,/);
 		expect(() => checkSchema({ type: "object", properties: { s: { type: "string", pattern: "(" } } })).toThrow("agent({schema}) received an invalid JSON Schema");
-		await expect(launch(await ensureEngine(ctx), { schema: { type: "string" } } as never)).rejects.toThrow(/unusable JSON Schema/);
 	});
 
 	it("ends the run at the first valid call and returns its validated object", async () => {
 		const n = await run([call({ n: "x" }, "bad"), call({ n: "7" }), fauxAssistantMessage("never asked")]);
-		expect([n.status, n.result, n.structuredError]).toEqual(["completed", '{"n":7}', undefined]);
+		expect([n.status, n.result]).toEqual(["completed", { n: 7 }]);
 		expect(faux.getPendingResponseCount()).toBe(1);
 	});
 
@@ -53,7 +55,7 @@ describe("StructuredOutput", () => {
 			asked = !options?.signal?.aborted;
 			return fauxAssistantMessage("never asked");
 		}]);
-		expect([n.status, n.result]).toEqual(["completed", '{"n":1}']);
+		expect([n.status, n.result]).toEqual(["completed", { n: 1 }]);
 		expect(asked).toBe(false);
 	});
 
@@ -65,17 +67,17 @@ describe("StructuredOutput", () => {
 			return fauxAssistantMessage("still plain");
 		}]);
 		expect(nudged).toBe(NUDGE);
-		expect([n.status, n.result, n.structuredError]).toEqual(["failed", "", "agent({schema}): subagent completed without calling StructuredOutput (after in-conversation nudge)"]);
+		expect([n.status, n.error]).toEqual(["failed", "Error: agent({schema}): subagent completed without calling StructuredOutput (after in-conversation nudge)"]);
 	});
 
 	it("takes a call made after the nudge", async () => {
 		const n = await run([fauxAssistantMessage("plain"), call({ n: 3 })]);
-		expect([n.status, n.result]).toEqual(["completed", '{"n":3}']);
+		expect([n.status, n.result]).toEqual(["completed", { n: 3 }]);
 	});
 
 	it("stops at the fifth failed call with CC's cap error", async () => {
 		const n = await run([...[1, 2, 3, 4, 5].map((i) => call({ n: "x" }, `bad${i}`)), call({ n: 1 }, "late")]);
 		expect(n.status).toBe("failed");
-		expect(n.structuredError).toMatch(/^agent\(\{schema\}\): StructuredOutput retry cap \(5\) exceeded — 5 failed calls with no valid output — last StructuredOutput error: /);
+		expect(n.error).toMatch(/^Error: agent\(\{schema\}\): StructuredOutput retry cap \(5\) exceeded — 5 failed calls with no valid output — last StructuredOutput error: /);
 	});
 });

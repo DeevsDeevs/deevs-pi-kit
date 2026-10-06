@@ -4,6 +4,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { access, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import type { Api, Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
@@ -13,7 +14,7 @@ import { Type, type TSchema } from "typebox";
 import { Compile } from "typebox/compile";
 import { Value } from "typebox/value";
 import { guardBashCall } from "../../shared/guard.ts";
-import { loadKitConfig, modelLabel, resolveModel, type ModelContext } from "../../shared/models.ts";
+import { loadKitConfig, readCodexCatalog, resolveModel, type ModelContext } from "../../shared/models.ts";
 import { trySignalGroup } from "../../shared/process-group.ts";
 import { agentSummary, newAgentId, tasks, workflowDiagnostics, workflowRecovery, workflowSummary, type TaskNotification, type TaskStatus } from "../../shared/tasks.ts";
 import { addWorktree, agentWorktreeAt, createAgentWorktree, finishAgentWorktree, git, type AgentWorktree } from "../../shared/worktree.ts";
@@ -68,12 +69,7 @@ export type LaunchSpec = LaunchBase & ({
 	tools: PiToolName[];
 	instructions: string;
 	limits: Limits;
-	/** The run must end with a valid StructuredOutput call; its object, as JSON, is the result. */
-	schema?: Durable.JsonObject;
 } | { cli: CliWorker });
-
-/** `structuredError` is CC's error for a schema run that broke the StructuredOutput contract: `agent()` throws it. */
-export type AgentOutcome = TaskNotification & { structuredError?: string };
 
 interface AgentRecord {
 	name?: string;
@@ -94,9 +90,8 @@ interface AgentRecord {
 	worktree?: AgentWorktree;
 	/** SendMessage text for a run its reporter has not placed yet; the reporter steers it in right after the prompt. */
 	pending?: string[];
-	schema?: Durable.JsonObject;
 }
-type OutboxItem = AgentOutcome & { silent?: boolean };
+type OutboxItem = TaskNotification & { silent?: boolean };
 interface RunInput {
 	agentId: string;
 	session: string;
@@ -113,7 +108,6 @@ interface ReporterInput extends RunInput {
 	limits: Limits;
 	/** Where a resumed run starts in its conversation, so its report counts only its own entries and tokens. */
 	from?: { entries: number; tokens: number };
-	structured?: boolean;
 }
 interface CliInput extends RunInput {
 	worker: CliWorker;
@@ -145,7 +139,7 @@ interface WorkflowRecord {
 	schemas?: Durable.JsonObject[];
 }
 /** The crash map: one per agent() call, keyed by prompt, options and occurrence; written with the call's conversation, then with its outcome, whose `worktree` is the one kept. */
-type CallRecord = Partial<CallOutcome> & { agentId: string; conversationId: ConversationId; isolated?: AgentWorktree };
+type CallRecord = Partial<CallOutcome> & { agentId: string; conversationId?: ConversationId; cli?: CliWorker; sessionId?: string; isolated?: AgentWorktree };
 type WorkflowRuntime = Durable.TaskRuntime<WorkflowInput, { phase: "run" }, null, object>;
 
 interface Kit {
@@ -175,9 +169,9 @@ export interface Engine {
 }
 
 interface Modules { D: D; openStorage(file: string): Promise<Durable.Storage> }
-interface Waiter { claimed: boolean; timedOut: boolean; resolve(n: AgentOutcome): void }
+interface Waiter { claimed: boolean; timedOut: boolean; resolve(n: TaskNotification): void }
 /** A reporter in this process. Messages steer its run only between the prompt's placement and `closing`; after that, SendMessage waits for the report and resumes. */
-interface Live { placed: boolean; closing: boolean; early: string[]; inflight: Promise<unknown>[]; done: Promise<AgentOutcome | undefined> }
+interface Live { placed: boolean; closing: boolean; early: string[]; inflight: Promise<unknown>[]; done: Promise<TaskNotification | undefined> }
 interface Host extends BackgroundHost {
 	/** The durable module stays loaded across /reload: a fresh copy would fail its own `instanceof` checks. */
 	modules?: Promise<Modules>;
@@ -191,15 +185,19 @@ interface Host extends BackgroundHost {
 	workflows: Map<string, Progress>;
 	/** Running CLI workers by agentId, for TaskStop. */
 	workers: Map<string, ChildProcess>;
+	/** By session, the user's request that started the current turn, snapshotted by Workflow at launch. */
+	requests: Map<string, string>;
 }
 
 const KEY = Symbol.for("pi-kit.agents");
 // SAFETY: this package exclusively owns the symbol-keyed slot and only ever stores the host in it.
 const slot = globalThis as typeof globalThis & { [KEY]?: Host };
-const host: Host = slot[KEY] ??= { engines: new Map(), running: 0, queue: [], waiters: new Map(), closing: false, opened: new Map(), live: new Map(), workflows: new Map(), workers: new Map() };
+const host: Host = slot[KEY] ??= { engines: new Map(), running: 0, queue: [], waiters: new Map(), closing: false, opened: new Map(), live: new Map(), workflows: new Map(), workers: new Map(), requests: new Map() };
 host.live ??= new Map();
 host.workflows ??= new Map();
 host.workers ??= new Map();
+host.requests ??= new Map();
+export const userRequests = host.requests;
 // A host kept from a kit version before Jobs and Monitors joined the engine.
 host.opened ??= new Map();
 
@@ -247,10 +245,7 @@ export async function reinstall(): Promise<void> {
 		if (!engine) continue;
 		engine.kit = buildKit(D, engine.dir, engine.project);
 		engine.registry.install(engine.kit.extension);
-		installSchemas(D, engine.registry, engine.session, [
-			...Object.values(agentRecords(await engine.harness.snapshot(engine.kit.Agents, engine.root.id, CTX))),
-			...Object.values(workflowRecords(await engine.harness.snapshot(engine.kit.Workflows, engine.root.id, CTX))),
-		]);
+		installSchemas(D, engine.registry, engine.session, workflowRecords(await engine.harness.snapshot(engine.kit.Workflows, engine.root.id, CTX)));
 	}
 }
 
@@ -286,13 +281,12 @@ export function checkSchema(schema: Durable.JsonObject): void {
 	if (missing.length) throw unusable(`required names ${missing.join(", ")}, which properties lacks`);
 }
 
-export async function launch(engine: Engine, spec: LaunchSpec): Promise<{ outputFile: string; done?: Promise<AgentOutcome> }> {
+export async function launch(engine: Engine, spec: LaunchSpec): Promise<{ outputFile: string; done?: Promise<TaskNotification> }> {
 	const { D } = await host.modules!;
-	const structured = !spec.cli && spec.schema ? useSchema(D, engine, spec.schema) : undefined;
 	const { agentId } = spec;
 	const outputFile = join(engine.dir, "out", `${agentId}.md`);
 	const startedAt = Date.now();
-	const done = spec.foreground ? new Promise<AgentOutcome>((resolve) => host.waiters.set(agentId, { claimed: false, timedOut: false, resolve })) : undefined;
+	const done = spec.foreground ? new Promise<TaskNotification>((resolve) => host.waiters.set(agentId, { claimed: false, timedOut: false, resolve })) : undefined;
 	const { kit, root } = engine;
 	await root.commit(async (tx) => {
 		const record: AgentRecord = { name: spec.name, description: spec.description, startedAt, status: "running", cwd: spec.cwd, writer: spec.writer, worktree: spec.worktree };
@@ -307,14 +301,14 @@ export async function launch(engine: Engine, spec: LaunchSpec): Promise<{ output
 		await D.configure(tx, child.id, {
 			model: { provider: spec.model.provider, modelId: spec.model.id },
 			thinkingLevel: spec.level,
-			extensions: structured ? [kit.extension, structured] : [kit.extension],
-			tools: [...spec.tools.map((name) => kit.tools[name]), ...(structured?.tools ?? [])],
+			extensions: [kit.extension],
+			tools: spec.tools.map((name) => kit.tools[name]),
 			instructions: spec.instructions,
 			cwd: spec.cwd,
 		});
-		const input: ReporterInput = { agentId, session: engine.session, conversationId: child.id, prompt: spec.prompt, requestId: `agent:${agentId}`, description: spec.description, toolUseId: spec.toolUseId, limits: spec.limits, startedAt, outputFile, worktree: spec.worktree, structured: !!structured };
+		const input: ReporterInput = { agentId, session: engine.session, conversationId: child.id, prompt: spec.prompt, requestId: `agent:${agentId}`, description: spec.description, toolUseId: spec.toolUseId, limits: spec.limits, startedAt, outputFile, worktree: spec.worktree };
 		await tx.createTask(kit.Reporter, input, BACKGROUND);
-		(await tx.doc(kit.Agents, root.id)).agents[agentId] = json({ ...record, conversationId: child.id, schema: spec.schema });
+		(await tx.doc(kit.Agents, root.id)).agents[agentId] = json({ ...record, conversationId: child.id });
 	}, CTX);
 	tasks.register({ id: agentId, kind: "agent", name: spec.name, description: spec.description, status: "running", ownerSession: engine.session, startedAt, stop: () => stop(engine, agentId) });
 	return { outputFile, done };
@@ -354,8 +348,6 @@ export async function send(engine: Engine, agentId: string, message: string, too
 			(current.pending ??= []).push(message);
 			return "steered" as const;
 		}
-		// A resumed run answers in text: the launch run's StructuredOutput call already settled the schema.
-		if (current.schema) await D.configure(tx, conversationId, { extensions: [engine.kit.extension] });
 		current.status = "running";
 		current.stopped = false;
 		if (worktree) current.worktree = worktree;
@@ -505,7 +497,7 @@ async function open(session: string, cwd: string): Promise<Engine> {
 	const engine: Engine = { session, dir, project: cwd, harness, root, registry, kit };
 	const records = agentRecords(await harness.snapshot(kit.Agents, root.id, CTX));
 	const workflows = workflowRecords(await harness.snapshot(kit.Workflows, root.id, CTX));
-	installSchemas(D, registry, session, [...Object.values(records), ...Object.values(workflows)]);
+	installSchemas(D, registry, session, workflows);
 	for (const [id, record] of Object.entries(records)) {
 		tasks.register({ id, kind: "agent", name: record.name, description: record.description, status: record.status, ownerSession: session, startedAt: record.startedAt, stop: () => stop(engine, id) });
 	}
@@ -651,9 +643,9 @@ function schemaExtension(D: D, session: string, schema: Durable.JsonObject): Dur
 	return D.defineExtension({ name: `pi-kit.schema.${createHash("sha256").update(JSON.stringify(schema)).digest("hex").slice(0, 16)}`, tools: [tool], hooks: [end] });
 }
 
-/** Running schema agents and workflows need their StructuredOutput again after a reopen or /reload. */
-function installSchemas(D: D, registry: Durable.Registry, session: string, records: (AgentRecord | WorkflowRecord)[]): void {
-	const used = records.flatMap((record) => (record.status !== "running" ? [] : "schemas" in record ? record.schemas ?? [] : "schema" in record && record.schema ? [record.schema] : []));
+/** Running workflows need their StructuredOutput again after a reopen or /reload. */
+function installSchemas(D: D, registry: Durable.Registry, session: string, records: Record<string, WorkflowRecord>): void {
+	const used = Object.values(records).flatMap((record) => (record.status === "running" ? record.schemas ?? [] : []));
 	for (const schema of new Map(used.map((schema) => [JSON.stringify(schema), schema])).values()) registry.install(schemaExtension(D, session, schema));
 }
 
@@ -717,10 +709,7 @@ async function report(D: D, docs: Pick<Kit, "Outbox" | "Agents">, input: Reporte
 					void conversation.abort(CTX);
 				});
 				try {
-					const first = await submission.wait(context);
-					settled = input.structured && first.status === "done" && !structuredResult((await scan(conversation, context)).slice(input.from?.entries ?? 0)).output
-						? await (await conversation.submit({ type: "input", content: NUDGE, requestId: `${input.requestId}:nudge` }, context)).wait(context)
-						: first;
+					settled = await submission.wait(context);
 				} finally {
 					unwatch();
 				}
@@ -737,19 +726,16 @@ async function report(D: D, docs: Pick<Kit, "Outbox" | "Agents">, input: Reporte
 		const run = transcript.slice(input.from?.entries ?? 0);
 		const tokens = totalTokens(await runtime.snapshot(D.UsageDoc, input.conversationId, context)) - (input.from?.tokens ?? 0);
 		const lastText = run.filter((entry) => entry.kind === "pi.assistant").map((entry) => text(entry.model?.[0])).filter(Boolean).at(-1) ?? "";
-		const so = input.structured ? structuredResult(run) : undefined;
-		const structuredError = so && !so.output ? structuredFailure(so, settled) : undefined;
-		if (settled?.status === "done" || so?.output) limited = undefined;
-		const output = so ? (so.output ? JSON.stringify(so.output) : "") : settled?.status === "done" || limited ? lastText : "";
-		const status = so?.output || settled?.status === "done" && !structuredError ? "completed"
-			: structuredError ? "failed"
+		if (settled?.status === "done") limited = undefined;
+		const output = settled?.status === "done" || limited ? lastText : "";
+		const status = settled?.status === "done" ? "completed"
 			: limited ? (output ? "completed" : "failed")
 			: settled === undefined || settled.status === "unanswered" && settled.reason === "aborted" ? "killed" : "failed";
 		const outcome: Outcome = {
 			status,
 			summary: limited
 				? `Agent "${input.description}" stopped at its ${limited} limit (partial result)`
-				: agentSummary(input.description, status, { error: structuredError ?? failure(settled), byUser: (await record())?.stoppedBy === "user" }),
+				: agentSummary(input.description, status, { error: failure(settled), byUser: (await record())?.stoppedBy === "user" }),
 			result: output,
 			usage: {
 				subagentTokens: tokens,
@@ -758,7 +744,6 @@ async function report(D: D, docs: Pick<Kit, "Outbox" | "Agents">, input: Reporte
 			},
 		};
 		if (limited) outcome.limited = limited;
-		if (structuredError) outcome.structuredError = structuredError;
 		({ n, claimed } = await commitReport(docs, input, runtime, context, transcriptLog(transcript), outcome, live.early));
 	} finally {
 		if (host.live.get(input.agentId) === live) host.live.delete(input.agentId);
@@ -767,7 +752,7 @@ async function report(D: D, docs: Pick<Kit, "Outbox" | "Agents">, input: Reporte
 	await deliver(input.agentId, n, claimed);
 }
 
-type Outcome = Pick<AgentOutcome, "summary" | "result" | "usage" | "limited" | "structuredError"> & Required<Pick<AgentOutcome, "status">>;
+type Outcome = Pick<TaskNotification, "summary" | "result" | "usage" | "limited"> & Required<Pick<TaskNotification, "status">>;
 type RunRuntime = Pick<Durable.TaskRuntime<unknown, { phase: "run" }, null, object>, "taskId" | "conversationId" | "commit">;
 
 /**
@@ -837,27 +822,35 @@ async function runCli(docs: Pick<Kit, "Outbox" | "Agents" | "CliTask">, owner: s
 		throw new Error("Pi closed while the worker ran.");
 	}
 	const stopped = (await record())?.stopped;
-	const { worker } = input;
-	let result = worker.harness === "codex" ? await readFile(lastMessageFile(worker), "utf8").catch(() => progress.text) : progress.text;
-	let structured = progress.structured;
-	if (worker.schema && worker.harness === "codex") {
-		try { structured = dropNulls(JSON.parse(result)); } catch {}
-	}
-	if (worker.schema && structured !== undefined) result = JSON.stringify(structured);
-	const ok = exit?.code === 0 && progress.error === undefined && (!worker.schema || structured !== undefined);
-	const status = !exit || stopped ? "killed" : ok ? "completed" : "failed";
-	const error = progress.error || (worker.schema && exit?.code === 0 ? "no structured output" : exit?.stderr.trim().split("\n").at(-1)) || `exit code ${exit?.code}`;
+	const answer = await cliAnswer(input.worker, exit, progress);
+	const status = !exit || stopped ? "killed" : answer.ok ? "completed" : "failed";
 	const { n, claimed } = await commitReport(docs, { ...input, worktree }, runtime, context, progress.log.join("\n"), {
 		status,
-		summary: agentSummary(input.description, status, { error, byUser: (await record())?.stoppedBy === "user" }),
-		result: status === "completed" ? result : "",
+		summary: agentSummary(input.description, status, { error: answer.error, byUser: (await record())?.stoppedBy === "user" }),
+		result: status === "completed" ? answer.text : "",
 		usage: { subagentTokens: progress.tokens, toolUses: progress.toolUses, durationMs: Date.now() - input.startedAt },
 	});
 	await deliver(input.agentId, n, claimed);
 }
 
+type CliExit = { code: number | null; stderr: string };
+
+/** A finished CLI run's answer: its last text or, with a schema, the structured object (Codex's strict-mode nulls dropped) as JSON. */
+async function cliAnswer(worker: CliWorker, exit: CliExit | undefined, progress: CliProgress): Promise<{ ok: boolean; text: string; structured?: JsonValue; error: string }> {
+	let text = worker.harness === "codex" ? await readFile(lastMessageFile(worker), "utf8").catch(() => progress.text) : progress.text;
+	let structured = progress.structured;
+	if (worker.schema && worker.harness === "codex") {
+		try { structured = dropNulls(JSON.parse(text)); } catch {}
+	}
+	if (worker.schema && structured !== undefined) text = JSON.stringify(structured);
+	const ok = exit?.code === 0 && progress.error === undefined && (!worker.schema || structured !== undefined);
+	const error = progress.error || (worker.schema && exit?.code === 0 ? "no structured output" : exit?.stderr.trim().split("\n").at(-1)) || `exit code ${exit?.code}`;
+	// SAFETY: structured_output and Codex's last message come from JSON.parse.
+	return { ok, text, structured: structured as JsonValue | undefined, error };
+}
+
 /** One CLI run in its own process group, tagged with PI_KIT_OWNER for the reaper; resolves when it exits. */
-async function spawnWorker(input: CliInput, owner: string, run: { resume?: string; prompt: string }, progress: CliProgress, signal: AbortSignal, onSession: (session: string) => Promise<void>): Promise<{ code: number | null; stderr: string }> {
+async function spawnWorker(input: Pick<CliInput, "agentId" | "worker">, owner: string, run: { resume?: string; prompt: string }, progress: CliProgress, signal: AbortSignal, onSession: (session: string) => Promise<void>): Promise<CliExit> {
 	const { worker } = input;
 	await mkdir(worker.dir, { recursive: true });
 	await rm(lastMessageFile(worker), { force: true });
@@ -981,7 +974,7 @@ const agentRecords = (doc: AgentsDoc | undefined) => (doc?.agents ?? {}) as unkn
 const workflowRecords = (doc: WorkflowsDoc | undefined) => (doc?.workflows ?? {}) as unknown as Record<string, WorkflowRecord>;
 // SAFETY: the kit writes a Calls member only through json() of a CallRecord.
 // oxlint-disable-next-line anti-slop/no-chained-type-assertions
-const callRecord = (doc: Readonly<Durable.JsonObject> | undefined) => (doc?.conversationId === undefined ? undefined : doc as unknown as CallRecord);
+const callRecord = (doc: Readonly<Durable.JsonObject> | undefined) => (doc?.conversationId === undefined && doc?.cli === undefined ? undefined : doc as unknown as CallRecord);
 
 export async function launchWorkflow(engine: Engine, input: WorkflowInput, description: string): Promise<void> {
 	const { kit, root } = engine;
@@ -1011,6 +1004,12 @@ function trackProgress(input: WorkflowInput): Progress {
 	return progress;
 }
 
+/** A finished run stays on /agents until 20 newer runs have finished. */
+function pruneProgress(): void {
+	const finished = [...host.workflows].filter(([, progress]) => progress.status !== "running");
+	for (const [id] of finished.slice(0, -20)) host.workflows.delete(id);
+}
+
 type WorkflowDocs = Pick<Kit, "Outbox" | "Workflows" | "Calls" | "tools">;
 
 async function runWorkflowTask(D: D, docs: WorkflowDocs, input: WorkflowInput, runtime: WorkflowRuntime, context: Ctx): Promise<void> {
@@ -1027,6 +1026,7 @@ async function runWorkflowTask(D: D, docs: WorkflowDocs, input: WorkflowInput, r
 	}
 	const status = error === undefined ? "completed" : "failed";
 	progress.status = status;
+	pruneProgress();
 	const durationMs = Date.now() - input.startedAt;
 	const outputFile = join(input.dir, `${input.runId}.json`);
 	await writeFile(outputFile, runRecord({ progress, script: input.source, scriptPath: input.scriptPath, args: input.args, result, error, defaultModel: input.lead && `${input.lead.provider}/${input.lead.id}`, durationMs })).catch(() => {});
@@ -1059,6 +1059,7 @@ async function runWorkflowTask(D: D, docs: WorkflowDocs, input: WorkflowInput, r
 async function abortWorkflowTask(docs: WorkflowDocs, input: WorkflowInput, runtime: WorkflowRuntime, context: Ctx): Promise<void> {
 	const progress = trackProgress(input);
 	progress.status = "killed";
+	pruneProgress();
 	await writeFile(join(input.dir, `${input.runId}.json`), runRecord({ progress, script: input.source, scriptPath: input.scriptPath, args: input.args, result: undefined, durationMs: Date.now() - input.startedAt })).catch(() => {});
 	await runtime.commit(async (tx) => {
 		const record = workflowRecords(await tx.doc(docs.Workflows, runtime.conversationId))[input.taskId];
@@ -1068,20 +1069,33 @@ async function abortWorkflowTask(docs: WorkflowDocs, input: WorkflowInput, runti
 	tasks.update(input.taskId, { status: "killed" });
 }
 
-/** agent() over durable: a slot of the global throttle, then a conversation the run owns, answered once even across a Pi exit. */
+/**
+ * agent() over durable: a slot of the global throttle, then a conversation the run owns, answered once even across a Pi exit.
+ * A `claude:` or `codex:` model runs as that CLI instead; its session id is kept on the call, so a rerun after a crash resumes it.
+ */
 function callRunner(D: D, docs: WorkflowDocs, engine: Engine, input: WorkflowInput, runtime: WorkflowRuntime, context: Ctx): AgentRunner {
 	const instructions = new Map<string, string>();
 	const member = (key: string) => `${input.taskId}:${key}`;
 	const read = async (key: string) => callRecord(await runtime.snapshot(docs.Calls, runtime.conversationId, member(key), context));
+	const save = (key: string, agentId: string, fields: CallRecord | CallOutcome) => runtime.commit(async (tx) => {
+		Object.assign(await tx.doc(docs.Calls, runtime.conversationId, member(key), agentId), json(fields));
+		return undefined;
+	}, context);
 	let creating = Promise.resolve();
-	const create = async (key: string, options: AgentOptions, structured: Durable.Extension | undefined): Promise<CallRecord> => {
+	const create = async (key: string, options: AgentOptions): Promise<CallRecord> => {
 		const type = workflowAgentType(options.agentType);
 		const resolved = resolveModel(options.model ?? type.model, await modelContext(input), LEVELS.find((level) => level === options.effort) ?? type.effort);
-		if (resolved.harness !== "pi") throw new Error(`${modelLabel(resolved)} runs as a Claude Code or Codex worker, which a workflow agent() cannot start yet; pick a Pi model.`);
 		const agentId = newAgentId();
 		const requested = resolve(input.cwd, options.cwd ?? ".");
 		const worktree = (options.isolation ?? type.isolation) === "worktree" ? await createAgentWorktree({ cwd: requested, agentId, agentDir: getAgentDir() }) : undefined;
 		const cwd = worktree ? join(worktree.path, relative(worktree.repoRoot, realpathSync(requested))) : requested;
+		if (resolved.harness !== "pi") {
+			const writer = type.tools.includes("edit") || type.tools.includes("write");
+			const call: CallRecord = { agentId, isolated: worktree, cli: { harness: resolved.harness, model: resolved.model, level: resolved.level, cwd, instructions: workerPrompt(type, cwd, worktree, true), tools: type.tools, writer, schema: options.schema, dir: join(engine.dir, "cli", agentId) } };
+			await save(key, agentId, call);
+			return call;
+		}
+		const structured = options.schema && useSchema(D, engine, options.schema);
 		const prompt = `${type.name}\0${cwd}`;
 		// Context files and skills are read once per type and directory, not once per agent.
 		if (!instructions.has(prompt)) instructions.set(prompt, workerPrompt(type, cwd, worktree));
@@ -1104,6 +1118,39 @@ function callRunner(D: D, docs: WorkflowDocs, engine: Engine, input: WorkflowInp
 		}, context);
 		return call!;
 	};
+	const askPi = async (key: string, call: CallRecord, prompt: string, schema: AgentOptions["schema"]): Promise<{ outcome: CallOutcome; log: string }> => {
+		const structured = schema && useSchema(D, engine, schema);
+		const conversation = (await engine.harness.conversation(call.conversationId!, context))!;
+		const ask = async (content: string, requestId: string) => (await conversation.submit({ type: "input", content, requestId }, context)).wait(context);
+		const first = await ask(prompt, `workflow:${key}`);
+		const settled = structured && first.status === "done" && !structuredResult(await scan(conversation, context)).output ? await ask(NUDGE, `workflow:${key}:nudge`) : first;
+		const transcript = await scan(conversation, context);
+		const so = structured ? structuredResult(transcript) : undefined;
+		const structuredError = so && !so.output ? structuredFailure(so, settled) : undefined;
+		const answer = text(transcript.filter((entry) => entry.kind === "pi.assistant").at(-1)?.model?.[0]);
+		const outcome: CallOutcome = {
+			agentId: call.agentId,
+			status: (so ? so.output : settled.status === "done") ? "done" : "failed",
+			// SAFETY: pi-ai validated the call's arguments as JSON; only the readonly marker differs.
+			result: so ? (so.output as JsonValue | undefined) ?? null : settled.status === "done" ? answer : null,
+			tokens: totalTokens(await runtime.snapshot(D.UsageDoc, call.conversationId!, context)),
+			toolUses: transcript.filter((entry) => entry.kind === "pi.tool-result").length,
+		};
+		if (outcome.status === "failed") outcome.error = structuredError ?? failure(settled);
+		if (structuredError) outcome.structuredError = structuredError;
+		return { outcome, log: `${transcriptLog(transcript)}\n\n${answer}\n` };
+	};
+	const askCli = async (key: string, call: CallRecord, prompt: string): Promise<{ outcome: CallOutcome; log: string }> => {
+		const worker = call.cli!;
+		const progress = newCliProgress();
+		const run = call.sessionId ? { resume: call.sessionId, prompt: CONTINUE } : { prompt };
+		const exit = await spawnWorker({ agentId: call.agentId, worker }, engine.dir, run, progress, runtime.signal, (sessionId) => save(key, call.agentId, { agentId: call.agentId, sessionId }));
+		const answer = await cliAnswer(worker, exit, progress);
+		const outcome: CallOutcome = { agentId: call.agentId, status: answer.ok ? "done" : "failed", result: answer.ok ? (worker.schema ? answer.structured ?? null : answer.text) : null, tokens: progress.tokens, toolUses: progress.toolUses };
+		if (!answer.ok) outcome.error = answer.error;
+		if (worker.schema && !answer.ok && exit.code === 0 && progress.error === undefined) outcome.structuredError = "agent({schema}): subagent completed without calling StructuredOutput";
+		return { outcome, log: `${progress.log.join("\n")}\n\n${answer.text}\n` };
+	};
 	return {
 		async stored(key) {
 			const call = await read(key);
@@ -1112,7 +1159,7 @@ function callRunner(D: D, docs: WorkflowDocs, engine: Engine, input: WorkflowInp
 			return { agentId: call.agentId, status: call.status, result: call.result ?? null, error: call.error, structuredError: call.structuredError, tokens: call.tokens ?? 0, toolUses: call.toolUses ?? 0, worktree: call.worktree };
 		},
 		async run(key, prompt, options, start) {
-			const structured = options.schema && useSchema(D, engine, options.schema);
+			if (options.schema) checkSchema(options.schema);
 			const held = await acquire(key);
 			try {
 				if (!held || runtime.signal.aborted) throw new Error("Workflow aborted");
@@ -1120,35 +1167,15 @@ function callRunner(D: D, docs: WorkflowDocs, engine: Engine, input: WorkflowInp
 				const mine = creating.then(() => new Promise<void>((resolve) => setImmediate(resolve)));
 				creating = mine;
 				await mine;
-				const call = await read(key) ?? await create(key, options, structured);
+				const call = await read(key) ?? await create(key, options);
 				start(call.agentId);
-				const conversation = (await engine.harness.conversation(call.conversationId, context))!;
-				const ask = async (content: string, requestId: string) => (await conversation.submit({ type: "input", content, requestId }, context)).wait(context);
-				const first = await ask(framePrompt(input.request, prompt), `workflow:${key}`);
-				const settled = structured && first.status === "done" && !structuredResult(await scan(conversation, context)).output ? await ask(NUDGE, `workflow:${key}:nudge`) : first;
+				const framed = framePrompt(input.request, prompt);
+				const { outcome, log } = call.cli ? await askCli(key, call, framed) : await askPi(key, call, framed, options.schema);
 				if (runtime.signal.aborted) throw new Error("Workflow aborted");
-				const transcript = await scan(conversation, context);
-				const so = structured ? structuredResult(transcript) : undefined;
-				const structuredError = so && !so.output ? structuredFailure(so, settled) : undefined;
-				const spent = (await runtime.snapshot(D.UsageDoc, call.conversationId, context))?.models ?? {};
-				const answer = text(transcript.filter((entry) => entry.kind === "pi.assistant").at(-1)?.model?.[0]);
 				const kept = call.isolated && existsSync(call.isolated.path) ? await finishAgentWorktree(call.isolated).catch(() => call.isolated) : undefined;
-				const outcome: CallOutcome = {
-					agentId: call.agentId,
-					status: (so ? so.output : settled.status === "done") ? "done" : "failed",
-					// SAFETY: pi-ai validated the call's arguments as JSON; only the readonly marker differs.
-					result: so ? (so.output as JsonValue | undefined) ?? null : settled.status === "done" ? answer : null,
-					tokens: Object.values(spent).reduce((sum, model) => sum + (model.totalTokens ?? 0), 0),
-					toolUses: transcript.filter((entry) => entry.kind === "pi.tool-result").length,
-				};
-				if (outcome.status === "failed") outcome.error = structuredError ?? failure(settled);
-				if (structuredError) outcome.structuredError = structuredError;
 				if (kept) outcome.worktree = { path: kept.path, branch: kept.branch };
-				await writeFile(join(input.dir, `agent-${call.agentId}.md`), `${transcriptLog(transcript)}\n\n${answer}\n`).catch(() => {});
-				await runtime.commit(async (tx) => {
-					Object.assign(await tx.doc(docs.Calls, runtime.conversationId, member(key), call.agentId), json(outcome));
-					return undefined;
-				}, context);
+				await writeFile(join(input.dir, `agent-${call.agentId}.md`), log).catch(() => {});
+				await save(key, call.agentId, outcome);
 				return outcome;
 			} finally {
 				if (held) release();
@@ -1160,7 +1187,12 @@ function callRunner(D: D, docs: WorkflowDocs, engine: Engine, input: WorkflowInp
 async function modelContext(input: WorkflowInput): Promise<ModelContext> {
 	const registry = host.models!;
 	const model = input.lead && registry.find(input.lead.provider, input.lead.id);
-	return { config: await loadKitConfig(input.cwd, getAgentDir()), registry, lead: model && input.lead ? { model, level: input.lead.level } : undefined };
+	return {
+		config: await loadKitConfig(input.cwd, getAgentDir()),
+		registry,
+		lead: model && input.lead ? { model, level: input.lead.level } : undefined,
+		codex: readCodexCatalog(process.env.CODEX_HOME || join(homedir(), ".codex")),
+	};
 }
 // SAFETY: the kit writes Background only through json() of a BackgroundRecord.
 // oxlint-disable-next-line anti-slop/no-chained-type-assertions
