@@ -65,7 +65,7 @@ The kit's only settings file is `pi-kit.json`: `~/.pi/agent/pi-kit.json` for eve
 
 ```json
 {
-  "models": { "deep": "astra:max", "sol": "openai-codex/gpt-*-sol" },
+  "models": { "deep": "astra:max", "mine": "openai/gpt-*-sol|openai-codex/gpt-*-sol:xhigh" },
   "lead": "sol",
   "autonomy": true,
   "guard": { "rmRf": true, "block": ["terraform destroy", "npm publish"] },
@@ -74,7 +74,7 @@ The kit's only settings file is `pi-kit.json`: `~/.pi/agent/pi-kit.json` for eve
 }
 ```
 
-- `models` and `lead` name models by pattern (`openai-codex/gpt-*-sol` is the newest sol); a project's names add to the global ones. A new session started without `--model` or `--provider` switches to `lead` at your thinking level (`"sol:xhigh"` sets one); restored sessions keep their model, and `"lead": null` turns this off.
+- `models` and `lead` name models by pattern (`openai/gpt-*-sol` is the newest sol); `a|b` takes the first that resolves (a trailing `:level` applies to every alternative), so the kit's `sol`, `astra`, `luna` and `terra` use your ChatGPT login under `openai` and fall back to the legacy `openai-codex`. A project's names add to the global ones. A new session started without `--model` or `--provider` switches to `lead` at your thinking level (`"sol:xhigh"` sets one); restored sessions keep their model, and `"lead": null` turns this off.
 - `autonomy`: `true` (the default): orchestration never waits on a dialog, and the lead takes it as the standing opt-in to `Workflow`, with a hidden reminder when it turns on, every ten prompts after, and when it turns off. `false` brings one confirmation back for each collaborator change and stops Mission continues. A project's value counts once the project is trusted. The old `"auto"` and `"ask"` read as `true` and `false` and are rewritten once.
 - `guard`: `"detached"`, `"forcePush"` or `"rmRf": false` in the global file turns one rule off; a project file can only add `block` patterns, and both lists add up.
 - `codexFast`: `true` sends `service_tier: "priority"` on ChatGPT-auth `openai-codex` requests.

@@ -27,10 +27,10 @@ type Miss = { reason: string };
 export const KIT_DEFAULTS = {
 	models: {
 		default: "inherit",
-		sol: "openai-codex/gpt-*-sol",
-		astra: "openai-codex/gpt-*-astra",
-		luna: "openai-codex/gpt-*-luna",
-		terra: "openai-codex/gpt-*-terra",
+		sol: "openai/gpt-*-sol|openai-codex/gpt-*-sol",
+		astra: "openai/gpt-*-astra|openai-codex/gpt-*-astra",
+		luna: "openai/gpt-*-luna|openai-codex/gpt-*-luna",
+		terra: "openai/gpt-*-terra|openai-codex/gpt-*-terra",
 		opus: "claude:opus",
 		sonnet: "claude:sonnet",
 		haiku: "claude:haiku",
@@ -41,6 +41,8 @@ export const KIT_DEFAULTS = {
 
 const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ModelThinkingLevel[];
 const DATED = /-\d{8}$/;
+/** Pi 1.0.4 signs in with ChatGPT under `openai`; `openai-codex` is the legacy provider. */
+const OPENAI_SUBSCRIPTION = new Set(["openai", "openai-codex"]);
 const CodexCache = Type.Object({ models: Type.Array(Type.Object({ slug: Type.String() })) });
 
 /** Project over global over kit defaults, per name. Callers load it again for every resolution, so an edit applies to the next call. */
@@ -90,7 +92,7 @@ function compareVersions(a: { key: number[]; dated: boolean }, b: { key: number[
 	return Number(b.dated) - Number(a.dated);
 }
 
-/** Resolves an explicit model, a persona's model, or (when both are absent) `default`; `effort` beats any level in the spec. Throws before anything starts. */
+/** Resolves an explicit model, a persona's model, or (when both are absent) `default`; `effort` beats any level in the spec, and `a|b` takes the first alternative that resolves. Throws before anything starts. */
 export function resolveModel(spec: string | undefined, ctx: ModelContext, effort?: ModelThinkingLevel): ResolvedModel {
 	const tried: string[] = [];
 	const names = new Set<string>();
@@ -106,9 +108,13 @@ export function resolveModel(spec: string | undefined, ctx: ModelContext, effort
 			current = ctx.config.models[body];
 			continue;
 		}
-		const outcome = resolveSpec(current, body, level, ctx);
-		if ("reason" in outcome) throw resolutionError(tried, badLevel(current) ?? outcome.reason, ctx);
-		return outcome;
+		const misses: string[] = [];
+		for (const alternative of body.split("|")) {
+			const outcome = resolveSpec(alternative === body ? current : alternative, alternative, level, ctx);
+			if (!("reason" in outcome)) return outcome;
+			misses.push(outcome.reason);
+		}
+		throw resolutionError(tried, badLevel(current) ?? misses.join("; "), ctx);
 	}
 }
 
@@ -178,14 +184,14 @@ function claude(name: string, level: ModelThinkingLevel | undefined, registry: M
 	return { harness: "claude", model: name, level: effort, clampedFrom: effort === level ? undefined : level };
 }
 
-/** A slug from Pi's `openai-codex` catalog, Codex's cache or its config.toml; no slug takes the lead's id on `openai-codex`, else config.toml's. */
+/** A slug from Pi's `openai-codex` catalog, Codex's cache or its config.toml; no slug takes the lead's id on an OpenAI subscription provider, else config.toml's. */
 function codex(slug: string, level: ModelThinkingLevel | undefined, ctx: ModelContext): ResolvedModel | Miss {
 	const piIds = ctx.registry.getAll().filter((model) => model.provider === "openai-codex").map((model) => model.id);
 	const known = [...new Set([...piIds, ...(ctx.codex?.slugs ?? []), ...(ctx.codex?.model ? [ctx.codex.model] : [])])];
-	const leadId = ctx.lead?.model.provider === "openai-codex" ? ctx.lead.model.id : undefined;
+	const leadId = ctx.lead && OPENAI_SUBSCRIPTION.has(ctx.lead.model.provider) ? ctx.lead.model.id : undefined;
 	const chosen = slug ? newest(slug, known) : (leadId ?? ctx.codex?.model);
-	if (!chosen) return { reason: slug ? `Codex knows ${known.join(", ")}` : "the lead is not on openai-codex and ~/.codex/config.toml names no model" };
-	return { harness: "codex", model: chosen, ...clamp(ctx.registry.find("openai-codex", chosen), level) };
+	if (!chosen) return { reason: slug ? `Codex knows ${known.join(", ")}` : "the lead is not on openai or openai-codex and ~/.codex/config.toml names no model" };
+	return { harness: "codex", model: chosen, ...clamp(ctx.registry.find("openai-codex", chosen) ?? ctx.registry.find("openai", chosen), level) };
 }
 
 function clamp(model: Model<Api> | undefined, level: ModelThinkingLevel | undefined): Leveled {
