@@ -10,6 +10,7 @@ import { agentForegroundResult, agentLaunchedResult, newAgentId, newWorkflowRunI
 import { showTextViewer } from "../shared/text-viewer.ts";
 import { createAgentWorktree, finishAgentWorktree, sharesCwd } from "../shared/worktree.ts";
 import { remindSilentTurns } from "./silent-turns.ts";
+import { promptWorkflow, WORKFLOW_DESCRIPTION, WORKFLOW_FIELDS, WORKFLOW_SNIPPET } from "./workflow-prompt.ts";
 import { agentTypes, agentTypesSection, findAgentType, workerPrompt } from "./definitions.ts";
 import { closeAll, ensureEngine, launch, launchWorkflow, queuedAhead, reinstall, resumeSession, send, settle, stop, workflowProgress, writerCwds, type Limits } from "./engine/index.ts";
 import { parseWorkflow } from "./workflow/meta.ts";
@@ -39,27 +40,28 @@ type AgentParams = Static<typeof AgentSchema>;
 
 const AGENT_DESCRIPTION = [
 	"Launch an agent that works on a task by itself, with its own context and tools, and reports back once.",
+	"subagent_type picks one of the agent types listed in your system prompt; general-purpose when omitted. When you already know the file or symbol, use read, grep or find yourself: agents are for open questions across the code and for work that matches a type.",
 	"",
-	"Agents run in the background by default: the call returns at once and a <task-notification> arrives in your conversation when the agent finishes. Do not poll, sleep or read its output file while it runs; keep working or answer the user. Do not do the same work yourself in parallel, and do not report a result before its notification arrives.",
-	"Launch independent agents in one message with several Agent calls so they run at the same time. Set run_in_background: false only when you cannot go on without the answer.",
+	"- By default an agent runs in the background: the call returns at once and a <task-notification> arrives in your conversation when the agent finishes. Do not poll, sleep or read its output file meanwhile; keep working or answer the user.",
+	"- Use run_in_background: false only if your next step cannot start without the answer and nothing else useful can happen meanwhile.",
+	"- Do not race: until the notification arrives you know nothing of the result, so never guess or pre-write it, and do not redo the agent's work yourself. If the user asks, say it is still running.",
+	"- Launch independent agents in one message with several Agent calls so they run at the same time.",
+	"- The user never sees the report: tell them what matters in it. A report says what the agent meant to do; when it changed code, look at the change before calling the work done.",
+	"- SendMessage to an agentId or name continues that agent with its context; a new Agent call starts from nothing.",
+	"- A type sets the model, effort and tools; `model` overrides them for this call.",
+	"- isolation: \"worktree\" puts the agent in its own worktree and branch: an unchanged one is removed, a changed one is kept and its path and branch reported. Give each parallel writer one.",
 	"",
-	"The agent starts with none of your context. Write the prompt as a complete brief: the goal, what you already know, the files and constraints involved, and what to return. Say whether it should change code or only research. Never delegate your own understanding: synthesize what agents report before acting on it.",
+	"The agent has seen none of this conversation. Brief it like a capable colleague who just walked in: the goal and why it matters, what you know or have ruled out, the files and constraints involved, and the form and length of answer you want. Say whether it should change code or only research. For a lookup, hand over the exact command; for an investigation, hand over the question rather than a list of steps. Never delegate understanding: instead of \"fix it based on your findings\", name the paths, lines and change you want, and synthesize what agents report before you act on it.",
 ].join("\n");
 
 const WorkflowSchema = Type.Object({
-	script: Type.Optional(Type.String({ description: "The workflow: plain JavaScript whose first statement is `export const meta = { name, description, phases }`" })),
-	scriptPath: Type.Optional(Type.String({ description: "A script file to run; takes precedence over name and script" })),
-	name: Type.Optional(Type.String({ description: "A saved workflow: .pi/workflows/<name>.js, then ~/.pi/agent/workflows/<name>.js" })),
-	args: Type.Optional(Type.Any({ description: "Given to the script as the global `args`" })),
-	resumeFromRunId: Type.Optional(Type.String({ pattern: "^wf_[a-z0-9-]{6,}$", description: "A finished or stopped run of this session to resume: its unchanged agent() calls replay from journal.jsonl" })),
+	script: Type.Optional(Type.String({ description: WORKFLOW_FIELDS.script })),
+	scriptPath: Type.Optional(Type.String({ description: WORKFLOW_FIELDS.scriptPath })),
+	name: Type.Optional(Type.String({ description: WORKFLOW_FIELDS.name })),
+	args: Type.Optional(Type.Any({ description: WORKFLOW_FIELDS.args })),
+	resumeFromRunId: Type.Optional(Type.String({ pattern: "^wf_[a-z0-9-]{6,}$", description: WORKFLOW_FIELDS.resumeFromRunId })),
 });
 type WorkflowParams = Static<typeof WorkflowSchema>;
-
-const WORKFLOW_DESCRIPTION = [
-	"Run a workflow script in the background: plain JavaScript that orchestrates many agents with agent(prompt, opts), parallel(thunks), pipeline(items, ...stages), phase(title) and log(text), and returns a result.",
-	"Use it only when the user asks for a workflow or names one. The call returns at once with the run's ids and script file; a <task-notification> carries the result when the run ends. Do not poll.",
-	"Load the `workflow-authoring` skill before writing a script.",
-].join("\n");
 
 export default function subagentsExtension(pi: ExtensionAPI): void {
 	tasks.install(pi);
@@ -75,6 +77,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		if (event.streamingBehavior === undefined && event.source !== "extension") request = event.text;
 	});
 	let widget: NodeJS.Timeout | undefined;
+	promptWorkflow(pi);
 
 	pi.registerTool({
 		name: "Agent",
@@ -139,7 +142,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		name: "Workflow",
 		label: "Workflow",
 		description: WORKFLOW_DESCRIPTION,
-		promptSnippet: "Run a workflow script that orchestrates many agents, when the user asks for one.",
+		promptSnippet: WORKFLOW_SNIPPET,
 		parameters: WorkflowSchema,
 		async execute(toolCallId, params: WorkflowParams, _signal, _onUpdate, ctx) {
 			const { source, scriptPath } = await workflowSource(params, ctx.cwd);

@@ -21,7 +21,7 @@ export function nextStep(messages, fallback) {
 		.map((m) => `${text(m.content)}\n${(m.tool_calls ?? []).map((t) => `toolCall:${t.id}`).join("\n")}`).join("\n");
 	const last = messages.findLastIndex((m) => m.role === "assistant");
 	const fresh = messages.slice(last + 1).map((m) => text(m.content)).join("\n");
-	const step = script.steps.find((s) => !said.includes(s.tool ? `toolCall:${s.id}` : `[polygon:${s.id}]`) && (!s.on || fresh.includes(s.on)));
+	const step = script.steps.find((s) => !said.includes(`toolCall:${s.id}`) && !said.includes(`[polygon:${s.id}]`) && (!s.on || fresh.includes(s.on)));
 	if (!step) return { text: "[polygon:idle]", agent: script.agent };
 	const transcript = messages.map((m) => text(m.content)).join("\n");
 	const args = Object.fromEntries(Object.entries(step.args ?? {}).map(([k, v]) => [k, resolveRef(v, transcript)]));
@@ -34,6 +34,26 @@ function resolveRef(value, transcript) {
 }
 
 const reply = (step) => step.id ? `[polygon:${step.id}] ${step.text ?? ""}` : step.text;
+
+/** A `schema: "auto"` step answers through the StructuredOutput tool when the request offers one, else as text. */
+function autoSchema(step, request) {
+	if (step.schema !== "auto") return step;
+	const tool = (request.tools ?? []).map((t) => t.function ?? t).find((t) => t.name === "StructuredOutput");
+	return tool ? { ...step, tool: tool.name, args: stub(tool.parameters ?? tool.input_schema) } : step;
+}
+
+/** The smallest value a JSON Schema accepts that still exercises the caller: one item per array, the first enum. */
+function stub(schema = {}) {
+	if ("const" in schema) return schema.const;
+	if (schema.enum) return schema.enum[0];
+	if (schema.anyOf ?? schema.oneOf) return stub((schema.anyOf ?? schema.oneOf)[0]);
+	const type = [schema.type].flat().find((t) => t !== "null");
+	if (type === "object" || schema.properties) return Object.fromEntries(Object.entries(schema.properties ?? {}).map(([k, v]) => [k, stub(v)]));
+	if (type === "array") return Array.from({ length: Math.max(1, schema.minItems ?? 1) }, () => stub(schema.items));
+	if (type === "integer" || type === "number") return schema.minimum ?? 1;
+	if (type === "boolean") return true;
+	return "x".repeat(Math.max(1, schema.minLength ?? 1));
+}
 
 /**
  * `marks` is the scenario's live list of strings to look for; each request logs the ones its raw body contains.
@@ -75,7 +95,7 @@ export function startPuppet(logFile, marks = [], scripts = {}, { live = false } 
 			if (req.url.includes("count_tokens")) { res.writeHead(200, { "content-type": "application/json" }); return res.end('{"input_tokens":1}'); }
 			if (!wire) { res.writeHead(200, { "content-type": "application/json" }); return res.end("{}"); }
 			const messages = request.messages ?? [];
-			const step = nextStep(messages, scripts[request.model]);
+			const step = autoSchema(nextStep(messages, scripts[request.model]), request);
 			log(wire, req.url, request, step, messages);
 			if (wire === "anthropic") return anthropic(res, request, step);
 			chat(res, request, step);
@@ -131,7 +151,7 @@ function responseMessages(request) {
 
 function responses(res, request, log, url) {
 	const messages = responseMessages(request);
-	const step = nextStep(messages);
+	const step = autoSchema(nextStep(messages), request);
 	log("responses", url, request, step, messages);
 	res.writeHead(200, { "content-type": "text/event-stream" });
 	const ev = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
