@@ -25,8 +25,8 @@ function surface(name, items) {
 	return { surface: name, items, total: items.reduce((sum, entry) => sum + entry.tokens, 0) };
 }
 
-/** The lead's task surface: Agent, TaskStop and their siblings, Jobs, and Runtime's collaborator tools. */
-const LEAD_EXTENSIONS = ["subagents", "jobs", "runtime"];
+/** The lead's task surface: Agent, TaskStop, job_start, Monitor and their siblings, and Runtime's collaborator tools. */
+const LEAD_EXTENSIONS = ["subagents", "runtime"];
 
 async function registeredTools() {
 	const tools = [];

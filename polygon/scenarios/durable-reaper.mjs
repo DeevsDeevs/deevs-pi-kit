@@ -1,16 +1,8 @@
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { rpc } from "../drive.mjs";
-import { poll } from "../look.mjs";
-
-// Only this scenario's processes: parallel scenarios run agents with PI_KIT_OWNER too.
-const owned = (t) => readdirSync("/proc").filter((pid) => /^\d+$/.test(pid)).filter((pid) => {
-	try {
-		const env = readFileSync(`/proc/${pid}/environ`, "utf8").split("\0");
-		return env.includes(`POLYGON_RUN=${t.tag}`) && env.some((v) => v.startsWith("PI_KIT_OWNER="));
-	} catch { return false; }
-});
+import { owned, poll } from "../look.mjs";
 
 // A bash child orphaned by kill -9 carries PI_KIT_OWNER; the next start of its session reaps it before resuming.
 export default {

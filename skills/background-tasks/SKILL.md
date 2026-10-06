@@ -9,11 +9,11 @@ Never launch background work through `cmd &`, `nohup`, `disown`, or `setsid`.
 
 ## Use a Job when
 
-The command is bounded, non-interactive, and should finish within 15 minutes: a build, test run, migration check, benchmark or bounded script, especially one with a readiness marker or output worth reading by cursor.
+The command ends by itself and you need its result later: a build, test run, migration check, benchmark or bounded script.
 
-1. `job_start`, with `argv` when shell syntax is unnecessary and `readyPattern` only when readiness matters.
-2. Keep working; a finished Job reports by itself as a `<task-notification>`. Do not poll it.
-3. `job_read` with `afterSeq` when its output becomes relevant; `TaskStop` stops it.
+1. `job_start` with the command and a short description.
+2. Keep working; the finished Job reports by itself as a `<task-notification>` with its exit code. Do not poll it.
+3. `read` its output file when the output matters; `TaskStop` stops it.
 
 ## Use Cron when
 
@@ -21,7 +21,7 @@ Timing itself is the dependency in this Pi session: a user-requested reminder, a
 
 ## Use Herdr when
 
-The process is persistent or terminal-oriented: dev servers, watchers, workers, queues, local services, REPLs, anything needing ongoing stdin or a PTY, work that must survive Pi exits, and unattended schedules. Pi Kit does not own panes, persistent shells or daemon scheduling.
+The process must keep running while Pi is closed or needs a terminal: dev servers, workers, queues, local services, REPLs, anything needing ongoing stdin or a PTY, and unattended schedules. Pi Kit does not own panes, persistent shells or daemon scheduling.
 
 ## Use plain shell when
 

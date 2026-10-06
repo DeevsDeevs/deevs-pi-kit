@@ -26,8 +26,8 @@ One HTTP server per scenario: `/v1/chat/completions` for Pi's `polygon/puppet` p
 
 ```json
 { "agent": "lead", "steps": [
-  { "id": "s1", "tool": "job_start", "args": { "name": "probe", "argv": ["sh", "-c", "echo ok"] } },
-  { "id": "s2", "tool": "job_read", "args": { "id": "$/j_[0-9a-z]+_[0-9a-f]{8}/" } },
+  { "id": "s1", "tool": "job_start", "args": { "command": "echo ok", "description": "probe" } },
+  { "id": "s2", "tool": "read", "args": { "path": "$/[^ ]*/out/b[0-9a-z]{8}\\.log/" } },
   { "id": "s3", "on": "ok", "text": "done" }
 ] }
 ```

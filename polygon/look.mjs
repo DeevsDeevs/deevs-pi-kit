@@ -14,7 +14,7 @@ export const taskNotifications = (events) => events.filter((e) => e.type === "me
 	.map((e) => {
 		const content = typeof e.message.content === "string" ? e.message.content : e.message.content.map((b) => b.text ?? "").join("");
 		const tag = (name) => new RegExp(`<${name}>([\\s\\S]*?)</${name}>`).exec(content)?.[1];
-		return { id: e.message.details?.notificationId, taskId: tag("task-id"), status: tag("status"), result: tag("result"), toolUseId: tag("tool-use-id"), limited: tag("limited"), usage: tag("usage") };
+		return { id: e.message.details?.notificationId, ids: e.message.details?.notificationIds, taskId: tag("task-id"), status: tag("status"), result: tag("result"), toolUseId: tag("tool-use-id"), limited: tag("limited"), usage: tag("usage"), outputFile: tag("output-file"), event: tag("event"), caughtUp: tag("caught_up") };
 	});
 
 const textOf = (content) => typeof content === "string" ? content : (content ?? []).map((b) => b.text ?? "").join("\n");
@@ -27,7 +27,7 @@ export const toolCalls = (events) => events.filter((e) => e.type === "tool_execu
 /** Agent ids (A.8) in a kit text. */
 export const agentIds = (text) => text.match(/\ba[0-9a-f]{16}\b/g) ?? [];
 
-const note = (m) => ({ taskId: tag(textOf(m.content), "task-id"), status: tag(textOf(m.content), "status"), notificationId: m.details?.notificationId });
+const note = (m) => ({ taskId: tag(textOf(m.content), "task-id"), status: tag(textOf(m.content), "status"), notificationId: m.details?.notificationId, event: /<event>([\s\S]*?)<\/event>/.exec(textOf(m.content))?.[1], caughtUp: tag(textOf(m.content), "caught_up") });
 
 /** `<task-notification>` messages (A.5) that reached the lead, read by markup. */
 export const taskNotes = (events) => events.filter((e) => e.type === "message_end" && e.message?.customType === "task-notification").map((e) => note(e.message));
@@ -66,3 +66,11 @@ export function procs(t) {
 	}
 	return found;
 }
+
+/** This scenario's live processes that carry PI_KIT_OWNER: kit agents' tool children, jobs and monitor scripts. */
+export const owned = (t) => readdirSync("/proc").filter((pid) => /^\d+$/.test(pid)).filter((pid) => {
+	try {
+		const env = readFileSync(`/proc/${pid}/environ`, "utf8").split("\0");
+		return env.includes(`POLYGON_RUN=${t.tag}`) && env.some((v) => v.startsWith("PI_KIT_OWNER="));
+	} catch { return false; }
+});

@@ -13,6 +13,7 @@ import { guardBashCall } from "../../shared/guard.ts";
 import { agentSummary, tasks, type TaskNotification, type TaskStatus } from "../../shared/tasks.ts";
 import { addWorktree, agentWorktreeAt, finishAgentWorktree, git, type AgentWorktree } from "../../shared/worktree.ts";
 import { PI_TOOLS, type PiToolName } from "../definitions.ts";
+import { backgroundTasks, type BackgroundDoc, type BackgroundHost, type BackgroundRecord, type JobInput } from "./background.ts";
 import { bunSqlite, lock, reap, unlock } from "./storage.ts";
 
 type D = typeof Durable;
@@ -85,6 +86,8 @@ interface Kit {
 	Agents: Durable.ConversationDocToken<AgentsDoc>;
 	Anchor: Durable.Task<null, { phase: "done" }, null, object>;
 	Reporter: Durable.Task<ReporterInput, { phase: "run" }, null, object>;
+	Background: Durable.ConversationDocToken<BackgroundDoc>;
+	Job: ReturnType<typeof backgroundTasks>["Job"];
 }
 
 export interface Engine {
@@ -99,7 +102,7 @@ export interface Engine {
 
 interface Modules { D: D; openStorage(file: string): Promise<Durable.Storage> }
 interface Waiter { claimed: boolean; timedOut: boolean; resolve(n: TaskNotification): void }
-interface Host {
+interface Host extends BackgroundHost {
 	/** The durable module stays loaded across /reload: a fresh copy would fail its own `instanceof` checks. */
 	modules?: Promise<Modules>;
 	engines: Map<string, Promise<Engine>>;
@@ -112,7 +115,7 @@ interface Host {
 const KEY = Symbol.for("pi-kit.agents");
 // SAFETY: this package exclusively owns the symbol-keyed slot and only ever stores the host in it.
 const slot = globalThis as typeof globalThis & { [KEY]?: Host };
-const host: Host = slot[KEY] ??= { engines: new Map(), running: 0, queue: [], waiters: new Map() };
+const host: Host = slot[KEY] ??= { engines: new Map(), running: 0, queue: [], waiters: new Map(), closing: false };
 
 tasks.addSource({
 	name: "agents",
@@ -164,6 +167,7 @@ export async function reinstall(): Promise<void> {
 export async function closeAll(): Promise<void> {
 	const engines = [...host.engines.values()];
 	host.engines.clear();
+	host.closing = true;
 	for (const pending of engines) {
 		const engine = await pending.catch(() => undefined);
 		if (!engine) continue;
@@ -171,6 +175,7 @@ export async function closeAll(): Promise<void> {
 		await engine.harness.close(CTX).catch(() => {});
 		await unlock(join(engine.dir, "engine.lock"));
 	}
+	host.closing = false;
 }
 
 export function queuedAhead(): boolean {
@@ -279,6 +284,42 @@ export async function stop(engine: Engine, agentId: string, by?: "user"): Promis
 	if (conversationId !== undefined) await (await engine.harness.conversation(conversationId, CTX))?.abort(CTX);
 }
 
+type Launch<T> = Omit<T, "session" | "owner" | "outputFile" | "startedAt">;
+
+/** `job_start`: the command runs in its own process group; its exit code and report are committed together. Returns the log. */
+export const startJob = (engine: Engine, input: Launch<JobInput>): Promise<string> => startBackground(engine, "job", input);
+
+async function startBackground(engine: Engine, kind: "job", launch: Launch<JobInput>): Promise<string> {
+	const { kit, root } = engine;
+	const input = { ...launch, session: engine.session, owner: engine.dir, outputFile: join(engine.dir, "out", `${launch.id}.log`), startedAt: Date.now() };
+	await writeFile(input.outputFile, "");
+	const record: BackgroundRecord = { kind, description: input.description, startedAt: input.startedAt, status: "running", taskId: 0 };
+	// Listed before the commit: a quick command can settle, and update its row, before the commit returns.
+	registerBackground(engine, input.id, record);
+	try {
+		await root.commit(async (tx) => {
+			const taskId = await tx.createTask(kit.Job, input, BACKGROUND);
+			(await tx.doc(kit.Background, root.id)).tasks[input.id] = json({ ...record, taskId: Number(taskId) });
+		}, CTX);
+	} catch (error) {
+		tasks.remove(input.id);
+		throw error;
+	}
+	return input.outputFile;
+}
+
+function registerBackground(engine: Engine, id: string, record: BackgroundRecord): void {
+	tasks.register({ id, kind: record.kind, description: record.description, status: record.status, ownerSession: engine.session, startedAt: record.startedAt, stop: () => stopBackground(engine, id) });
+}
+
+/** TaskStop of a job: the run is signalled (its process group killed), then its abort handler settles it. */
+async function stopBackground(engine: Engine, id: string): Promise<void> {
+	const record = backgroundRecords(await engine.harness.snapshot(engine.kit.Background, engine.root.id, CTX))[id];
+	if (!record) return;
+	// SAFETY: taskId was stored from the TaskId this harness created.
+	await engine.harness.abortTask(record.taskId as Durable.TaskId, CTX);
+}
+
 async function open(session: string, cwd: string): Promise<Engine> {
 	const dir = await storageDir(cwd, session);
 	await mkdir(join(dir, "out"), { recursive: true });
@@ -299,6 +340,7 @@ async function open(session: string, cwd: string): Promise<Engine> {
 	for (const [id, record] of Object.entries(agentRecords(await harness.snapshot(kit.Agents, root.id, CTX)))) {
 		tasks.register({ id, kind: "agent", name: record.name, description: record.description, status: record.status, ownerSession: session, startedAt: record.startedAt, stop: () => stop(engine, id) });
 	}
+	for (const [id, record] of Object.entries(backgroundRecords(await harness.snapshot(kit.Background, root.id, CTX)))) registerBackground(engine, id, record);
 	harness.resume();
 	for (const item of outboxItems(await harness.snapshot(kit.Outbox, root.id, CTX))) if (!item.silent) await tasks.notify(item);
 	return engine;
@@ -363,8 +405,10 @@ function buildKit(D: D, owner: string, project: string): Kit {
 			return blocked ? { block: blocked.reason } : undefined;
 		},
 	});
-	const extension = D.defineExtension({ name: "pi-kit", tasks: [Anchor, Reporter], tools: Object.values(tools), hooks: [guard] });
-	return { extension, tools, Outbox, Agents, Anchor, Reporter };
+	const Background = D.defineDoc<BackgroundDoc>({ kind: "pi-kit.background", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ tasks: {} }) });
+	const { Job } = backgroundTasks(D, { Outbox, Background }, host);
+	const extension = D.defineExtension({ name: "pi-kit", tasks: [Anchor, Reporter, Job], tools: Object.values(tools), hooks: [guard] });
+	return { extension, tools, Outbox, Agents, Anchor, Reporter, Background, Job };
 }
 
 /** Pi's own tool, built for the agent's cwd at each call and without a Pi context, so no lead session env leaks in. */
@@ -528,7 +572,7 @@ function failure(settled: Durable.SettledSubmissionRecord | undefined): string {
 }
 
 /** Documents hold strict JSON: optional fields that are `undefined` are dropped. */
-function json(value: AgentRecord | OutboxItem): Durable.JsonObject {
+function json(value: AgentRecord | OutboxItem | BackgroundRecord): Durable.JsonObject {
 	return JSON.parse(JSON.stringify(value));
 }
 
@@ -539,3 +583,6 @@ const outboxItems = (doc: OutboxDoc | undefined) => (doc?.items ?? []) as unknow
 // SAFETY: the kit writes Agents only through json() of an AgentRecord.
 // oxlint-disable-next-line anti-slop/no-chained-type-assertions
 const agentRecords = (doc: AgentsDoc | undefined) => (doc?.agents ?? {}) as unknown as Record<string, AgentRecord>;
+// SAFETY: the kit writes Background only through json() of a BackgroundRecord.
+// oxlint-disable-next-line anti-slop/no-chained-type-assertions
+const backgroundRecords = (doc: BackgroundDoc | undefined) => (doc?.tasks ?? {}) as unknown as Record<string, BackgroundRecord>;

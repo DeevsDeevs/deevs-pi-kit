@@ -13,15 +13,17 @@ export default {
 		await lead.script({ agent: "lead", steps: [
 			{ id: "s1", tool: "Agent", args: { description: "roster named", prompt: child("named"), name: "polygon-named" } },
 			{ id: "s2", tool: "Agent", args: { description: "roster unnamed", prompt: child("unnamed") } },
-			{ id: "s3", tool: "ListAgents", args: {} },
-			{ id: "s4", text: "listed" },
+			{ id: "s3", tool: "job_start", args: { command: "sleep 4", description: "roster job" } },
+			{ id: "s4", tool: "ListAgents", args: {} },
+			{ id: "s5", text: "listed" },
 		] });
-		await lead.until((_, events) => toolCalls(events).length >= 3, 30_000, "the ListAgents result");
-		const [named, unnamed, list] = toolCalls(lead.events);
-		assert.deepEqual([named, unnamed, list].map((c) => [c.name, c.isError]), [["Agent", false], ["Agent", false], ["ListAgents", false]]);
+		await lead.until((_, events) => toolCalls(events).length >= 4, 30_000, "the ListAgents result");
+		const [named, unnamed, job, list] = toolCalls(lead.events);
+		assert.deepEqual([named, unnamed, job, list].map((c) => [c.name, c.isError]), [["Agent", false], ["Agent", false], ["job_start", false], ["ListAgents", false]]);
 		const row = (id) => list.text.split("\n").find((line) => line.includes(id)) ?? "";
 		for (const call of [named, unnamed]) assert.match(row(agentIds(call.text)[0]), /\bagent\b/, "an agent row is not labelled by kind");
 		assert.ok(row(agentIds(named.text)[0]).includes("polygon-named"), "the named agent's row lacks its name");
-		await lead.until((_, events) => taskNotes(events).length >= 2, 30_000, "both agents to finish");
+		assert.match(row(job.details.taskId), /\bjob\b/, "the job row is not labelled by kind");
+		await lead.until((_, events) => taskNotes(events).length >= 3, 30_000, "the agents and the job to finish");
 	},
 };

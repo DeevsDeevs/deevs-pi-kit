@@ -27,6 +27,8 @@ export interface TaskNotification {
 	outputFile?: string;
 	status: "completed" | "failed" | "killed";
 	summary: string;
+	/** Replaces the agent note; a job says here that its log was cut. */
+	note?: string;
 	result?: string;
 	usage?: { subagentTokens?: number; toolUses?: number; durationMs?: number };
 	worktree?: { path: string; branch: string };
@@ -200,7 +202,7 @@ export function formatTaskNotification(n: TaskNotification): string {
 		...tag("status", n.status),
 		...tag("summary", n.summary),
 		...tag("limited", n.limited),
-		...(n.kind === "agent" ? [`<note>${AGENT_NOTE}</note>`] : []),
+		...tag("note", n.note ?? (n.kind === "agent" ? AGENT_NOTE : undefined)),
 		...tag("result", n.result === undefined ? undefined : capResult(n.result, n.kind === "workflow" ? 8_000 : 100_000, n.outputFile)),
 		...(usage ? [`<usage>${usage}</usage>`] : []),
 		...(n.worktree ? [`<worktree>${tag("worktreePath", n.worktree.path)[0]}${tag("worktreeBranch", n.worktree.branch)[0]}</worktree>`] : []),

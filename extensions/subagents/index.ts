@@ -2,14 +2,15 @@ import { existsSync, realpathSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
-import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, isToolCallEventType, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { guardBashCall, guardShell, loadGuardConfig } from "../shared/guard.ts";
 import { loadKitConfig, modelLabel, modelsTable, resolveLead, resolveModel, type ModelContext } from "../shared/models.ts";
-import { newAgentId, tasks, type RosterEntry, type TaskNotification } from "../shared/tasks.ts";
+import { newAgentId, newBackgroundTaskId, tasks, type RosterEntry, type TaskNotification } from "../shared/tasks.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
 import { createAgentWorktree, sharedCwdWarning } from "../shared/worktree.ts";
 import { remindSilentTurns } from "./silent-turns.ts";
 import { agentTypes, agentTypesSection, findAgentType, workerPrompt } from "./definitions.ts";
-import { AGENT_SLOTS, closeAll, ensureEngine, launch, queuedAhead, reinstall, resumeSession, send, settle, stop, writerCwds, type Limits } from "./engine/index.ts";
+import { AGENT_SLOTS, closeAll, ensureEngine, launch, queuedAhead, reinstall, resumeSession, send, settle, startJob, stop, writerCwds, type Limits } from "./engine/index.ts";
 
 const FOREGROUND_MS = 120_000;
 const RESERVED_NAMES = new Set(["main", "user", "system"]);
@@ -39,6 +40,14 @@ const AGENT_DESCRIPTION = [
 	"The agent starts with none of your context. Write the prompt as a complete brief: the goal, what you already know, the files and constraints involved, and what to return. Say whether it should change code or only research. Never delegate your own understanding: synthesize what agents report before acting on it.",
 ].join("\n");
 
+const JobSchema = Type.Object({
+	command: Type.String({ description: "The shell command to run" }),
+	description: Type.String({ description: "A short description of what it does, shown in the notification" }),
+	cwd: Type.Optional(Type.String({ description: "Working directory; defaults to yours" })),
+	timeout: Type.Optional(Type.Integer({ minimum: 1_000, description: `Milliseconds before the command is killed. ${ONLY_ON_REQUEST}` })),
+});
+type JobParams = Static<typeof JobSchema>;
+
 export default function subagentsExtension(pi: ExtensionAPI): void {
 	tasks.install(pi);
 	const modelContext = async (ctx: ExtensionContext): Promise<ModelContext> => ({
@@ -57,8 +66,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		async execute(toolCallId, params: AgentParams, signal, _onUpdate, ctx) {
 			const type = findAgentType(params.subagent_type);
 			if (params.name && RESERVED_NAMES.has(params.name)) throw new Error(`The name '${params.name}' is reserved; pick another.`);
-			const requested = resolve(ctx.cwd, params.cwd ?? ".");
-			if (!existsSync(requested) || !statSync(requested).isDirectory()) throw new Error(`cwd ${requested} is not a directory.`);
+			const requested = directory(ctx.cwd, params.cwd);
 			const resolved = resolveModel(params.model ?? type.model, await modelContext(ctx), type.effort);
 			if (resolved.harness !== "pi") throw new Error(`${modelLabel(resolved)} runs as a Claude Code or Codex worker, which the kit does not start yet; pick a Pi model.`);
 			const limits: Limits = { maxTurns: params.maxTurns, maxTokens: params.maxTokens, timeout: params.timeout };
@@ -112,6 +120,27 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			await entry.stop();
 			tasks.update(entry.id, { status: "killed" });
 			return { content: [{ type: "text" as const, text: `Successfully stopped task: ${entry.id} (${entry.description})` }], details: { taskId: entry.id, kind: entry.kind } };
+		},
+	});
+
+	pi.registerTool({
+		name: "job_start",
+		label: "job_start",
+		description: "Run a shell command in the background. The call returns at once with the job id and its output file; a <task-notification> arrives when the command exits, with its exit code. Read the output file with read; stop the job with TaskStop. A job lives in this Pi: it survives /reload, and if Pi closes first it is killed and reported as interrupted. Servers, watchers and REPLs that must outlive Pi belong in Herdr.",
+		promptSnippet: "Run a command in the background and get notified when it exits.",
+		parameters: JobSchema,
+		async execute(toolCallId, params: JobParams, _signal, _onUpdate, ctx) {
+			const cwd = directory(ctx.cwd, params.cwd);
+			const blocked = guardShell(params.command, { cwd, root: ctx.cwd, config: loadGuardConfig(ctx.cwd) });
+			if (blocked) throw new Error(blocked);
+			const id = newBackgroundTaskId();
+			const outputFile = await startJob(await ensureEngine(ctx), { id, command: params.command, description: params.description, cwd, toolUseId: toolCallId, timeout: params.timeout });
+			const text = [
+				`Command running in background with ID: ${id}. Output is being written to: ${outputFile}`,
+				"You will be notified when it exits. Do not poll, sleep or wait for it; keep working, and read the output file once the notification arrives.",
+				params.timeout && `Timeout: ${params.timeout} ms`,
+			].filter(Boolean).join("\n");
+			return { content: [{ type: "text" as const, text }], details: { taskId: id, outputFile } };
 		},
 	});
 
@@ -171,6 +200,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		},
 	});
 
+	pi.on("tool_call", (event, ctx) => isToolCallEventType("bash", event) ? guardBashCall(event.input.command, ctx.cwd) : undefined);
 	pi.on("session_start", async (event, ctx) => {
 		if (event.reason === "reload") await reinstall();
 		else await useLeadModel(pi, ctx).catch((error) => ctx.ui.notify(`The lead stays on Pi's model: ${error instanceof Error ? error.message : String(error)}`, "warning"));
@@ -182,6 +212,12 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", async (event) => {
 		if (event.reason === "quit") await closeAll();
 	});
+}
+
+function directory(base: string, cwd: string | undefined): string {
+	const requested = resolve(base, cwd ?? ".");
+	if (!existsSync(requested) || !statSync(requested).isDirectory()) throw new Error(`cwd ${requested} is not a directory.`);
+	return requested;
 }
 
 /** A new session (no assistant message yet, no --model or --provider) switches to the newest match of pi-kit.json's `lead`. */
