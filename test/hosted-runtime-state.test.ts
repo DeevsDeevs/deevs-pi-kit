@@ -166,7 +166,7 @@ describe("hosted runtime state persistence", () => {
 		expect(() => readHostedRuntimeState(root)).toThrow(HostedStateStorageError);
 
 		writeFileSync(path, JSON.stringify({ ...emptyHostedRuntimeState(), surprise: true }), { mode: 0o600 });
-		expect(() => readHostedRuntimeState(root)).toThrow(/additional properties.*surprise/);
+		expect(() => readHostedRuntimeState(root)).toThrow(/invalid at \/surprise/);
 
 		writeFileSync(path, Buffer.alloc(HOSTED_STATE_MAX_BYTES + 1, 0x20), { mode: 0o600 });
 		expect(() => readHostedRuntimeState(root)).toThrow(/exceeds/);

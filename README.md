@@ -4,7 +4,7 @@ A [Pi](https://github.com/earendil-works/pi) package for work you can walk away 
 
 ## Requirements
 
-- Pi 0.82 or newer and Node 22.19 or newer.
+- Pi 1.0 or newer and Node 22.19 or newer.
 - Herdr, for Runtime collaborators. Everything else works in plain Pi.
 - The Claude Code or Codex CLI, only for collaborators on that driver.
 
@@ -13,10 +13,12 @@ A [Pi](https://github.com/earendil-works/pi) package for work you can walk away 
 ```bash
 pi install git:github.com/DeevsDeevs/deevs-pi-kit        # every project
 pi install git:github.com/DeevsDeevs/deevs-pi-kit -l     # this project only
-pi update                                                # later upgrades
+pi update git:github.com/DeevsDeevs/deevs-pi-kit           # later upgrades
 ```
 
 Run `/reload` in Pi after installing or updating. `pi config` toggles individual extensions and skills.
+
+Extensions use Pi's host-provided packages as peers. The standalone Runtime daemon alone resolves TypeBox through the pinned `runtime-typebox` npm alias, so production-only installs work without shadowing Pi's TypeBox.
 
 The six stand-alone skills listed below also work in Claude Code and Codex: symlink `skills/<name>` from the installed checkout into `~/.agents/skills` for Codex and `~/.claude/skills` for Claude Code.
 
@@ -65,6 +67,7 @@ Nine skills pair with the extensions above and tell the model when and how to us
 ```bash
 npm install
 npm run check                        # lint, typecheck, tests, mode smokes, audit, pack
+node extensions/runtime/service/main.ts --help  # verify standalone imports without starting a daemon
 npm run smoke:runtime-release        # daemon, participant, mail and MCP against real Herdr
 npm run smoke:collaborator-release   # collaborator launch, mail, stop and worktree
 npm run smoke:native-release         # interactive targets and Git worktrees, no Herdr

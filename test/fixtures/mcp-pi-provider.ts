@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, getCurrentTools, type AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 // Deterministic model only. Pi's Agent loop, tool wrappers, persistence, MCP child
@@ -20,7 +20,7 @@ export default function proofProvider(pi: ExtensionAPI): void {
 				output.content = [{ type: "toolCall", id: randomUUID(), ...call }];
 				output.stopReason = "toolUse";
 			} else {
-				output.content = [{ type: "text", text: JSON.stringify({ tools: context.tools?.map(tool => tool.name) }) }];
+				output.content = [{ type: "text", text: JSON.stringify({ tools: getCurrentTools(context.messages).map(tool => tool.name) }) }];
 			}
 			stream.push({ type: "start", partial: output });
 			const block = output.content[0]!;

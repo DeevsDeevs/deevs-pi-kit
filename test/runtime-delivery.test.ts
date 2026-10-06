@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { RUNTIME_DELIVERY_MESSAGE, RuntimeDeliveryCoordinator } from "../extensions/shared/runtime-delivery.ts";
 import { consumeRuntimeEvent, pendingRuntimeEvents, runtimeEvents, type RuntimeEvent } from "../extensions/shared/runtime-events.ts";
@@ -151,5 +151,13 @@ describe("runtime terminal delivery", () => {
 		await test.coordinator.maybeDeliver();
 		expect(test.messages).toEqual([]);
 		expect(pendingRuntimeEvents(runtimeEvents.read())).toHaveLength(1);
+	});
+
+	it("shares one coordinator across separately loaded module graphs", async () => {
+		const first = await import("../extensions/shared/runtime-delivery.ts");
+		vi.resetModules();
+		const second = await import("../extensions/shared/runtime-delivery.ts");
+		expect(second.RuntimeDeliveryCoordinator).not.toBe(first.RuntimeDeliveryCoordinator);
+		expect(second.runtimeDelivery).toBe(first.runtimeDelivery);
 	});
 });
