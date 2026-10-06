@@ -78,6 +78,8 @@ interface ReporterInput {
 	startedAt: number;
 	outputFile: string;
 	worktree?: AgentWorktree;
+	/** Where a resumed run starts in its conversation, so its report counts only its own entries and tokens. */
+	from?: { entries: number; tokens: number };
 }
 
 interface Kit {
@@ -231,6 +233,8 @@ export async function send(engine: Engine, agentId: string, message: string, too
 	if (live) await live.done;
 	const latest = await agentRecord(engine, agentId);
 	const worktree = latest.status !== "running" && latest.worktree ? await reopenWorktree(latest.worktree) : undefined;
+	const { D } = await host.modules!;
+	const from = { entries: (await scan(conversation, CTX)).length, tokens: totalTokens(await engine.harness.snapshot(D.UsageDoc, record.conversationId, CTX)) };
 	const outcome = await engine.root.commit(async (tx) => {
 		const current = agentRecords(await tx.doc(engine.kit.Agents, engine.root.id))[agentId]!;
 		// Its reporter has not started yet (just launched, or just reopened): it steers the message in after the prompt.
@@ -241,7 +245,7 @@ export async function send(engine: Engine, agentId: string, message: string, too
 		current.status = "running";
 		current.stopped = false;
 		if (worktree) current.worktree = worktree;
-		const input: ReporterInput = { agentId, session: engine.session, conversationId: record.conversationId, prompt: message, requestId: `send:${randomUUID()}`, description: record.description, toolUseId, limits: {}, startedAt: Date.now(), outputFile: join(engine.dir, "out", `${agentId}.md`), worktree: current.worktree };
+		const input: ReporterInput = { agentId, session: engine.session, conversationId: record.conversationId, prompt: message, requestId: `send:${randomUUID()}`, description: record.description, toolUseId, limits: {}, startedAt: Date.now(), outputFile: join(engine.dir, "out", `${agentId}.md`), worktree: current.worktree, from };
 		await tx.createTask(engine.kit.Reporter, input, BACKGROUND);
 		return "resumed" as const;
 	}, CTX);
@@ -442,7 +446,8 @@ async function report(D: D, docs: Pick<Kit, "Outbox" | "Agents">, input: Reporte
 					return messages;
 				}, context));
 				for (const message of pending) live.inflight.push(conversation.submit({ type: "input", content: message, requestId: `send:${randomUUID()}`, whenBusy: "steer" }, context));
-				const unwatch = watchLimits(D, engine, input, (limit) => {
+				const turns = input.limits.maxTurns ? (await scan(conversation, context)).slice(input.from?.entries ?? 0).filter((entry) => entry.kind === "pi.assistant").length : 0;
+				const unwatch = watchLimits(D, engine, input, turns, (limit) => {
 					limited = limit;
 					void conversation.abort(CTX);
 				});
@@ -457,8 +462,9 @@ async function report(D: D, docs: Pick<Kit, "Outbox" | "Agents">, input: Reporte
 			if (held) release();
 		}
 		const transcript = await scan(conversation, context);
-		const usage = (await runtime.snapshot(D.UsageDoc, input.conversationId, context))?.models ?? {};
-		const lastText = transcript.filter((entry) => entry.kind === "pi.assistant").map((entry) => text(entry.model?.[0])).filter(Boolean).at(-1) ?? "";
+		const run = transcript.slice(input.from?.entries ?? 0);
+		const tokens = totalTokens(await runtime.snapshot(D.UsageDoc, input.conversationId, context)) - (input.from?.tokens ?? 0);
+		const lastText = run.filter((entry) => entry.kind === "pi.assistant").map((entry) => text(entry.model?.[0])).filter(Boolean).at(-1) ?? "";
 		if (settled?.status === "done") limited = undefined;
 		const output = settled?.status === "done" || limited ? lastText : "";
 		const status = settled?.status === "done" ? "completed"
@@ -478,8 +484,8 @@ async function report(D: D, docs: Pick<Kit, "Outbox" | "Agents">, input: Reporte
 				: agentSummary(input.description, status, { error: failure(settled), byUser: (await record())?.stoppedBy === "user" }),
 			result: output,
 			usage: {
-				subagentTokens: Object.values(usage).reduce((sum, model) => sum + (model.totalTokens ?? 0), 0),
-				toolUses: transcript.filter((entry) => entry.kind === "pi.tool-result").length,
+				subagentTokens: tokens,
+				toolUses: run.filter((entry) => entry.kind === "pi.tool-result").length,
 				durationMs: Date.now() - input.startedAt,
 			},
 		};
@@ -511,10 +517,10 @@ async function report(D: D, docs: Pick<Kit, "Outbox" | "Agents">, input: Reporte
 }
 
 /** `maxTurns`, `maxTokens` and `timeout` exist only when the user asked; the first one reached stops the agent. */
-function watchLimits(D: D, engine: Engine, input: ReporterInput, hit: (limit: string) => void): () => void {
+/** `turns` already taken counts toward `maxTurns`, so a run reopened after Pi exits keeps its count. */
+function watchLimits(D: D, engine: Engine, input: ReporterInput, turns: number, hit: (limit: string) => void): () => void {
 	const { maxTurns, maxTokens, timeout } = input.limits;
 	if (!maxTurns && !maxTokens && !timeout) return () => {};
-	let turns = 0;
 	let fired = false;
 	const fire = (limit: string) => {
 		if (fired) return;
@@ -527,8 +533,7 @@ function watchLimits(D: D, engine: Engine, input: ReporterInput, hit: (limit: st
 			if (change.type !== "entry" || change.value.conversationId !== input.conversationId || change.value.kind !== "pi.assistant") continue;
 			if (maxTurns && ++turns >= maxTurns) fire(`${maxTurns}-turn`);
 			if (maxTokens) void engine.harness.snapshot(D.UsageDoc, input.conversationId, CTX).then((usage) => {
-				const tokens = Object.values(usage?.models ?? {}).reduce((sum, model) => sum + (model.totalTokens ?? 0), 0);
-				if (tokens >= maxTokens) fire(`${maxTokens}-token`);
+				if (totalTokens(usage) >= maxTokens) fire(`${maxTokens}-token`);
 			});
 		}
 	});
@@ -536,6 +541,10 @@ function watchLimits(D: D, engine: Engine, input: ReporterInput, hit: (limit: st
 		clearTimeout(timer);
 		unsubscribe();
 	};
+}
+
+function totalTokens(usage: { models?: Record<string, { totalTokens?: number }> } | undefined): number {
+	return Object.values(usage?.models ?? {}).reduce((sum, model) => sum + (model.totalTokens ?? 0), 0);
 }
 
 function acquire(agentId: string): Promise<boolean> {
