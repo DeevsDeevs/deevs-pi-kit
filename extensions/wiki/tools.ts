@@ -2,7 +2,7 @@ import { Type } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import type { WikiService } from "./service.ts";
-import type { WikiContextInput, WikiGraphInput, WikiInitInput, WikiLintInput, WikiSearchInput, WikiStatusInput } from "./types.ts";
+import type { WikiContextInput, WikiGraphInput, WikiGraphResult, WikiInitInput, WikiInitResult, WikiLintInput, WikiLintResult, WikiSearchInput, WikiSearchResult, WikiStatusInput, WikiStatusResult } from "./types.ts";
 
 const PathSchema = {
 	path: Type.String({ description: "Explicit path to wiki root, relative to the project cwd" }),
@@ -68,7 +68,7 @@ export function registerWikiTools(pi: ExtensionAPI, service: WikiService): void 
 			return { content: [{ type: "text", text: formatInit(result) }], details: result };
 		},
 		renderCall: (args: WikiInitInput, theme: Theme) => wikiCall("init", args.path, theme),
-		renderResult: (result, options, theme) => wikiResult(result.details, options.expanded, theme),
+		renderResult,
 	});
 
 	pi.registerTool({
@@ -82,7 +82,7 @@ export function registerWikiTools(pi: ExtensionAPI, service: WikiService): void 
 			return { content: [{ type: "text", text: formatStatus(result) }], details: result };
 		},
 		renderCall: (args: WikiStatusInput, theme: Theme) => wikiCall("status", args.path, theme),
-		renderResult: (result, options, theme) => wikiResult(result.details, options.expanded, theme),
+		renderResult,
 	});
 
 	pi.registerTool({
@@ -96,7 +96,7 @@ export function registerWikiTools(pi: ExtensionAPI, service: WikiService): void 
 			return { content: [{ type: "text", text: formatLint(result) }], details: result };
 		},
 		renderCall: (args: WikiLintInput, theme: Theme) => wikiCall("lint", args.path, theme),
-		renderResult: (result, options, theme) => wikiResult(result.details, options.expanded, theme),
+		renderResult,
 	});
 
 	pi.registerTool({
@@ -110,7 +110,7 @@ export function registerWikiTools(pi: ExtensionAPI, service: WikiService): void 
 			return { content: [{ type: "text", text: formatGraph(result) }], details: result };
 		},
 		renderCall: (args: WikiGraphInput, theme: Theme) => wikiCall("graph", args.path, theme),
-		renderResult: (result, options, theme) => wikiResult(result.details, options.expanded, theme),
+		renderResult,
 	});
 
 	pi.registerTool({
@@ -125,7 +125,7 @@ export function registerWikiTools(pi: ExtensionAPI, service: WikiService): void 
 			return { content: [{ type: "text", text: formatSearch(result) }], details: result };
 		},
 		renderCall: (args, theme) => wikiCall("search", args.query, theme),
-		renderResult: (result, options, theme) => wikiResult(result.details, options.expanded, theme),
+		renderResult,
 	});
 
 	pi.registerTool({
@@ -140,8 +140,12 @@ export function registerWikiTools(pi: ExtensionAPI, service: WikiService): void 
 			return { content: [{ type: "text", text: result.context }], details: result };
 		},
 		renderCall: (args, theme) => wikiCall("context", args.query ?? args.path, theme),
-		renderResult: (result, options, theme) => wikiResult(result.details, options.expanded, theme),
+		renderResult,
 	});
+}
+
+function renderResult(result: { details?: unknown }, options: { expanded: boolean }, theme: Theme): Text {
+	return wikiResult(result.details, options.expanded, theme);
 }
 
 function wikiCall(action: string, target: string, theme: Theme): Text {
@@ -167,12 +171,12 @@ export function wikiResult(details: unknown, expanded: boolean, theme: Theme): T
 	return new Text(`${theme.fg("success", "✓")} ${theme.fg("accent", path)}`, 0, 0);
 }
 
-export function formatInit(result: Awaited<ReturnType<WikiService["init"]>>): string {
+function formatInit(result: WikiInitResult): string {
 	const action = result.dryRun ? "Would create" : "Created";
 	return [`${action} wiki at ${result.path}`, ...result.created.map((path) => `- ${path}`)].join("\n");
 }
 
-export function formatStatus(result: Awaited<ReturnType<WikiService["status"]>>): string {
+function formatStatus(result: WikiStatusResult): string {
 	const missingFiles = Object.entries(result.coreFiles).filter(([, ok]) => !ok).map(([name]) => name);
 	const missingDirs = Object.entries(result.coreDirs).filter(([, ok]) => !ok).map(([name]) => `${name}/`);
 	const typeCounts = Object.entries(result.pageCountsByType).map(([type, count]) => `${type}:${count}`).join(", ") || "none";
@@ -187,7 +191,7 @@ export function formatStatus(result: Awaited<ReturnType<WikiService["status"]>>)
 	].join("\n");
 }
 
-export function formatLint(result: Awaited<ReturnType<WikiService["lint"]>>): string {
+function formatLint(result: WikiLintResult): string {
 	const lines = [`Wiki lint: ${result.path}`, `Summary: ${result.summary.error} error(s), ${result.summary.warning} warning(s), ${result.summary.notice} notice(s)`];
 	if (!result.issues.length) lines.push("No issues found.");
 	for (const issue of result.issues) lines.push(`- [${issue.severity}] ${issue.code}${issue.path ? ` ${issue.path}` : ""}: ${issue.message}`);
@@ -195,7 +199,7 @@ export function formatLint(result: Awaited<ReturnType<WikiService["lint"]>>): st
 	return lines.join("\n");
 }
 
-export function formatGraph(result: Awaited<ReturnType<WikiService["graph"]>>): string {
+function formatGraph(result: WikiGraphResult): string {
 	const lines = [`Wiki graph: ${result.path}`, `${result.nodes.length} node(s), ${result.edges.length} edge(s), ${result.orphans.length} orphan(s), ${result.brokenLinks.length} broken, ${result.ambiguousLinks.length} ambiguous`];
 	if (result.orphans.length) lines.push("", "Orphans:", ...result.orphans.slice(0, 20).map((node) => `- ${node.id}`));
 	if (result.brokenLinks.length) lines.push("", "Broken links:", ...result.brokenLinks.slice(0, 20).map((link) => `- ${link.from}:${link.line} ${link.raw} -> ${link.target}`));
@@ -204,7 +208,7 @@ export function formatGraph(result: Awaited<ReturnType<WikiService["graph"]>>): 
 	return lines.join("\n");
 }
 
-export function formatSearch(result: Awaited<ReturnType<WikiService["search"]>>): string {
+function formatSearch(result: WikiSearchResult): string {
 	if (!result.matches.length) return `No wiki matches for: ${result.query}`;
 	const lines = [`Wiki search (${result.mode}): ${result.query}`];
 	for (const match of result.matches) {

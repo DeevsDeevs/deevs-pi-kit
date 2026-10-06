@@ -10,7 +10,6 @@ arxiv_get      fetch metadata and abstracts for arXiv IDs
 arxiv_bibtex   generate simple BibTeX entries
 ```
 
-
 ## Limits
 
 - no API key required

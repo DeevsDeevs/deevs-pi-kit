@@ -2,22 +2,17 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { ArxivService } from "./service.ts";
 import { registerArxivTools } from "./tools.ts";
 
-const SURFACE_KEY = Symbol.for("deevs-pi-kit.arxiv-surface");
-
-interface ArxivSurfaceState { active: boolean }
-interface GlobalWithArxivSurface { [SURFACE_KEY]?: ArxivSurfaceState }
+const SURFACE = Symbol.for("deevs-pi-kit.arxiv-surface");
 
 export default function arxivExtension(pi: ExtensionAPI): void {
-	const globalState = globalThis as GlobalWithArxivSurface;
-	const existing = globalState[SURFACE_KEY];
-	if (existing?.active) return;
-	const surfaceState: ArxivSurfaceState = { active: true };
-	globalState[SURFACE_KEY] = surfaceState;
+	const global = globalThis as { [SURFACE]?: { active: boolean } };
+	if (global[SURFACE]?.active) return;
+	const surface = { active: true };
+	global[SURFACE] = surface;
 
-	const service = new ArxivService();
-	registerArxivTools(pi, service);
+	registerArxivTools(pi, new ArxivService());
 
 	pi.on("session_shutdown", async () => {
-		surfaceState.active = false;
+		surface.active = false;
 	});
 }

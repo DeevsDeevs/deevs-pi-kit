@@ -41,4 +41,4 @@ Cite arXiv IDs and abs URLs. If research affects project decisions, save a chain
 
 ## Guardrails
 
-Preprints may be wrong, superseded, or unreviewed; abstracts are not enough for detailed method claims. Never claim citation counts (the extension has none). No PDF downloads unless asked with an appropriate document workflow. Keep searches bounded; broaden only with a stated reason.
+Preprints may be wrong, superseded, or unreviewed; abstracts are not enough for detailed method claims. Never claim citation counts. No PDF downloads unless asked with an appropriate document workflow. Keep searches bounded; broaden only with a stated reason.

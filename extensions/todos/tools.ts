@@ -1,9 +1,9 @@
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { TODO_TOOL_NAME, type TodoState } from "./state.ts";
+import { TODO_TOOL_NAME, validateTodos, type TodoState } from "./state.ts";
 import type { TodoDetails, TodoListInput, TodoStatus } from "./types.ts";
-import { formatTodoText, updateTodoWidget } from "./ui.ts";
+import { formatTodoText, todoIcon, updateTodoWidget } from "./ui.ts";
 
 const TodoItemSchema = Type.Object({
 	id: Type.String({ description: "Stable short id, usually 1, 2, 3...; keep the same id when updating" }),
@@ -32,21 +32,19 @@ export function registerTodoTools(pi: ExtensionAPI, state: TodoState): void {
 		],
 		parameters: TodoListSchema,
 		async execute(_toolCallId, params: TodoListInput, _signal, _onUpdate, ctx) {
-			if (params.operation === "read") return result("read", state, false, ctx);
+			if (params.operation === "read") return result("read", state, ctx);
 			if (params.operation === "clear") {
 				state.clear();
-				updateTodoWidget(ctx, state.read(), state.stats());
-				return result("clear", state, false, ctx, "Todos cleared.");
+				return result("clear", state, ctx, "Todos cleared.");
 			}
 
-			const validation = state.validate(params.todos);
-			if (!validation.valid) {
-				const details: TodoDetails = { operation: "write", todos: state.read(), stats: state.stats(), error: validation.errors.join("; ") };
-				return { content: [{ type: "text" as const, text: `Todo validation failed:\n${validation.errors.map((error) => `- ${error}`).join("\n")}` }], details, isError: true };
+			const errors = validateTodos(params.todos);
+			if (errors.length) {
+				const details: TodoDetails = { operation: "write", todos: state.read(), stats: state.stats(), error: errors.join("; ") };
+				return { content: [{ type: "text" as const, text: `Todo validation failed:\n${errors.map((error) => `- ${error}`).join("\n")}` }], details, isError: true };
 			}
 			state.write(params.todos ?? []);
-			updateTodoWidget(ctx, state.read(), state.stats());
-			return result("write", state, false, ctx);
+			return result("write", state, ctx);
 		},
 		renderCall(args: TodoListInput, theme: Theme) {
 			let text = theme.fg("toolTitle", theme.bold(`${TODO_TOOL_NAME} `)) + theme.fg("muted", args.operation);
@@ -60,30 +58,17 @@ export function registerTodoTools(pi: ExtensionAPI, state: TodoState): void {
 			if (details.todos.length === 0) return new Text(theme.fg("dim", "No todos"), 0, 0);
 			let text = theme.fg("success", "✓ ") + theme.fg("muted", `${details.stats.done}/${details.stats.total} done`);
 			const visible = expanded ? details.todos : details.todos.slice(0, 5);
-			for (const todo of visible) text += `\n  ${renderIcon(todo.status, theme)} ${theme.fg("accent", `${todo.id}.`)} ${renderTitle(todo.status, todo.title, theme)}`;
+			for (const todo of visible) text += `\n  ${todoIcon(todo.status, theme)} ${theme.fg("accent", `${todo.id}.`)} ${renderTitle(todo.status, todo.title, theme)}`;
 			if (!expanded && details.todos.length > visible.length) text += `\n${theme.fg("dim", `  … ${details.todos.length - visible.length} more`)}`;
 			return new Text(text, 0, 0);
 		},
 	});
-
-	pi.on("turn_end", async (_event, ctx) => updateTodoWidget(ctx, state.read(), state.stats()));
-	pi.on("session_tree", async (_event, ctx) => updateTodoWidget(ctx, state.read(), state.stats()));
 }
 
-function result(operation: TodoDetails["operation"], state: TodoState, isError: boolean, ctx: ExtensionContext, overrideText?: string) {
-	const todos = state.read();
-	const stats = state.stats();
-	updateTodoWidget(ctx, todos, stats);
-	const text = overrideText ?? (todos.length ? formatTodoText(todos, stats) : "No todos.");
-	const details: TodoDetails = { operation, todos, stats };
-	return { content: [{ type: "text" as const, text }], details, isError };
-}
-
-function renderIcon(status: TodoStatus, theme: Theme): string {
-	if (status === "done") return theme.fg("success", "✓");
-	if (status === "in_progress") return theme.fg("warning", "◉");
-	if (status === "blocked") return theme.fg("error", "!");
-	return theme.fg("dim", "○");
+function result(operation: TodoDetails["operation"], state: TodoState, ctx: ExtensionContext, text?: string) {
+	updateTodoWidget(ctx, state);
+	const details: TodoDetails = { operation, todos: state.read(), stats: state.stats() };
+	return { content: [{ type: "text" as const, text: text ?? formatTodoText(details.todos, details.stats) }], details, isError: false };
 }
 
 function renderTitle(status: TodoStatus, title: string, theme: Theme): string {
