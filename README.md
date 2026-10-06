@@ -4,7 +4,7 @@ A [Pi](https://github.com/earendil-works/pi) package for work you can walk away 
 
 ## Requirements
 
-- Pi 0.82 or newer and Node 22.19 or newer.
+- Pi 1.0 or newer and Node 22.19 or newer.
 - Herdr, for Runtime collaborators. Everything else works in plain Pi.
 - The Claude Code or Codex CLI, only for collaborators on that driver.
 
