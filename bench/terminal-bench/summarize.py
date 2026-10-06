@@ -35,8 +35,15 @@ def generation_cost(gen_id: str) -> float | None:
         return None
 
 
+def text(path: Path) -> str:
+    try:
+        return path.read_text(errors="ignore")
+    except OSError:  # container-owned files the host user cannot read
+        return ""
+
+
 def openrouter_usd(agent_dir: Path) -> tuple[int, float | None]:
-    ids = {m for f in agent_dir.rglob("*") if f.is_file() for m in re.findall(r"gen-\d+-[A-Za-z0-9]+", f.read_text(errors="ignore"))}
+    ids = {m for f in agent_dir.rglob("*") if f.is_file() for m in re.findall(r"gen-\d+-[A-Za-z0-9]+", text(f))}
     if not ids or not KEY.exists():
         return len(ids), None
     with ThreadPoolExecutor(16) as pool:
