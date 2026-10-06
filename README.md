@@ -43,7 +43,7 @@ Nothing to set up first. Pi starts the daemon in its own Herdr workspace on the 
 
 ## Extensions
 
-You ask the lead for everything in chat; the kit registers two commands: `/agents` lists background tasks, the Mission, agent types and models, stops a task or pauses the Mission (`/agents stop <id>`) and opens a task (`/agents attach <id>`); `/chains` browses and searches handoffs.
+You ask the lead for everything in chat; the kit registers two commands: `/agents` lists background tasks, the Mission, agent types and models, and stops a task or pauses the Mission (`/agents stop <id>`); `/chains` browses and searches handoffs.
 
 - **runtime** owns collaborator identity, mail and Herdr tab lifecycle. `collaborator_list`, `collaborator_manage`, `collaborator_workspace` and four MCP mail tools. [Protocol](extensions/runtime/PROTOCOL.md).
 - **guard** (`shared/guard.ts`) reads command syntax, including `$(...)` and heredocs, and refuses in the lead's and the agents' `bash`, `job_start` and `Monitor`: detached processes, force pushes to `main`, `master`, `release/*` or an unnamed branch and deletes of a protected one, recursive `rm` outside the project, `$TMPDIR` and `/tmp`, and the `guard.block` patterns (`"terraform destroy"` matches `terraform` with `destroy` among its arguments). `extensions/shared/guard-hook.mjs` is the same guard as a Claude Code or Codex PreToolUse hook.
