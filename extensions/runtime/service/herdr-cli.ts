@@ -23,6 +23,8 @@ export interface HostedLiveAgent {
 	workspaceId?: string;
 	sessionPath?: string;
 	agentStatus?: HerdrAgentStatus;
+	/** Herdr counts the agent's status changes; a prompted tab that took a turn has moved it. */
+	stateSeq?: number;
 }
 
 export interface HostedHostVerifier {
@@ -122,6 +124,7 @@ function liveAgent(agent: HerdrLiveAgent): HostedLiveAgent {
 	const result: HostedLiveAgent = { cwd: agent.cwd };
 	if (agent.name !== undefined) result.name = agent.name;
 	if (agent.agent_status !== undefined) result.agentStatus = agent.agent_status;
+	if (agent.state_change_seq !== undefined) result.stateSeq = agent.state_change_seq;
 	if (agent.tab_id !== undefined) result.tabId = agent.tab_id;
 	if (agent.workspace_id !== undefined) result.workspaceId = agent.workspace_id;
 	const sessionPath = agent.agent_session?.kind === "path" ? canonicalPath(agent.agent_session.value) : undefined;

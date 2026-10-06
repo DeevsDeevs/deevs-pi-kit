@@ -28,12 +28,13 @@ interface RecordedPrompt {
 /** Records every wake instead of touching Herdr, and reports whatever status the test chose. */
 class RecordingHost implements HostedHostVerifier {
 	status: HerdrAgentStatus | undefined = "idle";
+	stateSeq: number | undefined;
 	absent = false;
 	readonly prompts: RecordedPrompt[] = [];
 
 	async getAgent(agentName: string): Promise<HostedLiveAgent> {
 		if (this.absent) throw new Error("Herdr reports no such agent.");
-		return { name: agentName, cwd: PROJECT_ROOT, agentStatus: this.status };
+		return { name: agentName, cwd: PROJECT_ROOT, agentStatus: this.status, stateSeq: this.stateSeq };
 	}
 
 	async promptAgent(agentName: string, text: string): Promise<void> {
@@ -185,6 +186,25 @@ describe("native wake", () => {
 		await test.sweeper.sweep();
 		expect(test.host.prompts).toHaveLength(1);
 		expect(test.store.read().events[NATIVE_EVENT]?.readAt).toBe(1000);
+	});
+
+	it("with Herdr's status count, marks mail read only once the tab took a turn, and retries a dropped prompt", async () => {
+		const test = setup();
+		test.host.stateSeq = 4;
+		await test.sweeper.sweep();
+		test.advance(30_000);
+		await test.sweeper.sweep();
+		expect(test.host.prompts).toHaveLength(2);
+		expect(test.store.read().events[NATIVE_EVENT]?.readAt).toBeUndefined();
+		test.advance(30_000);
+		await test.sweeper.sweep();
+		test.advance(30_000);
+		await test.sweeper.sweep();
+		expect(test.host.prompts).toHaveLength(3);
+		test.host.stateSeq = 6;
+		await test.sweeper.sweep();
+		expect(test.store.read().events[NATIVE_EVENT]?.readAt).toBe(test.at());
+		expect(test.host.prompts).toHaveLength(3);
 	});
 
 	it("wakes again at once for newer mail", async () => {
