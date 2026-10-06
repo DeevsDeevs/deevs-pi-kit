@@ -16,7 +16,8 @@ export async function sandbox({ run, name, kit, results }) {
 	const requestLog = join(dir, "requests.jsonl");
 	writeFileSync(requestLog, "");
 	const marks = [];
-	const { server, port } = await startPuppet(requestLog, marks);
+	const scripts = {};
+	const { server, port } = await startPuppet(requestLog, marks, scripts);
 
 	const env = {
 		PATH: `${join(home, "bin")}:${process.env.PATH}`, LANG: "C.UTF-8", TERM: "xterm-256color", HOME: home,
@@ -42,7 +43,7 @@ export async function sandbox({ run, name, kit, results }) {
 	const git = (...args) => execFileSync("git", args, { cwd: repo, env, encoding: "utf8" });
 	git("init", "-q"); git("add", "."); git("commit", "-qm", "fixture");
 
-	const t = { name, dir, home, repo, kit, agentDir, env, port, tag, requestLog, marks, git, closers: [] };
+	const t = { name, dir, home, repo, kit, agentDir, env, port, tag, requestLog, marks, scripts, git, closers: [] };
 	t.teardown = async () => {
 		for (const close of t.closers.reverse()) await close().catch(() => {});
 		const leaked = procs(t);

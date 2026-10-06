@@ -1,10 +1,32 @@
 // Drivers: an RPC lead over `pi --mode rpc`, one-shot Pi runs, and the sandbox Herdr server.
 // Everything is async: the puppets live in this process, so a blocking spawn would starve them.
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { DIALOGS } from "./look.mjs";
 
 const tail = (s, n = 2000) => s.length > n ? s.slice(-n) : s;
+
+export const script = (s) => `POLYGON ${JSON.stringify(s)}`;
+export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Polls `check` until it returns a truthy value. */
+export async function eventually(check, ms = 30_000, label = check.toString()) {
+	for (const end = Date.now() + ms; Date.now() < end; await sleep(100)) {
+		const value = await check();
+		if (value) return value;
+	}
+	throw new Error(`timeout ${ms}ms waiting for ${label}`);
+}
+
+/** Adds puppet-served models (reasoning on, so levels apply) to `provider` in the sandbox models.json. */
+export function fixtureModels(t, provider, ids) {
+	const file = join(t.agentDir, "models.json");
+	const config = JSON.parse(readFileSync(file, "utf8"));
+	const entry = config.providers[provider] ??= { baseUrl: `http://127.0.0.1:${t.port}/v1`, api: "openai-completions", apiKey: "polygon", models: [] };
+	(entry.models ??= []).push(...ids.map((id) => ({ id, reasoning: true, contextWindow: 200000, maxTokens: 8000 })));
+	writeFileSync(file, JSON.stringify(config, null, 2));
+}
 
 export function exec(t, cmd, args, { timeoutMs = 60_000, input, env = t.env } = {}) {
 	return new Promise((resolve) => {
@@ -25,15 +47,18 @@ export async function pi(t, args, opts) {
 	return result;
 }
 
-/** A long-lived RPC lead. `until(pred)` resolves on the first event (past or future) matching pred. */
-export function rpc(t, { args = [], model = "polygon/puppet" } = {}) {
+/**
+ * A long-lived RPC lead. `until(pred)` resolves on the first event (past or future) matching pred.
+ * `model: null` leaves the model to Pi and the kit; `answer` replies yes (or the first option) to every dialog.
+ */
+export function rpc(t, { args = [], model = "polygon/puppet", answer = false } = {}) {
 	const lead = { events: [], stderr: "" };
 	let seq = 0, child, exited, waiters = [];
 	const check = (e) => {
 		for (const w of [...waiters]) if (w.pred(e, lead.events)) { waiters = waiters.filter((x) => x !== w); w.resolve(e); }
 	};
 	const start = (extra = []) => {
-		child = spawn("pi", ["--mode", "rpc", "--model", model, ...args, ...extra], { cwd: t.repo, env: t.env, stdio: ["pipe", "pipe", "pipe"] });
+		child = spawn("pi", ["--mode", "rpc", ...(model ? ["--model", model] : []), ...args, ...extra], { cwd: t.repo, env: t.env, stdio: ["pipe", "pipe", "pipe"] });
 		let buf = "";
 		child.stdout.on("data", (d) => {
 			buf += d;
@@ -43,6 +68,7 @@ export function rpc(t, { args = [], model = "polygon/puppet" } = {}) {
 				const e = JSON.parse(line);
 				e.receivedAt = Date.now();
 				lead.events.push(e);
+				if (answer && e.type === "extension_ui_request" && DIALOGS.has(e.method)) child.stdin.write(JSON.stringify({ type: "extension_ui_response", id: e.id, ...(e.method === "confirm" ? { confirmed: true } : { value: e.options?.[0] ?? "" }) }) + "\n");
 				check(e);
 			}
 		});
@@ -73,8 +99,8 @@ export function rpc(t, { args = [], model = "polygon/puppet" } = {}) {
 	};
 	/** Answers a dialog `extension_ui_request`; such responses get no command response back. */
 	lead.reply = (request, answer) => child.stdin.write(JSON.stringify({ type: "extension_ui_response", id: request.id, ...answer }) + "\n");
-	lead.prompt = (message) => lead.send({ type: "prompt", message });
-	lead.script = (script) => lead.prompt(`POLYGON ${JSON.stringify(script)}`);
+	lead.prompt = (message) => lead.send({ type: "prompt", message, streamingBehavior: "followUp" });
+	lead.script = (s) => lead.prompt(script(s));
 	lead.kill9 = async () => { child.kill("SIGKILL"); await exited; };
 	lead.restart = async (extra = ["--continue"]) => { await lead.kill9(); start(extra); };
 	lead.close = async () => {
@@ -97,14 +123,16 @@ export function rpc(t, { args = [], model = "polygon/puppet" } = {}) {
 export async function herdr(t) {
 	const socket = join(t.home, "herdr.sock");
 	const env = { ...t.env, HERDR_SOCKET_PATH: socket };
-	spawn("herdr", ["server"], { cwd: t.repo, env, stdio: "ignore" });
+	const server = spawn("herdr", ["server"], { cwd: t.repo, env, stdio: "ignore" });
+	const stopped = new Promise((r) => server.on("exit", r));
 	for (let i = 0; i < 50 && !existsSync(socket); i++) await new Promise((r) => setTimeout(r, 100));
 	const cli = async (...args) => {
 		const result = await exec(t, "herdr", args, { env, timeoutMs: 10_000 });
 		if (result.status !== 0) throw new Error(`herdr ${args.join(" ")}: ${tail(result.stderr)}`);
 		return result.stdout.trim() ? JSON.parse(result.stdout).result : undefined;
 	};
-	t.closers.push(() => cli("server", "stop"));
+	// `server stop` returns before the server exits; the census runs right after the closers.
+	t.closers.push(async () => { await cli("server", "stop"); await Promise.race([stopped, sleep(5_000)]); });
 	const { workspace } = await cli("workspace", "create", "--cwd", t.repo);
 	Object.assign(t.env, { HERDR_SOCKET_PATH: socket, HERDR_ENV: "1", HERDR_WORKSPACE_ID: workspace.workspace_id });
 	return { cli, workspaceId: workspace.workspace_id };
