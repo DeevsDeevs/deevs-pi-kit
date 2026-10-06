@@ -1,7 +1,8 @@
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
-import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { isToolCallEventType, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import type { JobReadInput, JobReadResult, JobRecord, JobStartInput } from "./types.ts";
+import { guardBashCall } from "../shared/guard.ts";
 import { formatDuration } from "../shared/runtime-ui.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
 import { claimJobManager, releaseJobManager } from "./registry.ts";
@@ -151,6 +152,7 @@ export default function jobsExtension(pi: ExtensionAPI): void {
 		},
 	});
 
+	pi.on("tool_call", (event, context) => isToolCallEventType("bash", event) ? guardBashCall(event.input.command, context.cwd) : undefined);
 	pi.on("session_start", async (_event, context) => {
 		ctx = context;
 		await manager.restore(context);

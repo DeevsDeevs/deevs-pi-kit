@@ -4,9 +4,10 @@ import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { JobBuffer } from "../extensions/jobs/buffer.ts";
+import jobsExtension from "../extensions/jobs/index.ts";
 import { JobManager } from "../extensions/jobs/manager.ts";
 import { claimJobManager, clearJobManager, releaseJobManager, setJobManager } from "../extensions/jobs/registry.ts";
-import { detectDetachedArgv } from "../extensions/shared/process-safety.ts";
+import { guardArgv } from "../extensions/shared/guard.ts";
 import { pendingRuntimeEvents, replayRuntimeEventEntries } from "../extensions/shared/runtime-events.ts";
 
 const cleanups: Array<() => void> = [];
@@ -125,24 +126,24 @@ describe("bounded Jobs", () => {
 		await expect(manager.start({ name: "argv-eval-detach", argv: ["bash", "-lc", "eval 'setsid node worker.js'"] }, ctx)).rejects.toThrow("Detached process launch");
 		await expect(manager.start({ name: "argv-control-detach", argv: ["bash", "-lc", "if true; then nohup node worker.js; fi"] }, ctx)).rejects.toThrow("Detached process launch");
 		await expect(manager.start({ name: "argv-fish-detach", argv: ["fish", "--command=setsid node worker.js"] }, ctx)).rejects.toThrow("Detached process launch");
-		expect(detectDetachedArgv(["rg", "nohup", "."])).toBeUndefined();
-		expect(detectDetachedArgv(["env", "$runner", "setsid"])).toBeUndefined();
-		expect(detectDetachedArgv(["bash", "-lc", "command -v '$runner'"])).toBeUndefined();
-		expect(detectDetachedArgv(["bash", "-lc", "rg nohup ."])).toBeUndefined();
-		expect(detectDetachedArgv(["bash", "-lc", "printf '%s' '; setsid'"])).toBeUndefined();
-		expect(detectDetachedArgv(["bash", "-lc", "printf '%s' '`setsid node`'"])).toBeUndefined();
-		expect(detectDetachedArgv(["bash", "-lc", "printf '%s' '$runner setsid'"])).toBeUndefined();
-		expect(detectDetachedArgv(["bash", "-lc", "printf '%s' 'setsi? {setsid,echo}'"])).toBeUndefined();
-		expect(detectDetachedArgv(["bash", "-lc", "echo message |& rg setsid ."])).toBeUndefined();
-		expect(detectDetachedArgv(["env", "MODE=test", "rg", "setsid", "."])).toBeUndefined();
-		expect(detectDetachedArgv(["env", "-Srg setsid ."])).toBeUndefined();
-		expect(detectDetachedArgv(["env", "-S", "rg", "setsid", "."])).toBeUndefined();
-		expect(detectDetachedArgv(["env", "-S", "rg '; setsid'"])).toBeUndefined();
-		expect(detectDetachedArgv(["env", "-S", "echo \\${COMMAND}"])).toBeUndefined();
-		expect(detectDetachedArgv(["env", "-S", "", "setsid", "node"])).toContain("Detached process launch");
-		expect(detectDetachedArgv(["/usr/bin/time", "-f", "setsid", "rg", "nohup", "."])).toBeUndefined();
-		expect(detectDetachedArgv(["nice", "-n", "5", "rg", "setsid", "."])).toBeUndefined();
-		expect(detectDetachedArgv(["sudo", "-u", "root", "setsid", "node", "worker.js"])).toContain("Detached process launch");
+		expect(guardArgv(["rg", "nohup", "."])).toBeUndefined();
+		expect(guardArgv(["env", "$runner", "setsid"])).toBeUndefined();
+		expect(guardArgv(["bash", "-lc", "command -v '$runner'"])).toBeUndefined();
+		expect(guardArgv(["bash", "-lc", "rg nohup ."])).toBeUndefined();
+		expect(guardArgv(["bash", "-lc", "printf '%s' '; setsid'"])).toBeUndefined();
+		expect(guardArgv(["bash", "-lc", "printf '%s' '`setsid node`'"])).toBeUndefined();
+		expect(guardArgv(["bash", "-lc", "printf '%s' '$runner setsid'"])).toBeUndefined();
+		expect(guardArgv(["bash", "-lc", "printf '%s' 'setsi? {setsid,echo}'"])).toBeUndefined();
+		expect(guardArgv(["bash", "-lc", "echo message |& rg setsid ."])).toBeUndefined();
+		expect(guardArgv(["env", "MODE=test", "rg", "setsid", "."])).toBeUndefined();
+		expect(guardArgv(["env", "-Srg setsid ."])).toBeUndefined();
+		expect(guardArgv(["env", "-S", "rg", "setsid", "."])).toBeUndefined();
+		expect(guardArgv(["env", "-S", "rg '; setsid'"])).toBeUndefined();
+		expect(guardArgv(["env", "-S", "echo \\${COMMAND}"])).toBeUndefined();
+		expect(guardArgv(["env", "-S", "", "setsid", "node"])).toContain("Detached process launch");
+		expect(guardArgv(["/usr/bin/time", "-f", "setsid", "rg", "nohup", "."])).toBeUndefined();
+		expect(guardArgv(["nice", "-n", "5", "rg", "setsid", "."])).toBeUndefined();
+		expect(guardArgv(["sudo", "-u", "root", "setsid", "node", "worker.js"])).toContain("Detached process launch");
 	});
 
 	it("keeps an active Job alive when a new hot-reload generation claims its manager", async () => {
@@ -351,6 +352,28 @@ describe("bounded Jobs", () => {
 		const descendantPid = Number(readFileSync(pidFile, "utf8"));
 		expect(treeStopped.runtime.status).toBe("cancelled");
 		expect(isAlive(descendantPid)).toBe(false);
+	});
+});
+
+describe("kit guard wiring", () => {
+	it("refuses job_start commands the guard refuses", async () => {
+		const { manager, ctx } = setup();
+		await expect(manager.start({ name: "rm-home", command: "rm -rf ~/x" }, ctx)).rejects.toThrow("Recursive rm outside");
+		await expect(manager.start({ name: "force-push", argv: ["git", "push", "-f", "origin", "main"] }, ctx)).rejects.toThrow("Force push to a protected branch");
+	});
+
+	it("blocks the lead's bash calls the guard refuses", () => {
+		const { ctx } = setup();
+		type Handler = (event: object, context: ExtensionContext) => unknown;
+		const handlers = new Map<string, Handler>();
+		const pi = { registerTool() {}, registerCommand() {}, appendEntry() {}, on: (name: string, handler: Handler) => handlers.set(name, handler) } as unknown as ExtensionAPI;
+		jobsExtension(pi);
+		cleanups.push(() => void handlers.get("session_shutdown")?.({}, ctx));
+		const call = (toolName: string, input: object) => handlers.get("tool_call")?.({ type: "tool_call", toolCallId: "t", toolName, input }, ctx);
+		expect(call("bash", { command: "nohup sleep 300 &" })).toEqual({ block: true, reason: expect.stringMatching(/^Detached process launch/) });
+		expect(call("bash", { command: "git push --force origin main" })).toMatchObject({ block: true });
+		expect(call("bash", { command: "npm test" })).toBeUndefined();
+		expect(call("read", { path: "nohup &" })).toBeUndefined();
 	});
 });
 
