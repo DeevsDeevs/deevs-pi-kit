@@ -689,6 +689,7 @@ function callRunner(D: D, docs: WorkflowDocs, engine: Engine, input: WorkflowInp
 	const read = async (key: string) => callRecord(await runtime.snapshot(docs.Calls, runtime.conversationId, member(key), context));
 	let creating = Promise.resolve();
 	const create = async (key: string, options: AgentOptions): Promise<CallRecord> => {
+		if (options.schema) throw new Error("agent({schema}) is not available in this build yet; ask for JSON in the prompt and parse the text.");
 		const type = workflowAgentType(options.agentType);
 		const resolved = resolveModel(options.model ?? type.model, await modelContext(input), LEVELS.find((level) => level === options.effort) ?? type.effort);
 		if (resolved.harness !== "pi") throw new Error(`${modelLabel(resolved)} runs as a Claude Code or Codex worker, which the kit does not start yet; pick a Pi model.`);
