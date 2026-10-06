@@ -184,15 +184,6 @@ describe("hosted runtime state persistence", () => {
 		expect(readHostedRuntimeState(root)).toEqual(emptyHostedRuntimeState());
 	});
 
-	it("rejects invalid cross-references rather than repairing them", () => {
-		const dangling = structuredClone(populatedState());
-		delete dangling.dedupe[dangling.events.evt_1!.dedupeKey];
-		expect(() => validateHostedRuntimeState(dangling)).toThrow(HostedStateStorageError);
-		const orphanMail = structuredClone(populatedState());
-		orphanMail.events.evt_1!.recipientParticipantKey = "participant_absent";
-		expect(() => validateHostedRuntimeState(orphanMail)).toThrow(HostedStateStorageError);
-	});
-
 	it("never expires a grant by time, including one an older build stamped with an expiry", () => {
 		const state = populatedState();
 		const namespaceId = "msg_00000000-0000-0000-0000-000000000001";

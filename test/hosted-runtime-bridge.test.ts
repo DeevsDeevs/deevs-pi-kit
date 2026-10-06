@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { HostedRuntimeClient } from "../extensions/runtime/client.ts";
 import type { HostedTarget } from "../extensions/runtime/schemas/state.ts";
-import type { BindAgentInput } from "../extensions/runtime/service/bind-request.ts";
+import type { BindAgentInput } from "../extensions/runtime/service/bridge.ts";
 import { RuntimeAgentBinder } from "../extensions/runtime/service/bridge.ts";
 import { HostedParticipantCoordinator } from "../extensions/runtime/service/participant.ts";
 import { dispatchHostedLine } from "../extensions/runtime/service/protocol.ts";

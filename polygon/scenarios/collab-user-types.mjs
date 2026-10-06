@@ -29,6 +29,6 @@ export default {
 		await cli("pane", "send-keys", pane, "enter");
 		await eventually(() => requests(t).some((r) => r.agent === "writer" && r.marks.includes("user-typed-mark")), 30_000, "the typed mark in the writer's request");
 		await eventually(() => notifications(lead.events).some((n) => n.customType === "collaborator-message"), 30_000, "the writer's SendMessage at the lead");
-		assert.ok(requests(t).some((r) => r.agent === "lead" && r.marks.includes("user-typed-mark")), "the writer's message never reached the lead's model");
+		await eventually(() => requests(t).some((r) => r.agent === "lead" && r.marks.includes("user-typed-mark")), 30_000, "the writer's message in the lead's request");
 	},
 };

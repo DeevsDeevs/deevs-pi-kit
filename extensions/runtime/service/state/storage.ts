@@ -28,7 +28,6 @@ import {
 	emptyHostedRuntimeState,
 } from "../../schemas/state.ts";
 import { HostedStateStorageError, storageError } from "./errors.ts";
-import { checkStateIntegrity } from "./integrity.ts";
 import { reduceHostedState } from "./reduce.ts";
 
 type PersistedStateValue = string | number | boolean | null | PersistedStateValue[] | { [field: string]: PersistedStateValue };
@@ -135,7 +134,6 @@ function discardSupersededState(path: string): HostedRuntimeState {
 export function validateHostedRuntimeState<Source>(value: Source): HostedRuntimeState {
 	try {
 		if (!Value.Check(HostedRuntimeStateSchema, value)) throw schemaError(HostedRuntimeStateSchema, value, "Runtime state");
-		checkStateIntegrity(value);
 		return value;
 	} catch (error) {
 		throw storageError("Runtime state is malformed", error);

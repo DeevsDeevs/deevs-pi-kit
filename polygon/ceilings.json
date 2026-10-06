@@ -1,6 +1,6 @@
 {
 	"kit": { "paths": ["extensions"], "max": 17000 },
-	"runtime": { "paths": ["extensions/runtime"], "max": 7400 },
+	"runtime": { "paths": ["extensions/runtime"], "max": 7200 },
 	"subagents": { "paths": ["extensions/subagents", "extensions/shared/tasks.ts", "extensions/shared/models.ts"], "max": 4000 },
 	"missions": { "paths": ["extensions/mission"], "max": 500 },
 	"polygon": { "paths": ["polygon/run.mjs", "polygon/sandbox.mjs", "polygon/puppet.mjs", "polygon/drive.mjs", "polygon/look.mjs", "polygon/fixtures", "polygon/scenarios"], "max": 2800 }

@@ -110,12 +110,6 @@ export const MessagingSendParams = Type.Object({
 	participantId: ParticipantNameText,
 	bodyBase64: BodyBase64,
 }, STRICT_OBJECT);
-export const MessagingReplyParams = Type.Object({
-	...NAMESPACE,
-	operationId: IdText,
-	eventId: IdText,
-	bodyBase64: BodyBase64,
-}, STRICT_OBJECT);
 
 /** Results stay open objects: a client decodes the fields it needs and ignores the rest. */
 export const LiveRegistrationResult = Type.Object({

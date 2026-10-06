@@ -42,7 +42,7 @@ Newline-delimited JSON, capped at 64 KiB per request line and 128 KiB per messag
 | Interactive agent | `bridge.bind`, `bridge.heartbeat`, `bridge.unregister` |
 | Participants | `participant.acquire`, `participant.get`, `participant.list`, `participant.stand_down`, `participant.stand_down_confirmed`, `participant.stop_confirmed`, `participant.release`, `participant.takeover` |
 | Mail | `mailbox.send` |
-| Messaging | `messaging.issue`, `messaging.peers`, `messaging.inbox`, `messaging.send`, `messaging.reply` |
+| Messaging | `messaging.issue`, `messaging.inbox`, `messaging.send` |
 | Worktrees | `worktree.ensure`, `worktree.list`, `worktree.remove` |
 
 ## Launch

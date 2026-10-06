@@ -12,7 +12,6 @@ import {
 	MailboxSendParams,
 	MessagingIssueParams,
 	MessagingNamespaceParams,
-	MessagingReplyParams,
 	MessagingSendParams,
 	ParticipantAcquireParams,
 	ParticipantAuthParams,
@@ -166,18 +165,11 @@ const HOSTED_METHODS = new Map<string, HostedMethodHandler>([
 		call.id,
 		await call.context.messaging.issue(authorize(call, params), params.participantKey, params.expectedGeneration),
 	))],
-	["messaging.peers", method(MessagingNamespaceParams, (call, params) => callMessaging(call, params, { method: "peers" }))],
 	["messaging.inbox", method(MessagingNamespaceParams, (call, params) => callMessaging(call, params, { method: "inbox" }))],
 	["messaging.send", method(MessagingSendParams, (call, params) => callMessaging(call, params, {
 		method: "send",
 		operationId: params.operationId,
 		participantId: params.participantId,
-		body: decodeMessagingBody(params.bodyBase64),
-	}))],
-	["messaging.reply", method(MessagingReplyParams, (call, params) => callMessaging(call, params, {
-		method: "reply",
-		operationId: params.operationId,
-		eventId: params.eventId,
 		body: decodeMessagingBody(params.bodyBase64),
 	}))],
 	["pi.register", method(PiRegisterParams, async (call, params) => success(
