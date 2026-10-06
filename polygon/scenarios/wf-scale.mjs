@@ -6,7 +6,7 @@ import { launches, progressEvents, usageOf } from "./wf-shapes.mjs";
 const N = 2_000;
 const SOURCE = [
 	'export const meta = { name: "scale", description: "Two thousand agents" };',
-	`const results = await parallel(Array.from({ length: ${N} }, (_, i) => () => agent(\`POLYGON {"agent":"s\${i}","steps":[{"id":"c","text":"ok","delayMs":40}]}\`, { label: \`s\${i}\` })));`,
+	`const results = await parallel(Array.from({ length: ${N} }, (_, i) => () => agent(\`POLYGON {"agent":"s\${i}","steps":[{"id":"c","text":"ok","delayMs":300}]}\`, { label: \`s\${i}\` })));`,
 	"return results.filter((r) => r !== null).length;",
 ].join("\n");
 

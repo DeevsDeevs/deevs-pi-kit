@@ -64,6 +64,7 @@ export async function driveWorkflow(workflow: ParsedWorkflow, args: JsonValue | 
 	const finished = new Set(records.flatMap((record) => (record.type === "result" || record.type === "failed" ? [record.key] : [])));
 	const crash = new CrashKeys();
 	let turn = Promise.resolve();
+	let calls = 0;
 	const write = (record: JournalRecord) => appendFileSync(journal, `${JSON.stringify(record)}\n`);
 	const event = (data: { [key: string]: JsonValue | undefined }) => appendFileSync(join(dir, "progress.jsonl"), `${JSON.stringify(data)}\n`);
 	Object.assign(progress, { status: "running", phase: undefined, phases: [], agents: [], logs: [], failures: [] });
@@ -107,15 +108,14 @@ export async function driveWorkflow(workflow: ParsedWorkflow, args: JsonValue | 
 			} else log(e.message);
 		},
 		agent: async (prompt, options) => {
-			// Keys are taken synchronously, in call order, before anything awaits.
-			const crashKey = crash.next(prompt, options);
-			const step = replay.next(prompt, options);
 			const row: AgentRow = { index: progress.agents.length, label: options.label, phase: options.phase, state: "queued", tokens: 0, toolUses: 0, queuedAt: Date.now() };
 			progress.agents.push(row);
-			// Calls take turns, one per event-loop pass, so a burst of thousands never starves the lead.
-			const mine = turn.then(() => new Promise<void>((resolve) => setImmediate(resolve)));
-			turn = mine;
-			await mine;
+			// At most 16 calls are keyed and looked up per event-loop pass, so a burst of thousands never starves the lead.
+			// Calls waiting on one turn resume in call order, which keeps the chained keys in call order too.
+			if (calls++ % 16 === 0) turn = turn.then(() => new Promise<void>((resolve) => setImmediate(resolve)));
+			await turn;
+			const crashKey = crash.next(prompt, options);
+			const step = replay.next(prompt, options);
 			const stored = await runner.stored(crashKey);
 			// A crash between the crash-map commit and the journal append leaves the line to write now.
 			if (stored !== undefined && stored !== "live") return settle(row, stored, step.key, finished.has(step.key));

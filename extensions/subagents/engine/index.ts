@@ -116,7 +116,7 @@ interface Kit {
 	Outbox: Durable.ConversationDocToken<OutboxDoc>;
 	Agents: Durable.ConversationDocToken<AgentsDoc>;
 	Workflows: Durable.ConversationDocToken<WorkflowsDoc>;
-	Calls: Durable.TaskDocFamilyToken<Durable.JsonObject, string>;
+	Calls: Durable.ConversationDocFamilyToken<Durable.JsonObject, string>;
 	Anchor: Durable.Task<null, { phase: "done" }, null, object>;
 	Reporter: Durable.Task<ReporterInput, { phase: "run" }, null, object>;
 	Workflow: Durable.Task<WorkflowInput, { phase: "run" }, null, object>;
@@ -382,7 +382,8 @@ function buildKit(D: D, owner: string, project: string): Kit {
 	const Outbox = D.defineDoc<OutboxDoc>({ kind: "pi-kit.outbox", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ items: [] }) });
 	const Agents = D.defineDoc<AgentsDoc>({ kind: "pi-kit.agents", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ agents: {} }) });
 	const Workflows = D.defineDoc<WorkflowsDoc>({ kind: "pi-kit.workflows", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ workflows: {} }) });
-	const Calls = D.defineDocFamily<Durable.JsonObject, string>({ kind: "pi-kit.workflow-call", version: 1, scope: "task", family: true, initial: (agentId) => ({ agentId }) });
+	// On the lead's conversation, keyed by run and call: a task's own documents are all retired in its terminal commit.
+	const Calls = D.defineDocFamily<Durable.JsonObject, string>({ kind: "pi-kit.workflow-call", version: 1, scope: "conversation", history: "latest", fork: "initial", family: true, initial: (agentId) => ({ agentId }) });
 	const terminal = <S extends { phase: string }>(status: "completed" | "aborted") => (_task: Durable.RunningTask<unknown, S, null>, runtime: Durable.TaskRuntime<unknown, S, null, object>, context: Ctx) =>
 		runtime.commit(() => (status === "completed" ? { status: "terminal", outcome: { status, result: null } } : { status: "terminal", outcome: { status } }), context);
 	// Owns the agent's conversation so it outlives its report, for a later SendMessage.
@@ -684,7 +685,9 @@ async function abortWorkflowTask(docs: WorkflowDocs, input: WorkflowInput, runti
 /** agent() over durable: a slot of the global throttle, then a conversation the run owns, answered once even across a Pi exit. */
 function callRunner(D: D, docs: WorkflowDocs, engine: Engine, input: WorkflowInput, runtime: WorkflowRuntime, context: Ctx): AgentRunner {
 	const instructions = new Map<string, string>();
-	const read = async (key: string) => callRecord(await runtime.snapshot(docs.Calls, runtime.taskId, key, context));
+	const member = (key: string) => `${input.taskId}:${key}`;
+	const read = async (key: string) => callRecord(await runtime.snapshot(docs.Calls, runtime.conversationId, member(key), context));
+	let creating = Promise.resolve();
 	const create = async (key: string, options: AgentOptions): Promise<CallRecord> => {
 		const type = workflowAgentType(options.agentType);
 		const resolved = resolveModel(options.model ?? type.model, await modelContext(input), LEVELS.find((level) => level === options.effort) ?? type.effort);
@@ -707,7 +710,7 @@ function callRunner(D: D, docs: WorkflowDocs, engine: Engine, input: WorkflowInp
 				cwd,
 			});
 			call = { agentId, conversationId: conversation.id, worktree };
-			Object.assign(await tx.doc(docs.Calls, runtime.taskId, key, agentId), json(call));
+			Object.assign(await tx.doc(docs.Calls, runtime.conversationId, member(key), agentId), json(call));
 			return undefined;
 		}, context);
 		return call!;
@@ -723,6 +726,10 @@ function callRunner(D: D, docs: WorkflowDocs, engine: Engine, input: WorkflowInp
 			const held = await acquire(key);
 			try {
 				if (!held || runtime.signal.aborted) throw new Error("Workflow aborted");
+				// One agent starts per event-loop pass: sixteen starting at once would stall the lead.
+				const mine = creating.then(() => new Promise<void>((resolve) => setImmediate(resolve)));
+				creating = mine;
+				await mine;
 				const call = await read(key) ?? await create(key, options);
 				start(call.agentId);
 				const conversation = (await engine.harness.conversation(call.conversationId, context))!;
@@ -743,7 +750,7 @@ function callRunner(D: D, docs: WorkflowDocs, engine: Engine, input: WorkflowInp
 				if (kept) outcome.worktree = { path: kept.path, branch: kept.branch };
 				await writeFile(join(input.dir, `agent-${call.agentId}.md`), `${transcriptLog(transcript)}\n\n${answer}\n`).catch(() => {});
 				await runtime.commit(async (tx) => {
-					Object.assign(await tx.doc(docs.Calls, runtime.taskId, key, call.agentId), json(outcome));
+					Object.assign(await tx.doc(docs.Calls, runtime.conversationId, member(key), call.agentId), json(outcome));
 					return undefined;
 				}, context);
 				return outcome;
