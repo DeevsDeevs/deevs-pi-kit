@@ -82,6 +82,14 @@ describe("task notification contract", () => {
 		const workflow = shared.formatTaskNotification({ ...job("w1"), kind: "workflow", outputFile: "/out/w1.json", result: "x".repeat(8_010) });
 		expect(workflow).toContain(`<result>${"x".repeat(8_000)}\n... (truncated 10 chars, full result in /out/w1.json)</result>`);
 		expect(workflow).not.toContain("<note>");
+		const done = shared.formatTaskNotification({
+			...job("w2"), kind: "workflow", result: "[]", diagnostics: shared.workflowDiagnostics("/wf/r", "/wf/s.js", "wf_1"), failures: "[x] failed: boom",
+			usage: { agentCount: 2, agentsDone: 1, agentsError: 1, agentsSkipped: 0, agentsEmptyResult: 1, subagentTokens: 9, toolUses: 3, durationMs: 7 },
+		});
+		expect(done.split("\n").map((line) => line.match(/^<([a-z-]+)>/)?.[1]).filter(Boolean)).toEqual(["task-notification", "task-id", "status", "summary", "result", "diagnostics", "failures", "usage"]);
+		expect(done).toContain("the longest unchanged prefix of agent() calls replays from cache.");
+		expect(done).toContain("<usage><agent_count>2</agent_count><agents_done>1</agents_done><agents_error>1</agents_error><agents_skipped>0</agents_skipped><agents_empty_result>1</agents_empty_result><subagent_tokens>9</subagent_tokens><tool_uses>3</tool_uses><duration_ms>7</duration_ms></usage>");
+		expect(shared.formatTaskNotification({ ...job("w3"), kind: "workflow", recovery: shared.workflowRecovery("/wf/r", "/wf/s.js", "wf_1") })).toContain("<recovery>To resume after editing the script, call: Workflow({scriptPath: '/wf/s.js', resumeFromRunId: 'wf_1'})\nAgent transcripts: /wf/r</recovery>");
 	});
 
 	it("keeps CC's summary sentences", () => {

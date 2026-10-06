@@ -277,13 +277,13 @@ describe("workflow sandbox", () => {
 });
 
 describe("workflow core imports", () => {
-	it("imports nothing from Pi and nothing outside node:vm, node:crypto and its own folder", () => {
+	it("imports nothing from Pi and nothing outside node:vm, node:crypto, node:fs, node:path and its own folder", () => {
 		const folder = new URL("../extensions/subagents/workflow/", import.meta.url);
 		for (const file of readdirSync(folder)) {
 			const source = readFileSync(new URL(file, folder), "utf8");
 			const specifiers = [...source.matchAll(/(?:from|import)\s*\(?\s*["']([^"']+)["']/g)].map((match) => match[1]);
 			expect(specifiers.filter((specifier) => specifier?.startsWith("@earendil-works/")), file).toEqual([]);
-			expect(specifiers.filter((specifier) => !["node:vm", "node:crypto"].includes(specifier ?? "") && !specifier?.startsWith("./")), file).toEqual([]);
+			expect(specifiers.filter((specifier) => !["node:vm", "node:crypto", "node:fs", "node:path"].includes(specifier ?? "") && !specifier?.startsWith("./")), file).toEqual([]);
 		}
 	});
 });
