@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DelegateExecutor } from "../extensions/subagents/executor.ts";
-import { SubagentService, type SubagentGroup } from "../extensions/subagents/service.ts";
+import { limitsText, SubagentService, type SubagentGroup } from "../extensions/subagents/service.ts";
 import { DEFAULT_TIMEOUT_MS } from "../extensions/subagents/config.ts";
 import type { DelegateRun } from "../extensions/subagents/runtime-types.ts";
 import { chainCheckpoints } from "../extensions/chains/checkpoint.ts";
@@ -379,14 +379,30 @@ describe("SubagentService", () => {
 		expect(branch.some((entry) => (entry.data as { event?: { source?: { kind?: string; id?: string } } })?.event?.source?.kind === "subagent-group" && (entry.data as { event?: { source?: { id?: string } } }).event?.source?.id === group.id)).toBe(false);
 	});
 
-	it("enforces interactive write authorization and persona tool policy at the service boundary", async () => {
+	it("grants writes from allowWrite alone, never a dialog, and keeps the persona tool policy", async () => {
 		const { service, ctx } = setup();
-		const deniedCtx = { ...ctx, mode: "tui", ui: { confirm: async () => false } } as unknown as ExtensionContext;
-		const approvedCtx = { ...ctx, mode: "tui", ui: { confirm: async () => true } } as unknown as ExtensionContext;
-		await expect(service.start({ agent: "reviewer", task: "Edit it.", allowWrite: true }, deniedCtx)).rejects.toThrow("not authorized");
-		await expect(service.start({ agent: "reviewer", task: "Edit it.", tools: ["edit"] }, ctx)).rejects.toThrow("not allowed");
-		const authorized = await service.start({ agent: "reviewer", task: "Edit it.", allowWrite: true, background: false }, approvedCtx);
-		expect((authorized as { spec: { id: string; tools: string[] } }).spec.tools).toContain("edit");
-		await expect(service.start({ resume: (authorized as { spec: { id: string } }).spec.id, task: "Continue." }, deniedCtx)).rejects.toThrow("not authorized");
+		const dialogCtx = { ...ctx, mode: "tui", ui: { confirm: () => { throw new Error("no dialog may open"); } } } as unknown as ExtensionContext;
+		await expect(service.start({ agent: "reviewer", task: "Edit it.", tools: ["edit"] }, dialogCtx)).rejects.toThrow("not allowed");
+		const writer = await service.start({ agent: "reviewer", task: "Edit it.", allowWrite: true, background: false }, dialogCtx) as DelegateRun;
+		expect(writer.spec.tools).toContain("edit");
+	});
+
+	it("rejects an unknown persona before anything starts and names the valid ones", async () => {
+		const { service, ctx } = setup();
+		const error = await service.start({ agent: "nobody", task: "Edit it.", allowWrite: true }, ctx).catch((caught: Error) => caught);
+		expect(String(error)).toMatch(/Unknown or disabled persona: nobody\. Valid personas: .*\breviewer\b/);
+		await expect(service.start({ tasks: [{ agent: "explorer", task: "A." }, { agent: "nobody", task: "B." }] }, ctx)).rejects.toThrow("Valid personas:");
+		expect(service.list()).toEqual({ runs: [], groups: [] });
+	});
+
+	it("shows only explicitly set limits in the launch and completion text", async () => {
+		const { service, ctx, branch } = setup();
+		const unbounded = await service.start({ agent: "explorer", task: "Inspect.", background: false }, ctx) as DelegateRun;
+		expect(limitsText(unbounded.spec.limits)).toBeUndefined();
+		const limited = await service.start({ agent: "explorer", task: "Inspect.", turns: 12, tokens: 50_000, background: false }, ctx) as DelegateRun;
+		expect(limitsText(limited.spec.limits)).toBe("limited: 12 turns, 50000 tokens (set by lead)");
+		const summaries = branch.map((entry) => (entry.data as { event?: { source?: { id?: string }; summary?: string } }).event).filter((event) => event?.summary).map((event) => [event!.source!.id, event!.summary]);
+		expect(summaries).toContainEqual([unbounded.spec.id, "explorer done"]);
+		expect(summaries).toContainEqual([limited.spec.id, "explorer done · limited: 12 turns, 50000 tokens (set by lead)"]);
 	});
 });

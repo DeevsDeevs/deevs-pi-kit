@@ -3,7 +3,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import askUserExtension from "../extensions/ask-user/index.ts";
 
 describe("ask_user mode behavior", () => {
-	it("uses native RPC dialogs with timeout/abort options instead of a TUI overlay", async () => {
+	it("uses native RPC dialogs with the abort signal and no timeout instead of a TUI overlay", async () => {
 		let tool: { execute: (...args: unknown[]) => Promise<{ details: unknown }> } | undefined;
 		const pi = { registerTool(value: typeof tool) { tool = value; } } as unknown as ExtensionAPI;
 		askUserExtension(pi);
@@ -18,9 +18,9 @@ describe("ask_user mode behavior", () => {
 			},
 		} as unknown as ExtensionContext;
 		const signal = new AbortController().signal;
-		const result = await tool!.execute("call", { questions: [{ question: "Proceed?", options: ["Yes", "No"] }], timeoutMs: 5_000 }, signal, undefined, ctx);
+		const result = await tool!.execute("call", { questions: [{ question: "Proceed?", options: ["Yes", "No"] }] }, signal, undefined, ctx);
 		expect((result.details as { cancelled: boolean }).cancelled).toBe(false);
-		expect(calls[0]).toMatchObject({ method: "select", options: { timeout: 5_000, signal } });
+		expect(calls[0]).toEqual({ method: "select", options: { signal } });
 	});
 
 	it.each([1, 2])("uses the same TUI overlay for %i question(s)", async (count) => {

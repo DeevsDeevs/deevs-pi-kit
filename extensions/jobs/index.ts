@@ -6,6 +6,7 @@ import { formatDuration } from "../shared/runtime-ui.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
 import { claimJobManager, releaseJobManager } from "./registry.ts";
 import { FULL_SCREEN_OVERLAY } from "../shared/dashboard.ts";
+import { clampWaitMs } from "../shared/runtime-delivery.ts";
 import { JobsDashboard } from "./ui.ts";
 
 const StartSchema = Type.Object({
@@ -21,7 +22,7 @@ const StartSchema = Type.Object({
 	stdin: Type.Optional(Type.String({ description: "Optional initial stdin; stdin closes after start" })),
 	maxBytes: Type.Optional(Type.Number({ description: "In-memory output cap" })),
 });
-const WaitSchema = Type.Object({ ids: Type.Array(Type.String(), { minItems: 1 }), waitMs: Type.Optional(Type.Number({ description: "Maximum wait; omit for terminal, 0 for status" })) });
+const WaitSchema = Type.Object({ ids: Type.Array(Type.String(), { minItems: 1 }), waitMs: Type.Optional(Type.Number({ description: "Maximum wait, capped at and defaulting to 120000; 0 for status. A Job still active then is returned with its current status and wakes idle Pi when it settles." })) });
 const ReadSchema = Type.Object({ id: Type.String(), afterSeq: Type.Optional(Type.Number()), maxBytes: Type.Optional(Type.Number()), stream: Type.Optional(StringEnum(["stdout", "stderr", "combined"] as const)) });
 const StopSchema = Type.Object({ id: Type.String() });
 
@@ -62,7 +63,7 @@ export default function jobsExtension(pi: ExtensionAPI): void {
 		parameters: WaitSchema,
 		async execute(_toolCallId, params: { ids: string[]; waitMs?: number }, signal, _onUpdate, context) {
 			ctx = context;
-			const jobs = await manager.wait(params.ids, params.waitMs, signal);
+			const jobs = await manager.wait(params.ids, clampWaitMs(params.waitMs), signal);
 			manager.consumeTerminal(jobs, runtimeClaimant(context));
 			updateStatus();
 			return { content: [{ type: "text" as const, text: jobs.map(formatJob).join("\n") }], details: { jobs } };

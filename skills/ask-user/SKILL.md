@@ -1,22 +1,17 @@
 ---
 name: ask-user
-description: "Ask the user 1-5 concrete clarifications through ask_user only when the answers change scope, safety, implementation or acceptance; gather evidence first."
+description: "Ask the user through ask_user only before an irreversible or destructive choice; otherwise state the assumed default and continue. Gather evidence first."
 ---
 
 # Ask User
 
-Collect explicit user input through the interactive `ask_user` overlay before making material assumptions. A clarification and decision gate, not general conversation. The UI supports searchable option lists, descriptions, context display, freeform answers, and batched questions with progress tabs (`←`/`→` switch in option-list mode).
+Collect explicit user input through the interactive `ask_user` overlay before an irreversible or destructive step. A decision gate, not general conversation. The UI supports searchable option lists, descriptions, context display, freeform answers, and batched questions with progress tabs (`←`/`→` switch in option-list mode).
 
 ## When to use
 
-Call `ask_user` — instead of asking inline — with 1–5 focused questions when at least one holds:
+Call `ask_user` with 1–5 focused questions only when the next step is irreversible or destructive: deleting or overwriting data, rewriting shared history, publishing, deploying, spending money.
 
-- requirements or acceptance criteria are ambiguous
-- multiple valid paths exist and the trade-off is preference-dependent
-- the next step changes architecture, schema, API contracts, deployment, security, or destructive behavior
-- scope must be cut or prioritized, or you are about to assume something material
-
-Not when a file, command, test, chain, or existing context can answer; the choice is trivial polish; asking only defers obvious work; or the user already decided.
+For anything else — ambiguous requirements, a preference-dependent trade-off, scope — state the default you assume in one line and continue; the user can redirect. Never when a file, command, test, chain, or existing context can answer, or the user already decided.
 
 ## Protocol
 
@@ -24,7 +19,7 @@ Not when a file, command, test, chain, or existing context can answer; the choic
 2. Batch related questions into one call (usually 1–3, never more than 5), each decision-shaped: one concrete choice or missing fact.
 3. Offer 2–5 short options with trade-off descriptions when helpful; allow freeform unless the answer must be one of the options.
 4. After the tool returns, restate the decisions and proceed.
-5. On cancel: for high-stakes or irreversible choices, stop and say what decision is required; for low-risk ambiguity, proceed only if the user explicitly delegated the choice, else ask inline.
+5. An answer the user types in chat counts. If the dialog is cancelled with no answer, do not take the irreversible step: say which decision it needs and continue with everything else.
 
 ## Payload shape
 

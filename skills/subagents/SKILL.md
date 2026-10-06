@@ -62,8 +62,8 @@ Detached runs are owned by a dedicated worker and can be restored after parent r
 ## Safety and limits
 
 - Personas are read-only by default and receive `safe_read`, `safe_list`, and `safe_search`, not unrestricted shell execution.
-- `allowWrite: true` is valid only when delegated writes are needed; Pi asks the user to confirm every write-capable run in the TUI before enabling write tools and shell.
+- `allowWrite: true` is valid only when the task must edit files; it enables write tools and shell without a confirmation dialog.
 - A requested `tools` list can narrow persona capabilities, never broaden them.
-- Omitted turn, token, and cost limits are unbounded. Wall time defaults to six hours (24-hour cap); set tighter limits only when the orchestration plan needs them. Token/cost enforcement may overshoot by at most one provider call when explicitly set.
+- Set turn, token, or cost limits only when the user explicitly asks for one; omitted means unbounded. A set limit shows in the launch result and the completion text, and a run it stops with no output is reported as failed. Wall time defaults to six hours (24-hour cap). Token/cost enforcement may overshoot by at most one provider call.
 - Subagents cannot spawn nested Subagents.
 - Persistent/interactive commands belong in Herdr; bounded non-agent commands belong in Jobs.

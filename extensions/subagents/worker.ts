@@ -148,7 +148,8 @@ async function main(): Promise<void> {
 	}
 	if (killTimer) clearTimeout(killTimer);
 	const stderrText = stderr.text().trim();
-	const status = runtime.settled && requested?.status === "limited" ? "completed" : requested?.status ?? (code === 0 && runtime.settled ? "completed" : "failed");
+	const limited = requested?.status === "limited";
+	const status = limited && runtime.settled ? "completed" : limited && !runtime.output?.length ? "failed" : requested?.status ?? (code === 0 && runtime.settled ? "completed" : "failed");
 	const error = requested?.error ?? (["failed", "partial", "needs_attention"].includes(status) ? stderrText || `Child exited with code ${code ?? "?"}.` : undefined);
 	const sessionFile = findLatestSessionFile(spec.sessionDir);
 	settle(

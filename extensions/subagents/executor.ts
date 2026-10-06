@@ -5,6 +5,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import * as path from "node:path";
 import { ownsProcessIdentity, quiesceProcessGroup } from "../shared/process-group.ts";
+import { MAX_WAIT_MS } from "../shared/runtime-delivery.ts";
 import { DEFAULT_TIMEOUT_MS } from "./config.ts";
 import {
 	createDelegatePaths,
@@ -312,7 +313,7 @@ export class DelegateExecutor {
 		const run = readRun(root, spec.id) ?? { spec, runtime };
 		this.accept(run);
 		if (!TERMINAL.has(run.runtime.status)) this.watchRun(run);
-		return detach ? run : this.wait(spec.id);
+		return detach ? run : this.wait(spec.id, MAX_WAIT_MS);
 	}
 
 	private watchRun(run: DelegateRun): void {

@@ -13,6 +13,7 @@ import {
 } from "./collaborator-policy.ts";
 import { RuntimeError } from "./errors.ts";
 import { throwIfAborted } from "./herdr.ts";
+import { isAutonomous } from "../shared/autonomy.ts";
 import { resolveRepoRoot } from "./service/worktree.ts";
 import { type HostedCollaboratorProfile, isEnded, isHeld, isVacant, isWriter } from "./schemas/state.ts";
 import type { NativeAgentService } from "./native-agents.ts";
@@ -141,7 +142,7 @@ export class CollaboratorService {
 		signal: AbortSignal | undefined,
 	): Promise<CollaboratorManageResult[]> {
 		throwIfAborted(signal);
-		const auto = this.session.store.auto;
+		const auto = await isAutonomous(ctx);
 		assertInteractiveHerdrStart(ctx, auto);
 		const identity = this.session.store.identity;
 		if (isEnded(identity?.disposition)) {
@@ -258,7 +259,7 @@ export class CollaboratorService {
 	): Promise<CollaboratorManageResult[]> {
 		return this.exclusively(async () => {
 			throwIfAborted(signal);
-			const auto = this.session.store.auto;
+			const auto = await isAutonomous(ctx);
 			if (!auto && !ctx.hasUI) {
 				throw new HostedRuntimeClientError("host_unavailable", "Collaborator lifecycle confirmation requires an interactive Pi session.");
 			}
@@ -364,7 +365,7 @@ export class CollaboratorService {
 		if (input.action === "list") {
 			return parseWorktreeList(await this.client.call("worktree.list", auth(registration)));
 		}
-		const auto = this.session.store.auto;
+		const auto = await isAutonomous(ctx);
 		if (!auto && !ctx.hasUI) throw new HostedRuntimeClientError("host_unavailable", "Worktree cleanup requires an interactive trusted Pi session.");
 		const participantId = collaboratorName(input.participantId, "participant ID");
 		const detail = `Force-remove the worktree of ${identity.protocol}/${participantId}`

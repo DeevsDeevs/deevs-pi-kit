@@ -159,6 +159,12 @@ describe("DelegateExecutor", () => {
 		expect(run.runtime.error).toContain("may overshoot");
 	});
 
+	it("reports a limited run that produced no output as failed", async () => {
+		const executor = setup(() => `const message={role:'assistant',content:[],usage:{input:80,output:30,cost:{total:0.1}}}; console.log(JSON.stringify({type:'message_end',message})); console.log(JSON.stringify({type:'turn_end',message,toolResults:[]})); setInterval(()=>{},1000);`);
+		const run = await executor.start(input({ turns: 1 }));
+		expect(run.runtime).toMatchObject({ status: "failed", limitReason: "turns", error: "Turn limit reached (1)." });
+	});
+
 	it("enforces wall limits and hard cancellation", async () => {
 		const timeoutExecutor = setup(() => "setInterval(()=>{},1000)");
 		const timedOut = await timeoutExecutor.start(input({ wallMs: 100 }));

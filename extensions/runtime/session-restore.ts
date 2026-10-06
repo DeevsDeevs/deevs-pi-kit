@@ -33,8 +33,6 @@ export interface HostedSessionRecord {
 	launch?: CollaboratorLaunch;
 	worktree?: CollaboratorWorktree;
 	agents?: ManagedAgentControl[];
-	/** Set by `/runtime auto on`: lifecycle changes in this project run without a confirmation dialog. */
-	auto?: true;
 }
 
 /** The validated state one Pi session resumes from; anything unreadable is reported, never trusted. */
@@ -43,7 +41,6 @@ interface RestoredRuntimeState {
 	launch?: CollaboratorLaunch;
 	worktree?: CollaboratorWorktree;
 	agents: ManagedAgentControl[];
-	auto: boolean;
 }
 
 const RECOVERY_LAUNCH: CollaboratorLaunch = { driver: "pi", profile: "read-only" };
@@ -54,18 +51,17 @@ const INVALID_AGENTS = "Persisted managed collaborator control is invalid; affec
 
 export function restoreSessionRecord(ctx: ExtensionContext): RestoredRuntimeState {
 	const entry = lastSessionRecord(ctx);
-	if (!entry) return { identity: bootstrapIdentity(process.env[COLLABORATOR_ENV]), agents: [], auto: false };
+	if (!entry) return { identity: bootstrapIdentity(process.env[COLLABORATOR_ENV]), agents: [] };
 	const record = asRecord(entry.data);
 	if (record?.version !== 3) {
 		ctx.ui.notify(INVALID_RECORD, "warning");
-		return { launch: RECOVERY_LAUNCH, agents: [], auto: false };
+		return { launch: RECOVERY_LAUNCH, agents: [] };
 	}
 	return {
 		identity: restoreIdentity(record, ctx),
 		launch: restoreLaunch(record, ctx),
 		worktree: parseWorktree(record.worktree, ctx),
 		agents: restoreAgents(record, ctx),
-		auto: record.auto === true,
 	};
 }
 

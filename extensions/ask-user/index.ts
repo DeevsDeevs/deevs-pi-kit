@@ -15,7 +15,6 @@ type AskQuestionInput = {
 type AskUserInput = {
 	context?: string;
 	questions: AskQuestionInput[];
-	timeoutMs?: number;
 };
 
 type AnswerKind = "selection" | "freeform" | "cancelled";
@@ -71,7 +70,6 @@ const AskUserSchema = Type.Object({
 		minItems: 1,
 		maxItems: MAX_QUESTIONS,
 	}),
-	timeoutMs: Type.Optional(Type.Number({ minimum: 1_000, maximum: 30 * 60_000, description: "Optional dialog timeout" })),
 });
 
 function normalizeOption(option: AskOptionInput): SelectItem {
@@ -291,11 +289,10 @@ class MultiAskOverlay implements Component, Focusable {
 
 }
 
-async function askMultiOverlay(ctx: ExtensionContext, questions: AskQuestionInput[], context: string | undefined, signal?: AbortSignal, timeoutMs?: number): Promise<AskAnswer[] | null> {
+async function askMultiOverlay(ctx: ExtensionContext, questions: AskQuestionInput[], context: string | undefined, signal?: AbortSignal): Promise<AskAnswer[] | null> {
 	let close: (() => void) | undefined;
 	let cancelled = signal?.aborted ?? false;
 	const abort = (): void => { cancelled = true; close?.(); };
-	const timer = timeoutMs ? setTimeout(abort, timeoutMs) : undefined;
 	signal?.addEventListener("abort", abort, { once: true });
 	try {
 		return await ctx.ui.custom<AskAnswer[] | null>(
@@ -316,12 +313,11 @@ async function askMultiOverlay(ctx: ExtensionContext, questions: AskQuestionInpu
 		},
 		);
 	} finally {
-		if (timer) clearTimeout(timer);
 		signal?.removeEventListener("abort", abort);
 	}
 }
 
-async function askNativeDialogs(ctx: ExtensionContext, questions: AskQuestionInput[], signal?: AbortSignal, timeoutMs?: number): Promise<AskAnswer[]> {
+async function askNativeDialogs(ctx: ExtensionContext, questions: AskQuestionInput[], signal?: AbortSignal): Promise<AskAnswer[]> {
 	const answers: AskAnswer[] = [];
 	for (const question of questions) {
 		if (signal?.aborted) break;
@@ -331,16 +327,16 @@ async function askNativeDialogs(ctx: ExtensionContext, questions: AskQuestionInp
 		if (options.length) {
 			const labels = options.map((option) => option.description ? `${option.label} — ${option.description}` : option.label);
 			if (question.allowFreeform !== false) labels.push("Type custom response…");
-			const selected = await ctx.ui.select(question.question, labels, { timeout: timeoutMs, signal });
+			const selected = await ctx.ui.select(question.question, labels, { signal });
 			if (selected === "Type custom response…") {
 				kind = "freeform";
-				answer = await ctx.ui.input(question.question, "Type your answer", { timeout: timeoutMs, signal });
+				answer = await ctx.ui.input(question.question, "Type your answer", { signal });
 			} else if (selected) {
 				answer = options[labels.indexOf(selected)]?.value ?? selected;
 			}
 		} else if (question.allowFreeform !== false) {
 			kind = "freeform";
-			answer = await ctx.ui.input(question.question, "Type your answer", { timeout: timeoutMs, signal });
+			answer = await ctx.ui.input(question.question, "Type your answer", { signal });
 		}
 		answers.push({ id: question.id, question: question.question, answer: answer ?? null, kind: answer === undefined ? "cancelled" : kind, cancelled: answer === undefined });
 		if (answer === undefined) break;
@@ -367,13 +363,13 @@ export default function askUserExtension(pi: ExtensionAPI): void {
 		name: "ask_user",
 		label: "Ask User",
 		description:
-			"Ask the user 1-5 focused clarification or decision questions in an interactive UI. Gather repo/docs/tool evidence first; do not ask questions you can answer yourself.",
-		promptSnippet: "Ask the user focused clarification questions through an interactive UI.",
+			"Ask the user 1-5 focused questions about an irreversible or destructive choice in an interactive UI. Gather repo/docs/tool evidence first; do not ask questions you can answer yourself.",
+		promptSnippet: "Ask the user about an irreversible or destructive choice through an interactive UI.",
 		promptGuidelines: [
-			"When 1-5 concrete clarifications materially affect implementation, scope, safety, or acceptance criteria, call ask_user instead of asking inline.",
+			"Call ask_user only for irreversible or destructive choices; for anything else, state the default you assume and continue.",
 			"Gather available evidence first; do not ask questions tools can answer.",
 			"Batch related questions in one call, each decision-shaped; prefer 2-5 short options with trade-off descriptions, allowing freeform when useful.",
-			"If the user cancels or leaves a high-impact choice unanswered, stop and report what is blocked instead of assuming silently.",
+			"An answer the user types in chat counts as the answer. If the dialog is cancelled with no answer, do not take the irreversible step.",
 		],
 		parameters: AskUserSchema,
 		executionMode: "sequential",
@@ -401,9 +397,9 @@ export default function askUserExtension(pi: ExtensionAPI): void {
 
 			const answers: AskAnswer[] = [];
 			if (ctx.mode !== "tui") {
-				answers.push(...await askNativeDialogs(ctx, questions, signal, params.timeoutMs));
+				answers.push(...await askNativeDialogs(ctx, questions, signal));
 			} else {
-				const batchAnswers = await askMultiOverlay(ctx, questions, context, signal, params.timeoutMs);
+				const batchAnswers = await askMultiOverlay(ctx, questions, context, signal);
 				if (batchAnswers) answers.push(...batchAnswers);
 			}
 
