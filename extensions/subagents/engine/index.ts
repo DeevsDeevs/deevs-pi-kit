@@ -471,7 +471,7 @@ async function report(D: D, docs: Pick<Kit, "Outbox" | "Agents">, input: Reporte
 			: limited ? (output ? "completed" : "failed")
 			: settled === undefined || settled.status === "unanswered" && settled.reason === "aborted" ? "killed" : "failed";
 		const kept = input.worktree && existsSync(input.worktree.path) ? await finishAgentWorktree(input.worktree).catch(() => input.worktree) : undefined;
-		const report: OutboxItem = {
+		const outcome: OutboxItem = {
 			notificationId: `${input.agentId}:${String(runtime.taskId)}`,
 			taskId: input.agentId,
 			kind: "agent",
@@ -489,24 +489,24 @@ async function report(D: D, docs: Pick<Kit, "Outbox" | "Agents">, input: Reporte
 				durationMs: Date.now() - input.startedAt,
 			},
 		};
-		if (limited) report.limited = limited;
-		if (kept) report.worktree = { path: kept.path, branch: kept.branch };
+		if (limited) outcome.limited = limited;
+		if (kept) outcome.worktree = { path: kept.path, branch: kept.branch };
 		await writeFile(input.outputFile, `${transcriptLog(transcript)}\n\n${output}\n`).catch(() => {});
 		const waiter = host.waiters.get(input.agentId);
 		await runtime.commit(async (tx) => {
 			const current = agentRecords(await tx.doc(docs.Agents, runtime.conversationId))[input.agentId];
 			if (current) {
-				current.status = report.status;
+				current.status = outcome.status;
 				// Messages for a run that never started wait for the next resume.
 				if (live.early.length) current.pending = [...current.pending ?? [], ...live.early];
 			}
 			if (waiter && !waiter.timedOut) waiter.claimed = true;
 			claimed = Boolean(waiter?.claimed);
-			(await tx.doc(docs.Outbox, runtime.conversationId)).items.push(json({ ...report, silent: claimed || undefined }));
+			(await tx.doc(docs.Outbox, runtime.conversationId)).items.push(json({ ...outcome, silent: claimed || undefined }));
 			return { status: "terminal", outcome: { status: "completed", result: null } };
 		}, context);
-		tasks.update(input.agentId, { status: report.status });
-		n = report;
+		tasks.update(input.agentId, { status: outcome.status });
+		n = outcome;
 	} finally {
 		if (host.live.get(input.agentId) === live) host.live.delete(input.agentId);
 		finished(n);
