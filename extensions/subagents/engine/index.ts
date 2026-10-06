@@ -77,6 +77,7 @@ interface Kit {
 export interface Engine {
 	session: string;
 	dir: string;
+	project: string;
 	harness: Durable.Harness;
 	root: Durable.Conversation;
 	registry: Durable.Registry;
@@ -138,7 +139,7 @@ export async function reinstall(): Promise<void> {
 	for (const pending of host.engines.values()) {
 		const engine = await pending.catch(() => undefined);
 		if (!engine) continue;
-		engine.kit = buildKit(D, engine.dir);
+		engine.kit = buildKit(D, engine.dir, engine.project);
 		engine.registry.install(engine.kit.extension);
 	}
 }
@@ -238,7 +239,7 @@ async function open(session: string, cwd: string): Promise<Engine> {
 	await reap(dir);
 	const { D, openStorage } = await (host.modules ??= loadModules());
 	const registry = D.createRegistry();
-	const kit = buildKit(D, dir);
+	const kit = buildKit(D, dir, cwd);
 	registry.install(kit.extension);
 	const harness = await D.Harness.open(await openStorage(join(dir, "engine.sqlite")), {
 		models: modelsAdapter(),
@@ -247,7 +248,7 @@ async function open(session: string, cwd: string): Promise<Engine> {
 		onReport: () => {},
 	}, CTX);
 	const root = await harness.root(CTX);
-	const engine: Engine = { session, dir, harness, root, registry, kit };
+	const engine: Engine = { session, dir, project: cwd, harness, root, registry, kit };
 	const agents = (await harness.snapshot(kit.Agents, root.id, CTX))?.agents ?? {};
 	for (const [id, record] of Object.entries(agents as unknown as Record<string, AgentRecord>)) {
 		tasks.register({ id, kind: "agent", name: record.name, description: record.description, status: record.status, ownerSession: session, startedAt: record.startedAt, stop: () => stop(engine, id) });
@@ -290,7 +291,8 @@ function modelsAdapter(): Durable.HarnessOptions["models"] {
 	} as unknown as Durable.HarnessOptions["models"];
 }
 
-function buildKit(D: D, owner: string): Kit {
+/** `project` is the lead's cwd: the guard's rm root for every agent, whatever cwd the lead gave it. */
+function buildKit(D: D, owner: string, project: string): Kit {
 	const Outbox = D.defineDoc<OutboxDoc>({ kind: "pi-kit.outbox", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ items: [] }) });
 	const Agents = D.defineDoc<AgentsDoc>({ kind: "pi-kit.agents", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ agents: {} }) });
 	const terminal = <S extends { phase: string }>(status: "completed" | "aborted") => (_task: unknown, runtime: Durable.TaskRuntime<unknown, S, null, object>, context: Ctx) =>
@@ -309,7 +311,7 @@ function buildKit(D: D, owner: string): Kit {
 		beforeTool: async (call, api, context) => {
 			if (call.name !== "bash") return undefined;
 			const cwd = (await api.snapshot(D.AgentDoc, api.conversationId, context))?.cwd ?? process.cwd();
-			const blocked = guardBashCall(String(call.arguments.command ?? ""), cwd);
+			const blocked = guardBashCall(String(call.arguments.command ?? ""), cwd, project);
 			return blocked ? { block: blocked.reason } : undefined;
 		},
 	});

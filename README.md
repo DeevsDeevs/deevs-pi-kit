@@ -46,7 +46,7 @@ Nothing to set up first. Pi starts the daemon in its own Herdr workspace on the 
 You ask the lead for everything in chat; the kit registers two commands: `/agents` browses, resumes and stops subagent runs, and `/chains` browses and searches handoffs.
 
 - **runtime** owns collaborator identity, mail and Herdr tab lifecycle. `collaborator_list`, `collaborator_manage`, `collaborator_workspace` and four MCP mail tools. [Protocol](extensions/runtime/PROTOCOL.md).
-- **jobs** runs bounded commands with capped output, a hard timeout and process-tree cancellation. `job_start`, `job_read`; `TaskStop` stops a job. A finished job arrives as a `<task-notification>` that starts a turn when Pi is idle. Its guard reads command syntax, including `$(...)` and heredocs, and refuses in `bash` and `job_start`: detached processes, force pushes to `main`, `master`, `release/*` or an unnamed branch, recursive `rm` outside the cwd, `$TMPDIR` and `/tmp`, and the `guard.block` patterns (`"terraform destroy"` matches `terraform` with `destroy` among its arguments). `extensions/shared/guard-hook.mjs` is the same guard as a Claude Code or Codex PreToolUse hook.
+- **jobs** runs bounded commands with capped output, a hard timeout and process-tree cancellation. `job_start`, `job_read`; `TaskStop` stops a job. A finished job arrives as a `<task-notification>` that starts a turn when Pi is idle. Its guard reads command syntax, including `$(...)` and heredocs, and refuses in `bash` and `job_start`: detached processes, force pushes to `main`, `master`, `release/*` or an unnamed branch and deletes of a protected one, recursive `rm` outside the project, `$TMPDIR` and `/tmp`, and the `guard.block` patterns (`"terraform destroy"` matches `terraform` with `destroy` among its arguments). `extensions/shared/guard-hook.mjs` is the same guard as a Claude Code or Codex PreToolUse hook.
 - **subagents** delegates through `Agent` and `TaskStop`, Claude Code's surface: `general-purpose`, which can edit, and the read-only personas explorer (`Explore`), architect (`Plan`), reviewer, tester, logic-hunter, devops, python-dev, cpp-dev, rust-dev and anti-slop. Agents run in the background on the lead's model and report once as a `<task-notification>`; they run on pi-durable inside Pi, survive `/reload`, pause when Pi exits and continue when their session reopens. At most 16 run at once; the rest queue. `maxTurns`, `maxTokens` and `timeout` exist only when you ask for them. `/agents` lists them. [More](extensions/subagents/README.md).
 - **cron** schedules prompts for this Pi session, fired while it is idle. `cron`. [More](extensions/cron/README.md).
 - **chains** saves markdown handoffs under `.chains/` and reminds once to save one at 80% context. `/chains`, `chain_*`. [More](extensions/chains/README.md).
@@ -60,7 +60,7 @@ You ask the lead for everything in chat; the kit registers two commands: `/agent
 
 ## Settings
 
-The kit's only settings file is `pi-kit.json`: `~/.pi/agent/pi-kit.json` for every project, and `.pi/pi-kit.json` for one project, which wins key by key. Both are re-read on every use, so an edit applies to the next call with no `/reload`. Every key is optional:
+The kit's only settings file is `pi-kit.json`: `~/.pi/agent/pi-kit.json` for every project, and `.pi/pi-kit.json` for one project, which wins key by key. Both are re-read on every use, so an edit applies to the next call with no `/reload`. A file that does not parse, or a value off its schema, is warned about once and skipped; the valid rest still applies. Every key is optional:
 
 ```json
 {
@@ -75,7 +75,7 @@ The kit's only settings file is `pi-kit.json`: `~/.pi/agent/pi-kit.json` for eve
 
 - `models` and `lead` name models by pattern (`openai-codex/gpt-*-sol` is the newest sol); a project's names add to the global ones.
 - `autonomy`: orchestration never waits on a dialog. `"ask"` brings one confirmation back for each collaborator change; a project's value counts once the project is trusted.
-- `guard`: `"detached"`, `"forcePush"` or `"rmRf": false` turns one rule off; `block` patterns from both files add up.
+- `guard`: `"detached"`, `"forcePush"` or `"rmRf": false` in the global file turns one rule off; a project file can only add `block` patterns, and both lists add up.
 - `codexFast`: `true` sends `service_tier: "priority"` on ChatGPT-auth `openai-codex` requests.
 - `notifier`: `enabled`, `title`, `body`, `terminal`, `bell`, `terminalRequiresTty`, `minIntervalMs`, `command` (an argv with `{title}`, `{body}`, `{cwd}`, `{project}`) and `jsonl`; an untrusted project's `command` and `jsonl` are ignored.
 

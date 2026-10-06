@@ -71,7 +71,7 @@ export class JobManager {
 		const parentSessionFile = ctx.sessionManager.getSessionFile();
 		const ownerSession = ctx.sessionManager.getSessionId();
 		await this.switchSession(parentSessionFile);
-		const guardOptions = { cwd: path.resolve(input.cwd ?? ctx.cwd), config: loadGuardConfig(ctx.cwd) };
+		const guardOptions = { cwd: path.resolve(input.cwd ?? ctx.cwd), root: ctx.cwd, config: loadGuardConfig(ctx.cwd) };
 		const blocked = input.command ? guardShell(input.command, guardOptions) : guardArgv(input.argv ?? [], guardOptions);
 		if (blocked) throw new Error(blocked);
 		const id = `j_${Date.now().toString(36)}_${randomUUID().replaceAll("-", "").slice(0, 8)}`;

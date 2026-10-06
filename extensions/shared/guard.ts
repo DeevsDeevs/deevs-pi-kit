@@ -14,8 +14,8 @@ const COMMAND_PREFIXES = new Set(["!", "builtin", "do", "elif", "else", "if", "t
 const GIT_VALUE_OPTIONS = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--super-prefix"]);
 const PUSH_VALUE_OPTIONS = new Set(["-o", "--push-option", "--repo", "--receive-pack", "--exec"]);
 const DETACH_ERROR = "Detached process launch or dynamically-computed command detected (backgrounding, nohup/setsid/disown, or a command name that cannot be statically verified). Use a literal command, or Herdr for persistent or independently owned processes.";
-const FORCE_PUSH_ERROR = "Force push to a protected branch (main, master, release/*) or to an unnamed branch is blocked. Name a non-protected target branch explicitly, e.g. `git push --force-with-lease origin feature/x`.";
-const RM_ERROR = "Recursive rm outside the working directory and the temp directories ($TMPDIR, /tmp) is blocked. Use literal paths inside the cwd or a temp directory.";
+const FORCE_PUSH_ERROR = "Force push to a protected branch (main, master, release/*) or to an unnamed branch, or deleting a protected branch, is blocked. Name a non-protected target branch explicitly, e.g. `git push --force-with-lease origin feature/x`.";
+const RM_ERROR = "Recursive rm outside the project and the temp directories ($TMPDIR, /tmp) is blocked. Use literal paths inside the project or a temp directory.";
 
 const HookPayload = Type.Object({
 	cwd: Type.Optional(Type.String()),
@@ -26,6 +26,8 @@ export type GuardConfig = KitValue<"guard">;
 
 export interface GuardOptions {
 	cwd: string;
+	/** The project rm may clean inside: the lead's cwd, never a cwd the model chose. Defaults to `cwd`. */
+	root?: string;
 	config?: GuardConfig;
 	home?: string;
 	tmpDir?: string;
@@ -36,12 +38,14 @@ interface Guard {
 	forcePush: boolean;
 	rmRf: boolean;
 	block: string[][];
-	/** The working directory rm may clean inside; `cwd` follows literal `cd`s and is undefined after a dynamic one. */
+	/** The project rm may clean inside; `cwd` follows literal `cd`s and is undefined after a dynamic one. */
 	root: string;
 	cwd: string | undefined;
 	home: string;
 	tmpDirs: string[];
 	functions: Set<string>;
+	/** The segment being checked is inside a local function's body, where `"$@"` and `$1` are its call sites' arguments. */
+	inFunction: boolean;
 }
 
 interface ShellToken {
@@ -74,9 +78,9 @@ export function guardArgv(argv: string[], options: GuardOptions = { cwd: process
 	return checkArgv(argv, guard(options), false);
 }
 
-/** A Pi `tool_call` result for a bash command, under the rules configured for `cwd`. */
-export function guardBashCall(command: string, cwd: string): { block: true; reason: string } | undefined {
-	const reason = guardShell(command, { cwd, config: loadGuardConfig(cwd) });
+/** A Pi `tool_call` result for a bash command run in `cwd`, under the rules configured for the project at `root`. */
+export function guardBashCall(command: string, cwd: string, root = cwd): { block: true; reason: string } | undefined {
+	const reason = guardShell(command, { cwd, root, config: loadGuardConfig(root) });
 	return reason ? { block: true, reason } : undefined;
 }
 
@@ -90,24 +94,24 @@ export function guardHookPayload(payload: string): string | undefined {
 	return Array.isArray(command) ? guardArgv(command, options) : guardShell(command, options);
 }
 
-/** `guard` from the global and the project `pi-kit.json`, read on every call: project switches win, block lists add up. */
+/** `guard` from pi-kit.json, read on every call. Only the global file switches rules off; a project, trusted or not, can only add `block` patterns. */
 export function loadGuardConfig(cwd: string, dir = agentDir()): GuardConfig {
 	const [global = {}, project = {}] = kitValues("guard", cwd, dir);
-	return { ...global, ...project, block: [...global.block ?? [], ...project.block ?? []] };
+	return { ...global, block: [...global.block ?? [], ...project.block ?? []] };
 }
 
-function guard({ cwd, config = {}, home = homedir(), tmpDir = tmpdir() }: GuardOptions): Guard {
-	const root = resolve(cwd);
+function guard({ cwd, root = cwd, config = {}, home = homedir(), tmpDir = tmpdir() }: GuardOptions): Guard {
 	return {
 		detached: config.detached !== false,
 		forcePush: config.forcePush !== false,
 		rmRf: config.rmRf !== false,
 		block: (config.block ?? []).map((pattern) => pattern.trim().split(/\s+/)).filter((words) => words[0]),
-		root,
-		cwd: root,
+		root: resolve(root),
+		cwd: resolve(cwd),
 		home,
 		tmpDirs: [tmpDir, "/tmp"],
 		functions: new Set(),
+		inFunction: false,
 	};
 }
 
@@ -139,17 +143,41 @@ function checkNested(scan: ShellScan, ctx: Guard): string | undefined {
 function checkSegments(tokens: ShellToken[], ctx: Guard): string | undefined {
 	collectFunctions(tokens, ctx.functions);
 	let segment: string[] = [];
-	for (const token of tokens) {
+	let depth = 0;
+	let header = false;
+	const bodies: number[] = [];
+	const check = () => {
+		ctx.inFunction = bodies.length > 0;
+		return checkSegment(segment, ctx);
+	};
+	for (let index = 0; index < tokens.length; index++) {
+		const token = tokens[index]!;
 		if (!token.operator) {
 			segment.push(token.value);
 			continue;
 		}
-		const reason = checkSegment(segment, ctx);
+		// `name ()` and `function name` open a header; the `{` or `(` after it opens the function's body.
+		if (token.value === "(" && tokens[index + 1]?.operator && tokens[index + 1]?.value === ")") {
+			header = true;
+			segment = [];
+			index++;
+			continue;
+		}
+		if ((token.value === "{" || token.value === "(") && segment[0] === "function") header = true;
+		const reason = check();
 		if (reason) return reason;
 		segment = [];
 		if (token.value === "&") return detach(ctx);
+		if (token.value === "{" || token.value === "(") {
+			if (header) bodies.push(depth);
+			header = false;
+			depth++;
+		} else if (token.value === "}" || token.value === ")") {
+			depth--;
+			if (bodies.at(-1) === depth) bodies.pop();
+		}
 	}
-	return checkSegment(segment, ctx);
+	return check();
 }
 
 function collectFunctions(tokens: ShellToken[], functions: Set<string>): void {
@@ -181,7 +209,7 @@ function checkSegment(words: string[], ctx: Guard): string | undefined {
 
 function checkArgv(argv: string[], ctx: Guard, rejectDynamicExecutable: boolean): string | undefined {
 	if (!argv.length) return undefined;
-	if (rejectDynamicExecutable && isDynamicExecutable(argv[0]!)) return detach(ctx);
+	if (rejectDynamicExecutable && isDynamicExecutable(argv[0]!, ctx.inFunction)) return detach(ctx);
 	const executable = executableName(argv[0]!);
 	const pattern = ctx.block.find((words) => matchesPattern(executable, argv, words));
 	if (pattern) return `Blocked by the guard.block pattern "${pattern.join(" ")}".`;
@@ -220,11 +248,12 @@ function forcePushesProtected(args: string[]): boolean {
 		const word = args[next]!;
 		if (word === "--") { operands.push(...args.slice(next + 1)); break; }
 		if (PUSH_VALUE_OPTIONS.has(word)) next++;
-		else if (word === "--force" || word === "--mirror" || word.startsWith("--force-with-lease") || /^-[^-]*f/.test(word)) force = true;
+		else if (word === "--force" || word === "--mirror" || word === "--delete" || word.startsWith("--force-with-lease") || /^-[^-]*[fd]/.test(word)) force = true;
 		else if (!word.startsWith("-")) operands.push(word);
 	}
 	const refspecs = operands.slice(1);
-	if (refspecs.some((refspec) => refspec.startsWith("+") && protectedTarget(refspec))) return true;
+	// `+src:dst` forces one ref and `:dst` deletes it.
+	if (refspecs.some((refspec) => /^\+|^:./.test(refspec) && protectedTarget(refspec))) return true;
 	return force && (refspecs.length === 0 || refspecs.some(protectedTarget));
 }
 
@@ -413,10 +442,10 @@ function checkCommandArgv(argv: string[], ctx: Guard, rejectDynamicExecutable = 
 	return checkArgv(argv.slice(index), ctx, rejectDynamicExecutable);
 }
 
-function isDynamicExecutable(value: string): boolean {
+function isDynamicExecutable(value: string, inFunction: boolean): boolean {
 	// `[` / `[[` are the test builtins, not glob/dynamic executables; exempt them so ordinary guard clauses like `[ -f x ] && ...` are not blocked.
-	// A function's own arguments (`"$@"`, `$1`) are checked at its call sites instead.
-	if (TEST_COMMANDS.has(value) || POSITIONAL_PARAMETER.test(value)) return false;
+	// Inside a function body its own arguments (`"$@"`, `$1`) are checked at its call sites instead; anywhere else they could be anything.
+	if (TEST_COMMANDS.has(value) || (inFunction && POSITIONAL_PARAMETER.test(value))) return false;
 	return /[$`*?[\]{}]/.test(value);
 }
 
