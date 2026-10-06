@@ -36,6 +36,9 @@ export function exec(t, cmd, args, { timeoutMs = 60_000, input, env = t.env } = 
 		child.stderr.on("data", (d) => { stderr += d; });
 		const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
 		child.on("close", (status, signal) => { clearTimeout(timer); resolve({ status, signal, stdout, stderr }); });
+		// A child that exits before reading stdin (EPIPE), or never spawns, must fail its scenario, not crash the runner.
+		child.on("error", (error) => { stderr += String(error); });
+		child.stdin.on("error", () => {});
 		child.stdin.end(input ?? "");
 	});
 }
@@ -59,6 +62,7 @@ export function rpc(t, { args = [], model = "polygon/puppet", answer = false } =
 	};
 	const start = (extra = []) => {
 		child = spawn("pi", ["--mode", "rpc", ...(model ? ["--model", model] : []), ...args, ...extra], { cwd: t.repo, env: t.env, stdio: ["pipe", "pipe", "pipe"] });
+		child.stdin.on("error", () => {});
 		let buf = "";
 		child.stdout.on("data", (d) => {
 			buf += d;
