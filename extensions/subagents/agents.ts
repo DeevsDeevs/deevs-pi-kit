@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import * as path from "node:path";
-import type { AgentDefinition, AgentMode } from "./catalog-types.ts";
+import type { AgentDefinition } from "./catalog-types.ts";
 
 const MODULE_DIR = decodeURIComponent(new URL(".", import.meta.url).pathname);
 const AGENTS_DIR = path.join(MODULE_DIR, "agents");
@@ -23,10 +23,7 @@ function parseAgentFile(filePath: string): AgentDefinition {
 	const name = stringValue(frontmatter.name) || path.basename(filePath, ".md");
 	const description = stringValue(frontmatter.description) || firstNonEmptyLine(body) || name;
 	const tools = listValue(frontmatter.tools, ["read", "grep", "find", "ls", "bash"]);
-	const mode = modeValue(frontmatter.mode);
-	const write = booleanValue(frontmatter.write, false);
 	const model = stringValue(frontmatter.model);
-	const tags = listValue(frontmatter.tags, []);
 	const disabled = booleanValue(frontmatter.disabled, false);
 	const effort = stringValue(frontmatter.effort);
 	const isolation = frontmatter.isolation?.trim() === "worktree" ? "worktree" as const : undefined;
@@ -35,10 +32,7 @@ function parseAgentFile(filePath: string): AgentDefinition {
 		name,
 		description,
 		tools,
-		mode,
-		write,
 		model: model === "inherit" ? undefined : model,
-		tags,
 		disabled,
 		effort,
 		isolation,
@@ -80,10 +74,6 @@ function listValue(value: string | undefined, fallback: string[]): string[] {
 function booleanValue(value: string | undefined, fallback: boolean): boolean {
 	if (value === undefined) return fallback;
 	return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
-}
-
-function modeValue(value: string | undefined): AgentMode {
-	return value?.trim() === "executor" ? "executor" : "advisory";
 }
 
 function firstNonEmptyLine(body: string): string | undefined {
