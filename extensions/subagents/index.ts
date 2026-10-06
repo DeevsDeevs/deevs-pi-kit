@@ -7,6 +7,7 @@ import { loadKitConfig, modelLabel, modelsTable, resolveLead, resolveModel, type
 import { newAgentId, tasks, type RosterEntry, type TaskNotification } from "../shared/tasks.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
 import { createAgentWorktree, sharedCwdWarning } from "../shared/worktree.ts";
+import { currentMission, saveMission } from "../mission/store.ts";
 import { remindSilentTurns } from "./silent-turns.ts";
 import { agentTypes, agentTypesSection, findAgentType, workerPrompt } from "./definitions.ts";
 import { AGENT_SLOTS, closeAll, ensureEngine, launch, queuedAhead, reinstall, resumeSession, send, settle, stop, writerCwds, type Limits } from "./engine/index.ts";
@@ -155,12 +156,18 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("agents", {
-		description: "Background tasks, agent types and models; /agents stop <id> stops a task, /agents attach <id> shows how to open it",
+		description: "Background tasks, the Mission, agent types and models; /agents stop <id> stops a task or pauses the Mission, /agents attach <id> shows how to open a task",
 		handler: async (args, ctx) => {
 			const [verb = "", id = ""] = args.trim().split(/\s+/);
 			if (!verb) return showTextViewer(ctx, "Agents", overview(ctx, await modelContext(ctx)));
 			if (verb !== "stop" && verb !== "attach") return ctx.ui.notify("Usage: /agents [stop <id> | attach <id>]", "warning");
 			const entry = tasks.find(id, ctx.sessionManager.getSessionId());
+			const mission = currentMission(ctx.cwd);
+			if (!entry && verb === "stop" && mission?.slug === id) {
+				mission.state.status = "paused";
+				saveMission(mission, "Paused by the user from /agents.");
+				return ctx.ui.notify(`Paused mission ${id}`, "info");
+			}
 			if (!entry) return ctx.ui.notify(`No task found with ID: ${id}`, "warning");
 			if (verb === "attach") return ctx.ui.notify(entry.attach ?? `${entry.id} runs inside this Pi and has no session of its own to attach to.`, "info");
 			if (entry.status !== "running") return ctx.ui.notify(`Task ${entry.id} is not running (status: ${entry.status})`, "warning");
@@ -232,9 +239,15 @@ function rosterLines(entries: RosterEntry[]): string[] {
 	];
 }
 
+function missionLines(cwd: string): string[] {
+	const mission = currentMission(cwd);
+	return mission ? ["", `Mission ${mission.slug}: ${mission.state.status}${mission.state.next ? ` · next: ${mission.state.next}` : ""}`] : [];
+}
+
 function overview(ctx: ExtensionContext, models: ModelContext): string {
 	return [
 		...rosterLines(tasks.list(ctx.sessionManager.getSessionId())),
+		...missionLines(ctx.cwd),
 		"",
 		"Agent types",
 		...agentTypes().map((type) => `- ${type.name}: ${type.tools.join(", ")}`),

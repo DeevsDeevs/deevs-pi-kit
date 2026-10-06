@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { herdr, rpc } from "../drive.mjs";
 import { dialogs, toolCalls } from "../look.mjs";
 
-// Writer spawn, stand-down and resume (a start after stand-down). Mission continue joins in M5.
+// Writer spawn, stand-down and resume (a start after stand-down). mission-restart asserts 0 dialogs for a Mission continue.
 const lifecycle = (protocol, participantId) => {
 	const start = (id) => ({ id, tool: "collaborator_manage", args: { action: "start", protocol, callerParticipantId: "lead", participants: [{ participantId, driver: "pi", profile: "workspace-write" }] } });
 	const standDown = { id: "s2", tool: "collaborator_manage", args: { action: "stand_down", participants: [{ participantId }] } };
