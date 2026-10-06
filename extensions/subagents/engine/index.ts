@@ -123,9 +123,13 @@ export function ensureEngine(ctx: ExtensionContext): Promise<Engine> {
 	return engine;
 }
 
-/** At session start: resume a session's paused agents only when it has a store; other sessions' stores stay untouched. */
+/**
+ * At session start: load durable, then resume a session's paused agents only when it has a store; other sessions' stores stay untouched.
+ * Node loads durable's module graph synchronously (about 400 ms); loaded here, that stall never lands on an Agent launch.
+ */
 export async function resumeSession(ctx: ExtensionContext): Promise<void> {
 	host.models = ctx.modelRegistry;
+	await (host.modules ??= loadModules());
 	if (host.engines.has(ctx.sessionManager.getSessionId())) return;
 	const exists = await access(join(await storageDir(ctx.cwd, ctx.sessionManager.getSessionId()), "engine.sqlite")).then(() => true, () => false);
 	if (exists) await ensureEngine(ctx);
