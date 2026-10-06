@@ -9,7 +9,6 @@ Runtime is a local daemon with two jobs: durable participant identity and mail, 
 | Job | One bounded command | No tab | Exit or timeout | Parent Pi |
 | Subagent | One bounded delegated run | Result artifact | Terminal result | Subagent service |
 | Collaborator | Persistent named peer | Real Herdr agent tab | Stand-down or stop | Participant generation |
-| Mission | Long-running objective | Parent Pi | Completion latch | Mission state machine |
 
 ## Guarantees
 

@@ -10,7 +10,7 @@ interface CheckpointObject {
 	[key: string]: CheckpointValue | undefined;
 }
 
-export type ChainDueCode = "context_pressure" | "material_change" | "mission_milestone" | "mission_control" | "branch_created" | "other";
+export type ChainDueCode = "context_pressure" | "material_change" | "branch_created" | "other";
 
 export interface ChainCheckpointState {
 	chain?: string;
@@ -243,7 +243,6 @@ export function registerChainCheckpoint(pi: ExtensionAPI, service: ChainCheckpoi
 			service.due("new Chain branch has no checkpoint", "branch_created");
 			return;
 		}
-		if (event.toolName === "mission_progress" && args?.checkpoint === true) service.due("Mission milestone recorded", "mission_milestone");
 	});
 	pi.on("session_shutdown", () => {
 		toolArgs.clear();
@@ -290,7 +289,7 @@ function parseOperation(value: CustomEntry["data"]): ChainCheckpointOperation | 
 }
 
 function chainDueCode(value: CheckpointValue | undefined): ChainDueCode | undefined {
-	if (value === "context_pressure" || value === "material_change" || value === "mission_milestone" || value === "mission_control" || value === "branch_created" || value === "other") return value;
+	if (value === "context_pressure" || value === "material_change" || value === "branch_created" || value === "other") return value;
 	return undefined;
 }
 

@@ -12,7 +12,7 @@ cron { action: "delete", id: "deadbeef" }
 
 `cron` has five local-time fields: minute, hour, day of month, month, and day of week. Ranges, lists, and steps are supported. `recurring` defaults to `true`; set it to `false` for a one-shot.
 
-Use it for user-requested reminders and recurring timed work, or for a short autonomous one-shot return when progress genuinely depends on wall-clock time and no completion event exists. Do not poll Jobs, Subagents, or Workflows; their terminal delivery already wakes idle Pi.
+Use it for user-requested reminders and recurring timed work, or for a short autonomous one-shot return when progress genuinely depends on wall-clock time and no completion event exists. Do not poll Jobs or agents; their terminal delivery already wakes idle Pi.
 
 Ask the lead to list or delete tasks; it calls `cron` with `list` or `delete`.
 
