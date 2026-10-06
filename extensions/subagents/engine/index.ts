@@ -13,7 +13,7 @@ import { guardBashCall } from "../../shared/guard.ts";
 import { agentSummary, tasks, type TaskNotification, type TaskStatus } from "../../shared/tasks.ts";
 import { addWorktree, agentWorktreeAt, finishAgentWorktree, git, type AgentWorktree } from "../../shared/worktree.ts";
 import { PI_TOOLS, type PiToolName } from "../definitions.ts";
-import { backgroundTasks, type BackgroundDoc, type BackgroundHost, type BackgroundRecord, type JobInput } from "./background.ts";
+import { backgroundTasks, type BackgroundDoc, type BackgroundHost, type BackgroundRecord, type JobInput, type MonitorInput } from "./background.ts";
 import { bunSqlite, lock, reap, unlock } from "./storage.ts";
 
 type D = typeof Durable;
@@ -88,6 +88,7 @@ interface Kit {
 	Reporter: Durable.Task<ReporterInput, { phase: "run" }, null, object>;
 	Background: Durable.ConversationDocToken<BackgroundDoc>;
 	Job: ReturnType<typeof backgroundTasks>["Job"];
+	Monitor: ReturnType<typeof backgroundTasks>["Monitor"];
 }
 
 export interface Engine {
@@ -115,7 +116,9 @@ interface Host extends BackgroundHost {
 const KEY = Symbol.for("pi-kit.agents");
 // SAFETY: this package exclusively owns the symbol-keyed slot and only ever stores the host in it.
 const slot = globalThis as typeof globalThis & { [KEY]?: Host };
-const host: Host = slot[KEY] ??= { engines: new Map(), running: 0, queue: [], waiters: new Map(), closing: false };
+const host: Host = slot[KEY] ??= { engines: new Map(), running: 0, queue: [], waiters: new Map(), closing: false, opened: new Map() };
+// A host kept from a kit version before Jobs and Monitors joined the engine.
+host.opened ??= new Map();
 
 tasks.addSource({
 	name: "agents",
@@ -288,8 +291,9 @@ type Launch<T> = Omit<T, "session" | "owner" | "outputFile" | "startedAt">;
 
 /** `job_start`: the command runs in its own process group; its exit code and report are committed together. Returns the log. */
 export const startJob = (engine: Engine, input: Launch<JobInput>): Promise<string> => startBackground(engine, "job", input);
+export const startMonitor = (engine: Engine, input: Launch<MonitorInput>): Promise<string> => startBackground(engine, "monitor", input);
 
-async function startBackground(engine: Engine, kind: "job", launch: Launch<JobInput>): Promise<string> {
+async function startBackground(engine: Engine, kind: "job" | "monitor", launch: Launch<JobInput> | Launch<MonitorInput>): Promise<string> {
 	const { kit, root } = engine;
 	const input = { ...launch, session: engine.session, owner: engine.dir, outputFile: join(engine.dir, "out", `${launch.id}.log`), startedAt: Date.now() };
 	await writeFile(input.outputFile, "");
@@ -298,7 +302,8 @@ async function startBackground(engine: Engine, kind: "job", launch: Launch<JobIn
 	registerBackground(engine, input.id, record);
 	try {
 		await root.commit(async (tx) => {
-			const taskId = await tx.createTask(kit.Job, input, BACKGROUND);
+			// SAFETY: the kind picks the task whose input this is.
+			const taskId = kind === "job" ? await tx.createTask(kit.Job, input as JobInput, BACKGROUND) : await tx.createTask(kit.Monitor, input as MonitorInput, BACKGROUND);
 			(await tx.doc(kit.Background, root.id)).tasks[input.id] = json({ ...record, taskId: Number(taskId) });
 		}, CTX);
 	} catch (error) {
@@ -312,7 +317,7 @@ function registerBackground(engine: Engine, id: string, record: BackgroundRecord
 	tasks.register({ id, kind: record.kind, description: record.description, status: record.status, ownerSession: engine.session, startedAt: record.startedAt, stop: () => stopBackground(engine, id) });
 }
 
-/** TaskStop of a job: the run is signalled (its process group killed), then its abort handler settles it. */
+/** TaskStop of a job or monitor: the run is signalled (its process group killed), then its abort handler settles it. */
 async function stopBackground(engine: Engine, id: string): Promise<void> {
 	const record = backgroundRecords(await engine.harness.snapshot(engine.kit.Background, engine.root.id, CTX))[id];
 	if (!record) return;
@@ -341,6 +346,7 @@ async function open(session: string, cwd: string): Promise<Engine> {
 		tasks.register({ id, kind: "agent", name: record.name, description: record.description, status: record.status, ownerSession: session, startedAt: record.startedAt, stop: () => stop(engine, id) });
 	}
 	for (const [id, record] of Object.entries(backgroundRecords(await harness.snapshot(kit.Background, root.id, CTX)))) registerBackground(engine, id, record);
+	host.opened.set(session, Date.now());
 	harness.resume();
 	for (const item of outboxItems(await harness.snapshot(kit.Outbox, root.id, CTX))) if (!item.silent) await tasks.notify(item);
 	return engine;
@@ -406,9 +412,9 @@ function buildKit(D: D, owner: string, project: string): Kit {
 		},
 	});
 	const Background = D.defineDoc<BackgroundDoc>({ kind: "pi-kit.background", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ tasks: {} }) });
-	const { Job } = backgroundTasks(D, { Outbox, Background }, host);
-	const extension = D.defineExtension({ name: "pi-kit", tasks: [Anchor, Reporter, Job], tools: Object.values(tools), hooks: [guard] });
-	return { extension, tools, Outbox, Agents, Anchor, Reporter, Background, Job };
+	const { Job, Monitor } = backgroundTasks(D, { Outbox, Background }, host);
+	const extension = D.defineExtension({ name: "pi-kit", tasks: [Anchor, Reporter, Job, Monitor], tools: Object.values(tools), hooks: [guard] });
+	return { extension, tools, Outbox, Agents, Anchor, Reporter, Background, Job, Monitor };
 }
 
 /** Pi's own tool, built for the agent's cwd at each call and without a Pi context, so no lead session env leaks in. */
@@ -486,12 +492,12 @@ async function report(D: D, docs: Pick<Kit, "Outbox" | "Agents">, input: Reporte
 	const waiter = host.waiters.get(input.agentId);
 	await runtime.commit(async (tx) => {
 		const record = agentRecords(await tx.doc(docs.Agents, runtime.conversationId))[input.agentId];
-		if (record) record.status = n.status;
+		if (record) record.status = status;
 		if (waiter && !waiter.timedOut) waiter.claimed = true;
 		(await tx.doc(docs.Outbox, runtime.conversationId)).items.push(json({ ...n, silent: waiter?.claimed || undefined }));
 		return { status: "terminal", outcome: { status: "completed", result: null } };
 	}, context);
-	tasks.update(input.agentId, { status: n.status });
+	tasks.update(input.agentId, { status });
 	if (waiter?.claimed) {
 		host.waiters.delete(input.agentId);
 		waiter.resolve(n);

@@ -1,14 +1,5 @@
-// Cron parsing and jitter behavior adapted from Kimi Code at
+// Cron parsing adapted from Kimi Code at
 // f06eb5c60e0a4e51162d1854dda1db41892b457c (MIT).
-
-export interface CronTask {
-	id: string;
-	cron: string;
-	prompt: string;
-	createdAt: number;
-	recurring: boolean;
-	lastFiredAt?: number;
-}
 
 export interface ParsedCron {
 	raw: string;
@@ -30,6 +21,7 @@ export function parseCron(expression: string): ParsedCron {
 	const fields = raw.split(" ");
 	if (!raw) throw new Error("Cron expression is empty.");
 	if (fields.length !== 5) throw new Error(`Cron expression must have exactly 5 fields; got ${fields.length}.`);
+	// SAFETY: exactly five fields was checked above.
 	const [minute, hour, dayOfMonth, month, dayOfWeek] = fields as [string, string, string, string, string];
 	const daysOfWeek = new Set<number>();
 	for (const value of parseField(dayOfWeek, 0, 7, "day-of-week")) daysOfWeek.add(value === 7 ? 0 : value);
@@ -176,24 +168,6 @@ function pad(value: number): string {
 	return String(value).padStart(2, "0");
 }
 
-export function nextCronDelivery(task: CronTask, cron: ParsedCron, fromMs: number, noJitter = false): { ideal: number; delivery: number } | null {
-	const ideal = nextCronRun(cron, fromMs);
-	if (ideal === null) return null;
-	if (noJitter) return { ideal, delivery: ideal };
-	const fraction = Number.parseInt(task.id, 16) / 0x1_0000_0000;
-	if (!task.recurring) {
-		const minute = new Date(ideal).getMinutes();
-		if (minute === 0 || minute === 30) {
-			const shifted = ideal - 90_000 * fraction;
-			if (shifted >= task.createdAt) return { ideal, delivery: shifted };
-		}
-		return { ideal, delivery: ideal };
-	}
-	const following = nextCronRun(cron, ideal);
-	const period = following && following > ideal ? following - ideal : 24 * 60 * MINUTE;
-	return { ideal, delivery: ideal + Math.min(period * 0.1, 15 * MINUTE) * fraction };
-}
-
 export function formatLocalTime(ms: number): string {
 	const date = new Date(ms);
 	const offsetMinutes = -date.getTimezoneOffset();
@@ -201,18 +175,4 @@ export function formatLocalTime(ms: number): string {
 	const absolute = Math.abs(offsetMinutes);
 	const offset = `${sign}${pad(Math.floor(absolute / 60))}:${pad(absolute % 60)}`;
 	return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}${offset}`;
-}
-
-export function renderCronFire(input: { id: string; cron: string; recurring: boolean; coalescedCount: number; stale: boolean; prompt: string; deliveryId: string }): string {
-	return [
-		`<cron-fire id="${attribute(input.id)}" deliveryId="${attribute(input.deliveryId)}" cron="${attribute(input.cron)}" recurring="${input.recurring}" coalescedCount="${input.coalescedCount}" stale="${input.stale}">`,
-		"<prompt>",
-		input.prompt,
-		"</prompt>",
-		"</cron-fire>",
-	].join("\n");
-}
-
-function attribute(value: string): string {
-	return value.replaceAll("&", "&amp;").replaceAll('"', "&quot;");
 }

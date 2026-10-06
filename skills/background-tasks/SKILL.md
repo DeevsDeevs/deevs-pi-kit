@@ -1,6 +1,6 @@
 ---
 name: background-tasks
-description: "Pick between Pi Kit Jobs, session Cron and Herdr-owned persistent processes for background work; never detach shells."
+description: "Pick between Pi Kit Jobs, Monitors and Herdr-owned persistent processes for background work; never detach shells."
 ---
 
 # Background Tasks
@@ -15,9 +15,9 @@ The command ends by itself and you need its result later: a build, test run, mig
 2. Keep working; the finished Job reports by itself as a `<task-notification>` with its exit code. Do not poll it.
 3. `read` its output file when the output matters; `TaskStop` stops it.
 
-## Use Cron when
+## Use a Monitor when
 
-Timing itself is the dependency in this Pi session: a user-requested reminder, a recurring timed check, or a short one-shot return after an external delay with no completion event. Cron fires only while the session is open; it cannot wake Pi or the machine.
+You want to hear about each change while you work: new lines from a script (`command`), files appearing in a folder (`path`), a page or endpoint changing (`url`), or a timed return (`cron` with `prompt`, `once: true` for one fire). For "tell me when X", give a command that exits once X holds. Monitors survive `/reload` and catch up after Pi was closed; `TaskStop` stops one.
 
 ## Use Herdr when
 

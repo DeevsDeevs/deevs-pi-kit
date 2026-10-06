@@ -2,7 +2,7 @@
 
 ## Kimi Code
 
-Cron parsing, jitter, and fire-envelope behavior in `extensions/cron/cron.ts` is adapted from Kimi Code by Moonshot AI, commit `f06eb5c60e0a4e51162d1854dda1db41892b457c`.
+Cron parsing in `extensions/subagents/engine/cron.ts` is adapted from Kimi Code by Moonshot AI, commit `f06eb5c60e0a4e51162d1854dda1db41892b457c`.
 
 MIT License
 
