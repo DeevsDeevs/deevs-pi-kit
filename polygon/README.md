@@ -53,6 +53,10 @@ export default {
 
 `herdr(t)` starts a Herdr server under the sandbox `HOME`, creates a workspace and points later leads at it (`HERDR_ENV`, `HERDR_WORKSPACE_ID`, `HERDR_SOCKET_PATH`).
 
+## Size ceilings
+
+`ceilings.json` caps the production lines (`.ts`, `.mjs`, `.js`) of each area; `size-ceilings` fails when one is over. A step that adds code raises its area by its stated lines in the same commit, and a step that deletes code lowers it.
+
 ## Live tier
 
 `npm run polygon -- --login` opens a shell in the image whose `HOME` is the `pi-kit-polygon-login` Podman volume; log in to Pi, Claude and Codex there once, with copy-paste or device-code flows (`codex login --device-auth`) since the container has no browser. `--live` mounts that volume read-only at `/login` and runs only the scenarios marked `live: true`, four at a time; it refuses to run while the volume holds no Pi, Claude or Codex login. Your real `~/.pi`, `~/.claude` and `~/.codex` are never mounted; `--kit installed` mounts only the kit checkout under `~/.pi/agent/git`, read-only.
