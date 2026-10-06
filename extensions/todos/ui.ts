@@ -1,6 +1,5 @@
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, type Component } from "@earendil-works/pi-tui";
-import { showTextViewer } from "../shared/text-viewer.ts";
 import type { TodoItem, TodoStats } from "./types.ts";
 
 const WIDGET_ID = "deevs-todos";
@@ -16,10 +15,6 @@ export function updateTodoWidget(ctx: ExtensionContext | undefined, todos: TodoI
 
 export function clearTodoWidget(ctx: ExtensionContext | undefined): void {
 	if (ctx?.hasUI) ctx.ui.setWidget(WIDGET_ID, undefined);
-}
-
-export async function showTodoOverlay(ctx: ExtensionContext, todos: TodoItem[], stats: TodoStats): Promise<void> {
-	await showTextViewer(ctx, "Todos", formatTodoText(todos, stats));
 }
 
 export function formatTodoText(todos: TodoItem[], stats: TodoStats): string {

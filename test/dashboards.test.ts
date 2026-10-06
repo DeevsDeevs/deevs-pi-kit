@@ -3,10 +3,8 @@ import { Key, visibleWidth } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { progressBar } from "../extensions/shared/dashboard.ts";
 import { AgentsDashboard } from "../extensions/subagents/ui.ts";
-import { JobsDashboard } from "../extensions/jobs/ui.ts";
 import { ChainsDashboard } from "../extensions/chains/ui.ts";
 import type { SubagentService } from "../extensions/subagents/service.ts";
-import type { JobManager } from "../extensions/jobs/manager.ts";
 
 const theme = {
 	fg: (_color: string, text: string) => text,
@@ -36,23 +34,6 @@ describe("bespoke dashboards", () => {
 		expect(new AgentsDashboard(service, theme, noop, noop, () => 8, noop, noop).render(40).length).toBeLessThanOrEqual(8);
 		expect(lines.join("\n")).toContain("Runs 1");
 		expect(lines.join("\n")).toContain("verify dashboard");
-	});
-
-	it("renders useful Job progress, command, and output", () => {
-		const now = Date.now();
-		const job = {
-			spec: { id: "j_test_12345678", name: "check", cwd: "/repo", argv: ["npm", "test"], timeoutMs: 60_000, maxBufferBytes: 1_024 },
-			runtime: { status: "running", ready: true, startedAt: now - 5_000, bufferedBytes: 12, droppedBytes: 0, pid: 42 },
-		};
-		const manager = { list: () => [job], read: () => ({ chunks: [{ text: "tests running" }] }) } as unknown as JobManager;
-		const dashboard = new JobsDashboard(manager, theme, noop, noop, () => 30, noop, noop);
-		const lines = dashboard.render(80);
-		bounded(lines, 80);
-		dashboard.handleInput(Key.right);
-		expect(dashboard.render(80)).toHaveLength(lines.length);
-		expect(new JobsDashboard(manager, theme, noop, noop, () => 8, noop, noop).render(40).length).toBeLessThanOrEqual(8);
-		expect(lines.join("\n")).toContain("npm test");
-		expect(lines.join("\n")).toContain("tests running");
 	});
 
 	it("renders Chain checkpoint, rows, and selected metadata", () => {
