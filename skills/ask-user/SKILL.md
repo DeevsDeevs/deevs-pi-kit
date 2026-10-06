@@ -42,6 +42,6 @@ For anything else — ambiguous requirements, a preference-dependent trade-off, 
 
 ## Question quality
 
-"Which storage model should v1 use?" beats "Any thoughts?". One decision per question; never ask the user to repeat facts present in the repo; state your recommendation when evidence points clearly one way.
+"Drop the legacy `users` table now, or keep it until the migration is verified?" beats "Any thoughts?". One decision per question; never ask the user to repeat facts present in the repo; state your recommendation when evidence points clearly one way.
 
 Use `ask-user` to collect explicit choices during implementation; use `grill-me` for the broader one-question-at-a-time pressure test before a plan is ready.

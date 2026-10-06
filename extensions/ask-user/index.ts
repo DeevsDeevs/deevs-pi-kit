@@ -255,6 +255,8 @@ async function askMultiOverlay(ctx: ExtensionContext, questions: AskQuestionInpu
 	}
 }
 
+const CUSTOM_RESPONSE = "Type custom response…";
+
 async function askNativeDialogs(ctx: ExtensionContext, questions: AskQuestionInput[], signal?: AbortSignal): Promise<AskAnswer[]> {
 	const answers: AskAnswer[] = [];
 	for (const question of questions) {
@@ -264,9 +266,9 @@ async function askNativeDialogs(ctx: ExtensionContext, questions: AskQuestionInp
 		let kind: AnswerKind = "selection";
 		if (options.length) {
 			const labels = options.map((option) => option.description ? `${option.label} — ${option.description}` : option.label);
-			if (question.allowFreeform !== false) labels.push("Type custom response…");
+			if (question.allowFreeform !== false) labels.push(CUSTOM_RESPONSE);
 			const selected = await ctx.ui.select(question.question, labels, { signal });
-			if (selected === "Type custom response…") {
+			if (selected === CUSTOM_RESPONSE) {
 				kind = "freeform";
 				answer = await ctx.ui.input(question.question, "Type your answer", { signal });
 			} else if (selected) {
@@ -323,7 +325,8 @@ export default function askUserExtension(pi: ExtensionAPI): void {
 			onUpdate?.({ content: [{ type: "text" as const, text: "Waiting for user clarification..." }], details: { context, answers: [], cancelled: false } });
 
 			const answers = ctx.mode === "tui" ? (await askMultiOverlay(ctx, questions, context, signal)) ?? [] : await askNativeDialogs(ctx, questions, signal);
-			const cancelled = answers.length < questions.length || answers.some((answer) => answer.cancelled);
+			// An empty answer list never counts as answered: this tool gates destructive steps.
+			const cancelled = answers.length === 0 || answers.length < questions.length || answers.some((answer) => answer.cancelled);
 			return {
 				content: [{ type: "text" as const, text: cancelled ? `User clarification cancelled or incomplete:\n${summarizeAnswers(answers)}` : `User answered:\n${summarizeAnswers(answers)}` }],
 				details: { context, answers, cancelled },
