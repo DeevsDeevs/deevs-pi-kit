@@ -120,14 +120,16 @@ export function rpc(t, { args = [], model = "polygon/puppet", answer = false } =
 export async function herdr(t) {
 	const socket = join(t.home, "herdr.sock");
 	const env = { ...t.env, HERDR_SOCKET_PATH: socket };
-	spawn("herdr", ["server"], { cwd: t.repo, env, stdio: "ignore" });
+	const server = spawn("herdr", ["server"], { cwd: t.repo, env, stdio: "ignore" });
+	const stopped = new Promise((r) => server.on("exit", r));
 	for (let i = 0; i < 50 && !existsSync(socket); i++) await new Promise((r) => setTimeout(r, 100));
 	const cli = async (...args) => {
 		const result = await exec(t, "herdr", args, { env, timeoutMs: 10_000 });
 		if (result.status !== 0) throw new Error(`herdr ${args.join(" ")}: ${tail(result.stderr)}`);
 		return JSON.parse(result.stdout).result;
 	};
-	t.closers.push(() => cli("server", "stop"));
+	// `server stop` returns before the server exits; the census runs right after the closers.
+	t.closers.push(async () => { await cli("server", "stop"); await Promise.race([stopped, sleep(5_000)]); });
 	const { workspace } = await cli("workspace", "create", "--cwd", t.repo);
 	Object.assign(t.env, { HERDR_SOCKET_PATH: socket, HERDR_ENV: "1", HERDR_WORKSPACE_ID: workspace.workspace_id });
 	return { cli, workspaceId: workspace.workspace_id };

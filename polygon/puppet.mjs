@@ -8,11 +8,12 @@ const text = (c) => typeof c === "string" ? c
 	: (c ?? []).map((b) => b.type === "tool_use" ? `toolCall:${b.id}` : b.type === "tool_result" ? text(b.content) : b.text ?? "").join("\n");
 const images = (messages) => messages.reduce((n, m) => n + (Array.isArray(m.content) ? m.content.filter((b) => b.type === "image" || b.type === "image_url" || b.type === "input_image").length : 0), 0);
 
-export function nextStep(messages) {
+/** `fallback` scripts a conversation that carries none, such as a collaborator woken by mail. */
+export function nextStep(messages, fallback) {
 	const host = messages.find((m) => m.role === "user" && text(m.content).includes("POLYGON {"));
-	if (!host) return { text: "polygon:no-script" };
-	const raw = text(host.content);
-	const script = JSON.parse(raw.slice(raw.indexOf("POLYGON ") + 8).split("\n")[0]);
+	if (!host && !fallback) return { text: "polygon:no-script" };
+	const raw = host ? text(host.content) : "";
+	const script = host ? JSON.parse(raw.slice(raw.indexOf("POLYGON ") + 8).split("\n")[0]) : fallback;
 	const said = messages.filter((m) => m.role === "assistant")
 		.map((m) => `${text(m.content)}\n${(m.tool_calls ?? []).map((t) => `toolCall:${t.id}`).join("\n")}`).join("\n");
 	const last = messages.findLastIndex((m) => m.role === "assistant");
@@ -31,7 +32,8 @@ function resolveRef(value, transcript) {
 
 const reply = (step) => step.id ? `[polygon:${step.id}] ${step.text ?? ""}` : step.text;
 
-export function startPuppet(logFile) {
+/** `scripts` maps a model id to its fallback script; scenarios fill it through `t.scripts`. */
+export function startPuppet(logFile, scripts = {}) {
 	const log = (wire, url, request, step, messages) => appendFileSync(logFile, JSON.stringify({
 		at: Date.now(), wire, url, agent: step.agent ?? null, step: step.id ?? null, tool: step.tool ?? null, model: request.model,
 		messages: messages.length, images: images(messages), tools: (request.tools ?? []).map((t) => t.function?.name ?? t.name ?? t.type),
@@ -47,7 +49,7 @@ export function startPuppet(logFile) {
 			if (req.url.includes("count_tokens")) { res.writeHead(200, { "content-type": "application/json" }); return res.end('{"input_tokens":1}'); }
 			if (!wire) { res.writeHead(200, { "content-type": "application/json" }); return res.end("{}"); }
 			const messages = request.messages ?? [];
-			const step = nextStep(messages);
+			const step = nextStep(messages, scripts[request.model]);
 			log(wire, req.url, request, step, messages);
 			if (wire === "anthropic") return anthropic(res, request, step);
 			chat(res, request, step);
