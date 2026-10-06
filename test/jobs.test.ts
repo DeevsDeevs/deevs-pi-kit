@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { JobBuffer } from "../extensions/jobs/buffer.ts";
+import jobsExtension from "../extensions/jobs/index.ts";
 import { JobManager } from "../extensions/jobs/manager.ts";
 import { claimJobManager, clearJobManager, releaseJobManager, setJobManager } from "../extensions/jobs/registry.ts";
 import { guardArgv } from "../extensions/shared/guard.ts";
@@ -359,6 +360,20 @@ describe("kit guard wiring", () => {
 		const { manager, ctx } = setup();
 		await expect(manager.start({ name: "rm-home", command: "rm -rf ~/x" }, ctx)).rejects.toThrow("Recursive rm outside");
 		await expect(manager.start({ name: "force-push", argv: ["git", "push", "-f", "origin", "main"] }, ctx)).rejects.toThrow("Force push to a protected branch");
+	});
+
+	it("blocks the lead's bash calls the guard refuses", () => {
+		const { ctx } = setup();
+		type Handler = (event: object, context: ExtensionContext) => unknown;
+		const handlers = new Map<string, Handler>();
+		const pi = { registerTool() {}, registerCommand() {}, appendEntry() {}, on: (name: string, handler: Handler) => handlers.set(name, handler) } as unknown as ExtensionAPI;
+		jobsExtension(pi);
+		cleanups.push(() => void handlers.get("session_shutdown")?.({}, ctx));
+		const call = (toolName: string, input: object) => handlers.get("tool_call")?.({ type: "tool_call", toolCallId: "t", toolName, input }, ctx);
+		expect(call("bash", { command: "nohup sleep 300 &" })).toEqual({ block: true, reason: expect.stringMatching(/^Detached process launch/) });
+		expect(call("bash", { command: "git push --force origin main" })).toMatchObject({ block: true });
+		expect(call("bash", { command: "npm test" })).toBeUndefined();
+		expect(call("read", { path: "nohup &" })).toBeUndefined();
 	});
 });
 
