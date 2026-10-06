@@ -32,18 +32,22 @@ function resolveRef(value, transcript) {
 
 const reply = (step) => step.id ? `[polygon:${step.id}] ${step.text ?? ""}` : step.text;
 
-export function startPuppet(logFile) {
-	const log = (wire, url, request, step, messages) => appendFileSync(logFile, JSON.stringify({
-		at: Date.now(), wire, url, agent: step.agent ?? null, step: step.id ?? null, tool: step.tool ?? null, model: request.model, tier: request.service_tier ?? null,
-		messages: messages.length, images: images(messages), tools: (request.tools ?? []).map((t) => t.function?.name ?? t.name ?? t.type),
-	}) + "\n");
+/** `marks` is the scenario's live list of strings to look for; each request logs the ones its raw body contains. */
+export function startPuppet(logFile, marks = []) {
+	const log = (wire, url, request, step, messages) => {
+		const raw = JSON.stringify(request);
+		appendFileSync(logFile, JSON.stringify({
+			at: Date.now(), wire, url, agent: step.agent ?? null, step: step.id ?? null, tool: step.tool ?? null, model: request.model,
+			messages: messages.length, images: images(messages), tools: (request.tools ?? []).map((t) => t.function?.name ?? t.name ?? t.type),
+			serviceTier: request.service_tier ?? null, marks: marks.filter((m) => raw.includes(m)),
+		}) + "\n");
+	};
 	const server = createServer((req, res) => {
 		const chunks = [];
 		req.on("data", (d) => { chunks.push(d); });
 		req.on("end", () => {
-			// Pi's openai-codex wire compresses its request bodies.
-			const raw = Buffer.concat(chunks);
-			const body = req.headers["content-encoding"] === "zstd" ? zstdDecompressSync(raw) : raw;
+			// Pi's openai-codex SSE transport sends its body zstd-compressed, as the Codex backend accepts.
+			const body = req.headers["content-encoding"] === "zstd" ? zstdDecompressSync(Buffer.concat(chunks)) : Buffer.concat(chunks);
 			const request = JSON.parse(body.toString() || "{}");
 			if (req.url.includes("/responses")) return responses(res, request, log, req.url);
 			const wire = req.url.includes("/chat/completions") ? "chat" : req.url.includes("/messages") ? "anthropic" : null;
@@ -65,10 +69,11 @@ function chat(res, request, step) {
 	const chunk = (delta, finish, usage) => res.write(`data: ${JSON.stringify({ id: "polygon", object: "chat.completion.chunk", created: 0, model: request.model, choices: [{ index: 0, delta, finish_reason: finish }], ...(usage ? { usage } : {}) })}\n\n`);
 	if (step.tool) chunk({ role: "assistant", tool_calls: [{ index: 0, id: step.id, type: "function", function: { name: step.tool, arguments: JSON.stringify(step.args) } }] }, null);
 	else chunk({ role: "assistant", content: reply(step) }, null);
+	const prompt = step.usage ?? 1;
 	// `delayMs` holds the stream open after the first chunk, so a scenario can kill a lead mid-stream.
 	setTimeout(() => {
 		if (res.destroyed) return;
-		chunk({}, step.tool ? "tool_calls" : "stop", { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 });
+		chunk({}, step.tool ? "tool_calls" : "stop", { prompt_tokens: prompt, completion_tokens: 1, total_tokens: prompt + 1 });
 		res.end("data: [DONE]\n\n");
 	}, step.delayMs ?? 0);
 }

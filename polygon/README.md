@@ -22,7 +22,7 @@ One container runs per polygon run. The kit is mounted read-only at `/kit` (a sy
 
 ## The puppet
 
-One HTTP server per scenario: `/v1/chat/completions` for Pi's `polygon/puppet` provider (`models.json`), `/v1/messages` for Claude (`ANTHROPIC_BASE_URL`), `/v1/responses` for Codex (a `model_providers` entry). The first user message `POLYGON {json}` is the script:
+One HTTP server per scenario: `/v1/chat/completions` for Pi's `polygon/puppet` provider (`models.json`), `/v1/messages` for Claude (`ANTHROPIC_BASE_URL`), `/v1/responses` for Codex (a `model_providers` entry), and `/codex/responses` for Pi's built-in `openai-codex` (its `baseUrl` repointed in `models.json`, a fake ChatGPT OAuth token in `auth.json`, the SSE transport). The first user message `POLYGON {json}` is the script:
 
 ```json
 { "agent": "lead", "steps": [
@@ -32,7 +32,7 @@ One HTTP server per scenario: `/v1/chat/completions` for Pi's `polygon/puppet` p
 ] }
 ```
 
-The next step is the first one not yet said in the transcript whose `on` (if any) appears after the last assistant message, so `kill -9`, resume and child processes need no server state. A string arg `"$/re/"` becomes the last match of `re` in the transcript. Every model request is appended to `requests.jsonl` with its agent, step, model, tools offered and message and image counts.
+The next step is the first one not yet said in the transcript whose `on` (if any) appears after the last assistant message, so `kill -9`, resume and child processes need no server state. A string arg `"$/re/"` becomes the last match of `re` in the transcript. A step's `usage` sets its reported prompt tokens (context-pressure tests). Every model request is appended to `requests.jsonl` with its agent, step, model, tools offered, message and image counts, `service_tier`, and `marks`: the strings a scenario pushed onto `t.marks` that the raw request contains (a system-prompt section tag, a persona line, a skill name).
 
 ## Adding a scenario
 
@@ -42,7 +42,7 @@ Drop `polygon/scenarios/<name>.mjs`:
 export default {
 	name: "jobs-basic", gate: "M0",        // gate may be an array; slow: true keeps it out of the default run
 	                                        // pending: "<step>" skips it (listed as PENDING) unless named in --only
-	async run(t) {                          // t: home, repo, env, git(), dir, requestLog
+	async run(t) {                          // t: home, repo, kit, env, git(), dir, requestLog, marks
 		const lead = rpc(t);                  // drive.mjs: send, prompt, script, until, kill9, restart
 		await lead.script({ agent: "lead", steps: [...] });
 		await lead.until((e) => e.type === "agent_settled");
