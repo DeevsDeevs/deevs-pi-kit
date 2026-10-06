@@ -2,6 +2,6 @@
   "kit": { "paths": ["extensions"], "max": 17000 },
   "subagents": { "paths": ["extensions/subagents", "extensions/shared/tasks.ts", "extensions/shared/models.ts"], "max": 4000 },
   "runtime": { "paths": ["extensions/runtime"], "max": 6900 },
-  "missions": { "paths": ["extensions/mission"], "max": 500 },
+  "missions": { "paths": ["extensions/mission"], "max": 306 },
   "polygon": { "paths": ["polygon"], "max": 2800 }
 }
