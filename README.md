@@ -63,11 +63,7 @@ Eight skills pair with the extensions above and tell the model when and how to u
 ```bash
 npm install
 npm run check                        # lint, typecheck, tests, mode smokes, audit, pack
-npm run smoke:runtime-release        # daemon, participant, mail and MCP against real Herdr
-npm run smoke:collaborator-release   # collaborator launch, mail, stop and worktree
 npm run smoke:native-release         # interactive targets and Git worktrees, no Herdr
 npm run bench:context                # tokens each surface costs, see bench/README.md
 npm run sync:chains-plugin           # copy the chain core into plugins/chains after editing it
 ```
-
-The release smokes start real Herdr and Pi processes, so `check` leaves them out.

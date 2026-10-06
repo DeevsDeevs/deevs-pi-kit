@@ -8,4 +8,3 @@ node_modules/
 .missions/
 *.log
 bench/results/*
-!bench/results/baseline/

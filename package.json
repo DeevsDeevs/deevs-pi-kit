@@ -16,10 +16,7 @@
     "audit": "node scripts/audit.mjs",
     "bench:context": "node --experimental-strip-types bench/context.mjs",
     "bench:protocol": "node --experimental-strip-types bench/protocol/all.mjs",
-    "bench:live": "node --experimental-strip-types bench/live/run.mjs",
     "smoke:modes": "node scripts/smoke-modes.mjs",
-    "smoke:runtime-release": "node --experimental-strip-types scripts/smoke-runtime-release.mjs",
-    "smoke:collaborator-release": "node --experimental-strip-types scripts/smoke-collaborator-release.mjs",
     "smoke:native-release": "vitest run test/hosted-runtime-bridge.test.ts test/hosted-runtime-participant.test.ts test/runtime-worktree.test.ts",
     "check": "npm run lint:anti-slop && npm run typecheck && npm test && npm run smoke:modes && npm run audit && npm pack --dry-run",
     "sync:chains-plugin": "node scripts/sync-chains-plugin.mjs"
