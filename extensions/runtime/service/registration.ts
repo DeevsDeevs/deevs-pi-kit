@@ -106,8 +106,12 @@ export class RuntimeRegistrationManager {
 		this.expire();
 		const registrationId = this.byTarget.get(targetKey);
 		const registration = registrationId ? this.registrations.get(registrationId) : undefined;
-		if (!registration) throw new RuntimeError("registration_stale", "Target has no live registration.");
-		return this.verify(registration.registrationId, registration.registrationKey, false);
+		if (registration) return this.verify(registration.registrationId, registration.registrationKey, false);
+		// Only a lead heartbeats a native tab, so its lease lapses while the lead is closed; Herdr still proves the agent itself.
+		const target = this.store.read().targets[targetKey];
+		if (!isAgentTarget(target)) throw new RuntimeError("registration_stale", "Target has no live registration.");
+		await this.assertTargetLive(target);
+		return this.install(targetKey);
 	}
 
 	unregister(registrationId: string, registrationKey: string): void {
