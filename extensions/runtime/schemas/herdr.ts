@@ -35,6 +35,7 @@ const HerdrLiveAgentSchema = Type.Object({
 	workspace_id: OptionalId,
 	agent_status: Type.Optional(HerdrAgentStatusSchema),
 	state_change_seq: Type.Optional(Count),
+	interactive_ready: Type.Optional(Type.Boolean()),
 	agent_session: Type.Optional(ManagedAgentSessionSchema),
 });
 export const HerdrLiveAgentResultSchema = Type.Object({ agent: HerdrLiveAgentSchema });

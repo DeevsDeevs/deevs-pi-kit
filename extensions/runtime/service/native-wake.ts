@@ -75,7 +75,7 @@ export class NativeWakeSweeper {
 				this.store.apply({ type: "messaging.read", namespaceId: last.namespaceId, eventIds: last.eventIds, at: this.now() });
 				return;
 			}
-			if (live.agentStatus === "working" || live.agentStatus === "blocked") return;
+			if (live.ready === false || live.agentStatus === "working" || live.agentStatus === "blocked") return;
 			const same = last?.eventIds.join() === wake.eventIds.join();
 			if (same && (last.count >= MAX_PROMPTS || this.now() - last.at < RETRY_MS)) return;
 			await this.host.promptAgent?.(wake.agentName, wake.text);
