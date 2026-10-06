@@ -237,7 +237,7 @@ export class NativeAgentService {
 		}
 		if (this.blockedNotified.has(targetKey)) return;
 		const notice = `Collaborator ${control.protocol}/${control.participantId} (${control.driver}) is blocked on a prompt in Herdr tab ${control.paneId}.`
-			+ " It cannot read mail until someone answers that prompt or you stop it with collaborator_manage.";
+			+ " It cannot read mail until someone answers that prompt or you stand it down with TaskStop.";
 		if (this.messaging.deliverNotice(ctx, notice)) this.blockedNotified.add(targetKey);
 	}
 
