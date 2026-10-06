@@ -436,6 +436,44 @@ it("refuses new operations at the record cap and retains a body its sender may s
 	expect(Object.keys(store.read().messaging[publisher.namespaceId]!.operations)).toEqual([operationId]);
 });
 
+it("never wedges at the record cap: a re-issue supersedes first, and retention frees pruned mail's records and old tombstones", async () => {
+	const test = await setup();
+	const recipient = await test.issue(test.recipientParticipant);
+	const [first] = await mcp(test.issued.descriptorPath, [send()]);
+	const eventId = first!.structuredContent.eventId!;
+	const full = test.readState();
+	const publisher = full.messaging[test.issued.namespaceId]!;
+	const [operationId] = Object.keys(publisher.operations);
+	const namespace = (i: number) => `msg_00000000-0000-0000-0000-${String(i).padStart(12, "0")}`;
+	for (let i = 1; i <= 100; i++) full.messaging[namespace(i)] = { ...full.messaging[recipient.namespaceId]!, namespaceId: namespace(i), status: "expired", operations: {} };
+	// Records of mail retention already dropped, as every send left them before this fix.
+	for (let i = Object.keys(full.messaging).length + Object.keys(publisher.operations).length; i < 10_000; i++) publisher.operations[`gone-${i}`] = `evt_gone_${i}`;
+	const store = (name: string) => {
+		const root = mkdtempSync(join(tmpdir(), `messaging-${name}-`));
+		cleanups.push(async () => { rmSync(root, { recursive: true, force: true }); });
+		writeHostedRuntimeState(root, full);
+		return new HostedStateStore(root);
+	};
+	const sendFrom = (namespaceId: string, id: string) => ({ type: "messaging.send" as const, namespaceId, operationId: id, recipientParticipantKey: test.recipientParticipant.participantKey, body: id, eventId: `evt_${id}`, at: 2000 });
+
+	const reissued = store("reissue");
+	expect(() => reissued.apply(sendFrom(publisher.namespaceId, "at-cap"))).toThrow("exceed capacity");
+	const fresh = namespace(9_999);
+	reissued.apply({ type: "messaging.issue", grant: { ...publisher, namespaceId: fresh, createdAt: 2000, operations: {} } });
+	expect(reissued.read().messaging[publisher.namespaceId]).toMatchObject({ status: "expired", operations: {} });
+	reissued.apply(sendFrom(fresh, "after_reissue"));
+	expect(reissued.read().events.evt_after_reissue).toBeDefined();
+
+	const pruned = store("prune");
+	pruned.apply({ type: "retention.prune", before: 1001, readBefore: 0 });
+	expect(Object.keys(pruned.read().messaging).filter((id) => pruned.read().messaging[id]!.status === "expired")).toEqual([]);
+	expect(pruned.read().messaging[publisher.namespaceId]!.operations).toEqual({ [operationId!]: eventId });
+	pruned.apply(sendFrom(publisher.namespaceId, "after_prune"));
+	expect(pruned.read().events.evt_after_prune).toBeDefined();
+	const retained = pruned.read();
+	expect(pruned.apply({ ...sendFrom(publisher.namespaceId, operationId!), body: "Please inspect.", eventId: "must-not-publish" })).toBe(retained);
+});
+
 it("publishes and reads only through MCP and keeps its namespace usable across a Runtime restart", async () => {
 	const test = await setup();
 	const [listed, sent] = await mcp(test.issued.descriptorPath, [peers(), send()]);

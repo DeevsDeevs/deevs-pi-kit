@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { guardArgv, guardBashCall, guardShell, loadGuardConfig, type GuardConfig } from "../extensions/shared/guard.ts";
 
 const HOOK = join(import.meta.dirname, "../extensions/shared/guard-hook.mjs");
@@ -135,6 +135,15 @@ describe("guard: shell functions", () => {
 		blocked("run() { \"$@\"; }; run nohup sleep 300");
 		blocked("function go { $1 x; }; go setsid");
 	});
+
+	it("reads positional parameters outside a function body as unknown commands", () => {
+		blocked("bash -c '\"$@\"' _ setsid sleep 100");
+		blocked("\"$@\"");
+		blocked("$1 x");
+		blocked("set -- setsid sleep 100; \"$@\"");
+		blocked("run() { echo; }; \"$@\"");
+		expect(guardArgv(["sh", "-c", "$1 x", "_", "nohup"])).toBeDefined();
+	});
 });
 
 describe("guard: force push", () => {
@@ -156,7 +165,18 @@ describe("guard: force push", () => {
 			"env GIT_TRACE=1 git push -f origin main",
 			"bash -c 'git push --force origin main'",
 			"git -c core.editor=true push -f origin '+refs/heads/*:refs/heads/*'",
+			"git push origin :main",
+			"git push origin :refs/heads/release/1",
+			"git push --delete origin main",
+			"git push -d origin master",
+			"git push origin --delete feature/x main",
 		]) expect(reason(command), command).toMatch(/^Force push to a protected branch/);
+	});
+
+	it("allows deleting a named feature branch", () => {
+		allowed("git push origin :feature/x");
+		allowed("git push --delete origin feature/x");
+		allowed("git push origin :");
 	});
 
 	it("allows ordinary pushes and forced pushes to named feature branches", () => {
@@ -254,18 +274,37 @@ describe("guard: configuration and hooks", () => {
 		return { root, agentDir, cwd };
 	};
 
-	it("merges the global and project pi-kit.json guard sections", () => {
+	it("takes switches from the global file only and adds up both block lists", () => {
 		const { agentDir, cwd } = fixture();
-		writeFileSync(join(agentDir, "pi-kit.json"), JSON.stringify({ models: { sol: "x" }, guard: { rmRf: false, forcePush: false, block: ["kubectl delete"] } }));
-		writeFileSync(join(cwd, ".pi", "pi-kit.json"), JSON.stringify({ guard: { forcePush: true, block: ["npm publish"] } }));
-		expect(loadGuardConfig(cwd, agentDir)).toEqual({ rmRf: false, forcePush: true, block: ["kubectl delete", "npm publish"] });
+		writeFileSync(join(agentDir, "pi-kit.json"), JSON.stringify({ models: { sol: "x" }, guard: { rmRf: false, block: ["kubectl delete"] } }));
+		writeFileSync(join(cwd, ".pi", "pi-kit.json"), JSON.stringify({ guard: { rmRf: true, detached: false, forcePush: false, block: ["npm publish"] } }));
+		expect(loadGuardConfig(cwd, agentDir)).toEqual({ rmRf: false, block: ["kubectl delete", "npm publish"] });
 	});
 
-	it("ignores a malformed or mistyped guard section, keeping every rule on", () => {
+	it("never lets a project file switch a rule off", () => {
+		const { cwd } = fixture();
+		writeFileSync(join(cwd, ".pi", "pi-kit.json"), JSON.stringify({ guard: { rmRf: false, detached: false, forcePush: false } }));
+		expect(guardBashCall("rm -rf ~", cwd)?.reason).toMatch(/^Recursive rm outside/);
+		expect(guardBashCall("nohup sleep 999 &", cwd)?.reason).toMatch(/^Detached process launch/);
+		expect(guardBashCall("git push -f origin main", cwd)?.reason).toMatch(/^Force push to a protected branch/);
+	});
+
+	it("keeps every rule on and the valid block patterns when a file is broken", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		const { agentDir, cwd } = fixture();
 		writeFileSync(join(agentDir, "pi-kit.json"), "{ not json");
-		writeFileSync(join(cwd, ".pi", "pi-kit.json"), JSON.stringify({ guard: { detached: "false" } }));
-		expect(loadGuardConfig(cwd, agentDir)).toEqual({ block: [] });
+		writeFileSync(join(cwd, ".pi", "pi-kit.json"), JSON.stringify({ guard: { detached: "false", block: ["npm publish"] } }));
+		expect(loadGuardConfig(cwd, agentDir)).toEqual({ block: ["npm publish"] });
+		expect(warn).toHaveBeenCalledTimes(2);
+		warn.mockRestore();
+	});
+
+	it("cleans only inside the project root, whatever cwd the command runs in", () => {
+		const { cwd } = fixture();
+		expect(guardBashCall("rm -rf etc", "/", cwd)?.reason).toMatch(/^Recursive rm outside/);
+		expect(guardBashCall("rm -rf /home/u", "/", cwd)?.reason).toMatch(/^Recursive rm outside/);
+		expect(guardBashCall("rm -rf build", join(cwd, "pkg"), cwd)).toBeUndefined();
+		expect(guardArgv(["rm", "-rf", "etc"], { cwd: "/", root: cwd })).toMatch(/^Recursive rm outside/);
 	});
 
 	it("answers a Pi tool_call with the project's rules", () => {

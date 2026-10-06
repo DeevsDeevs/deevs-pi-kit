@@ -1,25 +1,10 @@
 import { getAgentDir, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { kitPaths, migrateLegacyConfig, readKitKey } from "./config.ts";
+import { kitValues, migrateLegacyConfig } from "./config.ts";
 
-/**
- * `"autonomy": "auto" | "ask"` in pi-kit.json, re-read on every use: a trusted project's `.pi/pi-kit.json` overrides `~/.pi/agent/pi-kit.json`.
- * Absent everywhere means auto; any other value, or a file that does not parse, means ask.
- */
+/** `"autonomy": "auto" | "ask"` in pi-kit.json, re-read on every use: a trusted project's value overrides the global one; absent means auto. */
 export async function isAutonomous(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): Promise<boolean> {
-	const [global, project] = kitPaths(ctx.cwd, getAgentDir());
-	if (ctx.isProjectTrusted()) {
-		await migrateLegacyConfig(ctx.cwd);
-		const own = readAutonomy(project);
-		if (own !== undefined) return own;
-	}
-	return readAutonomy(global) ?? true;
-}
-
-function readAutonomy(path: string): boolean | undefined {
-	try {
-		const autonomy = readKitKey(path, "autonomy");
-		return autonomy === undefined ? undefined : autonomy === "auto";
-	} catch {
-		return false;
-	}
+	const trusted = ctx.isProjectTrusted();
+	if (trusted) await migrateLegacyConfig(ctx.cwd);
+	const [global, project] = kitValues("autonomy", ctx.cwd, getAgentDir());
+	return ((trusted ? project : undefined) ?? global ?? "auto") === "auto";
 }

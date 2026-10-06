@@ -75,7 +75,7 @@ describe("Chain checkpoint state", () => {
 		expect(service.read().dueReasons).toContain("repository HEAD advanced");
 		expect(statuses.at(-1)).toBe("chain!");
 		expect(service.reminder()).toContain("checkpoint is due");
-		service.due("Mission milestone recorded");
+		service.due("milestone recorded");
 		expect(service.reminder()).toContain("call chain_save before starting further substantive work");
 	});
 

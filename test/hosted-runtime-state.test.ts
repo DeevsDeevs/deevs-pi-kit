@@ -214,7 +214,7 @@ describe("hosted runtime state persistence", () => {
 		expect(validateHostedRuntimeState(pruned)).toEqual(pruned);
 	});
 
-	it("drops read mail after its own shorter window even while the sender's grant still lists it", () => {
+	it("drops read mail after its own shorter window, and its record in the sender's grant with it", () => {
 		const state = structuredClone(populatedState());
 		state.messaging["msg_00000000-0000-0000-0000-000000000002"] = {
 			namespaceId: "msg_00000000-0000-0000-0000-000000000002",
@@ -233,7 +233,7 @@ describe("hosted runtime state persistence", () => {
 		expect(reduceHostedState(state, { type: "retention.prune", before: 0, readBefore: 500 }).events.evt_1).toBeDefined();
 		const pruned = reduceHostedState(state, { type: "retention.prune", before: 0, readBefore: 501 });
 		expect(pruned.events.evt_1).toBeUndefined();
-		expect(pruned.messaging["msg_00000000-0000-0000-0000-000000000002"]?.operations).toEqual({ "op-1": "evt_1" });
+		expect(pruned.messaging["msg_00000000-0000-0000-0000-000000000002"]?.operations).toEqual({});
 	});
 });
 

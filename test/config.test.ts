@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { kitValues, migrateLegacyConfig, readKitKey } from "../extensions/shared/config.ts";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { kitValues, migrateLegacyConfig } from "../extensions/shared/config.ts";
 
 let root: string;
 let project: string;
@@ -20,14 +20,22 @@ beforeEach(() => {
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
 describe("pi-kit.json", () => {
-	it("reads one key per file and names the file and pointer of a bad value", () => {
-		write("pi-kit.json", { codexFast: true, notifier: { title: 5 } });
+	it("keeps what is valid, drops what is not, and warns once per problem naming the file and pointer", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		write("pi-kit.json", { codexFast: true, notifier: { title: 5, body: "ok" }, guard: { rmRf: "no", block: ["npm publish"] }, models: { sol: "x", luna: 7 }, lead: 3 });
 		const path = join(project, ".pi", "pi-kit.json");
-		expect(readKitKey(path, "codexFast")).toBe(true);
-		expect(readKitKey(path, "models")).toBeUndefined();
-		expect(() => readKitKey(path, "notifier")).toThrow(`${path}: /notifier/title`);
 		writeFileSync(join(agentDir, "pi-kit.json"), "{ nope");
 		expect(kitValues("codexFast", project, agentDir)).toEqual([undefined, true]);
+		expect(kitValues("notifier", project, agentDir)).toEqual([undefined, { body: "ok" }]);
+		expect(kitValues("guard", project, agentDir)).toEqual([undefined, { block: ["npm publish"] }]);
+		expect(kitValues("models", project, agentDir)).toEqual([undefined, { sol: "x" }]);
+		expect(kitValues("lead", project, agentDir)).toEqual([undefined, undefined]);
+		kitValues("notifier", project, agentDir);
+		const warnings = warn.mock.calls.map(([message]) => String(message));
+		expect(warnings.filter((message) => message.includes(join(agentDir, "pi-kit.json")))).toHaveLength(1);
+		expect(warnings.filter((message) => message.includes(`${path}: /notifier/title`))).toHaveLength(1);
+		expect(warnings.some((message) => message.includes(`${path}: /guard/rmRf`))).toBe(true);
+		warn.mockRestore();
 	});
 
 	it("moves the legacy project files in once, keeping keys already set", async () => {

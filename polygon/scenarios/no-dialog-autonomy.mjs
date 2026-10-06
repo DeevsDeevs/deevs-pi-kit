@@ -28,7 +28,7 @@ export default {
 		await herdr(t);
 		assert.equal(await run(t, "auto", "w1"), 0, "a dialog opened with no autonomy setting");
 		mkdirSync(join(t.repo, ".pi"), { recursive: true });
-		writeFileSync(join(t.repo, ".pi", "pi-kit.json"), JSON.stringify({ autonomy: false }));
-		assert.equal(await run(t, "ask", "w2"), 3, "with autonomy false, start, stand-down and resume should each ask once");
+		writeFileSync(join(t.repo, ".pi", "pi-kit.json"), JSON.stringify({ autonomy: "ask" }));
+		assert.equal(await run(t, "ask", "w2"), 3, "with autonomy ask, start, stand-down and resume should each ask once");
 	},
 };

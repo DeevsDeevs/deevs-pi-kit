@@ -32,7 +32,7 @@ Pi custom entries track:
 - concrete due reasons;
 - latest saved link.
 
-Checkpoint state is restored after resume/tree navigation. At 80% context usage the checkpoint becomes due and one reminder to save a concise Chain link joins the system prompt; no tool is blocked and Pi's own compaction runs as configured. Dropping below 80% or compacting resets the one-shot threshold. Successful Chain tools update state directly. Descendant advances of repository HEAD are detected without parsing shell commands, while sideways checkouts and resets are ignored. Mission lifecycle changes, explicit Mission milestones/review adjudication, and Chain forks also mark checkpoints due. Ordinary edits and bounded Jobs do not: activity is not automatically a durable milestone.
+Checkpoint state is restored after resume/tree navigation. At 80% context usage the checkpoint becomes due and one reminder to save a concise Chain link joins the system prompt; no tool is blocked and Pi's own compaction runs as configured. Dropping below 80% or compacting resets the one-shot threshold. Successful Chain tools update state directly. Descendant advances of repository HEAD are detected without parsing shell commands, while sideways checkouts and resets are ignored. Chain forks also mark checkpoints due. Ordinary edits and bounded Jobs do not: activity is not automatically a durable milestone.
 
 The footer stays quiet while saved and shows compact `chain!` only when attention is needed. Before the next agent turn, a due/resume reminder is set as the `chain_checkpoint` system-prompt section from state.
 
