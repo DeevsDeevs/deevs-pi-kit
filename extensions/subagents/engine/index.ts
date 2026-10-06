@@ -170,13 +170,15 @@ export interface Engine {
 interface Modules { D: D; openStorage(file: string): Promise<Durable.Storage> }
 interface Waiter { claimed: boolean; timedOut: boolean; resolve(n: TaskNotification): void }
 /** A reporter in this process. Messages steer its run only between the prompt's placement and `closing`; after that, SendMessage waits for the report and resumes. */
-interface Live { placed: boolean; closing: boolean; early: string[]; inflight: Promise<unknown>[]; done: Promise<TaskNotification | undefined> }
+interface Live { placed: boolean; closing: boolean; inflight: Promise<unknown>[]; done: Promise<TaskNotification | undefined> }
 interface Host extends BackgroundHost {
 	/** The durable module stays loaded across /reload: a fresh copy would fail its own `instanceof` checks. */
 	modules?: Promise<Modules>;
 	engines: Map<string, Promise<Engine>>;
 	models?: ModelRegistry;
 	running: number;
+	/** Agents whose run Pi closed mid-way: durable continues it at once, so it holds a slot before its reporter asks. */
+	reserved: Set<string>;
 	queue: { agentId: string; go(held: boolean): void }[];
 	waiters: Map<string, Waiter>;
 	live: Map<string, Live>;
@@ -189,10 +191,11 @@ interface Host extends BackgroundHost {
 const KEY = Symbol.for("pi-kit.agents");
 // SAFETY: this package exclusively owns the symbol-keyed slot and only ever stores the host in it.
 const slot = globalThis as typeof globalThis & { [KEY]?: Host };
-const host: Host = slot[KEY] ??= { engines: new Map(), running: 0, queue: [], waiters: new Map(), closing: false, opened: new Map(), live: new Map(), workflows: new Map(), workers: new Map() };
+const host: Host = slot[KEY] ??= { engines: new Map(), running: 0, reserved: new Set(), queue: [], waiters: new Map(), closing: false, opened: new Map(), live: new Map(), workflows: new Map(), workers: new Map() };
 host.live ??= new Map();
 host.workflows ??= new Map();
 host.workers ??= new Map();
+host.reserved ??= new Set();
 // A host kept from a kit version before Jobs and Monitors joined the engine.
 host.opened ??= new Map();
 
@@ -321,25 +324,22 @@ export async function send(engine: Engine, agentId: string, message: string, too
 	const conversationId = record.conversationId;
 	const conversation = (await engine.harness.conversation(conversationId, CTX))!;
 	const live = host.live.get(agentId);
-	if (live && !live.closing) {
-		if (!live.placed) {
-			live.early.push(message);
-			return "steered";
-		}
+	if (live?.placed && !live.closing) {
 		const admitted = conversation.submit({ type: "input", content: message, requestId: `send:${randomUUID()}`, whenBusy: "steer" }, CTX);
 		live.inflight.push(admitted.catch(() => undefined));
 		await admitted;
 		return "steered";
 	}
-	if (live) await live.done;
+	if (live?.closing) await live.done;
 	const latest = await agentRecord(engine, agentId);
 	const worktree = latest.status !== "running" && latest.worktree ? await reopenWorktree(latest.worktree) : undefined;
 	const { D } = await host.modules!;
 	const from = { entries: (await scan(conversation, CTX)).length, tokens: totalTokens(await engine.harness.snapshot(D.UsageDoc, conversationId, CTX)) };
 	const outcome = await engine.root.commit(async (tx) => {
 		const current = agentRecords(await tx.doc(engine.kit.Agents, engine.root.id))[agentId]!;
-		// Its reporter has not started yet (just launched, or just reopened): it steers the message in after the prompt.
+		// Its reporter has not placed the prompt yet (queued, just launched or reopened): it steers `pending` in right after.
 		if (current.status === "running") {
+			if (host.live.get(agentId)?.placed) return "placed" as const;
 			(current.pending ??= []).push(message);
 			return "steered" as const;
 		}
@@ -350,6 +350,7 @@ export async function send(engine: Engine, agentId: string, message: string, too
 		await tx.createTask(engine.kit.Reporter, input, BACKGROUND);
 		return "resumed" as const;
 	}, CTX);
+	if (outcome === "placed") return send(engine, agentId, message, toolUseId);
 	if (outcome === "resumed") tasks.update(agentId, { status: "running" });
 	return outcome;
 }
@@ -498,6 +499,13 @@ async function open(session: string, cwd: string): Promise<Engine> {
 	}
 	for (const [id, record] of Object.entries(workflows)) registerWorkflow(engine, id, record);
 	for (const [id, record] of Object.entries(backgroundRecords(await harness.snapshot(kit.Background, root.id, CTX)))) registerBackground(engine, id, record);
+	// ponytail: a resumed run takes its slot without waiting; reopening a session while another fills the 16 exceeds them until it settles.
+	const unsettled = new Set((await harness.inspect(CTX)).submissions.map((submission) => submission.conversationId));
+	for (const [id, record] of Object.entries(records)) {
+		if (record.status !== "running" || record.conversationId === undefined || !unsettled.has(record.conversationId)) continue;
+		host.running++;
+		host.reserved.add(id);
+	}
 	host.opened.set(session, Date.now());
 	harness.resume();
 	for (const item of outboxItems(await harness.snapshot(kit.Outbox, root.id, CTX))) if (!item.silent) await tasks.notify(item);
@@ -678,7 +686,7 @@ async function report(D: D, docs: Pick<Kit, "Outbox" | "Agents">, input: Reporte
 	const conversation = (await engine.harness.conversation(input.conversationId, context))!;
 	const record = async () => agentRecords(await runtime.snapshot(docs.Agents, runtime.conversationId, context))[input.agentId];
 	let finished: (n: TaskNotification | undefined) => void = () => {};
-	const live: Live = { placed: false, closing: false, early: [], inflight: [], done: new Promise((resolve) => { finished = resolve; }) };
+	const live: Live = { placed: false, closing: false, inflight: [], done: new Promise((resolve) => { finished = resolve; }) };
 	host.live.set(input.agentId, live);
 	let n: OutboxItem | undefined;
 	let claimed = false;
@@ -690,13 +698,13 @@ async function report(D: D, docs: Pick<Kit, "Outbox" | "Agents">, input: Reporte
 			if (held && !(await record())?.stopped) {
 				const submission = await conversation.submit({ type: "input", content: input.prompt, requestId: input.requestId }, context);
 				live.placed = true;
-				const pending = live.early.splice(0);
-				if ((await record())?.pending) pending.push(...await engine.root.commit(async (tx) => {
+				// SendMessage steers a placed run itself, so this drain, committed after `placed`, misses no pending message.
+				const pending = await engine.root.commit(async (tx) => {
 					const current = agentRecords(await tx.doc(docs.Agents, engine.root.id))[input.agentId];
 					const messages = current?.pending ?? [];
 					if (current) delete current.pending;
 					return messages;
-				}, context));
+				}, context);
 				for (const message of pending) live.inflight.push(conversation.submit({ type: "input", content: message, requestId: `send:${randomUUID()}`, whenBusy: "steer" }, context));
 				const turns = input.limits.maxTurns ? (await scan(conversation, context)).slice(input.from?.entries ?? 0).filter((entry) => entry.kind === "pi.assistant").length : 0;
 				const unwatch = watchLimits(D, engine, input, turns, (limit) => {
@@ -739,7 +747,7 @@ async function report(D: D, docs: Pick<Kit, "Outbox" | "Agents">, input: Reporte
 			},
 		};
 		if (limited) outcome.limited = limited;
-		({ n, claimed } = await commitReport(docs, input, runtime, context, transcriptLog(transcript), outcome, live.early));
+		({ n, claimed } = await commitReport(docs, input, runtime, context, transcriptLog(transcript), outcome));
 	} finally {
 		if (host.live.get(input.agentId) === live) host.live.delete(input.agentId);
 		finished(n);
@@ -750,11 +758,8 @@ async function report(D: D, docs: Pick<Kit, "Outbox" | "Agents">, input: Reporte
 type Outcome = Pick<TaskNotification, "summary" | "result" | "usage" | "limited"> & Required<Pick<TaskNotification, "status">>;
 type RunRuntime = Pick<Durable.TaskRuntime<unknown, { phase: "run" }, null, object>, "taskId" | "conversationId" | "commit">;
 
-/**
- * Commits a run's report: the record's status, the notification in the Outbox and, for a CLI worker with queued messages, its
- * next run. `early` holds messages for a run that never started; they wait for the next resume.
- */
-async function commitReport(docs: Pick<Kit, "Outbox" | "Agents"> & { CliTask?: Kit["CliTask"] }, input: RunInput, runtime: RunRuntime, context: Ctx, log: string, outcome: Outcome, early: string[] = []): Promise<{ n: OutboxItem; claimed: boolean }> {
+/** Commits a run's report: the record's status, the notification in the Outbox and, for a CLI worker with queued messages, its next run. */
+async function commitReport(docs: Pick<Kit, "Outbox" | "Agents"> & { CliTask?: Kit["CliTask"] }, input: RunInput, runtime: RunRuntime, context: Ctx, log: string, outcome: Outcome): Promise<{ n: OutboxItem; claimed: boolean }> {
 	const kept = input.worktree && existsSync(input.worktree.path) ? await finishAgentWorktree(input.worktree).catch(() => input.worktree) : undefined;
 	const n: OutboxItem = { notificationId: `${input.agentId}:${String(runtime.taskId)}`, taskId: input.agentId, kind: "agent", ownerSession: input.session, toolUseId: input.toolUseId, outputFile: input.outputFile, ...outcome };
 	if (kept) n.worktree = { path: kept.path, branch: kept.branch };
@@ -768,7 +773,6 @@ async function commitReport(docs: Pick<Kit, "Outbox" | "Agents"> & { CliTask?: K
 			record.queued = [];
 			next = true;
 		} else if (record) record.status = outcome.status;
-		if (record && early.length) record.pending = [...record.pending ?? [], ...early];
 		if (waiter && !waiter.timedOut) waiter.claimed = true;
 		(await tx.doc(docs.Outbox, runtime.conversationId)).items.push(json({ ...n, silent: waiter?.claimed || undefined }));
 		return { status: "terminal", outcome: { status: "completed", result: null } };
@@ -900,6 +904,7 @@ function totalTokens(usage: { models?: Record<string, { totalTokens?: number }> 
 }
 
 function acquire(agentId: string): Promise<boolean> {
+	if (host.reserved.delete(agentId)) return Promise.resolve(true);
 	if (host.running < AGENT_SLOTS) {
 		host.running++;
 		return Promise.resolve(true);
