@@ -340,7 +340,7 @@ export async function send(engine: Engine, agentId: string, message: string, too
 		// Its reporter has not placed the prompt yet (queued, just launched or reopened): it steers `pending` in right after.
 		if (current.status === "running") {
 			if (host.live.get(agentId)?.placed) return "placed" as const;
-			(current.pending ??= []).push(message);
+			current.pending = [...current.pending ?? [], message];
 			return "steered" as const;
 		}
 		current.status = "running";
@@ -701,7 +701,7 @@ async function report(D: D, docs: Pick<Kit, "Outbox" | "Agents">, input: Reporte
 				// SendMessage steers a placed run itself, so this drain, committed after `placed`, misses no pending message.
 				const pending = await engine.root.commit(async (tx) => {
 					const current = agentRecords(await tx.doc(docs.Agents, engine.root.id))[input.agentId];
-					const messages = current?.pending ?? [];
+					const messages = [...current?.pending ?? []];
 					if (current) delete current.pending;
 					return messages;
 				}, context);
@@ -1082,7 +1082,7 @@ function callRunner(D: D, docs: WorkflowDocs, engine: Engine, input: WorkflowInp
 				cwd,
 			});
 			const record = workflowRecords(await tx.doc(docs.Workflows, runtime.conversationId))[input.taskId];
-			if (record && options.schema && !record.schemas?.some((schema) => JSON.stringify(schema) === JSON.stringify(options.schema))) (record.schemas ??= []).push(options.schema);
+			if (record && options.schema && !record.schemas?.some((schema) => JSON.stringify(schema) === JSON.stringify(options.schema))) record.schemas = [...record.schemas ?? [], options.schema];
 			call = { agentId, conversationId: conversation.id, isolated: worktree };
 			Object.assign(await tx.doc(docs.Calls, runtime.conversationId, member(key), agentId), json(call));
 			return undefined;
