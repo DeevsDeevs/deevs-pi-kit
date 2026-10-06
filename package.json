@@ -10,7 +10,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "lint:anti-slop": "oxlint extensions/runtime extensions/chains extensions/shared extensions/subagents/engine extensions/subagents/workflow extensions/subagents/index.ts extensions/subagents/definitions.ts extensions/subagents/workflow-prompt.ts",
+    "lint:anti-slop": "oxlint extensions/mission extensions/runtime extensions/chains extensions/shared extensions/subagents/engine extensions/subagents/workflow extensions/subagents/index.ts extensions/subagents/definitions.ts extensions/subagents/workflow-prompt.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "audit": "node scripts/audit.mjs",

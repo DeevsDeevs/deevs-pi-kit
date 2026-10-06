@@ -1,5 +1,5 @@
 // Structural readers. Nothing here reads model prose.
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 export const DIALOGS = new Set(["select", "confirm", "input", "editor"]);
@@ -47,6 +47,13 @@ export function entries(t) {
 }
 
 export const requests = (t) => jsonl(t.requestLog);
+
+/** Every `.missions/<slug>/state.json` in the fixture repo. */
+export function missionStates(t) {
+	const root = join(t.repo, ".missions");
+	if (!existsSync(root)) return [];
+	return readdirSync(root).filter((slug) => existsSync(join(root, slug, "state.json"))).map((slug) => JSON.parse(readFileSync(join(root, slug, "state.json"), "utf8")));
+}
 
 /** Waits for a condition outside the lead's event stream: files, the request log, session entries. */
 export async function poll(check, ms, label) {
