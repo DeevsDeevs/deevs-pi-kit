@@ -15,7 +15,7 @@ import { Value } from "typebox/value";
 import { guardBashCall } from "../../shared/guard.ts";
 import { loadKitConfig, modelLabel, resolveModel, type ModelContext } from "../../shared/models.ts";
 import { trySignalGroup } from "../../shared/process-group.ts";
-import { agentSummary, answeredCalls, newAgentId, tasks, workflowDiagnostics, workflowRecovery, workflowSummary, type TaskNotification, type TaskStatus } from "../../shared/tasks.ts";
+import { agentSummary, newAgentId, sessionAcks, tasks, workflowDiagnostics, workflowRecovery, workflowSummary, type TaskNotification, type TaskStatus } from "../../shared/tasks.ts";
 import { addWorktree, agentWorktreeAt, createAgentWorktree, finishAgentWorktree, git, type AgentWorktree } from "../../shared/worktree.ts";
 import { LEVELS, PI_TOOLS, workerPrompt, workflowAgentType, type PiToolName } from "../definitions.ts";
 import { parseWorkflow } from "../workflow/meta.ts";
@@ -216,7 +216,7 @@ export function ensureEngine(ctx: ExtensionContext): Promise<Engine> {
 	const session = ctx.sessionManager.getSessionId();
 	let engine = host.engines.get(session);
 	if (!engine) {
-		engine = open(session, ctx.cwd, answeredCalls(ctx));
+		engine = open(session, ctx.cwd, sessionAcks(ctx));
 		host.engines.set(session, engine);
 		engine.catch(() => host.engines.delete(session));
 	}
@@ -476,7 +476,7 @@ async function stopBackground(engine: Engine, id: string): Promise<void> {
 	await engine.harness.abortTask(record.taskId as Durable.TaskId, CTX);
 }
 
-async function open(session: string, cwd: string, answered: Set<string>): Promise<Engine> {
+async function open(session: string, cwd: string, acks: ReturnType<typeof sessionAcks>): Promise<Engine> {
 	const dir = await storageDir(cwd, session);
 	await mkdir(join(dir, "out"), { recursive: true });
 	await lock(join(dir, "engine.lock"));
@@ -510,7 +510,8 @@ async function open(session: string, cwd: string, answered: Set<string>): Promis
 	}
 	host.opened.set(session, Date.now());
 	harness.resume();
-	for (const item of outboxItems(await harness.snapshot(kit.Outbox, root.id, CTX)).filter(unsent(answered))) await tasks.notify(item);
+	const undelivered = outboxItems(await harness.snapshot(kit.Outbox, root.id, CTX)).filter((item) => !acks.delivered.has(item.notificationId));
+	for (const item of undelivered.filter(unsent(acks.answered))) await tasks.notify(item);
 	return engine;
 }
 

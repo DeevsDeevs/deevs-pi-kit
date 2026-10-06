@@ -117,7 +117,7 @@ export const tasks = {
 		state.outstanding.set(notification.notificationId, notification);
 		const ctx = state.ctx;
 		if (ctx && activeSession() === notification.ownerSession) {
-			const delivered = deliveredIds(ctx);
+			const { delivered } = sessionAcks(ctx);
 			if (delivered.has(notification.notificationId)) state.outstanding.delete(notification.notificationId);
 			// A monitor's next event waits while its last one is still on the way; the next redelivery merges what waited.
 			else if (notification.kind !== "monitor" || !inFlight(notification.taskId, delivered)) send(notification, [notification.notificationId]);
@@ -160,7 +160,7 @@ export function mergeEvents(pending: TaskNotification[]): [TaskNotification, str
 async function redeliver(ctx: ExtensionContext): Promise<void> {
 	const session = ctx.sessionManager.getSessionId();
 	const pending = [...state.outstanding.values()].filter((notification) => notification.ownerSession === session);
-	const answered = answeredCalls(ctx);
+	const { answered } = sessionAcks(ctx);
 	for (const source of state.sources.values()) {
 		try {
 			pending.push(...await source.pending(session, answered));
@@ -169,7 +169,7 @@ async function redeliver(ctx: ExtensionContext): Promise<void> {
 		}
 	}
 	if (state.ctx !== ctx) return;
-	const delivered = deliveredIds(ctx);
+	const { delivered } = sessionAcks(ctx);
 	const fresh = new Map<string, TaskNotification>();
 	for (const notification of pending) {
 		if (delivered.has(notification.notificationId)) state.outstanding.delete(notification.notificationId);
@@ -196,20 +196,19 @@ function send(notification: TaskNotification, ids: string[]): void {
 	}
 }
 
-function deliveredIds(ctx: ExtensionContext): Set<string> {
-	const ids = new Set<string>();
+/** What the session file acknowledges: the notifications it holds, and the tool calls whose results it saved. */
+export function sessionAcks(ctx: ExtensionContext) {
+	const delivered = new Set<string>();
+	const answered = new Set<string>();
 	for (const entry of ctx.sessionManager.getEntries()) {
+		if (entry.type === "message" && entry.message.role === "toolResult") answered.add(entry.message.toolCallId);
 		if (entry.type !== "custom_message" || entry.customType !== TASK_NOTIFICATION) continue;
 		// SAFETY: Session entries are untrusted; a non-string id only sits in the set and never equals a real one.
 		const details = entry.details as { notificationId?: string; notificationIds?: string[] } | undefined;
-		if (details?.notificationId !== undefined) ids.add(details.notificationId);
-		if (Array.isArray(details?.notificationIds)) for (const id of details.notificationIds) ids.add(id);
+		if (details?.notificationId !== undefined) delivered.add(details.notificationId);
+		if (Array.isArray(details?.notificationIds)) for (const id of details.notificationIds) delivered.add(id);
 	}
-	return ids;
-}
-
-export function answeredCalls(ctx: ExtensionContext): Set<string> {
-	return new Set(ctx.sessionManager.getEntries().flatMap((entry) => (entry.type === "message" && entry.message.role === "toolResult" ? [entry.message.toolCallId] : [])));
+	return { delivered, answered };
 }
 
 function activeSession(): string | undefined {
