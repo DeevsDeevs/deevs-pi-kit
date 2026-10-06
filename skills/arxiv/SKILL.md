@@ -1,27 +1,27 @@
 ---
 name: arxiv
-description: "Search, triage and cite arXiv papers with the arxiv_* tools. Use for preprint or paper discovery, metadata, abstracts, BibTeX."
+description: "Search, triage and cite arXiv papers with the arxiv tool. Use for preprint or paper discovery, metadata, abstracts, BibTeX."
 ---
 
 # arXiv Research
 
-Use `arxiv_search`, `arxiv_get`, `arxiv_bibtex`. No hand-rolled `curl` unless the extension is unavailable or the user needs a raw API check.
+Use the `arxiv` tool (active once this skill is loaded): `action: "search"` or `action: "get"`. No hand-rolled `curl` unless the extension is unavailable or the user needs a raw API check.
 
 Use for paper/preprint discovery, exact-ID lookup, comparing recent work, collecting BibTeX, and saving research leads into a chain or wiki. arXiv alone cannot provide citation counts, peer-review status, exhaustive literature reviews, or full-paper claims beyond the abstract.
 
 ## Workflow
 
-1. Convert the request into 1–3 focused queries; `arxiv_search` with small `maxResults` (5–10) first.
+1. Convert the request into 1–3 focused queries; search with small `maxResults` (5–10) first.
 2. Filter by category when helpful: `cs.AI`, `cs.CL` (NLP), `cs.CV`, `cs.LG`, `cs.CR`, `stat.ML`, `math.OC`.
-3. Triage by title, abstract, date, authors, category; `arxiv_get` for IDs worth citing; `arxiv_bibtex` only when references are needed.
+3. Triage by title, abstract, date, authors, category; `get` the IDs worth citing, with `includeBibtex` only when references are needed.
 4. Distinguish abstract-supported claims from hypotheses needing full-paper reading.
 
 Tool shapes:
 
 ```json
-{ "query": "test time scaling language models", "category": "cs.CL", "maxResults": 5, "sortBy": "submittedDate" }
-{ "author": "Yann LeCun", "category": "cs.LG", "maxResults": 5 }
-{ "ids": "1706.03762", "includeBibtex": true }
+{ "action": "search", "query": "test time scaling language models", "category": "cs.CL", "maxResults": 5, "sortBy": "submittedDate" }
+{ "action": "search", "author": "Yann LeCun", "category": "cs.LG", "maxResults": 5 }
+{ "action": "get", "ids": "1706.03762", "includeBibtex": true }
 ```
 
 ## Reporting

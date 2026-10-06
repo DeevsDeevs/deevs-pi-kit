@@ -1,5 +1,8 @@
 import { buildBibtex, normalizeArxivId, parseArxivFeed } from "./parser.ts";
-import type { ArxivBibtexInput, ArxivBibtexResult, ArxivGetInput, ArxivGetResult, ArxivSearchInput, ArxivSearchResult } from "./types.ts";
+import type { ArxivArgs } from "./tools.ts";
+import type { ArxivGetResult, ArxivSearchResult } from "./types.ts";
+
+type ArxivSearchInput = Omit<ArxivArgs, "action" | "ids" | "includeBibtex">;
 
 const API_URL = "https://export.arxiv.org/api/query";
 const USER_AGENT = "deevs-pi-kit/0.1 arxiv-extension";
@@ -16,13 +19,13 @@ export class ArxivService {
 		const maxResults = clampInt(input.maxResults ?? DEFAULT_MAX, 1, MAX_RESULTS_CAP);
 		const start = clampInt(input.start ?? 0, 0, 10_000);
 		const searchQuery = buildSearchQuery(input);
-		if (!searchQuery) throw new Error("arxiv_search requires query, title, author, abstract, or category");
+		if (!searchQuery) throw new Error("arxiv search needs query, title, author, abstract, or category");
 		const url = buildUrl({ search_query: searchQuery, start: String(start), max_results: String(maxResults), sortBy: input.sortBy ?? "relevance", sortOrder: input.sortOrder ?? "descending" });
 		const feed = parseArxivFeed(await this.fetchText(url));
 		return { query: searchQuery, url, totalResults: feed.totalResults, start, maxResults, papers: feed.papers, truncated: feed.totalResults === null ? feed.papers.length >= maxResults : feed.totalResults > start + feed.papers.length };
 	}
 
-	async get(input: ArxivGetInput): Promise<ArxivGetResult> {
+	async get(input: { ids: string; includeBibtex?: boolean }): Promise<ArxivGetResult> {
 		const ids = normalizeIds(input.ids);
 		const url = buildUrl({ id_list: ids.join(","), max_results: String(ids.length) });
 		const feed = parseArxivFeed(await this.fetchText(url));
@@ -30,11 +33,6 @@ export class ArxivService {
 		const found = new Set(papers.flatMap((paper) => [paper.id.toLowerCase(), paper.baseId.toLowerCase()]));
 		const missing = ids.filter((id) => !found.has(id.toLowerCase()) && !found.has(id.replace(/v\d+$/i, "").toLowerCase()));
 		return { ids, url, papers, missing };
-	}
-
-	async bibtex(input: ArxivBibtexInput): Promise<ArxivBibtexResult> {
-		const result = await this.get({ ids: input.ids });
-		return { ids: result.ids, entries: result.papers.map(buildBibtex), missing: result.missing };
 	}
 
 	private async fetchText(url: string): Promise<string> {

@@ -1,151 +1,80 @@
-import { Type } from "@earendil-works/pi-ai";
+import { StringEnum, Type } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
-import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
+import type { Static } from "typebox";
 import type { WikiService } from "./service.ts";
-import type { WikiContextInput, WikiGraphInput, WikiGraphResult, WikiInitInput, WikiInitResult, WikiLintInput, WikiLintResult, WikiSearchInput, WikiSearchResult, WikiStatusInput, WikiStatusResult } from "./types.ts";
+import type { WikiContextResult, WikiGraphResult, WikiInitResult, WikiLintResult, WikiSearchResult, WikiStatusResult } from "./types.ts";
 
-const PathSchema = {
-	path: Type.String({ description: "Explicit path to wiki root, relative to the project cwd" }),
-};
-
-const InitSchema = Type.Object({
-	...PathSchema,
-	domain: Type.String({ description: "Domain/scope this wiki covers" }),
-	title: Type.Optional(Type.String({ description: "Index title; defaults to '<domain> Wiki'" })),
-	dryRun: Type.Optional(Type.Boolean({ description: "Preview files that would be created without writing" })),
+const WikiSchema = Type.Object({
+	action: StringEnum(["init", "status", "lint", "graph", "search", "context"] as const),
+	path: Type.String({ description: "Wiki root, relative to the project" }),
+	domain: Type.Optional(Type.String({ description: "init: what the wiki covers" })),
+	title: Type.Optional(Type.String({ description: "init: index title" })),
+	dryRun: Type.Optional(Type.Boolean({ description: "init: list files without writing" })),
+	maxIssues: Type.Optional(Type.Number({ description: "status/lint" })),
+	includeWarnings: Type.Optional(Type.Boolean({ description: "lint: default true" })),
+	includeOrphans: Type.Optional(Type.Boolean({ description: "graph" })),
+	includeBacklinks: Type.Optional(Type.Boolean({ description: "graph/context" })),
+	includeForwardLinks: Type.Optional(Type.Boolean({ description: "context" })),
+	maxNodes: Type.Optional(Type.Number({ description: "graph" })),
+	maxEdges: Type.Optional(Type.Number({ description: "graph" })),
+	query: Type.Optional(Type.String({ description: "search; context: pages to pack" })),
+	searchMode: Type.Optional(StringEnum(["lookup", "text", "regex"] as const, { description: "search/context, default lookup" })),
+	maxResults: Type.Optional(Type.Number({ description: "search" })),
+	contextLines: Type.Optional(Type.Number({ description: "search text/regex" })),
+	caseSensitive: Type.Optional(Type.Boolean({ description: "search text/regex" })),
+	pages: Type.Optional(Type.Array(Type.String(), { description: "context: page ids or paths" })),
+	maxPages: Type.Optional(Type.Number({ description: "context" })),
+	maxBytes: Type.Optional(Type.Number({ description: "context" })),
+	compact: Type.Optional(Type.Boolean({ description: "context: excerpts, default true" })),
 });
 
-const StatusSchema = Type.Object({
-	...PathSchema,
-	maxIssues: Type.Optional(Type.Number({ description: "Maximum warning/issues to include" })),
-});
-
-const LintSchema = Type.Object({
-	...PathSchema,
-	maxIssues: Type.Optional(Type.Number({ description: "Maximum issues to return" })),
-	includeWarnings: Type.Optional(Type.Boolean({ description: "Include warnings/notices; default true" })),
-});
-
-const GraphSchema = Type.Object({
-	...PathSchema,
-	includeOrphans: Type.Optional(Type.Boolean({ description: "Include pages with no inbound links" })),
-	includeBacklinks: Type.Optional(Type.Boolean({ description: "Include backlinks map" })),
-	maxNodes: Type.Optional(Type.Number({ description: "Maximum graph nodes to return" })),
-	maxEdges: Type.Optional(Type.Number({ description: "Maximum graph edges to return" })),
-});
-
-const SearchSchema = Type.Object({
-	...PathSchema,
-	query: Type.String({ description: "Search query" }),
-	mode: Type.Optional(Type.String({ description: "lookup for ranked results, text for exact text, regex for regex; default lookup" })),
-	maxResults: Type.Optional(Type.Number({ description: "Maximum matches to return" })),
-	contextLines: Type.Optional(Type.Number({ description: "Snippet context lines for text/regex modes" })),
-	caseSensitive: Type.Optional(Type.Boolean({ description: "Case-sensitive text/regex search" })),
-});
-
-const ContextSchema = Type.Object({
-	...PathSchema,
-	query: Type.Optional(Type.String({ description: "Optional search query for relevant pages" })),
-	pages: Type.Optional(Type.Array(Type.String({ description: "Explicit page id/path to include" }), { description: "Explicit wiki pages to include" })),
-	searchMode: Type.Optional(Type.String({ description: "lookup for ranked results, text for exact text, regex for regex; default lookup" })),
-	maxPages: Type.Optional(Type.Number({ description: "Maximum pages to include" })),
-	includeBacklinks: Type.Optional(Type.Boolean({ description: "Include backlink ids for included pages" })),
-	includeForwardLinks: Type.Optional(Type.Boolean({ description: "Include forward link ids for included pages" })),
-	maxBytes: Type.Optional(Type.Number({ description: "Maximum context bytes to return" })),
-	compact: Type.Optional(Type.Boolean({ description: "Use compact page excerpts; default true" })),
-});
+type WikiArgs = Static<typeof WikiSchema>;
+type WikiDetails = WikiInitResult | WikiStatusResult | WikiLintResult | WikiGraphResult | WikiSearchResult | WikiContextResult;
 
 export function registerWikiTools(pi: ExtensionAPI, service: WikiService): void {
 	pi.registerTool({
-		name: "wiki_init",
-		label: "Initialize Wiki",
-		description: "Create a project-local markdown wiki structure with SCHEMA.md, index.md, log.md, and standard directories.",
-		promptSnippet: "Initialize a curated markdown wiki after the user confirms path and domain.",
-		promptGuidelines: ["Use only with an explicit path/domain.", "Do not initialize into non-empty directories.", "Prefer dryRun first if the path is uncertain."],
-		parameters: InitSchema,
-		async execute(_toolCallId, params: WikiInitInput) {
-			const result = await service.init(params);
-			return { content: [{ type: "text", text: formatInit(result) }], details: result };
-		},
-		renderCall: (args: WikiInitInput, theme: Theme) => wikiCall("init", args.path, theme),
-		renderResult,
-	});
-
-	pi.registerTool({
-		name: "wiki_status",
-		label: "Wiki Status",
-		description: "Inspect wiki structure, page counts, graph summary, and top health warnings.",
-		promptSnippet: "Check a markdown wiki before editing or after changes.",
-		parameters: StatusSchema,
-		async execute(_toolCallId, params: WikiStatusInput) {
-			const result = await service.status(params);
-			return { content: [{ type: "text", text: formatStatus(result) }], details: result };
-		},
-		renderCall: (args: WikiStatusInput, theme: Theme) => wikiCall("status", args.path, theme),
-		renderResult,
-	});
-
-	pi.registerTool({
-		name: "wiki_lint",
-		label: "Lint Wiki",
-		description: "Deterministically report broken links, ambiguous links, orphans, index/frontmatter/tag issues, and source hash drift.",
-		promptSnippet: "Lint a markdown wiki before broad edits or after ingest.",
-		parameters: LintSchema,
-		async execute(_toolCallId, params: WikiLintInput) {
-			const result = await service.lint(params);
-			return { content: [{ type: "text", text: formatLint(result) }], details: result };
-		},
-		renderCall: (args: WikiLintInput, theme: Theme) => wikiCall("lint", args.path, theme),
-		renderResult,
-	});
-
-	pi.registerTool({
-		name: "wiki_graph",
-		label: "Wiki Graph",
-		description: "Build an explicit graph from Obsidian-style [[wikilinks]] in a markdown wiki.",
-		promptSnippet: "Inspect wiki link graph, backlinks, orphans, and broken/ambiguous links.",
-		parameters: GraphSchema,
-		async execute(_toolCallId, params: WikiGraphInput) {
-			const result = await service.graph(params);
-			return { content: [{ type: "text", text: formatGraph(result) }], details: result };
-		},
-		renderCall: (args: WikiGraphInput, theme: Theme) => wikiCall("graph", args.path, theme),
-		renderResult,
-	});
-
-	pi.registerTool({
-		name: "wiki_search",
-		label: "Search Wiki",
-		description: "Universal wiki search: ranked lookup by default, exact text with mode=text, regex with mode=regex.",
-		promptSnippet: "Search curated wiki pages by relevance, exact text, or regex.",
-		promptGuidelines: ["Use lookup mode for topics/ideas; use text/regex only for exact matching."],
-		parameters: SearchSchema,
-		async execute(_toolCallId, params: WikiSearchInput) {
-			const result = await service.search(params);
-			return { content: [{ type: "text", text: formatSearch(result) }], details: result };
-		},
-		renderCall: (args, theme) => wikiCall("search", args.query, theme),
-		renderResult,
-	});
-
-	pi.registerTool({
-		name: "wiki_context",
-		label: "Pack Wiki Context",
-		description: "Pack relevant wiki pages, snippets, schema/index orientation, and optional links into bounded context.",
-		promptSnippet: "Prepare curated wiki context for the current task or a subagent.",
-		promptGuidelines: ["Use query/pages to keep context targeted; set maxBytes for large wikis."],
-		parameters: ContextSchema,
-		async execute(_toolCallId, params: WikiContextInput) {
-			const result = await service.context(params);
-			return { content: [{ type: "text", text: result.context }], details: result };
-		},
-		renderCall: (args, theme) => wikiCall("context", args.query ?? args.path, theme),
-		renderResult,
+		name: "wiki",
+		label: "Wiki",
+		description: "Curated markdown wiki: init a layout, status, lint, link graph, search pages, or pack context. Load the wiki skill first.",
+		parameters: WikiSchema,
+		defaultActive: false,
+		execute: async (_toolCallId, params) => runWiki(service, params),
+		renderCall: (args, theme) => wikiCall(args.action ?? "", args.query ?? args.path ?? "", theme),
+		renderResult: (result, options, theme) => wikiResult(result.details, options.expanded, theme),
 	});
 }
 
-function renderResult(result: { details?: unknown }, options: { expanded: boolean }, theme: Theme): Text {
-	return wikiResult(result.details, options.expanded, theme);
+async function runWiki(service: WikiService, args: WikiArgs): Promise<AgentToolResult<WikiDetails>> {
+	const reply = <T extends WikiDetails>(details: T, text: string) => ({ content: [{ type: "text" as const, text }], details });
+	switch (args.action) {
+		case "init": {
+			if (!args.domain) throw new Error("wiki init needs domain.");
+			const result = await service.init({ ...args, domain: args.domain });
+			return reply(result, formatInit(result));
+		}
+		case "status": {
+			const result = await service.status(args);
+			return reply(result, formatStatus(result));
+		}
+		case "lint": {
+			const result = await service.lint(args);
+			return reply(result, formatLint(result));
+		}
+		case "graph": {
+			const result = await service.graph(args);
+			return reply(result, formatGraph(result));
+		}
+		case "search": {
+			if (!args.query) throw new Error("wiki search needs query.");
+			const result = await service.search({ ...args, query: args.query, mode: args.searchMode });
+			return reply(result, formatSearch(result));
+		}
+		case "context": {
+			const result = await service.context(args);
+			return reply(result, result.context);
+		}
+	}
 }
 
 function wikiCall(action: string, target: string, theme: Theme): Text {

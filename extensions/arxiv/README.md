@@ -2,13 +2,9 @@
 
 Search arXiv through the official Atom API. Use it for paper discovery, abstract-level triage, exact ID lookup, and BibTeX generation.
 
-## Tools
+## Tool
 
-```text
-arxiv_search   search by query, title, author, abstract, or category
-arxiv_get      fetch metadata and abstracts for arXiv IDs
-arxiv_bibtex   generate simple BibTeX entries
-```
+One `arxiv` tool with `action: "search"` (query, title, author, abstract or category) or `action: "get"` (metadata and abstracts for ids, optionally BibTeX). It stays off the model's tool list until the `arxiv` skill is loaded (the model reads it, or you run `/skill:arxiv`).
 
 ## Limits
 
