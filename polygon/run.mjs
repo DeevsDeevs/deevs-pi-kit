@@ -14,7 +14,7 @@ const ROOT = dirname(HERE);
 const LOGIN_VOLUME = "pi-kit-polygon-login";
 const { values: opts } = parseArgs({ options: {
 	only: { type: "string" }, gate: { type: "string" }, slow: { type: "boolean" }, live: { type: "boolean" },
-	list: { type: "boolean" }, login: { type: "boolean" }, kit: { type: "string", default: "." }, pi: { type: "string" },
+	list: { type: "boolean" }, login: { type: "boolean" }, kit: { type: "string", default: ROOT }, pi: { type: "string" },
 } });
 
 async function scenarios() {
@@ -40,7 +40,12 @@ function ensureImage() {
 	// ponytail: "latest" is resolved once per tag; remove the image to pick up new Claude/Codex releases.
 	const tag = createHash("sha256").update(readFileSync(containerfile)).update(JSON.stringify(args)).digest("hex").slice(0, 12);
 	const image = `localhost/pi-kit-polygon:${tag}`;
-	if (spawnSync("podman", ["image", "exists", image]).status === 0) return image;
+	const exists = spawnSync("podman", ["image", "exists", image]);
+	if (exists.error) {
+		console.error(`polygon: cannot run podman (${exists.error.message}); the polygon needs rootless Podman, see polygon/README.md.`);
+		process.exit(1);
+	}
+	if (exists.status === 0) return image;
 	console.error(`polygon: building ${image} (${Object.entries(args).map(([k, v]) => `${k}=${v}`).join(" ")})`);
 	const build = spawnSync("podman", ["build", "-t", image, "-f", containerfile, ...Object.entries(args).flatMap(([k, v]) => ["--build-arg", `${k}=${v}`]), HERE], { stdio: ["ignore", 2, 2] });
 	if (build.status !== 0) process.exit(build.status ?? 1);
@@ -59,6 +64,10 @@ async function host() {
 	if (opts.list) {
 		for (const s of await scenarios()) console.log(`${s.name.padEnd(24)} ${[s.gate].flat().join(",").padEnd(8)} ${[s.slow && "slow", s.live && "live", s.pending && `pending: ${s.pending}`].filter(Boolean).join(" ")}`);
 		return;
+	}
+	if (!opts.login && !select(await scenarios()).length) {
+		console.error(`polygon: no scenario matches${opts.live ? "; none is marked live: true yet" : ""}.`);
+		process.exit(1);
 	}
 	const image = ensureImage();
 	if (opts.login) {
@@ -116,7 +125,7 @@ async function inside() {
 	const chosen = select(await scenarios());
 	const selected = chosen.filter((s) => !isSkipped(s));
 	if (process.env.POLYGON_KIT_MODE === "clone") {
-		const install = spawnSync("npm", ["install", "--omit=dev", "--no-audit", "--no-fund", "--loglevel=error"], { cwd: "/kit", stdio: ["ignore", 2, 2], env: { ...process.env, npm_config_update_notifier: "false" } });
+		const install = spawnSync("npm", ["install", "--omit=dev", "--legacy-peer-deps", "--no-audit", "--no-fund", "--loglevel=error"], { cwd: "/kit", stdio: ["ignore", 2, 2], env: { ...process.env, npm_config_update_notifier: "false" } });
 		if (install.status !== 0) process.exit(1);
 	}
 	const started = Date.now();
