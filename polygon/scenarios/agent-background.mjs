@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { rpc } from "../drive.mjs";
+import { rpc, script } from "../drive.mjs";
 import { dialogs, requests, taskNotifications, toolCalls } from "../look.mjs";
 
 // The bash step outlasts the lead's launch turn, so the reports wake an idle lead.
-const child = (n) => `POLYGON ${JSON.stringify({ agent: `child${n}`, steps: [{ id: `w${n}`, tool: "bash", args: { command: "sleep 1" } }, { id: `c${n}`, text: `child ${n} done` }] })}`;
+const child = (n) => script({ agent: `child${n}`, steps: [{ id: `w${n}`, tool: "bash", args: { command: "sleep 1" } }, { id: `c${n}`, text: `child ${n} done` }] });
 
 export default {
 	name: "agent-background",
@@ -26,6 +26,8 @@ export default {
 		assert.ok(notes.every((n) => n.result?.trim()), "a notification carried an empty <result>");
 		assert.equal(dialogs(lead.events), 0);
 		const children = requests(t).filter((r) => r.agent?.startsWith("child"));
-		assert.deepEqual(children.map((r) => r.step).sort(), ["c1", "c2", "c3", "w1", "w2", "w3"]);
+		// A real model's tool call ids never mark a script step said, so live runs check only who asked.
+		if (t.live) assert.deepEqual([...new Set(children.map((r) => r.agent))].sort(), ["child1", "child2", "child3"]);
+		else assert.deepEqual(children.map((r) => r.step).sort(), ["c1", "c2", "c3", "w1", "w2", "w3"]);
 	},
 };
