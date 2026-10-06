@@ -26,16 +26,17 @@ const ctx = (trusted = true) => ({ cwd: project, isProjectTrusted: () => trusted
 const writeGlobal = (text: string) => writeFileSync(join(agentDir, "pi-kit.json"), text);
 const writeProject = (name: string, text: string) => writeFileSync(join(project, ".pi", name), text);
 const projectKit = () => JSON.parse(readFileSync(join(project, ".pi", "pi-kit.json"), "utf8")) as Record<string, unknown>;
+const globalKit = () => JSON.parse(readFileSync(join(agentDir, "pi-kit.json"), "utf8")) as Record<string, unknown>;
 
 describe("autonomy", () => {
-	it("is auto with no pi-kit.json anywhere", async () => {
+	it("is on with no pi-kit.json anywhere", async () => {
 		expect(await isAutonomous(ctx())).toBe(true);
 	});
 
 	it("lets a trusted project override the global file, re-reading both on every use", async () => {
-		writeGlobal(JSON.stringify({ autonomy: "ask" }));
+		writeGlobal(JSON.stringify({ autonomy: false }));
 		expect(await isAutonomous(ctx())).toBe(false);
-		writeProject("pi-kit.json", JSON.stringify({ autonomy: "auto" }));
+		writeProject("pi-kit.json", JSON.stringify({ autonomy: true }));
 		expect(await isAutonomous(ctx())).toBe(true);
 		expect(await isAutonomous(ctx(false))).toBe(false);
 		writeProject("pi-kit.json", JSON.stringify({ models: {} }));
@@ -44,33 +45,43 @@ describe("autonomy", () => {
 
 	it("reads an invalid value, or a file that does not parse, as absent", async () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-		writeGlobal(JSON.stringify({ autonomy: "ask" }));
-		for (const text of [JSON.stringify({ autonomy: false }), JSON.stringify({ autonomy: "on" }), "{\"autonomy\": \"auto\",}"]) {
+		writeGlobal(JSON.stringify({ autonomy: false }));
+		for (const text of [JSON.stringify({ autonomy: "on" }), "{\"autonomy\": true,}"]) {
 			writeProject("pi-kit.json", text);
 			expect(await isAutonomous(ctx())).toBe(false);
 		}
-		expect(warn).toHaveBeenCalledTimes(3);
+		expect(warn).toHaveBeenCalledTimes(2);
 		warn.mockRestore();
 	});
 
 	it("moves /runtime auto on from .pi/runtime.json into .pi/pi-kit.json once, keeping other keys", async () => {
-		writeGlobal(JSON.stringify({ autonomy: "ask" }));
+		writeGlobal(JSON.stringify({ autonomy: false }));
 		writeProject("runtime.json", JSON.stringify({ auto: true }));
 		writeProject("pi-kit.json", JSON.stringify({ models: { lead: "sol" } }));
 		expect(await isAutonomous(ctx())).toBe(true);
-		expect(projectKit()).toEqual({ models: { lead: "sol" }, autonomy: "auto" });
+		expect(projectKit()).toEqual({ models: { lead: "sol" }, autonomy: true });
 		expect(existsSync(join(project, ".pi", "runtime.json"))).toBe(false);
 	});
 
 	it("never overrides an explicit project setting and reads a non-true legacy flag as ask", async () => {
 		writeProject("runtime.json", JSON.stringify({ auto: true }));
-		writeProject("pi-kit.json", JSON.stringify({ autonomy: "ask" }));
+		writeProject("pi-kit.json", JSON.stringify({ autonomy: false }));
 		expect(await isAutonomous(ctx())).toBe(false);
 		expect(existsSync(join(project, ".pi", "runtime.json"))).toBe(false);
 		rmSync(join(project, ".pi", "pi-kit.json"));
 		writeProject("runtime.json", "{\"auto\": \"yes\"}");
 		expect(await isAutonomous(ctx())).toBe(false);
-		expect(projectKit()).toEqual({ autonomy: "ask" });
+		expect(projectKit()).toEqual({ autonomy: false });
+	});
+
+	it("rewrites the legacy auto and ask strings as booleans once, reading them right before that", async () => {
+		writeGlobal(JSON.stringify({ autonomy: "ask", lead: "sol" }));
+		expect(await isAutonomous(ctx(false))).toBe(false);
+		expect(globalKit()).toEqual({ autonomy: "ask", lead: "sol" });
+		writeProject("pi-kit.json", JSON.stringify({ autonomy: "auto" }));
+		expect(await isAutonomous(ctx())).toBe(true);
+		expect(globalKit()).toEqual({ autonomy: false, lead: "sol" });
+		expect(projectKit()).toEqual({ autonomy: true });
 	});
 
 	it("leaves an untrusted project's files alone", async () => {

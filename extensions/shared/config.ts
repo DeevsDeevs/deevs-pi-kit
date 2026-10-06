@@ -1,4 +1,4 @@
-import { readFileSync, rmSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Type, type Static, type TSchema } from "typebox";
@@ -11,7 +11,7 @@ const Text = Type.Optional(Type.String());
 const KEYS = {
 	models: Type.Record(Type.String(), Type.String()),
 	lead: Type.Union([Type.String(), Type.Null()]),
-	autonomy: Type.Union([Type.Literal("auto"), Type.Literal("ask")]),
+	autonomy: Type.Boolean(),
 	guard: Type.Object({ detached: Flag, forcePush: Flag, rmRf: Flag, block: Type.Optional(Type.Array(Type.String())) }),
 	codexFast: Type.Boolean(),
 	notifier: Type.Object({
@@ -21,6 +21,10 @@ const KEYS = {
 };
 const KitFile = Type.Partial(Type.Object(KEYS));
 const JsonObject = Type.Object({});
+const AnyKit = Type.Record(Type.String(), Type.Unknown());
+/** `autonomy` was `"auto" | "ask"` before it became a boolean; read as such until migrateLegacyConfig rewrites it. */
+const LEGACY_AUTONOMY: Record<string, boolean> = { auto: true, ask: false };
+const legacyAutonomy = (value: unknown): boolean | undefined => typeof value === "string" && Object.hasOwn(LEGACY_AUTONOMY, value) ? LEGACY_AUTONOMY[value] : undefined;
 
 export type KitKey = keyof typeof KEYS;
 export type KitValue<K extends KitKey> = Static<(typeof KEYS)[K]>;
@@ -47,11 +51,11 @@ export function kitValues<K extends KitKey>(key: K, cwd: string, dir = agentDir(
 
 function readKitKey<K extends KitKey>(path: string, key: K): KitValue<K> | undefined {
 	let file;
-	try { file = parseFile(path, Type.Record(Type.String(), Type.Unknown())); } catch (error) {
+	try { file = parseFile(path, AnyKit); } catch (error) {
 		warnOnce(error instanceof Error ? error.message : String(error));
 		return undefined;
 	}
-	const value = file?.[key];
+	const value = key === "autonomy" ? legacyAutonomy(file?.[key]) ?? file?.[key] : file?.[key];
 	if (value === undefined) return undefined;
 	if (Value.Check(KEYS[key], value)) return value;
 	const [first] = Value.Errors(KEYS[key], value);
@@ -76,10 +80,20 @@ function warnOnce(problem: string): void {
  * A pi-kit.json that does not parse, or a notifier.json off the schema, is left for the user.
  */
 export async function migrateLegacyConfig(cwd: string): Promise<void> {
-	await moveLegacy(cwd, "runtime.json", Type.Object({ auto: Type.Literal(true) }), () => ({ autonomy: "auto" }), { autonomy: "ask" });
+	const [global, project] = kitPaths(cwd);
+	await upgradeAutonomy(global, async (kit) => writeFileSync(global, `${JSON.stringify(kit, null, 2)}\n`));
+	await upgradeAutonomy(project, (kit) => saveProjectConfig(cwd, FILE, kit));
+	await moveLegacy(cwd, "runtime.json", Type.Object({ auto: Type.Literal(true) }), () => ({ autonomy: true }), { autonomy: false });
 	await moveLegacy(cwd, "codex-fast.json", Type.Object({ enabled: Flag }), (file) => ({ codexFast: file.enabled }), {});
 	await moveLegacy(cwd, "notifier.json", KEYS.notifier, (notifier) => ({ notifier }), undefined);
 	await moveLegacy(cwd, "subagents.json", Type.Object({ defaultModel: Text }), (file) => ({ models: file.defaultModel === undefined ? undefined : { default: file.defaultModel } }), {});
+}
+
+async function upgradeAutonomy(path: string, save: (kit: Record<string, unknown>) => Promise<unknown>): Promise<void> {
+	let file;
+	try { file = parseFile(path, AnyKit); } catch { return; }
+	const autonomy = legacyAutonomy(file?.autonomy);
+	if (file && autonomy !== undefined) await save({ ...file, autonomy });
 }
 
 async function moveLegacy<T extends TSchema>(cwd: string, name: string, schema: T, convert: (file: Static<T>) => Kit, invalid: Kit | undefined): Promise<void> {
