@@ -109,6 +109,21 @@ export interface ChainSearchResult {
 	regex: boolean;
 }
 
+export interface ChainRankedMatch {
+	link: ChainLinkInfo;
+	score: number;
+	lexicalScore: number;
+	recencyScore: number;
+	matchedTerms: string[];
+	snippet: string;
+}
+
+export interface ChainRankedSearchResult {
+	query: string;
+	matches: ChainRankedMatch[];
+	truncated: boolean;
+}
+
 export interface ChainContextResult {
 	link: ChainLinkInfo;
 	context: string;
@@ -116,4 +131,3 @@ export interface ChainContextResult {
 	includedLinks: ChainLinkInfo[];
 	searchMatches: ChainSearchMatch[];
 }
-

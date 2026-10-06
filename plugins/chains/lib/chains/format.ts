@@ -1,6 +1,6 @@
-import type { ChainService } from "./service.ts";
+import type { ChainListItem, ChainLoadResult, ChainRankedSearchResult, ChainSearchResult } from "./types.ts";
 
-export function formatList(chains: Awaited<ReturnType<ChainService["list"]>>): string {
+export function formatList(chains: ChainListItem[]): string {
 	if (chains.length === 0) return "No chains found in .chains. Use chain_save to create one.";
 	return chains.map((chain) => {
 		const latest = chain.latest ? `${chain.latest.filename} @ ${chain.latest.branch}${chain.latest.stale ? " (stale)" : ""}` : "none";
@@ -9,7 +9,7 @@ export function formatList(chains: Awaited<ReturnType<ChainService["list"]>>): s
 	}).join("\n");
 }
 
-export function formatLoad(result: Awaited<ReturnType<ChainService["load"]>>): string {
+export function formatLoad(result: ChainLoadResult): string {
 	const warning = result.link.stale ? `\n[stale: ${result.link.ageDays} days old]` : "";
 	const recent = result.recent.map((link) => `- ${link.filename} @ ${link.branch}`).join("\n");
 	return [
@@ -23,7 +23,7 @@ export function formatLoad(result: Awaited<ReturnType<ChainService["load"]>>): s
 	].join("\n\n");
 }
 
-export function formatSearch(result: Awaited<ReturnType<ChainService["search"]>>): string {
+export function formatSearch(result: ChainSearchResult): string {
 	if (result.matches.length === 0) return `No chain matches for: ${result.query}`;
 	const mode = result.regex ? "regex" : "text";
 	const lines = result.matches.map((match) => [`${match.link.chain}/${match.link.filename}@${match.link.branch}:${match.line}`, match.snippet].join("\n"));
@@ -31,7 +31,7 @@ export function formatSearch(result: Awaited<ReturnType<ChainService["search"]>>
 	return [`Search (${mode}): ${result.query}`, ...lines].join("\n\n");
 }
 
-export function formatRankedSearch(result: Awaited<ReturnType<ChainService["rankedSearch"]>>): string {
+export function formatRankedSearch(result: ChainRankedSearchResult): string {
 	if (result.matches.length === 0) return `No relevant chain links for: ${result.query}`;
 	const lines = result.matches.map((match, index) => [
 		`${index + 1}. ${match.link.chain}/${match.link.filename}@${match.link.branch} score=${match.score.toFixed(3)} lexical=${match.lexicalScore.toFixed(3)} recency=${match.recencyScore.toFixed(3)}`,
@@ -42,14 +42,4 @@ export function formatRankedSearch(result: Awaited<ReturnType<ChainService["rank
 	].filter(Boolean).join("\n"));
 	if (result.truncated) lines.push("[lookup truncated by maxResults]");
 	return [`Lookup: ${result.query}`, ...lines].join("\n\n");
-}
-
-export function formatContext(result: Awaited<ReturnType<ChainService["load"]>>): string {
-	return `# Chain Context: ${result.link.chain}@${result.link.branch}/${result.link.filename}
-
-Parent: ${result.link.parent ?? "(none)"}
-Title: ${result.link.title}
-Next step: ${result.link.nextStep ?? "(not found)"}
-
-${result.content}`;
 }
