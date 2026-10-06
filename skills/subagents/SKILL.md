@@ -55,7 +55,6 @@ Before delivering synthesized research, spawn a fresh child to audit the draft a
 4. Pass `waitMs: 0` only when an immediate status projection is genuinely needed; terminal delivery wakes idle Pi automatically.
 5. Pass `cancel: true` to stop and wait for actual worker/child quiescence.
 6. Terminal details include exact per-run usage, bounded output, session identity, and artifacts.
-7. Before cross-session Mission takeover, settle or explicitly cancel known Jobs/Subagents in the old session; takeover does not adopt, signal, or kill them.
 
 Detached runs are owned by a dedicated worker and can be restored after parent reload. Resume starts a new run/generation in the exact private child Pi session; it does not claim to resurrect a dead process.
 

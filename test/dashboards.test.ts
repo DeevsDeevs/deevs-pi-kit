@@ -4,13 +4,11 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { progressBar } from "../extensions/shared/dashboard.ts";
 import { AgentsDashboard } from "../extensions/subagents/ui.ts";
 import { JobsDashboard } from "../extensions/jobs/ui.ts";
-import { MissionDashboard } from "../extensions/mission/ui.ts";
 import { ChainsDashboard } from "../extensions/chains/ui.ts";
 import { renderWorkflowFleet, renderWorkflowWidget } from "../extensions/workflow/ui.ts";
 import type { WorkflowDetails } from "../extensions/workflow/index.ts";
 import type { SubagentService } from "../extensions/subagents/service.ts";
 import type { JobManager } from "../extensions/jobs/manager.ts";
-import type { MissionState } from "../extensions/mission/state.ts";
 
 const theme = {
 	fg: (_color: string, text: string) => text,
@@ -57,22 +55,6 @@ describe("bespoke dashboards", () => {
 		expect(new JobsDashboard(manager, theme, noop, noop, () => 8, noop, noop).render(40).length).toBeLessThanOrEqual(8);
 		expect(lines.join("\n")).toContain("npm test");
 		expect(lines.join("\n")).toContain("tests running");
-	});
-
-	it("renders Mission sections and budget bars instead of a text dump", () => {
-		const state = {
-			readAny: () => ({ missionId: "m_test", status: "paused", title: "UI Mission", objective: "Make status readable", objectiveVersion: 2, requirements: ["Readable requirements"], chain: "kit", chainBranch: "main", slug: "ui", review: { admission: { status: "changes_requested" } }, tokenBudget: 1000, costBudgetUsd: 5, lastReason: "/pause" }),
-			readUsage: () => ({ totalTokens: 500, totalCostUsd: 2, mainTokens: 0, subagentTokens: 0, mainCostUsd: 0, subagentCostUsd: 0 }),
-			readProgress: () => [],
-		} as unknown as MissionState;
-		const dashboard = new MissionDashboard(state, theme, noop, noop, () => 30, noop);
-		const lines = dashboard.render(80);
-		bounded(lines, 80);
-		dashboard.handleInput(Key.right);
-		expect(dashboard.render(80)).toHaveLength(lines.length);
-		expect(new MissionDashboard(state, theme, noop, noop, () => 8, noop).render(40).length).toBeLessThanOrEqual(8);
-		expect(lines.join("\n")).toContain("Overview");
-		expect(lines.join("\n")).toContain("50%");
 	});
 
 	it("renders Chain checkpoint, rows, and selected metadata", () => {
