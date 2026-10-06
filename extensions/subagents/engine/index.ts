@@ -15,7 +15,7 @@ import { Value } from "typebox/value";
 import { guardBashCall } from "../../shared/guard.ts";
 import { loadKitConfig, modelLabel, resolveModel, type ModelContext } from "../../shared/models.ts";
 import { trySignalGroup } from "../../shared/process-group.ts";
-import { agentSummary, newAgentId, tasks, workflowDiagnostics, workflowRecovery, workflowSummary, type TaskNotification, type TaskStatus } from "../../shared/tasks.ts";
+import { agentSummary, answeredCalls, newAgentId, tasks, workflowDiagnostics, workflowRecovery, workflowSummary, type TaskNotification, type TaskStatus } from "../../shared/tasks.ts";
 import { addWorktree, agentWorktreeAt, createAgentWorktree, finishAgentWorktree, git, type AgentWorktree } from "../../shared/worktree.ts";
 import { LEVELS, PI_TOOLS, workerPrompt, workflowAgentType, type PiToolName } from "../definitions.ts";
 import { parseWorkflow } from "../workflow/meta.ts";
@@ -90,7 +90,9 @@ interface AgentRecord {
 	/** SendMessage text for a run its reporter has not placed yet; the reporter steers it in right after the prompt. */
 	pending?: string[];
 }
+/** `silent`: a foreground Agent call returned the report as its result, so it is sent only if Pi closed before that result was saved. */
 type OutboxItem = TaskNotification & { silent?: boolean };
+const unsent = (answered: Set<string>) => (item: OutboxItem) => !item.silent || !answered.has(item.toolUseId ?? "");
 interface RunInput {
 	agentId: string;
 	session: string;
@@ -201,10 +203,10 @@ host.opened ??= new Map();
 
 tasks.addSource({
 	name: "agents",
-	async pending(session) {
+	async pending(session, answered) {
 		const engine = await host.engines.get(session)?.catch(() => undefined);
 		if (!engine) return [];
-		return outboxItems(await engine.harness.snapshot(engine.kit.Outbox, engine.root.id, CTX)).filter((item) => !item.silent);
+		return outboxItems(await engine.harness.snapshot(engine.kit.Outbox, engine.root.id, CTX)).filter(unsent(answered));
 	},
 });
 
@@ -214,7 +216,7 @@ export function ensureEngine(ctx: ExtensionContext): Promise<Engine> {
 	const session = ctx.sessionManager.getSessionId();
 	let engine = host.engines.get(session);
 	if (!engine) {
-		engine = open(session, ctx.cwd);
+		engine = open(session, ctx.cwd, answeredCalls(ctx));
 		host.engines.set(session, engine);
 		engine.catch(() => host.engines.delete(session));
 	}
@@ -474,7 +476,7 @@ async function stopBackground(engine: Engine, id: string): Promise<void> {
 	await engine.harness.abortTask(record.taskId as Durable.TaskId, CTX);
 }
 
-async function open(session: string, cwd: string): Promise<Engine> {
+async function open(session: string, cwd: string, answered: Set<string>): Promise<Engine> {
 	const dir = await storageDir(cwd, session);
 	await mkdir(join(dir, "out"), { recursive: true });
 	await lock(join(dir, "engine.lock"));
@@ -508,7 +510,7 @@ async function open(session: string, cwd: string): Promise<Engine> {
 	}
 	host.opened.set(session, Date.now());
 	harness.resume();
-	for (const item of outboxItems(await harness.snapshot(kit.Outbox, root.id, CTX))) if (!item.silent) await tasks.notify(item);
+	for (const item of outboxItems(await harness.snapshot(kit.Outbox, root.id, CTX)).filter(unsent(answered))) await tasks.notify(item);
 	return engine;
 }
 

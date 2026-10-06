@@ -14,7 +14,7 @@ const faux = createFauxCore({ provider: "faux", models: [{ id: "m" }] });
 const ctx = {
 	cwd,
 	modelRegistry: { find: (_provider: string, id: string) => faux.getModel(id), streamSimple: faux.streamSimple },
-	sessionManager: { getSessionId: () => "s" },
+	sessionManager: { getSessionId: () => "s", getEntries: () => [] },
 } as unknown as ExtensionContext;
 const schema = { type: "object", properties: { n: { type: "integer" } }, required: ["n"] };
 const call = (args: Parameters<typeof fauxToolCall>[1], id = "c") => fauxAssistantMessage(fauxToolCall("StructuredOutput", args, { id }), { stopReason: "toolUse" });

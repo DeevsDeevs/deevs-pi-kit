@@ -46,7 +46,8 @@ export interface TaskNotification {
 
 export interface NotificationSource {
 	name: string;
-	pending(ownerSession: string): Promise<TaskNotification[]>;
+	/** `answered` holds the tool calls whose results the owner session saved. */
+	pending(ownerSession: string, answered: Set<string>): Promise<TaskNotification[]>;
 }
 
 export const TASK_NOTIFICATION = "task-notification";
@@ -159,9 +160,10 @@ export function mergeEvents(pending: TaskNotification[]): [TaskNotification, str
 async function redeliver(ctx: ExtensionContext): Promise<void> {
 	const session = ctx.sessionManager.getSessionId();
 	const pending = [...state.outstanding.values()].filter((notification) => notification.ownerSession === session);
+	const answered = answeredCalls(ctx);
 	for (const source of state.sources.values()) {
 		try {
-			pending.push(...await source.pending(session));
+			pending.push(...await source.pending(session, answered));
 		} catch {
 			// One broken source must not block the others' reports.
 		}
@@ -204,6 +206,10 @@ function deliveredIds(ctx: ExtensionContext): Set<string> {
 		if (Array.isArray(details?.notificationIds)) for (const id of details.notificationIds) ids.add(id);
 	}
 	return ids;
+}
+
+export function answeredCalls(ctx: ExtensionContext): Set<string> {
+	return new Set(ctx.sessionManager.getEntries().flatMap((entry) => (entry.type === "message" && entry.message.role === "toolResult" ? [entry.message.toolCallId] : [])));
 }
 
 function activeSession(): string | undefined {

@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { createFauxCore, fauxAssistantMessage, type FauxResponseStep } from "@earendil-works/pi-ai";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { newAgentId } from "../extensions/shared/tasks.ts";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { newAgentId, tasks } from "../extensions/shared/tasks.ts";
 import { closeAll, ensureEngine, launch, send } from "../extensions/subagents/engine/index.ts";
 
 process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "pi-kit-send-"));
@@ -14,7 +14,7 @@ const faux = createFauxCore({ provider: "faux", models: [{ id: "m" }] });
 const ctx = {
 	cwd,
 	modelRegistry: { find: (_provider: string, id: string) => faux.getModel(id), streamSimple: faux.streamSimple },
-	sessionManager: { getSessionId: () => "s" },
+	sessionManager: { getSessionId: () => "s", getEntries: () => [] },
 } as unknown as ExtensionContext;
 
 afterAll(closeAll);
@@ -34,5 +34,26 @@ describe("SendMessage to an agent", () => {
 		const report = await done!;
 		expect([report.status, report.result]).toEqual(["completed", "second"]);
 		expect(asked.at(-1)).toContain("steer");
+	});
+
+	it("sends a foreground report again after a restart only when its Agent result was never saved", async () => {
+		faux.setResponses([fauxAssistantMessage("answer")]);
+		const agentId = newAgentId();
+		const { done } = await launch(await ensureEngine(ctx), { agentId, description: "d", prompt: "task", model: faux.getModel(), tools: ["read"], instructions: "", cwd, writer: false, toolUseId: "fg", limits: {}, foreground: true });
+		await done;
+		const sent: string[] = [];
+		let start: ((event: object, context: ExtensionContext) => Promise<void>) | undefined;
+		tasks.install({ on: (name: string, handler: typeof start) => { if (name === "session_start") start = handler; }, sendMessage: (message: { details: { notificationId: string } }) => sent.push(message.details.notificationId) } as unknown as ExtensionAPI);
+		const reopen = async (entries: object[]) => {
+			await closeAll();
+			const restarted = { ...ctx, isIdle: () => true, ui: { setStatus() {} }, sessionManager: { getSessionId: () => "s", getEntries: () => entries } } as unknown as ExtensionContext;
+			await start!({ reason: "startup" }, restarted);
+			await ensureEngine(restarted);
+		};
+		const mine = () => sent.filter((id) => id.startsWith(`${agentId}:`));
+		await reopen([{ type: "message", message: { role: "toolResult", toolCallId: "fg" } }]);
+		expect(mine()).toEqual([]);
+		await reopen([]);
+		expect(mine()).toHaveLength(1);
 	});
 });
