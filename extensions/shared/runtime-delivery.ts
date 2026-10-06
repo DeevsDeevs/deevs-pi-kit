@@ -156,10 +156,6 @@ const RUNTIME_DELIVERY = Symbol.for("deevs.pi-kit.runtime-delivery.v1");
 const globalRegistry = globalThis as typeof globalThis & { [RUNTIME_DELIVERY]?: RuntimeDeliveryCoordinator };
 export const runtimeDelivery = globalRegistry[RUNTIME_DELIVERY] ??= new RuntimeDeliveryCoordinator();
 
-export function requestRuntimeDelivery(): void {
-	void runtimeDelivery.maybeDeliver();
-}
-
 function deliveryContent(events: RuntimeEvent[]): string {
 	const lines = events.map((event) => `- ${event.source.kind} ${event.source.id} [${event.status}]: ${event.summary}`);
 	return [
@@ -175,12 +171,4 @@ function isString(value: string | undefined): value is string {
 	} catch {
 		return false;
 	}
-}
-
-/** Settled background work wakes the idle lead by itself, so no wait blocks longer than two minutes. */
-export const MAX_WAIT_MS = 120_000;
-
-/** An omitted wait means the full two minutes. */
-export function clampWaitMs(waitMs: number | undefined): number {
-	return Number.isFinite(waitMs) ? Math.max(0, Math.min(waitMs!, MAX_WAIT_MS)) : MAX_WAIT_MS;
 }

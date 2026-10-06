@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { clampWaitMs, RUNTIME_DELIVERY_MESSAGE, RuntimeDeliveryCoordinator } from "../extensions/shared/runtime-delivery.ts";
-import { consumeRuntimeEvent, pendingRuntimeEvents, runtimeEvents, type RuntimeEvent } from "../extensions/shared/runtime-events.ts";
+import { RUNTIME_DELIVERY_MESSAGE, RuntimeDeliveryCoordinator } from "../extensions/shared/runtime-delivery.ts";
+import { pendingRuntimeEvents, runtimeEvents, type RuntimeEvent } from "../extensions/shared/runtime-events.ts";
 
 function setup(pending = false, failSend = false, dropSend = false) {
 	const branch: Array<Record<string, unknown>> = [];
@@ -59,16 +59,6 @@ describe("runtime terminal delivery", () => {
 
 		test.coordinator.acknowledgeDelivered(test.ctx);
 		expect(runtimeEvents.read().deliveries["terminal-1"]?.status).toBe("acked");
-		expect(pendingRuntimeEvents(runtimeEvents.read())).toEqual([]);
-		test.coordinator.clearContext();
-	});
-
-	it("does not wake after a structured tool already consumed the terminal result", async () => {
-		const test = setup();
-		runtimeEvents.record(test.pi, { type: "emit", event: terminalEvent() });
-		expect(consumeRuntimeEvent(test.pi, "terminal-1", "/tmp/session.jsonl")).toBe(true);
-		await test.coordinator.maybeDeliver();
-		expect(test.messages).toEqual([]);
 		expect(pendingRuntimeEvents(runtimeEvents.read())).toEqual([]);
 		test.coordinator.clearContext();
 	});
@@ -159,9 +149,5 @@ describe("runtime terminal delivery", () => {
 		const second = await import("../extensions/shared/runtime-delivery.ts");
 		expect(second.RuntimeDeliveryCoordinator).not.toBe(first.RuntimeDeliveryCoordinator);
 		expect(second.runtimeDelivery).toBe(first.runtimeDelivery);
-	});
-
-	it("caps every wait at two minutes, defaulting to the cap", () => {
-		expect([clampWaitMs(undefined), clampWaitMs(Number.NaN), clampWaitMs(86_400_000), clampWaitMs(5_000), clampWaitMs(0), clampWaitMs(-1)]).toEqual([120_000, 120_000, 120_000, 5_000, 0, 0]);
 	});
 });

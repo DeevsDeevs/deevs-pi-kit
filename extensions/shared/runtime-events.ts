@@ -239,16 +239,6 @@ export function pendingRuntimeEvents(state: RuntimeEventState): RuntimeEvent[] {
 		.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
 }
 
-export function consumeRuntimeEvent(pi: ExtensionAPI, eventId: string, claimant: string): boolean {
-	const delivery = runtimeEvents.read().deliveries[eventId];
-	if (!delivery || delivery.status === "acked") return delivery?.status === "acked";
-	const at = Date.now();
-	if (delivery.status === "pending") runtimeEvents.record(pi, { type: "claim", eventId, claimant, at });
-	const claimed = runtimeEvents.read().deliveries[eventId];
-	if (claimed?.status === "claimed" && claimed.claimedBy === claimant) runtimeEvents.record(pi, { type: "ack", eventId, claimant, at });
-	return runtimeEvents.read().deliveries[eventId]?.status === "acked";
-}
-
 function decodeRuntimeEventOperation(record: PersistedRuntimeEventOperation): RuntimeEventOperation | undefined {
 	try {
 		if (record.type === "activate" && isSourceIdentity(record.source) && isString(record.generation)) {
