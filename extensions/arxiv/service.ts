@@ -1,5 +1,5 @@
-import { buildBibtex, parseArxivFeed } from "./parser.ts";
-import type { ArxivBibtexInput, ArxivBibtexResult, ArxivGetInput, ArxivGetResult, ArxivPaper, ArxivSearchInput, ArxivSearchResult, ArxivSortBy, ArxivSortOrder } from "./types.ts";
+import { buildBibtex, normalizeArxivId, parseArxivFeed } from "./parser.ts";
+import type { ArxivBibtexInput, ArxivBibtexResult, ArxivGetInput, ArxivGetResult, ArxivSearchInput, ArxivSearchResult } from "./types.ts";
 
 const API_URL = "https://export.arxiv.org/api/query";
 const USER_AGENT = "deevs-pi-kit/0.1 arxiv-extension";
@@ -15,11 +15,9 @@ export class ArxivService {
 	async search(input: ArxivSearchInput): Promise<ArxivSearchResult> {
 		const maxResults = clampInt(input.maxResults ?? DEFAULT_MAX, 1, MAX_RESULTS_CAP);
 		const start = clampInt(input.start ?? 0, 0, 10_000);
-		const sortBy = parseSortBy(input.sortBy);
-		const sortOrder = parseSortOrder(input.sortOrder);
 		const searchQuery = buildSearchQuery(input);
 		if (!searchQuery) throw new Error("arxiv_search requires query, title, author, abstract, or category");
-		const url = buildUrl({ search_query: searchQuery, start: String(start), max_results: String(maxResults), sortBy, sortOrder });
+		const url = buildUrl({ search_query: searchQuery, start: String(start), max_results: String(maxResults), sortBy: input.sortBy ?? "relevance", sortOrder: input.sortOrder ?? "descending" });
 		const feed = parseArxivFeed(await this.fetchText(url));
 		return { query: searchQuery, url, totalResults: feed.totalResults, start, maxResults, papers: feed.papers, truncated: feed.totalResults === null ? feed.papers.length >= maxResults : feed.totalResults > start + feed.papers.length };
 	}
@@ -40,8 +38,7 @@ export class ArxivService {
 	}
 
 	private async fetchText(url: string): Promise<string> {
-		const now = Date.now();
-		const waitMs = Math.max(0, MIN_REQUEST_INTERVAL_MS - (now - this.lastRequestAt));
+		const waitMs = Math.max(0, MIN_REQUEST_INTERVAL_MS - (Date.now() - this.lastRequestAt));
 		if (waitMs) await new Promise((resolve) => setTimeout(resolve, waitMs));
 		this.lastRequestAt = Date.now();
 
@@ -62,17 +59,12 @@ export class ArxivService {
 
 function buildSearchQuery(input: ArxivSearchInput): string {
 	const parts: string[] = [];
-	if (input.query?.trim()) parts.push(generalQuery(input.query));
+	if (input.query?.trim()) parts.push(fieldQuery("all", input.query));
 	if (input.title?.trim()) parts.push(fieldPhrase("ti", input.title));
 	if (input.author?.trim()) parts.push(fieldPhrase("au", input.author));
 	if (input.abstract?.trim()) parts.push(fieldQuery("abs", input.abstract));
 	if (input.category?.trim()) parts.push(`cat:${input.category.trim()}`);
 	return parts.join(" AND ");
-}
-
-function generalQuery(value: string): string {
-	const query = value.trim();
-	return advancedQuery(query) ? query : `all:${query}`;
 }
 
 function fieldQuery(field: string, value: string): string {
@@ -96,9 +88,8 @@ function buildUrl(params: Record<string, string>): string {
 	return url.toString();
 }
 
-function normalizeIds(ids: string[] | string): string[] {
-	const list = Array.isArray(ids) ? ids : ids.split(/[\s,]+/);
-	const normalized = [...new Set(list.map((id) => id.trim().replace(/^arXiv:/i, "")).filter(Boolean))];
+function normalizeIds(ids: string): string[] {
+	const normalized = [...new Set(ids.split(/[\s,]+/).map(normalizeArxivId).filter(Boolean))];
 	if (!normalized.length) throw new Error("At least one arXiv id is required");
 	if (normalized.length > MAX_ID_COUNT) throw new Error(`At most ${MAX_ID_COUNT} ids are allowed per request`);
 	for (const id of normalized) {
@@ -110,25 +101,4 @@ function normalizeIds(ids: string[] | string): string[] {
 function clampInt(value: number, min: number, max: number): number {
 	const n = Number.isFinite(value) ? Math.floor(value) : min;
 	return Math.min(max, Math.max(min, n));
-}
-
-function parseSortBy(value: ArxivSortBy | undefined): ArxivSortBy {
-	if (!value) return "relevance";
-	if (["relevance", "lastUpdatedDate", "submittedDate"].includes(value)) return value;
-	throw new Error(`Invalid sortBy: ${value}`);
-}
-
-function parseSortOrder(value: ArxivSortOrder | undefined): ArxivSortOrder {
-	if (!value) return "descending";
-	if (["ascending", "descending"].includes(value)) return value;
-	throw new Error(`Invalid sortOrder: ${value}`);
-}
-
-export function formatPaperLine(paper: ArxivPaper, index?: number): string {
-	const prefix = index === undefined ? "" : `${index}. `;
-	return `${prefix}[${paper.id}] ${paper.title}\n   Authors: ${paper.authors.join(", ") || "(unknown)"}\n   Published: ${paper.published.slice(0, 10)} | Updated: ${paper.updated.slice(0, 10)} | Categories: ${paper.categories.join(", ") || "(none)"}\n   ${paper.absUrl}\n   PDF: ${paper.pdfUrl}\n   Abstract: ${truncate(paper.summary, 500)}`;
-}
-
-function truncate(text: string, max: number): string {
-	return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }

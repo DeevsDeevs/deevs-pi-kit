@@ -14,12 +14,12 @@ export interface ArxivSearchInput {
 }
 
 export interface ArxivGetInput {
-	ids: string[] | string;
+	ids: string;
 	includeBibtex?: boolean;
 }
 
 export interface ArxivBibtexInput {
-	ids: string[] | string;
+	ids: string;
 }
 
 export interface ArxivPaper {

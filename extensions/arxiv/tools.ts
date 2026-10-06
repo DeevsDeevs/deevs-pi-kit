@@ -2,8 +2,7 @@ import { StringEnum, Type } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import type { ArxivService } from "./service.ts";
-import { formatPaperLine } from "./service.ts";
-import type { ArxivBibtexInput, ArxivGetInput, ArxivSearchInput } from "./types.ts";
+import type { ArxivBibtexInput, ArxivBibtexResult, ArxivGetInput, ArxivGetResult, ArxivPaper, ArxivSearchInput, ArxivSearchResult } from "./types.ts";
 
 const SearchSchema = Type.Object({
 	query: Type.Optional(Type.String({ description: "General arXiv query searched across all fields" })),
@@ -53,7 +52,7 @@ export function registerArxivTools(pi: ExtensionAPI, service: ArxivService): voi
 			const result = await service.get(params);
 			return { content: [{ type: "text", text: formatGet(result) }], details: result };
 		},
-		renderCall(args: ArxivGetInput, theme: Theme) { return paperCall("get", Array.isArray(args.ids) ? args.ids.join(", ") : args.ids, theme); },
+		renderCall(args: ArxivGetInput, theme: Theme) { return paperCall("get", args.ids, theme); },
 		renderResult(result: { details?: unknown }, { expanded }: { expanded: boolean }, theme: Theme) { return paperResult(result.details, expanded, theme); },
 	});
 
@@ -68,7 +67,7 @@ export function registerArxivTools(pi: ExtensionAPI, service: ArxivService): voi
 			const result = await service.bibtex(params);
 			return { content: [{ type: "text", text: formatBibtex(result) }], details: result };
 		},
-		renderCall(args: ArxivBibtexInput, theme: Theme) { return paperCall("bibtex", Array.isArray(args.ids) ? args.ids.join(", ") : args.ids, theme); },
+		renderCall(args: ArxivBibtexInput, theme: Theme) { return paperCall("bibtex", args.ids, theme); },
 		renderResult(result: { details?: unknown }, { expanded }: { expanded: boolean }, theme: Theme) { return paperResult(result.details, expanded, theme); },
 	});
 }
@@ -90,7 +89,7 @@ function paperResult(details: unknown, expanded: boolean, theme: Theme): Text {
 	return new Text(theme.fg("dim", "arXiv operation complete"), 0, 0);
 }
 
-export function formatSearch(result: Awaited<ReturnType<ArxivService["search"]>>): string {
+function formatSearch(result: ArxivSearchResult): string {
 	const total = result.totalResults === null ? "unknown" : String(result.totalResults);
 	const lines = [`arXiv search: ${result.query}`, `Total: ${total}; showing ${result.papers.length} from offset ${result.start}`];
 	if (!result.papers.length) lines.push("No papers found.");
@@ -99,7 +98,7 @@ export function formatSearch(result: Awaited<ReturnType<ArxivService["search"]>>
 	return lines.join("\n");
 }
 
-export function formatGet(result: Awaited<ReturnType<ArxivService["get"]>>): string {
+function formatGet(result: ArxivGetResult): string {
 	const lines = [`arXiv get: ${result.ids.join(", ")}`];
 	if (!result.papers.length) lines.push("No papers found.");
 	result.papers.forEach((paper) => {
@@ -110,10 +109,16 @@ export function formatGet(result: Awaited<ReturnType<ArxivService["get"]>>): str
 	return lines.join("\n");
 }
 
-export function formatBibtex(result: Awaited<ReturnType<ArxivService["bibtex"]>>): string {
+function formatBibtex(result: ArxivBibtexResult): string {
 	const lines = [`arXiv BibTeX: ${result.ids.join(", ")}`];
 	if (result.entries.length) lines.push("", "```bibtex", result.entries.join("\n\n"), "```");
 	else lines.push("No BibTeX entries generated.");
 	if (result.missing.length) lines.push("", `Missing: ${result.missing.join(", ")}`);
 	return lines.join("\n");
+}
+
+function formatPaperLine(paper: ArxivPaper, index?: number): string {
+	const prefix = index === undefined ? "" : `${index}. `;
+	const summary = paper.summary.length <= 500 ? paper.summary : `${paper.summary.slice(0, 499)}…`;
+	return `${prefix}[${paper.id}] ${paper.title}\n   Authors: ${paper.authors.join(", ") || "(unknown)"}\n   Published: ${paper.published.slice(0, 10)} | Updated: ${paper.updated.slice(0, 10)} | Categories: ${paper.categories.join(", ") || "(none)"}\n   ${paper.absUrl}\n   PDF: ${paper.pdfUrl}\n   Abstract: ${summary}`;
 }
