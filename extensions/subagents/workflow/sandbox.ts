@@ -1,3 +1,4 @@
+/* oxlint-disable anti-slop/no-runtime-typeof -- agent() options and results come from the untrusted workflow script: this is their decoding boundary. */
 import vm from "node:vm";
 import { wrapBody, type ParsedWorkflow } from "./meta.ts";
 
@@ -221,6 +222,7 @@ function agentOptions(prompt: string, raw: JsonValue, phase: string | undefined,
 	return options;
 }
 
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- whatever the workflow script throws, from its own realm
 function toError(reason: unknown): Error {
 	if (reason instanceof Error) return reason;
 	const fields: { name?: unknown; message?: unknown; stack?: unknown } = Object(reason);

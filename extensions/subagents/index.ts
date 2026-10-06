@@ -115,8 +115,8 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (event, ctx) => {
 		if (event.reason === "reload") await reinstall();
-		else await useLeadModel(pi, ctx).catch((error: unknown) => ctx.ui.notify(`The lead stays on Pi's model: ${error instanceof Error ? error.message : String(error)}`, "warning"));
-		await resumeSession(ctx).catch((error: unknown) => ctx.ui.notify(`Agents of this session did not resume: ${error instanceof Error ? error.message : String(error)}`, "error"));
+		else await useLeadModel(pi, ctx).catch((error) => ctx.ui.notify(`The lead stays on Pi's model: ${error instanceof Error ? error.message : String(error)}`, "warning"));
+		await resumeSession(ctx).catch((error) => ctx.ui.notify(`Agents of this session did not resume: ${error instanceof Error ? error.message : String(error)}`, "error"));
 	});
 	pi.on("before_agent_start", (event) => {
 		event.systemPromptOptions.sections.agent_types = agentTypesSection();

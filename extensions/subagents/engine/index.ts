@@ -3,12 +3,14 @@
 import { createHash, randomBytes } from "node:crypto";
 import { access, mkdir, realpath, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Api, AssistantMessage, Message, Model, ModelThinkingLevel, ToolResultMessage } from "@earendil-works/pi-ai";
+import type { Api, Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { createBashTool, createEditTool, createFindTool, createGrepTool, createLsTool, createReadTool, createWriteTool, getAgentDir, type ExtensionContext, type ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 import { guardBashCall } from "../../shared/guard.ts";
 import { tasks, type TaskNotification, type TaskStatus } from "../../shared/tasks.ts";
-import type { PiToolName } from "../definitions.ts";
+import { PI_TOOLS, type PiToolName } from "../definitions.ts";
 import { bunSqlite, lock, reap, unlock } from "./storage.ts";
 
 type D = typeof Durable;
@@ -24,6 +26,7 @@ const SAFE_TOOLS = new Set<PiToolName>(["read", "grep", "find", "ls"]);
 const FACTORIES = { read: createReadTool, grep: createGrepTool, find: createFindTool, ls: createLsTool, bash: createBashTool, edit: createEditTool, write: createWriteTool };
 // ponytail: a structural chord Context that never cancels; import chord's BACKGROUND_CONTEXT if durable starts checking identity.
 const CTX: Ctx = { abortSignal: undefined, value: () => undefined, toString: () => "pi-kit" };
+const FailureDetail = Type.Object({ message: Type.String() });
 
 export interface Limits { maxTurns?: number; maxTokens?: number; timeout?: number }
 
@@ -105,8 +108,7 @@ tasks.addSource({
 	async pending(session) {
 		const engine = await host.engines.get(session)?.catch(() => undefined);
 		if (!engine) return [];
-		const items = (await engine.harness.snapshot(engine.kit.Outbox, engine.root.id, CTX))?.items ?? [];
-		return (items as unknown as OutboxItem[]).filter((item) => !item.silent);
+		return outboxItems(await engine.harness.snapshot(engine.kit.Outbox, engine.root.id, CTX)).filter((item) => !item.silent);
 	},
 });
 
@@ -177,14 +179,14 @@ export async function launch(engine: Engine, spec: LaunchSpec): Promise<{ agentI
 		const child = await tx.createConversation({ ownership: { kind: "task", taskId: anchor } });
 		await D.configure(tx, child.id, {
 			model: { provider: spec.model.provider, modelId: spec.model.id },
-			...(spec.level ? { thinkingLevel: spec.level } : {}),
+			thinkingLevel: spec.level,
 			tools: spec.tools.map((name) => kit.tools[name]),
 			instructions: spec.instructions,
 			cwd: spec.cwd,
 		});
 		const input: ReporterInput = { agentId, session: engine.session, conversationId: child.id, prompt: spec.prompt, description: spec.description, toolUseId: spec.toolUseId, limits: spec.limits, startedAt, outputFile };
 		await tx.createTask(kit.Reporter, input, background);
-		(await tx.doc(kit.Agents, root.id)).agents[agentId] = json<AgentRecord>({ name: spec.name, description: spec.description, conversationId: child.id, startedAt, status: "running", cwd: spec.cwd, writer: spec.writer });
+		(await tx.doc(kit.Agents, root.id)).agents[agentId] = json({ name: spec.name, description: spec.description, conversationId: child.id, startedAt, status: "running", cwd: spec.cwd, writer: spec.writer });
 	}, CTX);
 	tasks.register({ id: agentId, kind: "agent", name: spec.name, description: spec.description, status: "running", ownerSession: engine.session, startedAt, stop: () => stop(engine, agentId) });
 	return { agentId, outputFile, done };
@@ -192,8 +194,7 @@ export async function launch(engine: Engine, spec: LaunchSpec): Promise<{ agentI
 
 /** Running writers in `cwd`: another one there means parallel edits to the same tree. */
 export async function writersIn(engine: Engine, cwd: string): Promise<number> {
-	const agents = (await engine.harness.snapshot(engine.kit.Agents, engine.root.id, CTX))?.agents ?? {};
-	return Object.values(agents as unknown as Record<string, AgentRecord>).filter((record) => record.status === "running" && record.writer && record.cwd === cwd).length;
+	return Object.values(agentRecords(await engine.harness.snapshot(engine.kit.Agents, engine.root.id, CTX))).filter((record) => record.status === "running" && record.writer && record.cwd === cwd).length;
 }
 
 /** Foreground: the report if it lands within `ms`; otherwise the agent continues in the background and notifies. Esc keeps the report out of the notifications. */
@@ -225,7 +226,7 @@ export async function settle(agentId: string, done: Promise<TaskNotification>, m
 export async function stop(engine: Engine, agentId: string): Promise<void> {
 	let conversationId: ConversationId | undefined;
 	await engine.root.commit(async (tx) => {
-		const record = (await tx.doc(engine.kit.Agents, engine.root.id)).agents[agentId] as unknown as AgentRecord | undefined;
+		const record = agentRecords(await tx.doc(engine.kit.Agents, engine.root.id))[agentId];
 		if (!record) return;
 		record.stopped = true;
 		conversationId = record.conversationId;
@@ -252,13 +253,11 @@ async function open(session: string, cwd: string): Promise<Engine> {
 	}, CTX);
 	const root = await harness.root(CTX);
 	const engine: Engine = { session, dir, harness, root, registry, kit };
-	const agents = (await harness.snapshot(kit.Agents, root.id, CTX))?.agents ?? {};
-	for (const [id, record] of Object.entries(agents as unknown as Record<string, AgentRecord>)) {
+	for (const [id, record] of Object.entries(agentRecords(await harness.snapshot(kit.Agents, root.id, CTX)))) {
 		tasks.register({ id, kind: "agent", name: record.name, description: record.description, status: record.status, ownerSession: session, startedAt: record.startedAt, stop: () => stop(engine, id) });
 	}
 	harness.resume();
-	const items = (await harness.snapshot(kit.Outbox, root.id, CTX))?.items ?? [];
-	for (const item of items as unknown as OutboxItem[]) if (!item.silent) await tasks.notify(item);
+	for (const item of outboxItems(await harness.snapshot(kit.Outbox, root.id, CTX))) if (!item.silent) await tasks.notify(item);
 	return engine;
 }
 
@@ -273,7 +272,7 @@ async function loadModules(): Promise<Modules> {
 		const bunModule: string = "bun:sqlite";
 		const { Database } = await import(bunModule);
 		const { SqliteStorage } = await import("@earendil-works/pi-durable/storage/sqlite");
-		return { D, openStorage: (file) => SqliteStorage.open(bunSqlite(Database, file) as unknown as Parameters<typeof SqliteStorage.open>[0]) };
+		return { D, openStorage: (file) => SqliteStorage.open(bunSqlite(Database, file)) };
 	}
 	const { openNodeSqliteStorage } = await import("@earendil-works/pi-durable/storage/sqlite/node");
 	return { D, openStorage: openNodeSqliteStorage };
@@ -285,6 +284,8 @@ function modelsAdapter(): Durable.HarnessOptions["models"] {
 		if (!host.models) throw new Error("Pi's model registry is not available yet.");
 		return host.models;
 	};
+	// SAFETY: durable calls only these five members of pi-ai's Models; the rest of that interface is never reached.
+	// oxlint-disable-next-line anti-slop/no-chained-type-assertions
 	return {
 		getModel: (provider: string, id: string) => registry().find(provider, id),
 		streamSimple: (...args: Parameters<ModelRegistry["streamSimple"]>) => registry().streamSimple(...args),
@@ -297,7 +298,7 @@ function modelsAdapter(): Durable.HarnessOptions["models"] {
 function buildKit(D: D, owner: string): Kit {
 	const Outbox = D.defineDoc<OutboxDoc>({ kind: "pi-kit.outbox", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ items: [] }) });
 	const Agents = D.defineDoc<AgentsDoc>({ kind: "pi-kit.agents", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ agents: {} }) });
-	const terminal = <S extends { phase: string }>(status: "completed" | "aborted") => (_task: unknown, runtime: Durable.TaskRuntime<unknown, S, null, object>, context: Ctx) =>
+	const terminal = <S extends { phase: string }>(status: "completed" | "aborted") => (_task: Durable.RunningTask<unknown, S, null>, runtime: Durable.TaskRuntime<unknown, S, null, object>, context: Ctx) =>
 		runtime.commit(() => (status === "completed" ? { status: "terminal", outcome: { status, result: null } } : { status: "terminal", outcome: { status } }), context);
 	// Owns the agent's conversation so it outlives its report, for a later SendMessage.
 	const Anchor = D.defineTask<null, { phase: "done" }, null>({ name: "pi-kit.agent-anchor", version: 1, initial: () => ({ phase: "done" }), phases: { done: terminal("completed") }, abort: terminal("aborted") });
@@ -308,7 +309,8 @@ function buildKit(D: D, owner: string): Kit {
 		phases: { run: (task, runtime, context) => report(D, { Outbox, Agents }, task.input, runtime, context) },
 		abort: terminal("aborted"),
 	});
-	const tools = Object.fromEntries(Object.keys(FACTORIES).map((name) => [name, piTool(D, name as PiToolName, owner)])) as Record<PiToolName, Durable.ToolRegistration>;
+	// SAFETY: one entry for every PI_TOOLS name.
+	const tools = Object.fromEntries(PI_TOOLS.map((name) => [name, piTool(D, name, owner)])) as Record<PiToolName, Durable.ToolRegistration>;
 	const guard = D.hook(D.ToolTask, {
 		beforeTool: async (call, api, context) => {
 			if (call.name !== "bash") return undefined;
@@ -326,13 +328,13 @@ function piTool(D: D, name: PiToolName, owner: string): Durable.ToolRegistration
 	const make = (cwd: string) => name === "bash"
 		? createBashTool(cwd, { spawnHook: (spawn) => ({ ...spawn, env: { ...spawn.env, PI_KIT_OWNER: owner } }) })
 		: FACTORIES[name](cwd);
-	const shape = make(process.cwd());
+	const piDefinition = make(process.cwd());
 	return D.defineTool({
 		name,
-		description: shape.description,
-		parameters: shape.parameters,
+		description: piDefinition.description,
+		parameters: piDefinition.parameters,
 		replay: SAFE_TOOLS.has(name) ? "safe" : "unsafe",
-		...(shape.prepareArguments ? { prepareArguments: shape.prepareArguments } : {}),
+		prepareArguments: piDefinition.prepareArguments,
 		execute: async (args, api, context) => {
 			const cwd = (await api.agent(context)).cwd ?? process.cwd();
 			// SAFETY: durable validated `args` against this very tool's parameters before execute().
@@ -349,7 +351,7 @@ async function report(D: D, docs: Pick<Kit, "Outbox" | "Agents">, input: Reporte
 	let limited: string | undefined;
 	const held = await acquire(input.agentId);
 	try {
-		const stopped = ((await runtime.snapshot(docs.Agents, runtime.conversationId, context))?.agents[input.agentId] as AgentRecord | undefined)?.stopped;
+		const stopped = agentRecords(await runtime.snapshot(docs.Agents, runtime.conversationId, context))[input.agentId]?.stopped;
 		if (held && !stopped) {
 			const submission = await conversation.submit({ type: "input", content: input.prompt, requestId: `agent:${input.agentId}` }, context);
 			const unwatch = watchLimits(D, engine, input, (limit) => {
@@ -391,10 +393,10 @@ async function report(D: D, docs: Pick<Kit, "Outbox" | "Agents">, input: Reporte
 	await writeFile(input.outputFile, `${transcriptLog(transcript)}\n\n${output}\n`).catch(() => {});
 	const waiter = host.waiters.get(input.agentId);
 	await runtime.commit(async (tx) => {
-		const record = (await tx.doc(docs.Agents, runtime.conversationId)).agents[input.agentId];
+		const record = agentRecords(await tx.doc(docs.Agents, runtime.conversationId))[input.agentId];
 		if (record) record.status = n.status;
 		if (waiter && !waiter.timedOut) waiter.claimed = true;
-		(await tx.doc(docs.Outbox, runtime.conversationId)).items.push(json<OutboxItem>({ ...n, silent: waiter?.claimed || undefined }));
+		(await tx.doc(docs.Outbox, runtime.conversationId)).items.push(json({ ...n, silent: waiter?.claimed || undefined }));
 		return { status: "terminal", outcome: { status: "completed", result: null } };
 	}, context);
 	tasks.update(input.agentId, { status: n.status });
@@ -461,24 +463,31 @@ async function scan(conversation: Durable.Conversation, context: Ctx): Promise<D
 
 function text(message: Message | undefined): string {
 	if (!message || message.role !== "assistant") return "";
-	return (message as AssistantMessage).content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("");
+	return message.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("");
 }
 
 function transcriptLog(entries: readonly Durable.EntryRecord[]): string {
 	return entries.flatMap((entry) => (entry.model ?? []).flatMap((message) => {
 		if (message.role === "assistant") return message.content.flatMap((block) => block.type === "toolCall" ? [`→ ${block.name} ${JSON.stringify(block.arguments).slice(0, 300)}`] : block.type === "text" && block.text ? [block.text] : []);
-		if (message.role === "toolResult") return [`← ${(message as ToolResultMessage).isError ? "error " : ""}${(message as ToolResultMessage).content.flatMap((block) => (block.type === "text" ? [block.text.slice(0, 300)] : [])).join("")}`];
+		if (message.role === "toolResult") return [`← ${message.isError ? "error " : ""}${message.content.flatMap((block) => (block.type === "text" ? [block.text.slice(0, 300)] : [])).join("")}`];
 		return [];
 	})).join("\n");
 }
 
 function failure(settled: Durable.SettledSubmissionRecord | undefined): string {
 	if (settled?.status !== "unanswered") return "no answer";
-	const detail = settled.detail as { message?: unknown } | undefined;
-	return typeof detail?.message === "string" ? detail.message : settled.reason;
+	return Value.Check(FailureDetail, settled.detail) ? settled.detail.message : settled.reason;
 }
 
 /** Documents hold strict JSON: optional fields that are `undefined` are dropped. */
-function json<T>(value: T): Durable.JsonObject {
-	return JSON.parse(JSON.stringify(value)) as Durable.JsonObject;
+function json(value: AgentRecord | OutboxItem): Durable.JsonObject {
+	return JSON.parse(JSON.stringify(value));
 }
+
+// Documents hold JsonObject, which no interface with optional fields can be asserted from directly.
+// SAFETY: the kit writes the Outbox only through json() of an OutboxItem.
+// oxlint-disable-next-line anti-slop/no-chained-type-assertions
+const outboxItems = (doc: OutboxDoc | undefined) => (doc?.items ?? []) as unknown as OutboxItem[];
+// SAFETY: the kit writes Agents only through json() of an AgentRecord.
+// oxlint-disable-next-line anti-slop/no-chained-type-assertions
+const agentRecords = (doc: AgentsDoc | undefined) => (doc?.agents ?? {}) as unknown as Record<string, AgentRecord>;

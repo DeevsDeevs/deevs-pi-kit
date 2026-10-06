@@ -1,10 +1,11 @@
+/* oxlint-disable anti-slop/no-runtime-typeof -- meta is a literal parsed from an untrusted workflow script: this is its decoding boundary. */
 export const MAX_SCRIPT_CHARS = 524_288;
 
 const FIRST_STATEMENT = "`export const meta = { name, description, phases }` must be the FIRST statement in the script";
 const PLAIN_JAVASCRIPT =
 	"Workflow scripts must be plain JavaScript: drop TypeScript-only syntax such as type annotations, interfaces and generics, and check that every string is quoted and escaped correctly.";
 const RESERVED_KEYS = new Set(["__proto__", "constructor", "prototype"]);
-const ESCAPES: Record<string, string> = { n: "\n", t: "\t", r: "\r", b: "\b", f: "\f", v: "\v", "0": "\0", "\n": "", " ": "", " ": "" };
+const ESCAPES = new Map([["n", "\n"], ["t", "\t"], ["r", "\r"], ["b", "\b"], ["f", "\f"], ["v", "\v"], ["0", "\0"], ["\n", ""], [" ", ""], [" ", ""]]);
 
 export interface WorkflowPhase {
 	title: string;
@@ -26,7 +27,8 @@ export interface ParsedWorkflow {
 	bodyLine: number;
 }
 
-type MetaValue = string | number | boolean | null | MetaValue[] | { [key: string]: MetaValue };
+type MetaValue = string | number | boolean | null | MetaValue[] | MetaObject;
+type MetaObject = { [key: string]: MetaValue };
 
 export function parseWorkflow(source: string): ParsedWorkflow {
 	if (source.length > MAX_SCRIPT_CHARS) throw new Error(`Script exceeds ${MAX_SCRIPT_CHARS} bytes`);
@@ -77,7 +79,7 @@ function validateMeta(value: MetaValue): WorkflowMeta {
 	};
 }
 
-function isRecord(value: MetaValue | undefined): value is { [key: string]: MetaValue } {
+function isRecord(value: MetaValue | undefined): value is MetaObject {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
@@ -125,8 +127,8 @@ class MetaReader {
 		throw notLiteral(`non-literal node type in meta: ${node}`);
 	}
 
-	private object(): { [key: string]: MetaValue } {
-		const result: { [key: string]: MetaValue } = {};
+	private object() {
+		const result: MetaObject = {};
 		this.at++;
 		for (;;) {
 			this.skip();
@@ -211,7 +213,7 @@ class MetaReader {
 				continue;
 			}
 			const escaped = this.source[this.at + 1] ?? "";
-			result += ESCAPES[escaped] ?? escaped;
+			result += ESCAPES.get(escaped) ?? escaped;
 			this.at += 2;
 		}
 	}
