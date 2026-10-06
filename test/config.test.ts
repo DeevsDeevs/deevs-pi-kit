@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -58,6 +58,20 @@ describe("pi-kit.json", () => {
 		write("codex-fast.json", { enabled: true });
 		await migrateLegacyConfig(project);
 		expect(existsSync(join(project, ".pi", "codex-fast.json"))).toBe(true);
+	});
+});
+
+describe("project pi-kit.json writes", () => {
+	it("refuse to follow a symlinked .pi or pi-kit.json", async () => {
+		write("codex-fast.json", { enabled: true });
+		symlinkSync(join(root, "elsewhere.json"), join(project, ".pi", "pi-kit.json"));
+		await expect(migrateLegacyConfig(project)).rejects.toThrow(/symlink/);
+		const linked = join(root, "linked");
+		mkdirSync(join(linked, "real-pi"), { recursive: true });
+		writeFileSync(join(linked, "real-pi", "codex-fast.json"), JSON.stringify({ enabled: true }));
+		symlinkSync(join(linked, "real-pi"), join(linked, ".pi"));
+		await expect(migrateLegacyConfig(linked)).rejects.toThrow(/symlink/);
+		expect(existsSync(join(linked, "real-pi", "pi-kit.json"))).toBe(false);
 	});
 });
 
