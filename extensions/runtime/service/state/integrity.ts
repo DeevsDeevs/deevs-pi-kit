@@ -1,5 +1,4 @@
 import { type HostedMailboxMessageEvent, type HostedRuntimeState, isHeld } from "../../schemas/state.ts";
-import { HOSTED_ACK_RETENTION_MS } from "../../schemas/common.ts";
 import { deriveParticipantKey, mailboxDedupeKey, targetIdentityKey } from "./keys.ts";
 
 /**
@@ -18,10 +17,7 @@ function checkKey(key: string, identity: string, subject: string): void {
 }
 
 function checkKeyedRecords(state: HostedRuntimeState): void {
-	for (const [key, grant] of Object.entries(state.messaging)) {
-		checkKey(key, grant.namespaceId, "messaging namespace");
-		if (grant.expiresAt !== grant.createdAt + HOSTED_ACK_RETENTION_MS) throw new Error(`messaging namespace ${key} has an invalid lifetime`);
-	}
+	for (const [key, grant] of Object.entries(state.messaging)) checkKey(key, grant.namespaceId, "messaging namespace");
 	for (const [key, target] of Object.entries(state.targets)) {
 		checkKey(key, target.targetKey, "target");
 		checkKey(key, targetIdentityKey(target), "target identity");

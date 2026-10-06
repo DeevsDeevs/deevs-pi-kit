@@ -116,7 +116,6 @@ const INCOHERENT: Array<[string, (state: HostedRuntimeState) => void]> = [
 	["participant key that is not derived from its identity", (state) => { record(state.participants, SENDER).participantId = "other"; }],
 	["mail event addressed to an absent participant", (state) => { record(state.events, "evt_1").recipientParticipantKey = "participant_gone"; }],
 	["mail dedupe key that is not derived from its sender and send ID", (state) => { record(state.events, "evt_1").sendId = "send_2"; }],
-	["messaging grant with an edited lifetime", (state) => { record(state.messaging, NAMESPACE).expiresAt += 1; }],
 ];
 
 describe("runtime schemas", () => {

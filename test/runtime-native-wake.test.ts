@@ -3,7 +3,6 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HOSTED_ACK_RETENTION_MS } from "../extensions/runtime/schemas/common.ts";
 import type { HerdrAgentStatus } from "../extensions/runtime/schemas/herdr.ts";
 import type { HostedAgentTarget, HostedMessagingGrant, HostedTarget } from "../extensions/runtime/schemas/state.ts";
 import type { HostedHostVerifier, HostedLiveAgent } from "../extensions/runtime/service/identity.ts";
@@ -98,7 +97,6 @@ function issueNamespace(store: HostedStateStore): string {
 		targetKey: "agent_native",
 		configurationHash: messagingConfigurationHash(agentTarget()),
 		createdAt: 900,
-		expiresAt: 900 + HOSTED_ACK_RETENTION_MS,
 		status: "active",
 		operations: {},
 	};
@@ -196,6 +194,15 @@ describe("native wake", () => {
 		mail(test.store, NATIVE, "evt_native_2");
 		await test.sweeper.sweep();
 		expect(test.host.prompts).toHaveLength(2);
+	});
+
+	it("keeps the namespace readable and writable after a clock jump past any former lifetime", () => {
+		const test = setup();
+		const later = 900 + 365 * 24 * 60 * 60 * 1_000;
+		markRead(test.store, test.namespaceId!, later);
+		const reply = { namespaceId: test.namespaceId!, operationId: "op_late", recipientParticipantKey: CALLER, body: "still here", eventId: "evt_late", at: later };
+		test.store.apply({ type: "messaging.send", ...reply });
+		expect(test.store.read().events.evt_late?.source.id).toBe(NATIVE);
 	});
 
 	it("never prompts a tab that was not issued a mail namespace", async () => {

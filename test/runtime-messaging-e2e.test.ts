@@ -383,36 +383,31 @@ it("does not record a read receipt or half a reply on pre-rename storage failure
 	expect(Object.keys(test.readState().events)).toHaveLength(2);
 });
 
-it("retains a published body until its sender retry authority expires, then prunes it", async () => {
+it("keeps a published body and its retry authority however much time passes, until the body is read", async () => {
 	const test = await setup();
 	const recipient = await test.issue(test.recipientParticipant);
-	test.setNow(1100);
 	const [sent] = await mcp(test.issued.descriptorPath, [send()]);
 	const eventId = sent!.structuredContent.eventId!;
 	const state = test.readState();
-	const receiver = state.messaging[recipient.namespaceId]!;
-	const publisher = state.messaging[test.issued.namespaceId]!;
-	const [operationId] = Object.keys(publisher.operations);
-	publisher.createdAt += 100;
-	publisher.expiresAt += 100;
+	const [operationId] = Object.keys(state.messaging[test.issued.namespaceId]!.operations);
 	const root = mkdtempSync(join(tmpdir(), "messaging-retention-"));
 	cleanups.push(async () => { rmSync(root, { recursive: true, force: true }); });
 	writeHostedRuntimeState(root, state);
 	const store = new HostedStateStore(root);
-	store.apply({ type: "retention.prune", before: receiver.expiresAt + 1 });
-	expect(store.read().messaging[receiver.namespaceId]!.status).toBe("expired");
+	const decade = 10 * 365 * 24 * 60 * 60 * 1_000;
+	store.apply({ type: "retention.prune", before: decade });
+	expect(store.read().messaging[recipient.namespaceId]!.status).toBe("active");
 	expect(store.read().events[eventId]).toBeDefined();
-	expect(Object.values(store.read().dedupe)).toContain(eventId);
-	expect(readHostedRuntimeState(root)).toEqual(store.read());
 	const retained = store.read();
-	expect(store.apply({ type: "messaging.send", namespaceId: test.issued.namespaceId, operationId: operationId!, recipientParticipantKey: test.recipientParticipant.participantKey, body: "Please inspect.", eventId: "must-not-publish", at: receiver.expiresAt + 1 })).toBe(retained);
-	store.apply({ type: "retention.prune", before: publisher.expiresAt + 1 });
+	expect(store.apply({ type: "messaging.send", namespaceId: test.issued.namespaceId, operationId: operationId!, recipientParticipantKey: test.recipientParticipant.participantKey, body: "Please inspect.", eventId: "must-not-publish", at: decade })).toBe(retained);
+	store.apply({ type: "messaging.read", namespaceId: recipient.namespaceId, eventIds: [eventId], at: decade });
+	store.apply({ type: "retention.prune", before: decade, readBefore: decade + 1 });
 	expect(store.read().events[eventId]).toBeUndefined();
 	expect(Object.values(store.read().dedupe)).not.toContain(eventId);
 	expect(readHostedRuntimeState(root)).toEqual(store.read());
 });
 
-it("refuses new operations at the record cap and retains ordinary bodies until terminal expiry without native ACK", async () => {
+it("refuses new operations at the record cap and retains a body its sender may still retry", async () => {
 	const test = await setup();
 	const recipient = await test.issue(test.recipientParticipant);
 	const [first] = await mcp(test.issued.descriptorPath, [send()]);
@@ -436,12 +431,9 @@ it("refuses new operations at the record cap and retains ordinary bodies until t
 	expect(Object.keys(store.read().messaging[publisher.namespaceId]!.operations)).toEqual([operationId]);
 	store.apply({ type: "messaging.read", namespaceId: grant.namespaceId, eventIds: [eventId], at: 1000 });
 	expect(store.read().events[eventId]).toMatchObject({ readAt: 1000 });
-	store.apply({ type: "retention.prune", before: 1001 });
+	store.apply({ type: "retention.prune", before: Number.MAX_SAFE_INTEGER });
 	expect(store.read().events[eventId]).toBeDefined();
-	store.apply({ type: "retention.prune", before: publisher.expiresAt + 1 });
-	expect(store.read().events[eventId]).toBeUndefined();
-	expect(store.read().messaging[publisher.namespaceId]!.operations).toEqual({});
-	expect(() => store.apply({ type: "messaging.read", namespaceId: grant.namespaceId, eventIds: [eventId], at: 1000 })).toThrow("expired");
+	expect(Object.keys(store.read().messaging[publisher.namespaceId]!.operations)).toEqual([operationId]);
 });
 
 it("publishes and reads only through MCP and keeps its namespace usable across a Runtime restart", async () => {
@@ -687,18 +679,15 @@ it("fences a post-rename directory-sync failure until restart, preserving the or
 	expect(Object.keys(test.readState().events)).toHaveLength(2);
 });
 
-it("persists terminal expiry across clock rollback and restart without republishing", async () => {
+it("keeps one namespace publishing across a clock jump far past the former lifetime and a restart", async () => {
 	const test = await setup();
-	await mcp(test.issued.descriptorPath, [send("expiry")]);
-	test.setNow(1000 + HOSTED_ACK_RETENTION_MS);
-	const [expired] = await mcp(test.issued.descriptorPath, [send("expiry")]);
-	expect(expired!.isError).toBe(true);
-	test.setNow(1000);
+	await mcp(test.issued.descriptorPath, [send("before")]);
+	test.setNow(1000 + 10 * HOSTED_ACK_RETENTION_MS);
 	await test.restart();
-	const [rolledBack] = await mcp(test.issued.descriptorPath, [send("expiry")]);
-	expect(rolledBack!.isError).toBe(true);
-	expect(test.readState().messaging[test.issued.namespaceId]?.status).toBe("expired");
-	expect(Object.keys(test.readState().events)).toHaveLength(1);
+	const [later] = await mcp(test.issued.descriptorPath, [send("after")]);
+	expect(later!.isError).toBe(false);
+	expect(test.readState().messaging[test.issued.namespaceId]?.status).toBe("active");
+	expect(Object.keys(test.readState().events)).toHaveLength(2);
 });
 
 it("negotiates actual MCP before descriptor issuance, transports escaped results, and settles cancellation", async () => {

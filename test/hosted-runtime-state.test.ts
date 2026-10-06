@@ -193,7 +193,7 @@ describe("hosted runtime state persistence", () => {
 		expect(() => validateHostedRuntimeState(orphanMail)).toThrow(HostedStateStorageError);
 	});
 
-	it("expires a grant whose window has closed while its published mail is still retained", () => {
+	it("never expires a grant by time, including one an older build stamped with an expiry", () => {
 		const state = populatedState();
 		const namespaceId = "msg_00000000-0000-0000-0000-000000000001";
 		state.messaging[namespaceId] = {
@@ -208,9 +208,10 @@ describe("hosted runtime state persistence", () => {
 			status: "active",
 			operations: { "op-1": "evt_1" },
 		};
-		const pruned = reduceHostedState(state, { type: "retention.prune", before: 101 + HOSTED_ACK_RETENTION_MS });
-		expect(pruned.messaging[namespaceId]?.status).toBe("expired");
-		expect(pruned.events.evt_1).toBeUndefined();
+		const pruned = reduceHostedState(state, { type: "retention.prune", before: 101 + 10 * HOSTED_ACK_RETENTION_MS });
+		expect(pruned.messaging[namespaceId]?.status).toBe("active");
+		expect(pruned.events.evt_1).toBeDefined();
+		expect(validateHostedRuntimeState(pruned)).toEqual(pruned);
 	});
 
 	it("drops read mail after its own shorter window even while the sender's grant still lists it", () => {
