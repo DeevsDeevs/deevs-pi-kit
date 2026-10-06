@@ -15,7 +15,7 @@ export class ChainsDashboard implements Component {
 
 	constructor(
 		private readonly chains: ChainListItem[],
-		private readonly checkpoint: ChainCheckpointState | undefined,
+		private readonly checkpoint: ChainCheckpointState,
 		private readonly theme: Theme,
 		private readonly done: () => void,
 		private readonly requestRender: () => void,
@@ -49,7 +49,7 @@ export class ChainsDashboard implements Component {
 		if (this.getHeight() < 12) {
 			const row = rows[this.selected];
 			return dashboardFrame("Chains", [
-				` ${this.checkpoint?.chain ? `${statusIcon(this.checkpoint.status)} ${this.checkpoint.chain}@${this.checkpoint.branch ?? "main"}` : "○ no checkpoint"}`,
+				` ${this.checkpoint.chain ? `${statusIcon(this.checkpoint.status)} ${this.checkpoint.chain}@${this.checkpoint.branch ?? "main"}` : "○ no checkpoint"}`,
 				` ${row ? selectedRow(this.rowText(row), true, this.theme, Math.max(1, width - 6)) : "No Chains"}`,
 				` ${this.theme.fg("dim", "j/k move · enter expand · q close")}`,
 			], this.theme, width, this.getHeight());
@@ -59,11 +59,11 @@ export class ChainsDashboard implements Component {
 		const window = pageWindow(rows, this.selected, listSize);
 		const bodyWidth = Math.max(10, width - 6);
 		const row = rows[this.selected];
-		const checkpoint = this.checkpoint?.chain
+		const checkpoint = this.checkpoint.chain
 			? `${statusIcon(this.checkpoint.status)} ${this.checkpoint.chain}@${this.checkpoint.branch ?? "main"} · ${this.checkpoint.status}${this.checkpoint.dueReasons.at(-1) ? ` · ${this.checkpoint.dueReasons.at(-1)}` : ""}`
 			: "○ no active checkpoint";
 		const body = [
-			` ${this.theme.fg(this.checkpoint?.status === "due" ? "warning" : "muted", checkpoint)}`,
+			` ${this.theme.fg(this.checkpoint.status === "due" ? "warning" : "muted", checkpoint)}`,
 			` ${this.theme.fg("muted", `${this.chains.length} chains · ${this.chains.reduce((sum, item) => sum + item.count, 0)} links`)}`,
 			"",
 			...window.values.map((item, index) => ` ${selectedRow(this.rowText(item), window.start + index === this.selected, this.theme, bodyWidth)}`),

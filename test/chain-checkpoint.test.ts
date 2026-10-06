@@ -37,17 +37,6 @@ describe("Chain checkpoint state", () => {
 		expect(replayed).toEqual(emptyChainCheckpoint());
 	});
 
-	it("satisfies only the exact saved or waived Chain target", () => {
-		const service = new ChainCheckpointService({ appendEntry() {} } as unknown as ExtensionAPI);
-		service.saved("other", "main");
-		expect(service.isSatisfied("kit", "main")).toBe(false);
-		service.activate("kit", "main");
-		expect(service.isSatisfied("kit", "main")).toBe(false);
-		service.waive("approved");
-		expect(service.isSatisfied("kit", "main")).toBe(true);
-		expect(service.isSatisfied("kit", "release")).toBe(false);
-	});
-
 	it("marks a new repository commit without treating ordinary edits as milestones", async () => {
 		const branch: Array<Record<string, unknown>> = [];
 		const statuses: Array<string | undefined> = [];
@@ -133,7 +122,7 @@ describe("Chain checkpoint state", () => {
 		let command: { handler: (args: string, ctx: ExtensionContext) => Promise<void> } | undefined;
 		const pi = { registerCommand(name: string, value: typeof command) { if (name === "chains") command = value; } } as unknown as ExtensionAPI;
 		const chains = ["abcdefghijklmno-one-zzzzzz", "abcdefghijklmno-two-zzzzzz"].map((chain) => ({ chain, count: 1, branches: [], latest: { chain, branch: "main", filename: "latest.md", title: chain, nextStep: null, parent: null, createdAt: null, ageDays: 0, stale: false, bytes: 1 } }));
-		registerChainCommands(pi, { list: async () => chains } as unknown as ChainService);
+		registerChainCommands(pi, { list: async () => chains } as unknown as ChainService, new ChainCheckpointService(pi));
 		let rendered = "";
 		const theme = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, bold: (text: string) => text };
 		const ctx = {
