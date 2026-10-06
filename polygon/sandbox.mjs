@@ -11,7 +11,7 @@ export async function sandbox({ run, name, kit, results }) {
 	const home = join(dir, "home");
 	const repo = join(dir, "repo");
 	const agentDir = join(home, ".pi", "agent");
-	for (const d of [agentDir, repo, join(home, "bin"), join(home, ".claude"), join(home, ".codex")]) mkdirSync(d, { recursive: true });
+	for (const d of [agentDir, repo, join(home, "bin"), join(home, "tmp"), join(home, ".claude"), join(home, ".codex")]) mkdirSync(d, { recursive: true });
 	const tag = `${run}/${name}`;
 	const requestLog = join(dir, "requests.jsonl");
 	writeFileSync(requestLog, "");
@@ -21,6 +21,8 @@ export async function sandbox({ run, name, kit, results }) {
 
 	const env = {
 		PATH: `${join(home, "bin")}:${process.env.PATH}`, LANG: "C.UTF-8", TERM: "xterm-256color", HOME: home,
+		// Pi's extension loader caches transpiled files under the temp dir; a shared one lets concurrent boots read half-written files.
+		TMPDIR: join(home, "tmp"),
 		XDG_CONFIG_HOME: join(home, ".config"), XDG_DATA_HOME: join(home, ".local/share"), XDG_STATE_HOME: join(home, ".local/state"), XDG_CACHE_HOME: join(home, ".cache"),
 		PI_CODING_AGENT_DIR: agentDir, CLAUDE_CONFIG_DIR: join(home, ".claude"), CODEX_HOME: join(home, ".codex"),
 		PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", PI_TELEMETRY: "0",
