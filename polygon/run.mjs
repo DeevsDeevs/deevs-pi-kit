@@ -139,14 +139,14 @@ function freshen() {
 		console.error(`polygon: the ${LOGIN_VOLUME} volume holds no Pi login${present.length ? "" : " (it is empty)"}. Run \`npm run polygon -- --login\` once and log in there; live runs never read your own ~/.pi, ~/.claude or ~/.codex.`);
 		process.exit(3);
 	}
-	let requests = 0;
+	let spent = 0;
 	for (const login of LOGINS) {
 		if (!present.includes(login)) {
 			console.error(`polygon: no ${login.name} login in ${LOGIN_VOLUME}; live scenarios that need it will fail.`);
 			continue;
 		}
 		const done = spawnSync(login.argv[0], login.argv.slice(1), { stdio: ["ignore", "ignore", "pipe"], timeout: 120_000, encoding: "utf8" });
-		requests += login.requests;
+		spent += login.requests;
 		if (done.status === 0) continue;
 		console.error(`polygon: freshening the ${login.name} login failed (${done.status ?? done.signal}): ${(done.stderr ?? "").trim().slice(-500)}`);
 		if (login.required) process.exit(3);
@@ -155,7 +155,7 @@ function freshen() {
 		mkdirSync(dirname(join("/results/.login", file)), { recursive: true });
 		writeFileSync(join("/results/.login", file), JSON.stringify(deadRefresh(JSON.parse(readFileSync(join("/login", file), "utf8"))), null, 2), { mode: 0o600 });
 	}
-	writeFileSync("/results/freshen.json", JSON.stringify({ requests, logins: present.map((login) => login.name) }, null, 2));
+	writeFileSync("/results/freshen.json", JSON.stringify({ requests: spent, logins: present.map((login) => login.name) }, null, 2));
 }
 
 async function runOne(s, run) {
