@@ -6,6 +6,7 @@ import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil
 import { loadKitConfig, modelLabel, resolveModel } from "../shared/models.ts";
 import { tasks, type TaskNotification } from "../shared/tasks.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
+import { remindSilentTurns } from "./silent-turns.ts";
 import { agentTypes, agentTypesSection, findAgentType, workerPrompt } from "./definitions.ts";
 import { AGENT_SLOTS, closeAll, ensureEngine, launch, queuedAhead, reinstall, resumeSession, settle, writersIn, type Limits } from "./engine/index.ts";
 
@@ -39,6 +40,7 @@ const AGENT_DESCRIPTION = [
 
 export default function subagentsExtension(pi: ExtensionAPI): void {
 	tasks.install(pi);
+	remindSilentTurns(pi);
 
 	pi.registerTool({
 		name: "Agent",
