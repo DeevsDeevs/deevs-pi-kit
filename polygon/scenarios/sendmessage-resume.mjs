@@ -9,7 +9,6 @@ const send = (id, on, message) => ({ id, on, tool: "SendMessage", args: { to: AG
 export default {
 	name: "sendmessage-resume",
 	gate: "M2",
-	pending: "step 2.1 adds SendMessage and /agents stop <id>",
 	async run(t) {
 		const lead = rpc(t);
 		const settled = () => lead.events.filter((e) => e.type === "agent_settled").length;

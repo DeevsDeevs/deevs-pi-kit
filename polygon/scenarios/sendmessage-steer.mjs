@@ -7,7 +7,6 @@ const MARK = "polygon-steer-mark";
 export default {
 	name: "sendmessage-steer",
 	gate: "M2",
-	pending: "step 2.1 adds SendMessage",
 	async run(t) {
 		const lead = rpc(t);
 		const child = { agent: "child", steps: [

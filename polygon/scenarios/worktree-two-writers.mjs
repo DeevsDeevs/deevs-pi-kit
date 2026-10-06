@@ -13,7 +13,6 @@ const spawn = (id, description, child) => ({ id, tool: "Agent", args: { descript
 export default {
 	name: "worktree-two-writers",
 	gate: "M2",
-	pending: "step 2.2 wires Agent isolation: \"worktree\" to shared/worktree.ts",
 	async run(t) {
 		const lead = rpc(t);
 		await lead.script({ agent: "lead", steps: [

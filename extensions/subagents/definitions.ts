@@ -61,8 +61,8 @@ export function findAgentType(requested: string | undefined): AgentType {
 	return found;
 }
 
-/** The agent's instructions: its persona or the general notes, the shared notes, the project's context files and skills, and the cwd. */
-export function workerPrompt(type: AgentType, cwd: string): string {
+/** The agent's instructions: its persona or the general notes, the shared notes, the project's context files and skills, the cwd, and its worktree. */
+export function workerPrompt(type: AgentType, cwd: string, worktree?: { path: string; branch: string; repoRoot: string }): string {
 	const agentDir = getAgentDir();
 	const context = loadProjectContextFiles({ cwd, agentDir }).map((file) => `## ${file.path}\n\n${file.content}`);
 	const skills = formatSkillsForPrompt(loadSkills({ cwd, agentDir, skillPaths: [KIT_SKILLS], includeDefaults: true }).skills);
@@ -72,6 +72,7 @@ export function workerPrompt(type: AgentType, cwd: string): string {
 		...(context.length ? [`# Project context\n\n${context.join("\n\n")}`] : []),
 		...(skills ? [skills] : []),
 		`Working directory: ${cwd}`,
+		...(worktree ? [`You work in a git worktree of ${worktree.repoRoot} at ${worktree.path}, on branch ${worktree.branch}, apart from the lead's checkout. Edit and commit only here; a worktree with changes is kept for the lead to review, an unchanged one is removed.`] : []),
 	].join("\n\n");
 }
 

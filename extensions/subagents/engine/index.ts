@@ -1,13 +1,15 @@
 // The only code that imports pi-durable. Agents run as durable conversations inside the lead's process: they survive
 // /reload, pause when Pi exits and continue when their session reopens; their reports reach the lead exactly once.
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { access, mkdir, realpath, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Api, AssistantMessage, Message, Model, ModelThinkingLevel, ToolResultMessage } from "@earendil-works/pi-ai";
 import { createBashTool, createEditTool, createFindTool, createGrepTool, createLsTool, createReadTool, createWriteTool, getAgentDir, type ExtensionContext, type ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
 import { guardBashCall } from "../../shared/guard.ts";
-import { tasks, type TaskNotification, type TaskStatus } from "../../shared/tasks.ts";
+import { agentSummary, tasks, type TaskNotification, type TaskStatus } from "../../shared/tasks.ts";
+import { addWorktree, finishAgentWorktree, git, type AgentWorktree } from "../../shared/worktree.ts";
 import type { PiToolName } from "../definitions.ts";
 import { bunSqlite, lock, reap, unlock } from "./storage.ts";
 
@@ -24,10 +26,12 @@ const SAFE_TOOLS = new Set<PiToolName>(["read", "grep", "find", "ls"]);
 const FACTORIES = { read: createReadTool, grep: createGrepTool, find: createFindTool, ls: createLsTool, bash: createBashTool, edit: createEditTool, write: createWriteTool };
 // ponytail: a structural chord Context that never cancels; import chord's BACKGROUND_CONTEXT if durable starts checking identity.
 const CTX: Ctx = { abortSignal: undefined, value: () => undefined, toString: () => "pi-kit" };
+const BACKGROUND = { ownership: { kind: "conversation" }, background: true } as const;
 
 export interface Limits { maxTurns?: number; maxTokens?: number; timeout?: number }
 
 export interface LaunchSpec {
+	agentId: string;
 	description: string;
 	prompt: string;
 	name?: string;
@@ -40,6 +44,7 @@ export interface LaunchSpec {
 	toolUseId: string;
 	limits: Limits;
 	foreground: boolean;
+	worktree?: AgentWorktree;
 }
 
 interface AgentRecord {
@@ -51,6 +56,9 @@ interface AgentRecord {
 	cwd: string;
 	writer: boolean;
 	stopped?: boolean;
+	/** Set only by `/agents stop`; SendMessage refuses such an agent. */
+	stoppedBy?: "user";
+	worktree?: AgentWorktree;
 }
 type OutboxItem = TaskNotification & { silent?: boolean };
 interface ReporterInput {
@@ -58,11 +66,13 @@ interface ReporterInput {
 	session: string;
 	conversationId: ConversationId;
 	prompt: string;
+	requestId: string;
 	description: string;
 	toolUseId: string;
 	limits: Limits;
 	startedAt: number;
 	outputFile: string;
+	worktree?: AgentWorktree;
 }
 
 interface Kit {
@@ -160,16 +170,15 @@ export function queuedAhead(): boolean {
 	return host.running >= AGENT_SLOTS;
 }
 
-export async function launch(engine: Engine, spec: LaunchSpec): Promise<{ agentId: string; outputFile: string; done?: Promise<TaskNotification> }> {
+export async function launch(engine: Engine, spec: LaunchSpec): Promise<{ outputFile: string; done?: Promise<TaskNotification> }> {
 	const { D } = await host.modules!;
-	const agentId = `a${randomBytes(8).toString("hex")}`;
+	const { agentId } = spec;
 	const outputFile = join(engine.dir, "out", `${agentId}.md`);
 	const startedAt = Date.now();
 	const done = spec.foreground ? new Promise<TaskNotification>((resolve) => host.waiters.set(agentId, { claimed: false, timedOut: false, resolve })) : undefined;
 	const { kit, root } = engine;
 	await root.commit(async (tx) => {
-		const background = { ownership: { kind: "conversation" }, background: true } as const;
-		const anchor = await tx.createTask(kit.Anchor, null, background);
+		const anchor = await tx.createTask(kit.Anchor, null, BACKGROUND);
 		const child = await tx.createConversation({ ownership: { kind: "task", taskId: anchor } });
 		await D.configure(tx, child.id, {
 			model: { provider: spec.model.provider, modelId: spec.model.id },
@@ -178,18 +187,53 @@ export async function launch(engine: Engine, spec: LaunchSpec): Promise<{ agentI
 			instructions: spec.instructions,
 			cwd: spec.cwd,
 		});
-		const input: ReporterInput = { agentId, session: engine.session, conversationId: child.id, prompt: spec.prompt, description: spec.description, toolUseId: spec.toolUseId, limits: spec.limits, startedAt, outputFile };
-		await tx.createTask(kit.Reporter, input, background);
-		(await tx.doc(kit.Agents, root.id)).agents[agentId] = json<AgentRecord>({ name: spec.name, description: spec.description, conversationId: child.id, startedAt, status: "running", cwd: spec.cwd, writer: spec.writer });
+		const input: ReporterInput = { agentId, session: engine.session, conversationId: child.id, prompt: spec.prompt, requestId: `agent:${agentId}`, description: spec.description, toolUseId: spec.toolUseId, limits: spec.limits, startedAt, outputFile, worktree: spec.worktree };
+		await tx.createTask(kit.Reporter, input, BACKGROUND);
+		(await tx.doc(kit.Agents, root.id)).agents[agentId] = json<AgentRecord>({ name: spec.name, description: spec.description, conversationId: child.id, startedAt, status: "running", cwd: spec.cwd, writer: spec.writer, worktree: spec.worktree });
 	}, CTX);
 	tasks.register({ id: agentId, kind: "agent", name: spec.name, description: spec.description, status: "running", ownerSession: engine.session, startedAt, stop: () => stop(engine, agentId) });
-	return { agentId, outputFile, done };
+	return { outputFile, done };
 }
 
-/** Running writers in `cwd`: another one there means parallel edits to the same tree. */
-export async function writersIn(engine: Engine, cwd: string): Promise<number> {
-	const agents = (await engine.harness.snapshot(engine.kit.Agents, engine.root.id, CTX))?.agents ?? {};
-	return Object.values(agents as unknown as Record<string, AgentRecord>).filter((record) => record.status === "running" && record.writer && record.cwd === cwd).length;
+/** SendMessage: a running agent gets a steer at its next tool round; any other is resumed on its own conversation and notifies again. */
+export async function send(engine: Engine, agentId: string, message: string, toolUseId: string): Promise<"steered" | "resumed" | "refused"> {
+	const record = (await agentRecords(engine))[agentId]!;
+	if (record.stoppedBy === "user") return "refused";
+	const requestId = `send:${randomUUID()}`;
+	if (record.status === "running") {
+		const conversation = (await engine.harness.conversation(record.conversationId, CTX))!;
+		const submission = await conversation.submit({ type: "input", content: message, requestId, whenBusy: "steer" }, CTX);
+		// An idle conversation (the agent waits for a slot, or just answered) runs the message at once; that run gets its own report.
+		if ((await submission.status(CTX)).status === "queued") return "steered";
+	}
+	const worktree = record.worktree && await reopenWorktree(record.worktree);
+	await engine.root.commit(async (tx) => {
+		const current = (await tx.doc(engine.kit.Agents, engine.root.id)).agents[agentId] as unknown as AgentRecord;
+		current.status = "running";
+		current.stopped = false;
+		if (worktree) current.worktree = worktree;
+		const input: ReporterInput = { agentId, session: engine.session, conversationId: record.conversationId, prompt: message, requestId, description: record.description, toolUseId, limits: {}, startedAt: Date.now(), outputFile: join(engine.dir, "out", `${agentId}.md`), worktree };
+		await tx.createTask(engine.kit.Reporter, input, BACKGROUND);
+	}, CTX);
+	tasks.update(agentId, { status: "running" });
+	return "resumed";
+}
+
+/** A resumed agent works in its worktree again; one removed as unchanged comes back on its branch at today's HEAD. */
+async function reopenWorktree(worktree: AgentWorktree): Promise<AgentWorktree> {
+	if (existsSync(worktree.path)) return worktree;
+	const base = (await git(worktree.repoRoot, ["rev-parse", "HEAD"])).trim();
+	await addWorktree(worktree.repoRoot, worktree.branch, worktree.path, base);
+	return { ...worktree, base };
+}
+
+/** Where running writers work, for the shared-cwd warning. */
+export async function writerCwds(engine: Engine): Promise<{ cwd: string }[]> {
+	return Object.values(await agentRecords(engine)).filter((record) => record.status === "running" && record.writer);
+}
+
+async function agentRecords(engine: Engine): Promise<Record<string, AgentRecord>> {
+	return ((await engine.harness.snapshot(engine.kit.Agents, engine.root.id, CTX))?.agents ?? {}) as unknown as Record<string, AgentRecord>;
 }
 
 /** Foreground: the report if it lands within `ms`; otherwise the agent continues in the background and notifies. Esc keeps the report out of the notifications. */
@@ -218,12 +262,13 @@ export async function settle(agentId: string, done: Promise<TaskNotification>, m
 	return "background";
 }
 
-export async function stop(engine: Engine, agentId: string): Promise<void> {
+export async function stop(engine: Engine, agentId: string, by?: "user"): Promise<void> {
 	let conversationId: ConversationId | undefined;
 	await engine.root.commit(async (tx) => {
 		const record = (await tx.doc(engine.kit.Agents, engine.root.id)).agents[agentId] as unknown as AgentRecord | undefined;
 		if (!record) return;
 		record.stopped = true;
+		if (by) record.stoppedBy = by;
 		conversationId = record.conversationId;
 	}, CTX);
 	const queued = host.queue.findIndex((entry) => entry.agentId === agentId);
@@ -341,13 +386,13 @@ function piTool(D: D, name: PiToolName, owner: string): Durable.ToolRegistration
 async function report(D: D, docs: Pick<Kit, "Outbox" | "Agents">, input: ReporterInput, runtime: Durable.TaskRuntime<ReporterInput, { phase: "run" }, null, object>, context: Ctx): Promise<void> {
 	const engine = (await host.engines.get(input.session))!;
 	const conversation = (await engine.harness.conversation(input.conversationId, context))!;
+	const record = async () => (await runtime.snapshot(docs.Agents, runtime.conversationId, context))?.agents[input.agentId] as AgentRecord | undefined;
 	let settled: Durable.SettledSubmissionRecord | undefined;
 	let limited: string | undefined;
 	const held = await acquire(input.agentId);
 	try {
-		const stopped = ((await runtime.snapshot(docs.Agents, runtime.conversationId, context))?.agents[input.agentId] as AgentRecord | undefined)?.stopped;
-		if (held && !stopped) {
-			const submission = await conversation.submit({ type: "input", content: input.prompt, requestId: `agent:${input.agentId}` }, context);
+		if (held && !(await record())?.stopped) {
+			const submission = await conversation.submit({ type: "input", content: input.prompt, requestId: input.requestId }, context);
 			const unwatch = watchLimits(D, engine, input, (limit) => {
 				limited = limit;
 				void conversation.abort(CTX);
@@ -357,12 +402,17 @@ async function report(D: D, docs: Pick<Kit, "Outbox" | "Agents">, input: Reporte
 	} finally {
 		if (held) release();
 	}
+	// A steer that missed the last tool round runs on after the answer; the report waits for it and carries the last answer.
+	await conversation.waitForIdle(context);
 	const transcript = await scan(conversation, context);
 	const usage = (await runtime.snapshot(D.UsageDoc, input.conversationId, context))?.models ?? {};
-	const answer = settled?.status === "done" ? transcript.find((entry) => entry.id === settled.answer) : undefined;
 	const lastText = text(transcript.filter((entry) => entry.kind === "pi.assistant").at(-1)?.model?.[0]);
-	const output = answer ? text(answer.model?.[0]) : limited ? lastText : "";
-	const quote = `Agent "${input.description}"`;
+	if (settled?.status === "done") limited = undefined;
+	const output = settled?.status === "done" || limited ? lastText : "";
+	const status = settled?.status === "done" ? "completed"
+		: limited ? (output ? "completed" : "failed")
+		: settled === undefined || settled.status === "unanswered" && settled.reason === "aborted" ? "killed" : "failed";
+	const kept = input.worktree && existsSync(input.worktree.path) ? await finishAgentWorktree(input.worktree).catch(() => input.worktree) : undefined;
 	const n: OutboxItem = {
 		notificationId: `${input.agentId}:${String(runtime.taskId)}`,
 		taskId: input.agentId,
@@ -370,13 +420,12 @@ async function report(D: D, docs: Pick<Kit, "Outbox" | "Agents">, input: Reporte
 		ownerSession: input.session,
 		toolUseId: input.toolUseId,
 		outputFile: input.outputFile,
-		...(answer
-			? { status: "completed", summary: `${quote} finished` }
-			: limited
-				? { status: output ? "completed" : "failed", summary: `${quote} stopped at its ${limited} limit (partial result)`, limited }
-				: settled === undefined || settled.status === "unanswered" && settled.reason === "aborted"
-					? { status: "killed", summary: `${quote} was stopped` }
-					: { status: "failed", summary: `${quote} failed: ${failure(settled)}` }),
+		status,
+		summary: limited
+			? `Agent "${input.description}" stopped at its ${limited} limit (partial result)`
+			: agentSummary(input.description, status, { error: failure(settled), byUser: (await record())?.stoppedBy === "user" }),
+		...(limited ? { limited } : {}),
+		...(kept ? { worktree: { path: kept.path, branch: kept.branch } } : {}),
 		result: output,
 		usage: {
 			subagentTokens: Object.values(usage).reduce((sum, model) => sum + (model.totalTokens ?? 0), 0),

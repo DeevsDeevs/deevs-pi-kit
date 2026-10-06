@@ -127,6 +127,17 @@ export function modelLabel(resolved: ResolvedModel): string {
 	return resolved.clampedFrom ? `${label} (${resolved.clampedFrom} is not supported)` : label;
 }
 
+/** One line per configured name with what it resolves to now; the models view of `/agents`. */
+export function modelsTable(ctx: ModelContext): string[] {
+	return Object.entries(ctx.config.models).map(([name, spec]) => {
+		try {
+			return `${name} → ${modelLabel(resolveModel(name, ctx))}`;
+		} catch {
+			return `${name} → ${spec} (does not resolve now)`;
+		}
+	});
+}
+
 function resolveSpec(spec: string, body: string, level: ModelThinkingLevel | undefined, ctx: ModelContext): ResolvedModel | Miss {
 	const { registry, lead } = ctx;
 	if (body === "inherit") return lead ? pi(lead.model, level ?? lead.level) : { reason: "there is no lead model to inherit" };
