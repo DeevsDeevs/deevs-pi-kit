@@ -74,7 +74,7 @@ The kit's only settings file is `pi-kit.json`: `~/.pi/agent/pi-kit.json` for eve
 ```
 
 - `models` and `lead` name models by pattern (`openai-codex/gpt-*-sol` is the newest sol); a project's names add to the global ones. A new session started without `--model` or `--provider` switches to `lead` at your thinking level (`"sol:xhigh"` sets one); restored sessions keep their model, and `"lead": null` turns this off.
-- `autonomy`: orchestration never waits on a dialog. `"ask"` brings one confirmation back for each collaborator change; a project's value counts once the project is trusted.
+- `autonomy`: orchestration never waits on a dialog, and the lead takes it as the standing opt-in to `Workflow`, with a hidden reminder when it turns on, every ten prompts after, and when it turns off. `"ask"` brings one confirmation back for each collaborator change; a project's value counts once the project is trusted.
 - `guard`: `"detached"`, `"forcePush"` or `"rmRf": false` in the global file turns one rule off; a project file can only add `block` patterns, and both lists add up.
 - `codexFast`: `true` sends `service_tier: "priority"` on ChatGPT-auth `openai-codex` requests.
 - `notifier`: `enabled`, `title`, `body`, `terminal`, `bell`, `terminalRequiresTty`, `minIntervalMs`, `command` (an argv with `{title}`, `{body}`, `{cwd}`, `{project}`) and `jsonl`; an untrusted project's `command` and `jsonl` are ignored.
@@ -83,7 +83,7 @@ A trusted project's old `.pi/codex-fast.json`, `.pi/notifier.json`, `.pi/runtime
 
 ## Skills
 
-Seven skills pair with the extensions above and tell the model when and how to use them: collaborators, background-tasks, chain-system, todos, wiki, arxiv, ask-user. Six stand alone and also work in Claude Code and Codex: codebase-orientation, concept-diagrams, diagnose, grill-me, validation-review, datadog-pup.
+Eight skills pair with the extensions above and tell the model when and how to use them: collaborators, background-tasks, workflow-authoring, chain-system, todos, wiki, arxiv, ask-user. A lead that is not on Anthropic, and every lead under autonomy, gets workflow-authoring in its system prompt instead. Six stand alone and also work in Claude Code and Codex: codebase-orientation, concept-diagrams, diagnose, grill-me, validation-review, datadog-pup.
 
 ## Development
 
