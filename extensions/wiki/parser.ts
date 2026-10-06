@@ -111,7 +111,7 @@ function parseList(value: string): string[] {
 }
 
 function unquote(value: string): string {
-	return value.replace(/^['\"]|['\"]$/g, "");
+	return value.replace(/^['"]|['"]$/g, "");
 }
 
 function lineNumberAt(content: string, index: number): number {
