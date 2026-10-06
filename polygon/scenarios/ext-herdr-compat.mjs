@@ -3,8 +3,8 @@ import { readFileSync } from "node:fs";
 import { herdr } from "../drive.mjs";
 
 // Interactive Pi in a Herdr pane: herdr-compat only acts in the TUI with HERDR_ENV=1.
-// ponytail: asserts the load only. Shift+Enter gives a newline with or without the extension here, and Enter sent
-// through Herdr 0.9.0 does not submit in this container, so its key mapping has no request-log check yet.
+// ponytail: asserts the load only. Shift+Enter gives a newline with or without the extension here, so its mapping has no
+// request-log check; send-text then send-keys enter does submit (collab-user-types proves it through the request log).
 export default {
 	name: "ext-herdr-compat",
 	gate: "M0",
