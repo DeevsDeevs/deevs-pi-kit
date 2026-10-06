@@ -85,6 +85,12 @@ describe("bounded Jobs", () => {
 		expect(manager.notifications(session).map((notification) => notification.taskId)).toEqual([failed.spec.id]);
 	});
 
+	it("keeps rm inside the lead's project whatever cwd the job asks for", async () => {
+		const { manager, ctx } = setup();
+		await expect(manager.start({ name: "shell-rm", command: "rm -rf etc", cwd: "/" }, ctx)).rejects.toThrow("Recursive rm outside");
+		await expect(manager.start({ name: "argv-rm", argv: ["rm", "-rf", "/home/u"], cwd: "/" }, ctx)).rejects.toThrow("Recursive rm outside");
+	});
+
 	it("rejects explicit detached-process syntax for shell and argv Jobs", async () => {
 		const { manager, ctx } = setup();
 		await expect(manager.start({ name: "shell-detach", command: "setsid node worker.js" }, ctx)).rejects.toThrow("Detached process launch");
