@@ -256,7 +256,7 @@ export async function closeAll(): Promise<void> {
 		const engine = await pending.catch(() => undefined);
 		if (!engine) continue;
 		await engine.harness.close(CTX).catch(() => {});
-		await reap(engine.dir);
+		await reap(`PI_KIT_OWNER=${engine.dir}`);
 		await unlock(join(engine.dir, "engine.lock"));
 	}
 	host.closing = false;
@@ -478,7 +478,7 @@ async function open(session: string, cwd: string): Promise<Engine> {
 	const dir = await storageDir(cwd, session);
 	await mkdir(join(dir, "out"), { recursive: true });
 	await lock(join(dir, "engine.lock"));
-	await reap(dir);
+	await reap(`PI_KIT_OWNER=${dir}`);
 	const { D, openStorage } = await (host.modules ??= loadModules());
 	const registry = D.createRegistry();
 	const kit = buildKit(D, dir, cwd);
@@ -840,13 +840,13 @@ async function runCli(docs: Pick<Kit, "Outbox" | "Agents" | "CliTask">, owner: s
 	await deliver(input.agentId, n, claimed);
 }
 
-/** One CLI run in its own process group, tagged with PI_KIT_OWNER for the reaper; resolves when it exits. */
+/** One CLI run in its own process group, tagged with PI_KIT_OWNER for the reaper and PI_KIT_WORKER for its own end. */
 async function spawnWorker(input: CliInput, owner: string, run: { resume?: string; prompt: string }, progress: CliProgress, signal: AbortSignal, onSession: (session: string) => Promise<void>): Promise<{ code: number | null; stderr: string }> {
 	const { worker } = input;
 	await mkdir(worker.dir, { recursive: true });
 	await rm(lastMessageFile(worker), { force: true });
 	if (worker.schema && worker.harness === "codex") await writeFile(schemaFile(worker), JSON.stringify(strictify(worker.schema)));
-	const child = spawn(worker.harness, cliArgv(worker, run.resume), { cwd: worker.cwd, env: { ...process.env, PI_KIT_OWNER: owner }, detached: true, stdio: ["pipe", "pipe", "pipe"] });
+	const child = spawn(worker.harness, cliArgv(worker, run.resume), { cwd: worker.cwd, env: { ...process.env, PI_KIT_OWNER: owner, PI_KIT_WORKER: input.agentId }, detached: true, stdio: ["pipe", "pipe", "pipe"] });
 	host.workers.set(input.agentId, child);
 	const kill = () => child.pid && trySignalGroup(child.pid, "SIGKILL");
 	signal.addEventListener("abort", kill, { once: true });
@@ -860,13 +860,17 @@ async function spawnWorker(input: CliInput, owner: string, run: { resume?: strin
 	});
 	child.stdin.on("error", () => {});
 	child.stdin.end(run.prompt);
+	const closed = new Promise((resolve) => child.on("close", resolve));
 	const code = await new Promise<number | null>((resolve) => {
 		child.on("error", (error) => { stderr += error.message; resolve(null); });
-		child.on("close", resolve);
+		child.on("exit", resolve);
 	});
 	signal.removeEventListener("abort", kill);
-	// Background helpers the CLI left behind (Codex syncs its plugins with git) end with the run.
+	// What the CLI leaves behind ends with the run: helpers in its group (Codex syncs its plugins with git), and tool commands
+	// it put in groups of their own (Claude's Bash), which would otherwise hold the output pipe and outlive a TaskStop.
 	kill();
+	await reap(`PI_KIT_WORKER=${input.agentId}`);
+	await Promise.race([closed, new Promise((resolve) => setTimeout(resolve, 5_000).unref())]);
 	host.workers.delete(input.agentId);
 	await session;
 	return { code, stderr };
