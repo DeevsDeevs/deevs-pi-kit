@@ -153,12 +153,19 @@ describe("runtime terminal delivery", () => {
 		expect(pendingRuntimeEvents(runtimeEvents.read())).toHaveLength(1);
 	});
 
-	it("shares one coordinator across separately loaded module graphs", async () => {
+	it("shares one delivery state across module graphs while each runs its own code", async () => {
+		const { pi, ctx, messages } = setup();
 		const first = await import("../extensions/shared/runtime-delivery.ts");
 		vi.resetModules();
 		const second = await import("../extensions/shared/runtime-delivery.ts");
-		expect(second.RuntimeDeliveryCoordinator).not.toBe(first.RuntimeDeliveryCoordinator);
-		expect(second.runtimeDelivery).toBe(first.runtimeDelivery);
+		expect(second.runtimeDelivery).not.toBe(first.runtimeDelivery);
+		expect(Object.getPrototypeOf(second.runtimeDelivery)).toBe(second.RuntimeDeliveryCoordinator.prototype);
+		first.runtimeDelivery.initialize(pi);
+		first.runtimeDelivery.restore(ctx);
+		runtimeEvents.record(pi, { type: "emit", event: terminalEvent("terminal-shared") });
+		await second.runtimeDelivery.maybeDeliver();
+		expect(messages).toHaveLength(1);
+		second.runtimeDelivery.clearContext();
 	});
 
 	it("caps every wait at two minutes, defaulting to the cap", () => {

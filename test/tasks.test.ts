@@ -223,6 +223,7 @@ describe("task delivery", () => {
 		const second = lead();
 		vi.resetModules();
 		const reloaded: Tasks = await import("../extensions/shared/tasks.ts");
+		expect(reloaded.tasks).not.toBe(shared.tasks);
 		reloaded.tasks.install(second.pi);
 		await first.start("s1");
 		await second.start("s1");
