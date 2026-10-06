@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, Model, ThinkingLevelMap } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
-import { KIT_DEFAULTS, loadKitConfig, modelLabel, newest, readCodexCatalog, resolveLead, resolveModel, type KitConfig, type ModelCatalog, type ModelContext } from "../extensions/shared/models.ts";
+import { KIT_DEFAULTS, loadKitConfig, modelLabel, modelsTable, newest, readCodexCatalog, resolveLead, resolveModel, type KitConfig, type ModelCatalog, type ModelContext } from "../extensions/shared/models.ts";
 
 const ALL_LEVELS: ThinkingLevelMap = { xhigh: "xhigh", max: "max" };
 
@@ -194,6 +194,17 @@ describe("resolveModel", () => {
 	it("stops on names that refer to each other", () => {
 		const config: KitConfig = { ...KIT_DEFAULTS, models: { ...KIT_DEFAULTS.models, a: "b", b: "a:high" } };
 		expect(failure("a", context({ config }))).toContain('Model "a" did not resolve: a → b → a:high: these names refer to each other in a loop.');
+	});
+});
+
+describe("modelsTable", () => {
+	it("shows what each name runs now, and names that do not resolve", () => {
+		const config: KitConfig = { ...KIT_DEFAULTS, models: { default: "inherit", astra: "openai-codex/gpt-*-astra", gone: "openai/gpt-9" } };
+		expect(modelsTable(context({ config }))).toEqual([
+			"default → openai-codex/gpt-6.1-sol:high",
+			"astra → openai-codex/gpt-6-astra:high",
+			"gone → openai/gpt-9 (does not resolve now)",
+		]);
 	});
 });
 

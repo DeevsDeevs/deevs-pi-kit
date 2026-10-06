@@ -8,7 +8,6 @@ const child = (agent) => script({ agent, steps: [{ id: "c1", tool: "bash", args:
 export default {
 	name: "roster",
 	gate: ["M2", "M5", "M6"],
-	pending: "step 2.1 adds ListAgents",
 	async run(t) {
 		const lead = rpc(t);
 		await lead.script({ agent: "lead", steps: [

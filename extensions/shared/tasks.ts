@@ -14,6 +14,8 @@ export interface RosterEntry {
 	ownerSession: string;
 	startedAt: number;
 	stop?: () => Promise<void>;
+	/** The shell command that opens this task in its own CLI, for `/agents attach`. */
+	attach?: string;
 }
 
 export interface TaskNotification {

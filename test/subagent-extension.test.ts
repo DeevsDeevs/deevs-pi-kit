@@ -7,7 +7,7 @@ import subagentsExtension from "../extensions/subagents/index.ts";
 import { agentTypesSection, findAgentType } from "../extensions/subagents/definitions.ts";
 
 describe("Subagent extension surface", () => {
-	it("registers Agent, TaskStop and /agents", () => {
+	it("registers Agent, TaskStop, SendMessage, ListAgents and /agents", () => {
 		const tools: string[] = [];
 		const commands: string[] = [];
 		const pi = {
@@ -16,7 +16,7 @@ describe("Subagent extension surface", () => {
 			on() {},
 		} as unknown as ExtensionAPI;
 		subagentsExtension(pi);
-		expect(tools).toEqual(["Agent", "TaskStop"]);
+		expect(tools).toEqual(["Agent", "TaskStop", "SendMessage", "ListAgents"]);
 		expect(commands).toEqual(["agents"]);
 	});
 
