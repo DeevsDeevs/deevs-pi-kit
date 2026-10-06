@@ -3,24 +3,10 @@ import { registerChainCommands } from "./commands.ts";
 import { ChainCheckpointService, registerChainCheckpoint } from "./checkpoint.ts";
 import { ChainService } from "./service.ts";
 import { registerChainTools } from "./tools.ts";
-
-const SURFACE_KEY = Symbol.for("deevs-pi-kit.chains-surface");
-
-interface ChainsSurfaceState {
-	active: boolean;
-}
-
-interface GlobalWithChainsSurface {
-	[SURFACE_KEY]?: ChainsSurfaceState;
-}
+import { claimSurface } from "../shared/surface.ts";
 
 export default function chainsExtension(pi: ExtensionAPI): void {
-	// SAFETY: This package exclusively owns the symbol-keyed hot-reload slot and writes the same interface below.
-	const globalState = globalThis as GlobalWithChainsSurface;
-	const existing = globalState[SURFACE_KEY];
-	if (existing?.active) return;
-	const surfaceState: ChainsSurfaceState = { active: true };
-	globalState[SURFACE_KEY] = surfaceState;
+	if (!claimSurface(pi, "chains")) return;
 
 	const service = new ChainService(process.cwd());
 	const checkpoints = new ChainCheckpointService(pi);
@@ -30,9 +16,5 @@ export default function chainsExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (_event, ctx) => {
 		service.setCwd(ctx.cwd);
-	});
-
-	pi.on("session_shutdown", async () => {
-		surfaceState.active = false;
 	});
 }

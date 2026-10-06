@@ -2,14 +2,10 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { TodoState } from "./state.ts";
 import { registerTodoTools } from "./tools.ts";
 import { clearTodoWidget, updateTodoWidget } from "./ui.ts";
-
-const SURFACE = Symbol.for("deevs-pi-kit.todos-surface");
+import { claimSurface } from "../shared/surface.ts";
 
 export default function todosExtension(pi: ExtensionAPI): void {
-	const global = globalThis as { [SURFACE]?: { active: boolean } };
-	if (global[SURFACE]?.active) return;
-	const surface = { active: true };
-	global[SURFACE] = surface;
+	if (!claimSurface(pi, "todos")) return;
 
 	const state = new TodoState();
 	let currentCtx: ExtensionContext | undefined;
@@ -27,8 +23,5 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		currentCtx = ctx;
 	});
 	pi.on("turn_end", async (_event, ctx) => updateTodoWidget(ctx, state));
-	pi.on("session_shutdown", async () => {
-		clearTodoWidget(currentCtx);
-		surface.active = false;
-	});
+	pi.on("session_shutdown", async () => clearTodoWidget(currentCtx));
 }

@@ -3,6 +3,19 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isToolCallEventType, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
+/** One registration per Pi process across hot reloads: false while an earlier load of the same extension is active. */
+export function claimSurface(pi: ExtensionAPI, name: string): boolean {
+	const key = Symbol.for(`deevs-pi-kit.${name}-surface`);
+	const slot: { [key: symbol]: { active: boolean } | undefined } = globalThis;
+	if (slot[key]?.active) return false;
+	const surface = { active: true };
+	slot[key] = surface;
+	pi.on("session_shutdown", () => {
+		surface.active = false;
+	});
+	return true;
+}
+
 /**
  * Keeps an inactive tool off the model's tool list until the kit skill that documents it is loaded: the model reads
  * `skills/<skill>/SKILL.md`, or the user runs `/skill:<skill>`. Pi appends the new declaration before the next request.
