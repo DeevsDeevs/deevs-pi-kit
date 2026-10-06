@@ -27,8 +27,6 @@ codex plugin marketplace add DeevsDeevs/deevs-pi-kit && codex plugin add chains@
 
 ## Quickstart
 
-Ask the lead in chat; nothing needs setting up first.
-
 ```text
 > Have a reviewer agent check HEAD while you fix the failing test.
 > Run a workflow: audit every route in src/api, then try to disprove each finding.
@@ -38,7 +36,7 @@ Ask the lead in chat; nothing needs setting up first.
 > Start a mission: move the CLI to the new config format; done when npm test passes.
 ```
 
-Agents, workflows and jobs report once as a `<task-notification>`, a monitor once per event; a collaborator's reply arrives as a message that starts a turn. Nothing opens a dialog unless `autonomy` is `false`.
+Ask in chat; nothing needs setting up first. Agents, workflows and jobs report once as a `<task-notification>`, a monitor once per event; a collaborator's reply arrives as a message that starts a turn. Nothing opens a dialog unless `autonomy` is `false`.
 
 ## What each piece does
 
@@ -56,7 +54,7 @@ Two commands: `/agents` shows tasks, collaborators, the Mission, agent types and
 
 ## pi-kit.json
 
-The only settings file: `~/.pi/agent/pi-kit.json` for every project, `.pi/pi-kit.json` for one trusted project, which wins key by key. Both are re-read on every use, so an edit applies without `/reload`. An unparsable file or an off-schema value is warned about once and skipped. Every key is optional:
+The only settings file: `~/.pi/agent/pi-kit.json` for every project, `.pi/pi-kit.json` for one project, which wins key by key. Both are re-read on every use, so an edit applies without `/reload`. An unparsable file or an off-schema value is warned about once and skipped. Every key is optional:
 
 ```json
 {
@@ -71,7 +69,7 @@ The only settings file: `~/.pi/agent/pi-kit.json` for every project, `.pi/pi-kit
 
 - `models`: names for models or patterns (`*` stands for a version, the newest wins), each with an optional `:level`. Built in: `sol`, `astra`, `luna` and `terra` (the newest OpenAI GPT of that name) and `opus`, `sonnet`, `haiku` and `fable` (Claude Code workers). A project's names add to the global ones.
 - `lead`: the model a new session switches to when started without `--model` or `--provider` (`"sol:xhigh"` sets the level too); `null` turns this off. Restored sessions keep their model.
-- `autonomy` (default `true`): nothing waits on a dialog, and the lead takes it as standing permission to run workflows. `false` asks before each collaborator change and stops Mission continues.
+- `autonomy` (default `true`): nothing waits on a dialog, and the lead takes it as standing permission to run workflows. `false` asks before each collaborator change and stops Mission continues. A project's value counts only once the project is trusted.
 - `guard`: in the global file, `"detached"`, `"forcePush"` or `"rmRf": false` turns a rule off; `block` patterns from both files add up (`"terraform destroy"` matches `terraform` with `destroy` among its arguments).
 - `codexFast`: sends `service_tier: "priority"` on ChatGPT-auth `openai-codex` requests.
 - `notifier`: `enabled`, `title`, `body`, `terminal`, `bell`, `terminalRequiresTty`, `minIntervalMs`, `command` (an argv with `{title}`, `{body}`, `{cwd}`, `{project}`) and `jsonl`; an untrusted project's `command` and `jsonl` are ignored.
