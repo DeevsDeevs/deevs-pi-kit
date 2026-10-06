@@ -2,7 +2,6 @@
 // f06eb5c60e0a4e51162d1854dda1db41892b457c (MIT).
 
 export interface ParsedCron {
-	raw: string;
 	minutes: ReadonlySet<number>;
 	hours: ReadonlySet<number>;
 	daysOfMonth: ReadonlySet<number>;
@@ -24,7 +23,6 @@ export function parseCron(expression: string): ParsedCron {
 	const daysOfWeek = new Set<number>();
 	for (const value of parseField(dayOfWeek, 0, 7, "day-of-week")) daysOfWeek.add(value === 7 ? 0 : value);
 	return {
-		raw,
 		minutes: parseField(minute, 0, 59, "minute"),
 		hours: parseField(hour, 0, 23, "hour"),
 		daysOfMonth: parseField(dayOfMonth, 1, 31, "day-of-month"),
