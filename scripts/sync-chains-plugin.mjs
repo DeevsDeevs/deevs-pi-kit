@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const CHAINS_PLUGIN_CORE = ["chains/service.ts", "chains/parser.ts", "chains/types.ts", "chains/format.ts", "shared/terms.ts", "shared/bytes.ts"];
+const CHAINS_PLUGIN_CORE = ["chains/service.ts", "chains/parser.ts", "chains/types.ts", "chains/format.ts", "chains/tool.ts", "shared/terms.ts", "shared/bytes.ts"];
 
 for (const file of CHAINS_PLUGIN_CORE) {
 	const target = join(root, "plugins/chains/lib", file);

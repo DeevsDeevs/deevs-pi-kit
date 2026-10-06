@@ -62,19 +62,17 @@ export interface ChainSearchInput {
 	branch?: string;
 	maxResults?: number;
 	contextLines?: number;
-	mode?: "lookup" | "text" | "regex";
+	searchMode?: "lookup" | "text" | "regex";
 	caseSensitive?: boolean;
-	recencyHalfLifeDays?: number;
-	recencyWeight?: number;
 }
 
 export interface ChainContextInput extends ChainLoadInput {
 	mode?: "latest" | "pack";
 	includeParents?: number;
 	recentLinks?: number;
-	searchQuery?: string;
+	query?: string;
 	searchMode?: "lookup" | "text" | "regex";
-	maxSearchMatches?: number;
+	maxResults?: number;
 	compact?: boolean;
 }
 

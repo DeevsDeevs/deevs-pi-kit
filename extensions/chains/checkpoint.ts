@@ -135,8 +135,8 @@ export class ChainCheckpointService {
 		const reasons = this.state.dueReasons.length ? ` Reasons: ${this.state.dueReasons.join("; ")}.` : "";
 		const instruction = this.state.status === "due"
 			? this.state.dueCodes.includes("context_pressure")
-				? " Context reached 80%: save a concise Chain checkpoint with chain_save before compaction drops detail. It is session metadata, not a code edit, so read-only/no-edit tasks need it too. If no Chain is active, choose a concise task-specific name."
-				: " The milestone already created this obligation: call chain_save before starting further substantive work."
+				? " Context reached 80%: save a concise Chain checkpoint (chain action save) before compaction drops detail. It is session metadata, not a code edit, so read-only/no-edit tasks need it too. If no Chain is active, choose a concise task-specific name."
+				: " The milestone already created this obligation: save a chain link before starting further substantive work."
 			: " Load this Chain before rediscovery and continue from its recorded next step.";
 		return `Chain checkpoint: ${this.state.status === "due" ? "a durable checkpoint is due" : "resume with the active Chain"} for ${target}.${reasons}${instruction} Do not claim completion while a checkpoint is due.`;
 	}
@@ -194,20 +194,21 @@ export function registerChainCheckpoint(pi: ExtensionAPI, service: ChainCheckpoi
 		const args = asRecord(toolArgs.get(event.toolCallId));
 		toolArgs.delete(event.toolCallId);
 		if (event.isError) return;
-		const details = asRecord(asRecord(event.result)?.details);
 		const chain = stringValue(args?.chain);
+		if (event.toolName !== "chain" || chain === undefined) return;
+		const action = stringValue(args?.action);
 		const parsedBranch = stringValue(args?.branch);
 		const branch = parsedBranch ?? "main";
-		if (event.toolName === "chain_save" && chain !== undefined) {
-			const filename = stringValue(asRecord(details?.link)?.filename);
+		if (action === "save") {
+			const filename = stringValue(asRecord(asRecord(asRecord(event.result)?.details)?.link)?.filename);
 			service.saved(chain, branch, filename);
 			return;
 		}
-		if ((event.toolName === "chain_load" || event.toolName === "chain_context") && chain !== undefined) {
+		if (action === "load" || action === "context") {
 			service.activate(chain, branch);
 			return;
 		}
-		if (event.toolName === "chain_fork" && chain !== undefined && parsedBranch !== undefined) {
+		if (action === "fork" && parsedBranch !== undefined) {
 			service.activate(chain, parsedBranch);
 			service.due("new Chain branch has no checkpoint", "branch_created");
 		}

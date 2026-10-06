@@ -28,6 +28,11 @@ describe("Chain checkpoint state", () => {
 			{ type: "custom", customType: CHAIN_CHECKPOINT_ENTRY, data: { type: "due", reason: "review adjudicated", at: 2 } },
 		]);
 		expect(replayed).toMatchObject({ chain: "kit", branch: "main", status: "due", dueReasons: ["review adjudicated"] });
+		// Sessions recorded before the waiver command was removed still replay their waivers.
+		expect(replayChainCheckpoint([
+			{ type: "custom", customType: CHAIN_CHECKPOINT_ENTRY, data: { type: "due", reason: "review adjudicated", at: 2 } },
+			{ type: "custom", customType: CHAIN_CHECKPOINT_ENTRY, data: { type: "waived", reason: "old", at: 3 } },
+		])).toMatchObject({ status: "saved", dueReasons: [] });
 	});
 
 	it("rejects malformed persisted operations instead of casting them into state", () => {
@@ -65,7 +70,7 @@ describe("Chain checkpoint state", () => {
 		expect(statuses.at(-1)).toBe("chain!");
 		expect(service.reminder()).toContain("checkpoint is due");
 		service.due("milestone recorded");
-		expect(service.reminder()).toContain("call chain_save before starting further substantive work");
+		expect(service.reminder()).toContain("save a chain link before starting further substantive work");
 	});
 
 	it("reminds once at 85 percent context through a prompt section and never blocks a tool", () => {
@@ -107,8 +112,8 @@ describe("Chain checkpoint state", () => {
 		expect(sent[0]).toContain("Context reached 80%");
 		expect(service.read().dueReasons).toEqual(["context usage reached 80%"]);
 
-		handlers.get("tool_execution_start")!({ toolCallId: "save", toolName: "chain_save", args: { chain: "kit", branch: "main" } });
-		handlers.get("tool_execution_end")!({ toolCallId: "save", toolName: "chain_save", isError: false, result: { details: { link: { filename: "checkpoint.md" } } } }, ctx);
+		handlers.get("tool_execution_start")!({ toolCallId: "save", toolName: "chain", args: { action: "save", chain: "kit", branch: "main" } });
+		handlers.get("tool_execution_end")!({ toolCallId: "save", toolName: "chain", isError: false, result: { details: { link: { filename: "checkpoint.md" } } } }, ctx);
 		expect(run()).toBeUndefined();
 		expect(sent).toHaveLength(1);
 

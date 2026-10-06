@@ -28,7 +28,7 @@ function hook(input: object, env: Record<string, string> = {}): { hookSpecificOu
 describe("chains plugin for Claude Code and Codex", () => {
 	it("ships exactly the Pi chain core (run npm run sync:chains-plugin after editing it)", () => {
 		const files = readdirSync(join(PLUGIN, "lib"), { recursive: true, encoding: "utf8" }).filter((file) => file.endsWith(".ts"));
-		expect(files.sort()).toEqual(["chains/format.ts", "chains/parser.ts", "chains/service.ts", "chains/types.ts", "shared/bytes.ts", "shared/terms.ts"]);
+		expect(files.sort()).toEqual(["chains/format.ts", "chains/parser.ts", "chains/service.ts", "chains/tool.ts", "chains/types.ts", "shared/bytes.ts", "shared/terms.ts"]);
 		for (const file of files) {
 			expect({ file, same: readFileSync(join(PLUGIN, "lib", file), "utf8") === readFileSync(join(ROOT, "extensions", file), "utf8") }).toEqual({ file, same: true });
 		}
@@ -42,21 +42,27 @@ describe("chains plugin for Claude Code and Codex", () => {
 		expect(Object.keys(JSON.parse(readFileSync(join(PLUGIN, "hooks/hooks.json"), "utf8")).hooks)).toEqual(["SessionStart", "Stop"]);
 	});
 
-	it("serves the six Pi chain tools over stdio and writes links Pi can read", () => {
+	it("serves the Pi chain tool over stdio and writes links Pi can read", () => {
 		const cwd = project();
 		const [init, list, save, load] = mcp(cwd, [
 			{ id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "1" } } },
 			{ method: "notifications/initialized" },
 			{ id: 2, method: "tools/list" },
-			{ id: 3, method: "tools/call", params: { name: "chain_save", arguments: { chain: "demo", title: "First", content: "# First\n\nDone.", nextStep: "Ship" } } },
-			{ id: 4, method: "tools/call", params: { name: "chain_load", arguments: { chain: "demo" } } },
+			{ id: 3, method: "tools/call", params: { name: "chain", arguments: { action: "save", chain: "demo", title: "First", content: "# First\n\nDone.", nextStep: "Ship" } } },
+			{ id: 4, method: "tools/call", params: { name: "chain", arguments: { action: "load", chain: "demo" } } },
 		]);
 		expect(init?.id).toBe(1);
-		expect(list?.result?.tools?.map((tool) => tool.name)).toEqual(["chain_save", "chain_load", "chain_list", "chain_fork", "chain_context", "chain_search"]);
+		expect(list?.result?.tools?.map((tool) => tool.name)).toEqual(["chain"]);
 		expect(save?.result?.content?.[0]?.text).toContain(join(cwd, ".chains/demo/"));
 		expect(load?.result?.content?.[0]?.text).toContain("Next step: Ship");
-		const [missing] = mcp(cwd, [{ id: 5, method: "tools/call", params: { name: "chain_load", arguments: { chain: "absent" } } }]);
+		const [missing, badMode, noAction] = mcp(cwd, [
+			{ id: 5, method: "tools/call", params: { name: "chain", arguments: { action: "load", chain: "absent" } } },
+			{ id: 6, method: "tools/call", params: { name: "chain", arguments: { action: "context", chain: "demo", mode: "full" } } },
+			{ id: 7, method: "tools/call", params: { name: "chain", arguments: { chain: "demo" } } },
+		]);
 		expect(missing?.result?.isError).toBe(true);
+		expect([badMode?.result?.isError, badMode?.result?.content?.[0]?.text]).toEqual([true, "mode must be one of pack, latest."]);
+		expect(noAction?.result?.content?.[0]?.text).toMatch(/^action must be one of save, load/);
 	});
 
 	it("refuses one stop at 80% context as the only reminder, unless a link was written since use was last below the line", () => {
@@ -98,7 +104,7 @@ describe("chains plugin for Claude Code and Codex", () => {
 	it("points a new session at the latest link and hands the link back after compaction", () => {
 		const cwd = project();
 		expect(hook({ hook_event_name: "SessionStart", source: "startup", cwd, session_id: "s" })).toBeUndefined();
-		mcp(cwd, [{ id: 1, method: "tools/call", params: { name: "chain_save", arguments: { chain: "demo", title: "Latest work", content: "# Latest work\n\nDetails here.", nextStep: "Ship it" } } }]);
+		mcp(cwd, [{ id: 1, method: "tools/call", params: { name: "chain", arguments: { action: "save", chain: "demo", title: "Latest work", content: "# Latest work\n\nDetails here.", nextStep: "Ship it" } } }]);
 		expect(hook({ hook_event_name: "SessionStart", source: "startup", cwd, session_id: "s" })?.hookSpecificOutput?.additionalContext).toContain('Latest: demo@main "Latest work". Next step: Ship it.');
 		const resumed = hook({ hook_event_name: "SessionStart", source: "compact", cwd, session_id: "s" })?.hookSpecificOutput?.additionalContext;
 		expect(resumed).toContain("Context was compacted");

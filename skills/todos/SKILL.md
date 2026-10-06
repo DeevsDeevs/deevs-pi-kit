@@ -23,7 +23,7 @@ Statuses: `pending` · `in_progress` · `done` (completed and verified enough) �
 
 Proactively for multi-step implementation/refactors, debugging with several hypotheses, validation passes with multiple checks, research that branches into decisions, multi-task requests, and subagent coordination needing visible progress.
 
-Not for one-shot answers, tiny edits, pure conversation, durable memory (`chain_save`), or replacing an issue tracker.
+Not for one-shot answers, tiny edits, pure conversation, durable memory (`chain`), or replacing an issue tracker.
 
 ## Workflow
 

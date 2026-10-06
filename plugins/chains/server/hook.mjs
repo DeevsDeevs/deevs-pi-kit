@@ -1,10 +1,9 @@
 // Chains checkpoint reminder for Claude Code and Codex, the same rule Pi applies:
 // at 80% context the first stop is refused once with a reminder to save a Chain link,
 // and after compaction the latest link is handed back so work continues from it.
-import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 const CHECKPOINT_RATIO = 0.8;
 const TAIL_BYTES = 512 * 1024;
@@ -100,7 +99,7 @@ function checkpointDue(input) {
 }
 
 function pressureReason(percent) {
-	return `Context is at ${percent}%. Save a Chain checkpoint with chain_save before compaction drops detail: `
+	return `Context is at ${percent}%. Save a Chain checkpoint (chain action save) before compaction drops detail: `
 		+ "the current request, decisions, files changed or read, blockers, pending tasks, and a structured nextStep. "
 		+ "If no Chain is active, choose a concise task-specific chain name. After saving, continue; compaction will hand the link back";
 }
@@ -120,7 +119,7 @@ async function sessionStart(input) {
 	}
 	const next = latest.nextStep ? ` Next step: ${latest.nextStep.replace(/\.?$/, ".")}` : "";
 	return `This project keeps Chains in .chains/ (${chains.length} chain(s)). Latest: ${latest.chain}@${latest.branch} "${latest.title}".${next} `
-		+ "Use chain_load or chain_search to resume prior work; save progress with chain_save.";
+		+ "Resume prior work with the chain tool (action load or search); save progress with action save.";
 }
 
 async function run(input) {
@@ -139,11 +138,9 @@ async function run(input) {
 	}
 }
 
-if (realpathSync(process.argv[1] ?? ".") === fileURLToPath(import.meta.url)) {
-	try {
-		const output = await run(JSON.parse(readFileSync(0, "utf8")));
-		if (output) process.stdout.write(JSON.stringify(output));
-	} catch (error) {
-		process.stderr.write(`chains hook: ${error instanceof Error ? error.message : String(error)}\n`);
-	}
+try {
+	const output = await run(JSON.parse(readFileSync(0, "utf8")));
+	if (output) process.stdout.write(JSON.stringify(output));
+} catch (error) {
+	process.stderr.write(`chains hook: ${error instanceof Error ? error.message : String(error)}\n`);
 }

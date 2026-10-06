@@ -85,7 +85,7 @@ For noisy corpora or major refactors: `explorer` maps sources/pages/taxonomy, `r
 
 ## Promotion from chains
 
-Use `chain_search`/`chain_context` to find stable decisions; convert only durable canonical facts into pages, citing chain links as sources. Do not dump chain summaries into pages.
+Use `chain` search and context to find stable decisions; convert only durable canonical facts into pages, citing chain links as sources. Do not dump chain summaries into pages.
 
 ## Pitfalls
 
