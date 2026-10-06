@@ -57,9 +57,6 @@ export interface DriverSpec {
 	/** Absent when the driver registers itself from its prepared Pi session instead of a Runtime bind. */
 	bind?: HostedNativeCollaboratorDriver;
 	defaultProfile?: HostedCollaboratorProfile;
-	/** Pi resolves models through providers, so an explicit model must name one. */
-	qualifiedModel: boolean;
-	personaModel: boolean;
 	command(input: DriverCommandInput): string[];
 	verify(agent: StartedAgentIdentity): boolean;
 }
@@ -74,8 +71,6 @@ interface DriverTable {
 export const DRIVERS: DriverTable = {
 	"pi": {
 		kind: "pi",
-		qualifiedModel: true,
-		personaModel: true,
 		command: piCommand,
 		verify: startedAs("pi"),
 	},
@@ -83,8 +78,6 @@ export const DRIVERS: DriverTable = {
 		kind: "claude",
 		bind: "claude-code",
 		defaultProfile: "read-only",
-		qualifiedModel: false,
-		personaModel: false,
 		command: claudeCommand,
 		verify: startedAs("claude"),
 	},
@@ -92,8 +85,6 @@ export const DRIVERS: DriverTable = {
 		kind: "codex",
 		bind: "codex",
 		defaultProfile: "read-only",
-		qualifiedModel: false,
-		personaModel: false,
 		command: codexCommand,
 		verify: startedAs("codex"),
 	},

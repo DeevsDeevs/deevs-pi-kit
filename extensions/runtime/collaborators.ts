@@ -1,5 +1,8 @@
 import { realpathSync } from "node:fs";
-import type { ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { getAgentDir, type ExtensionContext, type ToolCallEvent } from "@earendil-works/pi-coding-agent";
+import { loadKitConfig, readCodexCatalog, type ModelContext } from "../shared/models.ts";
 import { HostedRuntimeClient, HostedRuntimeClientError } from "./client.ts";
 import { CollaboratorLauncher, standingDown, type CollaboratorStart } from "./collaborator-launch.ts";
 import {
@@ -125,7 +128,7 @@ export class CollaboratorService {
 		}
 		if (input.action === "start") return this.exclusively(async () => this.startCollaborators(input, ctx, signal));
 		if (input.callerParticipantId || input.participants.some(hasStartOnlyFields)) {
-			const detail = "Only collaborator starts accept caller identity, driver, model, persona, or profile fields.";
+			const detail = "Only collaborator starts accept caller identity, model, persona, or profile fields.";
 			throw new HostedRuntimeClientError("invalid_request", detail);
 		}
 		return this.changeCollaborators(input.action, input.protocol, input.participants, ctx, signal);
@@ -159,8 +162,13 @@ export class CollaboratorService {
 		if (identity && requestsOtherIdentity(input, protocol, callerParticipantId)) {
 			throw new HostedRuntimeClientError("conflict", `Current collaborator identity is ${protocol}/${callerParticipantId}.`);
 		}
-		const piCodexModels = ctx.modelRegistry.getAll().filter((model) => model.provider === "openai-codex").map((model) => model.id);
-		const candidates = input.participants.map((participant) => resolveCollaboratorCandidate(participant, piCodexModels));
+		const models: ModelContext = {
+			config: await loadKitConfig(ctx.cwd, getAgentDir()),
+			registry: ctx.modelRegistry,
+			lead: ctx.model ? { model: ctx.model, level: this.session.pi.getThinkingLevel() } : undefined,
+			codex: readCodexCatalog(process.env.CODEX_HOME ?? join(homedir(), ".codex")),
+		};
+		const candidates = input.participants.map((participant) => resolveCollaboratorCandidate(participant, models));
 		const registration = await this.session.requireRegistration(ctx);
 		const participants = await this.session.listParticipants(registration);
 		const projectRoot = realpathSync(ctx.cwd);
@@ -432,8 +440,7 @@ function requestsOtherIdentity(input: CollaboratorManageInput, protocol: string,
 }
 
 function hasStartOnlyFields(participant: CollaboratorCandidate): boolean {
-	return participant.driver !== undefined
-		|| participant.model !== undefined
+	return participant.model !== undefined
 		|| participant.persona !== undefined
 		|| participant.profile !== undefined
 		|| participant.repo !== undefined;

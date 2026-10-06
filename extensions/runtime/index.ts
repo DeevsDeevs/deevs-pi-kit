@@ -7,7 +7,6 @@ import type { CollaboratorManageInput, CollaboratorManageResult, CollaboratorWor
 import { HostedRuntimeIntegration } from "./hosted-integration.ts";
 import { isHeld } from "./schemas/state.ts";
 
-const DRIVER_LITERALS = [Type.Literal("pi"), Type.Literal("claude-code"), Type.Literal("codex")];
 const PROFILE_LITERALS = [Type.Literal("read-only"), Type.Literal("workspace-write")];
 
 function collaboratorLines(participants: ClientParticipantStatus[]): string {
@@ -66,8 +65,7 @@ function registerCollaboratorManageTool(pi: ExtensionAPI, hosted: HostedRuntimeI
 			action: Type.Union([Type.Literal("start"), Type.Literal("stand_down"), Type.Literal("stop")]),
 			participants: Type.Array(Type.Object({
 				participantId: Type.String(),
-				driver: Type.Optional(Type.Union(DRIVER_LITERALS)),
-				model: Type.Optional(Type.String({ description: "Per driver: codex gpt-6-astra, claude-code opus, pi provider/model" })),
+				model: Type.Optional(Type.String({ description: "Picks the harness too: a configured name (sol, astra, opus), claude:<alias>, codex:<slug> or provider/id; omit for your own model" })),
 				persona: Type.Optional(Type.String({ description: "Built-in persona name" })),
 				profile: Type.Optional(Type.Union(PROFILE_LITERALS)),
 				repo: Type.Optional(Type.String({ description: "Cwd-relative Git repository to work in; writers need it when this folder is not itself a repository" })),

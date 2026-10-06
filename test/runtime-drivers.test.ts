@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 import { findAgent, loadBuiltinAgents } from "../extensions/subagents/agents.ts";
 import { resolveCollaboratorCandidate } from "../extensions/runtime/collaborator-policy.ts";
+import type { ModelContext } from "../extensions/shared/models.ts";
 import { DRIVERS, driverLaunchArgv } from "../extensions/runtime/drivers.ts";
 import type { HostedCollaboratorDriver } from "../extensions/runtime/schemas/state.ts";
 import { nativeMessagingConfiguration } from "../extensions/runtime/mcp/native.ts";
@@ -61,7 +62,10 @@ it.each(["claude-code", "codex"] as const)("collapses a multi-line built-in pers
 	const definition = findAgent(loadBuiltinAgents(), "reviewer");
 	const prompt = definition?.body.trim() ?? "";
 	expect(prompt).toMatch(/\n/);
-	const candidate = resolveCollaboratorCandidate({ participantId: "child", driver, persona: "reviewer" });
+	const registry = { getAll: () => [{ provider: "anthropic", id: "claude-opus-5-5" }], getAvailable: () => [], find: () => undefined };
+	const models = { config: { models: {}, lead: null }, registry, codex: { slugs: ["gpt-6-astra"] } } as unknown as ModelContext;
+	const candidate = resolveCollaboratorCandidate({ participantId: "child", model: driver === "codex" ? "codex:gpt-6-astra" : "claude:opus", persona: "reviewer" }, models);
+	expect(candidate.driver).toBe(driver);
 	expect(candidate.profile).toBe("read-only");
 	const input = { profile: candidate.profile, cwd: "/project", persona: candidate.persona };
 	const argv = launchArgv(driver, input);
