@@ -30,7 +30,7 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 	private readonly messaging: MessagingClient;
 	private readonly native: NativeAgentService;
 	private readonly collaborators: CollaboratorService;
-	/** What each collaborator was started with, so a message to a stood-down one resumes it the same way. */
+	// ponytail: in memory only; after a lead restart a stood-down collaborator resumes with default settings (a Pi one keeps its profile from its session file).
 	private readonly launched = new Map<string, CollaboratorCandidate>();
 
 	constructor(pi: ExtensionAPI, root = defaultRuntimeRoot()) {

@@ -18,7 +18,7 @@ import type { ManagedAgentPlan, NativeAgentService } from "./native-agents.ts";
 import { auth, strictObject, text, type ClientParticipantStatus, type LiveClientRegistration, type RegistrationAuth } from "./responses.ts";
 import type { RuntimeSession } from "./runtime-session.ts";
 import type { CollaboratorLaunch, ManagedAgentSession } from "./session-record.ts";
-import { COLLABORATOR_ENV, HOSTED_SESSION_ENTRY, type HostedSessionRecord } from "./session-restore.ts";
+import { COLLABORATOR_ENV, HOSTED_SESSION_ENTRY, type HostedSessionRecord } from "./session-record.ts";
 
 /** The authority one confirmed start batch shares across its launches. */
 export interface CollaboratorStart {

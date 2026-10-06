@@ -2,14 +2,13 @@ import { Type, type Static } from "typebox";
 import { HashText, IdText, ModelText, ParticipantNameText, PathText, STRICT_OBJECT, boundedText } from "./common.ts";
 import { HostedCollaboratorProfileSchema, HostedNativeCollaboratorDriverSchema, HostedParticipantStateSchema } from "./state.ts";
 
-/** Restored identity never carries revive authorization: that comes from the environment, once. */
+/** The name a session holds: its protocol and participant ID, and the key and generation Runtime last gave it. */
 export const ParticipantIdentitySchema = Type.Object({
 	protocol: ParticipantNameText,
 	participantId: ParticipantNameText,
 	participantKey: Type.Optional(IdText),
 	generation: Type.Optional(IdText),
 	disposition: HostedParticipantStateSchema,
-	reviveAuthorized: Type.Optional(Type.Literal(true)),
 }, STRICT_OBJECT);
 
 const CollaboratorPersonaSchema = Type.Object({
