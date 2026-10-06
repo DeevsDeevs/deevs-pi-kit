@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
@@ -89,7 +89,10 @@ export function createMission(cwd: string, title: string, goal: string, done: st
 /** Writes state.json, after appending `log` to log.md under the time and the status. */
 export function saveMission(mission: Mission, log?: string): void {
 	if (log !== undefined) appendFileSync(join(mission.dir, "log.md"), `\n## ${new Date().toISOString()} ${mission.state.status}\n\n${log.trim()}\n`);
-	writeFileSync(join(mission.dir, "state.json"), `${JSON.stringify(mission.state, null, 2)}\n`);
+	// A torn state.json would load the mission as legacy and pause it.
+	const tmp = join(mission.dir, `state.json.${process.pid}`);
+	writeFileSync(tmp, `${JSON.stringify(mission.state, null, 2)}\n`);
+	renameSync(tmp, join(mission.dir, "state.json"));
 	mission.legacy = false;
 }
 

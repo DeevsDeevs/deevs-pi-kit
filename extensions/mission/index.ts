@@ -1,12 +1,11 @@
-import { execFile } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isAutonomous } from "../shared/autonomy.ts";
 import { ownsProcessIdentity, readProcessIdentity } from "../shared/process-group.ts";
 import { tasks } from "../shared/tasks.ts";
+import { git } from "../shared/worktree.ts";
 import { createMission, currentMission, missionBrief, reviewPath, saveMission, STATUSES, type Mission, type MissionStatus, type Owner } from "./store.ts";
 
 const STALL_CONTINUES = 3;
@@ -14,7 +13,6 @@ const REVIEW_ROUNDS = 2;
 const MISSION_CONTINUE = "mission-continue";
 const MISSION_NOTICE = "mission-notice";
 
-const execFileAsync = promisify(execFile);
 const OPEN: readonly MissionStatus[] = ["active", "waiting_user"];
 
 const GUIDANCE = [
@@ -25,13 +23,7 @@ const GUIDANCE = [
 let self: Promise<Owner> | undefined;
 const thisProcess = (): Promise<Owner> => self ??= readProcessIdentity(process.pid).then((identity) => ({ pid: process.pid, identity }));
 
-async function gitHead(cwd: string): Promise<string | undefined> {
-	try {
-		return (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd, timeout: 5_000 })).stdout.trim() || undefined;
-	} catch {
-		return undefined;
-	}
-}
+const gitHead = (cwd: string): Promise<string | undefined> => git(cwd, ["rev-parse", "HEAD"]).then((out) => out.trim() || undefined, () => undefined);
 
 const text = (value: string, details: Record<string, string | boolean>) => ({ content: [{ type: "text" as const, text: value }], details });
 
