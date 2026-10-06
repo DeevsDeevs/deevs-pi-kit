@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { rpc } from "../drive.mjs";
-import { requests, runs } from "../look.mjs";
+import { requests, runs, settled } from "../look.mjs";
 
 export default {
 	name: "jobs-idle-wake",
@@ -14,7 +14,7 @@ export default {
 		] });
 		await lead.until((e) => e.type === "agent_settled", 30_000, "the first turn to settle");
 		await lead.until((_, events) => runs(events) >= 2, 30_000, "a lead run started by the finished job, with no prompt");
-		await lead.until((_, events) => events.filter((e) => e.type === "agent_settled").length >= 2, 30_000, "the woken turn to settle");
+		await lead.until((_, events) => settled(events) >= 2, 30_000, "the woken turn to settle");
 		assert.deepEqual(requests(t).filter((r) => r.agent === "lead").map((r) => r.step), ["s1", "s2", "s3"]);
 	},
 };

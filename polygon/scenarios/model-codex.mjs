@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { fixtureModels, rpc, script } from "../drive.mjs";
+import { agentStep, fixtureModels, rpc } from "../drive.mjs";
 import { requests, toolCalls } from "../look.mjs";
 
-const agent = (id, name, model) => ({ id, tool: "Agent", args: { description: `codex ${name}`, prompt: script({ agent: name, steps: [{ id: "c1", text: "ran" }] }), model, run_in_background: false } });
+const agent = (id, name, model) => agentStep(id, { agent: name, steps: [{ id: "c1", text: "ran" }] }, { model, run_in_background: false });
 
 export default {
 	name: "model-codex",

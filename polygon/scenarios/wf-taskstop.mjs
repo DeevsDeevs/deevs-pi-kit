@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { rpc, sleep } from "../drive.mjs";
-import { poll, procs, taskNotifications, toolCalls } from "../look.mjs";
+import { eventually, rpc, sleep } from "../drive.mjs";
+import { procs, taskNotifications, toolCalls } from "../look.mjs";
 import { launches, say } from "./wf-shapes.mjs";
 
 // TaskStop by run id: the agents stop, the run record says killed, and no notification follows, as in CC.
@@ -28,8 +28,8 @@ export default {
 		assert.equal(stop.isError, false, stop.text);
 		assert.ok(stop.text.startsWith(`Successfully stopped task: ${run.taskId} (One agent that never ends)`), stop.text);
 		const record = join(run.transcriptDir, `${run.runId}.json`);
-		await poll(() => existsSync(record) && JSON.parse(readFileSync(record, "utf8")).status === "killed", 10_000, "the killed run record");
-		await poll(() => procs(t).every((p) => p.pid === lead.pid || !p.argv.includes("sleep")), 10_000, "the agent's bash to exit");
+		await eventually(() => existsSync(record) && JSON.parse(readFileSync(record, "utf8")).status === "killed", 10_000, "the killed run record");
+		await eventually(() => procs(t).every((p) => p.pid === lead.pid || !p.argv.includes("sleep")), 10_000, "the agent's bash to exit");
 		await sleep(2_000);
 		assert.equal(taskNotifications(lead.events).length, 0, "a stopped workflow notified");
 	},

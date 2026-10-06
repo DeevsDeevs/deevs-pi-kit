@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { rpc, script } from "../drive.mjs";
-import { requests, taskNotifications } from "../look.mjs";
+import { requests, taskNotifications, toolCalls } from "../look.mjs";
 
 // An Agent with no model runs the lead's model and thinking level.
 export default {
@@ -14,8 +14,7 @@ export default {
 		await lead.until((_, events) => taskNotifications(events).length >= 1, 30_000, "the agent's report");
 		// Read after the run: on --live the kit may switch a new session's lead to the newest sol just after start.
 		const { data: state } = await lead.send({ type: "get_state" });
-		const launched = lead.events.find((e) => e.type === "tool_execution_end" && e.toolName === "Agent").result.content[0].text;
-		assert.match(launched, new RegExp(`^Model: ${state.model.provider}/${state.model.id}:${state.thinkingLevel}$`, "m"));
+		assert.match(toolCalls(lead.events)[0].text, new RegExp(`^Model: ${state.model.provider}/${state.model.id}:${state.thinkingLevel}$`, "m"));
 		const [leadModel] = requests(t).filter((r) => r.agent === "lead").map((r) => r.model);
 		assert.deepEqual([...new Set(requests(t).filter((r) => r.agent === "child").map((r) => r.model))], [leadModel]);
 	},

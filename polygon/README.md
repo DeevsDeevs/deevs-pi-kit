@@ -59,7 +59,7 @@ export default {
 
 ## Size ceilings
 
-`ceilings.json` caps the production lines (`.ts`, `.mjs`, `.js`) of each area; `size-ceilings` fails when one is over. A step that adds code raises its area by its stated lines in the same commit, and a step that deletes code lowers it.
+`ceilings.json` caps the production lines (`.ts`, `.mjs`, `.js`) of each area; `size-ceilings` fails when one is over. A step that adds code raises its area by its stated lines in the same commit, and a step that deletes code lowers it. An area set above the plan's number says why in its `why` field.
 
 ## Live tier
 

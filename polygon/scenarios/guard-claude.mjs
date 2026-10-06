@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { rpc, script } from "../drive.mjs";
-import { dialogs, requests, taskNotes } from "../look.mjs";
+import { dialogs, requests, taskNotifications } from "../look.mjs";
 
 export const BLOCKED = ["nohup sleep 1 &", "git push --force origin main", "rm -rf ~/x"];
 export const ALLOWED = "rm -rf /tmp/polygon-guard-x";
@@ -16,7 +16,7 @@ export async function guardThroughCli(t, { model, tool, arg }) {
 		{ id: "s1", tool: "Agent", args: { description: "guarded worker", prompt: script({ agent: "gw", steps: [...steps, { id: "c1", text: "guarded" }] }), model, subagent_type: "Explore" } },
 		{ id: "s2", text: "launched" },
 	] });
-	await lead.until((_, events) => taskNotes(events).length >= 1, 90_000, "the worker's report");
+	await lead.until((_, events) => taskNotifications(events).length >= 1, 90_000, "the worker's report");
 	const seen = requests(t).filter((r) => r.agent === "gw");
 	assert.deepEqual(seen.map((r) => r.step), ["g0", "g1", "g2", "g3", "c1"]);
 	assert.deepEqual(seen.map((r) => r.marks.length), [0, 0, 1, 2, 3], "a command was not blocked by the guard hook, or the allowed one was");

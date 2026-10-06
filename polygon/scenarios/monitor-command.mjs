@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { rpc } from "../drive.mjs";
-import { poll, procs, taskNotifications, toolCalls } from "../look.mjs";
+import { eventually, rpc } from "../drive.mjs";
+import { procs, taskNotifications, toolCalls } from "../look.mjs";
 
 // A three-line script ends with its exit code; `yes` is suppressed, then stopped; TaskStop leaves no process.
 export default {
@@ -33,6 +33,6 @@ export default {
 		assert.equal(of(firehose).at(-1).status, "failed");
 
 		assert.deepEqual(of(quiet), [], "a monitor stopped with TaskStop notified");
-		await poll(() => procs(t).every((p) => p.pid === lead.pid || !["sleep", "yes"].includes(p.argv[0])), 10_000, "every monitor script to exit");
+		await eventually(() => procs(t).every((p) => p.pid === lead.pid || !["sleep", "yes"].includes(p.argv[0])), 10_000, "every monitor script to exit");
 	},
 };

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { rpc } from "../drive.mjs";
-import { entries, requests, runs } from "../look.mjs";
+import { rpc, sleep } from "../drive.mjs";
+import { entries, requests, runs, settled } from "../look.mjs";
 
 // A job finishes while the lead is busy, so its notification is steered; clear_queue (Esc) drops it before the next tool round.
 export default {
@@ -16,9 +16,9 @@ export default {
 			{ id: "s4", text: "woke" },
 		] });
 		await lead.until((e) => e.type === "tool_execution_start" && e.toolName === "bash", 30_000, "the lead's bash call");
-		await new Promise((resolve) => setTimeout(resolve, 3_000));
+		await sleep(3_000);
 		await lead.send({ type: "clear_queue" });
-		await lead.until((_, events) => events.filter((e) => e.type === "agent_settled").length >= 2, 30_000, "the redelivered notification's turn to settle");
+		await lead.until((_, events) => settled(events) >= 2, 30_000, "the redelivered notification's turn to settle");
 
 		const kinds = entries(t).filter((e) => e.type === "message" || (e.type === "custom_message" && e.customType === "task-notification"))
 			.map((e) => e.type === "custom_message" ? "notification" : e.message.role);

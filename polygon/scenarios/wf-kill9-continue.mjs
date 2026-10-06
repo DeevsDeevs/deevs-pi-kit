@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { rpc } from "../drive.mjs";
-import { poll, requests, sessionNotes, taskNotifications } from "../look.mjs";
+import { eventually, rpc, sleep } from "../drive.mjs";
+import { requests, sessionNotes, taskNotifications } from "../look.mjs";
 import { journal, launches, out, say } from "./wf-shapes.mjs";
 
 // kill -9 while the second of three agents runs bash: on reopen the run continues by itself, no finished agent asks
@@ -21,11 +21,11 @@ export default {
 		].join("\n");
 		const lead = rpc(t);
 		await lead.script({ agent: "lead", steps: [{ id: "s1", tool: "Workflow", args: { script: source } }, { id: "s2", text: "launched" }] });
-		await poll(() => existsSync(marker), 30_000, "the second agent's bash to start");
+		await eventually(() => existsSync(marker), 30_000, "the second agent's bash to start");
 		const [run] = launches(lead.events);
 		await lead.restart();
-		await poll(() => sessionNotes(t).length > 0, 60_000, "the workflow notification in the session");
-		await new Promise((r) => setTimeout(r, 1_000));
+		await eventually(() => sessionNotes(t).length > 0, 60_000, "the workflow notification in the session");
+		await sleep(1_000);
 		assert.equal(sessionNotes(t).length, 1, "the run notified more than once");
 		const [note] = taskNotifications(lead.events);
 		assert.equal(note.status, "completed");

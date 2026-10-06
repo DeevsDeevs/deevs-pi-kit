@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { rpc } from "../drive.mjs";
+import { rpc, sleep } from "../drive.mjs";
+import { settled } from "../look.mjs";
 
 const lines = (file) => existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean) : [];
 
@@ -21,8 +22,8 @@ export default {
 		] });
 		await lead.until((e) => e.type === "agent_settled", 30_000, "agent_settled");
 		// The command runs detached; give it a moment, then make sure a second one does not follow.
-		for (let i = 0; i < 50 && !lines(log).length; i++) await new Promise((r) => setTimeout(r, 100));
-		await new Promise((r) => setTimeout(r, 1_000));
+		for (let i = 0; i < 50 && !lines(log).length; i++) await sleep(100);
+		await sleep(1_000);
 		assert.deepEqual(lines(log), ["repo"], "one settled turn of two model turns runs the notifier command once");
 	},
 };

@@ -1,14 +1,13 @@
 import assert from "node:assert/strict";
 import { realpathSync } from "node:fs";
-import { setTimeout as sleep } from "node:timers/promises";
-import { rpc } from "../drive.mjs";
-import { requests, toolCalls } from "../look.mjs";
+import { agentStep, rpc, sleep } from "../drive.mjs";
+import { requests, settled, toolCalls } from "../look.mjs";
 
 const writer = (agent, file) => ({ agent, steps: [
 	{ id: `${agent}a`, tool: "bash", args: { command: `printf ${agent} > ${file} && git add ${file} && git commit -qm ${agent}` } },
 	{ id: `${agent}b`, text: "committed" },
 ] });
-const spawn = (id, description, child) => ({ id, tool: "Agent", args: { description, prompt: `POLYGON ${JSON.stringify(child)}`, isolation: "worktree" } });
+const worktree = { isolation: "worktree" };
 
 export default {
 	name: "worktree-two-writers",
@@ -16,9 +15,9 @@ export default {
 	async run(t) {
 		const lead = rpc(t);
 		await lead.script({ agent: "lead", steps: [
-			spawn("s1", "first writer", writer("w1", "one.txt")),
-			spawn("s2", "second writer", writer("w2", "two.txt")),
-			spawn("s3", "idle writer", { agent: "noop", steps: [{ id: "n1", text: "nothing to change" }] }),
+			agentStep("s1", writer("w1", "one.txt"), worktree),
+			agentStep("s2", writer("w2", "two.txt"), worktree),
+			agentStep("s3", { agent: "noop", steps: [{ id: "n1", text: "nothing to change" }] }, worktree),
 			{ id: "s4", text: "launched" },
 		] });
 		await lead.until((e) => e.type === "agent_settled", 30_000, "the launching turn to settle");

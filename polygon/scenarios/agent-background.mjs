@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { rpc, script } from "../drive.mjs";
-import { dialogs, requests, taskNotifications, toolCalls } from "../look.mjs";
+import { dialogs, requests, settled, taskNotifications, toolCalls } from "../look.mjs";
 
 // The bash step outlasts the lead's launch turn, so the reports wake an idle lead.
 const child = (n) => script({ agent: `child${n}`, steps: [{ id: `w${n}`, tool: "bash", args: { command: "sleep 1" } }, { id: `c${n}`, text: `child ${n} done` }] });
@@ -16,7 +16,7 @@ export default {
 			{ id: "s4", text: "launched" },
 		] });
 		await lead.until((_, events) => taskNotifications(events).length >= 3, 60_000, "3 task notifications");
-		await lead.until((_, events) => events.filter((e) => e.type === "agent_settled").length >= 2, 30_000, "the woken turns to settle");
+		await lead.until((_, events) => settled(events) >= 2, 30_000, "the woken turns to settle");
 		const calls = toolCalls(lead.events).filter((c) => c.name === "Agent");
 		assert.deepEqual(calls.map((c) => [c.isError, c.details?.status]), [[false, "async_launched"], [false, "async_launched"], [false, "async_launched"]]);
 		const notes = taskNotifications(lead.events);

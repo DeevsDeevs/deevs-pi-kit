@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { fixtureModels, herdr, rpc, script } from "../drive.mjs";
-import { agentIds, taskNotes, toolCalls } from "../look.mjs";
+import { agentIds, taskNotifications, toolCalls } from "../look.mjs";
 
 // The roster labels agents and collaborators by kind. M5 adds job and monitor rows.
 const child = (agent) => script({ agent, steps: [{ id: "c1", tool: "bash", args: { command: "sleep 4" } }, { id: "c2", text: "done" }] });
@@ -31,6 +31,6 @@ export default {
 		assert.match(row(job.details.taskId), /^job\b/, "the job row is not labelled by kind");
 		assert.match(row(monitor.details.taskId), /^monitor\b/, "the monitor row is not labelled by kind");
 		assert.match(row("peer"), /^collaborator\b/, "the collaborator row is missing or not labelled by kind");
-		await lead.until((_, events) => taskNotes(events).length >= 4, 30_000, "the agents, the job and the monitor to finish");
+		await lead.until((_, events) => taskNotifications(events).length >= 4, 30_000, "the agents, the job and the monitor to finish");
 	},
 };

@@ -3,5 +3,5 @@
   "subagents": { "paths": ["extensions/subagents", "extensions/shared/tasks.ts", "extensions/shared/models.ts"], "max": 4000 },
   "runtime": { "paths": ["extensions/runtime"], "max": 6900 },
   "missions": { "paths": ["extensions/mission"], "max": 500 },
-  "polygon": { "paths": ["polygon"], "max": 2800 }
+  "polygon": { "paths": ["polygon"], "max": 3268, "why": "72 scenarios at about 34 lines against the plan's 69 at 25: collaborators, monitors, workflows and CLI workers each gained end-to-end scenarios after the plan, and the shared readers and step builders already live in drive.mjs and look.mjs" }
 }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { rpc, script, sleep } from "../drive.mjs";
-import { requests, taskNotes, toolCalls } from "../look.mjs";
+import { requests, taskNotifications, toolCalls } from "../look.mjs";
 
 const MARK = "polygon-queued-mark";
 const SLOTS = 16;
@@ -25,10 +25,10 @@ export default {
 		const send = toolCalls(lead.events).find((c) => c.name === "SendMessage");
 		assert.deepEqual([send.isError, send.details?.outcome], [false, "steered"]);
 		assert.equal(requests(t).filter((r) => r.agent === "queued").length, 0, "the queued agent ran before a slot freed");
-		await lead.until((_, events) => taskNotes(events).length >= SLOTS + 1, 90_000, "every agent's notification");
+		await lead.until((_, events) => taskNotifications(events).length >= SLOTS + 1, 90_000, "every agent's notification");
 		await sleep(2_000);
 		const queuedId = toolCalls(lead.events).filter((c) => c.name === "Agent").at(-1).details.agentId;
-		assert.equal(taskNotes(lead.events).filter((n) => n.taskId === queuedId).length, 1, "the queued agent notified more than once");
+		assert.equal(taskNotifications(lead.events).filter((n) => n.taskId === queuedId).length, 1, "the queued agent notified more than once");
 		assert.ok(requests(t).some((r) => r.agent === "queued" && r.step === "q2"), "the message never reached the queued agent");
 	},
 };

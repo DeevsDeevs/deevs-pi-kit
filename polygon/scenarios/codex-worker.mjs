@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { exec, rpc, script } from "../drive.mjs";
-import { dialogs, requests, taskNotes } from "../look.mjs";
+import { dialogs, requests, taskNotifications } from "../look.mjs";
 import { cli, SCHEMA, workerThenResume } from "./claude-worker.mjs";
 
 const WRITE = "`sandbox_mode` is `workspace-write`";
@@ -32,8 +32,8 @@ export default {
 		const lead = rpc(t);
 		const child = { agent: "xw", steps: [{ id: "c1", text: "first" }, { id: "c2", on: "polygon-resume", text: "resumed" }] };
 		await lead.script({ agent: "lead", steps: workerThenResume("codex:puppet", child, "polygon-resume").map((s) => (s.id === "s1" ? { ...s, args: { ...s.args, subagent_type: "general-purpose" } } : s)) });
-		await lead.until((_, events) => taskNotes(events).length >= 2, 90_000, "the run's and the resumed run's notifications");
-		const notes = taskNotes(lead.events);
+		await lead.until((_, events) => taskNotifications(events).length >= 2, 90_000, "the run's and the resumed run's notifications");
+		const notes = taskNotifications(lead.events);
 		assert.deepEqual(notes.map((n) => n.status), ["completed", "completed"]);
 		assert.equal(notes[0].taskId, notes[1].taskId);
 		const xw = requests(t).filter((r) => r.agent === "xw");

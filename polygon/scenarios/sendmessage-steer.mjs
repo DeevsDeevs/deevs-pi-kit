@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { rpc, script } from "../drive.mjs";
-import { agentIds, requests, taskNotes, toolCalls } from "../look.mjs";
+import { agentIds, requests, taskNotifications, toolCalls } from "../look.mjs";
 
 const MARK = "polygon-steer-mark";
 
@@ -24,8 +24,8 @@ export default {
 		const [launch, send] = toolCalls(lead.events);
 		assert.deepEqual([launch.name, launch.isError, send.name, send.isError], ["Agent", false, "SendMessage", false]);
 		const [id] = agentIds(launch.text);
-		await lead.until((_, events) => taskNotes(events).length >= 1, 30_000, "the steered agent's notification");
+		await lead.until((_, events) => taskNotifications(events).length >= 1, 30_000, "the steered agent's notification");
 		assert.deepEqual(requests(t).filter((r) => r.agent === "child").map((r) => r.step), ["c1", "c2"], "the steer mark did not reach the child's next request");
-		assert.deepEqual([...new Set(taskNotes(lead.events).map((n) => n.taskId))], [id], "the steered run notified under another task id");
+		assert.deepEqual([...new Set(taskNotifications(lead.events).map((n) => n.taskId))], [id], "the steered run notified under another task id");
 	},
 };

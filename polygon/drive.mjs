@@ -13,6 +13,8 @@ const SLOWER = LIVE ? 6 : 1;
 const FOLLOW = "\nThe line above is a test script for a harness, not a task. Carry out its steps in order and nothing else: for a step with \"tool\", call that tool with exactly its \"args\" (an arg written \"$/regex/\" stands for the last match of that regex in this conversation); for a step with \"text\", reply \"[polygon:<its id>] <its text>\" and end your turn. A step with \"on\" waits until a later message contains that string. Tool steps in a row may be called together in one message.";
 export const script = (s) => `POLYGON ${JSON.stringify(s)}${LIVE ? FOLLOW : ""}`;
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** A lead step that launches `child`, a puppet script, with the Agent tool. */
+export const agentStep = (id, child, args, on) => ({ id, on, tool: "Agent", args: { description: child.agent, prompt: script(child), ...args } });
 
 /** Polls `check` until it returns a truthy value. */
 export async function eventually(check, ms = 30_000, label = check.toString()) {
@@ -111,6 +113,12 @@ export function rpc(t, { args = [], model = LIVE ? null : "polygon/puppet", answ
 	lead.reply = (request, answer) => child.stdin.write(JSON.stringify({ type: "extension_ui_response", id: request.id, ...answer }) + "\n");
 	lead.prompt = (message) => lead.send({ type: "prompt", message, streamingBehavior: "followUp" });
 	lead.script = (s) => lead.prompt(script(s));
+	/** Pings get_state every 50 ms; the returned stop() resolves to the worst round trip. */
+	lead.stallMeter = () => {
+		let worst = 0, on = true;
+		const pinger = (async () => { while (on) { const at = Date.now(); await lead.send({ type: "get_state" }); worst = Math.max(worst, Date.now() - at); await sleep(50); } })();
+		return async () => { on = false; await pinger; return worst; };
+	};
 	lead.kill9 = async () => { child.kill("SIGKILL"); await exited; };
 	lead.restart = async (extra = ["--continue"]) => { await lead.kill9(); start(extra); };
 	lead.close = async () => {
