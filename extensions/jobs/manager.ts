@@ -4,11 +4,10 @@ import { EventEmitter } from "node:events";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { guardArgv, guardShell, loadGuardConfig } from "../shared/guard.ts";
 import { ownsProcessIdentity, quiesceProcessGroup, readProcessIdentity, trySignalGroup } from "../shared/process-group.ts";
-import { requestRuntimeDelivery } from "../shared/runtime-delivery.ts";
-import { consumeRuntimeEvent, runtimeEvents } from "../shared/runtime-events.ts";
+import { jobSummary, tasks, type JobEnd, type TaskNotification } from "../shared/tasks.ts";
 import { JobBuffer } from "./buffer.ts";
 import type { JobChunk, JobReadInput, JobReadResult, JobRecord, JobRuntime, JobSpec, JobStartInput, JobStatus, JobStream } from "./types.ts";
 
@@ -36,14 +35,6 @@ export class JobManager {
 	private readonly events = new EventEmitter();
 	private parentSessionFile?: string;
 
-	private pi: ExtensionAPI;
-
-	constructor(pi: ExtensionAPI) { this.pi = pi; }
-
-	setExtensionApi(pi: ExtensionAPI): void {
-		this.pi = pi;
-	}
-
 	onChange(listener: (job: JobRecord) => void): () => void {
 		this.events.on("change", listener);
 		return () => this.events.off("change", listener);
@@ -60,7 +51,7 @@ export class JobManager {
 		let cleared = 0;
 		for (const record of candidates) {
 			if (!TERMINAL.has(record.runtime.status)) continue;
-			consumeRuntimeEvent(this.pi, `terminal:${record.spec.id}:${record.spec.generation}`, this.parentSessionFile ?? "job-manager");
+			tasks.remove(record.spec.id);
 			this.records.delete(record.spec.id);
 			this.buffers.delete(record.spec.id);
 			rmSync(record.spec.artifactsDir, { recursive: true, force: true });
@@ -78,6 +69,7 @@ export class JobManager {
 	async start(input: JobStartInput, ctx: ExtensionContext, signal?: AbortSignal): Promise<JobRecord> {
 		validateStart(input);
 		const parentSessionFile = ctx.sessionManager.getSessionFile();
+		const ownerSession = ctx.sessionManager.getSessionId();
 		await this.switchSession(parentSessionFile);
 		const guardOptions = { cwd: path.resolve(input.cwd ?? ctx.cwd), config: loadGuardConfig(ctx.cwd) };
 		const blocked = input.command ? guardShell(input.command, guardOptions) : guardArgv(input.argv ?? [], guardOptions);
@@ -101,6 +93,7 @@ export class JobManager {
 			readyTimeoutMs: input.readyPattern ? clamp(input.readyTimeoutMs, 100, 5 * 60_000, 30_000) : undefined,
 			createdAt: Date.now(),
 			parentSessionFile,
+			ownerSession,
 			artifactsDir,
 			runtimePath: path.join(artifactsDir, "runtime.json"),
 			logPath: path.join(artifactsDir, "combined.log"),
@@ -112,7 +105,7 @@ export class JobManager {
 		writeJson(spec.runtimePath, runtime);
 		this.records.set(id, record);
 		this.buffers.set(id, new JobBuffer(spec.maxBufferBytes));
-		runtimeEvents.record(this.pi, { type: "activate", source: { kind: "job", id }, generation });
+		tasks.register({ id, kind: "job", description: spec.name, status: "running", ownerSession, startedAt: runtime.startedAt, stop: async () => { await this.stop(id); } });
 
 		const childEnv = { ...process.env, ...input.env, DEEVS_PI_JOB_ID: id, DEEVS_PI_JOB_GENERATION: generation };
 		const child = input.argv
@@ -181,8 +174,8 @@ export class JobManager {
 		return Promise.all(ids.map((id) => this.waitOne(id, waitMs, signal)));
 	}
 
-	consumeTerminal(records: JobRecord[], claimant: string): void {
-		for (const record of records) if (TERMINAL.has(record.runtime.status)) consumeRuntimeEvent(this.pi, `terminal:${record.spec.id}:${record.spec.generation}`, claimant);
+	notifications(ownerSession: string): TaskNotification[] {
+		return [...this.records.values()].filter((record) => record.spec.ownerSession === ownerSession && TERMINAL.has(record.runtime.status)).map((record) => jobNotification(record, ownerSession));
 	}
 
 	async stop(id: string, status: "cancelled" | "timeout" | "failed" = "cancelled", error?: string): Promise<JobRecord> {
@@ -372,6 +365,7 @@ export class JobManager {
 		writeJson(record.spec.runtimePath, record.runtime);
 		this.emit(record);
 		if (this.hidden.delete(record.spec.id)) {
+			tasks.remove(record.spec.id);
 			this.records.delete(record.spec.id);
 			this.buffers.delete(record.spec.id);
 		} else {
@@ -402,24 +396,10 @@ export class JobManager {
 	}
 
 	private emitTerminal(record: JobRecord): void {
-		if (record.spec.parentSessionFile !== this.parentSessionFile) return;
-		runtimeEvents.record(this.pi, { type: "activate", source: { kind: "job", id: record.spec.id }, generation: record.spec.generation });
-		runtimeEvents.record(this.pi, {
-			type: "emit",
-			event: {
-				version: 1,
-				id: `terminal:${record.spec.id}:${record.spec.generation}`,
-				dedupeKey: `job:${record.spec.id}:${record.spec.generation}:terminal`,
-				source: { kind: "job", id: record.spec.id, generation: record.spec.generation },
-				type: "terminal",
-				status: jobTerminalStatus(record.runtime.status),
-				delivery: "notify",
-				createdAt: record.runtime.endedAt ?? Date.now(),
-				summary: record.runtime.error || `${record.spec.name} ${record.runtime.status}`,
-				artifactRef: record.spec.artifactsDir,
-			},
-		});
-		requestRuntimeDelivery();
+		if (!record.spec.ownerSession) return;
+		const notification = jobNotification(record, record.spec.ownerSession);
+		tasks.update(record.spec.id, { status: notification.status });
+		void tasks.notify(notification);
 	}
 
 	private emit(record: JobRecord): void {
@@ -463,8 +443,25 @@ export class JobManager {
 	}
 }
 
-function jobTerminalStatus(status: JobStatus): "completed" | "failed" | "cancelled" | "timeout" | "lost" {
-	return TERMINAL.has(status) ? status as "completed" | "failed" | "cancelled" | "timeout" | "lost" : "failed";
+function jobNotification({ spec, runtime }: JobRecord, ownerSession: string): TaskNotification {
+	return {
+		notificationId: `${spec.id}:${spec.generation}`,
+		taskId: spec.id,
+		kind: "job",
+		ownerSession,
+		outputFile: spec.logPath,
+		status: runtime.status === "completed" ? "completed" : runtime.status === "cancelled" ? "killed" : "failed",
+		summary: jobSummary(spec.name, jobEnd(runtime)),
+		limited: runtime.status === "timeout" ? `timeout ${spec.timeoutMs}ms` : undefined,
+	};
+}
+
+function jobEnd(runtime: JobRuntime): JobEnd {
+	if (runtime.status === "cancelled") return "stopped";
+	if (runtime.status === "lost") return "interrupted";
+	if (runtime.status === "completed") return { exitCode: 0 };
+	const exitCode = runtime.exitCode ?? (runtime.exitSignal ? 128 + (os.constants.signals[runtime.exitSignal] ?? 0) : undefined);
+	return exitCode ? { exitCode } : { error: runtime.error ?? `Job ${runtime.status}.` };
 }
 
 function jobsRoot(cwd: string): string {

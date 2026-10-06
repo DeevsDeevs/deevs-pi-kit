@@ -8,6 +8,7 @@ import { showTextViewer } from "../shared/text-viewer.ts";
 import { claimJobManager, releaseJobManager } from "./registry.ts";
 import { FULL_SCREEN_OVERLAY } from "../shared/dashboard.ts";
 import { clampWaitMs } from "../shared/runtime-delivery.ts";
+import { tasks } from "../shared/tasks.ts";
 import { JobsDashboard } from "./ui.ts";
 
 const StartSchema = Type.Object({
@@ -28,7 +29,7 @@ const ReadSchema = Type.Object({ id: Type.String(), afterSeq: Type.Optional(Type
 const StopSchema = Type.Object({ id: Type.String() });
 
 export default function jobsExtension(pi: ExtensionAPI): void {
-	const { manager, owner } = claimJobManager(pi);
+	const { manager, owner } = claimJobManager();
 	let ctx: ExtensionContext | undefined;
 	const updateStatus = (): void => {
 		if (!ctx) return;
@@ -47,7 +48,6 @@ export default function jobsExtension(pi: ExtensionAPI): void {
 		async execute(_toolCallId, params: JobStartInput, signal, _onUpdate, context) {
 			ctx = context;
 			const job = await manager.start(params, context, signal);
-			manager.consumeTerminal([job], runtimeClaimant(context));
 			updateStatus();
 			return { content: [{ type: "text" as const, text: formatJob(job) }], details: job };
 		},
@@ -65,7 +65,6 @@ export default function jobsExtension(pi: ExtensionAPI): void {
 		async execute(_toolCallId, params: { ids: string[]; waitMs?: number }, signal, _onUpdate, context) {
 			ctx = context;
 			const jobs = await manager.wait(params.ids, clampWaitMs(params.waitMs), signal);
-			manager.consumeTerminal(jobs, runtimeClaimant(context));
 			updateStatus();
 			return { content: [{ type: "text" as const, text: jobs.map(formatJob).join("\n") }], details: { jobs } };
 		},
@@ -82,7 +81,6 @@ export default function jobsExtension(pi: ExtensionAPI): void {
 		async execute(_toolCallId, params: JobReadInput, _signal, _onUpdate, context) {
 			ctx = context;
 			const result = manager.read(params);
-			manager.consumeTerminal([result.job], runtimeClaimant(context));
 			return { content: [{ type: "text" as const, text: formatRead(result) }], details: result };
 		},
 		renderCall(args, theme) { return new Text(theme.fg("toolTitle", theme.bold("job_read ")) + theme.fg("muted", `${args.id} @${args.afterSeq ?? 0}`), 0, 0); },
@@ -101,7 +99,6 @@ export default function jobsExtension(pi: ExtensionAPI): void {
 		async execute(_toolCallId, params: { id: string }, _signal, _onUpdate, context) {
 			ctx = context;
 			const job = await manager.stop(params.id);
-			manager.consumeTerminal([job], runtimeClaimant(context));
 			updateStatus();
 			return { content: [{ type: "text" as const, text: formatJob(job) }], details: job };
 		},
@@ -119,10 +116,7 @@ export default function jobsExtension(pi: ExtensionAPI): void {
 				context.ui.notify(`Cleared ${manager.clearTerminal(id)} terminal Job record(s).`, "info");
 				return;
 			}
-			if (action === "stop" && id) {
-				const stopped = await manager.stop(id);
-				manager.consumeTerminal([stopped], runtimeClaimant(context));
-			}
+			if (action === "stop" && id) await manager.stop(id);
 			const jobs = manager.list();
 			let exact = jobs.find((job) => job.spec.id === action);
 			if (!action && context.mode === "tui" && context.hasUI) {
@@ -169,10 +163,8 @@ export default function jobsExtension(pi: ExtensionAPI): void {
 		ctx?.ui.setStatus("jobs", undefined);
 		ctx = undefined;
 	});
-}
-
-function runtimeClaimant(ctx: ExtensionContext): string {
-	return ctx.sessionManager.getSessionFile() ?? `memory:${ctx.sessionManager.getSessionId()}`;
+	tasks.install(pi);
+	tasks.addSource({ name: "jobs", pending: async (ownerSession) => manager.notifications(ownerSession) });
 }
 
 function formatJob(job: JobRecord): string {

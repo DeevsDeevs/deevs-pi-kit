@@ -1,4 +1,3 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { JobManager } from "./manager.ts";
 
 interface JobManagerRegistry {
@@ -13,12 +12,11 @@ interface JobManagerRegistry {
 const globalRegistry = globalThis as typeof globalThis & { __deevsPiKitJobs?: JobManagerRegistry; __deevsPiKitJobManager?: JobManager };
 const registry = globalRegistry.__deevsPiKitJobs ??= {};
 
-export function claimJobManager(pi: ExtensionAPI): { manager: JobManager; owner: symbol } {
+export function claimJobManager(): { manager: JobManager; owner: symbol } {
 	installShutdownBackstop();
 	if (registry.shutdownTimer) clearTimeout(registry.shutdownTimer);
 	registry.shutdownTimer = undefined;
-	const manager = registry.manager ?? globalRegistry.__deevsPiKitJobManager ?? new JobManager(pi);
-	manager.setExtensionApi(pi);
+	const manager = registry.manager ?? globalRegistry.__deevsPiKitJobManager ?? new JobManager();
 	const owner = Symbol("jobs-extension-owner");
 	registry.manager = manager;
 	registry.owner = owner;

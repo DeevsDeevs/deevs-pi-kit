@@ -8,7 +8,7 @@ import jobsExtension from "../extensions/jobs/index.ts";
 import { JobManager } from "../extensions/jobs/manager.ts";
 import { claimJobManager, clearJobManager, releaseJobManager, setJobManager } from "../extensions/jobs/registry.ts";
 import { guardArgv } from "../extensions/shared/guard.ts";
-import { pendingRuntimeEvents, replayRuntimeEventEntries } from "../extensions/shared/runtime-events.ts";
+import { tasks } from "../extensions/shared/tasks.ts";
 
 const cleanups: Array<() => void> = [];
 afterEach(() => cleanups.splice(0).reverse().forEach((cleanup) => cleanup()));
@@ -18,12 +18,16 @@ function setup() {
 	const project = mkdtempSync(path.join(tmpdir(), "jobs-project-"));
 	const previous = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = root;
-	const branch: Array<Record<string, unknown>> = [];
-	const pi = { appendEntry(customType: string, data: unknown) { branch.push({ type: "custom", customType, data }); } } as unknown as ExtensionAPI;
-	const ctx = { cwd: project, ui: { setStatus: () => undefined }, sessionManager: { getSessionFile: () => "/tmp/jobs-parent.jsonl" } } as unknown as ExtensionContext;
-	const manager = new JobManager(pi);
+	const messages: Array<{ content: string; details: { notificationId: string } }> = [];
+	type Handler = (event: object, context: ExtensionContext) => unknown;
+	const handlers = new Map<string, Handler>();
+	const pi = { on: (name: string, handler: Handler) => handlers.set(name, handler), sendMessage: (message: (typeof messages)[number]) => messages.push(message) } as unknown as ExtensionAPI;
+	const ctx = { cwd: project, isIdle: () => true, ui: { setStatus: () => undefined }, sessionManager: { getSessionFile: () => "/tmp/jobs-parent.jsonl", getSessionId: () => path.basename(project), getEntries: () => [] } } as unknown as ExtensionContext;
+	tasks.install(pi);
+	void handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, ctx);
+	const manager = new JobManager();
 	cleanups.push(() => { process.env.PI_CODING_AGENT_DIR = previous; }, () => rmSync(root, { recursive: true, force: true }), () => rmSync(project, { recursive: true, force: true }), () => { clearJobManager(manager); void manager.shutdown(); });
-	return { manager, ctx, branch };
+	return { manager, ctx, messages, session: path.basename(project) };
 }
 
 describe("bounded Jobs", () => {
@@ -41,7 +45,7 @@ describe("bounded Jobs", () => {
 	});
 
 	it("captures cursor output and settles after process close", async () => {
-		const { manager, ctx, branch } = setup();
+		const { manager, ctx, messages } = setup();
 		const started = await manager.start({ name: "echo", argv: [process.execPath, "-e", "console.log('hello'); console.error('warn'); setTimeout(()=>{},100)"], env: { SECRET_TOKEN: "do-not-persist" }, stdin: "private-input" }, ctx);
 		const [job] = await manager.wait([started.spec.id]);
 		const output = manager.read({ id: started.spec.id });
@@ -49,14 +53,14 @@ describe("bounded Jobs", () => {
 		expect(job?.runtime.status).toBe("completed");
 		expect(output.chunks.map((chunk) => chunk.text).join("")).toContain("hello");
 		expect(output.chunks.map((chunk) => chunk.text).join("")).toContain("warn");
-		expect(branch.some((entry) => (entry.data as { type?: string })?.type === "emit")).toBe(true);
+		expect(messages.map((message) => message.details.notificationId)).toEqual([`${started.spec.id}:${started.spec.generation}`]);
 		const persistedSpec = readFileSync(path.join(started.spec.artifactsDir, "spec.json"), "utf8");
 		expect(persistedSpec).not.toContain("do-not-persist");
 		expect(persistedSpec).not.toContain("private-input");
 		expect(job?.runtime.processIdentity).toBeTruthy();
 		expect(job?.runtime.heartbeatAt).toBeTypeOf("number");
 
-		const restored = new JobManager({ appendEntry() {} } as unknown as ExtensionAPI);
+		const restored = new JobManager();
 		await restored.restore(ctx);
 		expect(restored.read({ id: started.spec.id }).chunks.map((chunk) => chunk.text).join("")).toContain("hello");
 		expect(restored.clearTerminal(started.spec.id)).toBe(1);
@@ -64,24 +68,21 @@ describe("bounded Jobs", () => {
 		await restored.shutdown();
 	});
 
-	it("consumes the terminal wake when a tool explicitly collects a Job", async () => {
-		const { manager, ctx, branch } = setup();
-		const started = await manager.start({ name: "collected", argv: [process.execPath, "-e", "console.log('done')"] }, ctx);
-		const jobs = await manager.wait([started.spec.id]);
-		manager.consumeTerminal(jobs, "/tmp/jobs-parent.jsonl");
-		const eventId = `terminal:${started.spec.id}:${started.spec.generation}`;
-		const operations = branch.map((entry) => entry.data as { type?: string; eventId?: string; claimant?: string });
-		expect(operations.some((operation) => operation.type === "claim" && operation.eventId === eventId)).toBe(true);
-		expect(operations.some((operation) => operation.type === "ack" && operation.eventId === eventId)).toBe(true);
-	});
-
-	it("consumes a terminal wake when its Job record is cleared", async () => {
-		const { manager, ctx, branch } = setup();
-		const started = await manager.start({ name: "discarded", argv: [process.execPath, "-e", "console.log('done')"] }, ctx);
-		await manager.wait([started.spec.id]);
-		expect(pendingRuntimeEvents(replayRuntimeEventEntries(branch)).map((event) => event.source.id)).toEqual([started.spec.id]);
-		expect(manager.clearTerminal(started.spec.id)).toBe(1);
-		expect(pendingRuntimeEvents(replayRuntimeEventEntries(branch))).toEqual([]);
+	it("notifies every finished Job with its exit code, collected by a tool or not", async () => {
+		const { manager, ctx, messages, session } = setup();
+		const failed = await manager.start({ name: "exits 3", argv: [process.execPath, "-e", "process.exit(3)"] }, ctx);
+		await manager.wait([failed.spec.id]);
+		const stopped = await manager.start({ name: "sleeper", argv: [process.execPath, "-e", "setInterval(()=>{},1000)"] }, ctx);
+		expect(tasks.find(stopped.spec.id)).toMatchObject({ kind: "job", status: "running", ownerSession: session });
+		await manager.stop(stopped.spec.id);
+		expect(messages.map((message) => message.content.split("\n").filter((line) => /^<(status|summary|output-file)>/.test(line)))).toEqual([
+			[`<output-file>${failed.spec.logPath}</output-file>`, "<status>failed</status>", '<summary>Background command "exits 3" failed with exit code 3</summary>'],
+			[`<output-file>${stopped.spec.logPath}</output-file>`, "<status>killed</status>", '<summary>Background command "sleeper" was stopped</summary>'],
+		]);
+		expect(tasks.find(stopped.spec.id)?.status).toBe("killed");
+		expect(manager.clearTerminal(stopped.spec.id)).toBe(1);
+		expect(tasks.find(stopped.spec.id)).toBeUndefined();
+		expect(manager.notifications(session).map((notification) => notification.taskId)).toEqual([failed.spec.id]);
 	});
 
 	it("rejects explicit detached-process syntax for shell and argv Jobs", async () => {
@@ -148,15 +149,14 @@ describe("bounded Jobs", () => {
 
 	it("keeps an active Job alive when a new hot-reload generation claims its manager", async () => {
 		const { manager, ctx } = setup();
-		const firstPi = { appendEntry() {} } as unknown as ExtensionAPI;
 		setJobManager(manager);
-		const first = claimJobManager(firstPi);
+		const first = claimJobManager();
 		const started = await first.manager.start({ name: "reload", argv: [process.execPath, "-e", "setTimeout(()=>{},3000)"], timeoutMs: 5_000 }, ctx);
 		releaseJobManager(first.owner);
 		const registry = (globalThis as typeof globalThis & { __deevsPiKitJobs?: { shutdownTimer?: NodeJS.Timeout } }).__deevsPiKitJobs;
 		expect(registry?.shutdownTimer?.hasRef()).toBe(false);
 
-		const second = claimJobManager({ appendEntry() {} } as unknown as ExtensionAPI);
+		const second = claimJobManager();
 		expect(second.manager).toBe(first.manager);
 		await second.manager.restore(ctx);
 		await new Promise((resolve) => setTimeout(resolve, 1_100));
@@ -178,7 +178,7 @@ describe("bounded Jobs", () => {
 		const { manager, ctx } = setup();
 		const started = await manager.start({ name: "owned", argv: [process.execPath, "-e", "console.log('done')"] }, ctx);
 		await manager.wait([started.spec.id]);
-		const other = new JobManager({ appendEntry() {} } as unknown as ExtensionAPI);
+		const other = new JobManager();
 		const otherCtx = { ...ctx, sessionManager: { getSessionFile: () => "/tmp/other-jobs-parent.jsonl" } } as ExtensionContext;
 		await manager.restore(otherCtx);
 		expect(manager.list()).toEqual([]);
@@ -187,25 +187,21 @@ describe("bounded Jobs", () => {
 		const spec = JSON.parse(readFileSync(path.join(started.spec.artifactsDir, "spec.json"), "utf8")) as Record<string, unknown>;
 		delete spec.parentSessionFile;
 		writeFileSync(path.join(started.spec.artifactsDir, "spec.json"), JSON.stringify(spec));
-		const legacy = new JobManager({ appendEntry() {} } as unknown as ExtensionAPI);
+		const legacy = new JobManager();
 		await legacy.restore(ctx);
 		expect(legacy.list()).toEqual([]);
 		await Promise.all([other.shutdown(), legacy.shutdown()]);
 	});
 
 	it("hides and quiesces an active Job when the same manager switches parent sessions", async () => {
-		const { manager, ctx, branch } = setup();
+		const { manager, ctx, messages } = setup();
 		const started = await manager.start({ name: "active-owned", argv: [process.execPath, "-e", "setInterval(()=>{},1000)"] }, ctx);
 		const otherCtx = { ...ctx, sessionManager: { getSessionFile: () => "/tmp/other-jobs-parent.jsonl" } } as ExtensionContext;
 		await manager.restore(otherCtx);
 		expect(manager.list()).toEqual([]);
 		const runtime = JSON.parse(readFileSync(started.spec.runtimePath, "utf8")) as { status: string };
 		expect(runtime.status).toBe("cancelled");
-		const oldTerminalEvents = branch.filter((entry) => {
-			const operation = entry.data as { type?: string; event?: { source?: { id?: string } } };
-			return operation.type === "emit" && operation.event?.source?.id === started.spec.id;
-		});
-		expect(oldTerminalEvents).toEqual([]);
+		expect(messages).toEqual([]);
 	});
 
 	it("does not postpone SIGKILL when stop is requested repeatedly", async () => {
@@ -244,7 +240,7 @@ describe("bounded Jobs", () => {
 		expect(metadata.nextSeq).toBe(before.chunks.at(-1)!.seq + 1);
 		expect(metadata.droppedBytes).toBeGreaterThan(0);
 
-		const restored = new JobManager({ appendEntry() {} } as unknown as ExtensionAPI);
+		const restored = new JobManager();
 		await restored.restore(ctx);
 		const after = restored.read({ id: started.spec.id, maxBytes: 10_000 });
 		expect(after.job.runtime.bufferedBytes).toBeLessThanOrEqual(1_024);
@@ -290,7 +286,7 @@ describe("bounded Jobs", () => {
 
 		const staleRuntime = JSON.parse(readFileSync(live.spec.runtimePath, "utf8")) as typeof live.runtime;
 		writeFileSync(live.spec.runtimePath, JSON.stringify({ ...staleRuntime, processIdentity: "reused-pid" }));
-		const restored = new JobManager({ appendEntry() {} } as unknown as ExtensionAPI);
+		const restored = new JobManager();
 		await restored.restore(ctx);
 		expect(restored.get(live.spec.id).runtime.status).toBe("lost");
 		expect(isAlive(live.runtime.pid!)).toBe(true);
