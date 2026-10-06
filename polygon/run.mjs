@@ -27,9 +27,11 @@ if (opts.smoke) opts.live = true;
 // The polygon's own logins; the login and freshen containers see the volume with these paths, scenarios a sanitized copy.
 const LOGIN_ENV = ["HOME=/login", "PI_CODING_AGENT_DIR=/login/.pi/agent", "CLAUDE_CONFIG_DIR=/login/.claude", "CODEX_HOME=/login/.codex",
 	"PI_SKIP_VERSION_CHECK=1", "PI_TELEMETRY=0", "DISABLE_AUTOUPDATER=1", "DISABLE_TELEMETRY=1"];
-// Pi refreshes without a model call (and early, so no token expires mid-run); Claude and Codex refresh on one tiny request.
+// Pi refreshes each OAuth login without a model call, early so no token expires mid-run; a refresh must clear the minimum,
+// and Sign in with ChatGPT (`openai`) tokens live only 60 minutes. Claude and Codex refresh on one tiny request.
+const PI_AUTH = ".pi/agent/auth.json";
+const PI_LOGINS = { "openai-codex": "2h", openai: "45m", anthropic: "2h" };
 const LOGINS = [
-	{ name: "Pi (openai-codex)", required: true, requests: 0, files: [".pi/agent/auth.json"], argv: ["pi", "auth", "print-bearer-token", "--provider", "openai-codex", "--min-expiry", "2h"] },
 	{ name: "Claude Code", requests: 1, files: [".claude/.credentials.json", ".claude/.claude.json"], argv: ["claude", "-p", "Reply with the single word ok."] },
 	{ name: "Codex", requests: 1, files: [".codex/auth.json"], argv: ["codex", "exec", "--skip-git-repo-check", "Reply with the single word ok."] },
 ];
@@ -90,7 +92,7 @@ async function host() {
 	if (opts.login) {
 		console.error(`polygon: three logins follow; everything lands in the ${LOGIN_VOLUME} Podman volume, never in your own homes.`);
 		const steps = [
-			"echo; echo 'polygon login 1/3, Pi: type /login, choose ChatGPT (openai-codex), finish in your browser, then /quit.'", "pi",
+			"echo; echo 'polygon login 1/3, Pi: type /login, choose Sign in with ChatGPT (OpenAI) or Anthropic, finish in your browser, then /quit.'", "pi",
 			"echo; echo 'polygon login 2/3, Claude Code:'", "claude auth login",
 			"echo; echo 'polygon login 3/3, Codex (device code):'", "codex login --device-auth",
 		];
@@ -134,13 +136,17 @@ const deadRefresh = (value) => Array.isArray(value) ? value.map(deadRefresh)
 
 /** In the freshen container: refresh each login in the volume, then stage copies whose refresh tokens cannot rotate it. */
 function freshen() {
-	const present = LOGINS.filter((login) => existsSync(join("/login", login.files[0])));
-	if (!present.some((login) => login.required)) {
-		console.error(`polygon: the ${LOGIN_VOLUME} volume holds no Pi login${present.length ? "" : " (it is empty)"}. Run \`npm run polygon -- --login\` once and log in there; live runs never read your own ~/.pi, ~/.claude or ~/.codex.`);
+	const auth = existsSync(join("/login", PI_AUTH)) ? JSON.parse(readFileSync(join("/login", PI_AUTH), "utf8")) : {};
+	const pi = Object.keys(PI_LOGINS).filter((provider) => auth[provider]?.type === "oauth").map((provider) => ({
+		name: `Pi (${provider})`, required: true, requests: 0, files: [PI_AUTH], argv: ["pi", "auth", "print-bearer-token", "--provider", provider, "--min-expiry", PI_LOGINS[provider]],
+	}));
+	if (!pi.length) {
+		console.error(`polygon: the ${LOGIN_VOLUME} volume holds no Pi OAuth login (${Object.keys(PI_LOGINS).join(", ")}). Run \`npm run polygon -- --login\` once and log in there; live runs never read your own ~/.pi, ~/.claude or ~/.codex.`);
 		process.exit(3);
 	}
+	const present = [...pi, ...LOGINS.filter((login) => existsSync(join("/login", login.files[0])))];
 	let spent = 0;
-	for (const login of LOGINS) {
+	for (const login of [...pi, ...LOGINS]) {
 		if (!present.includes(login)) {
 			console.error(`polygon: no ${login.name} login in ${LOGIN_VOLUME}; live scenarios that need it will fail.`);
 			continue;
@@ -151,7 +157,7 @@ function freshen() {
 		console.error(`polygon: freshening the ${login.name} login failed (${done.status ?? done.signal}): ${(done.stderr ?? "").trim().slice(-500)}`);
 		if (login.required) process.exit(3);
 	}
-	for (const file of present.flatMap((login) => login.files).filter((f) => existsSync(join("/login", f)))) {
+	for (const file of new Set(present.flatMap((login) => login.files).filter((f) => existsSync(join("/login", f))))) {
 		mkdirSync(dirname(join("/results/.login", file)), { recursive: true });
 		writeFileSync(join("/results/.login", file), JSON.stringify(deadRefresh(JSON.parse(readFileSync(join("/login", file), "utf8"))), null, 2), { mode: 0o600 });
 	}

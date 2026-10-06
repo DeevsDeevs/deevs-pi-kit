@@ -1,7 +1,7 @@
 // One isolated world per scenario: its own HOME, agent dirs, fixture repo, puppet and process tag.
 // Runs inside the polygon container; the env is built from scratch, so no host credential can leak in.
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { startPuppet } from "./puppet.mjs";
 import { procs } from "./look.mjs";
@@ -34,11 +34,14 @@ export async function sandbox({ run, name, kit, results, logins }) {
 		...(live ? {} : { PI_OFFLINE: "1", ANTHROPIC_API_KEY: "polygon" }),
 	};
 	writeFileSync(join(home, ".gitconfig"), "[user]\n\tname = polygon\n\temail = polygon@invalid\n[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n");
-	const model = live ? { defaultProvider: "openai-codex" } : { defaultProvider: "polygon", defaultModel: "puppet" };
+	// ponytail: a live `openai` lead (Sign in with ChatGPT) calls api.openai.com directly and skips the request log; Pi detects that
+	// login by its stock baseUrl, so routing it through the puppet needs a forward that drops the fields the login rejects.
+	const staged = live ? Object.keys(JSON.parse(readFileSync(join(logins, ".pi/agent/auth.json"), "utf8"))) : [];
+	const model = live ? { defaultProvider: ["openai-codex", "openai", "anthropic"].find((p) => staged.includes(p)) } : { defaultProvider: "polygon", defaultModel: "puppet" };
 	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: "always", ...model, packages: [kit], transport: "sse" }, null, 2));
 	writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: {
 		polygon: { baseUrl: `http://127.0.0.1:${port}/v1`, api: "openai-completions", apiKey: "polygon", models: [{ id: "puppet", contextWindow: 200000, maxTokens: 8000 }] },
-		"openai-codex": { baseUrl: `http://127.0.0.1:${port}` },
+		"openai-codex": { baseUrl: `http://127.0.0.1:${port}` }, anthropic: { baseUrl: `http://127.0.0.1:${port}` },
 	} }, null, 2));
 	if (live) cpSync(logins, home, { recursive: true });
 	else {
