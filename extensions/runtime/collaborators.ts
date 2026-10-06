@@ -156,7 +156,8 @@ export class CollaboratorService {
 		if (identity && requestsOtherIdentity(input, protocol, callerParticipantId)) {
 			throw new HostedRuntimeClientError("conflict", `Current collaborator identity is ${protocol}/${callerParticipantId}.`);
 		}
-		const candidates = input.participants.map((participant) => resolveCollaboratorCandidate(participant));
+		const piCodexModels = ctx.modelRegistry.getAll().filter((model) => model.provider === "openai-codex").map((model) => model.id);
+		const candidates = input.participants.map((participant) => resolveCollaboratorCandidate(participant, piCodexModels));
 		const registration = await this.session.requireRegistration(ctx);
 		const participants = await this.session.listParticipants(registration);
 		const projectRoot = realpathSync(ctx.cwd);
