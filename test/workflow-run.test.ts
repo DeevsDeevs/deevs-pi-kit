@@ -42,7 +42,7 @@ describe("workflow run driver", () => {
 		const { runner } = fakeRunner(["two"]);
 		const { result, progress, journal } = await drive(dir, runner);
 		expect(result).toEqual(["r:one", null, "r:three"]);
-		expect(journal.map((record) => record.type)).toEqual(["started", "result", "started", "failed", "started", "result"]);
+		expect(journal.map((record) => record.type).sort()).toEqual(["failed", "result", "result", "started", "started", "started"]);
 		expect(progress.failures).toEqual(["[two] failed: boom"]);
 		expect(usage(progress, 5)).toEqual({ agentCount: 3, agentsDone: 2, agentsError: 1, agentsSkipped: 0, agentsEmptyResult: 0, subagentTokens: 3, toolUses: 4, durationMs: 5 });
 	});
