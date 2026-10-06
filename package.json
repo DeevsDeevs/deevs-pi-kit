@@ -22,7 +22,8 @@
     "smoke:collaborator-release": "node --experimental-strip-types scripts/smoke-collaborator-release.mjs",
     "smoke:native-release": "vitest run test/hosted-runtime-bridge.test.ts test/hosted-runtime-participant.test.ts test/runtime-worktree.test.ts",
     "check": "npm run lint:anti-slop && npm run typecheck && npm test && npm run smoke:modes && npm run audit && npm pack --dry-run",
-    "sync:chains-plugin": "node scripts/sync-chains-plugin.mjs"
+    "sync:chains-plugin": "node scripts/sync-chains-plugin.mjs",
+    "polygon": "node polygon/run.mjs"
   },
   "keywords": [
     "pi-package",

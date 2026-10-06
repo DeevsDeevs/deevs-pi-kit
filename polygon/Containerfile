@@ -1,0 +1,25 @@
+ARG NODE_IMAGE=docker.io/library/node:24-bookworm-slim
+
+FROM ${NODE_IMAGE} AS herdr
+ARG HERDR_VERSION=0.9.0
+ARG HERDR_SHA256=4fa1a01158dd8043da92d31b270780b0dcc10603038d9b61cac4d81ab63fb71f
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+ && curl -fsSL --retry 3 -o /herdr "https://github.com/herdrdev/herdr/releases/download/v${HERDR_VERSION}/herdr-linux-x86_64" \
+ && echo "${HERDR_SHA256}  /herdr" | sha256sum -c - \
+ && chmod 755 /herdr
+
+FROM ${NODE_IMAGE}
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates git python3 tini ripgrep fd-find procps \
+ && ln -s /usr/bin/fdfind /usr/local/bin/fd \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=herdr /herdr /usr/local/bin/herdr
+ARG PI_VERSION
+ARG CLAUDE_VERSION=latest
+ARG CODEX_VERSION=latest
+RUN npm install -g --no-audit --no-fund \
+    "@earendil-works/pi-coding-agent@${PI_VERSION}" \
+    "@anthropic-ai/claude-code@${CLAUDE_VERSION}" \
+    "@openai/codex@${CODEX_VERSION}" \
+ && npm cache clean --force
+ENTRYPOINT ["/usr/bin/tini", "--"]

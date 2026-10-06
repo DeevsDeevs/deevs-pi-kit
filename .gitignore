@@ -9,3 +9,4 @@ node_modules/
 *.log
 bench/results/*
 !bench/results/baseline/
+polygon/results/
