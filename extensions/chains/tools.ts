@@ -129,7 +129,7 @@ export function registerChainTools(pi: ExtensionAPI, service: ChainService): voi
 		label: "Format Chain Context",
 		description: "Load and pack chain links into bounded context for subagent tasks or handoffs.",
 		promptSnippet: "Format chain context for passing to subagents.",
-		promptGuidelines: ["Use chain_context before subagent when a delegate needs focused Chain context."],
+		promptGuidelines: ["Use chain_context before Agent when a delegate needs focused Chain context."],
 		parameters: ContextSchema,
 		async execute(_toolCallId, params: ChainContextInput) {
 			const result = await service.context(params);

@@ -26,11 +26,11 @@ Use project-native facts (changed files, callers, tests, CI conventions, specs/c
 
 Build a small dependency graph before running checks. Launch independent read-only checks and perspectives together; do not wait for typecheck before starting an unrelated docs/security review. Keep fix → targeted recheck and final-diff → review gates sequential. Do not parallelize commands that write the same outputs, contend heavily for the same resource, or would review a changing diff. Once the diff is frozen, full validation and independent final review should usually run concurrently, then be reconciled into one verdict.
 
-For servers/browsers/e2e: Herdr for persistent processes; `job_start` with readiness watches for bounded commands; run the smoke action with real assertions; capture concise evidence; `job_stop` when done. No large log dumps.
+For servers/browsers/e2e: Herdr for persistent processes; `job_start` with readiness watches for bounded commands; run the smoke action with real assertions; capture concise evidence; `TaskStop` when done. No large log dumps.
 
 ## 4. Perspectives
 
-Subagents only within budget, each scoped with `cwd`, exact files/diff, command limits, and output shape. Batch independent perspectives in one `tasks` group, continue other runnable checks, then collect it once with `subagent_wait` when the verdict becomes the next dependency; terminal delivery wakes idle Pi automatically. Useful: `tester` (missing tests, e2e plan), `reviewer` (requirements, correctness), `anti-slop` (overbuild, fake tests), `rust-dev`, `devops`. Never delegate what one local command or file read proves.
+Subagents only within budget, each scoped with `cwd`, exact files/diff, command limits, and output shape. Launch independent perspectives as several `Agent` calls in one message and continue other runnable checks; each reports back by itself. Useful: `tester` (missing tests, e2e plan), `reviewer` (requirements, correctness), `anti-slop` (overbuild, fake tests), `rust-dev`, `devops`. Never delegate what one local command or file read proves.
 
 ## 5. Judge test quality
 

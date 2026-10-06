@@ -83,7 +83,7 @@ A trusted project's old `.pi/codex-fast.json`, `.pi/notifier.json`, `.pi/runtime
 
 ## Skills
 
-Eight skills pair with the extensions above and tell the model when and how to use them: collaborators, background-tasks, subagents, chain-system, todos, wiki, arxiv, ask-user. Six stand alone and also work in Claude Code and Codex: codebase-orientation, concept-diagrams, diagnose, grill-me, validation-review, datadog-pup.
+Seven skills pair with the extensions above and tell the model when and how to use them: collaborators, background-tasks, chain-system, todos, wiki, arxiv, ask-user. Six stand alone and also work in Claude Code and Codex: codebase-orientation, concept-diagrams, diagnose, grill-me, validation-review, datadog-pup.
 
 ## Development
 
