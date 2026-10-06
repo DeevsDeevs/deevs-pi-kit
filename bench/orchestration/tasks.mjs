@@ -67,7 +67,7 @@ Result schema: {"findings": [{"file": "<repo-relative path>", "line": <integer>,
 			{ file: "extensions/runtime/service/messaging.ts", from: 185, to: 225 },
 			{ file: "extensions/runtime/service/protocol.ts", from: 112, to: 132 },
 		],
-		offlineCheck: true,
+		offlineCheck: "no-repo",
 		check(repo, out) {
 			const rows = Array.isArray(out?.findings) ? out.findings : [];
 			const valid = rows.filter((r) => isStr(r.file) && Number.isInteger(r.line) && ["high", "medium", "low"].includes(r.severity) && isStr(r.title));
@@ -79,7 +79,7 @@ Result schema: {"findings": [{"file": "<repo-relative path>", "line": <integer>,
 			};
 		},
 	},
-	t2: { title: "parallel fan-out summary of 13 modules", commit: PIN, timeoutMin: 25, prompt: t2Prompt, check: summarize },
+	t2: { title: "parallel fan-out summary of 13 modules", commit: PIN, timeoutMin: 25, prompt: t2Prompt, check: summarize, offlineCheck: "pristine" },
 	t3: {
 		title: "implement-and-review loop, test-backed",
 		commit: PIN,
@@ -107,6 +107,7 @@ Result schema: {"review_rounds": <integer: reviews performed>, "approved": <bool
 	t4: {
 		title: "44-agent fan-out over test files",
 		commit: PIN,
+		offlineCheck: "pristine",
 		timeoutMin: 40,
 		prompt: null, // built from the checkout
 		files: (repo) => readdirSync(join(repo, "test")).filter((f) => f.endsWith(".test.ts")).sort().map((f) => `test/${f}`),
@@ -116,12 +117,12 @@ Result schema: {"review_rounds": <integer: reviews performed>, "approved": <bool
 			const valid = rows.filter((r) => isStr(r.file) && isInt(r.tests) && isStr(r.subject));
 			const byFile = new Map(valid.map((r) => [r.file.replace(/^\.\//, ""), r]));
 			const present = files.filter((f) => byFile.has(f));
-			const truth = (f) => (readFileSync(join(repo, f), "utf8").match(/^\s*(?:it|test)(?:\.(?:only|skip|todo|concurrent))?\(/gm) ?? []).length;
+			const truth = (f) => (readFileSync(join(repo, f), "utf8").match(/^\s*(?:it|test)(?:\.(?:only|skip|todo|concurrent|each))?\(/gm) ?? []).length;
 			const exact = present.filter((f) => byFile.get(f).tests === truth(f));
 			return { success: present.length === files.length && valid.length === rows.length, expected: files.length, present: present.length, valid: valid.length, rows: rows.length, tests_exact: exact.length };
 		},
 	},
-	t5: { title: "fan-out summary survives a lead restart", commit: PIN, timeoutMin: 30, prompt: t2Prompt, check: summarize, restart: { afterFirstAgentMs: 12_000 } },
+	t5: { title: "fan-out summary survives a lead restart", commit: PIN, timeoutMin: 30, prompt: t2Prompt, check: summarize, offlineCheck: "pristine", restart: { afterFirstAgentMs: 12_000 } },
 };
 
 export function promptFor(id, repo) {

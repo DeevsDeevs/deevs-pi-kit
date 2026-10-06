@@ -38,10 +38,10 @@ function fixture(task) {
 	execSync(`git --git-dir=/fixture.git archive ${task.commit} | tar -x -C ${REPO}`, { stdio: "inherit" });
 	rmSync(join(REPO, "AGENTS.md"), { force: true });
 	task.setup?.(REPO);
-	// A writable node_modules of links into the read-only kit modules: vite writes its config bundle into node_modules/.vite-temp.
+	// A writable node_modules of links into the read-only kit modules, minus the host's caches: vite writes its config bundle into node_modules/.vite-temp.
 	if (task.node_modules) {
 		mkdirSync(join(REPO, "node_modules"));
-		for (const entry of readdirSync("/kit/node_modules")) symlinkSync(join("/kit/node_modules", entry), join(REPO, "node_modules", entry));
+		for (const entry of readdirSync("/kit/node_modules").filter((e) => e === ".bin" || !e.startsWith("."))) symlinkSync(join("/kit/node_modules", entry), join(REPO, "node_modules", entry));
 	}
 	writeFileSync(join(HOME, ".gitconfig"), "[user]\n\tname = bench\n\temail = bench@invalid\n[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n");
 	const git = (args) => execSync(`git ${args}`, { cwd: REPO, env: { ...process.env, HOME }, stdio: "ignore" });
@@ -171,7 +171,8 @@ async function pi(config, prompt, task, e) {
 	let timedOut = false;
 	for (;;) {
 		if (Date.now() > deadline) { timedOut = true; break; }
-		if (existsSync(join(REPO, RESULT)) && settled() && running() <= 0 && quietFor(20_000)) break;
+		// An agent orphaned by a restart may never report; two quiet minutes after the result bound that wait.
+		if (existsSync(join(REPO, RESULT)) && settled() && quietFor(running() <= 0 ? 20_000 : 120_000)) break;
 		await sleep(2_000);
 	}
 	try { stats = (await lead.send({ type: "get_session_stats" }, 10_000)).data; } catch {}
@@ -184,6 +185,7 @@ async function pi(config, prompt, task, e) {
 	const tok = stats?.tokens ?? {};
 	const subTokens = subagentTokens(events);
 	return {
+		ended_at: timedOut ? undefined : events.findLast((ev) => ev.type === "agent_settled")?.receivedAt,
 		session: stats?.sessionId ?? null,
 		exit: [{ timedOut }],
 		restarts,
@@ -222,10 +224,16 @@ function remeasure(dir) {
 		const sub = subagentTokens(events);
 		const lead = old.tokens.lead ?? old.tokens.total;
 		metrics = { tokens: { ...old.tokens, total: lead + sub, lead, subagents: sub }, lead_messages: events.filter((ev) => ev.type === "message_end" && ev.message?.role === "assistant").length };
+		// Runs from before wall time ended at the last settle counted the harness's quiet wait; recount from the event stream.
+		const settledAt = events.findLast((ev) => ev.type === "agent_settled")?.receivedAt;
+		if (!old.wall_basis && settledAt && !old.exit?.[0]?.timedOut) Object.assign(metrics, { wall_ms: settledAt - events[0].receivedAt, wall_basis: "first lead event to last settle" });
 		delete metrics.tokens.subagents_reported;
 	}
-	if (TASKS[old.task]?.offlineCheck && existsSync(join(dir, "task-result.json"))) {
-		const check = TASKS[old.task].check(null, JSON.parse(readFileSync(join(dir, "task-result.json"), "utf8")));
+	// "pristine" checks only read files the run never changes, so an untouched export of the same commit (BENCH_PRISTINE) stands in for its repo.
+	const offline = TASKS[old.task]?.offlineCheck;
+	const repo = offline === "pristine" && old.commit === PIN ? process.env.BENCH_PRISTINE : null;
+	if ((offline === "no-repo" || repo) && existsSync(join(dir, "task-result.json"))) {
+		const check = TASKS[old.task].check(repo, JSON.parse(readFileSync(join(dir, "task-result.json"), "utf8")));
 		Object.assign(metrics, { check, status: old.status === "quota" ? "quota" : check.success ? "pass" : "fail" });
 	}
 	writeFileSync(join(dir, "result.json"), JSON.stringify({ ...old, ...metrics }, null, 2));
@@ -255,9 +263,14 @@ async function main() {
 	const e = env(config);
 	const started = Date.now();
 	const metrics = await (config.harness === "claude" ? claude : pi)(config, prompt, task, e);
-	const wall = Date.now() - started;
+	// Pi ends at its last settle, not when the harness notices the quiet; claude -p ends at exit.
+	const wall = (metrics.ended_at ?? Date.now()) - started;
+	metrics.wall_basis = metrics.ended_at ? "start to last settle" : "start to exit";
+	delete metrics.ended_at;
 	let out, parseError;
 	try { out = JSON.parse(readFileSync(join(REPO, RESULT), "utf8")); } catch (error) { parseError = String(error).slice(0, 300); }
+	// The agents' changes as one patch, so a check can be replayed on a fresh export after the container is gone.
+	execSync("git add -A && git diff --cached --binary HEAD > /results/repo.patch && git reset -q", { cwd: REPO, env: { ...process.env, HOME } });
 	const check = task.check(REPO, out);
 	if (out) cpSync(join(REPO, RESULT), join(OUT, "task-result.json"));
 	writeFileSync(join(OUT, "repo.diff"), execSync("git diff HEAD --stat; git status --porcelain", { cwd: REPO, encoding: "utf8" }));
