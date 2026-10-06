@@ -1,6 +1,7 @@
 node_modules/
 .git/
 .pi/
+.claude/
 .chains/
 .missions/
 test/

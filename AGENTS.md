@@ -11,7 +11,7 @@ This repository is a portable pi package. Keep it minimal and intentional.
 - Host-provided packages, including `typebox`, are peers with `"*"` ranges, never production dependencies under their host names. The standalone Runtime daemon and `guard-hook.mjs` use the pinned `runtime-typebox` npm alias through their entrypoints' Node import hook; Pi extensions must never import that alias. The MCP server needs no TypeBox. Everything else is peer or dev only; justify any addition.
 - Document user-facing resources in `README.md` when they are added.
 - Never add AI attribution to commits or PRs: no `Co-Authored-By: Claude`, no session links, no "Generated with" footers. The author is the user alone.
-- Validate with `npm run check` (typecheck, tests, RPC/print/JSONL mode smoke, supply-chain audit, pack).
+- Validate with `npm run check` (lint, typecheck, tests, the Podman polygon scenarios, supply-chain audit, pack).
 
 ## Control-plane invariant
 

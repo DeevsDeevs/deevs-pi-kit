@@ -8,7 +8,7 @@ npm run polygon -- --only modes,jobs-basic
 npm run polygon -- --gate M0 --slow      # a milestone gate, slow scenarios included
 npm run polygon -- --kit clone           # git clone --local HEAD + npm install --omit=dev, inside the container
 npm run polygon -- --kit installed       # the checkout `pi update` produced, read-only
-npm run polygon -- --pi 1.0.4            # another Pi release than devDependencies pins
+npm run polygon -- --pi 1.0.1            # another Pi release than devDependencies pins
 npm run polygon -- --list
 ```
 

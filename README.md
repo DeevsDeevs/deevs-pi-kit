@@ -68,7 +68,7 @@ Eight skills pair with the extensions above and tell the model when and how to u
 
 ```bash
 npm install
-npm run check                        # lint, typecheck, tests, mode smokes, audit, pack
+npm run check                        # lint, typecheck, tests, polygon (needs Podman), audit, pack
 node extensions/runtime/service/main.ts --help  # verify standalone imports without starting a daemon
 npm run smoke:native-release         # interactive targets and Git worktrees, no Herdr
 npm run bench:context                # tokens each surface costs, see bench/README.md
