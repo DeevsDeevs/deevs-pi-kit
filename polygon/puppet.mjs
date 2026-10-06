@@ -36,12 +36,14 @@ const reply = (step) => step.id ? `[polygon:${step.id}] ${step.text ?? ""}` : st
 /**
  * `marks` is the scenario's live list of strings to look for; each request logs the ones its raw body contains.
  * `scripts` maps a model id to its fallback script; scenarios fill it through `t.scripts`.
+ * `bodies` (a file) receives every logged request's full body, for scenarios that measure what is sent on the wire.
  * `live` passes the openai-codex and Anthropic wires through to the real APIs, still logging each model request
  * (agent from its script, model, tools, marks and the upstream HTTP status), so the live tier keeps the request log.
  */
-export function startPuppet(logFile, marks = [], scripts = {}, { live = false } = {}) {
+export function startPuppet(logFile, marks = [], scripts = {}, { live = false, bodies } = {}) {
 	const log = (wire, url, request, step, messages, status) => {
 		const raw = JSON.stringify(request);
+		if (bodies) appendFileSync(bodies, JSON.stringify({ at: Date.now(), wire, url, agent: step.agent ?? null, step: step.id ?? null, body: request }) + "\n");
 		appendFileSync(logFile, JSON.stringify({
 			at: Date.now(), wire, url, agent: step.agent ?? null, step: step.id ?? null, tool: step.tool ?? null, model: request.model,
 			messages: messages.length, images: images(messages), tools: (request.tools ?? []).map((t) => t.function?.name ?? t.name ?? t.type),

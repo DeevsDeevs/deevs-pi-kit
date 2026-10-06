@@ -7,7 +7,7 @@ import { startPuppet } from "./puppet.mjs";
 import { procs } from "./look.mjs";
 
 /** `logins` (live runs only) is a staged copy of the polygon's logins, laid out like a HOME, refresh tokens already invalid. */
-export async function sandbox({ run, name, kit, results, logins }) {
+export async function sandbox({ run, name, kit, results, logins, bodies }) {
 	const live = Boolean(logins);
 	const dir = join(results, name);
 	const home = join(dir, "home");
@@ -19,7 +19,7 @@ export async function sandbox({ run, name, kit, results, logins }) {
 	writeFileSync(requestLog, "");
 	const marks = [];
 	const scripts = {};
-	const { server, port } = await startPuppet(requestLog, marks, scripts, { live });
+	const { server, port } = await startPuppet(requestLog, marks, scripts, { live, bodies: bodies ? join(dir, "bodies.jsonl") : undefined });
 
 	const env = {
 		PATH: `${join(home, "bin")}:${process.env.PATH}`, LANG: "C.UTF-8", TERM: "xterm-256color", HOME: home,
