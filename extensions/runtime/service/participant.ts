@@ -8,7 +8,7 @@ import {
 	requireParticipant,
 	requireTarget,
 } from "./participant-status.ts";
-import { RuntimeRegistrationManager, type HostedLiveRegistration } from "./registration.ts";
+import { LiveTargets, type HostedCaller } from "./live.ts";
 import { deriveParticipantKey, HostedStateStore } from "./state.ts";
 
 const DEFAULT_RECONNECT_GRACE_MS = 60_000;
@@ -46,7 +46,7 @@ export interface HostedParticipantCoordinatorOptions {
 
 export class HostedParticipantCoordinator {
 	private readonly store: HostedStateStore;
-	private readonly registrations: RuntimeRegistrationManager;
+	private readonly live: LiveTargets;
 	private readonly options: HostedParticipantCoordinatorOptions;
 	private readonly startedAt: number;
 	private readonly seenTargets = new Set<string>();
@@ -55,11 +55,11 @@ export class HostedParticipantCoordinator {
 
 	constructor(
 		store: HostedStateStore,
-		registrations: RuntimeRegistrationManager,
+		live: LiveTargets,
 		options: HostedParticipantCoordinatorOptions = {},
 	) {
 		this.store = store;
-		this.registrations = registrations;
+		this.live = live;
 		this.options = options;
 		this.startedAt = options.startedAt ?? this.now();
 	}
@@ -68,7 +68,7 @@ export class HostedParticipantCoordinator {
 		this.seenTargets.add(targetKey);
 	}
 
-	acquire(registration: HostedLiveRegistration, protocol: string, participantId: string, allowRevive = false): AcquiredParticipant {
+	acquire(registration: HostedCaller, protocol: string, participantId: string, allowRevive = false): AcquiredParticipant {
 		this.seenTargets.add(registration.targetKey);
 		this.assertTargetNotStopping(registration.targetKey);
 		const target = requireTarget(this.store, registration.targetKey);
@@ -97,12 +97,12 @@ export class HostedParticipantCoordinator {
 		return { participant: this.status(participant), revived, transitioned };
 	}
 
-	get(registration: HostedLiveRegistration, participantKey: string): HostedParticipantStatus {
+	get(registration: HostedCaller, participantKey: string): HostedParticipantStatus {
 		const target = requireTarget(this.store, registration.targetKey);
 		return this.status(requireParticipant(this.store, participantKey, target.projectRoot));
 	}
 
-	list(registration: HostedLiveRegistration): HostedParticipantStatus[] {
+	list(registration: HostedCaller): HostedParticipantStatus[] {
 		const target = requireTarget(this.store, registration.targetKey);
 		return Object.values(this.store.read().participants)
 			.filter((participant) => participant.projectRoot === target.projectRoot)
@@ -110,15 +110,15 @@ export class HostedParticipantCoordinator {
 			.map((participant) => this.status(participant, false));
 	}
 
-	standDown(registration: HostedLiveRegistration, participantKey: string, expectedGeneration?: string): HostedParticipantStatus {
+	standDown(registration: HostedCaller, participantKey: string, expectedGeneration?: string): HostedParticipantStatus {
 		return this.leave(registration, participantKey, "participant.stand_down", expectedGeneration);
 	}
 
-	release(registration: HostedLiveRegistration, participantKey: string): HostedParticipantStatus {
+	release(registration: HostedCaller, participantKey: string): HostedParticipantStatus {
 		return this.leave(registration, participantKey, "participant.release");
 	}
 
-	takeover(registration: HostedLiveRegistration, participantKey: string, expectedGeneration: string): HostedParticipantStatus {
+	takeover(registration: HostedCaller, participantKey: string, expectedGeneration: string): HostedParticipantStatus {
 		this.assertNotStopping(participantKey);
 		this.assertTargetNotStopping(registration.targetKey);
 		const target = requireTarget(this.store, registration.targetKey);
@@ -131,7 +131,7 @@ export class HostedParticipantCoordinator {
 		if (participant.holderTargetKey === registration.targetKey) return this.status(participant);
 		const previousHolderTargetKey = participant.holderTargetKey;
 		if (!previousHolderTargetKey) throw new RuntimeError("conflict", "Held participant has no holder target.");
-		if (this.registrations.hasLiveTarget(previousHolderTargetKey)) {
+		if (this.live.hasLiveTarget(previousHolderTargetKey)) {
 			throw new RuntimeError("busy", "Participant holder is still live.");
 		}
 		const graceMs = this.options.reconnectGraceMs ?? DEFAULT_RECONNECT_GRACE_MS;
@@ -149,7 +149,7 @@ export class HostedParticipantCoordinator {
 	}
 
 	send(
-		registration: HostedLiveRegistration,
+		registration: HostedCaller,
 		senderParticipantKey: string,
 		expectedSenderGeneration: string,
 		recipientParticipantKey: string,
@@ -181,7 +181,7 @@ export class HostedParticipantCoordinator {
 		return event;
 	}
 
-	sendMessaging(registration: HostedLiveRegistration, namespaceId: string, publication: MessagingPublication): void {
+	sendMessaging(registration: HostedCaller, namespaceId: string, publication: MessagingPublication): void {
 		const grant = this.store.read().messaging[namespaceId];
 		if (!grant || grant.targetKey !== registration.targetKey) {
 			throw new RuntimeError("conflict", "Messaging namespace does not belong to this target.");
@@ -199,7 +199,7 @@ export class HostedParticipantCoordinator {
 		if (this.stoppingTargets.has(targetKey)) throw new RuntimeError("busy", "Target collaborator process is stopping.");
 	}
 
-	standDownConfirmed(registration: HostedLiveRegistration, participantKey: string, expectedGeneration: string): HostedParticipantStatus {
+	standDownConfirmed(registration: HostedCaller, participantKey: string, expectedGeneration: string): HostedParticipantStatus {
 		this.assertNotStopping(participantKey);
 		const target = requireTarget(this.store, registration.targetKey);
 		const participant = requireParticipant(this.store, participantKey, target.projectRoot);
@@ -215,7 +215,7 @@ export class HostedParticipantCoordinator {
 	}
 
 	async stopConfirmed(
-		registration: HostedLiveRegistration,
+		registration: HostedCaller,
 		participantKey: string,
 		expectedGeneration: string,
 	): Promise<StoppedParticipant> {
@@ -273,7 +273,7 @@ export class HostedParticipantCoordinator {
 
 	private stoppableHolder(
 		participant: HostedParticipant,
-		registration: HostedLiveRegistration,
+		registration: HostedCaller,
 		expectedGeneration: string,
 	): string {
 		const dormant = isVacant(participant.state) && participant.transition.cause === "stand_down" && participant.generation === expectedGeneration;
@@ -322,7 +322,7 @@ export class HostedParticipantCoordinator {
 	}
 
 	private leave(
-		registration: HostedLiveRegistration,
+		registration: HostedCaller,
 		participantKey: string,
 		type: "participant.stand_down" | "participant.release",
 		expectedGeneration?: string,
@@ -343,7 +343,7 @@ export class HostedParticipantCoordinator {
 	}
 
 	private status(participant: HostedParticipant, includeQueue = true): HostedParticipantStatus {
-		return participantStatus(this.store, this.registrations, participant, includeQueue);
+		return participantStatus(this.store, this.live, participant, includeQueue);
 	}
 
 	private createEventId(): string {

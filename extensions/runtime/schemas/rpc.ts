@@ -19,7 +19,7 @@ import {
 	HostedParticipantStateSchema,
 } from "./state.ts";
 
-const AUTH = { registrationId: IdText, registrationKey: IdText };
+const AUTH = { targetKey: IdText };
 const NAMESPACE = { namespaceId: IdText, secret: IdText };
 const WORKTREE = {
 	callerParticipantKey: IdText,
@@ -112,12 +112,7 @@ export const MessagingSendParams = Type.Object({
 }, STRICT_OBJECT);
 
 /** Results stay open objects: a client decodes the fields it needs and ignores the rest. */
-export const LiveRegistrationResult = Type.Object({
-	targetKey: IdText,
-	registrationId: IdText,
-	registrationKey: IdText,
-	leaseUntil: Count,
-});
+export const LiveRegistrationResult = Type.Object({ targetKey: IdText });
 
 const MailHintResult = Type.Object({ namespaceId: IdText, eventId: IdText });
 
@@ -133,9 +128,6 @@ const MessagingInboxResult = Type.Object({ messages: Type.Array(InboxMessageResu
 
 export const HeartbeatResult = Type.Object({
 	targetKey: IdText,
-	registrationId: IdText,
-	registrationKey: IdText,
-	leaseUntil: Count,
 	mail: Type.Optional(MailHintResult),
 	agentStatus: Type.Optional(HerdrAgentStatusSchema),
 });

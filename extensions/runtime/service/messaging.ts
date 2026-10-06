@@ -12,7 +12,7 @@ import {
 } from "../schemas/state.ts";
 import { HostedParticipantCoordinator } from "./participant.ts";
 import { RuntimeError } from "../errors.ts";
-import { RuntimeRegistrationManager, type HostedLiveRegistration } from "./registration.ts";
+import { LiveTargets, type HostedCaller } from "./live.ts";
 import type { MessagingInboxMessageView, MessagingInboxView } from "../schemas/rpc.ts";
 import {
 	deriveParticipantKey,
@@ -32,7 +32,7 @@ export type MessagingInput =
 
 interface VerifiedNamespace {
 	grant: HostedMessagingGrant;
-	registration: HostedLiveRegistration;
+	registration: HostedCaller;
 }
 
 interface MessagingMailHint {
@@ -54,7 +54,7 @@ type MessagingResult = MessagingInboxView | MessagingEventResult;
 export class RuntimeMessaging {
 	private inFlight = 0;
 	private readonly store: HostedStateStore;
-	private readonly registrations: RuntimeRegistrationManager;
+	private readonly live: LiveTargets;
 	private readonly participants: HostedParticipantCoordinator;
 	private readonly socketPath: string;
 	private readonly now: () => number;
@@ -62,21 +62,21 @@ export class RuntimeMessaging {
 
 	constructor(
 		store: HostedStateStore,
-		registrations: RuntimeRegistrationManager,
+		live: LiveTargets,
 		participants: HostedParticipantCoordinator,
 		socketPath: string,
 		now: () => number = Date.now,
 		onPublished: () => void = () => {},
 	) {
 		this.store = store;
-		this.registrations = registrations;
+		this.live = live;
 		this.participants = participants;
 		this.socketPath = socketPath;
 		this.now = now;
 		this.onPublished = onPublished;
 	}
 
-	async issue(caller: HostedLiveRegistration, participantKey: string, expectedGeneration: string): Promise<MessagingIssued> {
+	async issue(caller: HostedCaller, participantKey: string, expectedGeneration: string): Promise<MessagingIssued> {
 		const state = this.store.read();
 		const held = (candidate: HostedParticipant) => isHeld(candidate.state) && candidate.holderTargetKey === caller.targetKey;
 		const callerParticipant = Object.values(state.participants).find(held);
@@ -85,9 +85,7 @@ export class RuntimeMessaging {
 		if (!issuanceScopeMatches(callerParticipant, participant, expectedGeneration)) throw issuanceMismatch();
 		const holderTargetKey = participant.holderTargetKey;
 		if (!holderTargetKey) throw issuanceMismatch();
-		const registration = await this.registrations.verifyTarget(holderTargetKey);
-		this.registrations.authorize(caller.registrationId, caller.registrationKey);
-		this.registrations.authorize(registration.registrationId, registration.registrationKey);
+		const registration = await this.live.verify(holderTargetKey);
 		const currentCaller = this.store.read().participants[callerParticipant.participantKey];
 		if (!stillHeldBy(currentCaller, callerParticipant.generation, caller.targetKey)) {
 			throw new RuntimeError("registration_stale", "Messaging controller changed during verification.");
@@ -144,7 +142,7 @@ export class RuntimeMessaging {
 	}
 
 	/** Best-effort idle hint for a Pi holder: the oldest unread message in its sole live namespace. */
-	unread(registration: HostedLiveRegistration): MessagingMailHint | undefined {
+	unread(registration: HostedCaller): MessagingMailHint | undefined {
 		const state = this.store.read();
 		const grant = liveTargetNamespace(state, registration);
 		if (!grant) return undefined;
@@ -192,7 +190,7 @@ export class RuntimeMessaging {
 	}
 
 	private publish(
-		registration: HostedLiveRegistration,
+		registration: HostedCaller,
 		grant: HostedMessagingGrant,
 		operationId: string,
 		recipientParticipantKey: string,
@@ -213,9 +211,8 @@ export class RuntimeMessaging {
 
 	private async verify(namespaceId: string, secret: string): Promise<VerifiedNamespace> {
 		this.authorize(namespaceId, secret);
-		const registration = await this.registrations.verifyTarget(this.requireGrant(namespaceId).targetKey);
+		const registration = await this.live.verify(this.requireGrant(namespaceId).targetKey);
 		this.authorize(namespaceId, secret);
-		this.registrations.authorize(registration.registrationId, registration.registrationKey);
 		return { grant: this.requireGrant(namespaceId), registration };
 	}
 
@@ -284,7 +281,7 @@ export function messagingDescriptorPath(root: string, targetKey: string): string
 	return join(root, `messaging-${digest(targetKey)}.json`);
 }
 
-function liveTargetNamespace(state: HostedRuntimeState, registration: HostedLiveRegistration): HostedMessagingGrant | undefined {
+function liveTargetNamespace(state: HostedRuntimeState, registration: HostedCaller): HostedMessagingGrant | undefined {
 	const eligible = Object.values(state.messaging)
 		.filter(grant => grant.targetKey === registration.targetKey && messagingGrantIsLive(state, grant));
 	return eligible.length === 1 ? eligible[0] : undefined;

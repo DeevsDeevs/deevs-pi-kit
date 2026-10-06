@@ -95,7 +95,7 @@ export class RuntimeSession {
 		this.registration = undefined;
 		if (!registration) return;
 		try {
-			await this.client.call("pi.unregister", { registrationId: registration.registrationId, registrationKey: registration.registrationKey });
+			await this.client.call("pi.unregister", auth(registration));
 		} catch {}
 	}
 
@@ -271,7 +271,5 @@ interface RegisterPiParams {
 }
 
 function sameRegistrationIdentity(left: LiveClientRegistration, right: LiveClientRegistration): boolean {
-	return left.registrationId === right.registrationId
-		&& left.registrationKey === right.registrationKey
-		&& left.targetKey === right.targetKey;
+	return left.targetKey === right.targetKey;
 }

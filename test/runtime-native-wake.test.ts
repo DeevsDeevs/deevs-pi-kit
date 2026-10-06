@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HerdrAgentStatus } from "../extensions/runtime/schemas/herdr.ts";
 import type { HostedAgentTarget, HostedMessagingGrant, HostedTarget } from "../extensions/runtime/schemas/state.ts";
-import type { HostedHostVerifier, HostedLiveAgent } from "../extensions/runtime/service/identity.ts";
+import type { HostedHostVerifier, HostedLiveAgent } from "../extensions/runtime/service/herdr-cli.ts";
 import { NativeWakeSweeper } from "../extensions/runtime/service/native-wake.ts";
 import { HostedStateStore, deriveParticipantKey, messagingConfigurationHash } from "../extensions/runtime/service/state.ts";
 

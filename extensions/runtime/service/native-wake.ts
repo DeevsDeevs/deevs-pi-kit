@@ -1,5 +1,5 @@
 import { type HostedAgentTarget, type HostedRuntimeState, isAgentTarget, isHeld } from "../schemas/state.ts";
-import type { HostedHostVerifier } from "./identity.ts";
+import type { HostedHostVerifier } from "./herdr-cli.ts";
 import { unreadMailEvents } from "./messaging.ts";
 import type { HostedStateStore } from "./state.ts";
 

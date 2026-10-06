@@ -144,13 +144,12 @@ export class MessagingClient {
 
 	private holdsIdentity(registration: LiveClientRegistration, identity: ParticipantIdentity): boolean {
 		if (!this.session.isActive || !isHeld(identity.disposition)) return false;
-		return this.session.liveRegistration?.registrationId === registration.registrationId;
+		return this.session.liveRegistration?.targetKey === registration.targetKey;
 	}
 
 	private identityUnchanged(registration: LiveClientRegistration, identity: ParticipantIdentity): boolean {
 		const live = this.session.liveRegistration;
-		if (!this.session.isActive || live?.registrationId !== registration.registrationId) return false;
-		if (live.registrationKey !== registration.registrationKey) return false;
+		if (!this.session.isActive || live?.targetKey !== registration.targetKey) return false;
 		const current = this.session.store.identity;
 		if (!current || current.participantKey !== identity.participantKey || current.generation !== identity.generation) return false;
 		return isHeld(current.disposition);

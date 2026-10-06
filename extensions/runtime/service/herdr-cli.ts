@@ -13,7 +13,25 @@ import {
 	HerdrTabResultSchema,
 	type HerdrLiveAgent,
 } from "../schemas/herdr.ts";
-import { canonicalFile, verifyPiSessionHeader, type HostedHostVerifier, type HostedLiveAgent } from "./identity.ts";
+import type { HerdrAgentStatus } from "../schemas/herdr.ts";
+
+/** What `herdr agent get` reports about one live agent: where it runs, the tab that owns it, and how busy it is. */
+export interface HostedLiveAgent {
+	name?: string;
+	cwd: string;
+	tabId?: string;
+	workspaceId?: string;
+	sessionPath?: string;
+	agentStatus?: HerdrAgentStatus;
+}
+
+export interface HostedHostVerifier {
+	/** Resolves `herdr agent get <name>` for one exact Herdr agent name. */
+	getAgent(agentName: string): Promise<HostedLiveAgent>;
+	/** Types one prompt into a native tab; a failure means undelivered, never that the agent acted. */
+	promptAgent?(agentName: string, text: string): Promise<void>;
+	closeTarget?(target: HostedTarget, runtimeRoot: string): Promise<"closed" | "already_absent" | "unmanaged">;
+}
 
 /** Every heartbeat and sweep asks after the same few agents; one answer per agent per second is fresh enough. */
 const AGENT_CACHE_MS = 1_000;
@@ -38,10 +56,7 @@ export class HerdrCliHostVerifier implements HostedHostVerifier {
 	async closeTarget(target: HostedTarget, runtimeRoot: string): Promise<"closed" | "already_absent" | "unmanaged"> {
 		switch (target.kind) {
 			case "agent": return this.closeAgentTarget(target);
-			case "pi": {
-				const cwd = target.worktreePath ?? target.repoRoot ?? target.projectRoot;
-				return this.closeCollaboratorTab(target.piSessionFile, target.piSessionId, cwd, runtimeRoot);
-			}
+			case "pi": return this.closeCollaboratorTab(target.piSessionFile, runtimeRoot);
 			default: {
 				const unreachable: never = target;
 				throw new RuntimeError("not_found", `Unsupported runtime target ${JSON.stringify(unreachable)}.`);
@@ -49,21 +64,10 @@ export class HerdrCliHostVerifier implements HostedHostVerifier {
 		}
 	}
 
-	/** Only a Pi collaborator Runtime itself started, proven by its own session file, is ever closed. */
-	private async closeCollaboratorTab(
-		piSessionFile: string,
-		piSessionId: string,
-		cwd: string,
-		runtimeRoot: string,
-	): Promise<"closed" | "already_absent" | "unmanaged"> {
-		let sessionFile: string;
-		try {
-			sessionFile = canonicalFile(piSessionFile, "collaborator session file");
-			if (dirname(sessionFile) !== realpathSync(join(runtimeRoot, "collaborator-sessions"))) return "unmanaged";
-			verifyPiSessionHeader(sessionFile, piSessionId, cwd);
-		} catch {
-			return "unmanaged";
-		}
+	/** Only a Pi collaborator Runtime itself started, in a session file of its own, is ever closed. */
+	private async closeCollaboratorTab(piSessionFile: string, runtimeRoot: string): Promise<"closed" | "already_absent" | "unmanaged"> {
+		const sessionFile = canonicalPath(piSessionFile);
+		if (!sessionFile || dirname(sessionFile) !== canonicalPath(join(runtimeRoot, "collaborator-sessions"))) return "unmanaged";
 		const find = async () => (await this.listAgents()).filter((agent) => agent.sessionPath === sessionFile);
 		const matches = await find();
 		const [agent] = matches;

@@ -7,8 +7,8 @@ import { HostedParticipantCoordinator } from "../extensions/runtime/service/part
 import { RuntimeError } from "../extensions/runtime/errors.ts";
 import { dispatchHostedLine } from "../extensions/runtime/service/protocol.ts";
 import { protocolContext } from "./fixtures/runtime-protocol.ts";
-import type { HostedHostVerifier, HostedLiveAgent } from "../extensions/runtime/service/identity.ts";
-import { RuntimeRegistrationManager, type HostedLiveRegistration, type RegisterPiInput } from "../extensions/runtime/service/registration.ts";
+import type { HostedHostVerifier, HostedLiveAgent } from "../extensions/runtime/service/herdr-cli.ts";
+import { LiveTargets, type HostedCaller, type RegisterPiInput } from "../extensions/runtime/service/live.ts";
 import { deriveAgentTargetKey, HostedStateStore, messagingConfigurationHash } from "../extensions/runtime/service/state.ts";
 import { replyInFlight } from "../extensions/runtime/collaborators.ts";
 
@@ -43,8 +43,7 @@ function setup() {
 	}
 	const store = new HostedStateStore(join(root, "runtime"));
 	let now = 1_000;
-	let registrationNumber = 0;
-	const registrations = new RuntimeRegistrationManager(store, host, { now: () => now, createId: () => `reg_${++registrationNumber}`, createKey: () => `key_${registrationNumber}` });
+	const registrations = new LiveTargets(store, host, { now: () => now });
 	let generationNumber = 0;
 	let eventNumber = 0;
 	let stopOutcome: "closed" | "already_absent" | "unmanaged" = "closed";
@@ -60,7 +59,7 @@ function setup() {
 	return { root, projectRoot, host, inputs, store, registrations, participants, stoppedTargets, setStopOutcome(value: typeof stopOutcome) { stopOutcome = value; }, setStopTarget(value: typeof stopTarget) { stopTarget = value; }, setNow(value: number) { now = value; } };
 }
 
-async function register(test: ReturnType<typeof setup>, name: string): Promise<HostedLiveRegistration> {
+async function register(test: ReturnType<typeof setup>, name: string): Promise<HostedCaller> {
 	const registration = await test.registrations.register(test.inputs.get(name)!);
 	test.participants.registrationReady(registration.targetKey);
 	return registration;
@@ -237,7 +236,7 @@ describe("hosted participant coordinator", () => {
 		const { fable, fableParticipant } = await acquirePair(test);
 		const successor = await register(test, "successor");
 		expect(() => test.participants.takeover(successor, fableParticipant.participantKey, fableParticipant.generation)).toThrow(RuntimeError);
-		test.registrations.unregister(fable.registrationId, fable.registrationKey);
+		test.registrations.forget(fable.targetKey);
 		expect(() => test.participants.takeover(successor, fableParticipant.participantKey, "stale_generation")).toThrow(expect.objectContaining({ code: "conflict" }));
 		const taken = test.participants.takeover(successor, fableParticipant.participantKey, fableParticipant.generation);
 		expect(taken).toMatchObject({ state: "held", holderTargetKey: successor.targetKey, lastTransition: { cause: "takeover" } });
@@ -247,10 +246,8 @@ describe("hosted participant coordinator", () => {
 	it("blocks takeover after a Runtime restart until reconnect grace elapses", async () => {
 		const test = setup();
 		const { fableParticipant } = await acquirePair(test);
-		test.registrations.close();
 		let now = 2_000;
-		let id = 0;
-		const registrations = new RuntimeRegistrationManager(test.store, test.host, { now: () => now, createId: () => `restart_reg_${++id}`, createKey: () => `restart_key_${id}` });
+		const registrations = new LiveTargets(test.store, test.host, { now: () => now });
 		const successor = await registrations.register(test.inputs.get("successor")!);
 		const participants = new HostedParticipantCoordinator(test.store, registrations, { now: () => now, startedAt: 2_000, reconnectGraceMs: 60_000, createGeneration: () => "lease_after_restart" });
 		participants.registrationReady(successor.targetKey);
@@ -263,7 +260,7 @@ describe("hosted participant coordinator", () => {
 		const test = setup();
 		const { fable, fableParticipant } = await acquirePair(test);
 		const successor = await register(test, "successor");
-		test.registrations.unregister(fable.registrationId, fable.registrationKey);
+		test.registrations.forget(fable.targetKey);
 		expect(test.participants.takeover(successor, fableParticipant.participantKey, fableParticipant.generation)).toMatchObject({ holderTargetKey: successor.targetKey });
 	});
 
@@ -306,24 +303,24 @@ describe("participant and mailbox RPC", () => {
 		const context = protocolContext(test.root, test.store, test.host, test.registrations, test.participants);
 		const call = (method: string, params: unknown) => dispatchHostedLine(JSON.stringify({ v: 1, id: method, method, params }), context);
 		expect(await call("hello", { minVersion: 1, maxVersion: 1 })).toMatchObject({ ok: true, result: { capabilities: { mailbox: { maxBodyBytes: 16_384 } } } });
-		let mainAuth = { registrationId: main.registrationId, registrationKey: main.registrationKey };
-		const fableAuth = { registrationId: fable.registrationId, registrationKey: fable.registrationKey };
+		let mainAuth = { targetKey: main.targetKey };
+		const fableAuth = { targetKey: fable.targetKey };
 		const acquiredMain = await call("participant.acquire", { ...mainAuth, protocol: "review", participantId: "main" });
 		const acquiredFable = await call("participant.acquire", { ...fableAuth, protocol: "review", participantId: "fable" });
 		const sender = (acquiredMain as { result: { participant: { participantKey: string; generation: string } } }).result.participant;
 		const recipient = (acquiredFable as { result: { participant: { participantKey: string; generation: string } } }).result.participant;
 		expect(acquiredMain).toMatchObject({ ok: true, result: { participant: { participantId: "main" }, revived: false } });
 		test.setNow(1_001);
-		test.registrations.unregister(mainAuth.registrationId, mainAuth.registrationKey);
+		test.registrations.forget(mainAuth.targetKey);
 		const reconnectedMain = await register(test, "main");
-		mainAuth = { registrationId: reconnectedMain.registrationId, registrationKey: reconnectedMain.registrationKey };
+		mainAuth = { targetKey: reconnectedMain.targetKey };
 		expect(await call("mailbox.send", { ...mainAuth, senderParticipantKey: sender.participantKey, expectedSenderGeneration: sender.generation, recipientParticipantKey: recipient.participantKey, sendId: "send_rpc", body: "Review RPC." })).toMatchObject({ ok: true, result: { sequence: 1 } });
 		expect(await call("mailbox.send", { ...mainAuth, senderParticipantKey: sender.participantKey, expectedSenderGeneration: "stale", recipientParticipantKey: recipient.participantKey, sendId: "send_stale", body: "Wrong sender." })).toMatchObject({ ok: false, error: { code: "conflict" } });
 		expect(await call("participant.get", { ...mainAuth, participantKey: recipient.participantKey })).toMatchObject({ ok: true, result: { unreadMail: 1 } });
 		expect(await call("participant.list", mainAuth)).toMatchObject({ ok: true, result: { participants: [{ participantId: "fable" }, { participantId: "main" }] } });
 		expect(await call("participant.acquire", { ...mainAuth, protocol: "review", participantId: "bad", extra: true })).toMatchObject({ ok: false, error: { code: "invalid_request" } });
 		expect(await call("participant.acquire", { ...mainAuth, protocol: "Review", participantId: "bad" })).toMatchObject({ ok: false, error: { code: "invalid_request" } });
-		expect(await call("participant.list", { ...mainAuth, registrationKey: "wrong" })).toMatchObject({ ok: false, error: { code: "registration_stale" } });
+		expect(await call("participant.list", { targetKey: "pi_unknown" })).toMatchObject({ ok: false, error: { code: "registration_stale" } });
 		expect(await call("mailbox.send", { ...mainAuth, senderParticipantKey: sender.participantKey, expectedSenderGeneration: sender.generation, recipientParticipantKey: recipient.participantKey, sendId: "bad_extra", body: "x", extra: true })).toMatchObject({ ok: false, error: { code: "invalid_request" } });
 		expect(await call("participant.takeover", { ...mainAuth, participantKey: recipient.participantKey, expectedGeneration: recipient.generation, confirmed: false })).toMatchObject({ ok: false, error: { code: "invalid_request" } });
 		expect(await call("participant.stand_down_confirmed", { ...mainAuth, participantKey: recipient.participantKey, expectedGeneration: recipient.generation, confirmed: false })).toMatchObject({ ok: false, error: { code: "invalid_request" } });

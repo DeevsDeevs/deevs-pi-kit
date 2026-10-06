@@ -11,8 +11,8 @@ import {
 	isWriter,
 } from "../schemas/state.ts";
 import type { HostedAgentBind } from "./state/operations.ts";
-import type { HostedHostVerifier, HostedLiveAgent } from "./identity.ts";
-import { RuntimeRegistrationManager, type HostedLiveRegistration } from "./registration.ts";
+import type { HostedHostVerifier, HostedLiveAgent } from "./herdr-cli.ts";
+import { LiveTargets, type HostedCaller } from "./live.ts";
 import { deriveAgentTargetKey, deriveParticipantKey, HostedStateStore } from "./state.ts";
 import { resolveCollaboratorRepo } from "./worktree.ts";
 import { isProjectWorktree } from "../../shared/worktree.ts";
@@ -30,7 +30,7 @@ export interface BindAgentInput {
 }
 
 export interface BoundAgentResult {
-	registration: HostedLiveRegistration;
+	registration: HostedCaller;
 	targetKey: string;
 	participantKey: string;
 	holderGeneration: string;
@@ -48,23 +48,23 @@ export interface AgentBinderOptions {
 /** Verifies one exact live Herdr agent by name and binds it to a target and participant lease. */
 export class RuntimeAgentBinder {
 	private readonly store: HostedStateStore;
-	private readonly registrations: RuntimeRegistrationManager;
+	private readonly live: LiveTargets;
 	private readonly host: HostedHostVerifier;
 	private readonly options: AgentBinderOptions;
 
 	constructor(
 		store: HostedStateStore,
-		registrations: RuntimeRegistrationManager,
+		live: LiveTargets,
 		host: HostedHostVerifier,
 		options: AgentBinderOptions = {},
 	) {
 		this.store = store;
-		this.registrations = registrations;
+		this.live = live;
 		this.host = host;
 		this.options = options;
 	}
 
-	async bind(caller: HostedLiveRegistration, input: BindAgentInput): Promise<BoundAgentResult> {
+	async bind(caller: HostedCaller, input: BindAgentInput): Promise<BoundAgentResult> {
 		const callerTarget = this.store.read().targets[caller.targetKey];
 		if (!isPiTarget(callerTarget)) {
 			throw new RuntimeError("conflict", "Only an authenticated Pi target may bind a Herdr agent collaborator.");
@@ -99,7 +99,7 @@ export class RuntimeAgentBinder {
 		}
 		this.store.apply({ type: "agent.bind", bind });
 		return {
-			registration: this.registrations.registerAgent(target),
+			registration: this.live.touch(target.targetKey),
 			targetKey: target.targetKey,
 			participantKey: target.participantKey,
 			holderGeneration: target.holderGeneration,
