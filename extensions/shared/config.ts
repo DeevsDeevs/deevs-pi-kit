@@ -23,8 +23,7 @@ const KitFile = Type.Partial(Type.Object(KEYS));
 const JsonObject = Type.Object({});
 const AnyKit = Type.Record(Type.String(), Type.Unknown());
 /** `autonomy` was `"auto" | "ask"` before it became a boolean; read as such until migrateLegacyConfig rewrites it. */
-const LEGACY_AUTONOMY: Record<string, boolean> = { auto: true, ask: false };
-const legacyAutonomy = (value: unknown): boolean | undefined => typeof value === "string" && Object.hasOwn(LEGACY_AUTONOMY, value) ? LEGACY_AUTONOMY[value] : undefined;
+const LegacyAutonomy = Type.Union([Type.Literal("auto"), Type.Literal("ask")]);
 
 export type KitKey = keyof typeof KEYS;
 export type KitValue<K extends KitKey> = Static<(typeof KEYS)[K]>;
@@ -55,7 +54,8 @@ function readKitKey<K extends KitKey>(path: string, key: K): KitValue<K> | undef
 		warnOnce(error instanceof Error ? error.message : String(error));
 		return undefined;
 	}
-	const value = key === "autonomy" ? legacyAutonomy(file?.[key]) ?? file?.[key] : file?.[key];
+	const raw = file?.[key];
+	const value = key === "autonomy" && Value.Check(LegacyAutonomy, raw) ? raw === "auto" : raw;
 	if (value === undefined) return undefined;
 	if (Value.Check(KEYS[key], value)) return value;
 	const [first] = Value.Errors(KEYS[key], value);
@@ -80,20 +80,24 @@ function warnOnce(problem: string): void {
  * A pi-kit.json that does not parse, or a notifier.json off the schema, is left for the user.
  */
 export async function migrateLegacyConfig(cwd: string): Promise<void> {
-	const [global, project] = kitPaths(cwd);
-	await upgradeAutonomy(global, async (kit) => writeFileSync(global, `${JSON.stringify(kit, null, 2)}\n`));
-	await upgradeAutonomy(project, (kit) => saveProjectConfig(cwd, FILE, kit));
+	await upgradeAutonomy(cwd);
 	await moveLegacy(cwd, "runtime.json", Type.Object({ auto: Type.Literal(true) }), () => ({ autonomy: true }), { autonomy: false });
 	await moveLegacy(cwd, "codex-fast.json", Type.Object({ enabled: Flag }), (file) => ({ codexFast: file.enabled }), {});
 	await moveLegacy(cwd, "notifier.json", KEYS.notifier, (notifier) => ({ notifier }), undefined);
 	await moveLegacy(cwd, "subagents.json", Type.Object({ defaultModel: Text }), (file) => ({ models: file.defaultModel === undefined ? undefined : { default: file.defaultModel } }), {});
 }
 
-async function upgradeAutonomy(path: string, save: (kit: Record<string, unknown>) => Promise<unknown>): Promise<void> {
-	let file;
-	try { file = parseFile(path, AnyKit); } catch { return; }
-	const autonomy = legacyAutonomy(file?.autonomy);
-	if (file && autonomy !== undefined) await save({ ...file, autonomy });
+async function upgradeAutonomy(cwd: string): Promise<void> {
+	const [global, project] = kitPaths(cwd);
+	for (const path of [global, project]) {
+		let file;
+		try { file = parseFile(path, AnyKit); } catch { continue; }
+		const legacy = file?.autonomy;
+		if (!file || !Value.Check(LegacyAutonomy, legacy)) continue;
+		const next = { ...file, autonomy: legacy === "auto" };
+		if (path === project) await saveProjectConfig(cwd, FILE, next);
+		else writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`);
+	}
 }
 
 async function moveLegacy<T extends TSchema>(cwd: string, name: string, schema: T, convert: (file: Static<T>) => Kit, invalid: Kit | undefined): Promise<void> {
