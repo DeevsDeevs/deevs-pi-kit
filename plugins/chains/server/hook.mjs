@@ -1,5 +1,5 @@
-// Chains checkpoint discipline for Claude Code and Codex, the same rule Pi enforces:
-// at 80% context every tool except the chain tools is refused until a Chain link is saved, stopping is refused once,
+// Chains checkpoint reminder for Claude Code and Codex, the same rule Pi applies:
+// at 80% context the first stop is refused once with a reminder to save a Chain link,
 // and after compaction the latest link is handed back so work continues from it.
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -9,7 +9,6 @@ import { fileURLToPath } from "node:url";
 export const CHECKPOINT_RATIO = 0.8;
 const TAIL_BYTES = 512 * 1024;
 const RESUME_BYTES = 16 * 1024;
-const ALLOWED_AT_PRESSURE = /chain_|^ToolSearch$|^AskUserQuestion$|^request_user_input$/;
 
 /** Last known context use of the session: Codex rollouts report the window; Claude transcripts report usage only. */
 export function contextUse(transcriptPath, claudeWindow = claudeContextWindow) {
@@ -76,35 +75,41 @@ export function newestLinkTime(cwd) {
 	return newest;
 }
 
-/** Pressure state for one session: due since `dueAt` until a link is written after it; rearms once use drops below the line. */
+/** Claude Code exports the project root to hooks; Codex hooks run in the session cwd. */
+function projectDir(input) {
+	return process.env.CLAUDE_PROJECT_DIR || input.cwd;
+}
+
+/**
+ * One reminder per pressure cycle: the first stop at or past the line, unless a link was written since the last stop
+ * below it. Rearms once use drops below the line.
+ */
 export function checkpointDue(input, now = Date.now()) {
 	const use = contextUse(input.transcript_path);
 	if (!use) return undefined;
 	const path = stateFile(input.session_id ?? "unknown");
-	const state = readJson(path) ?? {};
-	const percent = Math.round((use.used / use.window) * 100);
 	if (use.used < use.window * CHECKPOINT_RATIO) {
-		if (state.dueAt) writeFileSync(path, "{}");
+		writeFileSync(path, JSON.stringify({ belowAt: now }));
 		return undefined;
 	}
-	if (!state.dueAt) {
-		state.dueAt = now;
-		writeFileSync(path, JSON.stringify(state));
-	}
-	return newestLinkTime(input.cwd) >= state.dueAt ? undefined : percent;
+	const state = readJson(path) ?? {};
+	if (state.reminded || newestLinkTime(projectDir(input)) > (state.belowAt ?? now)) return undefined;
+	writeFileSync(path, JSON.stringify({ ...state, reminded: true }));
+	return Math.round((use.used / use.window) * 100);
 }
 
 function pressureReason(percent) {
-	return `Context is at ${percent}%. Save the required Chain checkpoint with chain_save before using other tools: `
+	return `Context is at ${percent}%. Save a Chain checkpoint with chain_save before compaction drops detail: `
 		+ "the current request, decisions, files changed or read, blockers, pending tasks, and a structured nextStep. "
 		+ "If no Chain is active, choose a concise task-specific chain name. After saving, continue; compaction will hand the link back";
 }
 
 async function sessionStart(input) {
-	if (!existsSync(join(input.cwd, ".chains"))) return undefined;
+	const cwd = projectDir(input);
+	if (!existsSync(join(cwd, ".chains"))) return undefined;
 	const { ChainService } = await import("../lib/chains/service.ts");
 	const { formatLoad } = await import("../lib/chains/format.ts");
-	const service = new ChainService(input.cwd);
+	const service = new ChainService(cwd);
 	const chains = await service.list({});
 	if (chains.length === 0) return undefined;
 	const latest = chains.map((chain) => chain.latest).filter(Boolean).sort((a, b) => String(b.createdAt ?? b.filename).localeCompare(String(a.createdAt ?? a.filename)))[0];
@@ -123,12 +128,6 @@ export async function run(input) {
 		case "SessionStart": {
 			const context = await sessionStart(input);
 			return context ? { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: context } } : undefined;
-		}
-		case "PreToolUse": {
-			if (ALLOWED_AT_PRESSURE.test(input.tool_name ?? "")) return undefined;
-			const percent = checkpointDue(input);
-			if (percent === undefined) return undefined;
-			return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: pressureReason(percent) } };
 		}
 		case "Stop": {
 			if (input.stop_hook_active) return undefined;

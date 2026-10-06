@@ -1,6 +1,6 @@
 {
   "name": "chains",
-  "description": "Durable markdown handoffs under .chains/, shared with Pi: save, load, fork, search, and a forced checkpoint at 80% context.",
+  "description": "Durable markdown handoffs under .chains/, shared with Pi: save, load, fork, search, and a checkpoint reminder at 80% context.",
   "author": { "name": "DeevsDeevs" },
   "repository": "https://github.com/DeevsDeevs/deevs-pi-kit",
   "license": "Apache-2.0"

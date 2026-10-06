@@ -12,4 +12,4 @@ A Chain is a markdown handoff under `.chains/<chain>/<timestamp>-<slug>.md`, sha
 - **Branch** a divergent line of work with `chain_fork`, then `chain_save` with its `branch` and `parent`.
 - **Delegate** with `chain_context` (`mode: pack`) to hand a subagent bounded context.
 
-At 80% context every other tool is refused until a link is saved; save it, then carry on. After compaction the latest link is handed back automatically.
+At 80% context the first stop is refused once as a reminder to save a link; save it, then carry on. After compaction the latest link is handed back automatically.

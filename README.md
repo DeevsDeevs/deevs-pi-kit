@@ -22,7 +22,7 @@ Extensions use Pi's host-provided packages as peers. The standalone Runtime daem
 
 The six stand-alone skills listed below also work in Claude Code and Codex: symlink `skills/<name>` from the installed checkout into `~/.agents/skills` for Codex and `~/.claude/skills` for Claude Code.
 
-Chains also ships as a plugin for Claude Code and Codex, reading and writing the same `.chains/` as Pi, with the same 80% checkpoint and post-compaction resume enforced by hooks:
+Chains also ships as a plugin for Claude Code and Codex, reading and writing the same `.chains/` as Pi, with the same 80% checkpoint reminder and post-compaction resume delivered by hooks:
 
 ```bash
 claude plugin marketplace add DeevsDeevs/deevs-pi-kit && claude plugin install chains@deevs-pi-kit
@@ -49,7 +49,7 @@ Nothing to set up first. Pi starts the daemon in its own Herdr workspace on the 
 - **workflow** runs foreground JavaScript that fans work out to read-only child agents, in trusted projects only. `workflow`.
 - **mission** drives a single-controller autonomous objective with limits, reviewed candidates and confirmed takeover, state under `.missions/`. `/mission`, `mission_*`. [More](extensions/mission/README.md).
 - **cron** schedules prompts for this Pi session, fired while it is idle. `/cron`, `cron`. [More](extensions/cron/README.md).
-- **chains** saves markdown handoffs under `.chains/` and forces a checkpoint at 80% context. `/chains`, `/chain-*`, `chain_*`. [More](extensions/chains/README.md).
+- **chains** saves markdown handoffs under `.chains/` and reminds once to save one at 80% context. `/chains`, `/chain-*`, `chain_*`. [More](extensions/chains/README.md).
 - **wiki** lints, graphs, searches and packs a curated markdown knowledge base. `/wiki:*`, `wiki_*`. [More](extensions/wiki/README.md).
 - **arxiv** searches arXiv and returns exact metadata and BibTeX. `/arxiv:*`, `arxiv_*`. [More](extensions/arxiv/README.md).
 - **todos** keeps a session todo list. `/todos`, `todo_list`. [More](extensions/todos/README.md).
