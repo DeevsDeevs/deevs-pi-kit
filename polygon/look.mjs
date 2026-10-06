@@ -33,6 +33,11 @@ export function entries(t) {
 
 export const requests = (t) => jsonl(t.requestLog);
 
+/** Waits for a condition outside the lead's event stream: files, the request log, session entries. */
+export async function poll(check, ms, label) {
+	for (const end = Date.now() + ms; !check(); await new Promise((r) => setTimeout(r, 50))) if (Date.now() > end) throw new Error(`timeout ${ms}ms waiting for ${label}`);
+}
+
 /** Every live process carrying this scenario's POLYGON_RUN tag. */
 export function procs(t) {
 	const found = [];

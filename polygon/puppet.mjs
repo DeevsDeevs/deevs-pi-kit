@@ -61,8 +61,12 @@ function chat(res, request, step) {
 	const chunk = (delta, finish, usage) => res.write(`data: ${JSON.stringify({ id: "polygon", object: "chat.completion.chunk", created: 0, model: request.model, choices: [{ index: 0, delta, finish_reason: finish }], ...(usage ? { usage } : {}) })}\n\n`);
 	if (step.tool) chunk({ role: "assistant", tool_calls: [{ index: 0, id: step.id, type: "function", function: { name: step.tool, arguments: JSON.stringify(step.args) } }] }, null);
 	else chunk({ role: "assistant", content: reply(step) }, null);
-	chunk({}, step.tool ? "tool_calls" : "stop", { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 });
-	res.end("data: [DONE]\n\n");
+	// `delayMs` holds the stream open after the first chunk, so a scenario can kill a lead mid-stream.
+	setTimeout(() => {
+		if (res.destroyed) return;
+		chunk({}, step.tool ? "tool_calls" : "stop", { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 });
+		res.end("data: [DONE]\n\n");
+	}, step.delayMs ?? 0);
 }
 
 function anthropic(res, request, step) {

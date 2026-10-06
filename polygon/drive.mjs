@@ -41,6 +41,7 @@ export function rpc(t, { args = [] } = {}) {
 				const line = buf.slice(0, i); buf = buf.slice(i + 1);
 				if (!line.trim()) continue;
 				const e = JSON.parse(line);
+				e.receivedAt = Date.now();
 				lead.events.push(e);
 				check(e);
 			}
