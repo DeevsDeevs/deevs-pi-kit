@@ -3,7 +3,7 @@ import { showTextViewer } from "../shared/text-viewer.ts";
 import type { ChainService } from "./service.ts";
 import type { ChainLoadResult } from "./types.ts";
 import { formatList, formatLoad, formatRankedSearch } from "./format.ts";
-import type { ChainCheckpointService } from "./checkpoint.ts";
+import { checkpointLabel, type ChainCheckpointService } from "./checkpoint.ts";
 import { FULL_SCREEN_OVERLAY } from "../shared/dashboard.ts";
 import { ChainsDashboard } from "./ui.ts";
 
@@ -33,7 +33,8 @@ export function registerChainCommands(pi: ExtensionAPI, service: ChainService, c
 					), { overlay: true, overlayOptions: FULL_SCREEN_OVERLAY });
 					return;
 				}
-				const state = checkpoint.chain ? `Checkpoint: ${checkpoint.chain}@${checkpoint.branch ?? "main"} · ${checkpoint.status}${checkpoint.dueReasons.length ? ` · ${checkpoint.dueReasons.at(-1)}` : ""}\n\n` : "";
+				const label = checkpointLabel(checkpoint);
+				const state = label ? `Checkpoint: ${label}\n\n` : "";
 				const content = query ? formatRankedSearch(await service.rankedSearch({ query, maxResults: 30 })) : formatList(await service.list({ includeBranches: true }));
 				await showTextViewer(ctx, query ? `Chains: ${query}` : "Chains", `${state}${content}`);
 			} catch (error) {
@@ -50,14 +51,7 @@ async function completeChains(service: ChainService, prefix: string) {
 
 function chainLoadPrompt(result: ChainLoadResult): string {
 	const warning = result.link.stale ? `\nWarning: this link is ${result.link.ageDays} days old; verify stale assumptions before acting.` : "";
-	return `Load this chain context and continue from it.
-
-Chain: ${result.link.chain}
-Branch: ${result.link.branch}
-Link: ${result.link.filename}${warning}
-Parent: ${result.link.parent ?? "(none)"}
-Title: ${result.link.title}
-Next step: ${result.link.nextStep ?? "(not found)"}
+	return `Load this chain context and continue from it.${warning}
 
 Use the saved chain content below as working context. If the next step is ambiguous or the link references missing/stale context, ask clarifying questions before proceeding.
 

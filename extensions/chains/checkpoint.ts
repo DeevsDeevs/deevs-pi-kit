@@ -50,6 +50,12 @@ export function reduceChainCheckpoint(state: ChainCheckpointState, operation: Ch
 	return { ...state, contextPressureHandled: false, updatedAt: operation.at };
 }
 
+/** `chain@branch · status · latest reason`; activate and saved always set chain and branch together. */
+export function checkpointLabel(state: ChainCheckpointState): string | undefined {
+	const reason = state.dueReasons.at(-1);
+	return state.chain ? `${state.chain}@${state.branch} · ${state.status}${reason ? ` · ${reason}` : ""}` : undefined;
+}
+
 export function replayChainCheckpoint(entries: readonly unknown[]): ChainCheckpointState {
 	let state = emptyChainCheckpoint();
 	for (const entry of entries) {
@@ -131,7 +137,7 @@ export class ChainCheckpointService {
 	reminder(): string | undefined {
 		if (this.state.status !== "due" && !this.remindNextTurn) return undefined;
 		this.remindNextTurn = false;
-		const target = this.state.chain ? `${this.state.chain}@${this.state.branch ?? "main"}` : "the relevant Chain";
+		const target = this.state.chain ? `${this.state.chain}@${this.state.branch}` : "the relevant Chain";
 		const reasons = this.state.dueReasons.length ? ` Reasons: ${this.state.dueReasons.join("; ")}.` : "";
 		const instruction = this.state.status === "due"
 			? this.state.dueCodes.includes("context_pressure")
