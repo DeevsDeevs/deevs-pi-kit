@@ -74,12 +74,6 @@ export const ParticipantAcquireParams = Type.Object({
 	...AUTH,
 	protocol: ParticipantNameText,
 	participantId: ParticipantNameText,
-	revive: Type.Optional(Type.Boolean()),
-}, STRICT_OBJECT);
-export const ParticipantStandDownParams = Type.Object({
-	...AUTH,
-	participantKey: IdText,
-	expectedGeneration: Type.Optional(IdText),
 }, STRICT_OBJECT);
 export const ParticipantConfirmedParams = Type.Object({
 	...AUTH,
@@ -88,21 +82,7 @@ export const ParticipantConfirmedParams = Type.Object({
 	confirmed: Type.Literal(true),
 }, STRICT_OBJECT);
 
-export const MailboxSendParams = Type.Object({
-	...AUTH,
-	senderParticipantKey: IdText,
-	expectedSenderGeneration: IdText,
-	recipientParticipantKey: IdText,
-	sendId: IdText,
-	body: boundedText(HOSTED_MAILBOX_MAX_BODY_BYTES),
-}, STRICT_OBJECT);
-
-export const MessagingIssueParams = Type.Object({
-	...AUTH,
-	participantKey: IdText,
-	expectedGeneration: IdText,
-	confirmed: Type.Literal(true),
-}, STRICT_OBJECT);
+export const MessagingIssueParams = ParticipantConfirmedParams;
 export const MessagingNamespaceParams = Type.Object({ ...NAMESPACE }, STRICT_OBJECT);
 export const MessagingSendParams = Type.Object({
 	...NAMESPACE,
@@ -164,11 +144,7 @@ export const WorktreeListResult = Type.Object({
 
 export const WorktreeRemoveResult = Type.Object({ removed: Type.Literal(true) });
 
-export const ParticipantAcquireResult = Type.Object({
-	participant: ParticipantStatusResult,
-	revived: Type.Boolean(),
-	transitioned: Type.Boolean(),
-});
+export const ParticipantAcquireResult = Type.Object({ participant: ParticipantStatusResult });
 
 /** Every messaging method carries the same namespace credentials, whatever else it takes. */
 export interface MessagingNamespaceAuth {

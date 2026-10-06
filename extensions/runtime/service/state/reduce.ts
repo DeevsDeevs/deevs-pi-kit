@@ -7,7 +7,6 @@ import {
 	acquireParticipant,
 	clearParticipantWorktree,
 	stopDormantParticipant,
-	releaseParticipant,
 	standDownParticipant,
 	takeoverParticipant,
 } from "./participants.ts";
@@ -28,7 +27,6 @@ const reducers: HostedStateReducers = {
 	"agent.bind": bindAgentTarget,
 	"participant.acquire": acquireParticipant,
 	"participant.stand_down": standDownParticipant,
-	"participant.release": releaseParticipant,
 	"participant.worktree.clear": clearParticipantWorktree,
 	"participant.dormant_stopped": stopDormantParticipant,
 	"participant.takeover": takeoverParticipant,

@@ -47,12 +47,11 @@ describe("hosted runtime client vertical", () => {
 		expect(registration).toEqual({ targetKey: "pi_session_1" });
 		const auth = { targetKey: "pi_session_1" };
 		const sender = await client.call("participant.acquire", { ...auth, protocol: "review", participantId: "main" }) as { participant: { participantKey: string; generation: string } };
-		expect(sender).toMatchObject({ participant: { participantId: "main", holderLive: true }, revived: false });
+		expect(sender).toMatchObject({ participant: { participantId: "main", holderLive: true } });
 		const fableRegistration = await client.call("pi.register", { projectRoot, piSessionId: "session_2", piSessionFile: fableSessionFile }) as Record<string, unknown>;
 		const fableAuth = { targetKey: String(fableRegistration.targetKey) };
-		const recipient = await client.call("participant.acquire", { ...fableAuth, protocol: "review", participantId: "fable" }) as { participant: { participantKey: string } };
+		await client.call("participant.acquire", { ...fableAuth, protocol: "review", participantId: "fable" });
 		expect(await client.call("participant.list", auth)).toMatchObject({ participants: [{ participantId: "fable" }, { participantId: "main" }] });
-		await client.call("mailbox.send", { ...auth, senderParticipantKey: sender.participant.participantKey, expectedSenderGeneration: sender.participant.generation, recipientParticipantKey: recipient.participant.participantKey, sendId: "send_client", body: "Focused mail" });
 		expect(await client.call("pi.heartbeat", fableAuth)).toMatchObject(fableAuth);
 		expect(await client.call("pi.heartbeat", auth)).toMatchObject(auth);
 		await expect(client.call("participant.list", { targetKey: "pi_unknown" })).rejects.toMatchObject({ code: "registration_stale" });

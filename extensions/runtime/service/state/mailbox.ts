@@ -1,6 +1,6 @@
 import { RuntimeError } from "../../errors.ts";
 import { HOSTED_MAILBOX_MAX_BODY_BYTES } from "../../schemas/common.ts";
-import { type HostedMailboxMessageEvent, type HostedParticipant, type HostedRuntimeState, isEnded, isHeld } from "../../schemas/state.ts";
+import { type HostedMailboxMessageEvent, type HostedParticipant, type HostedRuntimeState, isHeld } from "../../schemas/state.ts";
 import type { HostedStateOperation } from "./operations.ts";
 import { mailboxDedupeKey } from "./keys.ts";
 import { MAX_ID_BYTES } from "../../schemas/common.ts";
@@ -13,7 +13,7 @@ export function sendMailboxMessage(state: HostedRuntimeState, operation: Mailbox
 	if (!sender || !senderHoldsIdentity(sender, operation)) {
 		throw new RuntimeError("conflict", "Mailbox sender identity or generation changed before send.");
 	}
-	if (!recipient || isEnded(recipient.state)) throw new RuntimeError("conflict", "Mailbox recipient is unavailable.");
+	if (!recipient) throw new RuntimeError("conflict", "Mailbox recipient is unavailable.");
 	if (!participantsSharePeerScope(sender, recipient)) {
 		throw new RuntimeError("conflict", "Mailbox participants must be distinct and share one project and protocol.");
 	}
