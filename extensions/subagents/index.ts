@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { loadKitConfig, modelLabel, resolveModel } from "../shared/models.ts";
+import { loadKitConfig, modelLabel, resolveLead, resolveModel } from "../shared/models.ts";
 import { tasks, type TaskNotification } from "../shared/tasks.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
 import { agentTypes, agentTypesSection, findAgentType, workerPrompt } from "./definitions.ts";
@@ -115,6 +115,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (event, ctx) => {
 		if (event.reason === "reload") await reinstall();
+		else await useLeadModel(pi, ctx).catch((error: unknown) => ctx.ui.notify(`The lead stays on Pi's model: ${error instanceof Error ? error.message : String(error)}`, "warning"));
 		await resumeSession(ctx).catch((error: unknown) => ctx.ui.notify(`Agents of this session did not resume: ${error instanceof Error ? error.message : String(error)}`, "error"));
 	});
 	pi.on("before_agent_start", (event) => {
@@ -123,6 +124,16 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", async (event) => {
 		if (event.reason === "quit") await closeAll();
 	});
+}
+
+/** A new session (no assistant message yet, no --model or --provider) switches to the newest match of pi-kit.json's `lead`. */
+async function useLeadModel(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+	if (process.argv.includes("--model") || process.argv.includes("--provider")) return;
+	if (ctx.sessionManager.getEntries().some((entry) => entry.type === "message" && entry.message.role === "assistant")) return;
+	const lead = resolveLead({ config: await loadKitConfig(ctx.cwd, getAgentDir()), registry: ctx.modelRegistry });
+	if (!lead) return;
+	if (!await pi.setModel(lead.model)) throw new Error(`${lead.model.provider} is not logged in.`);
+	if (lead.level) pi.setThinkingLevel(lead.level);
 }
 
 function limitsLine(limits: Limits): string | undefined {

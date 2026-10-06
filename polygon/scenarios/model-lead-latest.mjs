@@ -17,7 +17,6 @@ async function turn(t, opts) {
 export default {
 	name: "model-lead-latest",
 	gate: "M1",
-	pending: "step 1.2 resolves a new session's lead model through resolveLead",
 	async run(t) {
 		fixtureModels(t, "polygon", ["gpt-6-sol", "gpt-6.2-sol", "gpt-6.10-sol"]);
 		const settings = join(t.agentDir, "settings.json");

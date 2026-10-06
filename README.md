@@ -73,7 +73,7 @@ The kit's only settings file is `pi-kit.json`: `~/.pi/agent/pi-kit.json` for eve
 }
 ```
 
-- `models` and `lead` name models by pattern (`openai-codex/gpt-*-sol` is the newest sol); a project's names add to the global ones.
+- `models` and `lead` name models by pattern (`openai-codex/gpt-*-sol` is the newest sol); a project's names add to the global ones. A new session started without `--model` or `--provider` switches to `lead` at your thinking level (`"sol:xhigh"` sets one); restored sessions keep their model, and `"lead": null` turns this off.
 - `autonomy`: orchestration never waits on a dialog. `"ask"` brings one confirmation back for each collaborator change; a project's value counts once the project is trusted.
 - `guard`: `"detached"`, `"forcePush"` or `"rmRf": false` turns one rule off; `block` patterns from both files add up.
 - `codexFast`: `true` sends `service_tier: "priority"` on ChatGPT-auth `openai-codex` requests.
