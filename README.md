@@ -51,7 +51,7 @@ Nothing to set up first. Pi starts the daemon in its own Herdr workspace on the 
 - **wiki** lints, graphs, searches and packs a curated markdown knowledge base. `/wiki:*`, `wiki_*`. [More](extensions/wiki/README.md).
 - **arxiv** searches arXiv and returns exact metadata and BibTeX. `/arxiv:*`, `arxiv_*`. [More](extensions/arxiv/README.md).
 - **todos** keeps a session todo list. `/todos`, `todo_list`. [More](extensions/todos/README.md).
-- **ask-user** asks a clarification through an overlay, after files and docs have been checked. `ask_user`.
+- **ask-user** asks before an irreversible or destructive choice through an overlay; anything else goes ahead on a stated default. `ask_user`.
 - **codex-fast** turns on the OpenAI Codex Fast service tier for ChatGPT-auth requests. `/codex-fast`, `.pi/codex-fast.json`.
 - **notifier** sends a ready-for-input terminal notification. `/notifier:test`, `/notifier:settings`, `.pi/notifier.json`.
 - **herdr-compat** treats Shift+Enter as a newline inside Herdr. Experimental.
