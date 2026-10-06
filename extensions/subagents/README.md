@@ -40,4 +40,4 @@ subagent_wait  status, wait, or cancellation with real settlement
 - terminal state is withheld until the child process group actually quiesces;
 - stable terminal events, exact per-run usage, one aggregate wake per completed group, user-priority wake admission, and Chain/Mission integration.
 
-Project settings in `.pi/subagents.json` cover allowed/default models, per-persona models, timeout bounds, and group concurrency.
+A trusted project's old `.pi/subagents.json` moves into `.pi/pi-kit.json` once, keeping only `defaultModel` as `models.default`; timeout bounds and group concurrency fall back to the defaults in `config.ts`.

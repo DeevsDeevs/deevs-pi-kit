@@ -23,19 +23,7 @@ created: 2026-04-28T12:30:00.000Z
 
 ## Commands and tools
 
-Human commands:
-
-```text
-/chains [query]
-/chain-link <chain> [--branch name] [--parent link.md]
-/chain-load <chain> [--branch name] [link.md]
-/chain-fork <chain> <new-branch> [--from link.md] [--from-branch name]
-/chain-list [--branches]
-/chain-search [chain] [--branch name] [--lookup|--text|--regex] <query>
-/chain-waive <reason>
-```
-
-Model tools:
+The user browses and searches with `/chains [query]` and asks you for everything else. Model tools:
 
 ```text
 chain_save    save a markdown link; supports branch, parent, nextStep
@@ -66,8 +54,8 @@ Chains are handoff-quality memory, not chat logs.
 - Creating a branch: `chain_fork` to resolve the parent, save the first link with `branch` and `parent` metadata, and state the branch scope and what would merge back. When the branch is accepted/rejected, save an outcome link on the parent branch.
 
 ```text
-/chain-fork project-work experiment --from-branch main
-/chain-link project-work --branch experiment
+chain_fork { chain: "project-work", branch: "experiment", fromBranch: "main" }
+chain_save { chain: "project-work", branch: "experiment", parent: <the fork's parent>, content: ... }
 ```
 
 ## Link content rubric

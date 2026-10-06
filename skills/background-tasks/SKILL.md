@@ -31,7 +31,7 @@ Jobs use pipe stdio, close stdin after optional initial input, cap memory/log ou
 
 Timing itself is the dependency in this exact Pi session: a user-requested reminder or recurring timed check/report, or a short autonomous one-shot return after an external delay with no completion event. Use the `cron` tool with a five-field local-time expression and `recurring: false` for one-shot work. Do not poll Jobs, Subagents, or Workflows; their terminal delivery already wakes idle Pi.
 
-Cron fires only while the session process is open and idle, or coalesces missed occurrences when the same session is resumed manually. It cannot wake Pi or the machine. After creating a task, report its id and `/cron delete <id>` cancellation path.
+Cron fires only while the session process is open and idle, or coalesces missed occurrences when the same session is resumed manually. It cannot wake Pi or the machine. After creating a task, report its id; `cron` with `delete` cancels it.
 
 ## Use Herdr when
 

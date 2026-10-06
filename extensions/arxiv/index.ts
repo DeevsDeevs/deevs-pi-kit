@@ -1,5 +1,4 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { registerArxivCommands } from "./commands.ts";
 import { ArxivService } from "./service.ts";
 import { registerArxivTools } from "./tools.ts";
 
@@ -17,7 +16,6 @@ export default function arxivExtension(pi: ExtensionAPI): void {
 
 	const service = new ArxivService();
 	registerArxivTools(pi, service);
-	registerArxivCommands(pi, service);
 
 	pi.on("session_shutdown", async () => {
 		surfaceState.active = false;

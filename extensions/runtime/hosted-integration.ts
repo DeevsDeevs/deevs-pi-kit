@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import type { CollaboratorToolBlock } from "./collaborator-policy.ts";
 import {
 	CollaboratorService,
@@ -14,7 +14,6 @@ import type { InboxReader } from "./mcp/pi.ts";
 import { MessagingClient } from "./messaging-client.ts";
 import { NativeAgentService } from "./native-agents.ts";
 import type { ClientParticipantStatus, HostedHeartbeat, LiveClientRegistration } from "./responses.ts";
-import { runRuntimeCommand, type RuntimeCommandServices } from "./runtime-command.ts";
 import { RuntimeSession, type RuntimeSessionHooks } from "./runtime-session.ts";
 import { HostedSessionStore } from "./session-record.ts";
 
@@ -56,11 +55,6 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 
 	messagingDescriptor(ctx: ExtensionContext): Promise<string> {
 		return this.messaging.descriptor(ctx);
-	}
-
-	command(args: string, ctx: ExtensionCommandContext): Promise<void> {
-		const services: RuntimeCommandServices = { session: this.session, messaging: this.messaging };
-		return runRuntimeCommand(services, args, ctx);
 	}
 
 	guardCollaboratorTool(toolName: string, input: ToolCallEvent["input"] | undefined, cwd: string): CollaboratorToolBlock | undefined {

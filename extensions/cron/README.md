@@ -14,7 +14,7 @@ cron { action: "delete", id: "deadbeef" }
 
 Use it for user-requested reminders and recurring timed work, or for a short autonomous one-shot return when progress genuinely depends on wall-clock time and no completion event exists. Do not poll Jobs, Subagents, or Workflows; their terminal delivery already wakes idle Pi.
 
-Use `/cron` to browse tasks and `/cron delete <id>` to remove one.
+Ask the lead to list or delete tasks; it calls `cron` with `list` or `delete`.
 
 ## Semantics
 

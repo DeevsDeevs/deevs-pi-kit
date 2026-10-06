@@ -1,0 +1,98 @@
+import { readFileSync, rmSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { Type, type Static, type TSchema } from "typebox";
+import { Value } from "typebox/value";
+import { saveProjectConfig } from "./project-config.ts";
+
+const FILE = "pi-kit.json";
+const Flag = Type.Optional(Type.Boolean());
+const Text = Type.Optional(Type.String());
+const KEYS = {
+	models: Type.Record(Type.String(), Type.String()),
+	lead: Type.Union([Type.String(), Type.Null()]),
+	autonomy: Type.Union([Type.Literal("auto"), Type.Literal("ask")]),
+	guard: Type.Object({ detached: Flag, forcePush: Flag, rmRf: Flag, block: Type.Optional(Type.Array(Type.String())) }),
+	codexFast: Type.Boolean(),
+	notifier: Type.Object({
+		enabled: Flag, title: Text, body: Text, terminal: Flag, bell: Flag, terminalRequiresTty: Flag,
+		command: Type.Optional(Type.Array(Type.String())), jsonl: Text, minIntervalMs: Type.Optional(Type.Number()),
+	}),
+};
+const KitFile = Type.Partial(Type.Object(KEYS));
+
+export type KitKey = keyof typeof KEYS;
+export type KitValue<K extends KitKey> = Static<(typeof KEYS)[K]>;
+type Kit = Static<typeof KitFile>;
+
+/** Pi's agent dir without importing Pi, so the standalone guard hook can read pi-kit.json too. */
+export function agentDir(): string {
+	return process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
+}
+
+/** The global, then the project pi-kit.json; every reader takes them fresh, so an edit applies to the next use. */
+export function kitPaths(cwd: string, dir = agentDir()): [global: string, project: string] {
+	return [join(dir, FILE), join(cwd, ".pi", FILE)];
+}
+
+/** One key of one pi-kit.json: undefined when the file or the key is absent; throws `<path>: <pointer> <message>` on a file that does not parse or a value off its schema. */
+export function readKitKey<K extends KitKey>(path: string, key: K): KitValue<K> | undefined {
+	// SAFETY: parseFile checked `key` against KEYS[key], so its value is KitValue<K> or absent.
+	const file = parseFile(path, Type.Object({ [key]: Type.Optional(KEYS[key]) })) as Partial<Record<K, KitValue<K>>> | undefined;
+	return file?.[key];
+}
+
+/** `key` from the global and the project pi-kit.json; a file that does not parse or a value off its schema counts as absent. */
+export function kitValues<K extends KitKey>(key: K, cwd: string, dir = agentDir()): [global: KitValue<K> | undefined, project: KitValue<K> | undefined] {
+	const [global, project] = kitPaths(cwd, dir).map((path) => {
+		try { return readKitKey(path, key); } catch { return undefined; }
+	});
+	return [global, project];
+}
+
+/**
+ * Moves each legacy `.pi/<file>` of a trusted project into `.pi/pi-kit.json` once and deletes it; keys already set there win.
+ * A pi-kit.json that does not parse, or a notifier.json off the schema, is left for the user.
+ */
+export async function migrateLegacyConfig(cwd: string): Promise<void> {
+	await moveLegacy(cwd, "runtime.json", Type.Object({ auto: Type.Literal(true) }), () => ({ autonomy: "auto" }), { autonomy: "ask" });
+	await moveLegacy(cwd, "codex-fast.json", Type.Object({ enabled: Flag }), (file) => ({ codexFast: file.enabled }), {});
+	await moveLegacy(cwd, "notifier.json", KEYS.notifier, (notifier) => ({ notifier }), undefined);
+	await moveLegacy(cwd, "subagents.json", Type.Object({ defaultModel: Text }), (file) => ({ models: file.defaultModel === undefined ? undefined : { default: file.defaultModel } }), {});
+}
+
+async function moveLegacy<T extends TSchema>(cwd: string, name: string, schema: T, convert: (file: Static<T>) => Kit, invalid: Kit | undefined): Promise<void> {
+	const legacyPath = join(cwd, ".pi", name);
+	let moved: Kit | undefined;
+	try {
+		const file = parseFile(legacyPath, schema);
+		if (file === undefined) return;
+		moved = convert(file);
+	} catch {
+		moved = invalid;
+	}
+	if (!moved) return;
+	let kit: Kit;
+	try { kit = parseFile(kitPaths(cwd)[1], KitFile) ?? {}; } catch { return; }
+	const next: Kit = { ...moved, ...kit };
+	if (moved.models && kit.models) next.models = { ...moved.models, ...kit.models };
+	if (moved.notifier && kit.notifier) next.notifier = { ...moved.notifier, ...kit.notifier };
+	await saveProjectConfig(cwd, FILE, next);
+	rmSync(legacyPath, { force: true });
+}
+
+/** A JSON file checked against `schema`: undefined when it does not exist; throws `<path>: <pointer> <message>` otherwise. */
+function parseFile<T extends TSchema>(path: string, schema: T): Static<T> | undefined {
+	let text: string;
+	try { text = readFileSync(path, "utf8"); } catch (error) {
+		if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
+		throw new Error(`${path}: ${error instanceof Error ? error.message : String(error)}`);
+	}
+	let value;
+	try { value = JSON.parse(text); } catch (error) {
+		throw new Error(`${path}: ${error instanceof Error ? error.message : String(error)}`);
+	}
+	if (Value.Check(schema, value)) return value;
+	const [first] = Value.Errors(schema, value);
+	throw new Error(`${path}: ${first?.instancePath || "/"} ${first?.message}`);
+}

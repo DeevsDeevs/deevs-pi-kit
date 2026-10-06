@@ -1,5 +1,4 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { registerTodoCommands } from "./commands.ts";
 import { TodoState } from "./state.ts";
 import { registerTodoTools } from "./tools.ts";
 import { clearTodoWidget, updateTodoWidget } from "./ui.ts";
@@ -28,7 +27,6 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	};
 
 	registerTodoTools(pi, state);
-	registerTodoCommands(pi, state, setContext);
 
 	pi.on("session_start", async (_event, ctx) => restore(ctx));
 	pi.on("session_tree", async (_event, ctx) => restore(ctx));

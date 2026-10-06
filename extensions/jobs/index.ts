@@ -4,11 +4,8 @@ import { isToolCallEventType, type ExtensionAPI, type ExtensionContext, type The
 import type { JobReadInput, JobReadResult, JobRecord, JobStartInput } from "./types.ts";
 import { guardBashCall } from "../shared/guard.ts";
 import { formatDuration } from "../shared/runtime-ui.ts";
-import { showTextViewer } from "../shared/text-viewer.ts";
 import { claimJobManager, releaseJobManager } from "./registry.ts";
-import { FULL_SCREEN_OVERLAY } from "../shared/dashboard.ts";
 import { clampWaitMs } from "../shared/runtime-delivery.ts";
-import { JobsDashboard } from "./ui.ts";
 
 const StartSchema = Type.Object({
 	name: Type.String({ description: "Short human-readable job name" }),
@@ -107,49 +104,6 @@ export default function jobsExtension(pi: ExtensionAPI): void {
 		},
 		renderCall(args, theme) { return new Text(theme.fg("toolTitle", theme.bold("job_stop ")) + theme.fg("muted", args.id), 0, 0); },
 		renderResult(result, { expanded }, theme) { return new Text(renderJob(result.details as JobRecord | undefined, expanded, theme), 0, 0); },
-	});
-
-	pi.registerCommand("jobs", {
-		description: "Browse, inspect, stop, or clear bounded Jobs",
-		getArgumentCompletions: (prefix) => manager.list().map((job) => job.spec.id).filter((id) => id.startsWith(prefix)).map((value) => ({ value, label: value })),
-		handler: async (args, context) => {
-			ctx = context;
-			const [action, id] = args.trim().split(/\s+/, 2);
-			if (action === "clear") {
-				context.ui.notify(`Cleared ${manager.clearTerminal(id)} terminal Job record(s).`, "info");
-				return;
-			}
-			if (action === "stop" && id) {
-				const stopped = await manager.stop(id);
-				manager.consumeTerminal([stopped], runtimeClaimant(context));
-			}
-			const jobs = manager.list();
-			let exact = jobs.find((job) => job.spec.id === action);
-			if (!action && context.mode === "tui" && context.hasUI) {
-				let unsubscribeDashboard: () => void = () => {};
-				try {
-					await context.ui.custom<void>((tui, theme, _keybindings, done) => {
-						const render = () => tui.requestRender();
-						unsubscribeDashboard = manager.onChange(render);
-						return new JobsDashboard(
-							manager,
-							theme,
-							() => done(undefined),
-							render,
-							() => Math.max(4, tui.terminal.rows - 2),
-							(id) => void manager.stop(id).then(() => { context.ui.notify(`Stopped ${id}.`, "info"); render(); }).catch((error) => context.ui.notify(error instanceof Error ? error.message : String(error), "error")),
-							(id) => { context.ui.notify(`Cleared ${manager.clearTerminal(id)} record.`, "info"); render(); },
-						);
-					}, { overlay: true, overlayOptions: FULL_SCREEN_OVERLAY });
-				} finally {
-					unsubscribeDashboard();
-				}
-				return;
-			}
-			const selected = exact ? [exact] : action && action !== "stop" ? jobs.filter((job) => `${job.spec.id} ${job.spec.name}`.toLowerCase().includes(action.toLowerCase())) : jobs;
-			const content = selected.map((job) => `${formatJob(job)}\n  ${job.spec.command ?? job.spec.argv?.join(" ") ?? ""}\n${exact ? formatRead(manager.read({ id: job.spec.id, maxBytes: 32_768 })) : `  log: ${job.spec.logPath}`}`).join("\n\n");
-			await showTextViewer(context, exact ? `Job ${exact.spec.id}` : "Jobs", content || "No Jobs.");
-		},
 	});
 
 	pi.on("tool_call", (event, context) => isToolCallEventType("bash", event) ? guardBashCall(event.input.command, context.cwd) : undefined);

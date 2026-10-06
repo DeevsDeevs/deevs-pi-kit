@@ -1,10 +1,10 @@
 import { readFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { clampThinkingLevel, type Api, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
-import { Type, type Static } from "typebox";
+import { Type } from "typebox";
 import { Value } from "typebox/value";
+import { kitPaths, readKitKey } from "./config.ts";
 
 export type ModelCatalog = Pick<ModelRegistry, "getAll" | "getAvailable" | "find">;
 export type KitConfig = { models: Record<string, string>; lead: string | null };
@@ -41,32 +41,15 @@ export const KIT_DEFAULTS = {
 
 const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ModelThinkingLevel[];
 const DATED = /-\d{8}$/;
-const KitFile = Type.Object({
-	models: Type.Optional(Type.Record(Type.String(), Type.String())),
-	lead: Type.Optional(Type.Union([Type.String(), Type.Null()])),
-});
 const CodexCache = Type.Object({ models: Type.Array(Type.Object({ slug: Type.String() })) });
 
 /** Project over global over kit defaults, per name. Callers load it again for every resolution, so an edit applies to the next call. */
 export async function loadKitConfig(cwd: string, agentDir: string): Promise<KitConfig> {
-	const files = await Promise.all([join(agentDir, "pi-kit.json"), join(cwd, ".pi", "pi-kit.json")].map(readKitFile));
+	const files = kitPaths(cwd, agentDir).map((path) => ({ models: readKitKey(path, "models"), lead: readKitKey(path, "lead") }));
 	return {
 		models: Object.assign({}, KIT_DEFAULTS.models, ...files.map((file) => file.models)),
 		lead: files.reduce<string | null>((lead, file) => (file.lead === undefined ? lead : file.lead), KIT_DEFAULTS.lead),
 	};
-}
-
-async function readKitFile(path: string): Promise<Static<typeof KitFile>> {
-	let value;
-	try {
-		value = JSON.parse(await readFile(path, "utf8"));
-	} catch (error) {
-		if (error instanceof Error && "code" in error && error.code === "ENOENT") return {};
-		throw new Error(`${path}: ${error instanceof Error ? error.message : String(error)}`);
-	}
-	if (Value.Check(KitFile, value)) return value;
-	const [first] = Value.Errors(KitFile, value);
-	throw new Error(`${path}: ${first?.instancePath || "/"} ${first?.message}`);
 }
 
 /** Codex's model cache and the top-level `model` of its config.toml; either may be missing. */

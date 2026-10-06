@@ -20,13 +20,6 @@ Statuses: `pending`, `in_progress`, `blocked`, `done`.
 
 `write` replaces the full list. Preserve stable ids and include all existing items when updating.
 
-## Commands
-
-```text
-/todos          show the current list
-/todos clear    clear the list
-```
-
 ## Guardrails
 
 - intended for current-session progress only

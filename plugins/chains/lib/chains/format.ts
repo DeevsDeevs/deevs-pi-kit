@@ -1,7 +1,7 @@
 import type { ChainService } from "./service.ts";
 
 export function formatList(chains: Awaited<ReturnType<ChainService["list"]>>): string {
-	if (chains.length === 0) return "No chains found in .chains. Use /chain-link <name> to create one.";
+	if (chains.length === 0) return "No chains found in .chains. Use chain_save to create one.";
 	return chains.map((chain) => {
 		const latest = chain.latest ? `${chain.latest.filename} @ ${chain.latest.branch}${chain.latest.stale ? " (stale)" : ""}` : "none";
 		const branches = chain.branches?.length ? `\n  branches: ${chain.branches.map((branch) => `${branch.branch}(${branch.count})`).join(", ")}` : "";
