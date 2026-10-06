@@ -1,5 +1,6 @@
 import { CustomEditor, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
+// oxlint-disable-next-line no-control-regex -- a terminal key sequence starts with ESC.
 const KITTY_ALT_ENTER = /^\x1b\[13;3(?::([123]))?u$/;
 const MODIFY_OTHER_KEYS_ALT_ENTER = "\x1b[27;3;13~";
 

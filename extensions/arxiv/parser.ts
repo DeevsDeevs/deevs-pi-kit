@@ -1,6 +1,6 @@
 import type { ArxivPaper } from "./types.ts";
 
-export function parseArxivFeed(xml: string): { totalResults: number | null; papers: ArxivPaper[] } {
+export function parseArxivFeed(xml: string) {
 	const totalRaw = textOf(xml, "opensearch:totalResults") ?? textOf(xml, "totalResults");
 	const totalResults = totalRaw === null ? null : Number.parseInt(totalRaw, 10);
 	const papers = [...xml.matchAll(/<entry>([\s\S]*?)<\/entry>/g)].map((match) => parseEntry(match[1]!));

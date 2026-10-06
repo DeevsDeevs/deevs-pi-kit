@@ -1,6 +1,6 @@
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
-import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { TODO_TOOL_NAME, validateTodos, type TodoState } from "./state.ts";
 import type { TodoDetails, TodoListInput, TodoStatus } from "./types.ts";
 import { formatTodoText, todoIcon, updateTodoWidget } from "./ui.ts";
@@ -31,7 +31,7 @@ export function registerTodoTools(pi: ExtensionAPI, state: TodoState): void {
 			"write is a complete replacement: include every todo, preserving stable ids.",
 		],
 		parameters: TodoListSchema,
-		async execute(_toolCallId, params: TodoListInput, _signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params: TodoListInput, _signal, _onUpdate, ctx): Promise<AgentToolResult<TodoDetails>> {
 			if (params.operation === "read") return result("read", state, ctx);
 			if (params.operation === "clear") {
 				state.clear();
@@ -52,7 +52,7 @@ export function registerTodoTools(pi: ExtensionAPI, state: TodoState): void {
 			return new Text(text, 0, 0);
 		},
 		renderResult(result, { expanded }, theme) {
-			const details = result.details as TodoDetails | undefined;
+			const details = result.details;
 			if (!details) return new Text(result.content[0]?.type === "text" ? result.content[0].text : "", 0, 0);
 			if (details.error) return new Text(theme.fg("error", `todo error: ${details.error}`), 0, 0);
 			if (details.todos.length === 0) return new Text(theme.fg("dim", "No todos"), 0, 0);

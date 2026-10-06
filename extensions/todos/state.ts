@@ -39,10 +39,12 @@ export class TodoState {
 			if (entry.type === "message") {
 				const msg = entry.message;
 				if (msg.role === "toolResult" && msg.toolName === TODO_TOOL_NAME) {
+					// SAFETY: only this tool writes these results; the array check skips older or damaged entries.
 					const details = msg.details as TodoDetails | undefined;
 					if (Array.isArray(details?.todos)) this.write(details.todos);
 				}
 			} else if (entry.type === "custom" && entry.customType === TODO_CUSTOM_TYPE) {
+				// SAFETY: only this extension writes this entry type; the array check skips older or damaged entries.
 				const data = entry.data as TodoPersistedState | undefined;
 				if (Array.isArray(data?.todos)) this.write(data.todos);
 			}

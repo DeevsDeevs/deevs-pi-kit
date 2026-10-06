@@ -30,7 +30,7 @@ const WikiSchema = Type.Object({
 });
 
 type WikiArgs = Static<typeof WikiSchema>;
-type WikiDetails = WikiInitResult | WikiStatusResult | WikiLintResult | WikiGraphResult | WikiSearchResult | WikiContextResult;
+export type WikiDetails = WikiInitResult | WikiStatusResult | WikiLintResult | WikiGraphResult | WikiSearchResult | WikiContextResult;
 
 export function registerWikiTools(pi: ExtensionAPI, service: WikiService): void {
 	pi.registerTool({
@@ -81,23 +81,19 @@ function wikiCall(action: string, target: string, theme: Theme): Text {
 	return new Text(theme.fg("toolTitle", theme.bold(`wiki ${action} `)) + theme.fg("muted", target.replace(/\s+/g, " ").slice(0, 90)), 0, 0);
 }
 
-export function wikiResult(details: unknown, expanded: boolean, theme: Theme): Text {
-	const value = details as Record<string, unknown> | undefined;
-	if (!value) return new Text(theme.fg("dim", "Wiki operation complete"), 0, 0);
-	const path = typeof value.path === "string" ? value.path : "wiki";
-	const summary = value.summary as { error?: number; warning?: number; notice?: number } | undefined;
-	if (summary) return new Text(`${theme.fg(summary.error ? "error" : summary.warning ? "warning" : "success", summary.error ? "issues" : "✓ clean")} ${theme.fg("accent", path)} · ${summary.error ?? 0} errors · ${summary.warning ?? 0} warnings`, 0, 0);
-	const matches = value.matches as unknown[] | undefined;
-	if (matches) return new Text(`${theme.fg("success", "✓")} ${theme.fg("accent", path)} · ${matches.length} match(es)`, 0, 0);
-	const nodes = value.nodes as unknown[] | undefined;
-	const edges = value.edges as unknown[] | undefined;
-	if (nodes && edges) return new Text(`${theme.fg("success", "✓")} ${theme.fg("accent", path)} · ${nodes.length} nodes · ${edges.length} edges`, 0, 0);
-	const created = value.created as string[] | undefined;
-	if (created) return new Text(`${theme.fg("success", value.dryRun ? "preview" : "✓ created")} ${theme.fg("accent", path)} · ${created.length} file(s)`, 0, 0);
-	if (typeof value.pageCount === "number") return new Text(`${theme.fg("success", "✓")} ${theme.fg("accent", path)} · ${value.pageCount} pages`, 0, 0);
-	const included = value.pages as unknown[] | undefined;
-	if (included) return new Text(`${theme.fg("success", "✓")} context from ${included.length} page(s)${expanded && typeof value.context === "string" ? `\n${value.context}` : ""}`, 0, 0);
-	return new Text(`${theme.fg("success", "✓")} ${theme.fg("accent", path)}`, 0, 0);
+export function wikiResult(details: WikiDetails | undefined, expanded: boolean, theme: Theme): Text {
+	if (!details) return new Text(theme.fg("dim", "Wiki operation complete"), 0, 0);
+	const done = (text: string) => new Text(`${theme.fg("success", "✓")} ${text}`, 0, 0);
+	const path = theme.fg("accent", details.path);
+	if ("summary" in details) {
+		const { error, warning } = details.summary;
+		return new Text(`${theme.fg(error ? "error" : warning ? "warning" : "success", error ? "issues" : "✓ clean")} ${path} · ${error} errors · ${warning} warnings`, 0, 0);
+	}
+	if ("matches" in details) return done(`${path} · ${details.matches.length} match(es)`);
+	if ("edges" in details) return done(`${path} · ${details.nodes.length} nodes · ${details.edges.length} edges`);
+	if ("created" in details) return new Text(`${theme.fg("success", details.dryRun ? "preview" : "✓ created")} ${path} · ${details.created.length} file(s)`, 0, 0);
+	if ("pageCount" in details) return done(`${path} · ${details.pageCount} pages`);
+	return done(`context from ${details.pages.length} page(s)${expanded ? `\n${details.context}` : ""}`);
 }
 
 function formatInit(result: WikiInitResult): string {

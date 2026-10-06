@@ -20,6 +20,7 @@ const DEFAULT_CONFIG: ResolvedConfig = {
 };
 
 function stripControl(text: string): string {
+	// oxlint-disable-next-line no-control-regex -- strips control characters before they reach a terminal escape.
 	return text.replace(/[\x00-\x1f\x7f\x9b]/g, " ").replace(/\s+/g, " ").trim();
 }
 

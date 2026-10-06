@@ -47,16 +47,14 @@ function paperCall(action: string, target: string, theme: Theme): Text {
 	return new Text(theme.fg("toolTitle", theme.bold(`arXiv ${action} `)) + theme.fg("muted", target.replace(/\s+/g, " ").slice(0, 80)), 0, 0);
 }
 
-function paperResult(details: unknown, expanded: boolean, theme: Theme): Text {
-	const value = details as { papers?: Array<{ title?: string; authors?: string[]; id?: string }> } | undefined;
-	if (value?.papers) {
-		const visible = expanded ? value.papers : value.papers.slice(0, 3);
-		let text = `${theme.fg("success", "✓")} ${value.papers.length} paper(s)`;
-		for (const paper of visible) text += `\n${theme.fg("accent", paper.title ?? paper.id ?? "paper")}${expanded && paper.authors?.length ? theme.fg("dim", ` — ${paper.authors.join(", ")}`) : ""}`;
-		if (!expanded && value.papers.length > visible.length) text += `\n${theme.fg("dim", `… ${value.papers.length - visible.length} more`)}`;
-		return new Text(text, 0, 0);
-	}
-	return new Text(theme.fg("dim", "arXiv operation complete"), 0, 0);
+function paperResult(details: ArxivSearchResult | ArxivGetResult | undefined, expanded: boolean, theme: Theme): Text {
+	if (!details) return new Text(theme.fg("dim", "arXiv operation complete"), 0, 0);
+	const { papers } = details;
+	const visible = expanded ? papers : papers.slice(0, 3);
+	let text = `${theme.fg("success", "✓")} ${papers.length} paper(s)`;
+	for (const paper of visible) text += `\n${theme.fg("accent", paper.title || paper.id)}${expanded && paper.authors.length ? theme.fg("dim", ` — ${paper.authors.join(", ")}`) : ""}`;
+	if (!expanded && papers.length > visible.length) text += `\n${theme.fg("dim", `… ${papers.length - visible.length} more`)}`;
+	return new Text(text, 0, 0);
 }
 
 function formatSearch(result: ArxivSearchResult): string {

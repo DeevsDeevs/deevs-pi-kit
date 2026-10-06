@@ -67,8 +67,8 @@ export class WikiService {
 
 	async status(input: WikiStatusInput): Promise<WikiStatusResult> {
 		const root = await this.resolveExistingRoot(input.path);
-		const coreFiles = Object.fromEntries(await Promise.all(CORE_FILES.map(async (file) => [file, await exists(join(root, file))]))) as Record<string, boolean>;
-		const coreDirs = Object.fromEntries(await Promise.all(CORE_DIRS.map(async (dir) => [dir, await exists(join(root, dir))]))) as Record<string, boolean>;
+		const coreFiles = Object.fromEntries(await Promise.all(CORE_FILES.map(async (file) => [file, await exists(join(root, file))] as const)));
+		const coreDirs = Object.fromEntries(await Promise.all(CORE_DIRS.map(async (dir) => [dir, await exists(join(root, dir))] as const)));
 		const pages = await this.pages(root);
 		const graph = await this.graph({ path: root, includeOrphans: true });
 		const lint = await this.lint({ path: root, maxIssues: input.maxIssues ?? 10 });
@@ -398,7 +398,7 @@ function within(child: string, parent: string): boolean {
 	return child === parent || child.startsWith(parent.endsWith(sep) ? parent : `${parent}${sep}`);
 }
 
-function summarizeIssues(issues: WikiIssue[]): Record<WikiIssueSeverity, number> {
+function summarizeIssues(issues: WikiIssue[]) {
 	return { error: issues.filter((issue) => issue.severity === "error").length, warning: issues.filter((issue) => issue.severity === "warning").length, notice: issues.filter((issue) => issue.severity === "notice").length };
 }
 
@@ -421,7 +421,7 @@ function compactPage(content: string, maxBytes: number): string {
 	return truncateText(preferred, maxBytes, "page").text;
 }
 
-function truncateText(value: string, maxBytes: number, label: string): { text: string; truncated: boolean } {
+function truncateText(value: string, maxBytes: number, label: string) {
 	if (Buffer.byteLength(value, "utf8") <= maxBytes) return { text: value, truncated: false };
 	const suffix = `\n\n[${label} truncated to ${maxBytes} bytes]`;
 	const suffixBytes = Buffer.byteLength(suffix, "utf8");

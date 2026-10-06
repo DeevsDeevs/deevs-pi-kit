@@ -71,6 +71,7 @@ const AskUserSchema = Type.Object({
 });
 
 function normalizeOption(option: AskOptionInput): SelectItem {
+	// oxlint-disable-next-line anti-slop/no-runtime-typeof -- the schema admits a plain title or a {title, description} object.
 	if (typeof option === "string") return { value: option, label: option };
 	return { value: option.title, label: option.title, description: option.description };
 }
