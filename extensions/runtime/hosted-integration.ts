@@ -32,8 +32,6 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 	private readonly collaborators: CollaboratorService;
 	// ponytail: in memory only; after a lead restart a stood-down collaborator resumes with default settings (a Pi one keeps its profile from its session file).
 	private readonly launched = new Map<string, CollaboratorCandidate>();
-	/** A roster sync that failed after a start (a slow daemon) is retried on each heartbeat until it lands. */
-	private rosterStale = false;
 
 	constructor(pi: ExtensionAPI, root = defaultRuntimeRoot()) {
 		this.store = new HostedSessionStore(pi);
@@ -71,7 +69,7 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 		const results = await this.collaborators.manage(input, ctx, signal);
 		if (input.action === "start") for (const participant of input.participants) this.launched.set(participant.participantId, participant);
 		// A first start acquires main; its namespace must exist before a collaborator can mail it.
-		if (isHeld(this.store.identity?.disposition)) await this.provisionAndSync(ctx);
+		if (isHeld(this.store.identity?.disposition)) await this.messaging.descriptor(ctx).then(() => this.syncRoster(ctx)).catch(() => {});
 		return results;
 	}
 
@@ -81,10 +79,6 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 		if (!launched && driver && driver !== "pi") throw new Error(`${participantId} ran ${driver}; start it again with collaborator_manage and its model.`);
 		const [result] = await this.manageCollaborators({ action: "start", participants: [launched ?? { participantId }] }, ctx);
 		if (result?.status !== "started") throw new Error(`${participantId} did not resume: ${result?.error ?? result?.status}`);
-	}
-
-	private async provisionAndSync(ctx: ExtensionContext): Promise<void> {
-		this.rosterStale = !await this.messaging.descriptor(ctx).then(() => this.syncRoster(ctx)).then(() => true, () => false);
 	}
 
 	/** Collaborators join the shared roster: the lead sees each one by name, a collaborator sees main. */
@@ -142,8 +136,7 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 		await this.syncRoster(ctx);
 	}
 
-	async afterHeartbeat(registration: LiveClientRegistration, ctx: ExtensionContext, heartbeat: HostedHeartbeat): Promise<void> {
-		if (this.rosterStale) await this.provisionAndSync(ctx);
+	afterHeartbeat(registration: LiveClientRegistration, ctx: ExtensionContext, heartbeat: HostedHeartbeat): Promise<void> {
 		return this.messaging.deliverMail(registration, ctx, heartbeat.mail);
 	}
 
