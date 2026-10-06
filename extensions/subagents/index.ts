@@ -1,14 +1,15 @@
 import { createHash } from "node:crypto";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { loadKitConfig, modelLabel, modelsTable, resolveLead, resolveModel, type ModelContext } from "../shared/models.ts";
+import { loadKitConfig, modelLabel, modelsTable, readCodexCatalog, resolveLead, resolveModel, type ModelContext } from "../shared/models.ts";
 import { agentForegroundResult, agentLaunchedResult, newAgentId, newWorkflowRunId, newWorkflowTaskId, taskNotRunningResult, taskStoppedResult, tasks, workflowLaunchedResult, type RosterEntry } from "../shared/tasks.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
-import { createAgentWorktree, finishAgentWorktree, sharesCwd } from "../shared/worktree.ts";
+import { createAgentWorktree, finishAgentWorktree, gitTopLevel, sharesCwd } from "../shared/worktree.ts";
 import { remindSilentTurns } from "./silent-turns.ts";
 import { promptWorkflow, WORKFLOW_DESCRIPTION, WORKFLOW_FIELDS, WORKFLOW_SNIPPET } from "./workflow-prompt.ts";
 import { agentTypes, agentTypesSection, findAgentType, workerPrompt } from "./definitions.ts";
@@ -69,6 +70,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		config: await loadKitConfig(ctx.cwd, getAgentDir()),
 		registry: ctx.modelRegistry,
 		lead: ctx.model ? { model: ctx.model, level: pi.getThinkingLevel() } : undefined,
+		codex: readCodexCatalog(process.env.CODEX_HOME || join(homedir(), ".codex")),
 	});
 	remindSilentTurns(pi);
 	// The request that started the current turn, snapshotted by Workflow at launch; a later side question never reaches its agents.
@@ -91,34 +93,24 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			const requested = resolve(ctx.cwd, params.cwd ?? ".");
 			if (!existsSync(requested) || !statSync(requested).isDirectory()) throw new Error(`cwd ${requested} is not a directory.`);
 			const resolved = resolveModel(params.model ?? type.model, await modelContext(ctx), type.effort);
-			if (resolved.harness !== "pi") throw new Error(`${modelLabel(resolved)} runs as a Claude Code or Codex worker, which the kit does not start yet; pick a Pi model.`);
 			const limits: Limits = { maxTurns: params.maxTurns, maxTokens: params.maxTokens, timeout: params.timeout };
+			if (resolved.harness !== "pi" && limitsText(limits)) throw new Error(`maxTurns, maxTokens and timeout apply to Pi models only; ${modelLabel(resolved)} runs as a CLI worker.`);
 			const foreground = params.run_in_background === false;
 			const engine = await ensureEngine(ctx);
 			const agentId = newAgentId();
-			const worktree = (params.isolation ?? type.isolation) === "worktree" ? await createAgentWorktree({ cwd: requested, agentId, agentDir: getAgentDir() }) : undefined;
-			const cwd = worktree ? join(worktree.path, relative(worktree.repoRoot, realpathSync(requested))) : requested;
 			const writer = type.tools.includes("edit") || type.tools.includes("write");
+			// Claude workers bypass permissions, so every writer in a repository gets its own worktree.
+			const isolate = (params.isolation ?? type.isolation) === "worktree" || resolved.harness === "claude" && writer && await gitTopLevel(requested) !== undefined;
+			const worktree = isolate ? await createAgentWorktree({ cwd: requested, agentId, agentDir: getAgentDir() }) : undefined;
+			const cwd = worktree ? join(worktree.path, relative(worktree.repoRoot, realpathSync(requested))) : requested;
 			const shared = writer && sharesCwd(await writerCwds(engine), cwd);
 			const queued = queuedAhead();
+			const base = { agentId, description: params.description, prompt: params.prompt, name: params.name, cwd, writer, toolUseId: toolCallId, foreground, worktree };
 			let started: Awaited<ReturnType<typeof launch>>;
 			try {
-				started = await launch(engine, {
-					agentId,
-					description: params.description,
-					prompt: params.prompt,
-					name: params.name,
-					model: resolved.model,
-					level: resolved.level,
-					tools: type.tools,
-					instructions: workerPrompt(type, cwd, worktree),
-					cwd,
-					writer,
-					toolUseId: toolCallId,
-					limits,
-					foreground,
-					worktree,
-				});
+				started = await launch(engine, resolved.harness === "pi"
+					? { ...base, model: resolved.model, level: resolved.level, tools: type.tools, instructions: workerPrompt(type, cwd, worktree), limits }
+					: { ...base, cli: { harness: resolved.harness, model: resolved.model, level: resolved.level, cwd, instructions: workerPrompt(type, cwd, worktree, true), tools: type.tools, writer, dir: join(engine.dir, "cli", agentId) } });
 			} catch (error) {
 				if (worktree) await finishAgentWorktree(worktree).catch(() => undefined);
 				throw error;
@@ -208,7 +200,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		label: "SendMessage",
 		description: [
 			"Send a message to an agent you launched, by its agentId or name.",
-			"A running agent gets it at its next tool round and folds it into its current work. An agent that finished, failed or that you stopped resumes with its full context under the same agentId and notifies again. An agent the user stopped is not resumed.",
+			"A running agent gets it at its next tool round and folds it into its current work; a running Claude or Codex worker gets it when its current run ends. An agent that finished, failed or that you stopped resumes with its full context under the same agentId and notifies again. An agent the user stopped is not resumed.",
 		].join("\n"),
 		promptSnippet: "Steer a running agent, or continue a finished one with its context.",
 		parameters: Type.Object({
@@ -225,7 +217,9 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			}
 			const outcome = await send(await ensureEngine(ctx), entry.id, params.message, toolCallId);
 			if (outcome === "refused") throw new Error(`Agent "${params.to}" was stopped by the user and was not resumed. Start a new agent for this work only if the user explicitly asks for it.`);
-			const text = outcome === "steered" ? `Message queued for delivery to ${params.to} at its next tool round.` : `Resuming agent ${params.to}`;
+			const text = outcome === "steered" ? `Message queued for delivery to ${params.to} at its next tool round.`
+				: outcome === "queued" ? `Message queued for delivery to ${params.to} when its current run ends.`
+				: `Resuming agent ${params.to}`;
 			return { content: [{ type: "text" as const, text }], details: { agentId: entry.id, outcome } };
 		},
 	});
