@@ -1,8 +1,8 @@
-import { readFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { Type, type Static } from "typebox";
+import { basename, isAbsolute, relative, resolve, sep } from "node:path";
+import { Type } from "typebox";
 import { Value } from "typebox/value";
+import { agentDir, kitValues, type KitValue } from "./config.ts";
 
 const DETACH_EXECUTABLES = new Set(["disown", "nohup", "setsid", "coproc"]);
 const SHELL_EXECUTABLES = new Set(["bash", "dash", "fish", "ksh", "sh", "zsh", "csh", "tcsh", "ash", "mksh", "rbash"]);
@@ -17,19 +17,12 @@ const DETACH_ERROR = "Detached process launch or dynamically-computed command de
 const FORCE_PUSH_ERROR = "Force push to a protected branch (main, master, release/*) or to an unnamed branch is blocked. Name a non-protected target branch explicitly, e.g. `git push --force-with-lease origin feature/x`.";
 const RM_ERROR = "Recursive rm outside the working directory and the temp directories ($TMPDIR, /tmp) is blocked. Use literal paths inside the cwd or a temp directory.";
 
-const GuardSection = Type.Object({
-	detached: Type.Optional(Type.Boolean()),
-	forcePush: Type.Optional(Type.Boolean()),
-	rmRf: Type.Optional(Type.Boolean()),
-	block: Type.Optional(Type.Array(Type.String())),
-});
-const PiKitFile = Type.Object({ guard: Type.Optional(GuardSection) });
 const HookPayload = Type.Object({
 	cwd: Type.Optional(Type.String()),
 	tool_input: Type.Optional(Type.Object({ command: Type.Optional(Type.Union([Type.String(), Type.Array(Type.String())])) })),
 });
 
-export type GuardConfig = Static<typeof GuardSection>;
+export type GuardConfig = KitValue<"guard">;
 
 export interface GuardOptions {
 	cwd: string;
@@ -98,16 +91,9 @@ export function guardHookPayload(payload: string): string | undefined {
 }
 
 /** `guard` from the global and the project `pi-kit.json`, read on every call: project switches win, block lists add up. */
-export function loadGuardConfig(cwd: string, agentDir = process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent")): GuardConfig {
-	const global = readGuardSection(join(agentDir, "pi-kit.json"));
-	const project = readGuardSection(join(cwd, ".pi", "pi-kit.json"));
+export function loadGuardConfig(cwd: string, dir = agentDir()): GuardConfig {
+	const [global = {}, project = {}] = kitValues("guard", cwd, dir);
 	return { ...global, ...project, block: [...global.block ?? [], ...project.block ?? []] };
-}
-
-function readGuardSection(path: string): GuardConfig {
-	let file: unknown;
-	try { file = JSON.parse(readFileSync(path, "utf8")); } catch { return {}; }
-	return Value.Check(PiKitFile, file) ? file.guard ?? {} : {};
 }
 
 function guard({ cwd, config = {}, home = homedir(), tmpDir = tmpdir() }: GuardOptions): Guard {
