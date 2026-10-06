@@ -17,8 +17,6 @@ export interface RosterEntry {
 	stop?: () => Promise<{ worktree?: { path: string; branch: string } } | undefined | void>;
 	/** Set by kinds that take messages through their own channel (collaborators); returns the result line. */
 	send?: (message: string, images: string[]) => Promise<string>;
-	/** The shell command that opens this task in its own CLI, for `/agents attach`. */
-	attach?: string;
 }
 
 export interface TaskNotification {
@@ -306,16 +304,7 @@ export function jobSummary(description: string, end: JobEnd): string {
 	return end.exitCode === 0 ? `${subject} completed (exit code 0)` : `${subject} failed with exit code ${end.exitCode}`;
 }
 
-export interface AgentLaunch {
-	agentId: string;
-	outputFile: string;
-	model?: string;
-	limits?: string;
-	queued?: boolean;
-	sharesCwd?: boolean;
-}
-
-export function agentLaunchedResult(launch: AgentLaunch): string {
+export function agentLaunchedResult(launch: { agentId: string; outputFile: string; model?: string; limits?: string; queued?: boolean; sharesCwd?: boolean }): string {
 	return [
 		"Async agent launched successfully.",
 		`agentId: ${launch.agentId} (internal ID; use SendMessage with to: '${launch.agentId}' to continue this agent)`,
@@ -329,17 +318,8 @@ export function agentLaunchedResult(launch: AgentLaunch): string {
 	].join("\n");
 }
 
-export interface AgentForeground {
-	text: string;
-	agentId: string;
-	/** The summary of a run its limit stopped. */
-	limited?: string;
-	limits?: string;
-	worktree?: { path: string; branch: string };
-	usage: { subagentTokens: number; toolUses: number; durationMs: number };
-}
-
-export function agentForegroundResult(result: AgentForeground): string {
+/** `limited` is the summary of a run its limit stopped. */
+export function agentForegroundResult(result: { text: string; agentId: string; limited?: string; limits?: string; worktree?: { path: string; branch: string }; usage: { subagentTokens: number; toolUses: number; durationMs: number } }): string {
 	return [
 		result.text || "(The agent finished without output.)",
 		`agentId: ${result.agentId} (use SendMessage with to: '${result.agentId}' to continue this agent)`,
