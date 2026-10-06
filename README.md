@@ -20,7 +20,7 @@ Run `/reload` in Pi after installing or updating. `pi config` toggles individual
 
 The six stand-alone skills listed below also work in Claude Code and Codex: symlink `skills/<name>` from the installed checkout into `~/.agents/skills` for Codex and `~/.claude/skills` for Claude Code.
 
-Chains also ships as a plugin for Claude Code and Codex, reading and writing the same `.chains/` as Pi, with the same 80% checkpoint and post-compaction resume enforced by hooks:
+Chains also ships as a plugin for Claude Code and Codex, reading and writing the same `.chains/` as Pi, with the same 80% checkpoint reminder and post-compaction resume delivered by hooks:
 
 ```bash
 claude plugin marketplace add DeevsDeevs/deevs-pi-kit && claude plugin install chains@deevs-pi-kit

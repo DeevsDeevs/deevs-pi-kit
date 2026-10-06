@@ -19,8 +19,8 @@ function mcp(cwd: string, requests: object[]): Array<{ id: number; result?: { to
 	return run.stdout.trim().split("\n").map((line) => JSON.parse(line));
 }
 
-function hook(input: object, env: Record<string, string> = {}): { hookSpecificOutput?: { permissionDecision?: string; additionalContext?: string }; decision?: string } | undefined {
-	const run = spawnSync("node", [join(PLUGIN, "server/hook.mjs")], { input: JSON.stringify(input), encoding: "utf8", env: { ...process.env, ...env } });
+function hook(input: object, env: Record<string, string> = {}): { hookSpecificOutput?: { additionalContext?: string }; decision?: string; reason?: string } | undefined {
+	const run = spawnSync("node", [join(PLUGIN, "server/hook.mjs")], { input: JSON.stringify(input), encoding: "utf8", env: { ...process.env, CLAUDE_PROJECT_DIR: "", ...env } });
 	expect(run.stderr).toBe("");
 	return run.stdout ? JSON.parse(run.stdout) : undefined;
 }
@@ -39,7 +39,7 @@ describe("chains plugin for Claude Code and Codex", () => {
 		const entry = marketplace.plugins.find((plugin: { name: string }) => plugin.name === "chains");
 		expect(existsSync(join(ROOT, entry.source, ".claude-plugin/plugin.json"))).toBe(true);
 		expect(JSON.parse(readFileSync(join(PLUGIN, ".mcp.json"), "utf8")).mcpServers.chains.args).toEqual(["${CLAUDE_PLUGIN_ROOT}/server/mcp.mjs"]);
-		expect(Object.keys(JSON.parse(readFileSync(join(PLUGIN, "hooks/hooks.json"), "utf8")).hooks)).toEqual(["SessionStart", "PreToolUse", "Stop"]);
+		expect(Object.keys(JSON.parse(readFileSync(join(PLUGIN, "hooks/hooks.json"), "utf8")).hooks)).toEqual(["SessionStart", "Stop"]);
 	});
 
 	it("serves the six Pi chain tools over stdio and writes links Pi can read", () => {
@@ -59,29 +59,40 @@ describe("chains plugin for Claude Code and Codex", () => {
 		expect(missing?.result?.isError).toBe(true);
 	});
 
-	it("refuses non-chain tools and one stop at 80% context until a link is written, for Claude and Codex transcripts", () => {
+	it("refuses one stop at 80% context as the only reminder, unless a link was written since use was last below the line", () => {
 		const cwd = project();
 		const data = { CLAUDE_PLUGIN_DATA: join(cwd, "data"), CHAINS_CONTEXT_WINDOW: "200000" };
 		const claude = join(cwd, "claude.jsonl");
-		writeFileSync(claude, `${JSON.stringify({ type: "assistant", message: { usage: { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 170_000 } } })}\n`);
-		const call = (tool_name: string) => hook({ hook_event_name: "PreToolUse", tool_name, cwd, session_id: "claude", transcript_path: claude }, data);
-		expect(call("Bash")?.hookSpecificOutput?.permissionDecision).toBe("deny");
-		expect(call("mcp__plugin_chains_chains__chain_save")).toBeUndefined();
-		expect(hook({ hook_event_name: "Stop", cwd, session_id: "claude", transcript_path: claude }, data)?.decision).toBe("block");
-		expect(hook({ hook_event_name: "Stop", stop_hook_active: true, cwd, session_id: "claude", transcript_path: claude }, data)).toBeUndefined();
+		const use = (path: string, cacheRead: number) => writeFileSync(path, `${JSON.stringify({ type: "assistant", message: { usage: { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: cacheRead } } })}\n`);
+		const stop = (session_id: string, extra: object = {}, env: Record<string, string> = {}) => hook({ hook_event_name: "Stop", cwd, session_id, transcript_path: claude, ...extra }, { ...data, ...env });
+		use(claude, 100_000);
+		expect(stop("claude")).toBeUndefined();
+		use(claude, 170_000);
+		expect(stop("claude")).toMatchObject({ decision: "block", reason: expect.stringContaining("Context is at 85%") });
+		expect(stop("claude", { stop_hook_active: true })).toBeUndefined();
+		expect(stop("claude")).toBeUndefined();
+		use(claude, 100_000);
+		expect(stop("claude")).toBeUndefined();
+		use(claude, 170_000);
+		expect(stop("claude")?.decision).toBe("block");
+
+		use(claude, 100_000);
+		expect(stop("saved")).toBeUndefined();
 		mkdirSync(join(cwd, ".chains/demo"), { recursive: true });
 		const link = join(cwd, ".chains/demo/2026-09-01-000000000-saved.md");
 		writeFileSync(link, "# Saved\n");
 		const later = new Date(Date.now() + 1000);
 		utimesSync(link, later, later);
-		expect(call("Bash")).toBeUndefined();
+		use(claude, 170_000);
+		expect(stop("saved", { cwd: join(cwd, "src") }, { CLAUDE_PROJECT_DIR: cwd })).toBeUndefined();
 
 		const fresh = project();
 		const codex = join(fresh, "codex.jsonl");
+		const codexStop = () => hook({ hook_event_name: "Stop", cwd: fresh, session_id: "codex", transcript_path: codex }, data);
 		writeFileSync(codex, `${JSON.stringify({ type: "event_msg", payload: { type: "token_count", info: { last_token_usage: { input_tokens: 100_000 }, model_context_window: 258_400 } } })}\n`);
-		expect(hook({ hook_event_name: "PreToolUse", tool_name: "shell", cwd: fresh, session_id: "codex", transcript_path: codex }, data)).toBeUndefined();
+		expect(codexStop()).toBeUndefined();
 		writeFileSync(codex, `${JSON.stringify({ type: "event_msg", payload: { type: "token_count", info: { last_token_usage: { input_tokens: 220_000 }, model_context_window: 258_400 } } })}\n`);
-		expect(hook({ hook_event_name: "PreToolUse", tool_name: "shell", cwd: fresh, session_id: "codex", transcript_path: codex }, data)?.hookSpecificOutput?.permissionDecision).toBe("deny");
+		expect(codexStop()?.decision).toBe("block");
 	});
 
 	it("points a new session at the latest link and hands the link back after compaction", () => {
