@@ -1,4 +1,4 @@
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -21,6 +21,14 @@ describe("Monitor looks", () => {
 		const second = await lookAtPath(dir, first.seen);
 		expect(second.event?.split("\n").sort()).toEqual(["added c.txt", "changed a.txt", "removed b.txt"]);
 		expect((await lookAtPath(dir, second.seen)).event).toBeUndefined();
+	});
+
+	it("reports a folder created after the watch began, with its first files", async () => {
+		const dir = join(scratch(), "later");
+		const first = await lookAtPath(dir, undefined);
+		mkdirSync(dir);
+		writeFileSync(join(dir, "a.txt"), "a");
+		expect((await lookAtPath(dir, first.seen)).event).toBe("added a.txt");
 	});
 
 	it("reports a file's new lines from its stored offset", async () => {
