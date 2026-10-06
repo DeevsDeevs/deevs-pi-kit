@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { eventually, exec, herdr, rpc, sleep } from "../drive.mjs";
+import { eventually, exec, herdr, rpc, script, sleep } from "../drive.mjs";
 import { notifications, requests, toolCalls } from "../look.mjs";
 
 // A Claude writer, a Codex reviewer and a Codex writer start in their own collaborator tabs with no prompt left for a
-// human, and a message reaches the Codex writer in its fresh worktree.
+// human. A message reaches the Codex writer in its fresh worktree, and the kit guard, its PreToolUse hook, refuses its
+// detached command (the census fails the run if that process survives).
 export default {
 	name: "collab-spawn",
 	gate: "M6",
@@ -25,7 +26,11 @@ export default {
 				{ participantId: "reviewer", model: "codex:puppet", profile: "read-only" },
 				{ participantId: "coder", model: "codex:puppet", profile: "workspace-write" },
 			] } },
-			{ id: "s2", tool: "SendMessage", args: { to: "coder", message: "spawn-codex-mark" } },
+			{ id: "s2", tool: "SendMessage", args: { to: "coder", message: script({ agent: "coder", steps: [
+				{ id: "c1", tool: "exec_command", args: { cmd: "nohup sleep 97 > /dev/null 2>&1 &" } },
+				{ id: "c2", tool: "exec_command", args: { cmd: "echo spawn-codex-mark" } },
+				{ id: "c3", text: "done" },
+			] }) } },
 			{ id: "s3", text: "started" },
 		] });
 		await lead.until((e) => e.type === "agent_settled", 180_000, "both starts");
@@ -36,8 +41,9 @@ export default {
 		const labels = (await cli("tab", "list")).tabs.map((tab) => tab.label);
 		for (const name of ["writer", "reviewer", "coder"]) assert.ok(labels.includes(`collaborator:${name}`), `no collaborator:${name} tab in ${labels}`);
 		await eventually(() => requests(t).some((r) => r.wire === "responses"), 30_000, "the reviewer's first request");
-		t.marks.push("spawn-codex-mark");
-		await eventually(() => requests(t).some((r) => r.wire === "responses" && r.marks.includes("spawn-codex-mark")), 30_000, "the message in the Codex writer's request");
+		t.marks.push("Detached process launch");
+		await eventually(() => requests(t).some((r) => r.agent === "coder" && r.step === "c3"), 30_000, "the Codex writer's steps");
+		assert.ok(requests(t).some((r) => r.agent === "coder" && r.marks.includes("Detached process launch")), "the guard hook did not refuse the Codex writer's detached command");
 		const reviewer = requests(t).find((r) => r.wire === "responses");
 		assert.ok(!reviewer.tools.some((name) => name === "apply_patch"), `the reviewer was offered a patch tool: ${reviewer.tools}`);
 		const listed = (await cli("agent", "list")).agents;

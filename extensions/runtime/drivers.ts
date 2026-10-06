@@ -142,8 +142,11 @@ function codexCommand(input: DriverCommandInput): string[] {
 		? ["--", `${NATIVE_STARTUP_MESSAGE} ${mcp.context}`]
 		: input.persona ? ["--config", `developer_instructions=${JSON.stringify(input.persona.prompt)}`] : [];
 	const trustedProject = ["--config", `projects={ ${JSON.stringify(input.cwd)} = { trust_level = "trusted" } }`];
-	if (isWriter(input.profile)) return ["--sandbox", "workspace-write", "--ask-for-approval", "never", ...trustedProject, ...server, ...model, ...startup];
-	return ["--ask-for-approval", "never", "--sandbox", "read-only", "--disable", "hooks", ...trustedProject, ...server, ...model, ...startup];
+	// Decision 8: the kit guard as a PreToolUse hook; the kit vets its own hook, so its trust is bypassed for this launch.
+	const hook = `${shellQuote(mcp?.server.command ?? "node")} ${shellQuote(GUARD_HOOK)}`;
+	const guard = ["--dangerously-bypass-hook-trust", "--config", `hooks.PreToolUse=[{hooks=[{type="command",command=${JSON.stringify(hook)}}]}]`];
+	const sandbox = isWriter(input.profile) ? "workspace-write" : "read-only";
+	return ["--sandbox", sandbox, "--ask-for-approval", "never", ...guard, ...trustedProject, ...server, ...model, ...startup];
 }
 
 function codexServerValue(mcp: NativeMessagingConfiguration): string {

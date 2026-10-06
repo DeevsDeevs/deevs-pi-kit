@@ -80,7 +80,8 @@ it.each(["claude-code", "codex"] as const)("gives a read-only %s collaborator th
 		expect(compiled.args[compiled.args.indexOf("--mcp-config") + 1]).toBe(writer.args[writer.args.indexOf("--mcp-config") + 1]);
 		expect(compiled.args[compiled.args.indexOf("--append-system-prompt") + 1]).toBe(writer.args.at(-1));
 	} else {
-		expect(compiled.args.join(" ")).toContain("--ask-for-approval never --sandbox read-only --disable hooks");
+		expect(compiled.args.join(" ")).toContain("--sandbox read-only --ask-for-approval never --dangerously-bypass-hook-trust");
+		expect(compiled.args.find((arg) => arg.startsWith("hooks.PreToolUse="))).toContain("guard-hook.mjs");
 		expect(compiled.args.join("\n")).toContain("trust_level");
 		expect(compiled.args).toContain(writer.args[writer.args.indexOf("--config") + 1]);
 		expect(compiled.args.at(-1)).toBe(writer.args.at(-1));
