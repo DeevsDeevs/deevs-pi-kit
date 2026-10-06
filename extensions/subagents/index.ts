@@ -1,7 +1,7 @@
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { SubagentService, type SubagentGroup, type SubagentStartRequest, type SubagentWaitRequest } from "./service.ts";
+import { limitsText, SubagentService, type SubagentGroup, type SubagentStartRequest, type SubagentWaitRequest } from "./service.ts";
 import type { DelegateRun } from "./runtime-types.ts";
 import { clearSubagentService, setSubagentService } from "./registry.ts";
 import { formatDuration, formatUsage } from "../shared/runtime-ui.ts";
@@ -13,6 +13,13 @@ import { FULL_SCREEN_OVERLAY } from "../shared/dashboard.ts";
 import { clampWaitMs } from "../shared/runtime-delivery.ts";
 import { AgentsDashboard } from "./ui.ts";
 
+const ONLY_ON_REQUEST = "Set ONLY when the user explicitly asks for a limit; omitted means unbounded. A run stopped by it with no output counts as failed";
+const LimitSchema = {
+	turns: Type.Optional(Type.Integer({ minimum: 1, description: `Provider-turn limit. ${ONLY_ON_REQUEST}` })),
+	tokens: Type.Optional(Type.Integer({ minimum: 1, description: `Aggregate token limit; one provider call may overshoot. ${ONLY_ON_REQUEST}` })),
+	costUsd: Type.Optional(Type.Number({ exclusiveMinimum: 0, description: `USD cost limit; one provider call may overshoot. ${ONLY_ON_REQUEST}` })),
+};
+
 const TaskSchema = Type.Object({
 	agent: Type.String({ description: "Curated Pi Kit persona name" }),
 	task: Type.String({ description: "Focused bounded task" }),
@@ -22,9 +29,7 @@ const TaskSchema = Type.Object({
 	tools: Type.Optional(Type.Array(Type.String(), { description: "Optional narrowing using persona-local names such as safe_read, safe_list, and safe_search" })),
 	allowWrite: Type.Optional(Type.Boolean({ description: "Explicitly enable edit/write for this run" })),
 	wallMs: Type.Optional(Type.Integer({ minimum: 1_000, maximum: 86_400_000, description: "Hard wall-clock limit; defaults to 6 hours and is capped at 24 hours" })),
-	turns: Type.Optional(Type.Integer({ minimum: 1, description: "Optional provider-turn limit; omitted means unbounded" })),
-	tokens: Type.Optional(Type.Integer({ minimum: 1, description: "Optional aggregate token limit; omitted means unbounded, with at most one provider-call overshoot when set" })),
-	costUsd: Type.Optional(Type.Number({ exclusiveMinimum: 0, description: "Optional USD cost limit; omitted means unbounded, with at most one provider-call overshoot when set" })),
+	...LimitSchema,
 });
 
 const SubagentSchema = Type.Object({
@@ -38,9 +43,7 @@ const SubagentSchema = Type.Object({
 	tools: Type.Optional(Type.Array(Type.String(), { description: "Optional narrowing using persona-local names such as safe_read, safe_list, and safe_search" })),
 	allowWrite: Type.Optional(Type.Boolean()),
 	wallMs: Type.Optional(Type.Integer({ minimum: 1_000, maximum: 86_400_000, description: "Hard wall-clock limit; defaults to 6 hours and is capped at 24 hours" })),
-	turns: Type.Optional(Type.Integer({ minimum: 1, description: "Optional provider-turn limit; omitted means unbounded" })),
-	tokens: Type.Optional(Type.Integer({ minimum: 1, description: "Optional aggregate token limit; omitted means unbounded" })),
-	costUsd: Type.Optional(Type.Number({ exclusiveMinimum: 0, description: "Optional USD cost limit; omitted means unbounded" })),
+	...LimitSchema,
 	tasks: Type.Optional(Type.Array(TaskSchema, { description: "Independent tasks for one bounded parallel group", maxItems: 16 })),
 	concurrency: Type.Optional(Type.Integer({ minimum: 1, description: "Parallel group concurrency" })),
 	failFast: Type.Optional(Type.Boolean()),
@@ -106,8 +109,8 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		promptSnippet: "Delegate focused exploration, review, testing, architecture, or specialist work to owned Pi Kit personas.",
 		promptGuidelines: [
 			"Use fresh independent runs for review and refutation; resume only when continuity is required.",
-			"Keep scope concrete. Omitted turn/token/cost limits are unbounded and wall time defaults to six hours; tighten only with a reason, never arbitrary tiny defaults.",
-			"Never enable allowWrite unless the user explicitly requested delegated writes; Pi confirms each write-capable run in the TUI.",
+			"Keep scope concrete. Set turns, tokens or costUsd only when the user explicitly asks for a limit; wall time defaults to six hours.",
+			"Set allowWrite only when the task must edit files; no dialog confirms it.",
 			"After starting background runs, continue runnable independent work. Terminal events wake idle Pi automatically; wait only when the result is the next dependency, during cancellation, or at final settlement.",
 		],
 		parameters: SubagentSchema,
@@ -282,13 +285,13 @@ function formatAgentsBrowser(service: SubagentService, id: string): string {
 function formatStart(value: DelegateRun | SubagentGroup): string {
 	if (isGroup(value)) return `${value.id} [${value.status}] ${value.children.length} started, ${value.pending.length} pending`;
 	const duration = Date.now() - value.runtime.startedAt;
-	const header = `${value.spec.id} [${value.runtime.status}] ${value.spec.persona} · ${formatDuration(duration)}`;
+	const header = [`${value.spec.id} [${value.runtime.status}] ${value.spec.persona} · ${formatDuration(duration)}`, limitsText(value.spec.limits)].filter(Boolean).join(" · ");
 	return value.runtime.output ? `${header}\n${value.runtime.output}` : header;
 }
 
 function formatWait(value: DelegateRun | SubagentGroup, maxBytes: number): string {
 	if (isGroup(value)) return `${value.id} [${value.status}] children=${value.children.join(",") || "none"} pending=${value.pending.length}`;
-	const header = `${value.spec.id} [${value.runtime.status}] ${formatUsage(tokenTotal(value), value.runtime.usage.costUsd)}`;
+	const header = [`${value.spec.id} [${value.runtime.status}] ${formatUsage(tokenTotal(value), value.runtime.usage.costUsd)}`, limitsText(value.spec.limits)].filter(Boolean).join(" · ");
 	const body = value.runtime.output || value.runtime.error || "(no output)";
 	return `${header}\n${truncateBytes(body, maxBytes)}`;
 }

@@ -26,11 +26,11 @@ subagent       fresh run, persistent resume, or bounded parallel group
 subagent_wait  status, wait, or cancellation with real settlement
 ```
 
-`subagent_wait` blocks until settlement by default. Continue runnable independent parent work after launch; terminal delivery wakes idle Pi automatically. Use one bounded wait only when the result is the next dependency, during cancellation, or at final settlement—not repeated `waitMs: 0` status calls.
+`subagent_wait` blocks at most two minutes, the default, then returns the current status. Continue runnable independent parent work after launch; terminal delivery wakes idle Pi automatically. Use one bounded wait only when the result is the next dependency, during cancellation, or at final settlement—not repeated `waitMs: 0` status calls.
 
 ## Guarantees
 
-- read-only unless `allowWrite: true` is explicit and the user confirms the run in the TUI;
+- read-only unless `allowWrite: true` is explicit, with no confirmation dialog;
 - requested tools may narrow but never broaden persona capability;
 - reviewer personas use bounded `safe_diff` for exact revision inspection without shell, hooks, external diff/text conversion, or pagers;
 - detached worker owns the private Pi child and durable artifacts;

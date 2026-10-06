@@ -6,7 +6,8 @@ import { clampConcurrency, clampTimeoutMs, loadAgentsSettings } from "./config.t
 import { findAgent, loadBuiltinAgents } from "./agents.ts";
 import { defaultDelegateRoot, releaseAdmissionReservation, removeAdmission, reserveAdmission } from "./artifacts.ts";
 import { DelegateExecutor } from "./executor.ts";
-import type { DelegateRun, DelegateRunStatus } from "./runtime-types.ts";
+import type { AgentDefinition } from "./catalog-types.ts";
+import type { DelegateRun, DelegateRunSpec, DelegateRunStatus } from "./runtime-types.ts";
 import { MAX_WAIT_MS, requestRuntimeDelivery } from "../shared/runtime-delivery.ts";
 import { consumeRuntimeEvent, runtimeEvents, type RuntimeTerminalStatus } from "../shared/runtime-events.ts";
 import { chainCheckpoints } from "../chains/checkpoint.ts";
@@ -110,13 +111,13 @@ export class SubagentService {
 
 	async start(request: SubagentStartRequest, ctx: ExtensionContext): Promise<DelegateRun | SubagentGroup> {
 		this.ctx = ctx;
-		const previous = request.resume ? this.executor.get(request.resume) : undefined;
-		const writeRequested = request.allowWrite === true || request.tasks?.some((task) => task.allowWrite) === true || previous?.spec.allowWrite === true;
-		if (writeRequested && !await authorizeDelegatedWrite(ctx, request)) throw new Error("Delegated writes were not authorized by the user.");
+		for (const task of request.tasks ?? []) requirePersona(task.agent);
+		if (request.agent) requirePersona(request.agent);
 		if (request.tasks?.length) return this.startGroup(request.tasks, request, ctx);
 		if (request.resume) {
+			const previous = this.executor.get(request.resume);
 			if (!request.task?.trim()) throw new Error("A resume task is required.");
-			const settings = await loadAgentsSettings(previous!.spec.cwd);
+			const settings = await loadAgentsSettings(previous.spec.cwd);
 			this.reserveCapacity(settings.parallelMaxConcurrency);
 			try {
 				const run = await this.executor.resume({
@@ -263,9 +264,7 @@ export class SubagentService {
 	}
 
 	private async startTask(task: SubagentTaskInput, ctx: ExtensionContext, background: boolean, admissionKey?: string): Promise<DelegateRun> {
-		const agents = loadBuiltinAgents();
-		const persona = findAgent(agents, task.agent);
-		if (!persona || persona.disabled) throw new Error(`Unknown or disabled persona: ${task.agent}`);
+		const persona = requirePersona(task.agent);
 		const cwd = path.resolve(task.cwd ?? ctx.cwd);
 		const parentSessionFile = ctx.sessionManager.getSessionFile();
 		if (admissionKey) {
@@ -344,11 +343,8 @@ export class SubagentService {
 
 	private async startGroup(tasks: SubagentTaskInput[], request: SubagentStartRequest, ctx: ExtensionContext): Promise<SubagentGroup> {
 		if (tasks.length > 16) throw new Error("A subagent group is limited to 16 tasks.");
+		for (const task of tasks) if (!task.task?.trim()) throw new Error(`Task for ${task.agent || "persona"} is empty.`);
 		const settings = await loadAgentsSettings(ctx.cwd);
-		for (const task of tasks) {
-			if (!task.task?.trim()) throw new Error(`Task for ${task.agent || "persona"} is empty.`);
-			if (!findAgent(loadBuiltinAgents(), task.agent)) throw new Error(`Unknown persona: ${task.agent}`);
-		}
 		const group: SubagentGroup = {
 			version: 1,
 			id: `g_${Date.now().toString(36)}_${randomUUID().replaceAll("-", "").slice(0, 8)}`,
@@ -465,7 +461,7 @@ export class SubagentService {
 				status: terminalStatus(run.runtime.status),
 				delivery: attention || run.spec.deliverTerminal !== false ? "notify" : "record_only",
 				createdAt: run.runtime.endedAt ?? Date.now(),
-				summary: run.runtime.output?.split(/\r?\n/, 1)[0]?.slice(0, 240) || run.runtime.error || run.runtime.status,
+				summary: [run.runtime.output?.split(/\r?\n/, 1)[0]?.slice(0, 240) || run.runtime.error || run.runtime.status, limitsText(run.spec.limits)].filter(Boolean).join(" · "),
 				artifactRef: run.spec.artifactsDir,
 				usage: run.runtime.usage,
 			},
@@ -683,10 +679,21 @@ export class SubagentService {
 	}
 }
 
-async function authorizeDelegatedWrite(ctx: ExtensionContext, request: SubagentStartRequest): Promise<boolean> {
-	if (ctx.mode !== "tui") return false;
-	const target = request.tasks?.length ? `${request.tasks.length} Subagents` : request.resume ? `resumed Subagent ${request.resume}` : `${request.agent ?? "Subagent"} persona`;
-	return ctx.ui.confirm("Authorize delegated writes?", `${target} will receive edit/write tools and shell access for this run.`);
+function requirePersona(name: string): AgentDefinition {
+	const agents = loadBuiltinAgents();
+	const persona = findAgent(agents, name);
+	if (persona && !persona.disabled) return persona;
+	throw new Error(`Unknown or disabled persona: ${name}. Valid personas: ${agents.filter((agent) => !agent.disabled).map((agent) => agent.name).join(", ")}.`);
+}
+
+/** Only limits the lead set explicitly; undefined when the run is unbounded. */
+export function limitsText(limits: DelegateRunSpec["limits"]): string | undefined {
+	const parts = [
+		limits.turns === undefined ? "" : `${limits.turns} turns`,
+		limits.tokens === undefined ? "" : `${limits.tokens} tokens`,
+		limits.costUsd === undefined ? "" : `$${limits.costUsd}`,
+	].filter(Boolean);
+	return parts.length ? `limited: ${parts.join(", ")} (set by lead)` : undefined;
 }
 
 function runTerminalKey(run: DelegateRun): string {
