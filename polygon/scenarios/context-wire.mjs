@@ -37,7 +37,7 @@ export default {
 		await phase("pi-kit", async () => {
 			const lead = rpc(t, { model: "polygon/puppet" });
 			await lead.script({ agent: "pi-kit", steps: [
-				{ id: "s1", tool: "job_start", args: { name: "probe", argv: ["sh", "-c", "sleep 1; echo polygon-ok"] } },
+				{ id: "s1", tool: "job_start", args: { command: "sleep 1; echo polygon-ok", description: "probe" } },
 				{ id: "s2", text: "started" },
 				{ id: "s3", text: "woke" },
 			] });
