@@ -7,7 +7,6 @@ import { DelegateExecutor } from "../extensions/subagents/executor.ts";
 import { SubagentService, type SubagentGroup } from "../extensions/subagents/service.ts";
 import { DEFAULT_TIMEOUT_MS } from "../extensions/subagents/config.ts";
 import type { DelegateRun } from "../extensions/subagents/runtime-types.ts";
-import { chainCheckpoints } from "../extensions/chains/checkpoint.ts";
 import { pendingRuntimeEvents, replayRuntimeEventEntries } from "../extensions/shared/runtime-events.ts";
 
 const cleanup: Array<() => void> = [];
@@ -113,30 +112,6 @@ describe("SubagentService", () => {
 		expect(pendingRuntimeEvents(replayRuntimeEventEntries(branch)).map((event) => event.source.id)).toEqual([run.spec.id]);
 		expect(service.clearTerminal(run.spec.id)).toBe(1);
 		expect(pendingRuntimeEvents(replayRuntimeEventEntries(branch))).toEqual([]);
-	});
-
-	it("records a write-enabled terminal Chain obligation only once across reload", async () => {
-		const { service, ctx, root, pi } = setup();
-		const previous = chainCheckpoints.current;
-		const due = vi.fn();
-		chainCheckpoints.current = { due } as unknown as NonNullable<typeof chainCheckpoints.current>;
-		try {
-			const run = await service.start({ agent: "reviewer", task: "Write." }, ctx) as DelegateRun;
-			run.spec.allowWrite = true;
-			const specPath = path.join(run.spec.artifactsDir, "spec.json");
-			writeFileSync(specPath, JSON.stringify(run.spec));
-			await service.wait({ ids: [run.spec.id], waitMs: 3_000 });
-			expect(due).toHaveBeenCalledTimes(1);
-			expect(JSON.parse(readFileSync(run.spec.runtimePath, "utf8")).chainCheckpointRecordedAt).toBeTypeOf("number");
-
-			service.dispose();
-			const restored = new SubagentService(pi, new DelegateExecutor({ artifactsRoot: root }), root);
-			cleanup.push(() => restored.dispose());
-			await restored.restore(ctx);
-			expect(due).toHaveBeenCalledTimes(1);
-		} finally {
-			chainCheckpoints.current = previous;
-		}
 	});
 
 	it("restores only runs owned by the exact parent Pi session", async () => {

@@ -9,7 +9,6 @@ import { DelegateExecutor } from "./executor.ts";
 import type { DelegateRun, DelegateRunStatus } from "./runtime-types.ts";
 import { requestRuntimeDelivery } from "../shared/runtime-delivery.ts";
 import { consumeRuntimeEvent, runtimeEvents, type RuntimeTerminalStatus } from "../shared/runtime-events.ts";
-import { chainCheckpoints } from "../chains/checkpoint.ts";
 
 class ConcurrencyLimitError extends Error {}
 export class SubagentAdmissionReservedError extends Error {}
@@ -447,19 +446,13 @@ export class SubagentService {
 		if (this.terminalSeen.has(terminalKey)) return;
 		this.terminalSeen.add(terminalKey);
 		this.activate(run);
-		const terminalDedupeKey = `subagent:${run.spec.id}:${run.spec.generation}:terminal`;
-		if (run.spec.allowWrite && !run.runtime.chainCheckpointRecordedAt) {
-			if (!runtimeEvents.read().dedupe[terminalDedupeKey]) chainCheckpoints.current?.due(`write-enabled subagent ${run.spec.id} settled`, "material_change");
-			run.runtime.chainCheckpointRecordedAt = Date.now();
-			writeFileSync(run.spec.runtimePath, JSON.stringify(run.runtime));
-		}
 		const attention = run.runtime.status === "needs_attention";
 		runtimeEvents.record(this.pi, {
 			type: "emit",
 			event: {
 				version: 1,
 				id: `terminal:${run.spec.id}:${run.spec.generation}`,
-				dedupeKey: terminalDedupeKey,
+				dedupeKey: `subagent:${run.spec.id}:${run.spec.generation}:terminal`,
 				source: { kind: "subagent", id: run.spec.id, generation: run.spec.generation },
 				type: attention ? "attention" : "terminal",
 				status: terminalStatus(run.runtime.status),

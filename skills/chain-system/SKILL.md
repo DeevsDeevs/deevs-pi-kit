@@ -102,8 +102,8 @@ subagent({
 
 `extensions/chains` tracks branch-local `saved` versus `checkpoint due` state:
 
-- 80% context usage forces one immediate checkpoint before further substantive work, including read-only/no-edit tasks; saving triggers Pi compaction and a follow-up that reloads the Chain and continues, while a failed save leaves only settlement, cancellation, status, clarification, and collaborator-reporting tools available;
-- descendant HEAD advances, Mission lifecycle/milestones (including cross-session takeover), review adjudication, new branches, and write-enabled Subagent settlement mark a checkpoint due; ordinary edits and bounded Jobs do not;
+- 80% context usage marks a checkpoint due and adds one reminder to the system prompt, including for read-only/no-edit tasks; no tool is blocked;
+- descendant HEAD advances, Mission lifecycle/milestones (including cross-session takeover), review adjudication, and new branches mark a checkpoint due; ordinary edits and bounded Jobs do not;
 - `chain_save` clears due state; an explicit persisted waiver can also clear it with a reason;
 - `/chains` browses active state and saved links; `/chains <query>` searches them;
 - it never auto-saves because durable links need handoff-quality summaries.

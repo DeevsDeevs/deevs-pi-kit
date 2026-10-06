@@ -47,7 +47,7 @@ Nothing to set up first. Pi starts the daemon in its own Herdr workspace on the 
 - **workflow** runs foreground JavaScript that fans work out to read-only child agents, in trusted projects only. `workflow`.
 - **mission** drives a single-controller autonomous objective with limits, reviewed candidates and confirmed takeover, state under `.missions/`. `/mission`, `mission_*`. [More](extensions/mission/README.md).
 - **cron** schedules prompts for this Pi session, fired while it is idle. `/cron`, `cron`. [More](extensions/cron/README.md).
-- **chains** saves markdown handoffs under `.chains/` and forces a checkpoint at 80% context. `/chains`, `/chain-*`, `chain_*`. [More](extensions/chains/README.md).
+- **chains** saves markdown handoffs under `.chains/` and reminds once to save one at 80% context. `/chains`, `/chain-*`, `chain_*`. [More](extensions/chains/README.md).
 - **wiki** lints, graphs, searches and packs a curated markdown knowledge base. `/wiki:*`, `wiki_*`. [More](extensions/wiki/README.md).
 - **arxiv** searches arXiv and returns exact metadata and BibTeX. `/arxiv:*`, `arxiv_*`. [More](extensions/arxiv/README.md).
 - **todos** keeps a session todo list. `/todos`, `todo_list`. [More](extensions/todos/README.md).
