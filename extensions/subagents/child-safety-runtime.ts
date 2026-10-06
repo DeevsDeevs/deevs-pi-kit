@@ -2,7 +2,7 @@ import { open, readdir, readFile, realpath, stat, writeFile } from "node:fs/prom
 import * as path from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import { isToolCallEventType, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { detectDetachedShell } from "../shared/process-safety.ts";
+import { guardBashCall } from "../shared/guard.ts";
 import { registerSafeDiffTool } from "../shared/safe-diff.ts";
 
 const SKIP_DIRS = new Set([".git", "node_modules", ".pi", ".chains", ".missions"]);
@@ -118,14 +118,7 @@ export default function childSafetyRuntime(pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.on("tool_call", async (event) => {
-		if (!isToolCallEventType("bash", event)) return undefined;
-		const command = event.input.command;
-		if (typeof command !== "string") return undefined;
-		const reason = detectDetachedShell(command);
-		if (!reason) return undefined;
-		return { block: true, reason };
-	});
+	pi.on("tool_call", (event, ctx) => isToolCallEventType("bash", event) ? guardBashCall(event.input.command, ctx.cwd) : undefined);
 }
 
 async function projectPath(requested = "."): Promise<string> {
