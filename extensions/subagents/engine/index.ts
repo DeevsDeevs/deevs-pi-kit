@@ -106,8 +106,8 @@ interface WorkflowRecord {
 	status: TaskStatus;
 	durableTaskId?: Durable.TaskId;
 }
-/** The crash map: one per agent() call, keyed by prompt, options and occurrence; written with the call's conversation, then with its outcome. */
-type CallRecord = Partial<CallOutcome> & { agentId: string; conversationId: ConversationId; worktree?: AgentWorktree };
+/** The crash map: one per agent() call, keyed by prompt, options and occurrence; written with the call's conversation, then with its outcome, whose `worktree` is the one kept. */
+type CallRecord = Partial<CallOutcome> & { agentId: string; conversationId: ConversationId; isolated?: AgentWorktree };
 type WorkflowRuntime = Durable.TaskRuntime<WorkflowInput, { phase: "run" }, null, object>;
 
 interface Kit {
@@ -709,7 +709,7 @@ function callRunner(D: D, docs: WorkflowDocs, engine: Engine, input: WorkflowInp
 				instructions: instructions.get(prompt),
 				cwd,
 			});
-			call = { agentId, conversationId: conversation.id, worktree };
+			call = { agentId, conversationId: conversation.id, isolated: worktree };
 			Object.assign(await tx.doc(docs.Calls, runtime.conversationId, member(key), agentId), json(call));
 			return undefined;
 		}, context);
@@ -738,7 +738,7 @@ function callRunner(D: D, docs: WorkflowDocs, engine: Engine, input: WorkflowInp
 				const transcript = await scan(conversation, context);
 				const spent = (await runtime.snapshot(D.UsageDoc, call.conversationId, context))?.models ?? {};
 				const answer = text(transcript.filter((entry) => entry.kind === "pi.assistant").at(-1)?.model?.[0]);
-				const kept = call.worktree && existsSync(call.worktree.path) ? await finishAgentWorktree(call.worktree).catch(() => call.worktree) : undefined;
+				const kept = call.isolated && existsSync(call.isolated.path) ? await finishAgentWorktree(call.isolated).catch(() => call.isolated) : undefined;
 				const outcome: CallOutcome = {
 					agentId: call.agentId,
 					status: settled.status === "done" ? "done" : "failed",
