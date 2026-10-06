@@ -78,7 +78,7 @@ The kit's only settings file is `pi-kit.json`: `~/.pi/agent/pi-kit.json` for eve
 - `autonomy`: `true` (the default): orchestration never waits on a dialog, and the lead takes it as the standing opt-in to `Workflow`, with a hidden reminder when it turns on, every ten prompts after, and when it turns off. `false` brings one confirmation back for each collaborator change and stops Mission continues. A project's value counts once the project is trusted. The old `"auto"` and `"ask"` read as `true` and `false` and are rewritten once.
 - `guard`: `"detached"`, `"forcePush"` or `"rmRf": false` in the global file turns one rule off; a project file can only add `block` patterns, and both lists add up.
 - `codexFast`: `true` sends `service_tier: "priority"` on ChatGPT-auth `openai-codex` requests.
-- `notifier`: `enabled`, `title`, `body`, `terminal`, `bell`, `terminalRequiresTty`, `minIntervalMs`, `command` (an argv with `{title}`, `{body}`, `{cwd}`, `{project}`) and `jsonl`; an untrusted project's `command` and `jsonl` are ignored.
+- `notifier`: `enabled`, `title`, `body`, `terminal`, `bell`, `terminalRequiresTty`, `minIntervalMs`, `command` (an argv with `{title}`, `{body}`, `{cwd}`, `{project}`, killed if it runs past 10 s) and `jsonl`; an untrusted project's `command` and `jsonl` are ignored.
 
 A trusted project's old `.pi/codex-fast.json`, `.pi/notifier.json`, `.pi/runtime.json` and `.pi/subagents.json` move into `.pi/pi-kit.json` once, by themselves (`subagents.json` keeps only its `defaultModel`, as `models.default`).
 

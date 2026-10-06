@@ -56,11 +56,8 @@ function runCommand(command: string[], ctx: ExtensionContext, config: ResolvedCo
 	const [program, ...args] = command.map((part) => renderTemplate(part, ctx, config));
 	if (!program) return;
 
-	const child = spawn(program, args, {
-		cwd: ctx.cwd,
-		detached: true,
-		stdio: "ignore",
-	});
+	// Bounded, never detached (AGENTS.md process ownership): a notifier that has not exited in 10 s is killed.
+	const child = spawn(program, args, { cwd: ctx.cwd, stdio: "ignore", timeout: 10_000 });
 	child.on("error", () => undefined);
 	child.unref();
 }
