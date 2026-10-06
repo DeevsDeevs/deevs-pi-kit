@@ -1,6 +1,6 @@
-import { execFile } from "node:child_process";
-import { mkdirSync, readdirSync, realpathSync } from "node:fs";
+import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
+import { addWorktree, git, gitTopLevel, repositoriesUnder } from "../../shared/worktree.ts";
 import { RuntimeError } from "../errors.ts";
 import { PARTICIPANT_NAME } from "../schemas/common.ts";
 import { type HostedParticipant, isHeld, isPiTarget } from "../schemas/state.ts";
@@ -8,8 +8,6 @@ import type { HostedLiveRegistration } from "./registration.ts";
 import { deriveParticipantKey, HostedStateStore, projectScope } from "./state.ts";
 
 const BRANCH_PREFIX = "refs/heads/runtime/collab/";
-const MAX_GIT_BUFFER = 1024 * 1024;
-const GIT_TIMEOUT_MS = 30_000;
 
 interface RuntimeWorktree {
 	protocol: string;
@@ -129,7 +127,7 @@ export class RuntimeWorktrees {
 	/** An explicit repo wins; otherwise the participant's recorded repo, so a restart needs none; otherwise the project root itself. */
 	private repoRoot(projectRoot: string, input: EnsureWorktreeInput, participant: HostedParticipant | undefined): Promise<string> {
 		if (input.repo === undefined && participant?.repoRoot) return Promise.resolve(participant.repoRoot);
-		return resolveRepoRoot(projectRoot, input.repo, input.participantId);
+		return resolveCollaboratorRepo(projectRoot, input.repo, input.participantId);
 	}
 
 	/** A Git worktree recorded on another participant belongs to that identity, whatever its branch says. */
@@ -197,22 +195,6 @@ function branchRef(identity: ParticipantIdentity): string {
 	return `${BRANCH_PREFIX}${identity.protocol}/${identity.participantId}`;
 }
 
-/** A leftover branch outrules `-b`, so an interrupted removal or a manually pruned directory still reattaches. */
-async function addWorktree(projectRoot: string, branch: string, path: string): Promise<void> {
-	const reattach = await branchExists(projectRoot, branch);
-	if (reattach) await git(projectRoot, ["worktree", "add", path, branch]);
-	else await git(projectRoot, ["worktree", "add", "-b", branch, path, "HEAD"]);
-}
-
-async function branchExists(projectRoot: string, branch: string): Promise<boolean> {
-	try {
-		await git(projectRoot, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
 async function listWorktrees(repoRoot: string): Promise<RuntimeWorktree[]> {
 	const worktrees: RuntimeWorktree[] = [];
 	let path: string | undefined;
@@ -237,7 +219,7 @@ function parseWorktreeBranch(branch: string, path: string, repoRoot: string): Ru
  * The repository a collaborator works in: `<projectRoot>/<repo>` when given, else the project root, either
  * way the top level of a Git repository. The link may live under the root while its target lies elsewhere.
  */
-export async function resolveRepoRoot(projectRoot: string, repo: string | undefined, participantId: string): Promise<string> {
+export async function resolveCollaboratorRepo(projectRoot: string, repo: string | undefined, participantId: string): Promise<string> {
 	if (repo === undefined) {
 		if (await gitTopLevel(projectRoot) === projectRoot) return projectRoot;
 		const candidates = await repositoriesUnder(projectRoot);
@@ -252,43 +234,4 @@ export async function resolveRepoRoot(projectRoot: string, repo: string | undefi
 	try { repoRoot = realpathSync(join(projectRoot, repo)); } catch { throw new RuntimeError("invalid_request", `repo ${repo} for ${participantId} does not exist.`); }
 	if (await gitTopLevel(repoRoot) !== repoRoot) throw new RuntimeError("invalid_request", `repo ${repo} for ${participantId} is not the top level of a Git repository.`);
 	return repoRoot;
-}
-
-// ponytail: one level deep; nested repositories are reachable by an explicit repo path.
-export async function repositoriesUnder(projectRoot: string): Promise<string[]> {
-	const names: string[] = [];
-	for (const entry of readdirSync(projectRoot, { withFileTypes: true })) {
-		if (entry.name.startsWith(".") || !(entry.isDirectory() || entry.isSymbolicLink())) continue;
-		let path: string;
-		try { path = realpathSync(join(projectRoot, entry.name)); } catch { continue; }
-		if (await gitTopLevel(path) === path) names.push(entry.name);
-	}
-	return names.sort();
-}
-
-async function gitTopLevel(cwd: string): Promise<string | undefined> {
-	try { return realpathSync((await git(cwd, ["rev-parse", "--show-toplevel"])).trim()); } catch { return undefined; }
-}
-
-export async function isProjectWorktree(path: string, projectRoot: string): Promise<boolean> {
-	try {
-		return await commonDir(path) === await commonDir(projectRoot);
-	} catch {
-		return false;
-	}
-}
-
-async function commonDir(cwd: string): Promise<string> {
-	return realpathSync((await git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim());
-}
-
-function git(cwd: string, args: string[]): Promise<string> {
-	return new Promise((resolve, reject) => {
-		const env = { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" };
-		const options = { cwd, encoding: "utf8" as const, maxBuffer: MAX_GIT_BUFFER, timeout: GIT_TIMEOUT_MS, env };
-		execFile("git", args, options, (error, stdout, stderr) => {
-			if (error) reject(new RuntimeError("host_unavailable", `git ${args[0]} failed: ${stderr.trim() || error.message}`));
-			else resolve(stdout);
-		});
-	});
 }
