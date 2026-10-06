@@ -36,8 +36,10 @@ wiki/
 Before changing an existing wiki: read `SCHEMA.md`, `index.md`, and recent `log.md` entries, then search existing pages for the topic before creating a new one. Skipping orientation creates duplicate pages, broken links, and stale contradictions.
 
 ```text
+wiki_init     create the standard layout and starter files
 wiki_status   inspect structure and top health warnings
 wiki_lint     find link/frontmatter/index/tag/source issues
+wiki_graph    backlinks, orphans, broken and ambiguous links
 wiki_search   search pages by relevance/text/regex
 wiki_context  pack relevant bounded wiki context
 read          read schema/index/log/pages when editing precisely
@@ -48,34 +50,9 @@ Use `bash` only for small repo-local scans the wiki tools do not cover.
 
 ## Initializing
 
-Confirm the wiki path and domain, create the standard layout, write small domain-specific starter files, and suggest first sources to ingest.
+Confirm the wiki path and domain, run `wiki_init` (`dryRun` first if the path is uncertain), tailor its starter `SCHEMA.md` to the domain, and suggest first sources to ingest.
 
-`index.md` — one line per page, `[[page-name]] — short summary`, under these exact sections:
-
-```markdown
-# Wiki Index
-
-> Last updated: YYYY-MM-DD | Total pages: 0
-
-## Entities
-
-## Concepts
-
-## Comparisons
-
-## Queries
-```
-
-`log.md` — append-only:
-
-```markdown
-# Wiki Log
-
-> Append-only record of material wiki changes.
-> Format: `## [YYYY-MM-DD] action | subject`
-```
-
-Log material changes, ingests, filed queries, lints, archives, and broad refactors — not trivial lookups.
+`index.md` lists one line per page, `[[page-name]] — short summary`, under its Entities, Concepts, Comparisons and Queries sections. `log.md` is append-only, one `## [YYYY-MM-DD] action | subject` heading per entry. Log material changes, ingests, filed queries, lints, archives, and broad refactors — not trivial lookups.
 
 `SCHEMA.md` must define:
 

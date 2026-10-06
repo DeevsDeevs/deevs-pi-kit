@@ -36,7 +36,6 @@ Not for one-shot answers, tiny edits, pure conversation, durable memory (`chain_
 
 Chains hold durable milestones, not every todo update. The parent owns the list for subagent-backed work: mark all grouped parallel runs `in_progress`, then each `done`/`blocked` after reading the settled results. Track background process or group ids in `notes` only when useful. Todos can mirror a review matrix, but verdicts still need explicit evidence.
 
-
 ## Anti-slop
 
 No vague items ("fix stuff"), no `done` without evidence, no stale `in_progress` on task switches, no updates after every tiny tool call, no keeping finished smoke-test lists around. Beyond ~8 items, group or defer unless the user asked for a detailed checklist.
