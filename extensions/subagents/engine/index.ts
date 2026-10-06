@@ -68,12 +68,7 @@ export type LaunchSpec = LaunchBase & ({
 	tools: PiToolName[];
 	instructions: string;
 	limits: Limits;
-	/** The run must end with a valid StructuredOutput call; its object, as JSON, is the result. */
-	schema?: Durable.JsonObject;
 } | { cli: CliWorker });
-
-/** `structuredError` is CC's error for a schema run that broke the StructuredOutput contract: `agent()` throws it. */
-export type AgentOutcome = TaskNotification & { structuredError?: string };
 
 interface AgentRecord {
 	name?: string;
@@ -94,9 +89,8 @@ interface AgentRecord {
 	worktree?: AgentWorktree;
 	/** SendMessage text for a run its reporter has not placed yet; the reporter steers it in right after the prompt. */
 	pending?: string[];
-	schema?: Durable.JsonObject;
 }
-type OutboxItem = AgentOutcome & { silent?: boolean };
+type OutboxItem = TaskNotification & { silent?: boolean };
 interface RunInput {
 	agentId: string;
 	session: string;
@@ -113,7 +107,6 @@ interface ReporterInput extends RunInput {
 	limits: Limits;
 	/** Where a resumed run starts in its conversation, so its report counts only its own entries and tokens. */
 	from?: { entries: number; tokens: number };
-	structured?: boolean;
 }
 interface CliInput extends RunInput {
 	worker: CliWorker;
@@ -175,9 +168,9 @@ export interface Engine {
 }
 
 interface Modules { D: D; openStorage(file: string): Promise<Durable.Storage> }
-interface Waiter { claimed: boolean; timedOut: boolean; resolve(n: AgentOutcome): void }
+interface Waiter { claimed: boolean; timedOut: boolean; resolve(n: TaskNotification): void }
 /** A reporter in this process. Messages steer its run only between the prompt's placement and `closing`; after that, SendMessage waits for the report and resumes. */
-interface Live { placed: boolean; closing: boolean; early: string[]; inflight: Promise<unknown>[]; done: Promise<AgentOutcome | undefined> }
+interface Live { placed: boolean; closing: boolean; early: string[]; inflight: Promise<unknown>[]; done: Promise<TaskNotification | undefined> }
 interface Host extends BackgroundHost {
 	/** The durable module stays loaded across /reload: a fresh copy would fail its own `instanceof` checks. */
 	modules?: Promise<Modules>;
@@ -247,10 +240,7 @@ export async function reinstall(): Promise<void> {
 		if (!engine) continue;
 		engine.kit = buildKit(D, engine.dir, engine.project);
 		engine.registry.install(engine.kit.extension);
-		installSchemas(D, engine.registry, engine.session, [
-			...Object.values(agentRecords(await engine.harness.snapshot(engine.kit.Agents, engine.root.id, CTX))),
-			...Object.values(workflowRecords(await engine.harness.snapshot(engine.kit.Workflows, engine.root.id, CTX))),
-		]);
+		installSchemas(D, engine.registry, engine.session, workflowRecords(await engine.harness.snapshot(engine.kit.Workflows, engine.root.id, CTX)));
 	}
 }
 
@@ -286,13 +276,12 @@ export function checkSchema(schema: Durable.JsonObject): void {
 	if (missing.length) throw unusable(`required names ${missing.join(", ")}, which properties lacks`);
 }
 
-export async function launch(engine: Engine, spec: LaunchSpec): Promise<{ outputFile: string; done?: Promise<AgentOutcome> }> {
+export async function launch(engine: Engine, spec: LaunchSpec): Promise<{ outputFile: string; done?: Promise<TaskNotification> }> {
 	const { D } = await host.modules!;
-	const structured = !spec.cli && spec.schema ? useSchema(D, engine, spec.schema) : undefined;
 	const { agentId } = spec;
 	const outputFile = join(engine.dir, "out", `${agentId}.md`);
 	const startedAt = Date.now();
-	const done = spec.foreground ? new Promise<AgentOutcome>((resolve) => host.waiters.set(agentId, { claimed: false, timedOut: false, resolve })) : undefined;
+	const done = spec.foreground ? new Promise<TaskNotification>((resolve) => host.waiters.set(agentId, { claimed: false, timedOut: false, resolve })) : undefined;
 	const { kit, root } = engine;
 	await root.commit(async (tx) => {
 		const record: AgentRecord = { name: spec.name, description: spec.description, startedAt, status: "running", cwd: spec.cwd, writer: spec.writer, worktree: spec.worktree };
@@ -307,14 +296,14 @@ export async function launch(engine: Engine, spec: LaunchSpec): Promise<{ output
 		await D.configure(tx, child.id, {
 			model: { provider: spec.model.provider, modelId: spec.model.id },
 			thinkingLevel: spec.level,
-			extensions: structured ? [kit.extension, structured] : [kit.extension],
-			tools: [...spec.tools.map((name) => kit.tools[name]), ...(structured?.tools ?? [])],
+			extensions: [kit.extension],
+			tools: spec.tools.map((name) => kit.tools[name]),
 			instructions: spec.instructions,
 			cwd: spec.cwd,
 		});
-		const input: ReporterInput = { agentId, session: engine.session, conversationId: child.id, prompt: spec.prompt, requestId: `agent:${agentId}`, description: spec.description, toolUseId: spec.toolUseId, limits: spec.limits, startedAt, outputFile, worktree: spec.worktree, structured: !!structured };
+		const input: ReporterInput = { agentId, session: engine.session, conversationId: child.id, prompt: spec.prompt, requestId: `agent:${agentId}`, description: spec.description, toolUseId: spec.toolUseId, limits: spec.limits, startedAt, outputFile, worktree: spec.worktree };
 		await tx.createTask(kit.Reporter, input, BACKGROUND);
-		(await tx.doc(kit.Agents, root.id)).agents[agentId] = json({ ...record, conversationId: child.id, schema: spec.schema });
+		(await tx.doc(kit.Agents, root.id)).agents[agentId] = json({ ...record, conversationId: child.id });
 	}, CTX);
 	tasks.register({ id: agentId, kind: "agent", name: spec.name, description: spec.description, status: "running", ownerSession: engine.session, startedAt, stop: () => stop(engine, agentId) });
 	return { outputFile, done };
@@ -354,8 +343,6 @@ export async function send(engine: Engine, agentId: string, message: string, too
 			(current.pending ??= []).push(message);
 			return "steered" as const;
 		}
-		// A resumed run answers in text: the launch run's StructuredOutput call already settled the schema.
-		if (current.schema) await D.configure(tx, conversationId, { extensions: [engine.kit.extension] });
 		current.status = "running";
 		current.stopped = false;
 		if (worktree) current.worktree = worktree;
@@ -505,7 +492,7 @@ async function open(session: string, cwd: string): Promise<Engine> {
 	const engine: Engine = { session, dir, project: cwd, harness, root, registry, kit };
 	const records = agentRecords(await harness.snapshot(kit.Agents, root.id, CTX));
 	const workflows = workflowRecords(await harness.snapshot(kit.Workflows, root.id, CTX));
-	installSchemas(D, registry, session, [...Object.values(records), ...Object.values(workflows)]);
+	installSchemas(D, registry, session, workflows);
 	for (const [id, record] of Object.entries(records)) {
 		tasks.register({ id, kind: "agent", name: record.name, description: record.description, status: record.status, ownerSession: session, startedAt: record.startedAt, stop: () => stop(engine, id) });
 	}
@@ -651,9 +638,9 @@ function schemaExtension(D: D, session: string, schema: Durable.JsonObject): Dur
 	return D.defineExtension({ name: `pi-kit.schema.${createHash("sha256").update(JSON.stringify(schema)).digest("hex").slice(0, 16)}`, tools: [tool], hooks: [end] });
 }
 
-/** Running schema agents and workflows need their StructuredOutput again after a reopen or /reload. */
-function installSchemas(D: D, registry: Durable.Registry, session: string, records: (AgentRecord | WorkflowRecord)[]): void {
-	const used = records.flatMap((record) => (record.status !== "running" ? [] : "schemas" in record ? record.schemas ?? [] : "schema" in record && record.schema ? [record.schema] : []));
+/** Running workflows' schema agents need their StructuredOutput again after a reopen or /reload. */
+function installSchemas(D: D, registry: Durable.Registry, session: string, records: Record<string, WorkflowRecord>): void {
+	const used = Object.values(records).flatMap((record) => (record.status === "running" ? record.schemas ?? [] : []));
 	for (const schema of new Map(used.map((schema) => [JSON.stringify(schema), schema])).values()) registry.install(schemaExtension(D, session, schema));
 }
 
@@ -717,10 +704,7 @@ async function report(D: D, docs: Pick<Kit, "Outbox" | "Agents">, input: Reporte
 					void conversation.abort(CTX);
 				});
 				try {
-					const first = await submission.wait(context);
-					settled = input.structured && first.status === "done" && !structuredResult((await scan(conversation, context)).slice(input.from?.entries ?? 0)).output
-						? await (await conversation.submit({ type: "input", content: NUDGE, requestId: `${input.requestId}:nudge` }, context)).wait(context)
-						: first;
+					settled = await submission.wait(context);
 				} finally {
 					unwatch();
 				}
@@ -737,19 +721,16 @@ async function report(D: D, docs: Pick<Kit, "Outbox" | "Agents">, input: Reporte
 		const run = transcript.slice(input.from?.entries ?? 0);
 		const tokens = totalTokens(await runtime.snapshot(D.UsageDoc, input.conversationId, context)) - (input.from?.tokens ?? 0);
 		const lastText = run.filter((entry) => entry.kind === "pi.assistant").map((entry) => text(entry.model?.[0])).filter(Boolean).at(-1) ?? "";
-		const so = input.structured ? structuredResult(run) : undefined;
-		const structuredError = so && !so.output ? structuredFailure(so, settled) : undefined;
-		if (settled?.status === "done" || so?.output) limited = undefined;
-		const output = so ? (so.output ? JSON.stringify(so.output) : "") : settled?.status === "done" || limited ? lastText : "";
-		const status = so?.output || settled?.status === "done" && !structuredError ? "completed"
-			: structuredError ? "failed"
+		if (settled?.status === "done") limited = undefined;
+		const output = settled?.status === "done" || limited ? lastText : "";
+		const status = settled?.status === "done" ? "completed"
 			: limited ? (output ? "completed" : "failed")
 			: settled === undefined || settled.status === "unanswered" && settled.reason === "aborted" ? "killed" : "failed";
 		const outcome: Outcome = {
 			status,
 			summary: limited
 				? `Agent "${input.description}" stopped at its ${limited} limit (partial result)`
-				: agentSummary(input.description, status, { error: structuredError ?? failure(settled), byUser: (await record())?.stoppedBy === "user" }),
+				: agentSummary(input.description, status, { error: failure(settled), byUser: (await record())?.stoppedBy === "user" }),
 			result: output,
 			usage: {
 				subagentTokens: tokens,
@@ -758,7 +739,6 @@ async function report(D: D, docs: Pick<Kit, "Outbox" | "Agents">, input: Reporte
 			},
 		};
 		if (limited) outcome.limited = limited;
-		if (structuredError) outcome.structuredError = structuredError;
 		({ n, claimed } = await commitReport(docs, input, runtime, context, transcriptLog(transcript), outcome, live.early));
 	} finally {
 		if (host.live.get(input.agentId) === live) host.live.delete(input.agentId);
@@ -767,7 +747,7 @@ async function report(D: D, docs: Pick<Kit, "Outbox" | "Agents">, input: Reporte
 	await deliver(input.agentId, n, claimed);
 }
 
-type Outcome = Pick<AgentOutcome, "summary" | "result" | "usage" | "limited" | "structuredError"> & Required<Pick<AgentOutcome, "status">>;
+type Outcome = Pick<TaskNotification, "summary" | "result" | "usage" | "limited"> & Required<Pick<TaskNotification, "status">>;
 type RunRuntime = Pick<Durable.TaskRuntime<unknown, { phase: "run" }, null, object>, "taskId" | "conversationId" | "commit">;
 
 /**
