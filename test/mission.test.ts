@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
@@ -123,3 +123,15 @@ it("carries goal, done criteria, the last three log entries and the next step wh
 	expect(currentMission(cwd)?.state).toMatchObject({ status: "paused", quietContinues: 0, owner: { pid: process.pid } });
 });
 
+it("runs at most two closing-review rounds before a review mission closes", async () => {
+	const { call } = lead();
+	await call("mission_start", { title: "Reviewed", goal: "g", done: "d", review: true });
+	await expect(call("mission_update", { log: "x", next: "y", verdict: "clear" })).rejects.toThrow("No closing review waits");
+	expect((await call("mission_update", { log: "built", next: "review", status: "done" })).details.status).toBe("active");
+	expect(readFileSync(join(cwd, ".missions", currentMission(cwd)!.slug, "review.js"), "utf8")).toContain('"enum":["changes_requested","clear"]');
+	await expect(call("mission_update", { log: "x", next: "y", status: "done" })).rejects.toThrow("waits for its verdict");
+	expect((await call("mission_update", { log: "missing tests", next: "add tests", verdict: "changes_requested" })).details.status).toBe("active");
+	expect((await call("mission_update", { log: "tests added", next: "review", status: "done" })).details.status).toBe("active");
+	expect((await call("mission_update", { log: "still missing", next: "none", verdict: "changes_requested" })).details.status).toBe("done");
+	expect(currentMission(cwd)?.state).toMatchObject({ status: "done", reviews: 2, reviewing: false });
+});
