@@ -11,7 +11,7 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { guardBashCall } from "../../shared/guard.ts";
 import { agentSummary, tasks, type TaskNotification, type TaskStatus } from "../../shared/tasks.ts";
-import { addWorktree, finishAgentWorktree, git, type AgentWorktree } from "../../shared/worktree.ts";
+import { addWorktree, agentWorktreeAt, finishAgentWorktree, git, type AgentWorktree } from "../../shared/worktree.ts";
 import { PI_TOOLS, type PiToolName } from "../definitions.ts";
 import { bunSqlite, lock, reap, unlock } from "./storage.ts";
 
@@ -338,7 +338,7 @@ function modelsAdapter(): Durable.HarnessOptions["models"] {
 	} as unknown as Durable.HarnessOptions["models"];
 }
 
-/** `project` is the lead's cwd: the guard's rm root for every agent, whatever cwd the lead gave it. */
+/** `project` is the lead's cwd: the guard's rm root for every agent, whatever cwd the lead gave it, except an isolated agent's own worktree. */
 function buildKit(D: D, owner: string, project: string): Kit {
 	const Outbox = D.defineDoc<OutboxDoc>({ kind: "pi-kit.outbox", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ items: [] }) });
 	const Agents = D.defineDoc<AgentsDoc>({ kind: "pi-kit.agents", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ agents: {} }) });
@@ -359,7 +359,7 @@ function buildKit(D: D, owner: string, project: string): Kit {
 		beforeTool: async (call, api, context) => {
 			if (call.name !== "bash") return undefined;
 			const cwd = (await api.snapshot(D.AgentDoc, api.conversationId, context))?.cwd ?? process.cwd();
-			const blocked = guardBashCall(String(call.arguments.command ?? ""), cwd, project);
+			const blocked = guardBashCall(String(call.arguments.command ?? ""), cwd, agentWorktreeAt(cwd, getAgentDir()) ?? project);
 			return blocked ? { block: blocked.reason } : undefined;
 		},
 	});

@@ -1,9 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createAgentWorktree, finishAgentWorktree, resolveRepoRoot, sharedCwdWarning } from "../extensions/shared/worktree.ts";
+import { agentWorktreeAt, createAgentWorktree, finishAgentWorktree, resolveRepoRoot, sharedCwdWarning } from "../extensions/shared/worktree.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -40,6 +40,15 @@ describe("agent worktrees", () => {
 		expect(existsSync(worktree.path)).toBe(false);
 		expect(git(repo, ["branch", "--list", "agent/*"])).toBe("");
 		expect(git(repo, ["status", "--porcelain"])).toBe("");
+	});
+
+	it("finds the agent worktree holding a cwd, so its rm root is that tree and not a sibling or the repo", async () => {
+		const { repo, agentDir } = setup();
+		const worktree = await createAgentWorktree({ cwd: repo, agentId: "a0123456789abcdef", agentDir });
+		expect(agentWorktreeAt(join(worktree.path, "src"), agentDir)).toBe(worktree.path);
+		expect(agentWorktreeAt(worktree.path, agentDir)).toBe(worktree.path);
+		expect(agentWorktreeAt(dirname(worktree.path), agentDir)).toBeUndefined();
+		expect(agentWorktreeAt(repo, agentDir)).toBeUndefined();
 	});
 
 	it("keeps a worktree with a commit or with uncommitted work, and leaves the main tree alone", async () => {

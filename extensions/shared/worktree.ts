@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readdirSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, sep } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 
 const MAX_GIT_BUFFER = 1024 * 1024;
 const GIT_TIMEOUT_MS = 30_000;
@@ -47,6 +47,14 @@ async function addAgentWorktree({ cwd, agentId, agentDir = defaultAgentDir() }: 
 	mkdirSync(dirname(path), { recursive: true });
 	await addWorktree(repoRoot, branch, path, base);
 	return { path: realpathSync(path), branch, repoRoot, base };
+}
+
+/** The kit-made agent worktree that holds `cwd`, if any: an isolated agent may `rm` inside its own tree, outside the lead's project. */
+export function agentWorktreeAt(cwd: string, agentDir = defaultAgentDir()): string | undefined {
+	const base = join(agentDir, "pi-kit", "worktrees");
+	const realBase = existsSync(base) ? realpathSync(base) : base;
+	const [hash, agentId] = relative(realBase, cwd).split(sep);
+	return hash && agentId && hash !== ".." ? join(realBase, hash, agentId) : undefined;
 }
 
 /** Removes the worktree and its branch when nothing changed; otherwise keeps both and returns the worktree. */
