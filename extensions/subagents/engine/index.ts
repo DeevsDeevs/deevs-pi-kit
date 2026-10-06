@@ -34,7 +34,7 @@ type AgentsDoc = { agents: Record<string, Durable.JsonObject> };
 type WorkflowsDoc = { workflows: Record<string, Durable.JsonObject> };
 
 /** One global throttle across every engine and Workflow: at most 16 agents run, the rest queue FIFO. */
-export const AGENT_SLOTS = 16;
+const AGENT_SLOTS = 16;
 const SAFE_TOOLS = new Set<PiToolName>(["read", "grep", "find", "ls"]);
 const FACTORIES = { read: createReadTool, grep: createGrepTool, find: createFindTool, ls: createLsTool, bash: createBashTool, edit: createEditTool, write: createWriteTool };
 // ponytail: a structural chord Context that never cancels; import chord's BACKGROUND_CONTEXT if durable starts checking identity.

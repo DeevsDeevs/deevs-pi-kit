@@ -24,9 +24,9 @@ Personas are `agents/*.md` with Claude Code's frontmatter (`name, description, t
 
 - `Agent` runs in the background by default and reports once as a `<task-notification>`; `run_in_background: false` waits up to two minutes, then the agent continues in the background.
 - With no `model`, an agent runs the lead's model and thinking level; names come from `pi-kit.json` (`extensions/shared/models.ts`).
-- At most 16 agents run at once across the process; later ones queue and say so in their launch result.
+- At most 16 agents run at once across the process; later ones queue and say so in their launch result. After a restart, runs that were mid-way keep their slots ahead of the queue.
 - `maxTurns`, `maxTokens` and `timeout` exist only when the user asks for them, and show in the launch result and the report.
-- `SendMessage` to a running agent arrives at its next tool round; to one that finished, failed or was stopped by `TaskStop`, it resumes the agent under the same `agentId`, with its context, and the agent notifies again. An agent stopped with `/agents stop` is not resumed. A name addresses its latest agent.
+- `SendMessage` to a running agent arrives at its next tool round, to one still waiting for a slot right after its prompt (kept in its record across a restart); to one that finished, failed or was stopped by `TaskStop`, it resumes the agent under the same `agentId`, with its context, and the agent notifies again. An agent stopped with `/agents stop` is not resumed. A name addresses its latest agent.
 - `isolation: "worktree"` runs the agent in a worktree under `<agent dir>/pi-kit/worktrees/` on branch `agent/<agentId>`. A worktree with changes is kept and its path and branch reach the report; an unchanged one is removed with its branch.
 - `TaskStop` stops an agent (by id or name), a workflow (by `w…` task id or `wf_…` run id; no notification follows), a job or a monitor; the agent's and the job's report say it was stopped, a monitor just ends. `ListAgents` and `/agents` list every task of the session by kind; `/agents` adds the agent types and what each model name resolves to now.
 
@@ -53,6 +53,7 @@ A `claude:` or `codex:` model (`opus`, `sonnet`, `haiku` and `fable` are `claude
 - Codex: `approval_policy=never` and `sandbox_mode=workspace-write` for writers, `read-only` otherwise, passed with `-c` on `exec` and `exec resume` alike. The guard is a PreToolUse hook passed with `-c`; `--dangerously-bypass-hook-trust` lets it run without a stored trust entry.
 - The CLI's session id is memoed at its first event. After Pi closed, the next start reaps the old process group and the worker resumes its session (`claude --resume`, `codex exec resume`); a worker that had not started yet starts again.
 - `SendMessage` to a running worker waits for its run to end, then resumes it with the message; it notifies once per run.
+- When a run ends or is stopped, its process group and the commands it started in groups of their own (Claude's `Bash`) are killed; they carry `PI_KIT_WORKER=<agentId>`.
 - `maxTurns`, `maxTokens` and `timeout` apply to Pi models only.
 - `test/fixtures/cli/` holds event streams and `--help` texts recorded by the polygon's `claude-worker` and `codex-worker`; a unit test fails when the argv uses a flag the recorded release does not document. Re-record after a CLI update by copying them from `polygon/results/latest/`.
 
