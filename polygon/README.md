@@ -32,7 +32,7 @@ One HTTP server per scenario: `/v1/chat/completions` for Pi's `polygon/puppet` p
 ] }
 ```
 
-The next step is the first one not yet said in the transcript whose `on` (if any) appears after the last assistant message, so `kill -9`, resume and child processes need no server state. A string arg `"$/re/"` becomes the last match of `re` in the transcript. A step's `usage` sets its reported prompt tokens (context-pressure tests). Every model request is appended to `requests.jsonl` with its agent, step, model, tools offered, message and image counts, `service_tier`, and `marks`: the strings a scenario pushed onto `t.marks` that the raw request contains (a system-prompt section tag, a persona line, a skill name).
+The next step is the first one not yet said in the transcript whose `on` (if any) appears after the last assistant message, so `kill -9`, resume and child processes need no server state. A string arg `"$/re/"` becomes the last match of `re` in the transcript. A step's `usage` sets its reported prompt tokens (context-pressure tests). A `schema: "auto"` step calls `StructuredOutput` with the smallest value its schema accepts when the request offers that tool, and replies as text otherwise. Every model request is appended to `requests.jsonl` with its agent, step, model, tools offered, message and image counts, `service_tier`, and `marks`: the strings a scenario pushed onto `t.marks` that the raw request contains (a system-prompt section tag, a persona line, a skill name).
 
 ## Adding a scenario
 
@@ -50,6 +50,8 @@ export default {
 	},
 };
 ```
+
+`wf-cc-scripts` runs your recorded Claude Code workflow scripts unchanged. They come from private repositories, so they live only in the gitignored `polygon/private/` (`cp ~/.claude/projects/*/*/workflows/scripts/*.js polygon/private/`, with a run's recorded `args` beside its script as `<script>.args.json`); with none there the scenario stays pending.
 
 `herdr(t)` starts a Herdr server under the sandbox `HOME`, creates a workspace and points later leads at it (`HERDR_ENV`, `HERDR_WORKSPACE_ID`, `HERDR_SOCKET_PATH`).
 
