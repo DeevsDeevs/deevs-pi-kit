@@ -53,6 +53,8 @@ export default function missionExtension(pi: ExtensionAPI): void {
 		if (!interrupted) later(ctx);
 	});
 	pi.on("before_agent_start", (event, ctx) => {
+		// A Pi collaborator in the lead's directory has no mission tools.
+		if (!pi.getActiveTools().includes("mission_update")) return;
 		const mission = currentMission(ctx.cwd);
 		if (mission && OPEN.includes(mission.state.status)) event.systemPromptOptions.sections.mission = `${missionBrief(mission)}\n\n${GUIDANCE}`;
 	});
@@ -119,6 +121,7 @@ export default function missionExtension(pi: ExtensionAPI): void {
 
 /** The autonomous continue: enum, counter and pid checks only. */
 async function maybeContinue(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+	if (!pi.getActiveTools().includes("mission_update")) return;
 	const mission = currentMission(ctx.cwd);
 	if (mission?.state.status !== "active") return;
 	const { state } = mission;
@@ -128,7 +131,8 @@ async function maybeContinue(pi: ExtensionAPI, ctx: ExtensionContext): Promise<v
 		state.owner = me;
 	}
 	if (!await isAutonomous(ctx)) return;
-	if (tasks.list().some((task) => task.status === "running" && task.kind !== "monitor")) return;
+	// Monitors and collaborators wake the lead themselves, by notification or by mail.
+	if (tasks.list(ctx.sessionManager.getSessionId()).some((task) => task.status === "running" && task.kind !== "monitor" && task.kind !== "collaborator")) return;
 	const head = await gitHead(ctx.cwd);
 	if (head !== state.head) {
 		state.head = head;
