@@ -150,7 +150,11 @@ export class RuntimeDeliveryCoordinator {
 	}
 }
 
-export const runtimeDelivery = new RuntimeDeliveryCoordinator();
+// Pi loads each extension with its own module graph; one coordinator must serve them all.
+const RUNTIME_DELIVERY = Symbol.for("deevs.pi-kit.runtime-delivery.v1");
+// SAFETY: This package exclusively owns the symbol-keyed slot and only ever stores a coordinator in it.
+const globalRegistry = globalThis as typeof globalThis & { [RUNTIME_DELIVERY]?: RuntimeDeliveryCoordinator };
+export const runtimeDelivery = globalRegistry[RUNTIME_DELIVERY] ??= new RuntimeDeliveryCoordinator();
 
 export function requestRuntimeDelivery(): void {
 	void runtimeDelivery.maybeDeliver();
