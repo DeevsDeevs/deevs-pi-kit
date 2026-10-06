@@ -15,10 +15,10 @@ export function issueMessagingGrant(state: HostedRuntimeState, operation: IssueO
 	const grant = operation.grant;
 	if (!Value.Check(HostedMessagingGrantSchema, grant)) throw new RuntimeError("conflict", "Messaging namespace shape is invalid.");
 	if (!newlyIssuedGrant(state, grant)) throw new RuntimeError("conflict", "Messaging namespace must be newly issued.");
-	assertMessagingCapacity(state);
 	assertMessagingHolder(state, grant);
-	// One descriptor file exists per target, so a fresh grant supersedes that target's previous namespace.
+	// One descriptor file exists per target, so a fresh grant supersedes that target's previous namespace, whose freed records count first.
 	const superseded = supersedeTargetGrants(state, grant.targetKey);
+	assertMessagingCapacity(superseded);
 	return { ...superseded, messaging: { ...superseded.messaging, [grant.namespaceId]: grant } };
 }
 
@@ -30,7 +30,6 @@ function supersedeTargetGrants(state: HostedRuntimeState, targetKey: string): Ho
 export function expireMessagingGrant(state: HostedRuntimeState, operation: ExpireOperation): HostedRuntimeState {
 	const grant = state.messaging[operation.namespaceId];
 	if (!grant || grant.status === "expired") return state;
-	// ponytail: expired namespace IDs remain under the 10,000-record cap; prune tombstones if launch volume requires it.
 	const expired: HostedMessagingGrant = { ...grant, status: "expired", operations: {} };
 	return { ...state, messaging: { ...state.messaging, [grant.namespaceId]: expired } };
 }
@@ -118,10 +117,7 @@ function messagingSendMatches(published: HostedMailboxMessageEvent, operation: H
 		&& published.inReplyToEventId === operation.inReplyToEventId;
 }
 
-/**
- * Namespaces and their operation records share one cap; only these two reducers ever add either.
- * ponytail: a grant keeps one operation record per send until a re-issue supersedes it; prune records of pruned mail if a holder nears the cap.
- */
+/** Namespaces and their operation records share one cap; only these two reducers ever add either, and retention pruning frees both. */
 function assertMessagingCapacity(state: HostedRuntimeState): void {
 	let records = Object.keys(state.messaging).length;
 	for (const grant of Object.values(state.messaging)) records += Object.keys(grant.operations).length;
