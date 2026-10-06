@@ -42,12 +42,9 @@ function writeTerminalNotification(config: ResolvedConfig): void {
 	if (process.env.KITTY_WINDOW_ID) {
 		process.stdout.write(`\x1b]99;i=pi-ready:d=0;${safeTitle}\x1b\\`);
 		process.stdout.write(`\x1b]99;i=pi-ready:p=body;${safeBody}\x1b\\`);
-	} else if (isGhostty()) {
-		// Ghostty documents desktop notifications via OSC 9 and OSC 777.
-		process.stdout.write(`\x1b]9;${safeTitle}: ${safeBody}\x07`);
-		process.stdout.write(`\x1b]777;notify;${safeTitle};${safeBody}\x07`);
 	} else {
-		// OSC 777 is used by iTerm2/WezTerm/rxvt-style integrations.
+		// Ghostty documents desktop notifications via OSC 9 and OSC 777; iTerm2, WezTerm and rxvt-style integrations read OSC 777.
+		if (isGhostty()) process.stdout.write(`\x1b]9;${safeTitle}: ${safeBody}\x07`);
 		process.stdout.write(`\x1b]777;notify;${safeTitle};${safeBody}\x07`);
 	}
 
