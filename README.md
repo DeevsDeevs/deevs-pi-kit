@@ -70,6 +70,7 @@ npm run smoke:collaborator-release   # collaborator launch, mail, stop and workt
 npm run smoke:native-release         # interactive targets and Git worktrees, no Herdr
 npm run bench:context                # tokens each surface costs, see bench/README.md
 npm run sync:chains-plugin           # copy the chain core into plugins/chains after editing it
+npm run polygon                      # end-to-end scenarios in a Podman sandbox, see polygon/README.md
 ```
 
 The release smokes start real Herdr and Pi processes, so `check` leaves them out.
