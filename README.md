@@ -44,7 +44,6 @@ Nothing to set up first. Pi starts the daemon in its own Herdr workspace on the 
 - **runtime** owns collaborator identity, mail and Herdr tab lifecycle. `/runtime`, `collaborator_list`, `collaborator_manage`, `collaborator_workspace` and four MCP mail tools. [Protocol](extensions/runtime/PROTOCOL.md).
 - **jobs** runs bounded commands with capped output, a hard timeout and process-tree cancellation. `/jobs`, `job_start`, `job_wait`, `job_read`, `job_stop`.
 - **subagents** runs curated read-only personas in isolated Pi processes: explorer, architect, reviewer, tester, logic-hunter, devops, python-dev, cpp-dev, rust-dev, anti-slop. Writing needs `allowWrite` and your confirmation. `/agents`, `subagent`, `subagent_wait`. [More](extensions/subagents/README.md).
-- **workflow** runs foreground JavaScript that fans work out to read-only child agents, in trusted projects only. `workflow`.
 - **cron** schedules prompts for this Pi session, fired while it is idle. `/cron`, `cron`. [More](extensions/cron/README.md).
 - **chains** saves markdown handoffs under `.chains/` and forces a checkpoint at 80% context. `/chains`, `/chain-*`, `chain_*`. [More](extensions/chains/README.md).
 - **wiki** lints, graphs, searches and packs a curated markdown knowledge base. `/wiki:*`, `wiki_*`. [More](extensions/wiki/README.md).
