@@ -10,7 +10,7 @@ import type { MessagingClient } from "./messaging-client.ts";
 import { parseBoundAgent, parseManagedAgent, type BoundAgent, type ManagedAgentStatus } from "./native-parse.ts";
 import { auth, parseHeartbeat, text, type LiveClientRegistration } from "./responses.ts";
 import type { RuntimeSession } from "./runtime-session.ts";
-import type { ManagedAgentControl, ManagedAgentSession } from "./session-record.ts";
+import type { ManagedAgentControl, ManagedAgentSession } from "./schemas/session.ts";
 import { deriveAgentTargetKey } from "./service/state.ts";
 
 const FATAL_HEARTBEAT_CODES = ["not_found", "conflict", "identity_mismatch"];

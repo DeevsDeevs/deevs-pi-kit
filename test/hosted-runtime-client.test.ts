@@ -72,8 +72,8 @@ describe("hosted runtime client vertical", () => {
 		const pi = { exec: async () => ({ code: 0, stdout: "{}", stderr: "", killed: false }) };
 		const ctx = { cwd: projectRoot, isProjectTrusted: () => true, sessionManager: { getSessionFile: () => sessionFile, getSessionId: () => "session_1", getBranch: () => [] } };
 		const integration = new HostedRuntimeIntegration(pi as never, runtimeRoot);
-		const starting = integration.sessionStart(ctx as never);
-		await integration.sessionShutdown();
+		const starting = integration.session.sessionStart(ctx as never);
+		await integration.session.sessionShutdown();
 		await starting;
 		const client = new HostedRuntimeClient(server.socketPath);
 		await expect(client.call("pi.heartbeat", { targetKey: "pi_session_1" })).rejects.toMatchObject({ code: "registration_stale" });

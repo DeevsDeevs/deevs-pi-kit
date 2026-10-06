@@ -27,7 +27,7 @@ export default {
 		] };
 		const lead = rpc(t);
 		await lead.script({ agent: "lead", steps: [
-			{ id: "s1", tool: "collaborator_manage", args: { action: "start", participants: [{ participantId: "painter", model: "polygon/painter", profile: "read-only" }] } },
+			{ id: "s1", tool: "collaborator_start", args: { participants: [{ name: "painter", model: "polygon/painter", profile: "read-only" }] } },
 			{ id: "s2", tool: "SendMessage", args: { to: "painter", message: "send a screenshot" } },
 			{ id: "s3", text: "waiting" },
 		] });

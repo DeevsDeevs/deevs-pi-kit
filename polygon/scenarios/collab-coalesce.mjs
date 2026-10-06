@@ -19,7 +19,7 @@ export default {
 		t.marks.push(...MARKS);
 		const lead = rpc(t);
 		await lead.script({ agent: "lead", steps: [
-			{ id: "s1", tool: "collaborator_manage", args: { action: "start", participants: [{ participantId: "busy", model: "polygon/busy", profile: "read-only" }] } },
+			{ id: "s1", tool: "collaborator_start", args: { participants: [{ name: "busy", model: "polygon/busy", profile: "read-only" }] } },
 			{ id: "s2", tool: "SendMessage", args: { to: "busy", message: "go" } },
 			{ id: "s3", tool: "bash", args: { command: "sleep 3" } },
 			...MARKS.map((message, i) => ({ id: `m${i}`, tool: "SendMessage", args: { to: "busy", message } })),

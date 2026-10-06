@@ -24,6 +24,17 @@ export const CollaboratorLaunchSchema = Type.Object({
 	persona: Type.Optional(CollaboratorPersonaSchema),
 }, STRICT_OBJECT);
 
+/** A collaborator this lead started: its start spec, its tab, and the native session a Claude or Codex one resumes. */
+export const StartedCollaboratorSchema = Type.Object({
+	participantId: ParticipantNameText,
+	model: Type.Optional(boundedText(200)),
+	persona: Type.Optional(boundedText(64)),
+	profile: Type.Optional(HostedCollaboratorProfileSchema),
+	repo: Type.Optional(PathText),
+	tabId: Type.Optional(IdText),
+	nativeSession: Type.Optional(IdText),
+}, STRICT_OBJECT);
+
 export const CollaboratorWorktreeSchema = Type.Object({
 	projectRoot: PathText,
 	repo: Type.Optional(PathText),
@@ -64,7 +75,7 @@ export const ManagedAgentControlSchema = Type.Object({
 export type ParticipantIdentity = Static<typeof ParticipantIdentitySchema>;
 export type CollaboratorPersona = Static<typeof CollaboratorPersonaSchema>;
 export type CollaboratorLaunch = Static<typeof CollaboratorLaunchSchema>;
+export type StartedCollaborator = Static<typeof StartedCollaboratorSchema>;
 export type CollaboratorWorktree = Static<typeof CollaboratorWorktreeSchema>;
 export type ManagedAgentSession = Static<typeof ManagedAgentSessionSchema>;
-export type ManagedAgentOwner = Static<typeof ManagedAgentOwnerSchema>;
 export type ManagedAgentControl = Static<typeof ManagedAgentControlSchema>;

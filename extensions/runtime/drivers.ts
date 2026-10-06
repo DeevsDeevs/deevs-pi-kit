@@ -4,7 +4,7 @@ import { collapsePrompt, shellQuote } from "./herdr.ts";
 import { type HostedCollaboratorDriver, type HostedCollaboratorProfile, type HostedNativeCollaboratorDriver, isWriter } from "./schemas/state.ts";
 import type { NativeMessagingConfiguration } from "./mcp/native.ts";
 import { toolDefinitions } from "./mcp/tools.ts";
-import type { CollaboratorPersona, ManagedAgentSession } from "./session-record.ts";
+import type { CollaboratorPersona, ManagedAgentSession } from "./schemas/session.ts";
 
 const MESSAGING_TOOLS = toolDefinitions.map(tool => tool.name);
 const COLLABORATOR_METADATA_TOOLS = [...MESSAGING_TOOLS, "chain_save", "chain_load", "chain_context"] as const;
@@ -36,6 +36,8 @@ interface DriverCommandInput {
 	model?: string;
 	persona?: CollaboratorPersona;
 	mcp?: NativeMessagingConfiguration;
+	/** A Claude or Codex session to resume instead of starting a new one. */
+	resume?: string;
 }
 
 /** One authorized collaborator launch: which driver, under which agent name, in which pane. */
@@ -131,22 +133,25 @@ function claudeCommand(input: DriverCommandInput): string[] {
 	const guard = `${shellQuote(mcp?.server.command ?? "node")} ${shellQuote(GUARD_HOOK)}`;
 	const settings = { skipDangerousModePermissionPrompt: true, hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: guard }] }] } };
 	const tools = isWriter(input.profile) ? [] : ["--tools", [CLAUDE_READ_ONLY_TOOLS, ...(mcp ? MESSAGING_TOOLS.map(tool => `mcp__${mcp.serverName}__${tool}`) : [])].join(",")];
-	return [...servers, "--permission-mode", "bypassPermissions", "--settings", JSON.stringify(settings), ...tools, ...model, ...prompt];
+	const resume = input.resume ? ["--resume", input.resume] : [];
+	return [...resume, ...servers, "--permission-mode", "bypassPermissions", "--settings", JSON.stringify(settings), ...tools, ...model, ...prompt];
 }
 
 function codexCommand(input: DriverCommandInput): string[] {
 	const model = modelArguments(input.model);
 	const mcp = input.mcp;
 	const server = mcp ? ["--config", `mcp_servers.${mcp.serverName}=${codexServerValue(mcp)}`] : [];
-	const startup = mcp
-		? ["--", `${NATIVE_STARTUP_MESSAGE} ${mcp.context}`]
-		: input.persona ? ["--config", `developer_instructions=${JSON.stringify(input.persona.prompt)}`] : [];
+	const persona = input.persona && !mcp ? ["--config", `developer_instructions=${JSON.stringify(input.persona.prompt)}`] : [];
+	// `codex resume [OPTIONS] [SESSION_ID] [PROMPT]`: the positionals follow `--`.
+	const positional = [...(input.resume ? [input.resume] : []), ...(mcp ? [`${NATIVE_STARTUP_MESSAGE} ${mcp.context}`] : [])];
+	const startup = [...persona, ...(positional.length ? ["--", ...positional] : [])];
 	const trustedProject = ["--config", `projects={ ${JSON.stringify(input.cwd)} = { trust_level = "trusted" } }`];
 	// Decision 8: the kit guard as a PreToolUse hook; the kit vets its own hook, so its trust is bypassed for this launch.
 	const hook = `${shellQuote(mcp?.server.command ?? "node")} ${shellQuote(GUARD_HOOK)}`;
 	const guard = ["--dangerously-bypass-hook-trust", "--config", `hooks.PreToolUse=[{hooks=[{type="command",command=${JSON.stringify(hook)}}]}]`];
 	const sandbox = isWriter(input.profile) ? "workspace-write" : "read-only";
-	return ["--sandbox", sandbox, "--ask-for-approval", "never", ...guard, ...trustedProject, ...server, ...model, ...startup];
+	const command = input.resume ? ["resume"] : [];
+	return [...command, "--sandbox", sandbox, "--ask-for-approval", "never", ...guard, ...trustedProject, ...server, ...model, ...startup];
 }
 
 function codexServerValue(mcp: NativeMessagingConfiguration): string {

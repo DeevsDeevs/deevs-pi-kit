@@ -19,7 +19,7 @@ export default {
 		t.marks.push("standdown-go", "standdown-again");
 		const lead = rpc(t);
 		await lead.script({ agent: "lead", steps: [
-			{ id: "s1", tool: "collaborator_manage", args: { action: "start", participants: [{ participantId: "worker", model: "polygon/worker", profile: "read-only" }] } },
+			{ id: "s1", tool: "collaborator_start", args: { participants: [{ name: "worker", model: "polygon/worker", profile: "read-only" }] } },
 			{ id: "s2", tool: "SendMessage", args: { to: "worker", message: "standdown-go" } },
 			{ id: "s3", tool: "TaskStop", args: { task_id: "worker" } },
 			{ id: "s4", tool: "bash", args: { command: "sleep 2" } },
@@ -32,7 +32,7 @@ export default {
 		const pane = start.details.results[0].paneId;
 		assert.ok(!(await cli("pane", "list")).panes.some((p) => p.pane_id === pane), "the stood-down collaborator's tab is still open");
 		await lead.until((_, events) => toolCalls(events).length >= 5, 120_000, "the resuming send");
-		assert.deepEqual(toolCalls(lead.events).map((c) => [c.name, c.isError]), [["collaborator_manage", false], ["SendMessage", false], ["TaskStop", false], ["bash", false], ["SendMessage", false]], toolCalls(lead.events).at(-1).text);
+		assert.deepEqual(toolCalls(lead.events).map((c) => [c.name, c.isError]), [["collaborator_start", false], ["SendMessage", false], ["TaskStop", false], ["bash", false], ["SendMessage", false]], toolCalls(lead.events).at(-1).text);
 		const resumed = await eventually(() => requests(t).find((r) => r.agent === "worker" && r.marks.includes("standdown-again")), 60_000, "the resumed collaborator's request");
 		assert.ok(resumed.marks.includes("standdown-go"), "the resumed collaborator lost its transcript");
 		await eventually(() => notifications(lead.events).some((n) => n.customType === "collaborator-message"), 30_000, "the reply sent mid-stand-down");

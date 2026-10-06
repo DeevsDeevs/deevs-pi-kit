@@ -17,7 +17,7 @@ import { isVacant, isWriter } from "./schemas/state.ts";
 import type { ManagedAgentPlan, NativeAgentService } from "./native-agents.ts";
 import { auth, strictObject, text, type ClientParticipantStatus, type LiveClientRegistration, type RegistrationAuth } from "./responses.ts";
 import type { RuntimeSession } from "./runtime-session.ts";
-import type { CollaboratorLaunch, ManagedAgentSession } from "./session-record.ts";
+import type { CollaboratorLaunch, ManagedAgentSession } from "./schemas/session.ts";
 import { COLLABORATOR_ENV, HOSTED_SESSION_ENTRY, type HostedSessionRecord } from "./session-record.ts";
 
 /** The authority one confirmed start batch shares across its launches. */
@@ -114,7 +114,7 @@ export class CollaboratorLauncher {
 			const mcp = spec.bind ? await this.native.messagingConfiguration(plan, candidate.persona?.prompt) : undefined;
 			if (mcp) notifyNativePrompt(start.ctx, tab.paneId);
 			if (!spec.bind) ({ sessionFile, created } = this.collaboratorSession(start, launchCwd, candidate));
-			const input = { profile: candidate.profile, cwd: launchCwd, sessionFile, model: candidate.model, persona: candidate.persona, mcp };
+			const input = { profile: candidate.profile, cwd: launchCwd, sessionFile, model: candidate.model, persona: candidate.persona, mcp, resume: candidate.resume };
 			const argv = driverLaunchArgv({ driver: candidate.driver, agentName: plan.agentName, paneId: tab.paneId, input });
 			const agent = await this.native.startAgent({ agentName: plan.agentName, spec, tab, argv });
 			this.session.requireCurrentScope(request.current);

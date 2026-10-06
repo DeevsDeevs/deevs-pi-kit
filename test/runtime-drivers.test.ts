@@ -72,3 +72,14 @@ it.each(["claude-code", "codex"] as const)("collapses a multi-line built-in pers
 	for (const argument of argv) expect(argument).not.toMatch(/\p{Cc}/u);
 	expect(argv.join(" ")).toContain(prompt.split("\n")[0]);
 });
+
+it("resumes a stood-down Claude or Codex collaborator in its own native session", () => {
+	const session = "9fb61616-532a-4078-be08-a07d2f707186";
+	const claude = launchArgv("claude-code", { ...representativeInput("claude-code"), resume: session });
+	expect(claude.slice(claude.indexOf("--") + 1, claude.indexOf("--") + 3)).toEqual(["--resume", session]);
+	const codex = launchArgv("codex", { ...representativeInput("codex"), resume: session });
+	const startup = codex.slice(codex.indexOf("--") + 1);
+	expect(startup[0]).toBe("resume");
+	expect(startup.slice(startup.lastIndexOf("--") + 1, startup.lastIndexOf("--") + 2)).toEqual([session]);
+	expect(launchArgv("codex", representativeInput("codex"))).not.toContain("resume");
+});

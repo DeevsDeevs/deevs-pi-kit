@@ -13,7 +13,7 @@ export default {
 		fixtureModels(t, "polygon", ["writer"]);
 		const lead = rpc(t);
 		await lead.script({ agent: "lead", steps: [
-			{ id: "s1", tool: "collaborator_manage", args: { action: "start", participants: [{ participantId: "writer", model: "polygon/writer", profile: "workspace-write" }] } },
+			{ id: "s1", tool: "collaborator_start", args: { participants: [{ name: "writer", model: "polygon/writer", profile: "workspace-write" }] } },
 			{ id: "s2", text: "started" },
 		] });
 		await lead.until((e) => e.type === "agent_settled", 120_000, "the writer's start");

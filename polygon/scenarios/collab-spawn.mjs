@@ -21,10 +21,10 @@ export default {
 		writeFileSync(claudeConfig, JSON.stringify({ hasCompletedOnboarding: true, projects: { [t.repo]: { hasTrustDialogAccepted: true } }, customApiKeyResponses: { approved: ["polygon"], rejected: [] } }));
 		const lead = rpc(t);
 		await lead.script({ agent: "lead", steps: [
-			{ id: "s1", tool: "collaborator_manage", args: { action: "start", participants: [
-				{ participantId: "writer", model: "claude:opus", profile: "workspace-write" },
-				{ participantId: "reviewer", model: "codex:puppet", profile: "read-only" },
-				{ participantId: "coder", model: "codex:puppet", profile: "workspace-write" },
+			{ id: "s1", tool: "collaborator_start", args: { participants: [
+				{ name: "writer", model: "claude:opus", profile: "workspace-write" },
+				{ name: "reviewer", model: "codex:puppet", profile: "read-only" },
+				{ name: "coder", model: "codex:puppet", profile: "workspace-write" },
 			] } },
 			{ id: "s2", tool: "SendMessage", args: { to: "coder", message: script({ agent: "coder", steps: [
 				{ id: "c1", tool: "exec_command", args: { cmd: "nohup sleep 97 > /dev/null 2>&1 &" } },

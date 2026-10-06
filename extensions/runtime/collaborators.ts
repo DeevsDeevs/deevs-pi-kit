@@ -18,7 +18,8 @@ import { RuntimeError } from "./errors.ts";
 import { delay, throwIfAborted } from "./herdr.ts";
 import { isAutonomous } from "../shared/autonomy.ts";
 import { resolveCollaboratorRepo } from "./service/worktree.ts";
-import { type HostedCollaboratorProfile, isEnded, isHeld, isVacant, isWriter } from "./schemas/state.ts";
+import { type HostedCollaboratorProfile, isHeld, isVacant, isWriter } from "./schemas/state.ts";
+import { decodeHerdr, herdrResult, HerdrLiveAgentResultSchema } from "./schemas/herdr.ts";
 import type { NativeAgentService } from "./native-agents.ts";
 import {
 	auth,
@@ -36,7 +37,6 @@ import {
 } from "./responses.ts";
 import type { RuntimeSession } from "./runtime-session.ts";
 
-const COLLABORATOR_BATCH_LIMIT = 12;
 /** The lead is main and its collaborators share one protocol per project, so neither needs naming. */
 export const LEAD = "main";
 const DEFAULT_PROTOCOL = "collab";
@@ -44,19 +44,12 @@ const DEFAULT_PROTOCOL = "collab";
 const STAND_DOWN_GRACE_MS = 120_000;
 const STAND_DOWN_POLL_MS = 1_000;
 
-type CollaboratorManageAction = "start" | "stand_down" | "stop";
-
-export interface CollaboratorManageInput {
-	action: CollaboratorManageAction;
-	participants: CollaboratorCandidate[];
-	protocol?: string;
-	callerParticipantId?: string;
-}
-
 export interface CollaboratorManageResult {
 	participant: string;
-	status: "started" | "stood_down" | "stopped" | "already_vacant" | "already_stopped" | "unmanaged" | "failed" | "declined" | "cancelled";
+	status: "started" | "stood_down" | "already_vacant" | "failed" | "declined" | "cancelled";
 	paneId?: string;
+	driver?: string;
+	profile?: string;
 	error?: string;
 }
 
@@ -71,7 +64,7 @@ interface WorktreeRemoveParams extends RegistrationAuth {
 
 export interface CollaboratorWorktreeInput {
 	action: "list" | "cleanup";
-	participantId?: string;
+	name?: string;
 	repo?: string;
 }
 
@@ -87,14 +80,12 @@ interface StartConfirmation {
 	signal?: AbortSignal;
 }
 
-/** Owns collaborator lifecycle: listing, confirmed start/stand-down/stop, launches and worktrees. */
+/** Owns collaborator lifecycle: listing, confirmed start and stand-down, launches and worktrees. */
 export class CollaboratorService {
 	private readonly session: RuntimeSession;
 	private readonly native: NativeAgentService;
 	private readonly launcher: CollaboratorLauncher;
 	private manageActive = false;
-	/** The tab each collaborator was started in: stand-down and stop close it, whatever Herdr reports about its agent. */
-	private readonly tabs = new Map<string, string>();
 
 	constructor(session: RuntimeSession, native: NativeAgentService) {
 		this.session = session;
@@ -124,16 +115,29 @@ export class CollaboratorService {
 		return isHeld(this.session.store.identity?.disposition) ? "workspace-write" : "read-only";
 	}
 
-	async manage(input: CollaboratorManageInput, ctx: ExtensionContext, signal?: AbortSignal): Promise<CollaboratorManageResult[]> {
-		if (input.participants.length < 1 || input.participants.length > COLLABORATOR_BATCH_LIMIT) {
-			throw new HostedRuntimeClientError("invalid_request", "Collaborator management requires 1 to 12 participants.");
-		}
-		if (input.action === "start") return this.exclusively(async () => this.startCollaborators(input, ctx, signal));
-		if (input.callerParticipantId || input.participants.some(hasStartOnlyFields)) {
-			const detail = "Only collaborator starts accept caller identity, model, persona, or profile fields.";
-			throw new HostedRuntimeClientError("invalid_request", detail);
-		}
-		return this.changeCollaborators(input.action, input.protocol, input.participants, ctx, signal);
+	start(participants: CollaboratorCandidate[], ctx: ExtensionContext, signal?: AbortSignal): Promise<CollaboratorManageResult[]> {
+		return this.exclusively(() => this.startCollaborators(participants, ctx, signal));
+	}
+
+	/** Lets a reply in flight land, then vacates the collaborator and closes its tab; a later message resumes it. */
+	standDown(participantId: string, ctx: ExtensionContext, signal?: AbortSignal): Promise<CollaboratorManageResult> {
+		return this.exclusively(async () => {
+			throwIfAborted(signal);
+			const auto = await assertLifecycleAllowed(ctx, "Collaborator stand-down");
+			const protocol = this.session.store.identity?.protocol ?? DEFAULT_PROTOCOL;
+			const registration = await this.session.requireRegistration(ctx);
+			const participant = findParticipant(await this.session.listParticipants(registration), protocol, participantId);
+			if (!participant) throw new HostedRuntimeClientError("not_found", `No collaborator named ${participantId}.`);
+			if (!isHeld(participant.state)) return settled(participant, "already_vacant");
+			const detail = "Let it land a reply in flight (up to 2 min), then vacate it and close its Herdr tab, keeping queued messages and its transcript?";
+			if (!auto && !await ctx.ui.confirm("Stand down collaborator?", `${detail}\n\n${participantId}`, { signal })) return settled(participant, "declined");
+			try {
+				await this.standDownParticipant(participant, registration, signal);
+				return settled(participant, "stood_down");
+			} catch (error) {
+				return { ...settled(participant, outcome(signal)), error: error instanceof Error ? error.message : String(error) };
+			}
+		});
 	}
 
 	private async exclusively<T>(operation: () => Promise<T>): Promise<T> {
@@ -148,29 +152,25 @@ export class CollaboratorService {
 
 	/** One confirmation, then one launch path for every requested collaborator. */
 	private async startCollaborators(
-		input: CollaboratorManageInput,
+		requested: CollaboratorCandidate[],
 		ctx: ExtensionContext,
 		signal: AbortSignal | undefined,
 	): Promise<CollaboratorManageResult[]> {
 		throwIfAborted(signal);
-		const auto = await isAutonomous(ctx);
-		assertInteractiveHerdrStart(ctx, auto);
+		const auto = await assertLifecycleAllowed(ctx, "Collaborator start");
+		if (process.env.HERDR_ENV !== "1" || !process.env.HERDR_WORKSPACE_ID) {
+			throw new HostedRuntimeClientError("host_unavailable", "Collaborator start requires this Pi session to run inside Herdr.");
+		}
 		const identity = this.session.store.identity;
-		if (isEnded(identity?.disposition)) {
-			throw new HostedRuntimeClientError("conflict", "Current collaborator identity has ended; explicit revival is required.");
-		}
-		const protocol = collaboratorName(identity?.protocol ?? input.protocol ?? DEFAULT_PROTOCOL, "protocol");
-		const callerParticipantId = collaboratorName(identity?.participantId ?? input.callerParticipantId ?? LEAD, "caller participant ID");
-		if (identity && requestsOtherIdentity(input, protocol, callerParticipantId)) {
-			throw new HostedRuntimeClientError("conflict", `Current collaborator identity is ${protocol}/${callerParticipantId}.`);
-		}
+		const protocol = identity?.protocol ?? DEFAULT_PROTOCOL;
+		const callerParticipantId = identity?.participantId ?? LEAD;
 		const models: ModelContext = {
 			config: await loadKitConfig(ctx.cwd, getAgentDir()),
 			registry: ctx.modelRegistry,
 			lead: ctx.model ? { model: ctx.model, level: this.session.pi.getThinkingLevel() } : undefined,
 			codex: readCodexCatalog(process.env.CODEX_HOME ?? join(homedir(), ".codex")),
 		};
-		const candidates = input.participants.map((participant) => resolveCollaboratorCandidate(participant, models));
+		const candidates = requested.map((participant) => resolveCollaboratorCandidate(participant, models));
 		const registration = await this.session.requireRegistration(ctx);
 		const participants = await this.session.listParticipants(registration);
 		const projectRoot = realpathSync(ctx.cwd);
@@ -180,10 +180,10 @@ export class CollaboratorService {
 		const acquires = held === undefined;
 		const confirmed = auto || await confirmStart({ ctx, protocol, callerParticipantId, acquires, candidates, participants, signal });
 		throwIfAborted(signal);
-		if (!confirmed) return candidates.map((candidate) => ({ participant: `${protocol}/${candidate.participantId}`, status: "declined" }));
+		if (!confirmed) return candidates.map((candidate) => ({ participant: candidate.participantId, status: "declined" }));
 		const caller = held ?? await this.acquireCaller(protocol, callerParticipantId, registration);
 		const start: CollaboratorStart = { ctx, protocol, registration, caller, projectRoot, signal };
-		return this.launchAll(start, candidates, participants);
+		return this.launchAll(start, candidates, participants, requested);
 	}
 
 	/** The caller participant this Pi target already holds, or undefined when the start must acquire it. */
@@ -197,11 +197,7 @@ export class CollaboratorService {
 		signal: AbortSignal | undefined,
 	): Promise<ClientParticipantStatus | undefined> {
 		const caller = findParticipant(participants, protocol, participantId);
-		if (!caller) return undefined;
-		if (isEnded(caller.state)) {
-			throw new HostedRuntimeClientError("conflict", "Ended caller identities require explicit /runtime collaborate revival.");
-		}
-		if (!isHeld(caller.state)) return undefined;
+		if (!caller || !isHeld(caller.state)) return undefined;
 		if (caller.holderTargetKey !== registration.targetKey) {
 			if (caller.holderLive) {
 				throw new HostedRuntimeClientError("conflict", `Current collaborator identity ${protocol}/${participantId} is held by another live Pi target.`);
@@ -228,8 +224,7 @@ export class CollaboratorService {
 		if (!auto && !await ctx.ui.confirm("Take over collaborator identity?", detail, { signal })) {
 			throw new HostedRuntimeClientError("conflict", `${protocol}/${participantId} stays held by its offline Pi session.`);
 		}
-		const params = { ...auth(registration), participantKey: caller.participantKey, expectedGeneration: caller.generation, confirmed: true };
-		const participant = parseParticipant(await this.client.call("participant.takeover", params));
+		const participant = parseParticipant(await this.client.call("participant.takeover", confirmed(registration, caller)));
 		this.session.store.persistHeld(protocol, participantId, participant);
 		ctx.ui.notify(`Took over ${protocol}/${participantId} from its offline Pi session.`, "info");
 		return participant;
@@ -240,7 +235,7 @@ export class CollaboratorService {
 		participantId: string,
 		registration: LiveClientRegistration,
 	): Promise<ClientParticipantStatus> {
-		const params = { ...auth(registration), protocol, participantId, revive: false };
+		const params = { ...auth(registration), protocol, participantId };
 		const acquired = parseAcquireResult(await this.client.call("participant.acquire", params));
 		this.session.store.persistHeld(protocol, participantId, acquired.participant);
 		return acquired.participant;
@@ -251,82 +246,20 @@ export class CollaboratorService {
 		start: CollaboratorStart,
 		candidates: ResolvedCollaboratorCandidate[],
 		participants: ClientParticipantStatus[],
+		requested: CollaboratorCandidate[],
 	): Promise<CollaboratorManageResult[]> {
-		return Promise.all(candidates.map(async (candidate) => {
-			const participant = `${start.protocol}/${candidate.participantId}`;
+		return Promise.all(candidates.map(async (candidate, index) => {
+			const participant = candidate.participantId;
 			try {
 				const existing = findParticipant(participants, start.protocol, candidate.participantId);
 				const tab = await this.launcher.launch(start, candidate, existing);
-				this.tabs.set(candidate.participantId, tab.tabId);
-				return { participant, status: "started" as const, paneId: tab.paneId };
+				const { nativeSession: _resumed, ...spec } = requested[index]!;
+				this.session.store.persistStarted({ ...spec, tabId: tab.tabId });
+				return { participant, status: "started" as const, paneId: tab.paneId, driver: candidate.driver, profile: candidate.profile };
 			} catch (error) {
 				return { participant, status: outcome(start.signal), error: error instanceof Error ? error.message : String(error) };
 			}
 		}));
-	}
-
-	private async changeCollaborators(
-		action: "stand_down" | "stop",
-		requestedProtocol: string | undefined,
-		candidates: CollaboratorCandidate[],
-		ctx: ExtensionContext,
-		signal?: AbortSignal,
-	): Promise<CollaboratorManageResult[]> {
-		return this.exclusively(async () => {
-			throwIfAborted(signal);
-			const auto = await isAutonomous(ctx);
-			if (!auto && !ctx.hasUI) {
-				throw new HostedRuntimeClientError("host_unavailable", "Collaborator lifecycle confirmation requires an interactive Pi session.");
-			}
-			if (!ctx.isProjectTrusted()) {
-				throw new HostedRuntimeClientError("untrusted", "Collaborator lifecycle changes require a trusted project.");
-			}
-			const protocol = collaboratorName(requestedProtocol ?? this.session.store.identity?.protocol, "protocol");
-			const registration = await this.session.requireRegistration(ctx);
-			const targets = await this.resolveChangeTargets(protocol, candidates, registration);
-			const skipped = action === "stand_down" ? targets.filter((participant) => !isHeld(participant.state)) : [];
-			const actionable = targets.filter((participant) => !skipped.includes(participant));
-			const vacated = skipped.map((participant) => settled(protocol, participant, "already_vacant"));
-			if (actionable.length === 0) return vacated;
-			if (!auto && !await confirmChange(action, protocol, actionable, ctx, signal)) {
-				return [...vacated, ...actionable.map((participant) => settled(protocol, participant, "declined"))];
-			}
-			const changed = await Promise.all(actionable.map((participant) =>
-				this.changeParticipant(action, protocol, participant, registration, signal)));
-			return [...vacated, ...changed];
-		});
-	}
-
-	private async resolveChangeTargets(
-		protocol: string,
-		candidates: CollaboratorCandidate[],
-		registration: LiveClientRegistration,
-	): Promise<ClientParticipantStatus[]> {
-		const participantIds = candidates.map((candidate) => collaboratorName(candidate.participantId, "participant ID"));
-		const participants = await this.session.listParticipants(registration);
-		return participantIds.map((participantId) => {
-			const participant = findParticipant(participants, protocol, participantId);
-			if (!participant) throw new HostedRuntimeClientError("not_found", `No ${protocol}/${participantId} participant exists.`);
-			return participant;
-		});
-	}
-
-	private async changeParticipant(
-		action: "stand_down" | "stop",
-		protocol: string,
-		participant: ClientParticipantStatus,
-		registration: LiveClientRegistration,
-		signal?: AbortSignal,
-	): Promise<CollaboratorManageResult> {
-		const name = `${protocol}/${participant.participantId}`;
-		try {
-			const status = action === "stand_down"
-				? await this.standDownParticipant(participant, registration, signal)
-				: await this.stopParticipant(participant, registration);
-			return { participant: name, status };
-		} catch (error) {
-			return { participant: name, status: outcome(signal), error: error instanceof Error ? error.message : String(error) };
-		}
 	}
 
 	/** Another target's collaborator keeps its mail authority until its reply in flight lands, then vacates and its tab closes. */
@@ -334,22 +267,28 @@ export class CollaboratorService {
 		participant: ClientParticipantStatus,
 		registration: LiveClientRegistration,
 		signal?: AbortSignal,
-	): Promise<"stood_down"> {
+	): Promise<void> {
 		const other = participant.holderTargetKey !== registration.targetKey;
 		if (other) await this.awaitFinalReply(participant, registration, signal);
-		const params = {
-			...auth(registration),
-			participantKey: participant.participantKey,
-			expectedGeneration: participant.generation,
-			confirmed: true,
-		};
-		const changed = parseParticipant(await this.client.call("participant.stand_down_confirmed", params));
+		await this.recordNativeSession(participant);
+		const changed = parseParticipant(await this.client.call("participant.stand_down_confirmed", confirmed(registration, participant)));
 		const identity = this.session.store.identity;
 		if (identity?.participantKey === changed.participantKey) {
 			this.session.store.persistIdentity({ ...identity, generation: changed.generation, disposition: "vacant" });
 		}
 		if (other) await this.stopParticipant({ ...changed, holderTargetKey: participant.holderTargetKey }, registration);
-		return "stood_down";
+	}
+
+	/** A Claude or Codex collaborator resumes its own session later; Herdr knows its id once it ran. */
+	private async recordNativeSession(participant: ClientParticipantStatus): Promise<void> {
+		const control = participant.holderTargetKey ? this.session.store.agent(participant.holderTargetKey) : undefined;
+		const spec = this.session.store.started.get(participant.participantId);
+		if (!control || !spec) return;
+		const reported = await this.session.pi.exec("herdr", ["agent", "get", control.agentName], { timeout: 2_000 }).catch(() => undefined);
+		try {
+			const session = decodeHerdr(HerdrLiveAgentResultSchema, herdrResult(reported?.stdout ?? ""), "Herdr agent").agent.agent_session;
+			if (session?.kind === "id" && session.source === control.agentSession.source) this.session.store.persistStarted({ ...spec, nativeSession: session.value });
+		} catch {}
 	}
 
 	private async awaitFinalReply(participant: ClientParticipantStatus, registration: LiveClientRegistration, signal?: AbortSignal): Promise<void> {
@@ -363,17 +302,8 @@ export class CollaboratorService {
 		}
 	}
 
-	private async stopParticipant(
-		participant: ClientParticipantStatus,
-		registration: LiveClientRegistration,
-	): Promise<"stopped" | "already_stopped" | "unmanaged"> {
-		const params = {
-			...auth(registration),
-			participantKey: participant.participantKey,
-			expectedGeneration: participant.generation,
-			confirmed: true,
-		};
-		const response = strictObject(await this.client.call("participant.stop_confirmed", params), "Collaborator stop result");
+	private async stopParticipant(participant: ClientParticipantStatus, registration: LiveClientRegistration): Promise<void> {
+		const response = strictObject(await this.client.call("participant.stop_confirmed", confirmed(registration, participant)), "Collaborator stop result");
 		const changed = parseParticipant(response.participant);
 		const outcome = response.outcome;
 		if (outcome !== "stopped" && outcome !== "already_stopped" && outcome !== "unmanaged") {
@@ -386,15 +316,14 @@ export class CollaboratorService {
 		const control = participant.holderTargetKey ? this.session.store.agent(participant.holderTargetKey) : undefined;
 		if (control && outcome !== "unmanaged") this.native.markStopped(control);
 		await this.closeTab(participant.participantId);
-		return outcome;
 	}
 
-
-	// ponytail: tab IDs live in this lead's memory; after a lead restart the daemon's own close is the only one.
+	/** The tab the collaborator was started in closes, whatever Herdr reports about its agent. */
 	private async closeTab(participantId: string): Promise<void> {
-		const tabId = this.tabs.get(participantId);
-		if (!tabId) return;
-		this.tabs.delete(participantId);
+		const spec = this.session.store.started.get(participantId);
+		if (!spec?.tabId) return;
+		const { tabId, ...rest } = spec;
+		this.session.store.persistStarted(rest);
 		await this.session.pi.exec("herdr", ["tab", "close", tabId], { timeout: 5_000 }).catch(() => undefined);
 	}
 
@@ -408,9 +337,8 @@ export class CollaboratorService {
 		if (input.action === "list") {
 			return parseWorktreeList(await this.client.call("worktree.list", auth(registration)));
 		}
-		const auto = await isAutonomous(ctx);
-		if (!auto && !ctx.hasUI) throw new HostedRuntimeClientError("host_unavailable", "Worktree cleanup requires an interactive trusted Pi session.");
-		const participantId = collaboratorName(input.participantId, "participant ID");
+		const auto = await assertLifecycleAllowed(ctx, "Worktree cleanup");
+		const participantId = collaboratorName(input.name, "name");
 		const detail = `Force-remove the worktree of ${identity.protocol}/${participantId}`
 			+ ` and delete branch runtime/collab/${identity.protocol}/${participantId}?`
 			+ " Uncommitted or unmerged work in it is lost.";
@@ -428,12 +356,12 @@ export class CollaboratorService {
 	}
 }
 
-function settled(
-	protocol: string,
-	participant: ClientParticipantStatus,
-	status: CollaboratorManageResult["status"],
-): CollaboratorManageResult {
-	return { participant: `${protocol}/${participant.participantId}`, status };
+function settled(participant: ClientParticipantStatus, status: CollaboratorManageResult["status"]): CollaboratorManageResult {
+	return { participant: participant.participantId, status };
+}
+
+function confirmed(registration: LiveClientRegistration, participant: ClientParticipantStatus) {
+	return { ...auth(registration), participantKey: participant.participantKey, expectedGeneration: participant.generation, confirmed: true };
 }
 
 /** Herdr's status and the mail counters say a reply may still come; a blocked or offline holder sends none. */
@@ -445,18 +373,6 @@ export function replyInFlight(status: ClientParticipantStatus): boolean {
 /** A cancelled batch reports cancellation, not failure, for whatever its abort interrupted. */
 function outcome(signal: AbortSignal | undefined): CollaboratorManageResult["status"] {
 	return signal?.aborted ? "cancelled" : "failed";
-}
-
-function requestsOtherIdentity(input: CollaboratorManageInput, protocol: string, callerParticipantId: string): boolean {
-	if (input.protocol && input.protocol !== protocol) return true;
-	return Boolean(input.callerParticipantId) && input.callerParticipantId !== callerParticipantId;
-}
-
-function hasStartOnlyFields(participant: CollaboratorCandidate): boolean {
-	return participant.model !== undefined
-		|| participant.persona !== undefined
-		|| participant.profile !== undefined
-		|| participant.repo !== undefined;
 }
 
 /** A writer needs a repository before any dialog or tab; a restart reuses the repo the daemon recorded. */
@@ -476,33 +392,12 @@ async function resolveCandidateRepo(
 	}
 }
 
-function assertHerdrWorkspace(): void {
-	if (process.env.HERDR_ENV !== "1" || !process.env.HERDR_WORKSPACE_ID) {
-		throw new HostedRuntimeClientError("host_unavailable", "Collaborator start requires this Pi session to run inside Herdr.");
-	}
-}
-
-function assertInteractiveHerdrStart(ctx: ExtensionContext, auto: boolean): void {
-	if (!auto && !ctx.hasUI) {
-		throw new HostedRuntimeClientError("host_unavailable", "Collaborator start confirmation requires an interactive Pi session.");
-	}
-	if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Collaborator start requires a trusted project.");
-	assertHerdrWorkspace();
-}
-
-function confirmChange(
-	action: "stand_down" | "stop",
-	protocol: string,
-	actionable: ClientParticipantStatus[],
-	ctx: ExtensionContext,
-	signal?: AbortSignal,
-): Promise<boolean> {
-	const summary = actionable.map((participant) => `${protocol}/${participant.participantId}`).join("\n");
-	const detail = action === "stand_down"
-		? "Let these collaborators land a reply in flight (up to 2 min), then vacate them and close their exact plugin-managed Herdr tabs, preserving queued messages and transcripts?"
-		: "Vacate these collaborators, preserve queued messages, and terminate only their exact plugin-managed Herdr tabs?";
-	const title = `${action === "stand_down" ? "Stand down" : "Stop"} Runtime collaborators?`;
-	return ctx.ui.confirm(title, `${detail}\n\n${summary}`, { signal });
+/** Without autonomy a lifecycle change needs a dialog, so a UI; it always needs a trusted project. Returns autonomy. */
+async function assertLifecycleAllowed(ctx: ExtensionContext, what: string): Promise<boolean> {
+	const auto = await isAutonomous(ctx);
+	if (!auto && !ctx.hasUI) throw new HostedRuntimeClientError("host_unavailable", `${what} confirmation requires an interactive Pi session.`);
+	if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", `${what} requires a trusted project.`);
+	return auto;
 }
 
 /** The one start dialog: caller, project, and every requested driver, model, persona, profile and worktree. */

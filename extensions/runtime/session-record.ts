@@ -10,18 +10,12 @@ import {
 	CollaboratorWorktreeSchema,
 	ManagedAgentControlSchema,
 	ParticipantIdentitySchema,
+	StartedCollaboratorSchema,
 	type CollaboratorLaunch,
 	type CollaboratorWorktree,
 	type ManagedAgentControl,
 	type ParticipantIdentity,
-} from "./schemas/session.ts";
-
-export type {
-	CollaboratorLaunch,
-	CollaboratorPersona,
-	ManagedAgentControl,
-	ManagedAgentSession,
-	ParticipantIdentity,
+	type StartedCollaborator,
 } from "./schemas/session.ts";
 
 /** One current-only hidden entry kind; older kinds are ignored rather than migrated. */
@@ -41,54 +35,49 @@ export interface HostedSessionRecord {
 	launch?: CollaboratorLaunch;
 	worktree?: CollaboratorWorktree;
 	agents?: ManagedAgentControl[];
+	started?: StartedCollaborator[];
 }
 
 /** Reads and writes the single hidden session entry that carries this Pi session's Runtime state; anything unreadable is dropped, never trusted. */
 export class HostedSessionStore {
 	private readonly pi: ExtensionAPI;
-	private identityState?: ParticipantIdentity;
-	private launchState?: CollaboratorLaunch;
-	private worktreeState?: CollaboratorWorktree;
-	private readonly agentControls = new Map<string, ManagedAgentControl>();
+	identity?: ParticipantIdentity;
+	launch?: CollaboratorLaunch;
+	worktree?: CollaboratorWorktree;
+	readonly agents = new Map<string, ManagedAgentControl>();
+	/** The collaborators this lead started, by name: what a stood-down one resumes with, and the tab a stand-down closes. */
+	readonly started = new Map<string, StartedCollaborator>();
 
 	constructor(pi: ExtensionAPI) {
 		this.pi = pi;
 	}
 
-	get identity(): ParticipantIdentity | undefined {
-		return this.identityState;
-	}
-
-	get launch(): CollaboratorLaunch | undefined {
-		return this.launchState;
-	}
-
-	get worktree(): CollaboratorWorktree | undefined {
-		return this.worktreeState;
-	}
-
-	get agents(): ReadonlyMap<string, ManagedAgentControl> {
-		return this.agentControls;
-	}
-
 	agent(targetKey: string): ManagedAgentControl | undefined {
-		return this.agentControls.get(targetKey);
+		return this.agents.get(targetKey);
 	}
 
 	restore(ctx: ExtensionContext): void {
 		let data: RestoredSessionData;
 		for (const entry of ctx.sessionManager.getBranch()) if (entry.type === "custom" && entry.customType === HOSTED_SESSION_ENTRY) data = entry.data;
 		const record = asRecord(data);
-		this.identityState = Value.Check(ParticipantIdentitySchema, record?.participant) ? record.participant : envIdentity(process.env[COLLABORATOR_ENV]);
-		this.launchState = record?.launch === undefined ? undefined : parseLaunch(record.launch) ?? RECOVERY_LAUNCH;
-		this.worktreeState = parseWorktree(record?.worktree, ctx);
-		this.agentControls.clear();
+		this.identity = Value.Check(ParticipantIdentitySchema, record?.participant) ? record.participant : envIdentity(process.env[COLLABORATOR_ENV]);
+		this.launch = record?.launch === undefined ? undefined : parseLaunch(record.launch) ?? RECOVERY_LAUNCH;
+		this.worktree = parseWorktree(record?.worktree, ctx);
+		this.agents.clear();
 		const agents = Array.isArray(record?.agents) ? record.agents : [];
-		for (const control of agents) if (Value.Check(ManagedAgentControlSchema, control) && ownedBy(control, ctx)) this.agentControls.set(control.targetKey, control);
+		for (const control of agents) if (Value.Check(ManagedAgentControlSchema, control) && ownedBy(control, ctx)) this.agents.set(control.targetKey, control);
+		this.started.clear();
+		const started = Array.isArray(record?.started) ? record.started : [];
+		for (const spec of started) if (Value.Check(StartedCollaboratorSchema, spec)) this.started.set(spec.participantId, spec);
 	}
 
 	persistIdentity(identity: ParticipantIdentity): void {
-		this.identityState = identity;
+		this.identity = identity;
+		this.persist();
+	}
+
+	persistStarted(spec: StartedCollaborator): void {
+		this.started.set(spec.participantId, spec);
 		this.persist();
 	}
 
@@ -103,21 +92,19 @@ export class HostedSessionStore {
 	}
 
 	persistAgent(control: ManagedAgentControl): void {
-		this.agentControls.set(control.targetKey, control);
+		this.agents.set(control.targetKey, control);
 		this.persist();
 	}
 
 	forgetAgent(targetKey: string): void {
-		if (!this.agentControls.delete(targetKey)) return;
+		if (!this.agents.delete(targetKey)) return;
 		this.persist();
 	}
 
 	private persist(): void {
-		const record: HostedSessionRecord = { version: 3 };
-		if (this.identityState) record.participant = this.identityState;
-		if (this.launchState) record.launch = this.launchState;
-		if (this.worktreeState) record.worktree = this.worktreeState;
-		if (this.agentControls.size > 0) record.agents = [...this.agentControls.values()];
+		const record: HostedSessionRecord = { version: 3, participant: this.identity, launch: this.launch, worktree: this.worktree };
+		if (this.agents.size > 0) record.agents = [...this.agents.values()];
+		if (this.started.size > 0) record.started = [...this.started.values()];
 		this.pi.appendEntry(HOSTED_SESSION_ENTRY, record);
 	}
 }
