@@ -601,6 +601,8 @@ async function spawnWorker(input: CliInput, owner: string, run: { resume?: strin
 		child.on("close", resolve);
 	});
 	signal.removeEventListener("abort", kill);
+	// Background helpers the CLI left behind (Codex syncs its plugins with git) end with the run.
+	kill();
 	host.workers.delete(input.agentId);
 	await session;
 	return { code, stderr };
