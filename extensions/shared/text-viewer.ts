@@ -25,15 +25,21 @@ export async function showTextViewer(ctx: ExtensionContext, title: string, conte
 
 export class TextViewer implements Component {
 	private offset = 0;
+	private readonly title: string;
+	private readonly content: string;
+	private readonly theme: Theme;
+	private readonly done: () => void;
+	private readonly requestRender: () => void;
+	private readonly getPageSize: () => number;
 
-	constructor(
-		private readonly title: string,
-		private readonly content: string,
-		private readonly theme: Theme,
-		private readonly done: () => void,
-		private readonly requestRender: () => void,
-		private readonly getPageSize: () => number = () => 20,
-	) {}
+	constructor(title: string, content: string, theme: Theme, done: () => void, requestRender: () => void, getPageSize: () => number = () => 20) {
+		this.title = title;
+		this.content = content;
+		this.theme = theme;
+		this.done = done;
+		this.requestRender = requestRender;
+		this.getPageSize = getPageSize;
+	}
 
 	handleInput(data: string): void {
 		if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c")) || matchesKey(data, "q")) {

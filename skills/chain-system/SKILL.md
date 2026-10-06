@@ -76,13 +76,13 @@ Include exact file paths, command results, subagent run/group IDs, background pr
 
 ## Subagent context passing
 
-Chains are a context bus, not automatic subagent memory: save or load a focused branch link, call `chain_context` for a bounded pack, include the formatted excerpt directly in the `subagent` task text, and after the run save a link referencing its run/group IDs and decision impact.
+Chains are a context bus, not automatic subagent memory: save or load a focused branch link, call `chain_context` for a bounded pack, include the formatted excerpt directly in the `Agent` prompt, and after its report save a link referencing its agentId and decision impact.
 
 ```text
-subagent({
-  agent: "reviewer",
-  task: "Focus only on search/index design and return migration risks.\n\nChain context:\n<bounded chain_context output>",
-  background: true
+Agent({
+  description: "Review index migration risks",
+  subagent_type: "reviewer",
+  prompt: "Focus only on search/index design and return migration risks.\n\nChain context:\n<bounded chain_context output>"
 })
 ```
 

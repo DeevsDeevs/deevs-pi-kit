@@ -25,20 +25,25 @@ function surface(name, items) {
 	return { surface: name, items, total: items.reduce((sum, entry) => sum + entry.tokens, 0) };
 }
 
+/** The lead's task surface: Agent, TaskStop and their siblings, Jobs, and Runtime's collaborator tools. */
+const LEAD_EXTENSIONS = ["subagents", "jobs", "runtime"];
+
 async function registeredTools() {
-	const extension = await import(pathToFileURL(join(repo, "extensions/runtime/index.ts")));
 	const tools = [];
 	const noop = () => {};
-	extension.default({
-		registerTool: tool => tools.push(tool),
-		registerCommand: noop,
-		registerEntryRenderer: noop,
-		registerFlag: noop,
-		on: noop,
-		getAllTools: () => [],
-		appendEntry: noop,
-		sendMessage: noop,
-	});
+	for (const name of LEAD_EXTENSIONS) {
+		const extension = await import(pathToFileURL(join(repo, "extensions", name, "index.ts")));
+		extension.default({
+			registerTool: tool => tools.push(tool),
+			registerCommand: noop,
+			registerEntryRenderer: noop,
+			registerFlag: noop,
+			on: noop,
+			getAllTools: () => [],
+			appendEntry: noop,
+			sendMessage: noop,
+		});
+	}
 	return tools.map(tool => ({
 		name: tool.name,
 		description: tool.description ?? "",
@@ -119,12 +124,14 @@ export async function measure() {
 	const { toolDefinitions } = await import(pathToFileURL(join(repo, "extensions/runtime/mcp/tools.ts")));
 	const { nativeMessagingConfiguration } = await import(pathToFileURL(join(repo, "extensions/runtime/mcp/native.ts")));
 	const { NATIVE_STARTUP_MESSAGE } = await import(pathToFileURL(join(repo, "extensions/runtime/drivers.ts")));
+	const { agentTypesSection } = await import(pathToFileURL(join(repo, "extensions/subagents/definitions.ts")));
 	const native = nativeMessagingConfiguration({ root: "/tmp/x", targetKey: "agent_x", nodeExecutable: process.execPath });
 	const readme = read("README.md");
 	const protocol = read("extensions/runtime/PROTOCOL.md");
 	const collaborators = skills.find(skill => skill.name === "collaborators");
 	const surfaces = [
 		toolSurface(tools),
+		surface("promptSections", [item("agent_types", agentTypesSection())]),
 		surface("skillIndex", skills.map(skill => item(skill.name, skillIndexEntry(skill)))),
 		surface("skillBodies", skills.map(skill => item(skill.name, skill.body))),
 		surface("nativeCatalog", toolDefinitions.map(tool => item(tool.name, JSON.stringify(tool)))),

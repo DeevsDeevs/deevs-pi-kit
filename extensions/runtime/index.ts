@@ -3,7 +3,6 @@ import { registerMessagingMcp } from "./mcp/pi.ts";
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { runtimeDelivery } from "../shared/runtime-delivery.ts";
-import { registerSafeDiffTool } from "../shared/safe-diff.ts";
 import { registerRuntimeEventRenderer } from "../shared/runtime-ui.ts";
 import type { ClientParticipantStatus } from "./responses.ts";
 import type { CollaboratorManageInput, CollaboratorManageResult, CollaboratorWorktreeInput } from "./collaborators.ts";
@@ -32,7 +31,6 @@ function manageLines(results: CollaboratorManageResult[]): string {
 }
 
 export default function runtimeExtension(pi: ExtensionAPI): void {
-	registerSafeDiffTool(pi);
 	registerRuntimeEventRenderer(pi);
 	runtimeDelivery.initialize(pi);
 	const hosted = new HostedRuntimeIntegration(pi);

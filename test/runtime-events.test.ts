@@ -1,12 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
-	consumeRuntimeEvent,
 	emptyRuntimeEventState,
 	pendingRuntimeEvents,
 	reduceRuntimeEvent,
 	replayRuntimeEventEntries,
-	runtimeEvents,
 	type RuntimeEvent,
 } from "../extensions/shared/runtime-events.ts";
 
@@ -62,15 +59,6 @@ describe("runtime event reducer", () => {
 		state = reduceRuntimeEvent(state, { type: "ack", eventId: "event-1", claimant: "session-a", at: 300 });
 		expect(state.deliveries["event-1"]?.status).toBe("acked");
 		expect(pendingRuntimeEvents(state)).toEqual([]);
-	});
-
-	it("consumes a pending event for the exact claimant", () => {
-		const branch: Array<Record<string, unknown>> = [];
-		const pi = { appendEntry(customType: string, data: unknown) { branch.push({ type: "custom", customType, data }); } } as unknown as ExtensionAPI;
-		runtimeEvents.restore([{ type: "custom", customType: "deevs.runtime-event-op.v1", data: { type: "emit", event: event() } }]);
-		expect(consumeRuntimeEvent(pi, "event-1", "session-a")).toBe(true);
-		expect(branch.map((entry) => (entry.data as { type?: string }).type)).toEqual(["claim", "ack"]);
-		expect(pendingRuntimeEvents(runtimeEvents.read())).toEqual([]);
 	});
 
 	it("releases a failed delivery claim only for its claimant", () => {

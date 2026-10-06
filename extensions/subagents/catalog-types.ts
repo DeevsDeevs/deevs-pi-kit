@@ -13,13 +13,3 @@ export interface AgentDefinition {
 	isolation?: "worktree";
 	body: string;
 }
-
-export interface AgentsSettings {
-	allowedModels: string[];
-	defaultModel?: string;
-	modelsByAgent: Record<string, string>;
-	defaultTimeoutMs: number;
-	maxTimeoutMs: number;
-	parallelDefaultConcurrency: number;
-	parallelMaxConcurrency: number;
-}

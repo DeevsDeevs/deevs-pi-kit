@@ -1,7 +1,5 @@
-import { lstat, mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
+import { lstat, mkdir, realpath, rename, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
-
-type ConfigNormalizer<T> = (input: Partial<T>) => T;
 
 function projectConfigPath(cwd: string, filename: string): string {
 	if (!/^[A-Za-z0-9_.-]+\.json$/.test(filename)) throw new Error(`Invalid project config filename: ${filename}`);
@@ -14,25 +12,9 @@ function assertInsideProjectConfig(cwd: string, path: string): void {
 	if (rel.startsWith("..") || isAbsolute(rel)) throw new Error(`Project config path escapes .pi/: ${path}`);
 }
 
-async function readProjectConfig<T extends object>(cwd: string, filename: string): Promise<Partial<T>> {
-	const path = projectConfigPath(cwd, filename);
-	try {
-		await ensureSafeProjectConfigTarget(cwd, path, false);
-		// SAFETY: The generic config shape remains untrusted until the caller-supplied normalizer validates every field.
-		const parsed = JSON.parse(await readFile(path, "utf8")) as Partial<T> | null;
-		return parsed && Object.getPrototypeOf(parsed) === Object.prototype ? parsed : {};
-	} catch {
-		return {};
-	}
-}
-
-export async function loadProjectConfig<T extends object>(cwd: string, filename: string, defaults: T, normalize: ConfigNormalizer<T>, override: Partial<T> = {}): Promise<T> {
-	return normalize({ ...structuredClone(defaults), ...await readProjectConfig<T>(cwd, filename), ...override });
-}
-
 export async function saveProjectConfig<T extends object>(cwd: string, filename: string, config: T): Promise<string> {
 	const path = projectConfigPath(cwd, filename);
-	await ensureSafeProjectConfigTarget(cwd, path, true);
+	await ensureSafeProjectConfigTarget(cwd, path);
 	await mkdir(dirname(path), { recursive: true });
 	const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
 	await writeFile(tmp, `${JSON.stringify(stripUndefined(config), null, 2)}\n`, "utf8");
@@ -40,7 +22,7 @@ export async function saveProjectConfig<T extends object>(cwd: string, filename:
 	return path;
 }
 
-async function ensureSafeProjectConfigTarget(cwd: string, path: string, rejectExistingTargetSymlink: boolean): Promise<void> {
+async function ensureSafeProjectConfigTarget(cwd: string, path: string): Promise<void> {
 	assertInsideProjectConfig(cwd, path);
 	const cwdReal = await realpath(cwd).catch(() => resolve(cwd));
 	const piDir = resolve(cwd, ".pi");
@@ -53,7 +35,6 @@ async function ensureSafeProjectConfigTarget(cwd: string, path: string, rejectEx
 	} catch (error) {
 		if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
 	}
-	if (!rejectExistingTargetSymlink) return;
 	try {
 		const targetStat = await lstat(path);
 		if (targetStat.isSymbolicLink()) throw new Error(`Refusing to overwrite symlinked project config file: ${path}`);

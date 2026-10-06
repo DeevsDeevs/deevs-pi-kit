@@ -7,6 +7,7 @@ import { loadKitConfig, modelLabel, modelsTable, resolveLead, resolveModel, type
 import { newAgentId, tasks, type RosterEntry, type TaskNotification } from "../shared/tasks.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
 import { createAgentWorktree, sharedCwdWarning } from "../shared/worktree.ts";
+import { remindSilentTurns } from "./silent-turns.ts";
 import { agentTypes, agentTypesSection, findAgentType, workerPrompt } from "./definitions.ts";
 import { AGENT_SLOTS, closeAll, ensureEngine, launch, queuedAhead, reinstall, resumeSession, send, settle, stop, writerCwds, type Limits } from "./engine/index.ts";
 
@@ -45,6 +46,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		registry: ctx.modelRegistry,
 		lead: ctx.model ? { model: ctx.model, level: pi.getThinkingLevel() } : undefined,
 	});
+	remindSilentTurns(pi);
 
 	pi.registerTool({
 		name: "Agent",
