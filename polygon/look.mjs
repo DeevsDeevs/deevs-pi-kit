@@ -14,7 +14,7 @@ export const taskNotifications = (events) => events.filter((e) => e.type === "me
 	.map((e) => {
 		const content = typeof e.message.content === "string" ? e.message.content : e.message.content.map((b) => b.text ?? "").join("");
 		const tag = (name) => new RegExp(`<${name}>([\\s\\S]*?)</${name}>`).exec(content)?.[1];
-		return { id: e.message.details?.notificationId, taskId: tag("task-id"), status: tag("status"), result: tag("result"), toolUseId: tag("tool-use-id"), limited: tag("limited"), usage: tag("usage") };
+		return { id: e.message.details?.notificationId, taskId: tag("task-id"), status: tag("status"), result: tag("result"), toolUseId: tag("tool-use-id"), limited: tag("limited"), usage: tag("usage"), failures: tag("failures"), diagnostics: tag("diagnostics"), recovery: tag("recovery"), outputFile: tag("output-file") };
 	});
 
 const textOf = (content) => typeof content === "string" ? content : (content ?? []).map((b) => b.text ?? "").join("\n");

@@ -14,7 +14,9 @@ export function nextStep(messages, fallback) {
 	const host = messages.find((m) => m.role === "user" && text(m.content).includes("POLYGON {"));
 	if (!host && !fallback) return { text: "polygon:no-script" };
 	const raw = host ? text(host.content) : "";
-	const script = host ? JSON.parse(raw.slice(raw.indexOf("POLYGON ") + 8).split("\n")[0]) : fallback;
+	// The last script that starts a line: a workflow agent's own task follows the lead's request it relays, and scripts
+	// nested in a lead's tool arguments sit inside its JSON line.
+	const script = host ? JSON.parse([...raw.matchAll(/^\s*POLYGON (.*)$/gm)].at(-1)[1]) : fallback;
 	const said = messages.filter((m) => m.role === "assistant")
 		.map((m) => `${text(m.content)}\n${(m.tool_calls ?? []).map((t) => `toolCall:${t.id}`).join("\n")}`).join("\n");
 	const last = messages.findLastIndex((m) => m.role === "assistant");
@@ -83,6 +85,11 @@ export function startPuppet(logFile, marks = [], scripts = {}, { live = false } 
 }
 
 function chat(res, request, step) {
+	// `error` fails every request of its step, so retries hit it again until they give up.
+	if (step.error) {
+		res.writeHead(step.error.status, { "content-type": "application/json", ...(step.error.retryAfter === undefined ? {} : { "retry-after": String(step.error.retryAfter) }) });
+		return res.end(JSON.stringify({ error: { message: `polygon error ${step.error.status}`, type: "polygon" } }));
+	}
 	res.writeHead(200, { "content-type": "text/event-stream" });
 	const chunk = (delta, finish, usage) => res.write(`data: ${JSON.stringify({ id: "polygon", object: "chat.completion.chunk", created: 0, model: request.model, choices: [{ index: 0, delta, finish_reason: finish }], ...(usage ? { usage } : {}) })}\n\n`);
 	if (step.tool) chunk({ role: "assistant", tool_calls: [{ index: 0, id: step.id, type: "function", function: { name: step.tool, arguments: JSON.stringify(step.args) } }] }, null);

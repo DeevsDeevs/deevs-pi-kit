@@ -29,9 +29,13 @@ export interface TaskNotification {
 	status: "completed" | "failed" | "killed";
 	summary: string;
 	result?: string;
-	usage?: { subagentTokens?: number; toolUses?: number; durationMs?: number };
+	usage?: { agentCount?: number; agentsDone?: number; agentsError?: number; agentsSkipped?: number; agentsEmptyResult?: number; subagentTokens?: number; toolUses?: number; durationMs?: number };
 	worktree?: { path: string; branch: string };
 	limited?: string;
+	/** Workflow runs: `recovery` when one failed, `diagnostics` when one completed, and the agents that failed. */
+	recovery?: string;
+	diagnostics?: string;
+	failures?: string;
 }
 
 export interface NotificationSource {
@@ -189,6 +193,11 @@ export function escapeMarkup(text: string): string {
 export function formatTaskNotification(n: TaskNotification): string {
 	const tag = (name: string, value: string | number | undefined): string[] => value === undefined ? [] : [`<${name}>${escapeMarkup(String(value))}</${name}>`];
 	const usage = n.usage && [
+		...tag("agent_count", n.usage.agentCount),
+		...tag("agents_done", n.usage.agentsDone),
+		...tag("agents_error", n.usage.agentsError),
+		...tag("agents_skipped", n.usage.agentsSkipped),
+		...tag("agents_empty_result", n.usage.agentsEmptyResult),
 		...tag("subagent_tokens", n.usage.subagentTokens),
 		...tag("tool_uses", n.usage.toolUses),
 		...tag("duration_ms", n.usage.durationMs),
@@ -202,7 +211,10 @@ export function formatTaskNotification(n: TaskNotification): string {
 		...tag("summary", n.summary),
 		...tag("limited", n.limited),
 		...(n.kind === "agent" ? [`<note>${AGENT_NOTE}</note>`] : []),
+		...tag("recovery", n.recovery),
 		...tag("result", n.result === undefined ? undefined : capResult(n.result, n.kind === "workflow" ? 8_000 : 100_000, n.outputFile)),
+		...tag("diagnostics", n.diagnostics),
+		...tag("failures", n.failures),
 		...(usage ? [`<usage>${usage}</usage>`] : []),
 		...(n.worktree ? [`<worktree>${tag("worktreePath", n.worktree.path)[0]}${tag("worktreeBranch", n.worktree.branch)[0]}</worktree>`] : []),
 		"</task-notification>",
@@ -224,6 +236,18 @@ export function workflowSummary(description: string, status: TaskNotification["s
 	if (status === "completed") return `Dynamic workflow "${description}" completed`;
 	if (status === "failed") return `Dynamic workflow "${description}" failed: ${error ?? "unknown error"}`;
 	return `Dynamic workflow "${description}" was stopped`;
+}
+
+export function workflowDiagnostics(transcriptDir: string, scriptPath: string, runId: string): string {
+	return [
+		`Per-agent results: ${transcriptDir}/journal.jsonl holds one {"type":"result",...} line per finished agent with its full return value.`,
+		"If the result above is empty or unexpected, Read this file BEFORE diagnosing; do not assume the agents returned something.",
+		`To re-run with edited post-processing: Workflow({scriptPath: '${scriptPath}', resumeFromRunId: '${runId}'}): the longest unchanged prefix of agent() calls replays from cache.`,
+	].join("\n");
+}
+
+export function workflowRecovery(transcriptDir: string, scriptPath: string, runId: string): string {
+	return `To resume after editing the script, call: Workflow({scriptPath: '${scriptPath}', resumeFromRunId: '${runId}'})\nAgent transcripts: ${transcriptDir}`;
 }
 
 export type JobEnd = { exitCode: number } | { error: string } | "stopped" | "interrupted";

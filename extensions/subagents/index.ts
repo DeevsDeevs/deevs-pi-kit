@@ -1,17 +1,24 @@
+import { createHash } from "node:crypto";
 import { existsSync, realpathSync, statSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join, relative, resolve } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadKitConfig, modelLabel, modelsTable, resolveLead, resolveModel, type ModelContext } from "../shared/models.ts";
-import { agentForegroundResult, agentLaunchedResult, newAgentId, taskNotRunningResult, taskStoppedResult, tasks, type RosterEntry } from "../shared/tasks.ts";
+import { agentForegroundResult, agentLaunchedResult, newAgentId, newWorkflowRunId, newWorkflowTaskId, taskNotRunningResult, taskStoppedResult, tasks, workflowLaunchedResult, type RosterEntry } from "../shared/tasks.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
 import { createAgentWorktree, finishAgentWorktree, sharesCwd } from "../shared/worktree.ts";
 import { remindSilentTurns } from "./silent-turns.ts";
 import { agentTypes, agentTypesSection, findAgentType, workerPrompt } from "./definitions.ts";
-import { closeAll, ensureEngine, launch, queuedAhead, reinstall, resumeSession, send, settle, stop, writerCwds, type Limits } from "./engine/index.ts";
+import { closeAll, ensureEngine, launch, launchWorkflow, queuedAhead, reinstall, resumeSession, send, settle, stop, workflowProgress, writerCwds, type Limits } from "./engine/index.ts";
+import { parseWorkflow } from "./workflow/meta.ts";
+import type { Progress } from "./workflow/run.ts";
 
 const FOREGROUND_MS = 120_000;
+/** A longer request is not relayed to workflow agents: a cut one could mislead them. */
+const MAX_REQUEST_CHARS = 4_000;
+const AUTHORING_HINT = "Load the `workflow-authoring` skill for the script format, fix the script, and retry.";
 const RESERVED_NAMES = new Set(["main", "user", "system"]);
 const ONLY_ON_REQUEST = "Set ONLY when the user explicitly asks for this limit; omitted means none.";
 
@@ -39,6 +46,21 @@ const AGENT_DESCRIPTION = [
 	"The agent starts with none of your context. Write the prompt as a complete brief: the goal, what you already know, the files and constraints involved, and what to return. Say whether it should change code or only research. Never delegate your own understanding: synthesize what agents report before acting on it.",
 ].join("\n");
 
+const WorkflowSchema = Type.Object({
+	script: Type.Optional(Type.String({ description: "The workflow: plain JavaScript whose first statement is `export const meta = { name, description, phases }`" })),
+	scriptPath: Type.Optional(Type.String({ description: "A script file to run; takes precedence over name and script" })),
+	name: Type.Optional(Type.String({ description: "A saved workflow: .pi/workflows/<name>.js, then ~/.pi/agent/workflows/<name>.js" })),
+	args: Type.Optional(Type.Any({ description: "Given to the script as the global `args`" })),
+	resumeFromRunId: Type.Optional(Type.String({ pattern: "^wf_[a-z0-9-]{6,}$", description: "A finished or stopped run of this session to resume: its unchanged agent() calls replay from journal.jsonl" })),
+});
+type WorkflowParams = Static<typeof WorkflowSchema>;
+
+const WORKFLOW_DESCRIPTION = [
+	"Run a workflow script in the background: plain JavaScript that orchestrates many agents with agent(prompt, opts), parallel(thunks), pipeline(items, ...stages), phase(title) and log(text), and returns a result.",
+	"Use it only when the user asks for a workflow or names one. The call returns at once with the run's ids and script file; a <task-notification> carries the result when the run ends. Do not poll.",
+	"Load the `workflow-authoring` skill before writing a script.",
+].join("\n");
+
 export default function subagentsExtension(pi: ExtensionAPI): void {
 	tasks.install(pi);
 	const modelContext = async (ctx: ExtensionContext): Promise<ModelContext> => ({
@@ -47,6 +69,12 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		lead: ctx.model ? { model: ctx.model, level: pi.getThinkingLevel() } : undefined,
 	});
 	remindSilentTurns(pi);
+	// The request that started the current turn, snapshotted by Workflow at launch; a later side question never reaches its agents.
+	let request: string | undefined;
+	pi.on("input", (event) => {
+		if (event.streamingBehavior === undefined && event.source !== "extension") request = event.text;
+	});
+	let widget: NodeJS.Timeout | undefined;
 
 	pi.registerTool({
 		name: "Agent",
@@ -108,9 +136,57 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerTool({
+		name: "Workflow",
+		label: "Workflow",
+		description: WORKFLOW_DESCRIPTION,
+		promptSnippet: "Run a workflow script that orchestrates many agents, when the user asks for one.",
+		parameters: WorkflowSchema,
+		async execute(toolCallId, params: WorkflowParams, _signal, _onUpdate, ctx) {
+			const { source, scriptPath } = await workflowSource(params, ctx.cwd);
+			let meta;
+			try {
+				({ meta } = parseWorkflow(source));
+			} catch (error) {
+				throw new Error(`${error instanceof Error ? error.message : String(error)}\n${AUTHORING_HINT}`);
+			}
+			const session = ctx.sessionManager.getSessionId();
+			const resumed = params.resumeFromRunId;
+			if (resumed && tasks.find(resumed, session)?.status === "running") throw new Error(`Workflow run ${resumed} is still running; stop it with TaskStop before resuming it.`);
+			const home = join(getAgentDir(), "pi-kit", "workflows", createHash("sha256").update(realpathSync(ctx.cwd)).digest("hex").slice(0, 16));
+			const runId = resumed ?? newWorkflowRunId();
+			const dir = join(home, runId);
+			if (resumed && !existsSync(join(dir, "journal.jsonl"))) throw new Error(`No journal found for workflow run ${resumed} in this project; call Workflow again without resumeFromRunId.`);
+			const file = scriptPath ?? join(home, "scripts", `${meta.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${runId}.js`);
+			await mkdir(dir, { recursive: true });
+			if (!scriptPath) {
+				await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+				await writeFile(file, source, { mode: 0o600 });
+			}
+			if (!resumed) await appendFile(join(dir, "journal.jsonl"), `${JSON.stringify({ type: "launched" })}\n`);
+			const taskId = newWorkflowTaskId();
+			await launchWorkflow(await ensureEngine(ctx), {
+				taskId,
+				runId,
+				session,
+				toolUseId: toolCallId,
+				source,
+				scriptPath: file,
+				args: coerceArgs(params.args),
+				cwd: ctx.cwd,
+				dir,
+				request: request !== undefined && request.length <= MAX_REQUEST_CHARS ? request : undefined,
+				lead: ctx.model && { provider: ctx.model.provider, id: ctx.model.id, level: pi.getThinkingLevel() },
+				startedAt: Date.now(),
+			}, meta.description);
+			const text = workflowLaunchedResult({ taskId, summary: meta.description, transcriptDir: dir, scriptPath: file, runId });
+			return { content: [{ type: "text" as const, text }], details: { taskId, runId, scriptPath: file, transcriptDir: dir, status: "async_launched" } };
+		},
+	});
+
+	pi.registerTool({
 		name: "TaskStop",
 		label: "TaskStop",
-		description: "Stop a running background task: an agent, by its agentId or name, or a job, by its id.",
+		description: "Stop a running background task: an agent, by its agentId or name; a workflow, by its task id (w…) or run id (wf_…), with no notification after; or a job, by its id.",
 		promptSnippet: "Stop a background agent or job that is no longer needed.",
 		parameters: Type.Object({ task_id: Type.String({ description: "The id or name of the task to stop" }) }),
 		async execute(_toolCallId, params: { task_id: string }, _signal, _onUpdate, ctx) {
@@ -181,6 +257,15 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_start", async (event, ctx) => {
+		clearInterval(widget);
+		let shown = "";
+		widget = setInterval(() => {
+			const lines = runningWorkflows(ctx).map(widgetLine);
+			if (lines.join("\n") === shown) return;
+			shown = lines.join("\n");
+			ctx.ui.setWidget("workflows", lines.length ? lines : undefined);
+		}, 1_000);
+		widget.unref();
 		if (event.reason === "reload") await reinstall();
 		else await useLeadModel(pi, ctx).catch((error) => ctx.ui.notify(`The lead stays on Pi's model: ${error instanceof Error ? error.message : String(error)}`, "warning"));
 		await resumeSession(ctx).catch((error) => ctx.ui.notify(`Agents of this session did not resume: ${error instanceof Error ? error.message : String(error)}`, "error"));
@@ -189,8 +274,69 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		event.systemPromptOptions.sections.agent_types = agentTypesSection();
 	});
 	pi.on("session_shutdown", async (event) => {
+		clearInterval(widget);
 		if (event.reason === "quit") await closeAll();
 	});
+}
+
+/** `scriptPath`, then `name`, then `script`; only a scriptPath is run from its own file, the others get a persisted copy. */
+async function workflowSource(params: WorkflowParams, cwd: string): Promise<{ source: string; scriptPath?: string }> {
+	if (params.scriptPath) {
+		const scriptPath = resolve(cwd, params.scriptPath);
+		const source = await readFile(scriptPath, "utf8").catch(() => undefined);
+		if (source === undefined) throw new Error(`Cannot read the workflow script ${scriptPath}.`);
+		return { source, scriptPath };
+	}
+	if (params.name) {
+		for (const dir of [join(cwd, ".pi", "workflows"), join(getAgentDir(), "workflows")]) {
+			const source = await readFile(join(dir, `${params.name}.js`), "utf8").catch(() => undefined);
+			if (source !== undefined) return { source };
+		}
+		throw new Error(`No workflow named '${params.name}' in .pi/workflows or ~/.pi/agent/workflows.`);
+	}
+	if (params.script) return { source: params.script };
+	throw new Error("Workflow needs a script, a scriptPath or a name.");
+}
+
+/** `args` given as a JSON string of an object or array is parsed, as CC does. */
+function coerceArgs(args: WorkflowParams["args"]): WorkflowParams["args"] {
+	// oxlint-disable-next-line anti-slop/no-runtime-typeof -- args arrive untyped from the model: this is their decoding boundary.
+	if (!(typeof args === "string" && /^\s*[[{]/.test(args))) return args;
+	try {
+		return JSON.parse(args);
+	} catch {
+		return args;
+	}
+}
+
+function runningWorkflows(ctx: ExtensionContext): Progress[] {
+	try {
+		return workflowProgress(ctx.sessionManager.getSessionId()).filter((progress) => progress.status === "running");
+	} catch {
+		return [];
+	}
+}
+
+function widgetLine(progress: Progress): string {
+	const count = (state: string) => progress.agents.filter((agent) => agent.state === state).length;
+	const failed = count("error");
+	const tokens = progress.agents.reduce((sum, agent) => sum + agent.tokens, 0);
+	return `${progress.meta.name} ${progress.taskId} · ${progress.phase ?? "-"} · ${count("start")} running, ${count("done")}/${progress.agents.length} done${failed ? `, ${failed} failed` : ""} · ${tokens} tokens · ${age(Date.now() - progress.startedAt)}`;
+}
+
+/** The /agents view of a run: one row per agent() call with its phase, label, state, tokens and age. */
+function workflowLines(progress: Progress): string[] {
+	const now = Date.now();
+	return [
+		"",
+		`Workflow ${progress.taskId} (${progress.runId}) ${progress.status} · ${progress.meta.description}`,
+		...progress.agents.map((agent) => `  ${agent.phase ?? "-"} · ${agent.label} · ${agent.state}${agent.cached ? " (cached)" : ""} · ${agent.tokens} tokens · ${age(now - (agent.startedAt ?? agent.queuedAt))}`),
+	];
+}
+
+function age(ms: number): string {
+	if (ms < 60_000) return `${Math.round(ms / 1_000)}s`;
+	return ms < 3_600_000 ? `${Math.floor(ms / 60_000)}m` : `${Math.floor(ms / 3_600_000)}h`;
 }
 
 /** A new session (no assistant message yet, no --model or --provider) switches to the newest match of pi-kit.json's `lead`. */
@@ -218,6 +364,7 @@ function rosterLines(entries: RosterEntry[]): string[] {
 function overview(ctx: ExtensionContext, models: ModelContext): string {
 	return [
 		...rosterLines(tasks.list(ctx.sessionManager.getSessionId())),
+		...workflowProgress(ctx.sessionManager.getSessionId()).flatMap(workflowLines),
 		"",
 		"Agent types",
 		...agentTypes().map((type) => `- ${type.name}: ${type.tools.join(", ")}`),
