@@ -30,7 +30,6 @@ return {
 export default {
 	name: "wf-schema",
 	gate: "M3",
-	pending: "needs Workflow (3.3)",
 	async run(t) {
 		const lead = rpc(t);
 		await lead.script({ agent: "lead", steps: [{ id: "s1", tool: "Workflow", args: { script } }, { id: "s2", text: "launched" }] });

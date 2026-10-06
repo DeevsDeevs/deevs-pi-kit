@@ -12,6 +12,8 @@ export interface CallOutcome {
 	status: "done" | "failed";
 	result: JsonValue;
 	error?: string;
+	/** CC's StructuredOutput contract error: agent() throws it rather than returning null. */
+	structuredError?: string;
 	tokens: number;
 	toolUses: number;
 	worktree?: { path: string; branch: string };
@@ -92,6 +94,7 @@ export async function driveWorkflow(workflow: ParsedWorkflow, args: JsonValue | 
 			log(`[${row.label}] failed: ${outcome.error ?? "no answer"}`);
 		}
 		if (outcome.worktree) log(`[${row.label}] worktree kept: ${outcome.worktree.path} (${outcome.worktree.branch})`);
+		if (outcome.structuredError) throw new Error(outcome.structuredError);
 		return outcome.status === "done" ? outcome.result : null;
 	};
 	for (const phase of workflow.meta.phases ?? []) phaseIndex(phase.title);

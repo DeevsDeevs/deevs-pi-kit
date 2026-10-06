@@ -121,6 +121,8 @@ interface WorkflowRecord {
 	startedAt: number;
 	status: TaskStatus;
 	durableTaskId?: Durable.TaskId;
+	/** The schemas its agent() calls use, installed again after a reopen. */
+	schemas?: Durable.JsonObject[];
 }
 /** The crash map: one per agent() call, keyed by prompt, options and occurrence; written with the call's conversation, then with its outcome, whose `worktree` is the one kept. */
 type CallRecord = Partial<CallOutcome> & { agentId: string; conversationId: ConversationId; isolated?: AgentWorktree };
@@ -215,7 +217,10 @@ export async function reinstall(): Promise<void> {
 		if (!engine) continue;
 		engine.kit = buildKit(D, engine.dir, engine.project);
 		engine.registry.install(engine.kit.extension);
-		installSchemas(D, engine.registry, engine.session, Object.values(agentRecords(await engine.harness.snapshot(engine.kit.Agents, engine.root.id, CTX))));
+		installSchemas(D, engine.registry, engine.session, [
+			...Object.values(agentRecords(await engine.harness.snapshot(engine.kit.Agents, engine.root.id, CTX))),
+			...Object.values(workflowRecords(await engine.harness.snapshot(engine.kit.Workflows, engine.root.id, CTX))),
+		]);
 	}
 }
 
@@ -250,15 +255,13 @@ export function checkSchema(schema: Durable.JsonObject): void {
 }
 
 export async function launch(engine: Engine, spec: LaunchSpec): Promise<{ outputFile: string; done?: Promise<AgentOutcome> }> {
-	if (spec.schema) checkSchema(spec.schema);
 	const { D } = await host.modules!;
+	const structured = spec.schema && useSchema(D, engine, spec.schema);
 	const { agentId } = spec;
 	const outputFile = join(engine.dir, "out", `${agentId}.md`);
 	const startedAt = Date.now();
 	const done = spec.foreground ? new Promise<AgentOutcome>((resolve) => host.waiters.set(agentId, { claimed: false, timedOut: false, resolve })) : undefined;
 	const { kit, root } = engine;
-	const structured = spec.schema && schemaExtension(D, engine.session, spec.schema);
-	if (structured && !engine.registry.snapshot().extension(structured.name)) engine.registry.install(structured);
 	await root.commit(async (tx) => {
 		const anchor = await tx.createTask(kit.Anchor, null, BACKGROUND);
 		const child = await tx.createConversation({ ownership: { kind: "task", taskId: anchor } });
@@ -400,11 +403,12 @@ async function open(session: string, cwd: string): Promise<Engine> {
 	const root = await harness.root(CTX);
 	const engine: Engine = { session, dir, project: cwd, harness, root, registry, kit };
 	const records = agentRecords(await harness.snapshot(kit.Agents, root.id, CTX));
-	installSchemas(D, registry, session, Object.values(records));
+	const workflows = workflowRecords(await harness.snapshot(kit.Workflows, root.id, CTX));
+	installSchemas(D, registry, session, [...Object.values(records), ...Object.values(workflows)]);
 	for (const [id, record] of Object.entries(records)) {
 		tasks.register({ id, kind: "agent", name: record.name, description: record.description, status: record.status, ownerSession: session, startedAt: record.startedAt, stop: () => stop(engine, id) });
 	}
-	for (const [id, record] of Object.entries(workflowRecords(await harness.snapshot(kit.Workflows, root.id, CTX)))) registerWorkflow(engine, id, record);
+	for (const [id, record] of Object.entries(workflows)) registerWorkflow(engine, id, record);
 	harness.resume();
 	for (const item of outboxItems(await harness.snapshot(kit.Outbox, root.id, CTX))) if (!item.silent) await tasks.notify(item);
 	return engine;
@@ -535,10 +539,18 @@ function schemaExtension(D: D, session: string, schema: Durable.JsonObject): Dur
 	return D.defineExtension({ name: `pi-kit.schema.${createHash("sha256").update(JSON.stringify(schema)).digest("hex").slice(0, 16)}`, tools: [tool], hooks: [end] });
 }
 
-/** Running schema agents need their StructuredOutput again after a reopen or /reload. */
-function installSchemas(D: D, registry: Durable.Registry, session: string, records: AgentRecord[]): void {
-	const schemas = new Map(records.flatMap((record) => (record.schema && record.status === "running" ? [[JSON.stringify(record.schema), record.schema] as const] : [])));
-	for (const schema of schemas.values()) registry.install(schemaExtension(D, session, schema));
+/** Running schema agents and workflows need their StructuredOutput again after a reopen or /reload. */
+function installSchemas(D: D, registry: Durable.Registry, session: string, records: (AgentRecord | WorkflowRecord)[]): void {
+	const used = records.flatMap((record) => (record.status !== "running" ? [] : "schemas" in record ? record.schemas ?? [] : "schema" in record && record.schema ? [record.schema] : []));
+	for (const schema of new Map(used.map((schema) => [JSON.stringify(schema), schema])).values()) registry.install(schemaExtension(D, session, schema));
+}
+
+/** Checks the schema, then installs its StructuredOutput extension once per process. */
+function useSchema(D: D, engine: Engine, schema: Durable.JsonObject): Durable.Extension {
+	checkSchema(schema);
+	const extension = schemaExtension(D, engine.session, schema);
+	if (!engine.registry.snapshot().extension(extension.name)) engine.registry.install(extension);
+	return extension;
 }
 
 async function abortRun(session: string, conversationId: ConversationId): Promise<void> {
@@ -854,8 +866,7 @@ function callRunner(D: D, docs: WorkflowDocs, engine: Engine, input: WorkflowInp
 	const member = (key: string) => `${input.taskId}:${key}`;
 	const read = async (key: string) => callRecord(await runtime.snapshot(docs.Calls, runtime.conversationId, member(key), context));
 	let creating = Promise.resolve();
-	const create = async (key: string, options: AgentOptions): Promise<CallRecord> => {
-		if (options.schema) throw new Error("agent({schema}) is not available in this build yet; ask for JSON in the prompt and parse the text.");
+	const create = async (key: string, options: AgentOptions, structured: Durable.Extension | undefined): Promise<CallRecord> => {
 		const type = workflowAgentType(options.agentType);
 		const resolved = resolveModel(options.model ?? type.model, await modelContext(input), LEVELS.find((level) => level === options.effort) ?? type.effort);
 		if (resolved.harness !== "pi") throw new Error(`${modelLabel(resolved)} runs as a Claude Code or Codex worker, which the kit does not start yet; pick a Pi model.`);
@@ -872,10 +883,13 @@ function callRunner(D: D, docs: WorkflowDocs, engine: Engine, input: WorkflowInp
 			await D.configure(tx, conversation.id, {
 				model: { provider: resolved.model.provider, modelId: resolved.model.id },
 				thinkingLevel: resolved.level,
-				tools: type.tools.map((name) => docs.tools[name]),
+				extensions: structured ? [engine.kit.extension, structured] : [engine.kit.extension],
+				tools: [...type.tools.map((name) => docs.tools[name]), ...(structured?.tools ?? [])],
 				instructions: instructions.get(prompt),
 				cwd,
 			});
+			const record = workflowRecords(await tx.doc(docs.Workflows, runtime.conversationId))[input.taskId];
+			if (record && options.schema && !record.schemas?.some((schema) => JSON.stringify(schema) === JSON.stringify(options.schema))) (record.schemas ??= []).push(options.schema);
 			call = { agentId, conversationId: conversation.id, isolated: worktree };
 			Object.assign(await tx.doc(docs.Calls, runtime.conversationId, member(key), agentId), json(call));
 			return undefined;
@@ -887,9 +901,10 @@ function callRunner(D: D, docs: WorkflowDocs, engine: Engine, input: WorkflowInp
 			const call = await read(key);
 			if (!call) return undefined;
 			if (!call.status) return "live";
-			return { agentId: call.agentId, status: call.status, result: call.result ?? null, error: call.error, tokens: call.tokens ?? 0, toolUses: call.toolUses ?? 0, worktree: call.worktree };
+			return { agentId: call.agentId, status: call.status, result: call.result ?? null, error: call.error, structuredError: call.structuredError, tokens: call.tokens ?? 0, toolUses: call.toolUses ?? 0, worktree: call.worktree };
 		},
 		async run(key, prompt, options, start) {
+			const structured = options.schema && useSchema(D, engine, options.schema);
 			const held = await acquire(key);
 			try {
 				if (!held || runtime.signal.aborted) throw new Error("Workflow aborted");
@@ -897,23 +912,29 @@ function callRunner(D: D, docs: WorkflowDocs, engine: Engine, input: WorkflowInp
 				const mine = creating.then(() => new Promise<void>((resolve) => setImmediate(resolve)));
 				creating = mine;
 				await mine;
-				const call = await read(key) ?? await create(key, options);
+				const call = await read(key) ?? await create(key, options, structured);
 				start(call.agentId);
 				const conversation = (await engine.harness.conversation(call.conversationId, context))!;
-				const settled = await (await conversation.submit({ type: "input", content: framePrompt(input.request, prompt), requestId: `workflow:${key}` }, context)).wait(context);
+				const ask = async (content: string, requestId: string) => (await conversation.submit({ type: "input", content, requestId }, context)).wait(context);
+				const first = await ask(framePrompt(input.request, prompt), `workflow:${key}`);
+				const settled = structured && first.status === "done" && !structuredResult(await scan(conversation, context)).output ? await ask(NUDGE, `workflow:${key}:nudge`) : first;
 				if (runtime.signal.aborted) throw new Error("Workflow aborted");
 				const transcript = await scan(conversation, context);
+				const so = structured ? structuredResult(transcript) : undefined;
+				const structuredError = so && !so.output ? structuredFailure(so, settled) : undefined;
 				const spent = (await runtime.snapshot(D.UsageDoc, call.conversationId, context))?.models ?? {};
 				const answer = text(transcript.filter((entry) => entry.kind === "pi.assistant").at(-1)?.model?.[0]);
 				const kept = call.isolated && existsSync(call.isolated.path) ? await finishAgentWorktree(call.isolated).catch(() => call.isolated) : undefined;
 				const outcome: CallOutcome = {
 					agentId: call.agentId,
-					status: settled.status === "done" ? "done" : "failed",
-					result: settled.status === "done" ? answer : null,
+					status: (so ? so.output : settled.status === "done") ? "done" : "failed",
+					// SAFETY: pi-ai validated the call's arguments as JSON; only the readonly marker differs.
+					result: so ? (so.output as JsonValue | undefined) ?? null : settled.status === "done" ? answer : null,
 					tokens: Object.values(spent).reduce((sum, model) => sum + (model.totalTokens ?? 0), 0),
 					toolUses: transcript.filter((entry) => entry.kind === "pi.tool-result").length,
 				};
-				if (settled.status !== "done") outcome.error = failure(settled);
+				if (outcome.status === "failed") outcome.error = structuredError ?? failure(settled);
+				if (structuredError) outcome.structuredError = structuredError;
 				if (kept) outcome.worktree = { path: kept.path, branch: kept.branch };
 				await writeFile(join(input.dir, `agent-${call.agentId}.md`), `${transcriptLog(transcript)}\n\n${answer}\n`).catch(() => {});
 				await runtime.commit(async (tx) => {
