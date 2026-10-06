@@ -1,5 +1,5 @@
-import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { kitValues, migrateLegacyConfig } from "../shared/config.ts";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { migrateLegacyConfig, trustedKitValue } from "../shared/config.ts";
 
 const EXTENSION_ID = "codex-fast";
 const PROVIDER_ID = "openai-codex";
@@ -8,8 +8,7 @@ const FAST_SERVICE_TIER = "priority";
 
 /** `"codexFast": true` in pi-kit.json, re-read on every request; a project's own value counts only once it is trusted. */
 function isFastEnabled(ctx: ExtensionContext): boolean {
-	const [global, project] = kitValues("codexFast", ctx.cwd, getAgentDir());
-	return (ctx.isProjectTrusted() ? project : undefined) ?? global ?? false;
+	return trustedKitValue("codexFast", ctx) ?? false;
 }
 
 function isEligible(ctx: ExtensionContext): boolean {

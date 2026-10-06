@@ -1,7 +1,7 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { spawn } from "node:child_process";
-import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { kitValues, migrateLegacyConfig, type KitValue } from "../shared/config.ts";
 
 type ResolvedConfig = Required<Omit<KitValue<"notifier">, "command" | "jsonl">> & {
@@ -80,7 +80,7 @@ async function appendJsonl(path: string, ctx: ExtensionContext, config: Resolved
 
 /** `notifier` in pi-kit.json, re-read on every use: the project's fields over the global ones over the defaults. */
 function loadConfig(ctx: ExtensionContext): ResolvedConfig {
-	const [global, project] = kitValues("notifier", ctx.cwd, getAgentDir());
+	const [global, project] = kitValues("notifier", ctx.cwd);
 	const config = { ...DEFAULT_CONFIG, ...global, ...project };
 	return trustedNotifierConfig(ctx, { ...config, minIntervalMs: Math.max(0, config.minIntervalMs) });
 }

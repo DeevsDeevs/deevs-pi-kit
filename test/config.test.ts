@@ -1,8 +1,9 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { kitValues, migrateLegacyConfig } from "../extensions/shared/config.ts";
+import { agentDir as kitAgentDir, kitValues, migrateLegacyConfig } from "../extensions/shared/config.ts";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 let root: string;
 let project: string;
@@ -57,5 +58,17 @@ describe("pi-kit.json", () => {
 		write("codex-fast.json", { enabled: true });
 		await migrateLegacyConfig(project);
 		expect(existsSync(join(project, ".pi", "codex-fast.json"))).toBe(true);
+	});
+});
+
+describe("agentDir", () => {
+	afterEach(() => vi.unstubAllEnvs());
+
+	it("matches Pi's getAgentDir, including a ~ in PI_CODING_AGENT_DIR", () => {
+		for (const value of ["~/pi-agent", "/abs/agent", "~", ""]) {
+			vi.stubEnv("PI_CODING_AGENT_DIR", value);
+			expect([value, kitAgentDir()]).toEqual([value, getAgentDir()]);
+		}
+		expect(kitAgentDir()).toBe(join(homedir(), ".pi", "agent"));
 	});
 });

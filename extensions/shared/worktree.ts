@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
+import { agentDir as defaultAgentDir } from "./config.ts";
 
 const MAX_GIT_BUFFER = 1024 * 1024;
 const GIT_TIMEOUT_MS = 30_000;
@@ -133,8 +133,4 @@ export function git(cwd: string, args: string[]): Promise<string> {
 			else resolve(stdout);
 		});
 	});
-}
-
-function defaultAgentDir(): string {
-	return process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
 }

@@ -29,9 +29,10 @@ export type KitKey = keyof typeof KEYS;
 export type KitValue<K extends KitKey> = Static<(typeof KEYS)[K]>;
 type Kit = Static<typeof KitFile>;
 
-/** Pi's agent dir without importing Pi, so the standalone guard hook can read pi-kit.json too. */
+/** Pi's `getAgentDir()` without importing Pi, so the standalone guard hook can read pi-kit.json too. */
 export function agentDir(): string {
-	return process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
+	const dir = process.env.PI_CODING_AGENT_DIR;
+	return dir ? dir.replace(/^~(?=$|\/)/, homedir()) : join(homedir(), ".pi", "agent");
 }
 
 /** The global, then the project pi-kit.json; every reader takes them fresh, so an edit applies to the next use. */
@@ -46,6 +47,12 @@ function kitPaths(cwd: string, dir = agentDir()): [global: string, project: stri
 export function kitValues<K extends KitKey>(key: K, cwd: string, dir = agentDir()): [global: KitValue<K> | undefined, project: KitValue<K> | undefined] {
 	const [global, project] = kitPaths(cwd, dir).map((path) => readKitKey(path, key));
 	return [global, project];
+}
+
+/** `key` from a trusted project's pi-kit.json, else from the global one. */
+export function trustedKitValue<K extends KitKey>(key: K, ctx: { cwd: string; isProjectTrusted(): boolean }): KitValue<K> | undefined {
+	const [global, project] = kitValues(key, ctx.cwd);
+	return (ctx.isProjectTrusted() ? project : undefined) ?? global;
 }
 
 function readKitKey<K extends KitKey>(path: string, key: K): KitValue<K> | undefined {
