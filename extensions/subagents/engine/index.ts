@@ -434,12 +434,13 @@ async function report(D: D, docs: Pick<Kit, "Outbox" | "Agents">, input: Reporte
 			if (held && !(await record())?.stopped) {
 				const submission = await conversation.submit({ type: "input", content: input.prompt, requestId: input.requestId }, context);
 				live.placed = true;
-				const pending = await engine.root.commit(async (tx) => {
+				const pending = live.early.splice(0);
+				if ((await record())?.pending) pending.push(...await engine.root.commit(async (tx) => {
 					const current = agentRecords(await tx.doc(docs.Agents, engine.root.id))[input.agentId];
-					const messages = [...live.early.splice(0), ...current?.pending ?? []];
+					const messages = current?.pending ?? [];
 					if (current) delete current.pending;
 					return messages;
-				}, context);
+				}, context));
 				for (const message of pending) live.inflight.push(conversation.submit({ type: "input", content: message, requestId: `send:${randomUUID()}`, whenBusy: "steer" }, context));
 				const unwatch = watchLimits(D, engine, input, (limit) => {
 					limited = limit;
