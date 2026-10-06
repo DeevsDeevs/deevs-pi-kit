@@ -13,8 +13,6 @@ export interface ParsedCron {
 }
 
 const MINUTE = 60_000;
-const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
 export function parseCron(expression: string): ParsedCron {
 	const raw = expression.trim().replace(/\s+/g, " ");
@@ -119,49 +117,6 @@ function dayMatches(cron: ParsedCron, date: Date): boolean {
 	if (cron.daysOfMonthWildcard) return dow;
 	if (cron.daysOfWeekWildcard) return dom;
 	return dom || dow;
-}
-
-export function cronToHuman(cron: ParsedCron): string {
-	const allMinutes = fullRange(cron.minutes, 0, 59);
-	const allHours = fullRange(cron.hours, 0, 23);
-	const allMonths = fullRange(cron.months, 1, 12);
-	if (allHours && cron.daysOfMonthWildcard && allMonths && cron.daysOfWeekWildcard) {
-		const step = detectStep(cron.minutes, 0);
-		if (step && step > 1) return `every ${step} minutes`;
-		if (allMinutes) return "every minute";
-		if (cron.minutes.size === 1) return `at minute ${[...cron.minutes][0]} of every hour`;
-	}
-	if (cron.minutes.size === 1 && cron.daysOfMonthWildcard && allMonths && cron.daysOfWeekWildcard) {
-		const step = detectStep(cron.hours, 0);
-		if (step && step > 1) return `every ${step} hours at minute ${pad([...cron.minutes][0]!)}`;
-	}
-	if (cron.minutes.size === 1 && cron.hours.size === 1 && cron.daysOfMonthWildcard && allMonths) {
-		const time = `${pad([...cron.hours][0]!)}:${pad([...cron.minutes][0]!)}`;
-		if (cron.daysOfWeekWildcard) return `at ${time} every day`;
-		const days = [...cron.daysOfWeek].sort((a, b) => a - b);
-		const label = days.length === 5 && days.every((value, index) => value === index + 1) ? "weekdays"
-			: days.length === 2 && days[0] === 0 && days[1] === 6 ? "weekends"
-			: days.map((value) => DAY_NAMES[value]).join(", ");
-		return `at ${time} on ${label}`;
-	}
-	if (cron.minutes.size === 1 && cron.hours.size === 1 && cron.daysOfMonth.size === 1 && !cron.daysOfMonthWildcard && cron.months.size === 1 && cron.daysOfWeekWildcard) {
-		return `at ${pad([...cron.hours][0]!)}:${pad([...cron.minutes][0]!)} on day ${[...cron.daysOfMonth][0]} of ${MONTH_NAMES[[...cron.months][0]! - 1]}`;
-	}
-	return cron.raw;
-}
-
-function fullRange(values: ReadonlySet<number>, min: number, max: number): boolean {
-	if (values.size !== max - min + 1) return false;
-	for (let value = min; value <= max; value++) if (!values.has(value)) return false;
-	return true;
-}
-
-function detectStep(values: ReadonlySet<number>, min: number): number | null {
-	const sorted = [...values].sort((a, b) => a - b);
-	if (sorted.length < 2 || sorted[0] !== min) return null;
-	const step = sorted[1]! - sorted[0]!;
-	for (let index = 1; index < sorted.length; index++) if (sorted[index]! !== min + index * step) return null;
-	return step;
 }
 
 function pad(value: number): string {
