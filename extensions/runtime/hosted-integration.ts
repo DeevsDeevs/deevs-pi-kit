@@ -73,8 +73,11 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 		return results;
 	}
 
-	private async relaunch(participantId: string, ctx: ExtensionContext): Promise<void> {
-		const [result] = await this.manageCollaborators({ action: "start", participants: [this.launched.get(participantId) ?? { participantId }] }, ctx);
+	private async relaunch(participantId: string, driver: string | undefined, ctx: ExtensionContext): Promise<void> {
+		const launched = this.launched.get(participantId);
+		// Only the model spec names a Claude or Codex harness, and it is gone once the lead restarted.
+		if (!launched && driver && driver !== "pi") throw new Error(`${participantId} ran ${driver}; start it again with collaborator_manage and its model.`);
+		const [result] = await this.manageCollaborators({ action: "start", participants: [launched ?? { participantId }] }, ctx);
 		if (result?.status !== "started") throw new Error(`${participantId} did not resume: ${result?.error ?? result?.status}`);
 	}
 
@@ -84,7 +87,7 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 		if (!identity || !isHeld(identity.disposition)) return;
 		const ownerSession = ctx.sessionManager.getSessionId();
 		const current = () => this.session.context ?? ctx;
-		const row = (name: string, description: string, held: boolean, stop?: () => Promise<void>) => tasks.register({
+		const row = (name: string, description: string, held: boolean, driver?: string, stop?: () => Promise<void>) => tasks.register({
 			id: name,
 			kind: "collaborator",
 			name,
@@ -95,7 +98,7 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 			stop,
 			send: async (message, images) => {
 				// A stood-down collaborator resumes its own transcript in a new tab, then gets the message.
-				if (!held) await this.relaunch(name, current());
+				if (!held) await this.relaunch(name, driver, current());
 				return this.messaging.send(current(), name, message, images);
 			},
 		});
@@ -103,7 +106,7 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 		for (const participant of await this.collaborators.list(ctx)) {
 			if (participant.protocol !== identity.protocol || participant.participantId === identity.participantId) continue;
 			const standDown = { action: "stand_down" as const, protocol: identity.protocol, participants: [{ participantId: participant.participantId }] };
-			row(participant.participantId, `${participant.driver ?? "pi"} ${participant.profile ?? "read-only"}`, isHeld(participant.state),
+			row(participant.participantId, `${participant.driver ?? "pi"} ${participant.profile ?? "read-only"}`, isHeld(participant.state), participant.driver,
 				async () => { await this.manageCollaborators(standDown, current()); });
 		}
 	}
