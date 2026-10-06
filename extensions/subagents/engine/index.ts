@@ -22,14 +22,13 @@ import { parseWorkflow } from "../workflow/meta.ts";
 import { driveWorkflow, framePrompt, newProgress, runRecord, usage, type AgentRunner, type CallOutcome, type Progress } from "../workflow/run.ts";
 import type { AgentOptions, JsonValue } from "../workflow/sandbox.ts";
 import { cliArgv, dropNulls, lastMessageFile, newProgress as newCliProgress, readEvent, schemaFile, strictify, type CliProgress, type CliWorker } from "./cli.ts";
-import { backgroundTasks, type BackgroundDoc, type BackgroundHost, type BackgroundRecord, type JobInput, type MonitorInput } from "./background.ts";
+import { backgroundTasks, pruneOutbox, type BackgroundDoc, type BackgroundHost, type BackgroundRecord, type JobInput, type MonitorInput, type OutboxDoc } from "./background.ts";
 import { bunSqlite, lock, reap, unlock } from "./storage.ts";
 
 type D = typeof Durable;
 type Ctx = Parameters<Durable.Harness["close"]>[0];
 type ConversationId = Durable.ConversationId;
 // Documents hold strict JSON; these shapes are read and written through `json()`.
-type OutboxDoc = { items: Durable.JsonObject[] };
 type AgentsDoc = { agents: Record<string, Durable.JsonObject> };
 type WorkflowsDoc = { workflows: Record<string, Durable.JsonObject> };
 
@@ -512,6 +511,7 @@ async function open(session: string, cwd: string): Promise<Engine> {
 	for (const [id, record] of Object.entries(workflows)) registerWorkflow(engine, id, record);
 	for (const [id, record] of Object.entries(backgroundRecords(await harness.snapshot(kit.Background, root.id, CTX)))) registerBackground(engine, id, record);
 	host.opened.set(session, Date.now());
+	await root.commit(async (tx) => pruneOutbox(await tx.doc(kit.Outbox, root.id), session), CTX);
 	harness.resume();
 	for (const item of outboxItems(await harness.snapshot(kit.Outbox, root.id, CTX))) if (!item.silent) await tasks.notify(item);
 	return engine;

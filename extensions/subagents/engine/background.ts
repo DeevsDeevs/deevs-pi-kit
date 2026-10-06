@@ -11,7 +11,7 @@ import { cut, LINE_CHARS, lookAtPath, lookAtUrl, RateLimit, type PathSeen, type 
 
 type D = typeof Durable;
 type Ctx = Parameters<Durable.Harness["close"]>[0];
-type OutboxDoc = { items: Durable.JsonObject[] };
+export type OutboxDoc = { items: Durable.JsonObject[] };
 export type BackgroundDoc = { tasks: Record<string, Durable.JsonObject> };
 type Docs = { Outbox: Durable.ConversationDocToken<OutboxDoc>; Background: Durable.ConversationDocToken<BackgroundDoc> };
 
@@ -127,10 +127,12 @@ export function backgroundTasks(D: D, docs: Docs, host: BackgroundHost) {
 		abort: (task, runtime, context) => settle(runtime, context, task.input.id, "killed", undefined, "aborted"),
 	});
 
-	/** Timer sources: sleep to the next probe, look, and commit only an event, so a quiet watch writes nothing. */
+	/**
+	 * Timer sources: sleep to the next probe, look, and commit only an event, so a quiet watch writes nothing.
+	 * One event per probe at most, so `every` is their rate limit; the token bucket is the command source's.
+	 */
 	async function watch(input: MonitorInput, at: Watch, runtime: Runtime<MonitorInput, MonitorState>, context: Ctx): Promise<void> {
 		const deadline = input.timeoutMs ? input.startedAt + input.timeoutMs : Infinity;
-		const limit = new RateLimit(runtime.now());
 		let caughtUp = closedSince(input.session, at.lastAt);
 		let { nextAt, seen } = at;
 		for (;;) {
@@ -154,12 +156,8 @@ export function backgroundTasks(D: D, docs: Docs, host: BackgroundHost) {
 				caughtUp = undefined;
 				continue;
 			}
-			const verdict = limit.take(now);
-			if (verdict === "drop") continue;
-			if (verdict === "stop") return endMonitor(input, runtime, context, { status: "failed", event: STOPPED });
-			const text = suppressed(verdict, event);
-			if (input.once || nextAt === Infinity) return endMonitor(input, runtime, context, { status: "completed", event: text, caughtUp });
-			return emit(input, runtime, context, { phase: "watch", nextAt, lastAt: now, seen, events: at.events + 1 }, text, caughtUp);
+			if (input.once || nextAt === Infinity) return endMonitor(input, runtime, context, { status: "completed", event, caughtUp });
+			return emit(input, runtime, context, { phase: "watch", nextAt, lastAt: now, seen, events: at.events + 1 }, event, caughtUp);
 		}
 	}
 
@@ -172,6 +170,7 @@ export function backgroundTasks(D: D, docs: Docs, host: BackgroundHost) {
 		const log = createWriteStream(input.outputFile, { flags: "a" });
 		const child = start(input.target, input);
 		child.stderr?.on("data", (chunk: Buffer) => log.write(chunk));
+		// In memory: it survives /reload with this process; a reopen runs the script again with a full bucket.
 		const limit = new RateLimit(Date.now());
 		let events = at.events;
 		let lines: string[] = [];
@@ -237,7 +236,9 @@ export function backgroundTasks(D: D, docs: Docs, host: BackgroundHost) {
 	async function emit<S extends MonitorState>(input: MonitorInput, runtime: Runtime<MonitorInput, MonitorState>, context: Ctx, next: S, event: string, caughtUp: string | undefined): Promise<void> {
 		const n = monitorEvent(input, String(next.events), event, caughtUp);
 		await runtime.commit(async (tx) => {
-			(await tx.doc(docs.Outbox, runtime.conversationId)).items.push(json(n));
+			const outbox = await tx.doc(docs.Outbox, runtime.conversationId);
+			pruneOutbox(outbox, input.session);
+			outbox.items.push(json(n));
 			return { status: "running", checkpoint: next };
 		}, context);
 		await tasks.notify(n);
@@ -286,6 +287,12 @@ function suppressed(dropped: number, event: string): string {
 
 function monitorEvent(input: MonitorInput, seq: string, event: string, caughtUp: string | undefined): TaskNotification {
 	return { notificationId: `${input.id}:${seq}`, taskId: input.id, kind: "monitor", ownerSession: input.session, outputFile: input.outputFile, summary: `Monitor event: "${input.description}"`, event, caughtUp };
+}
+
+/** Drops the items the session file already acknowledges, so a long-lived monitor does not grow the Outbox forever. */
+export function pruneOutbox(outbox: OutboxDoc, session: string): void {
+	const delivered = tasks.delivered(session);
+	if (delivered) outbox.items = outbox.items.filter((item) => !delivered.has(String(item.notificationId)));
 }
 
 export function nextFire(cron: string, from: number): number {
