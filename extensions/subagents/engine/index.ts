@@ -322,7 +322,7 @@ export async function launch(engine: Engine, spec: LaunchSpec): Promise<{ output
 export async function send(engine: Engine, agentId: string, message: string, toolUseId: string): Promise<"steered" | "queued" | "resumed" | "refused"> {
 	const record = await agentRecord(engine, agentId);
 	if (record.stoppedBy === "user") return "refused";
-	if (record.cli || !record.conversationId) return sendCli(engine, agentId, message, toolUseId);
+	if (!record.conversationId) return sendCli(engine, agentId, message, toolUseId);
 	const conversationId = record.conversationId;
 	const conversation = (await engine.harness.conversation(conversationId, CTX))!;
 	const live = host.live.get(agentId);
