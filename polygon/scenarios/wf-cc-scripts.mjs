@@ -15,7 +15,7 @@ const GO = "RUN-RECORDED";
 export default {
 	name: "wf-cc-scripts",
 	gate: ["M3", "M7"],
-	pending: recorded.length ? "needs Workflow (3.3)" : "no recorded scripts in polygon/private/",
+	pending: recorded.length ? undefined : "no recorded scripts in polygon/private/",
 	timeoutMs: 600_000,
 	async run(t) {
 		assert.ok(recorded.length, "polygon/private/ holds no recorded scripts");
