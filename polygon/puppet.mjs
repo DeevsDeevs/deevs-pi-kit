@@ -3,6 +3,7 @@
 // A string arg "$/re/" is replaced by the last match of re in the transcript (ids the script cannot know upfront).
 import { createServer } from "node:http";
 import { appendFileSync } from "node:fs";
+import { zstdDecompressSync } from "node:zlib";
 
 const text = (c) => typeof c === "string" ? c
 	: (c ?? []).map((b) => b.type === "tool_use" ? `toolCall:${b.id}` : b.type === "tool_result" ? text(b.content) : b.text ?? "").join("\n");
@@ -31,16 +32,23 @@ function resolveRef(value, transcript) {
 
 const reply = (step) => step.id ? `[polygon:${step.id}] ${step.text ?? ""}` : step.text;
 
-export function startPuppet(logFile) {
-	const log = (wire, url, request, step, messages) => appendFileSync(logFile, JSON.stringify({
-		at: Date.now(), wire, url, agent: step.agent ?? null, step: step.id ?? null, tool: step.tool ?? null, model: request.model,
-		messages: messages.length, images: images(messages), tools: (request.tools ?? []).map((t) => t.function?.name ?? t.name ?? t.type),
-	}) + "\n");
+/** `marks` is the scenario's live list of strings to look for; each request logs the ones its raw body contains. */
+export function startPuppet(logFile, marks = []) {
+	const log = (wire, url, request, step, messages) => {
+		const raw = JSON.stringify(request);
+		appendFileSync(logFile, JSON.stringify({
+			at: Date.now(), wire, url, agent: step.agent ?? null, step: step.id ?? null, tool: step.tool ?? null, model: request.model,
+			messages: messages.length, images: images(messages), tools: (request.tools ?? []).map((t) => t.function?.name ?? t.name ?? t.type),
+			serviceTier: request.service_tier ?? null, marks: marks.filter((m) => raw.includes(m)),
+		}) + "\n");
+	};
 	const server = createServer((req, res) => {
-		let body = "";
-		req.on("data", (d) => { body += d; });
+		const chunks = [];
+		req.on("data", (d) => { chunks.push(d); });
 		req.on("end", () => {
-			const request = JSON.parse(body || "{}");
+			// Pi's openai-codex SSE transport sends its body zstd-compressed, as the Codex backend accepts.
+			const body = req.headers["content-encoding"] === "zstd" ? zstdDecompressSync(Buffer.concat(chunks)) : Buffer.concat(chunks);
+			const request = JSON.parse(body.toString() || "{}");
 			if (req.url.includes("/responses")) return responses(res, request, log, req.url);
 			const wire = req.url.includes("/chat/completions") ? "chat" : req.url.includes("/messages") ? "anthropic" : null;
 			// Token counts and health probes such as Claude's /api/hello are answered outside the request log.
@@ -61,7 +69,8 @@ function chat(res, request, step) {
 	const chunk = (delta, finish, usage) => res.write(`data: ${JSON.stringify({ id: "polygon", object: "chat.completion.chunk", created: 0, model: request.model, choices: [{ index: 0, delta, finish_reason: finish }], ...(usage ? { usage } : {}) })}\n\n`);
 	if (step.tool) chunk({ role: "assistant", tool_calls: [{ index: 0, id: step.id, type: "function", function: { name: step.tool, arguments: JSON.stringify(step.args) } }] }, null);
 	else chunk({ role: "assistant", content: reply(step) }, null);
-	chunk({}, step.tool ? "tool_calls" : "stop", { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 });
+	const prompt = step.usage ?? 1;
+	chunk({}, step.tool ? "tool_calls" : "stop", { prompt_tokens: prompt, completion_tokens: 1, total_tokens: prompt + 1 });
 	res.end("data: [DONE]\n\n");
 }
 
@@ -87,7 +96,7 @@ function responses(res, request, log, url) {
 	const items = typeof request.input === "string" ? [{ type: "message", role: "user", content: request.input }] : request.input ?? [];
 	const messages = items.map((i) => i.type === "function_call" ? { role: "assistant", content: `toolCall:${i.call_id}` }
 		: i.type === "function_call_output" ? { role: "tool", content: typeof i.output === "string" ? i.output : JSON.stringify(i.output) }
-		: i.type === "message" ? { role: i.role, content: typeof i.content === "string" ? i.content : i.content ?? [] }
+		: i.role ? { role: i.role, content: typeof i.content === "string" ? i.content : i.content ?? [] }
 		: { role: "other", content: "" });
 	const step = nextStep(messages);
 	log("responses", url, request, step, messages);

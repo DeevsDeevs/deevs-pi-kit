@@ -26,14 +26,14 @@ export async function pi(t, args, opts) {
 }
 
 /** A long-lived RPC lead. `until(pred)` resolves on the first event (past or future) matching pred. */
-export function rpc(t, { args = [] } = {}) {
+export function rpc(t, { args = [], model = "polygon/puppet" } = {}) {
 	const lead = { events: [], stderr: "" };
 	let seq = 0, child, exited, waiters = [];
 	const check = (e) => {
 		for (const w of [...waiters]) if (w.pred(e, lead.events)) { waiters = waiters.filter((x) => x !== w); w.resolve(e); }
 	};
 	const start = (extra = []) => {
-		child = spawn("pi", ["--mode", "rpc", "--model", "polygon/puppet", ...args, ...extra], { cwd: t.repo, env: t.env, stdio: ["pipe", "pipe", "pipe"] });
+		child = spawn("pi", ["--mode", "rpc", "--model", model, ...args, ...extra], { cwd: t.repo, env: t.env, stdio: ["pipe", "pipe", "pipe"] });
 		let buf = "";
 		child.stdout.on("data", (d) => {
 			buf += d;
@@ -70,6 +70,8 @@ export function rpc(t, { args = [] } = {}) {
 		if (!response.success) throw new Error(`${cmd.type} failed: ${JSON.stringify(response).slice(0, 500)}`);
 		return response;
 	};
+	/** Answers a dialog `extension_ui_request`; such responses get no command response back. */
+	lead.reply = (request, answer) => child.stdin.write(JSON.stringify({ type: "extension_ui_response", id: request.id, ...answer }) + "\n");
 	lead.prompt = (message) => lead.send({ type: "prompt", message });
 	lead.script = (script) => lead.prompt(`POLYGON ${JSON.stringify(script)}`);
 	lead.kill9 = async () => { child.kill("SIGKILL"); await exited; };
@@ -99,7 +101,7 @@ export async function herdr(t) {
 	const cli = async (...args) => {
 		const result = await exec(t, "herdr", args, { env, timeoutMs: 10_000 });
 		if (result.status !== 0) throw new Error(`herdr ${args.join(" ")}: ${tail(result.stderr)}`);
-		return JSON.parse(result.stdout).result;
+		return result.stdout.trim() ? JSON.parse(result.stdout).result : undefined;
 	};
 	t.closers.push(() => cli("server", "stop"));
 	const { workspace } = await cli("workspace", "create", "--cwd", t.repo);
