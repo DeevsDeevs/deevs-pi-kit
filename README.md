@@ -1,6 +1,6 @@
 # deevs-pi-kit
 
-A [Pi](https://github.com/earendil-works/pi) package for work you can walk away from: bounded background jobs, isolated subagents, autonomous missions, handoffs that survive a session, and persistent collaborators (Pi, Claude Code or Codex) that mail each other from their own [Herdr](https://herdr.dev) tabs. Pi does the thinking; Herdr owns every process that outlives a turn.
+A [Pi](https://github.com/earendil-works/pi) package for work you can walk away from: bounded background jobs, isolated subagents, handoffs that survive a session, and persistent collaborators (Pi, Claude Code or Codex) that mail each other from their own [Herdr](https://herdr.dev) tabs. Pi does the thinking; Herdr owns every process that outlives a turn.
 
 ## Requirements
 
@@ -46,8 +46,6 @@ Nothing to set up first. Pi starts the daemon in its own Herdr workspace on the 
 - **runtime** owns collaborator identity, mail and Herdr tab lifecycle. `/runtime`, `collaborator_list`, `collaborator_manage`, `collaborator_workspace` and four MCP mail tools. [Protocol](extensions/runtime/PROTOCOL.md).
 - **jobs** runs bounded commands with capped output, a hard timeout and process-tree cancellation. `/jobs`, `job_start`, `job_wait`, `job_read`, `job_stop`.
 - **subagents** runs curated read-only personas in isolated Pi processes: explorer, architect, reviewer, tester, logic-hunter, devops, python-dev, cpp-dev, rust-dev, anti-slop. Writing needs `allowWrite`; no dialog asks. `/agents`, `subagent`, `subagent_wait`. [More](extensions/subagents/README.md).
-- **workflow** runs foreground JavaScript that fans work out to read-only child agents, in trusted projects only. `workflow`.
-- **mission** drives a single-controller autonomous objective with limits, reviewed candidates and confirmed takeover, state under `.missions/`. `/mission`, `mission_*`. [More](extensions/mission/README.md).
 - **cron** schedules prompts for this Pi session, fired while it is idle. `/cron`, `cron`. [More](extensions/cron/README.md).
 - **chains** saves markdown handoffs under `.chains/` and reminds once to save one at 80% context. `/chains`, `/chain-*`, `chain_*`. [More](extensions/chains/README.md).
 - **wiki** lints, graphs, searches and packs a curated markdown knowledge base. `/wiki:*`, `wiki_*`. [More](extensions/wiki/README.md).
@@ -64,7 +62,7 @@ Orchestration never waits on a dialog: write-capable subagents and collaborator 
 
 ## Skills
 
-Nine skills pair with the extensions above and tell the model when and how to use them: collaborators, background-tasks, subagents, missions, chain-system, todos, wiki, arxiv, ask-user. Six stand alone and also work in Claude Code and Codex: codebase-orientation, concept-diagrams, diagnose, grill-me, validation-review, datadog-pup.
+Eight skills pair with the extensions above and tell the model when and how to use them: collaborators, background-tasks, subagents, chain-system, todos, wiki, arxiv, ask-user. Six stand alone and also work in Claude Code and Codex: codebase-orientation, concept-diagrams, diagnose, grill-me, validation-review, datadog-pup.
 
 ## Development
 
@@ -72,11 +70,7 @@ Nine skills pair with the extensions above and tell the model when and how to us
 npm install
 npm run check                        # lint, typecheck, tests, mode smokes, audit, pack
 node extensions/runtime/service/main.ts --help  # verify standalone imports without starting a daemon
-npm run smoke:runtime-release        # daemon, participant, mail and MCP against real Herdr
-npm run smoke:collaborator-release   # collaborator launch, mail, stop and worktree
 npm run smoke:native-release         # interactive targets and Git worktrees, no Herdr
 npm run bench:context                # tokens each surface costs, see bench/README.md
 npm run sync:chains-plugin           # copy the chain core into plugins/chains after editing it
 ```
-
-The release smokes start real Herdr and Pi processes, so `check` leaves them out.

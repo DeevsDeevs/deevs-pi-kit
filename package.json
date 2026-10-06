@@ -1,7 +1,7 @@
 {
   "name": "deevs-pi-kit",
   "version": "0.1.0",
-  "description": "Portable Pi package with bounded Jobs, curated Subagents, Missions, session Cron, Chains, workflows, research tools, and skills",
+  "description": "Portable Pi package with bounded Jobs, curated Subagents, session Cron, Chains, research tools, and skills",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
@@ -10,16 +10,13 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "lint:anti-slop": "oxlint extensions/runtime extensions/mission extensions/chains extensions/shared",
+    "lint:anti-slop": "oxlint extensions/runtime extensions/chains extensions/shared",
     "test": "vitest run",
     "test:watch": "vitest",
     "audit": "node scripts/audit.mjs",
     "bench:context": "node --experimental-strip-types bench/context.mjs",
     "bench:protocol": "node --experimental-strip-types bench/protocol/all.mjs",
-    "bench:live": "node --experimental-strip-types bench/live/run.mjs",
     "smoke:modes": "node scripts/smoke-modes.mjs",
-    "smoke:runtime-release": "node --experimental-strip-types scripts/smoke-runtime-release.mjs",
-    "smoke:collaborator-release": "node --experimental-strip-types scripts/smoke-collaborator-release.mjs",
     "smoke:native-release": "vitest run test/hosted-runtime-bridge.test.ts test/hosted-runtime-participant.test.ts test/runtime-worktree.test.ts",
     "check": "npm run lint:anti-slop && npm run typecheck && npm test && npm run smoke:modes && npm run audit && npm pack --dry-run",
     "sync:chains-plugin": "node scripts/sync-chains-plugin.mjs"

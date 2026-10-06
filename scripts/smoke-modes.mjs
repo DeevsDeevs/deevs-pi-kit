@@ -26,7 +26,7 @@ if (!commands?.success || !state?.success || !jobs?.success || !cron?.success) t
 if (!rows.some((row) => row.type === "extension_ui_request" && row.method === "notify" && String(row.message).includes("No Jobs"))) throw new Error("RPC /jobs output was silent");
 if (!rows.some((row) => row.type === "extension_ui_request" && row.method === "notify" && String(row.message).includes("No cron tasks"))) throw new Error("RPC /cron output was silent");
 const names = new Set(commands.data.commands.map((command) => command.name));
-for (const name of ["agents", "chains", "cron", "jobs", "mission", "todos"]) if (!names.has(name)) throw new Error(`Missing /${name}`);
+for (const name of ["agents", "chains", "cron", "jobs", "todos"]) if (!names.has(name)) throw new Error(`Missing /${name}`);
 
 for (const check of [
 	{ extension: "jobs", command: "/jobs", expected: "No Jobs" },
