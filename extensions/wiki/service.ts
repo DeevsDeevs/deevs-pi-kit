@@ -73,7 +73,7 @@ export class WikiService {
 		const graph = await this.graph({ path: root, includeOrphans: true });
 		const lint = await this.lint({ path: root, maxIssues: input.maxIssues ?? 10 });
 		const pageCountsByType: Record<string, number> = {};
-		for (const page of pages) pageCountsByType[page.type ?? "unknown"] = (pageCountsByType[page.type ?? "unknown"] ?? 0) + 1;
+		for (const type of pages.map((page) => page.type ?? "unknown")) pageCountsByType[type] = (pageCountsByType[type] ?? 0) + 1;
 		return {
 			path: root,
 			coreFiles,
@@ -156,7 +156,11 @@ export class WikiService {
 			}
 		}
 		const inbound = new Map<string, string[]>();
-		for (const edge of edges) inbound.set(edge.to, [...(inbound.get(edge.to) ?? []), edge.from]);
+		for (const edge of edges) {
+			const from = inbound.get(edge.to) ?? [];
+			from.push(edge.from);
+			inbound.set(edge.to, from);
+		}
 		const orphans = input.includeOrphans === false ? [] : nodes.filter((node) => (inbound.get(node.id) ?? []).length === 0);
 		const backlinks = input.includeBacklinks ? Object.fromEntries([...inbound.entries()].map(([key, value]) => [key, [...new Set(value)].sort()])) : undefined;
 		const truncated = nodes.length > maxNodes || edges.length > maxEdges;
@@ -334,7 +338,9 @@ function linkTargets(pages: WikiPageInfo[]): LinkTargets {
 	const byBase = new Map<string, WikiPageInfo[]>();
 	for (const page of pages) {
 		const base = basenameId(page.relativePath);
-		byBase.set(base, [...(byBase.get(base) ?? []), page]);
+		const named = byBase.get(base) ?? [];
+		named.push(page);
+		byBase.set(base, named);
 	}
 	return { byId: new Map(pages.map((page) => [page.id, page])), byBase };
 }
