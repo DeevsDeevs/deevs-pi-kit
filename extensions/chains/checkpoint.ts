@@ -164,7 +164,7 @@ export class ChainCheckpointService {
 				? " Context reached 80%: save a concise Chain checkpoint with chain_save before compaction drops detail. It is session metadata, not a code edit, so read-only/no-edit tasks need it too. If no Chain is active, choose a concise task-specific name."
 				: " The milestone already created this obligation: call chain_save before starting further substantive work."
 			: " Load this Chain before rediscovery and continue from its recorded next step.";
-		return `Chain checkpoint: ${this.state.status === "due" ? "a durable checkpoint is due" : "resume with the active Chain"} for ${target}.${reasons}${instruction} Do not claim completion while a checkpoint is due unless it is explicitly waived with a reason.`;
+		return `Chain checkpoint: ${this.state.status === "due" ? "a durable checkpoint is due" : "resume with the active Chain"} for ${target}.${reasons}${instruction} Do not claim completion while a checkpoint is due.`;
 	}
 
 	clearStatus(): void {
