@@ -30,6 +30,9 @@ function select(all) {
 		&& (!opts.live || s.live));
 }
 
+// A scenario written ahead of its feature carries `pending: "<the step that makes it pass>"`; only --only runs it.
+const isSkipped = (s) => s.pending && !opts.only;
+
 function ensureImage() {
 	const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
 	const args = { PI_VERSION: opts.pi ?? pkg.devDependencies["@earendil-works/pi-coding-agent"], CLAUDE_VERSION: "latest", CODEX_VERSION: "latest" };
@@ -54,7 +57,7 @@ function kitSource(results) {
 
 async function host() {
 	if (opts.list) {
-		for (const s of await scenarios()) console.log(`${s.name.padEnd(24)} ${[s.gate].flat().join(",").padEnd(8)} ${[s.slow && "slow", s.live && "live"].filter(Boolean).join(" ")}`);
+		for (const s of await scenarios()) console.log(`${s.name.padEnd(24)} ${[s.gate].flat().join(",").padEnd(8)} ${[s.slow && "slow", s.live && "live", s.pending && `pending: ${s.pending}`].filter(Boolean).join(" ")}`);
 		return;
 	}
 	const image = ensureImage();
@@ -110,13 +113,14 @@ async function runOne(s, run) {
 
 async function inside() {
 	const run = process.env.POLYGON_RUN_ID;
-	const selected = select(await scenarios());
+	const chosen = select(await scenarios());
+	const selected = chosen.filter((s) => !isSkipped(s));
 	if (process.env.POLYGON_KIT_MODE === "clone") {
 		const install = spawnSync("npm", ["install", "--omit=dev", "--no-audit", "--no-fund", "--loglevel=error"], { cwd: "/kit", stdio: ["ignore", 2, 2], env: { ...process.env, npm_config_update_notifier: "false" } });
 		if (install.status !== 0) process.exit(1);
 	}
 	const started = Date.now();
-	const out = [];
+	const out = chosen.filter(isSkipped).map((s) => ({ name: s.name, gate: s.gate, status: "pending", ms: 0, error: s.pending }));
 	let next = 0;
 	const workers = Math.min(selected.length, opts.live ? 4 : availableParallelism());
 	await Promise.all(Array.from({ length: workers }, async () => {
@@ -128,11 +132,11 @@ async function inside() {
 	}));
 	out.sort((a, b) => a.name.localeCompare(b.name));
 	writeFileSync("/results/summary.json", JSON.stringify({ run, kit: process.env.POLYGON_KIT_MODE, live: Boolean(opts.live), ms: Date.now() - started, results: out }, null, 2));
-	console.log(`\n${"scenario".padEnd(24)} ${"gate".padEnd(8)} ${"status".padEnd(6)} ${"ms".padStart(7)}  detail`);
-	for (const r of out) console.log(`${r.name.padEnd(24)} ${[r.gate].flat().join(",").padEnd(8)} ${r.status.padEnd(6)} ${String(r.ms).padStart(7)}  ${(r.error ?? "").split("\n")[0].slice(0, 140)}`);
-	const failed = out.filter((r) => r.status !== "pass").length;
-	console.log(`\n${out.length - failed} passed, ${failed} failed in ${Date.now() - started}ms`);
-	process.exit(failed || !out.length ? 1 : 0);
+	console.log(`\n${"scenario".padEnd(24)} ${"gate".padEnd(8)} ${"status".padEnd(7)} ${"ms".padStart(7)}  detail`);
+	for (const r of out) console.log(`${r.name.padEnd(24)} ${[r.gate].flat().join(",").padEnd(8)} ${(r.status === "pending" ? "PENDING" : r.status).padEnd(7)} ${String(r.ms).padStart(7)}  ${(r.error ?? "").split("\n")[0].slice(0, 140)}`);
+	const count = (status) => out.filter((r) => r.status === status).length;
+	console.log(`\n${count("pass")} passed, ${count("fail")} failed, ${count("pending")} pending in ${Date.now() - started}ms`);
+	process.exit(count("fail") || !selected.length ? 1 : 0);
 }
 
 await (process.env.POLYGON_IN_CONTAINER ? inside() : host());

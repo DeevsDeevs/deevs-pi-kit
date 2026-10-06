@@ -41,6 +41,7 @@ Drop `polygon/scenarios/<name>.mjs`:
 ```js
 export default {
 	name: "jobs-basic", gate: "M0",        // gate may be an array; slow: true keeps it out of the default run
+	                                        // pending: "<step>" skips it (listed as PENDING) unless named in --only
 	async run(t) {                          // t: home, repo, env, git(), dir, requestLog
 		const lead = rpc(t);                  // drive.mjs: send, prompt, script, until, kill9, restart
 		await lead.script({ agent: "lead", steps: [...] });
