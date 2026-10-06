@@ -13,13 +13,13 @@ npm run polygon -- --pi-runtime node     # Pi from npm on Node instead of the Bu
 npm run polygon -- --list
 ```
 
-Results land in `polygon/results/<run>/` (`latest` points at the newest): `summary.json`, and per scenario `result.json`, `events.jsonl` (the RPC lead), `requests.jsonl` (the puppet), `pi-stderr.log` and the sandbox `home/` and `repo/`. On red, read `polygon/results/latest/<name>/` before changing code. The exit code is non-zero on any failure.
+Scenarios run twelve at a time (four on `--live`); those marked `timing: true` bound latency and run alone afterwards, so a bound measures the kit rather than the load. Results land in `polygon/results/<run>/` (`latest` points at the newest): `summary.json` (with the image's exact `pi`, `claude`, `codex` and `herdr` versions), and per scenario `result.json`, `events.jsonl` (the RPC lead), `requests.jsonl` (the puppet), `pi-stderr.log` and the sandbox `home/` and `repo/`. On red, read `polygon/results/latest/<name>/` before changing code. The exit code is non-zero on any failure.
 
 ## Sandbox
 
-`Containerfile` holds Node 24, git, python3, tini, ripgrep, fd, the latest Claude Code and Codex, Herdr's official static release binary checked against its published SHA-256, and Pi at the kit's devDependencies version as its Bun-compiled release binary (`pi-linux-x64.tar.gz`, checked against the release's `SHA256SUMS`), the build users run. `--pi-runtime node` installs Pi from npm and runs it on Node instead, for comparison; `durable-load` asserts which runtime, and so which SQLite driver, the engine got. The image tag is a hash of the Containerfile and build args, built only when missing; `podman image rm` it to pick up newer Claude or Codex releases.
+`Containerfile` holds Node 24, git, python3, tini, ripgrep, fd, the latest Claude Code and Codex, Herdr's official static release binary checked against its published SHA-256, and Pi at the kit's devDependencies version as its Bun-compiled release binary (`pi-linux-x64.tar.gz`, checked against the release's `SHA256SUMS`), the build users run. `--pi-runtime node` installs Pi from npm and runs it on Node instead, for comparison; `durable-load` asserts which runtime, and so which SQLite driver, the engine got. The image tag is a hash of the Containerfile and build args, built only when missing; `podman image rm` it to pick up newer Claude or Codex releases. `test/fixtures/cli/` holds Claude and Codex output recorded on the versions in its `versions.json`; when the image runs others, the run fails with a `cli-fixtures` row until you copy the new `claude-worker` and `codex-worker` outputs there and update `versions.json`.
 
-One container runs per polygon run. The kit is mounted read-only at `/kit` (a symlinked `node_modules` is mounted at its real path), `polygon/` at `/polygon`, and the run's results at `/results`. Each scenario gets its own `HOME` under `/results/<name>/home`, with Pi, Claude and Codex config dirs inside it, an env built from scratch, a git identity, and a `POLYGON_RUN` tag. Teardown closes the drivers, then SIGKILLs every process still carrying the tag; any such process fails the scenario.
+One container runs per polygon run, with `--network=none` (loopback only) unless `--live`; `--kit clone` installs its dependencies in a separate container first. The kit is mounted read-only at `/kit` (a symlinked `node_modules` is mounted at its real path), `polygon/` at `/polygon`, and the run's results at `/results`. Each scenario gets its own `HOME` under `/results/<name>/home`, with Pi, Claude and Codex config dirs inside it, an env built from scratch, a git identity, and a `POLYGON_RUN` tag. Teardown closes the drivers, then SIGKILLs every process still carrying the tag; any such process fails the scenario.
 
 ## The puppet
 
@@ -41,7 +41,8 @@ Drop `polygon/scenarios/<name>.mjs`:
 
 ```js
 export default {
-	name: "jobs-basic", gate: "M0",        // gate may be an array; slow: true keeps it out of the default run
+	name: "jobs-basic", gate: "M0",        // gate may be an array; slow: true keeps it out of the default run;
+	                                        // timing: true runs it alone after the others
 	                                        // pending: "<step>" skips it (listed as PENDING) unless named in --only
 	async run(t) {                          // t: home, repo, kit, env, git(), dir, requestLog, marks, live, piRuntime
 		const lead = rpc(t);                  // drive.mjs: send, prompt, script, until, kill9, restart

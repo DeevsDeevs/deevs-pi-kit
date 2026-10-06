@@ -16,6 +16,7 @@ function lockPids(t) {
 export default {
 	name: "durable-16",
 	gate: "M1",
+	timing: true,
 	slow: true,
 	timeoutMs: 240_000,
 	async run(t) {

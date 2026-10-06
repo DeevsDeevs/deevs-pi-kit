@@ -6,6 +6,7 @@ import { entries, requests, runs } from "../look.mjs";
 export default {
 	name: "esc-redeliver",
 	gate: "M1",
+	timing: true,
 	async run(t) {
 		const lead = rpc(t);
 		await lead.script({ agent: "lead", steps: [

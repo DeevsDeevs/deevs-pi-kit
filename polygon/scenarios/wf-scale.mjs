@@ -14,6 +14,7 @@ const SOURCE = [
 export default {
 	name: "wf-scale",
 	gate: "M3",
+	timing: true,
 	slow: true,
 	timeoutMs: 600_000,
 	async run(t) {
