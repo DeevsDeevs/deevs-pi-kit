@@ -72,9 +72,10 @@ it.each(["claude-code", "codex"] as const)("gives a read-only %s collaborator th
 	if (driver === "claude-code") {
 		expect(compiled.args.join(" ")).toContain("--permission-mode dontAsk --setting-sources  --strict-mcp-config");
 		const tools = compiled.args[compiled.args.indexOf("--tools") + 1]!.split(",");
-		expect(tools.slice(0, 3)).toEqual(["Read", "Glob", "Grep"]);
-		expect(tools.slice(3)).toEqual(toolDefinitions.map(tool => `mcp__${compiled.serverName}__${tool.name}`));
-		expect(compiled.args[compiled.args.indexOf("--allowedTools") + 1]).toBe(`mcp__${compiled.serverName}`);
+		expect(tools.slice(0, 4)).toEqual(["Bash", "Read", "Glob", "Grep"]);
+		expect(tools.slice(4)).toEqual(toolDefinitions.map(tool => `mcp__${compiled.serverName}__${tool.name}`));
+		expect(tools).not.toContain("Edit");
+		expect(compiled.args[compiled.args.indexOf("--allowedTools") + 1]).toBe(`Bash,Read,Glob,Grep,mcp__${compiled.serverName}`);
 		expect(compiled.args[compiled.args.indexOf("--mcp-config") + 1]).toBe(writer.args[writer.args.indexOf("--mcp-config") + 1]);
 		expect(compiled.args[compiled.args.indexOf("--append-system-prompt") + 1]).toBe(writer.args.at(-1));
 	} else {

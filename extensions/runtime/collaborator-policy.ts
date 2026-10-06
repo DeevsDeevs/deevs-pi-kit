@@ -18,7 +18,7 @@ import type { CollaboratorPersona } from "./session-record.ts";
 const PATH_SEPARATOR = process.platform === "win32" ? "\\" : "/";
 const COLLABORATOR_PERSONAS = loadBuiltinAgents();
 const PI_COLLABORATOR_MODEL = /^[a-z0-9][a-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._/:-]*$/;
-const FILE_TOOLS = new Set(["read", "grep", "find", "ls", "edit", "write"]);
+const WRITE_TOOLS = new Set(["edit", "write"]);
 
 export interface CollaboratorCandidate {
 	participantId: string;
@@ -115,7 +115,7 @@ export function collaboratorToolBlock(
 ): CollaboratorToolBlock | undefined {
 	const allowed = collaboratorProfileTools(profile);
 	if (!allowed.includes(toolName)) return { block: true, reason: `Collaborator profile ${profile} does not permit ${toolName}.` };
-	if (!FILE_TOOLS.has(toolName)) return undefined;
+	if (!WRITE_TOOLS.has(toolName)) return undefined;
 	if (collaboratorPathAllowed(cwd, path, toolName === "write")) return undefined;
 	return { block: true, reason: `Collaborator profile ${profile} confines ${toolName} to the project workspace.` };
 }

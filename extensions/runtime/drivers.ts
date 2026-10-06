@@ -7,8 +7,8 @@ import type { CollaboratorPersona, ManagedAgentSession } from "./session-record.
 
 const MESSAGING_TOOLS = toolDefinitions.map(tool => tool.name);
 const COLLABORATOR_METADATA_TOOLS = ["collaborator_list", ...MESSAGING_TOOLS, "chain_save", "chain_load", "chain_context"] as const;
-const READ_ONLY_COLLABORATOR_TOOLS = ["read", "grep", "find", "ls", "safe_diff", ...COLLABORATOR_METADATA_TOOLS] as const;
-const WORKSPACE_WRITE_COLLABORATOR_TOOLS = [...READ_ONLY_COLLABORATOR_TOOLS, "edit", "write", "bash"] as const;
+const READ_ONLY_COLLABORATOR_TOOLS = ["read", "grep", "find", "ls", "bash", "safe_diff", ...COLLABORATOR_METADATA_TOOLS] as const;
+const WORKSPACE_WRITE_COLLABORATOR_TOOLS = [...READ_ONLY_COLLABORATOR_TOOLS, "edit", "write"] as const;
 /** One owner contract per collaborator profile: every profile has an allowlist, none falls through. */
 interface ProfileToolTable {
 	"read-only": readonly string[];
@@ -19,7 +19,7 @@ const PROFILE_TOOLS: ProfileToolTable = {
 	"read-only": READ_ONLY_COLLABORATOR_TOOLS,
 	"workspace-write": WORKSPACE_WRITE_COLLABORATOR_TOOLS,
 };
-const CLAUDE_READ_ONLY_TOOLS = "Read,Glob,Grep";
+const CLAUDE_READ_ONLY_TOOLS = "Bash,Read,Glob,Grep";
 const MAX_LAUNCH_COMMAND_BYTES = 4000;
 const LAUNCH_TIMEOUT_MS = "30000";
 export const NATIVE_STARTUP_MESSAGE = "Acknowledge in one line and wait for input.";
@@ -135,9 +135,9 @@ function claudeCommand(input: DriverCommandInput): string[] {
 	const prompt = context ? ["--append-system-prompt", context] : [];
 	const servers = mcp ? ["--mcp-config", JSON.stringify({ mcpServers: { [mcp.serverName]: mcp.server } })] : [];
 	if (isWriter(input.profile)) return [...servers, "--permission-mode", "auto", ...model, ...prompt];
-	// Read-only ignores every settings file and foreign MCP server, allows only the mail server, and keeps the file tools.
+	// Read-only ignores every settings file and foreign MCP server and offers no edit or write tool; dontAsk denies anything not allowed, so Bash and reads anywhere are allowed explicitly.
 	const tools = [CLAUDE_READ_ONLY_TOOLS, ...(mcp ? MESSAGING_TOOLS.map(tool => `mcp__${mcp.serverName}__${tool}`) : [])].join(",");
-	const allowed = mcp ? ["--allowedTools", `mcp__${mcp.serverName}`] : [];
+	const allowed = ["--allowedTools", [CLAUDE_READ_ONLY_TOOLS, ...(mcp ? [`mcp__${mcp.serverName}`] : [])].join(",")];
 	return ["--permission-mode", "dontAsk", "--setting-sources", "", "--strict-mcp-config", "--tools", tools, ...allowed, ...servers, ...model, ...prompt];
 }
 
