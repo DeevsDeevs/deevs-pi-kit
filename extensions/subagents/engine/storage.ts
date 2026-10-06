@@ -1,22 +1,29 @@
 import { readdir, readFile, rm, writeFile } from "node:fs/promises";
+import type { SqliteDatabase, SqliteExecutor, SqliteValue } from "@earendil-works/pi-durable/storage/sqlite";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 import { ownsProcessIdentity, readProcessIdentity, trySignalGroup } from "../../shared/process-group.ts";
 
-type Row = Record<string, unknown>;
+type Row = Record<string, SqliteValue>;
 interface BunDatabase {
 	exec(sql: string): void;
-	query(sql: string): { run(...params: unknown[]): void; get(...params: unknown[]): Row | null; all(...params: unknown[]): Row[] };
+	query(sql: string): { run(...params: SqliteValue[]): void; get(...params: SqliteValue[]): Row | null; all(...params: SqliteValue[]): Row[] };
 	close(): void;
 }
 
+const LockFile = Type.Object({ pid: Type.Number(), identity: Type.Optional(Type.String()) });
+
 /** durable's portable SqliteStorage over Bun's synchronous `bun:sqlite`; every operation is queued behind the last. */
-export function bunSqlite(Database: new (path: string, options: { create: boolean }) => BunDatabase, path: string) {
+export function bunSqlite(Database: new (path: string, options: { create: boolean }) => BunDatabase, path: string): SqliteDatabase {
 	const db = new Database(path, { create: true });
 	db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000");
-	const direct = {
-		exec: async (sql: string) => void db.exec(sql),
-		run: async (sql: string, ...params: unknown[]) => void db.query(sql).run(...params),
-		get: async (sql: string, ...params: unknown[]) => db.query(sql).get(...params) ?? undefined,
-		all: async (sql: string, ...params: unknown[]) => db.query(sql).all(...params),
+	const direct: SqliteExecutor = {
+		exec: async (sql) => void db.exec(sql),
+		run: async (sql, ...params) => void db.query(sql).run(...params),
+		// SAFETY: durable's own SQL selects exactly the columns of the row type it asks for.
+		get: async <T extends object>(sql: string, ...params: SqliteValue[]) => (db.query(sql).get(...params) ?? undefined) as T | undefined,
+		// SAFETY: as for get.
+		all: async <T extends object>(sql: string, ...params: SqliteValue[]) => db.query(sql).all(...params) as T[],
 	};
 	let tail: Promise<unknown> = Promise.resolve();
 	const serial = <T>(op: () => Promise<T>): Promise<T> => {
@@ -25,11 +32,11 @@ export function bunSqlite(Database: new (path: string, options: { create: boolea
 		return next;
 	};
 	return {
-		exec: (sql: string) => serial(() => direct.exec(sql)),
-		run: (sql: string, ...params: unknown[]) => serial(() => direct.run(sql, ...params)),
-		get: (sql: string, ...params: unknown[]) => serial(() => direct.get(sql, ...params)),
-		all: (sql: string, ...params: unknown[]) => serial(() => direct.all(sql, ...params)),
-		transaction: <T>(callback: (tx: typeof direct) => Promise<T>) => serial(async () => {
+		exec: (sql) => serial(() => direct.exec(sql)),
+		run: (sql, ...params) => serial(() => direct.run(sql, ...params)),
+		get: (sql, ...params) => serial(() => direct.get(sql, ...params)),
+		all: (sql, ...params) => serial(() => direct.all(sql, ...params)),
+		transaction: (callback) => serial(async () => {
 			db.exec("BEGIN IMMEDIATE");
 			try {
 				const result = await callback(direct);
@@ -52,6 +59,7 @@ export async function lock(file: string): Promise<void> {
 			await writeFile(file, mine, { flag: "wx" });
 			return;
 		} catch (error) {
+			// SAFETY: fs/promises rejects with a Node system error.
 			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 		}
 		const held = parseLock(await readFile(file, "utf8").catch(() => ""));
@@ -70,8 +78,8 @@ export async function unlock(file: string): Promise<void> {
 
 function parseLock(text: string): { pid: number; identity?: string } | undefined {
 	try {
-		const value = JSON.parse(text) as { pid?: unknown; identity?: unknown };
-		return typeof value.pid === "number" ? { pid: value.pid, identity: typeof value.identity === "string" ? value.identity : undefined } : undefined;
+		const value = JSON.parse(text);
+		return Value.Check(LockFile, value) ? value : undefined;
 	} catch {
 		return undefined;
 	}

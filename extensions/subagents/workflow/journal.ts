@@ -1,3 +1,4 @@
+/* oxlint-disable anti-slop/no-runtime-typeof -- journal.jsonl lines are read back from disk: parseJournal is their decoding boundary. */
 import { createHash } from "node:crypto";
 import type { AgentOptions, JsonValue } from "./sandbox.ts";
 
