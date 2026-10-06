@@ -1,8 +1,16 @@
+import { registerHooks } from "node:module";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { startRuntimeServer } from "./server.ts";
+
+// Only standalone Node needs a private TypeBox; Pi extensions use the host's peer.
+registerHooks({
+	resolve(specifier, context, nextResolve) {
+		return nextResolve(specifier.replace(/^typebox(?=\/|$)/, "runtime-typebox"), context);
+	},
+});
 
 try {
+	const { startRuntimeServer } = await import("./server.ts");
 	const options = parseArgs(process.argv.slice(2));
 	if (options.help) {
 		process.stdout.write("Usage: node extensions/runtime/service/main.ts [--root PATH]\n");
