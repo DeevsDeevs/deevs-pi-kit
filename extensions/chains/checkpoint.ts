@@ -237,20 +237,17 @@ async function gitFingerprint(pi: ExtensionAPI, cwd: string): Promise<string | u
 
 function parseOperation(value: CustomEntry["data"]): ChainCheckpointOperation | undefined {
 	const operation = asRecord(value);
-	const type = stringValue(operation?.type);
-	const at = numberValue(operation?.at);
+	if (!operation) return undefined;
+	const type = stringValue(operation.type);
+	const at = numberValue(operation.at);
 	if (type === undefined || at === undefined) return undefined;
-	const chain = stringValue(operation?.chain);
-	const branch = stringValue(operation?.branch);
+	const chain = stringValue(operation.chain);
+	const branch = stringValue(operation.branch);
 	if (type === "activate" && chain !== undefined && branch !== undefined) return { type, chain, branch, at };
-	const reason = stringValue(operation?.reason);
-	if (type === "due" && reason !== undefined) return { type, reason, code: chainDueCode(operation?.code) ?? "other", at };
-	const link = stringValue(operation?.link);
-	if (type === "saved" && chain !== undefined && branch !== undefined && (operation?.link === undefined || link !== undefined)) {
-		const saved: ChainCheckpointOperation = { type, chain, branch, at };
-		if (link !== undefined) saved.link = link;
-		return saved;
-	}
+	const reason = stringValue(operation.reason);
+	if (type === "due" && reason !== undefined) return { type, reason, code: chainDueCode(operation.code) ?? "other", at };
+	const link = stringValue(operation.link);
+	if (type === "saved" && chain !== undefined && branch !== undefined && (operation.link === undefined || link !== undefined)) return { type, chain, branch, link, at };
 	if (type === "waived" && reason !== undefined) return { type, reason, at };
 	if (type === "context_reset") return { type, at };
 	return undefined;
