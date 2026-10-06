@@ -93,6 +93,8 @@ export class CollaboratorService {
 	private readonly native: NativeAgentService;
 	private readonly launcher: CollaboratorLauncher;
 	private manageActive = false;
+	/** The tab each collaborator was started in: stand-down and stop close it, whatever Herdr reports about its agent. */
+	private readonly tabs = new Map<string, string>();
 
 	constructor(session: RuntimeSession, native: NativeAgentService) {
 		this.session = session;
@@ -254,7 +256,9 @@ export class CollaboratorService {
 			const participant = `${start.protocol}/${candidate.participantId}`;
 			try {
 				const existing = findParticipant(participants, start.protocol, candidate.participantId);
-				return { participant, status: "started" as const, paneId: await this.launcher.launch(start, candidate, existing) };
+				const tab = await this.launcher.launch(start, candidate, existing);
+				this.tabs.set(candidate.participantId, tab.tabId);
+				return { participant, status: "started" as const, paneId: tab.paneId };
 			} catch (error) {
 				return { participant, status: outcome(start.signal), error: error instanceof Error ? error.message : String(error) };
 			}
@@ -381,9 +385,18 @@ export class CollaboratorService {
 		}
 		const control = participant.holderTargetKey ? this.session.store.agent(participant.holderTargetKey) : undefined;
 		if (control && outcome !== "unmanaged") this.native.markStopped(control);
+		await this.closeTab(participant.participantId);
 		return outcome;
 	}
 
+
+	// ponytail: tab IDs live in this lead's memory; after a lead restart the daemon's own close is the only one.
+	private async closeTab(participantId: string): Promise<void> {
+		const tabId = this.tabs.get(participantId);
+		if (!tabId) return;
+		this.tabs.delete(participantId);
+		await this.session.pi.exec("herdr", ["tab", "close", tabId], { timeout: 5_000 }).catch(() => undefined);
+	}
 
 	async manageWorktrees(input: CollaboratorWorktreeInput, ctx: ExtensionContext, signal?: AbortSignal): Promise<CollaboratorWorktreeResult> {
 		throwIfAborted(signal);

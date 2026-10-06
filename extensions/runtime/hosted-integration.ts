@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent";
-import type { CollaboratorToolBlock } from "./collaborator-policy.ts";
+import type { CollaboratorCandidate, CollaboratorToolBlock } from "./collaborator-policy.ts";
 import {
 	CollaboratorService,
 	LEAD,
@@ -30,6 +30,8 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 	private readonly messaging: MessagingClient;
 	private readonly native: NativeAgentService;
 	private readonly collaborators: CollaboratorService;
+	/** What each collaborator was started with, so a message to a stood-down one resumes it the same way. */
+	private readonly launched = new Map<string, CollaboratorCandidate>();
 
 	constructor(pi: ExtensionAPI, root = defaultRuntimeRoot()) {
 		this.store = new HostedSessionStore(pi);
@@ -65,9 +67,15 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 
 	async manageCollaborators(input: CollaboratorManageInput, ctx: ExtensionContext, signal?: AbortSignal): Promise<CollaboratorManageResult[]> {
 		const results = await this.collaborators.manage(input, ctx, signal);
+		if (input.action === "start") for (const participant of input.participants) this.launched.set(participant.participantId, participant);
 		// A first start acquires main; its namespace must exist before a collaborator can mail it.
 		if (isHeld(this.store.identity?.disposition)) await this.messaging.descriptor(ctx).then(() => this.syncRoster(ctx)).catch(() => {});
 		return results;
+	}
+
+	private async relaunch(participantId: string, ctx: ExtensionContext): Promise<void> {
+		const [result] = await this.manageCollaborators({ action: "start", participants: [this.launched.get(participantId) ?? { participantId }] }, ctx);
+		if (result?.status !== "started") throw new Error(`${participantId} did not resume: ${result?.error ?? result?.status}`);
 	}
 
 	/** Collaborators join the shared roster: the lead sees each one by name, a collaborator sees main. */
@@ -75,6 +83,7 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 		const identity = this.store.identity;
 		if (!identity || !isHeld(identity.disposition)) return;
 		const ownerSession = ctx.sessionManager.getSessionId();
+		const current = () => this.session.context ?? ctx;
 		const row = (name: string, description: string, held: boolean, stop?: () => Promise<void>) => tasks.register({
 			id: name,
 			kind: "collaborator",
@@ -84,14 +93,18 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 			ownerSession,
 			startedAt: Date.now(),
 			stop,
-			send: (message, images) => this.messaging.send(this.session.context ?? ctx, name, message, images),
+			send: async (message, images) => {
+				// A stood-down collaborator resumes its own transcript in a new tab, then gets the message.
+				if (!held) await this.relaunch(name, current());
+				return this.messaging.send(current(), name, message, images);
+			},
 		});
 		if (this.store.launch) return row(LEAD, "the lead", true);
 		for (const participant of await this.collaborators.list(ctx)) {
 			if (participant.protocol !== identity.protocol || participant.participantId === identity.participantId) continue;
 			const standDown = { action: "stand_down" as const, protocol: identity.protocol, participants: [{ participantId: participant.participantId }] };
 			row(participant.participantId, `${participant.driver ?? "pi"} ${participant.profile ?? "read-only"}`, isHeld(participant.state),
-				async () => { await this.collaborators.manage(standDown, this.session.context ?? ctx); });
+				async () => { await this.manageCollaborators(standDown, current()); });
 		}
 	}
 

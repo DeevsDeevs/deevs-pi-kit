@@ -2,9 +2,10 @@ import { existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { HostedRuntimeClient, HostedRuntimeClientError } from "./client.ts";
-import { restoreHeldParticipant } from "./held-identity.ts";
+import { isEnded } from "./schemas/state.ts";
 import {
 	auth,
+	parseAcquireResult,
 	parseHeartbeat,
 	parseParticipant,
 	parseRegistration,
@@ -186,7 +187,7 @@ export class RuntimeSession {
 		this.registration = registration;
 		this.startHeartbeat();
 		try {
-			await restoreHeldParticipant(this, registration, ctx);
+			await this.acquireIdentity(registration);
 			await this.hooks.afterRegister(registration, ctx);
 		} catch (error) {
 			const cause = error instanceof Error ? error.message : String(error);
@@ -194,6 +195,17 @@ export class RuntimeSession {
 		}
 		this.requireCurrentScope(current);
 		return registration;
+	}
+
+	/** Identity is a name: each registration (re)acquires it, so a reopened lead or a resumed collaborator holds its name again. */
+	private async acquireIdentity(registration: LiveClientRegistration): Promise<void> {
+		const identity = this.store.identity;
+		if (!identity || isEnded(identity.disposition)) return;
+		const params = { ...auth(registration), protocol: identity.protocol, participantId: identity.participantId, revive: false };
+		const { participant } = parseAcquireResult(await this.client.call("participant.acquire", params));
+		if (identity.participantKey !== participant.participantKey || identity.generation !== participant.generation || identity.disposition !== "held") {
+			this.store.persistHeld(identity.protocol, identity.participantId, participant);
+		}
 	}
 
 	private registrationParams(ctx: ExtensionContext, sessionFile: string): RegisterPiParams {
@@ -245,7 +257,6 @@ export class RuntimeSession {
 			throw new HostedRuntimeClientError("registration_stale", "Heartbeat replaced its registration identity.");
 		}
 		this.registration = heartbeat.registration;
-		if (this.store.identity?.participantKey) await restoreHeldParticipant(this, this.registration, ctx);
 		this.requireCurrentScope(current);
 		await this.hooks.afterHeartbeat(this.registration, ctx, heartbeat);
 	}
