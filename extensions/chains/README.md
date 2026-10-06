@@ -15,17 +15,13 @@ chain_list     list chains and branches
 chain_search   ranked, text, or regex search
 ```
 
-## Commands
+## Command
 
 ```text
-/chains [query]
-/chain-link <chain> [--branch name] [--parent link.md]
-/chain-load <chain> [--branch name] [link.md]
-/chain-waive <reason>
-/chain-fork <chain> <new-branch> [--from link.md]
-/chain-list [--branches]
-/chain-search [chain] [--lookup|--text|--regex] <query>
+/chains [query]    browse Chains, or search them
 ```
+
+Saving, loading, forking and searching are the lead's `chain_*` tools; ask in chat.
 
 ## State-aware checkpoint discipline
 

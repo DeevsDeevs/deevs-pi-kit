@@ -10,15 +10,6 @@ arxiv_get      fetch metadata and abstracts for arXiv IDs
 arxiv_bibtex   generate simple BibTeX entries
 ```
 
-## Commands
-
-```text
-/arxiv:search [options] <query>
-/arxiv:get [--bibtex] <id[,id]>
-/arxiv:bibtex <id[,id]>
-```
-
-Common search options: `--max`, `--sort`, `--category`, `--author`.
 
 ## Limits
 

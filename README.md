@@ -4,7 +4,7 @@ A [Pi](https://github.com/earendil-works/pi) package for work you can walk away 
 
 ## Requirements
 
-- Pi 1.0 or newer and Node 22.19 or newer.
+- Pi 1.0.4 or newer and Node 22.19 or newer.
 - Herdr, for Runtime collaborators. Everything else works in plain Pi.
 - The Claude Code or Codex CLI, only for collaborators on that driver.
 
@@ -39,26 +39,47 @@ Open Pi inside Herdr in a trusted project and ask:
 > Start a read-only Codex collaborator called reviewer on gpt-5.6-terra and ask it to review HEAD.
 ```
 
-Nothing to set up first. Pi starts the daemon in its own Herdr workspace on the first call, names this project's collaboration and itself, opens the tab with `collaborator_manage` and mails it with `collaborator_send`; the reply lands in your session on its own. Starts, stops and cleanups run without a dialog unless [autonomy](#autonomy) is `ask`. A `workspace-write` collaborator works in its own worktree on `runtime/collab/<protocol>/<name>`; review and merge that branch with Git, then `collaborator_workspace cleanup`. The daemon's guarantees and limits are in [PROTOCOL.md](extensions/runtime/PROTOCOL.md); what the model is told to do is in [skills/collaborators](skills/collaborators/SKILL.md).
+Nothing to set up first. Pi starts the daemon in its own Herdr workspace on the first call, names this project's collaboration and itself, opens the tab with `collaborator_manage` and mails it with `collaborator_send`; the reply lands in your session on its own. Starts, stops and cleanups run without a dialog unless [autonomy](#settings) is `ask`. A `workspace-write` collaborator works in its own worktree on `runtime/collab/<protocol>/<name>`; review and merge that branch with Git, then `collaborator_workspace cleanup`. The daemon's guarantees and limits are in [PROTOCOL.md](extensions/runtime/PROTOCOL.md); what the model is told to do is in [skills/collaborators](skills/collaborators/SKILL.md).
 
 ## Extensions
 
-- **runtime** owns collaborator identity, mail and Herdr tab lifecycle. `/runtime`, `collaborator_list`, `collaborator_manage`, `collaborator_workspace` and four MCP mail tools. [Protocol](extensions/runtime/PROTOCOL.md).
-- **jobs** runs bounded commands with capped output, a hard timeout and process-tree cancellation. `/jobs`, `job_start`, `job_wait`, `job_read`, `job_stop`. Its guard reads command syntax, including `$(...)` and heredocs, and refuses in `bash` and `job_start`: detached processes, force pushes to `main`, `master`, `release/*` or an unnamed branch, recursive `rm` outside the cwd, `$TMPDIR` and `/tmp`, and the `guard.block` patterns (`"terraform destroy"` matches `terraform` with `destroy` among its arguments). Rules live under `guard` in `~/.pi/agent/pi-kit.json` and `.pi/pi-kit.json`; `"detached"`, `"forcePush"` or `"rmRf": false` turns one off. `extensions/shared/guard-hook.mjs` is the same guard as a Claude Code or Codex PreToolUse hook.
+You ask the lead for everything in chat; the kit registers two commands: `/agents` browses, resumes and stops subagent runs, and `/chains` browses and searches handoffs.
+
+- **runtime** owns collaborator identity, mail and Herdr tab lifecycle. `collaborator_list`, `collaborator_manage`, `collaborator_workspace` and four MCP mail tools. [Protocol](extensions/runtime/PROTOCOL.md).
+- **jobs** runs bounded commands with capped output, a hard timeout and process-tree cancellation. `job_start`, `job_wait`, `job_read`, `job_stop`. Its guard reads command syntax, including `$(...)` and heredocs, and refuses in `bash` and `job_start`: detached processes, force pushes to `main`, `master`, `release/*` or an unnamed branch, recursive `rm` outside the cwd, `$TMPDIR` and `/tmp`, and the `guard.block` patterns (`"terraform destroy"` matches `terraform` with `destroy` among its arguments). `extensions/shared/guard-hook.mjs` is the same guard as a Claude Code or Codex PreToolUse hook.
 - **subagents** runs curated read-only personas in isolated Pi processes: explorer, architect, reviewer, tester, logic-hunter, devops, python-dev, cpp-dev, rust-dev, anti-slop. Writing needs `allowWrite`; no dialog asks. `/agents`, `subagent`, `subagent_wait`. [More](extensions/subagents/README.md).
-- **cron** schedules prompts for this Pi session, fired while it is idle. `/cron`, `cron`. [More](extensions/cron/README.md).
-- **chains** saves markdown handoffs under `.chains/` and reminds once to save one at 80% context. `/chains`, `/chain-*`, `chain_*`. [More](extensions/chains/README.md).
-- **wiki** lints, graphs, searches and packs a curated markdown knowledge base. `/wiki:*`, `wiki_*`. [More](extensions/wiki/README.md).
-- **arxiv** searches arXiv and returns exact metadata and BibTeX. `/arxiv:*`, `arxiv_*`. [More](extensions/arxiv/README.md).
-- **todos** keeps a session todo list. `/todos`, `todo_list`. [More](extensions/todos/README.md).
+- **cron** schedules prompts for this Pi session, fired while it is idle. `cron`. [More](extensions/cron/README.md).
+- **chains** saves markdown handoffs under `.chains/` and reminds once to save one at 80% context. `/chains`, `chain_*`. [More](extensions/chains/README.md).
+- **wiki** lints, graphs, searches and packs a curated markdown knowledge base. `wiki_*`. [More](extensions/wiki/README.md).
+- **arxiv** searches arXiv and returns exact metadata and BibTeX. `arxiv_*`. [More](extensions/arxiv/README.md).
+- **todos** keeps a session todo list. `todo_list`. [More](extensions/todos/README.md).
 - **ask-user** asks before an irreversible or destructive choice through an overlay; anything else goes ahead on a stated default. `ask_user`.
-- **codex-fast** turns on the OpenAI Codex Fast service tier for ChatGPT-auth requests. `/codex-fast`, `.pi/codex-fast.json`.
-- **notifier** sends a ready-for-input terminal notification. `/notifier:test`, `/notifier:settings`, `.pi/notifier.json`.
+- **codex-fast** turns on the OpenAI Codex Fast service tier for ChatGPT-auth requests when `codexFast` is on.
+- **notifier** sends a ready-for-input terminal notification, or runs your `notifier.command`, when a turn settles.
 - **herdr-compat** treats Shift+Enter as a newline inside Herdr. Experimental.
 
-## Autonomy
+## Settings
 
-Orchestration never waits on a dialog: write-capable subagents and collaborator starts, stops and cleanups just run. `{"autonomy": "ask"}` in `~/.pi/agent/pi-kit.json`, or in a trusted project's `.pi/pi-kit.json`, which wins, brings one confirmation back for each collaborator change. Both files are re-read on every use; a `.pi/runtime.json` left by the old `/runtime auto on` moves there by itself.
+The kit's only settings file is `pi-kit.json`: `~/.pi/agent/pi-kit.json` for every project, and `.pi/pi-kit.json` for one project, which wins key by key. Both are re-read on every use, so an edit applies to the next call with no `/reload`. Every key is optional:
+
+```json
+{
+  "models": { "deep": "astra:max", "sol": "openai-codex/gpt-*-sol" },
+  "lead": "sol",
+  "autonomy": "auto",
+  "guard": { "rmRf": true, "block": ["terraform destroy", "npm publish"] },
+  "codexFast": false,
+  "notifier": { "bell": false, "command": ["notify-send", "{title}", "{body}"] }
+}
+```
+
+- `models` and `lead` name models by pattern (`openai-codex/gpt-*-sol` is the newest sol); a project's names add to the global ones.
+- `autonomy`: orchestration never waits on a dialog. `"ask"` brings one confirmation back for each collaborator change; a project's value counts once the project is trusted.
+- `guard`: `"detached"`, `"forcePush"` or `"rmRf": false` turns one rule off; `block` patterns from both files add up.
+- `codexFast`: `true` sends `service_tier: "priority"` on ChatGPT-auth `openai-codex` requests.
+- `notifier`: `enabled`, `title`, `body`, `terminal`, `bell`, `terminalRequiresTty`, `minIntervalMs`, `command` (an argv with `{title}`, `{body}`, `{cwd}`, `{project}`) and `jsonl`; an untrusted project's `command` and `jsonl` are ignored.
+
+A trusted project's old `.pi/codex-fast.json`, `.pi/notifier.json`, `.pi/runtime.json` and `.pi/subagents.json` move into `.pi/pi-kit.json` once, by themselves (`subagents.json` keeps only its `defaultModel`, as `models.default`).
 
 ## Skills
 

@@ -34,17 +34,6 @@ wiki_context  pack bounded wiki context for tasks or subagents
 
 All tools require an explicit wiki root path. Paths must stay inside the project.
 
-## Commands
-
-```text
-/wiki:init <path> --domain "domain" [--dry-run]
-/wiki:status <path>
-/wiki:lint <path>
-/wiki:graph <path>
-/wiki:search <path> [--lookup|--text|--regex] <query>
-/wiki:context <path> <query>
-```
-
 ## Scope
 
 - no URL fetching

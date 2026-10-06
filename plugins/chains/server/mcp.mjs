@@ -44,7 +44,7 @@ export const TOOLS = [
 			includeLinks: bool("Include all link metadata, not only latest"),
 			includeBranches: bool("Include branch summaries"),
 		}),
-		run: async (service, args) => formatList(await service.list(args)).replace("Use /chain-link <name> to create one.", "Use chain_save to create one."),
+		run: async (service, args) => formatList(await service.list(args)),
 	},
 	{
 		name: "chain_fork",

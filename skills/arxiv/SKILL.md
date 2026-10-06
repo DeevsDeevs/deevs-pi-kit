@@ -5,7 +5,7 @@ description: "Search, triage and cite arXiv papers with the arxiv_* tools. Use f
 
 # arXiv Research
 
-Use `arxiv_search`, `arxiv_get`, `arxiv_bibtex` (human commands: `/arxiv:search <query>`, `/arxiv:get <id>`, `/arxiv:bibtex <id>`). No hand-rolled `curl` unless the extension is unavailable or the user needs a raw API check.
+Use `arxiv_search`, `arxiv_get`, `arxiv_bibtex`. No hand-rolled `curl` unless the extension is unavailable or the user needs a raw API check.
 
 Use for paper/preprint discovery, exact-ID lookup, comparing recent work, collecting BibTeX, and saving research leads into a chain or wiki. arXiv alone cannot provide citation counts, peer-review status, exhaustive literature reviews, or full-paper claims beyond the abstract.
 
