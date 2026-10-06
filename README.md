@@ -37,7 +37,7 @@ Open Pi inside Herdr in a trusted project and ask:
 > Start a read-only Codex collaborator called reviewer on gpt-5.6-terra and ask it to review HEAD.
 ```
 
-Nothing to set up first. Pi starts the daemon in its own Herdr workspace on the first call, names this project's collaboration and itself, opens the tab with `collaborator_manage` and mails it with `collaborator_send`; the reply lands in your session on its own. Each start, stop and cleanup shows one confirmation dialog until you run `/runtime auto on`, which is remembered for the project in `.pi/runtime.json`. A `workspace-write` collaborator works in its own worktree on `runtime/collab/<protocol>/<name>`; review and merge that branch with Git, then `collaborator_workspace cleanup`. The daemon's guarantees and limits are in [PROTOCOL.md](extensions/runtime/PROTOCOL.md); what the model is told to do is in [skills/collaborators](skills/collaborators/SKILL.md).
+Nothing to set up first. Pi starts the daemon in its own Herdr workspace on the first call, names this project's collaboration and itself, opens the tab with `collaborator_manage` and mails it with `collaborator_send`; the reply lands in your session on its own. Starts, stops and cleanups run without a dialog unless [autonomy](#autonomy) is `ask`. A `workspace-write` collaborator works in its own worktree on `runtime/collab/<protocol>/<name>`; review and merge that branch with Git, then `collaborator_workspace cleanup`. The daemon's guarantees and limits are in [PROTOCOL.md](extensions/runtime/PROTOCOL.md); what the model is told to do is in [skills/collaborators](skills/collaborators/SKILL.md).
 
 ## Extensions
 
@@ -55,6 +55,10 @@ Nothing to set up first. Pi starts the daemon in its own Herdr workspace on the 
 - **codex-fast** turns on the OpenAI Codex Fast service tier for ChatGPT-auth requests. `/codex-fast`, `.pi/codex-fast.json`.
 - **notifier** sends a ready-for-input terminal notification. `/notifier:test`, `/notifier:settings`, `.pi/notifier.json`.
 - **herdr-compat** treats Shift+Enter as a newline inside Herdr. Experimental.
+
+## Autonomy
+
+Orchestration never waits on a dialog: write-capable subagents and collaborator starts, stops and cleanups just run. `{"autonomy": "ask"}` in `~/.pi/agent/pi-kit.json`, or in a trusted project's `.pi/pi-kit.json`, which wins, brings one confirmation back for each collaborator change. Both files are re-read on every use; a `.pi/runtime.json` left by the old `/runtime auto on` moves there by itself.
 
 ## Skills
 
