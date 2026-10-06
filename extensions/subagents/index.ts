@@ -10,6 +10,7 @@ import { loadBuiltinAgents } from "./agents.ts";
 import { toToolUsage, type RuntimeUsage } from "../shared/runtime-events.ts";
 import { utf8Tail } from "../shared/bytes.ts";
 import { FULL_SCREEN_OVERLAY } from "../shared/dashboard.ts";
+import { clampWaitMs } from "../shared/runtime-delivery.ts";
 import { AgentsDashboard } from "./ui.ts";
 
 const TaskSchema = Type.Object({
@@ -30,7 +31,7 @@ const SubagentSchema = Type.Object({
 	agent: Type.Optional(Type.String({ description: "Persona for a fresh single run" })),
 	task: Type.Optional(Type.String({ description: "Task for a fresh or resumed single run" })),
 	resume: Type.Optional(Type.String({ description: "Terminal run id whose persistent agent session should receive a new turn" })),
-	background: Type.Optional(Type.Boolean({ description: "Return after start; default true. False waits for terminal settlement." })),
+	background: Type.Optional(Type.Boolean({ description: "Return after start; default true. False waits up to 2 minutes for terminal settlement, then returns the current status." })),
 	cwd: Type.Optional(Type.String()),
 	context: Type.Optional(StringEnum(["fresh", "fork"] as const)),
 	model: Type.Optional(Type.String()),
@@ -47,7 +48,7 @@ const SubagentSchema = Type.Object({
 
 const WaitSchema = Type.Object({
 	ids: Type.Array(Type.String(), { minItems: 1, description: "Run or group ids" }),
-	waitMs: Type.Optional(Type.Number({ description: "Maximum wait for terminal state; omit to wait until terminal, 0 for status only" })),
+	waitMs: Type.Optional(Type.Number({ description: "Maximum wait for terminal state, capped at and defaulting to 120000; 0 for status only. A run still active then is returned with its current status and wakes idle Pi when it settles." })),
 	cancel: Type.Optional(Type.Boolean({ description: "Cancel these runs/groups before returning settlement" })),
 	maxBytes: Type.Optional(Type.Number({ description: "Maximum output bytes per run; default 65536" })),
 });
@@ -145,7 +146,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				if (params.ids.includes(run.spec.id)) onUpdate?.({ content: [{ type: "text", text: formatWait(run, clampBytes(params.maxBytes)) }], details: { results: [run] } });
 			});
 			try {
-				const results = await service.wait(params, signal);
+				const results = await service.wait({ ...params, waitMs: clampWaitMs(params.waitMs) }, signal);
 				service.consumeTerminal(results, runtimeClaimant(ctx));
 				updateStatus();
 				const maxBytes = clampBytes(params.maxBytes);

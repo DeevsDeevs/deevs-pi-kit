@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { RUNTIME_DELIVERY_MESSAGE, RuntimeDeliveryCoordinator } from "../extensions/shared/runtime-delivery.ts";
+import { clampWaitMs, RUNTIME_DELIVERY_MESSAGE, RuntimeDeliveryCoordinator } from "../extensions/shared/runtime-delivery.ts";
 import { consumeRuntimeEvent, pendingRuntimeEvents, runtimeEvents, type RuntimeEvent } from "../extensions/shared/runtime-events.ts";
 
 function setup(pending = false, failSend = false, dropSend = false) {
@@ -53,7 +53,7 @@ describe("runtime terminal delivery", () => {
 
 		expect(test.messages).toHaveLength(1);
 		expect(test.messages[0]?.options).toEqual({ triggerTurn: true, deliverAs: "followUp" });
-		expect((test.messages[0]?.message as { content?: string }).content).toContain("Continue runnable independent work first");
+		expect((test.messages[0]?.message as { content?: string }).content).toContain("do not start work the user did not ask for");
 		expect((test.messages[0]?.message as { content?: string }).content).not.toContain("Use subagent_wait");
 		expect(runtimeEvents.read().deliveries["terminal-1"]?.status).toBe("claimed");
 
@@ -151,5 +151,9 @@ describe("runtime terminal delivery", () => {
 		await test.coordinator.maybeDeliver();
 		expect(test.messages).toEqual([]);
 		expect(pendingRuntimeEvents(runtimeEvents.read())).toHaveLength(1);
+	});
+
+	it("caps every wait at two minutes, defaulting to the cap", () => {
+		expect([clampWaitMs(undefined), clampWaitMs(Number.NaN), clampWaitMs(86_400_000), clampWaitMs(5_000), clampWaitMs(0), clampWaitMs(-1)]).toEqual([120_000, 120_000, 120_000, 5_000, 0, 0]);
 	});
 });

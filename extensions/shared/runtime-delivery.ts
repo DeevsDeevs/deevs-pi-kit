@@ -161,7 +161,7 @@ function deliveryContent(events: RuntimeEvent[]): string {
 	return [
 		`Background work reached a terminal state.`,
 		...lines,
-		`Continue runnable independent work first. Collect structured results with the relevant wait/read tool when they become the next dependency or final-settlement gate.`,
+		`Report the result to the user and do not start work the user did not ask for. The relevant wait/read tool returns the full output.`,
 	].join("\n");
 }
 
@@ -171,4 +171,12 @@ function isString(value: string | undefined): value is string {
 	} catch {
 		return false;
 	}
+}
+
+/** Settled background work wakes the idle lead by itself, so no wait blocks longer than two minutes. */
+export const MAX_WAIT_MS = 120_000;
+
+/** An omitted wait means the full two minutes. */
+export function clampWaitMs(waitMs: number | undefined): number {
+	return Number.isFinite(waitMs) ? Math.max(0, Math.min(waitMs!, MAX_WAIT_MS)) : MAX_WAIT_MS;
 }

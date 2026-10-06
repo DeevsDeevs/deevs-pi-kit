@@ -7,7 +7,7 @@ import { findAgent, loadBuiltinAgents } from "./agents.ts";
 import { defaultDelegateRoot, releaseAdmissionReservation, removeAdmission, reserveAdmission } from "./artifacts.ts";
 import { DelegateExecutor } from "./executor.ts";
 import type { DelegateRun, DelegateRunStatus } from "./runtime-types.ts";
-import { requestRuntimeDelivery } from "../shared/runtime-delivery.ts";
+import { MAX_WAIT_MS, requestRuntimeDelivery } from "../shared/runtime-delivery.ts";
 import { consumeRuntimeEvent, runtimeEvents, type RuntimeTerminalStatus } from "../shared/runtime-events.ts";
 import { chainCheckpoints } from "../chains/checkpoint.ts";
 
@@ -370,7 +370,7 @@ export class SubagentService {
 		runtimeEvents.record(this.pi, { type: "activate", source: { kind: "subagent-group", id: group.id }, generation: group.generation });
 		this.writeGroup(group);
 		await this.fillGroup(group, ctx);
-		if (request.background === false) await this.waitGroup(group, undefined);
+		if (request.background === false) await this.waitGroup(group, MAX_WAIT_MS);
 		return group;
 	}
 
