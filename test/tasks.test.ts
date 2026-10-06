@@ -214,6 +214,20 @@ describe("task delivery", () => {
 		expect(pi.sent).toHaveLength(1);
 	});
 
+	it("merges a monitor's undelivered events into one notification that acks them all", async () => {
+		const pi = lead();
+		shared.tasks.install(pi.pi);
+		await pi.start("s1");
+		pi.busy(true);
+		const event = (seq: number): TaskNotification => ({ notificationId: `m:${seq}`, taskId: "m", kind: "monitor", ownerSession: "s1", summary: 'Monitor event: "m"', event: `line ${seq}` });
+		for (const seq of [1, 2, 3]) await shared.tasks.notify(event(seq));
+		expect(pi.sent.map((send) => send.id)).toEqual(["m:1"]);
+		await pi.settle();
+		await pi.settle();
+		expect(pi.sent.map((send) => send.id)).toEqual(["m:1", "m:1"]);
+		expect(pi.entries("s1").map((entry) => entry.details)).toEqual([{ notificationId: "m:1", notificationIds: ["m:1", "m:2", "m:3"] }]);
+	});
+
 	it("holds reports for an inactive session and delivers them when it returns", async () => {
 		const pi = lead();
 		shared.tasks.install(pi.pi);

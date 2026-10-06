@@ -9,7 +9,7 @@ export default {
 	async run(t) {
 		const lead = rpc(t);
 		await lead.script({ agent: "lead", steps: [
-			{ id: "s1", tool: "job_start", args: { name: "probe", argv: ["sh", "-c", "sleep 1"] } },
+			{ id: "s1", tool: "job_start", args: { command: "sleep 1", description: "probe" } },
 			{ id: "s2", tool: "bash", args: { command: "sleep 6" } },
 			{ id: "s3", text: "busy turn done" },
 			{ id: "s4", text: "woke" },

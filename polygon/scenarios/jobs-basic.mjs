@@ -1,28 +1,32 @@
 import assert from "node:assert/strict";
 import { rpc } from "../drive.mjs";
-import { procs, toolCalls } from "../look.mjs";
+import { procs, taskNotifications, toolCalls } from "../look.mjs";
 
-const JOB_ID = "$/j_[0-9a-z]+_[0-9a-f]{8}/";
+export const JOB_ID = "$/(?<=ID: )b[0-9a-z]{8}/";
+export const JOB_LOG = "$/\\/\\S+\\/out\\/b[0-9a-z]{8}\\.log/";
 
+// Start, read the output file, stop: one `killed` report, and no process of the job left.
 export default {
 	name: "jobs-basic",
-	gate: "M0",
+	gate: ["M0", "M5"],
 	async run(t) {
 		const lead = rpc(t);
 		await lead.script({ agent: "lead", steps: [
-			{ id: "s1", tool: "job_start", args: { name: "probe", argv: ["sh", "-c", "echo polygon-ok; sleep 300"], readyPattern: "polygon-ok" } },
-			{ id: "s2", tool: "job_read", args: { id: JOB_ID } },
-			{ id: "s3", tool: "TaskStop", args: { task_id: JOB_ID } },
-			{ id: "s4", text: "done" },
+			{ id: "s1", tool: "job_start", args: { command: "echo polygon-ok; sleep 300", description: "probe" } },
+			{ id: "s2", tool: "bash", args: { command: "sleep 1" } },
+			{ id: "s3", tool: "read", args: { path: JOB_LOG } },
+			{ id: "s4", tool: "TaskStop", args: { task_id: JOB_ID } },
+			{ id: "s5", text: "done" },
 		] });
-		await lead.until((e) => e.type === "agent_settled", 30_000, "agent_settled");
+		await lead.until((_, events) => taskNotifications(events).length >= 1, 30_000, "the stopped job's report");
 
 		const calls = toolCalls(lead.events);
-		assert.deepEqual(calls.map((c) => [c.name, c.isError]), [["job_start", false], ["job_read", false], ["TaskStop", false]]);
-		const [start, read, stop] = calls.map((c) => c.details);
-		assert.equal(start.runtime.status, "running");
-		assert.ok(read.chunks.length > 0, "job_read returned no output chunks");
-		assert.equal(stop.kind, "job");
+		assert.deepEqual(calls.map((c) => [c.name, c.isError]), [["job_start", false], ["bash", false], ["read", false], ["TaskStop", false]]);
+		const [start, , read, stop] = calls;
+		assert.match(read.text, /polygon-ok/, "the output file lacks the job's output");
+		assert.equal(stop.details.kind, "job");
+		const [report] = taskNotifications(lead.events);
+		assert.deepEqual([report.taskId, report.status, report.outputFile], [start.details.taskId, "killed", start.details.outputFile]);
 		assert.deepEqual(procs(t).filter((p) => p.pid !== lead.pid), [], "census: the job's process tree outlived TaskStop");
 	},
 };

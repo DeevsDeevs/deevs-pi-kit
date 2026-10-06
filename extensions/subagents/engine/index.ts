@@ -22,6 +22,7 @@ import { parseWorkflow } from "../workflow/meta.ts";
 import { driveWorkflow, framePrompt, newProgress, runRecord, usage, type AgentRunner, type CallOutcome, type Progress } from "../workflow/run.ts";
 import type { AgentOptions, JsonValue } from "../workflow/sandbox.ts";
 import { cliArgv, dropNulls, lastMessageFile, newProgress as newCliProgress, readEvent, schemaFile, strictify, type CliProgress, type CliWorker } from "./cli.ts";
+import { backgroundTasks, type BackgroundDoc, type BackgroundHost, type BackgroundRecord, type JobInput, type MonitorInput } from "./background.ts";
 import { bunSqlite, lock, reap, unlock } from "./storage.ts";
 
 type D = typeof Durable;
@@ -158,6 +159,9 @@ interface Kit {
 	Reporter: Durable.Task<ReporterInput, { phase: "run" }, null, object>;
 	CliTask: Durable.Task<CliInput, { phase: "run" }, null, object>;
 	Workflow: Durable.Task<WorkflowInput, { phase: "run" }, null, object>;
+	Background: Durable.ConversationDocToken<BackgroundDoc>;
+	Job: ReturnType<typeof backgroundTasks>["Job"];
+	Monitor: ReturnType<typeof backgroundTasks>["Monitor"];
 }
 
 export interface Engine {
@@ -174,7 +178,7 @@ interface Modules { D: D; openStorage(file: string): Promise<Durable.Storage> }
 interface Waiter { claimed: boolean; timedOut: boolean; resolve(n: AgentOutcome): void }
 /** A reporter in this process. Messages steer its run only between the prompt's placement and `closing`; after that, SendMessage waits for the report and resumes. */
 interface Live { placed: boolean; closing: boolean; early: string[]; inflight: Promise<unknown>[]; done: Promise<AgentOutcome | undefined> }
-interface Host {
+interface Host extends BackgroundHost {
 	/** The durable module stays loaded across /reload: a fresh copy would fail its own `instanceof` checks. */
 	modules?: Promise<Modules>;
 	engines: Map<string, Promise<Engine>>;
@@ -187,17 +191,17 @@ interface Host {
 	workflows: Map<string, Progress>;
 	/** Running CLI workers by agentId, for TaskStop. */
 	workers: Map<string, ChildProcess>;
-	/** Set while Pi quits: a CLI worker the harness close kills then is interrupted, not failed. */
-	closing?: boolean;
 }
 
 const KEY = Symbol.for("pi-kit.agents");
 // SAFETY: this package exclusively owns the symbol-keyed slot and only ever stores the host in it.
 const slot = globalThis as typeof globalThis & { [KEY]?: Host };
-const host: Host = slot[KEY] ??= { engines: new Map(), running: 0, queue: [], waiters: new Map(), live: new Map(), workflows: new Map(), workers: new Map() };
+const host: Host = slot[KEY] ??= { engines: new Map(), running: 0, queue: [], waiters: new Map(), closing: false, opened: new Map(), live: new Map(), workflows: new Map(), workers: new Map() };
 host.live ??= new Map();
 host.workflows ??= new Map();
 host.workers ??= new Map();
+// A host kept from a kit version before Jobs and Monitors joined the engine.
+host.opened ??= new Map();
 
 tasks.addSource({
 	name: "agents",
@@ -262,6 +266,7 @@ export async function closeAll(): Promise<void> {
 		await reap(engine.dir);
 		await unlock(join(engine.dir, "engine.lock"));
 	}
+	host.closing = false;
 }
 
 export function queuedAhead(): boolean {
@@ -443,6 +448,44 @@ export async function stop(engine: Engine, agentId: string, by?: "user"): Promis
 	return host.live.get(agentId)?.done;
 }
 
+type Launch<T> = Omit<T, "session" | "owner" | "outputFile" | "startedAt">;
+
+/** `job_start`: the command runs in its own process group; its exit code and report are committed together. Returns the log. */
+export const startJob = (engine: Engine, input: Launch<JobInput>): Promise<string> => startBackground(engine, "job", input);
+export const startMonitor = (engine: Engine, input: Launch<MonitorInput>): Promise<string> => startBackground(engine, "monitor", input);
+
+async function startBackground(engine: Engine, kind: "job" | "monitor", launch: Launch<JobInput> | Launch<MonitorInput>): Promise<string> {
+	const { kit, root } = engine;
+	const input = { ...launch, session: engine.session, owner: engine.dir, outputFile: join(engine.dir, "out", `${launch.id}.log`), startedAt: Date.now() };
+	await writeFile(input.outputFile, "");
+	const record: BackgroundRecord = { kind, description: input.description, startedAt: input.startedAt, status: "running", taskId: 0 };
+	// Listed before the commit: a quick command can settle, and update its row, before the commit returns.
+	registerBackground(engine, input.id, record);
+	try {
+		await root.commit(async (tx) => {
+			// SAFETY: the kind picks the task whose input this is.
+			const taskId = kind === "job" ? await tx.createTask(kit.Job, input as JobInput, BACKGROUND) : await tx.createTask(kit.Monitor, input as MonitorInput, BACKGROUND);
+			(await tx.doc(kit.Background, root.id)).tasks[input.id] = json({ ...record, taskId: Number(taskId) });
+		}, CTX);
+	} catch (error) {
+		tasks.remove(input.id);
+		throw error;
+	}
+	return input.outputFile;
+}
+
+function registerBackground(engine: Engine, id: string, record: BackgroundRecord): void {
+	tasks.register({ id, kind: record.kind, description: record.description, status: record.status, ownerSession: engine.session, startedAt: record.startedAt, stop: () => stopBackground(engine, id) });
+}
+
+/** TaskStop of a job or monitor: the run is signalled (its process group killed), then its abort handler settles it. */
+async function stopBackground(engine: Engine, id: string): Promise<void> {
+	const record = backgroundRecords(await engine.harness.snapshot(engine.kit.Background, engine.root.id, CTX))[id];
+	if (!record) return;
+	// SAFETY: taskId was stored from the TaskId this harness created.
+	await engine.harness.abortTask(record.taskId as Durable.TaskId, CTX);
+}
+
 async function open(session: string, cwd: string): Promise<Engine> {
 	const dir = await storageDir(cwd, session);
 	await mkdir(join(dir, "out"), { recursive: true });
@@ -467,6 +510,8 @@ async function open(session: string, cwd: string): Promise<Engine> {
 		tasks.register({ id, kind: "agent", name: record.name, description: record.description, status: record.status, ownerSession: session, startedAt: record.startedAt, stop: () => stop(engine, id) });
 	}
 	for (const [id, record] of Object.entries(workflows)) registerWorkflow(engine, id, record);
+	for (const [id, record] of Object.entries(backgroundRecords(await harness.snapshot(kit.Background, root.id, CTX)))) registerBackground(engine, id, record);
+	host.opened.set(session, Date.now());
 	harness.resume();
 	for (const item of outboxItems(await harness.snapshot(kit.Outbox, root.id, CTX))) if (!item.silent) await tasks.notify(item);
 	return engine;
@@ -550,8 +595,10 @@ function buildKit(D: D, owner: string, project: string): Kit {
 			return blocked ? { block: blocked.reason } : undefined;
 		},
 	});
-	const extension = D.defineExtension({ name: "pi-kit", tasks: [Anchor, Reporter, CliTask, Workflow], tools: Object.values(tools), hooks: [guard] });
-	return { extension, tools, Outbox, Agents, Workflows, Calls, Anchor, Reporter, CliTask, Workflow };
+	const Background = D.defineDoc<BackgroundDoc>({ kind: "pi-kit.background", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ tasks: {} }) });
+	const { Job, Monitor } = backgroundTasks(D, { Outbox, Background }, host);
+	const extension = D.defineExtension({ name: "pi-kit", tasks: [Anchor, Reporter, CliTask, Job, Monitor, Workflow], tools: Object.values(tools), hooks: [guard] });
+	return { extension, tools, Outbox, Agents, Workflows, Calls, Anchor, Reporter, CliTask, Background, Job, Monitor, Workflow };
 }
 
 /** Pi's own tool, built for the agent's cwd at each call and without a Pi context, so no lead session env leaks in. */
@@ -720,7 +767,7 @@ async function report(D: D, docs: Pick<Kit, "Outbox" | "Agents">, input: Reporte
 	await deliver(input.agentId, n, claimed);
 }
 
-type Outcome = Pick<AgentOutcome, "status" | "summary" | "result" | "usage" | "limited" | "structuredError">;
+type Outcome = Pick<AgentOutcome, "summary" | "result" | "usage" | "limited" | "structuredError"> & Required<Pick<AgentOutcome, "status">>;
 type RunRuntime = Pick<Durable.TaskRuntime<unknown, { phase: "run" }, null, object>, "taskId" | "conversationId" | "commit">;
 
 /**
@@ -740,13 +787,13 @@ async function commitReport(docs: Pick<Kit, "Outbox" | "Agents"> & { CliTask?: K
 			await tx.createTask(docs.CliTask, cliInput(input.session, input.outputFile, input.agentId, record, record.queued.join("\n\n"), input.toolUseId), BACKGROUND);
 			record.queued = [];
 			next = true;
-		} else if (record) record.status = n.status;
+		} else if (record) record.status = outcome.status;
 		if (record && early.length) record.pending = [...record.pending ?? [], ...early];
 		if (waiter && !waiter.timedOut) waiter.claimed = true;
 		(await tx.doc(docs.Outbox, runtime.conversationId)).items.push(json({ ...n, silent: waiter?.claimed || undefined }));
 		return { status: "terminal", outcome: { status: "completed", result: null } };
 	}, context);
-	tasks.update(input.agentId, { status: next ? "running" : n.status });
+	tasks.update(input.agentId, { status: next ? "running" : outcome.status });
 	return { n, claimed: Boolean(waiter?.claimed) };
 }
 
@@ -918,7 +965,7 @@ function failure(settled: Durable.SettledSubmissionRecord | undefined): string {
 }
 
 /** Documents hold strict JSON: optional fields that are `undefined` are dropped. */
-function json(value: AgentRecord | OutboxItem | WorkflowRecord | CallRecord | CallOutcome): Durable.JsonObject {
+function json(value: AgentRecord | OutboxItem | WorkflowRecord | CallRecord | CallOutcome | BackgroundRecord): Durable.JsonObject {
 	return JSON.parse(JSON.stringify(value));
 }
 
@@ -1115,3 +1162,6 @@ async function modelContext(input: WorkflowInput): Promise<ModelContext> {
 	const model = input.lead && registry.find(input.lead.provider, input.lead.id);
 	return { config: await loadKitConfig(input.cwd, getAgentDir()), registry, lead: model && input.lead ? { model, level: input.lead.level } : undefined };
 }
+// SAFETY: the kit writes Background only through json() of a BackgroundRecord.
+// oxlint-disable-next-line anti-slop/no-chained-type-assertions
+const backgroundRecords = (doc: BackgroundDoc | undefined) => (doc?.tasks ?? {}) as unknown as Record<string, BackgroundRecord>;

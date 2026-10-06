@@ -5,15 +5,19 @@ import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
-import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, isToolCallEventType, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { guardBashCall, guardShell, loadGuardConfig } from "../shared/guard.ts";
 import { loadKitConfig, modelLabel, modelsTable, readCodexCatalog, resolveLead, resolveModel, type ModelContext } from "../shared/models.ts";
-import { agentForegroundResult, agentLaunchedResult, newAgentId, newWorkflowRunId, newWorkflowTaskId, taskNotRunningResult, taskStoppedResult, tasks, workflowLaunchedResult, type RosterEntry } from "../shared/tasks.ts";
+import { agentForegroundResult, agentLaunchedResult, newAgentId, newBackgroundTaskId, newWorkflowRunId, newWorkflowTaskId, taskNotRunningResult, taskStoppedResult, tasks, workflowLaunchedResult, type RosterEntry } from "../shared/tasks.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
 import { createAgentWorktree, finishAgentWorktree, gitTopLevel, sharesCwd } from "../shared/worktree.ts";
 import { remindSilentTurns } from "./silent-turns.ts";
 import { promptWorkflow, WORKFLOW_DESCRIPTION, WORKFLOW_FIELDS, WORKFLOW_SNIPPET } from "./workflow-prompt.ts";
 import { agentTypes, agentTypesSection, findAgentType, workerPrompt } from "./definitions.ts";
-import { closeAll, ensureEngine, launch, launchWorkflow, queuedAhead, reinstall, resumeSession, send, settle, stop, workflowProgress, writerCwds, type Limits } from "./engine/index.ts";
+import { nextFire } from "./engine/background.ts";
+import { formatLocalTime, parseCron } from "./engine/cron.ts";
+import { closeAll, ensureEngine, launch, launchWorkflow, queuedAhead, reinstall, resumeSession, send, settle, startJob, startMonitor, stop, workflowProgress, writerCwds, type Limits } from "./engine/index.ts";
+import { lookAtPath, lookAtUrl } from "./engine/watch.ts";
 import { parseWorkflow } from "./workflow/meta.ts";
 import type { Progress } from "./workflow/run.ts";
 
@@ -64,6 +68,34 @@ const WorkflowSchema = Type.Object({
 });
 type WorkflowParams = Static<typeof WorkflowSchema>;
 
+const JobSchema = Type.Object({
+	command: Type.String({ description: "The shell command to run" }),
+	description: Type.String({ description: "A short description of what it does, shown in the notification" }),
+	cwd: Type.Optional(Type.String({ description: "Working directory; defaults to yours" })),
+	timeout: Type.Optional(Type.Integer({ minimum: 1_000, description: `Milliseconds before the command is killed. ${ONLY_ON_REQUEST}` })),
+});
+type JobParams = Static<typeof JobSchema>;
+
+const MonitorSchema = Type.Object({
+	description: Type.String({ description: "What is watched; shown in every event" }),
+	command: Type.Optional(Type.String({ description: "Script; each stdout line is an event, exit ends the watch" })),
+	path: Type.Optional(Type.String({ description: "Folder or file" })),
+	url: Type.Optional(Type.String({ description: "http(s) URL, polled with GET" })),
+	cron: Type.Optional(Type.String({ description: "5-field cron, local time" })),
+	prompt: Type.Optional(Type.String({ description: "With cron: what each fire delivers" })),
+	every: Type.Optional(Type.Number({ description: "Seconds between probes: path 2 (min 1), url 60 (min 30)" })),
+	once: Type.Optional(Type.Boolean({ description: "End after the first event" })),
+	timeout_ms: Type.Optional(Type.Integer({ minimum: 1_000, description: `Expiry. ${ONLY_ON_REQUEST}` })),
+});
+type MonitorParams = Static<typeof MonitorSchema>;
+
+const MONITOR_DESCRIPTION = [
+	"Watch something in the background and get a <task-notification> per event while you keep working. An event is not the user's reply.",
+	"Sources, exactly one: command (each stdout line is an event, lines within 200 ms arrive together; exit ends the watch with its code; stderr only reaches the output file, so add 2>&1 when failures matter), path (a folder's added, changed and removed files, or a file's new lines), url (a status or body change), cron with prompt (a local-time timer that delivers the prompt when you are idle).",
+	"For \"tell me when X\", use a command that exits once X holds (`until test -e out/done; do sleep 1; done`) or once: true. Scripts must flush each line (grep --line-buffered), survive a failed probe (`curl ... || true`), and match failures as well as success: silence is not success. Floods are rate limited, then stopped.",
+	"Watches survive /reload and pause while Pi is closed. On reopen a path or url watch reports what changed meanwhile as one caught_up event, an overdue cron fires once, and a command runs again from the top.",
+].join("\n");
+
 export default function subagentsExtension(pi: ExtensionAPI): void {
 	tasks.install(pi);
 	const modelContext = async (ctx: ExtensionContext): Promise<ModelContext> => ({
@@ -90,8 +122,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		async execute(toolCallId, params: AgentParams, signal, _onUpdate, ctx) {
 			const type = findAgentType(params.subagent_type);
 			if (params.name && RESERVED_NAMES.has(params.name)) throw new Error(`The name '${params.name}' is reserved; pick another.`);
-			const requested = resolve(ctx.cwd, params.cwd ?? ".");
-			if (!existsSync(requested) || !statSync(requested).isDirectory()) throw new Error(`cwd ${requested} is not a directory.`);
+			const requested = directory(ctx.cwd, params.cwd);
 			const resolved = resolveModel(params.model ?? type.model, await modelContext(ctx), type.effort);
 			const limits: Limits = { maxTurns: params.maxTurns, maxTokens: params.maxTokens, timeout: params.timeout };
 			if (resolved.harness !== "pi" && limitsText(limits)) throw new Error(`maxTurns, maxTokens and timeout apply to Pi models only; ${modelLabel(resolved)} runs as a CLI worker.`);
@@ -181,8 +212,8 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "TaskStop",
 		label: "TaskStop",
-		description: "Stop a running background task: an agent, by its agentId or name; a workflow, by its task id (w…) or run id (wf_…), with no notification after; or a job, by its id.",
-		promptSnippet: "Stop a background agent or job that is no longer needed.",
+		description: "Stop a running background task: an agent, by its agentId or name; a workflow, by its task id (w…) or run id (wf_…), with no notification after; or a job or monitor, by its id.",
+		promptSnippet: "Stop a background agent, job or monitor that is no longer needed.",
 		parameters: Type.Object({ task_id: Type.String({ description: "The id or name of the task to stop" }) }),
 		async execute(_toolCallId, params: { task_id: string }, _signal, _onUpdate, ctx) {
 			const entry = tasks.find(params.task_id, ctx.sessionManager.getSessionId());
@@ -192,6 +223,70 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			if (tasks.find(entry.id)?.status === "running") tasks.update(entry.id, { status: "killed" });
 			const text = taskStoppedResult(entry.id, entry.description, stopped?.worktree ? [stopped.worktree] : []);
 			return { content: [{ type: "text" as const, text }], details: { taskId: entry.id, kind: entry.kind } };
+		},
+	});
+
+	pi.registerTool({
+		name: "job_start",
+		label: "job_start",
+		description: "Run a shell command in the background. The call returns at once with the job id and its output file; a <task-notification> arrives when the command exits, with its exit code. Read the output file with read; stop the job with TaskStop. A job lives in this Pi: it survives /reload, and if Pi closes first it is killed and reported as interrupted. Servers, watchers and REPLs that must outlive Pi belong in Herdr.",
+		promptSnippet: "Run a command in the background and get notified when it exits.",
+		parameters: JobSchema,
+		async execute(toolCallId, params: JobParams, _signal, _onUpdate, ctx) {
+			const cwd = directory(ctx.cwd, params.cwd);
+			const blocked = guardShell(params.command, { cwd, root: ctx.cwd, config: loadGuardConfig(ctx.cwd) });
+			if (blocked) throw new Error(blocked);
+			const id = newBackgroundTaskId();
+			const outputFile = await startJob(await ensureEngine(ctx), { id, command: params.command, description: params.description, cwd, toolUseId: toolCallId, timeout: params.timeout });
+			const text = [
+				`Command running in background with ID: ${id}. Output is being written to: ${outputFile}`,
+				"You will be notified when it exits. Do not poll, sleep or wait for it; keep working, and read the output file once the notification arrives.",
+				params.timeout && `Timeout: ${params.timeout} ms`,
+			].filter(Boolean).join("\n");
+			return { content: [{ type: "text" as const, text }], details: { taskId: id, outputFile } };
+		},
+	});
+
+	pi.registerTool({
+		name: "Monitor",
+		label: "Monitor",
+		description: MONITOR_DESCRIPTION,
+		promptSnippet: "Watch a command's output, a folder, a URL or a cron timer, and get notified on each event.",
+		parameters: MonitorSchema,
+		async execute(_toolCallId, params: MonitorParams, signal, _onUpdate, ctx) {
+			const sources = (["command", "path", "url", "cron"] as const).filter((key) => params[key] !== undefined);
+			if (sources.length !== 1) throw new Error("Give exactly one of command, path, url or cron.");
+			const source = sources[0]!;
+			if ((source === "cron") !== (params.prompt !== undefined)) throw new Error("prompt goes with cron, and cron needs a prompt.");
+			const every = (params.every ?? (source === "url" ? 60 : 2)) * 1000;
+			if (every < (source === "url" ? 30_000 : 1_000)) throw new Error(`every must be at least ${source === "url" ? 30 : 1} seconds for ${source}.`);
+			const cwd = ctx.cwd;
+			let target = params[source]!;
+			let look: Awaited<ReturnType<typeof lookAtPath>> | Awaited<ReturnType<typeof lookAtUrl>> | undefined;
+			let baseline: string | undefined;
+			if (source === "command") {
+				const blocked = guardShell(target, { cwd, config: loadGuardConfig(cwd) });
+				if (blocked) throw new Error(blocked);
+			} else if (source === "cron") {
+				const next = nextFire(parseCron(target).raw, Date.now());
+				if (next === Infinity) throw new Error(`Cron expression ${JSON.stringify(target)} has no fire within five years.`);
+				baseline = `next fire ${formatLocalTime(next)}`;
+			} else if (source === "path") {
+				target = resolve(cwd, target);
+				look = await lookAtPath(target, undefined);
+			} else {
+				if (!/^https?:\/\//.test(target)) throw new Error("url must start with http:// or https://.");
+				look = await lookAtUrl(target, undefined, signal ?? new AbortController().signal);
+			}
+			baseline ??= look?.baseline;
+			const id = newBackgroundTaskId();
+			const outputFile = await startMonitor(await ensureEngine(ctx), { id, description: params.description, cwd, source, target, prompt: params.prompt, every, once: params.once ?? false, timeoutMs: params.timeout_ms, seen: look?.seen });
+			const until = params.timeout_ms ? `it expires after ${Math.round(params.timeout_ms / 1000)}s`
+				: params.once ? "its first event or TaskStop"
+				: source === "command" ? "the script exits or you stop it with TaskStop"
+				: "you stop it with TaskStop";
+			const text = `Monitor started (task ${id}${baseline ? `; ${baseline}` : ""}). It runs until ${until}. You will be notified on each event. Keep working; do not poll or sleep. An event is not the user's reply.`;
+			return { content: [{ type: "text" as const, text }], details: { taskId: id, outputFile, baseline } };
 		},
 	});
 
@@ -253,6 +348,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		},
 	});
 
+	pi.on("tool_call", (event, ctx) => isToolCallEventType("bash", event) ? guardBashCall(event.input.command, ctx.cwd) : undefined);
 	pi.on("session_start", async (event, ctx) => {
 		clearInterval(widget);
 		let shown = "";
@@ -334,6 +430,12 @@ function workflowLines(progress: Progress): string[] {
 function age(ms: number): string {
 	if (ms < 60_000) return `${Math.round(ms / 1_000)}s`;
 	return ms < 3_600_000 ? `${Math.floor(ms / 60_000)}m` : `${Math.floor(ms / 3_600_000)}h`;
+}
+
+function directory(base: string, cwd: string | undefined): string {
+	const requested = resolve(base, cwd ?? ".");
+	if (!existsSync(requested) || !statSync(requested).isDirectory()) throw new Error(`cwd ${requested} is not a directory.`);
+	return requested;
 }
 
 /** A new session (no assistant message yet, no --model or --provider) switches to the newest match of pi-kit.json's `lead`. */

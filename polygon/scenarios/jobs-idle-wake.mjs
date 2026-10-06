@@ -8,7 +8,7 @@ export default {
 	async run(t) {
 		const lead = rpc(t);
 		await lead.script({ agent: "lead", steps: [
-			{ id: "s1", tool: "job_start", args: { name: "probe", argv: ["sh", "-c", "sleep 1; echo polygon-ok"] } },
+			{ id: "s1", tool: "job_start", args: { command: "sleep 1; echo polygon-ok", description: "probe" } },
 			{ id: "s2", text: "started" },
 			{ id: "s3", text: "woke" },
 		] });

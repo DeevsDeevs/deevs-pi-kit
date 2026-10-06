@@ -26,8 +26,14 @@ export interface TaskNotification {
 	ownerSession: string;
 	toolUseId?: string;
 	outputFile?: string;
-	status: "completed" | "failed" | "killed";
+	/** Absent on a monitor event that does not end its watch. */
+	status?: "completed" | "failed" | "killed";
 	summary: string;
+	/** Replaces the agent note; a job says here that its log was cut. */
+	note?: string;
+	event?: string;
+	/** `closed from <t1> to <t2>`: the event caught up on what changed while Pi was closed. */
+	caughtUp?: string;
 	result?: string;
 	usage?: { agentCount?: number; agentsDone?: number; agentsError?: number; agentsSkipped?: number; agentsEmptyResult?: number; subagentTokens?: number; toolUses?: number; durationMs?: number };
 	worktree?: { path: string; branch: string };
@@ -110,12 +116,45 @@ export const tasks = {
 		state.outstanding.set(notification.notificationId, notification);
 		const ctx = state.ctx;
 		if (ctx && activeSession() === notification.ownerSession) {
-			if (deliveredIds(ctx).has(notification.notificationId)) state.outstanding.delete(notification.notificationId);
-			else send(notification);
+			const delivered = deliveredIds(ctx);
+			if (delivered.has(notification.notificationId)) state.outstanding.delete(notification.notificationId);
+			// A monitor's next event waits while its last one is still on the way; the next redelivery merges what waited.
+			else if (notification.kind !== "monitor" || !inFlight(notification.taskId, delivered)) send(notification, [notification.notificationId]);
 		}
 		showHeld();
 	},
+	/** Whether the owner session's lead could take a new turn now; a session not on screen counts as idle (its reports are held). */
+	idle(ownerSession: string): boolean {
+		try {
+			return !state.ctx || activeSession() !== ownerSession || (state.ctx.isIdle() && !state.ctx.hasPendingMessages());
+		} catch {
+			return true;
+		}
+	},
 };
+
+function inFlight(taskId: string, delivered: Set<string>): boolean {
+	return [...state.outstanding.values()].some((n) => n.taskId === taskId && state.sent.has(n.notificationId) && !delivered.has(n.notificationId));
+}
+
+/** Undelivered events of one monitor become one notification that acks all of their ids. */
+export function mergeEvents(pending: TaskNotification[]): [TaskNotification, string[]][] {
+	const out: [TaskNotification, string[]][] = [];
+	const open = new Map<string, [TaskNotification, string[]]>();
+	for (const n of pending) {
+		const merged = n.kind === "monitor" ? open.get(n.taskId) : undefined;
+		if (!merged) {
+			const entry: [TaskNotification, string[]] = [n, [n.notificationId]];
+			out.push(entry);
+			if (n.kind === "monitor") open.set(n.taskId, entry);
+			continue;
+		}
+		const [first] = merged;
+		merged[0] = { ...n, notificationId: first.notificationId, event: [first.event, n.event].filter(Boolean).join("\n"), caughtUp: first.caughtUp ?? n.caughtUp };
+		merged[1].push(n.notificationId);
+	}
+	return out;
+}
 
 async function redeliver(ctx: ExtensionContext): Promise<void> {
 	const session = ctx.sessionManager.getSessionId();
@@ -129,14 +168,16 @@ async function redeliver(ctx: ExtensionContext): Promise<void> {
 	}
 	if (state.ctx !== ctx) return;
 	const delivered = deliveredIds(ctx);
+	const fresh = new Map<string, TaskNotification>();
 	for (const notification of pending) {
 		if (delivered.has(notification.notificationId)) state.outstanding.delete(notification.notificationId);
-		else send(notification);
+		else if (!state.sent.has(notification.notificationId)) fresh.set(notification.notificationId, notification);
 	}
+	for (const [notification, ids] of mergeEvents([...fresh.values()])) send(notification, ids);
 	showHeld();
 }
 
-function send(notification: TaskNotification): void {
+function send(notification: TaskNotification, ids: string[]): void {
 	const { pi, ctx } = state;
 	if (!pi || !ctx || state.sent.has(notification.notificationId)) return;
 	try {
@@ -145,9 +186,9 @@ function send(notification: TaskNotification): void {
 			customType: TASK_NOTIFICATION,
 			content: formatTaskNotification(notification),
 			display: true,
-			details: { notificationId: notification.notificationId },
+			details: { notificationId: notification.notificationId, notificationIds: ids.length > 1 ? ids : undefined },
 		}, { triggerTurn: true, deliverAs: "steer" });
-		state.sent.set(notification.notificationId, steered);
+		for (const id of ids) state.sent.set(id, steered);
 	} catch {
 		// A stale pi after /reload or a session switch; the next session_start sends it again.
 	}
@@ -158,8 +199,9 @@ function deliveredIds(ctx: ExtensionContext): Set<string> {
 	for (const entry of ctx.sessionManager.getEntries()) {
 		if (entry.type !== "custom_message" || entry.customType !== TASK_NOTIFICATION) continue;
 		// SAFETY: Session entries are untrusted; a non-string id only sits in the set and never equals a real one.
-		const id = (entry.details as { notificationId?: string } | undefined)?.notificationId;
-		if (id !== undefined) ids.add(id);
+		const details = entry.details as { notificationId?: string; notificationIds?: string[] } | undefined;
+		if (details?.notificationId !== undefined) ids.add(details.notificationId);
+		if (Array.isArray(details?.notificationIds)) for (const id of details.notificationIds) ids.add(id);
 	}
 	return ids;
 }
@@ -210,8 +252,10 @@ export function formatTaskNotification(n: TaskNotification): string {
 		...tag("status", n.status),
 		...tag("summary", n.summary),
 		...tag("limited", n.limited),
-		...(n.kind === "agent" ? [`<note>${AGENT_NOTE}</note>`] : []),
+		...tag("note", n.note ?? (n.kind === "agent" ? AGENT_NOTE : undefined)),
 		...tag("recovery", n.recovery),
+		...tag("event", n.event),
+		...tag("caught_up", n.caughtUp),
 		...tag("result", n.result === undefined ? undefined : capResult(n.result, n.kind === "workflow" ? 8_000 : 100_000, n.outputFile)),
 		...tag("diagnostics", n.diagnostics),
 		...tag("failures", n.failures),
