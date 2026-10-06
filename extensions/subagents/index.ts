@@ -14,7 +14,7 @@ import { createAgentWorktree, finishAgentWorktree, gitTopLevel, sharesCwd } from
 import { currentMission, saveMission } from "../mission/store.ts";
 import { remindSilentTurns } from "./silent-turns.ts";
 import { promptWorkflow, WORKFLOW_DESCRIPTION, WORKFLOW_FIELDS, WORKFLOW_SNIPPET } from "./workflow-prompt.ts";
-import { agentTypes, agentTypesSection, findAgentType, workerPrompt } from "./definitions.ts";
+import { agentTypes, agentTypesList, findAgentType, workerPrompt } from "./definitions.ts";
 import { nextFire } from "./engine/background.ts";
 import { formatLocalTime, parseCron } from "./engine/cron.ts";
 import { closeAll, ensureEngine, launch, launchWorkflow, queuedAhead, reinstall, resumeSession, send, settle, startJob, startMonitor, stop, userRequests, workflowProgress, writerCwds, type Limits } from "./engine/index.ts";
@@ -27,14 +27,14 @@ const FOREGROUND_MS = 120_000;
 const MAX_REQUEST_CHARS = 4_000;
 const AUTHORING_HINT = "Load the `workflow-authoring` skill for the script format, fix the script, and retry.";
 const RESERVED_NAMES = new Set(["main", "user", "system"]);
-const ONLY_ON_REQUEST = "Set ONLY when the user explicitly asks for this limit; omitted means none.";
+const ONLY_ON_REQUEST = "ONLY when the user asks for this limit.";
 
 const AgentSchema = Type.Object({
-	description: Type.String({ description: "A short (3-5 word) description of the task" }),
-	prompt: Type.String({ description: "The task for the agent to perform" }),
+	description: Type.String({ description: "3-5 words naming the task, shown in its notification" }),
+	prompt: Type.String({ description: "The whole brief: the agent sees nothing else" }),
 	subagent_type: Type.Optional(Type.String({ description: "The agent type; general-purpose when omitted" })),
-	model: Type.Optional(Type.String({ description: "Omit normally: the agent runs your model and thinking level. Otherwise a configured name (astra, luna, opus) or provider/id[:level]; pass a model the user named exactly" })),
-	run_in_background: Type.Optional(Type.Boolean({ description: "Default true: return at once and get a notification when the agent finishes. false waits for the result, for at most 2 minutes" })),
+	model: Type.Optional(Type.String({ description: "Omit to run your model and level. Else a configured name (astra, luna, opus) or provider/id[:level]; a model the user named, exactly" })),
+	run_in_background: Type.Optional(Type.Boolean({ description: "Default true. false waits up to 2 minutes for the result: only when nothing useful can happen without it" })),
 	name: Type.Optional(Type.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$", description: "A name to address the agent by; a later agent with the same name takes it over" })),
 	isolation: Type.Optional(Type.Literal("worktree", { description: "Run in a fresh git worktree of the repo" })),
 	cwd: Type.Optional(Type.String({ description: "Working directory, for one repo inside a multi-repo parent folder; defaults to yours" })),
@@ -45,19 +45,16 @@ const AgentSchema = Type.Object({
 type AgentParams = Static<typeof AgentSchema>;
 
 const AGENT_DESCRIPTION = [
-	"Launch an agent that works on a task by itself, with its own context and tools, and reports back once.",
-	"subagent_type picks one of the agent types listed in your system prompt; general-purpose when omitted. When you already know the file or symbol, use read, grep or find yourself: agents are for open questions across the code and for work that matches a type.",
+	"Launch an agent that does one task by itself, with its own context and tools, and reports back once. For a file or symbol you already know, use read, grep or find yourself; agents are for open questions across the code and for work that matches a type.",
 	"",
-	"- By default an agent runs in the background: the call returns at once and a <task-notification> arrives in your conversation when the agent finishes. Do not poll, sleep or read its output file meanwhile; keep working or answer the user.",
-	"- Use run_in_background: false only if your next step cannot start without the answer and nothing else useful can happen meanwhile.",
-	"- Do not race: until the notification arrives you know nothing of the result, so never guess or pre-write it, and do not redo the agent's work yourself. If the user asks, say it is still running.",
-	"- Launch independent agents in one message with several Agent calls so they run at the same time.",
-	"- The user never sees the report: tell them what matters in it. A report says what the agent meant to do; when it changed code, look at the change before calling the work done.",
-	"- SendMessage to an agentId or name continues that agent with its context; a new Agent call starts from nothing.",
-	"- A type sets the model, effort and tools; `model` overrides them for this call.",
-	"- isolation: \"worktree\" puts the agent in its own worktree and branch: an unchanged one is removed, a changed one is kept and its path and branch reported. Give each parallel writer one.",
+	"- It runs in the background: a <task-notification> brings its report. Until then you know nothing of the result: do not poll, sleep, read its output file, guess the result or redo the work; keep working or answer the user.",
+	"- Launch independent agents in one message so they run at the same time.",
+	"- The user never sees the report: relay what matters. When the agent changed code, look at the change before calling the work done.",
+	"- SendMessage to its agentId or name continues it with its context; a new Agent call starts from nothing.",
+	"- isolation: \"worktree\" gives it its own worktree and branch, kept and reported only if changed. Give each parallel writer one.",
 	"",
-	"The agent has seen none of this conversation. Brief it like a capable colleague who just walked in: the goal and why it matters, what you know or have ruled out, the files and constraints involved, and the form and length of answer you want. Say whether it should change code or only research. For a lookup, hand over the exact command; for an investigation, hand over the question rather than a list of steps. Never delegate understanding: instead of \"fix it based on your findings\", name the paths, lines and change you want, and synthesize what agents report before you act on it.",
+	"It has seen none of this conversation: brief it like a colleague who just walked in. Give the goal and why, what you know or ruled out, the files and constraints, whether to change code or only research, and the answer you want back. Name the paths, lines and change instead of \"fix it based on your findings\", and synthesize its report before you act on it.",
+	"",
 ].join("\n");
 
 const WorkflowSchema = Type.Object({
@@ -116,8 +113,8 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "Agent",
 		label: "Agent",
-		description: AGENT_DESCRIPTION,
-		promptSnippet: "Delegate a self-contained task to a background agent that reports back once.",
+		description: AGENT_DESCRIPTION + agentTypesList(),
+		promptSnippet: "Delegate a self-contained task to a background agent.",
 		parameters: AgentSchema,
 		async execute(toolCallId, params: AgentParams, signal, _onUpdate, ctx) {
 			const type = findAgentType(params.subagent_type);
@@ -214,7 +211,6 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		name: "TaskStop",
 		label: "TaskStop",
 		description: "Stop a running background task: an agent, by its agentId or name; a workflow, by its task id (w…) or run id (wf_…), with no notification after; a job or monitor, by its id; or a collaborator, by its name (a graceful stand-down).",
-		promptSnippet: "Stop a background agent, job or monitor that is no longer needed.",
 		parameters: Type.Object({ task_id: Type.String({ description: "The id or name of the task to stop" }) }),
 		async execute(_toolCallId, params: { task_id: string }, _signal, _onUpdate, ctx) {
 			const entry = tasks.find(params.task_id, ctx.sessionManager.getSessionId());
@@ -231,7 +227,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		name: "job_start",
 		label: "job_start",
 		description: "Run a shell command in the background. The call returns at once with the job id and its output file; a <task-notification> arrives when the command exits, with its exit code. Read the output file with read; stop the job with TaskStop. A job lives in this Pi: it survives /reload, and if Pi closes first it is killed and reported as interrupted. Servers, watchers and REPLs that must outlive Pi belong in Herdr.",
-		promptSnippet: "Run a command in the background and get notified when it exits.",
+		promptSnippet: "Run a command in the background; notified when it exits.",
 		parameters: JobSchema,
 		async execute(toolCallId, params: JobParams, _signal, _onUpdate, ctx) {
 			const cwd = directory(ctx.cwd, params.cwd);
@@ -252,7 +248,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		name: "Monitor",
 		label: "Monitor",
 		description: MONITOR_DESCRIPTION,
-		promptSnippet: "Watch a command's output, a folder, a URL or a cron timer, and get notified on each event.",
+		promptSnippet: "Get notified on each event from a command, folder, URL or cron timer.",
 		parameters: MonitorSchema,
 		async execute(_toolCallId, params: MonitorParams, signal, _onUpdate, ctx) {
 			const sources = (["command", "path", "url", "cron"] as const).filter((key) => params[key] !== undefined);
@@ -298,7 +294,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			"Send a message to an agent you launched, by its agentId or name, or to a collaborator by its name (main is the lead).",
 			"A running agent gets it at its next tool round and folds it into its current work; a running Claude or Codex worker gets it when its current run ends. An agent that finished, failed or that you stopped resumes with its full context under the same agentId and notifies again. An agent the user stopped is not resumed. A collaborator gets it at its next idle, merged with anything else sent meanwhile.",
 		].join("\n"),
-		promptSnippet: "Steer a running agent, continue a finished one with its context, or message a collaborator.",
+		promptSnippet: "Steer or continue an agent, or message a collaborator.",
 		parameters: Type.Object({
 			to: Type.String({ description: "The agentId or name of the agent, or a collaborator's name" }),
 			message: Type.String({ description: "The message" }),
@@ -329,7 +325,6 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		name: "ListAgents",
 		label: "ListAgents",
 		description: "List this session's background tasks, each labelled by kind (agent, workflow, job, monitor, collaborator), with its id, name, status and description.",
-		promptSnippet: "List background agents, workflows, jobs, monitors and collaborators.",
 		parameters: Type.Object({}),
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 			const entries = tasks.list(ctx.sessionManager.getSessionId());
@@ -374,9 +369,6 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		if (event.reason === "reload") await reinstall();
 		else await useLeadModel(pi, ctx).catch((error) => ctx.ui.notify(`The lead stays on Pi's model: ${error instanceof Error ? error.message : String(error)}`, "warning"));
 		await resumeSession(ctx).catch((error) => ctx.ui.notify(`Agents of this session did not resume: ${error instanceof Error ? error.message : String(error)}`, "error"));
-	});
-	pi.on("before_agent_start", (event) => {
-		event.systemPromptOptions.sections.agent_types = agentTypesSection();
 	});
 	pi.on("session_shutdown", async (event) => {
 		clearInterval(widget);

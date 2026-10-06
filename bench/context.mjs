@@ -124,14 +124,12 @@ export async function measure() {
 	const { toolDefinitions } = await import(pathToFileURL(join(repo, "extensions/runtime/mcp/tools.ts")));
 	const { nativeMessagingConfiguration } = await import(pathToFileURL(join(repo, "extensions/runtime/mcp/native.ts")));
 	const { NATIVE_STARTUP_MESSAGE } = await import(pathToFileURL(join(repo, "extensions/runtime/drivers.ts")));
-	const { agentTypesSection } = await import(pathToFileURL(join(repo, "extensions/subagents/definitions.ts")));
 	const native = nativeMessagingConfiguration({ root: "/tmp/x", targetKey: "agent_x", nodeExecutable: process.execPath });
 	const readme = read("README.md");
 	const protocol = read("extensions/runtime/PROTOCOL.md");
 	const collaborators = skills.find(skill => skill.name === "collaborators");
 	const surfaces = [
 		toolSurface(tools),
-		surface("promptSections", [item("agent_types", agentTypesSection())]),
 		surface("skillIndex", skills.map(skill => item(skill.name, skillIndexEntry(skill)))),
 		surface("skillBodies", skills.map(skill => item(skill.name, skill.body))),
 		surface("nativeCatalog", toolDefinitions.map(tool => item(tool.name, JSON.stringify(tool)))),

@@ -30,7 +30,7 @@ const ALIASES = new Map([["explore", "explorer"], ["plan", "architect"]]);
 
 const GENERAL_PURPOSE: AgentType = {
 	name: "general-purpose",
-	whenToUse: "Researches complex questions, searches code and runs multi-step tasks, including edits. Use it for a search you are not sure to land in the first few tries.",
+	whenToUse: "Research, code search and multi-step tasks, including edits.",
 	tools: [...PI_TOOLS],
 	prompt: [
 		"You are an agent the lead delegated one task to. Do that task completely, without gold-plating and without leaving it half done.",
@@ -91,11 +91,12 @@ export function workerPrompt(type: AgentType, cwd: string, worktree?: { path: st
 	].join("\n\n");
 }
 
-export function agentTypesSection(): string {
+/** The Agent tool's list of types; tools are named only where they differ from the read-only set. */
+export function agentTypesList(): string {
+	const readOnly = PI_TOOLS.filter((name) => name !== "edit" && name !== "write").join(", ");
 	return [
-		"Available agent types for the Agent tool:",
-		...agentTypes().map((type) => `- ${type.name}: ${type.whenToUse} (Tools: ${type.tools.join(", ")})`),
-		"Launch independent agents in one message with several Agent calls so they run at the same time.",
+		`subagent_type (default general-purpose); a type sets the model, effort and tools, \`model\` overrides them. Tools are ${readOnly} unless listed:`,
+		...agentTypes().map((type) => `- ${type.name}: ${type.whenToUse}${type.tools.join(", ") === readOnly ? "" : ` (${type.tools.join(", ")})`}`),
 	].join("\n");
 }
 

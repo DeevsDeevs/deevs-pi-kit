@@ -1,6 +1,6 @@
 ---
 name: ask-user
-description: "Ask the user through ask_user only before an irreversible or destructive choice; otherwise state the assumed default and continue. Gather evidence first."
+description: "When and how to ask with ask_user: decision gates before irreversible steps, question and option shape."
 ---
 
 # Ask User
