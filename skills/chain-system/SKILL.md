@@ -72,7 +72,7 @@ Use the concise default rubric below. For important handoffs, load and follow `l
 8. Current Work
 9. Next Step
 
-Include exact file paths, command results, subagent run/group IDs, background process IDs, and unresolved errors when they matter. Skip routine tool chatter.
+Include exact file paths, command results, agent, workflow and job ids, and unresolved errors when they matter. Skip routine tool chatter.
 
 ## Subagent context passing
 

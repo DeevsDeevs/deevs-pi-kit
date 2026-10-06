@@ -26,7 +26,7 @@ Use project-native facts (changed files, callers, tests, CI conventions, specs/c
 
 Build a small dependency graph before running checks. Launch independent read-only checks and perspectives together; do not wait for typecheck before starting an unrelated docs/security review. Keep fix → targeted recheck and final-diff → review gates sequential. Do not parallelize commands that write the same outputs, contend heavily for the same resource, or would review a changing diff. Once the diff is frozen, full validation and independent final review should usually run concurrently, then be reconciled into one verdict.
 
-For servers/browsers/e2e: Herdr for persistent processes; `job_start` with readiness watches for bounded commands; run the smoke action with real assertions; capture concise evidence; `TaskStop` when done. No large log dumps.
+For servers/browsers/e2e: Herdr for persistent processes; `job_start` for bounded commands and `Monitor` to wait for readiness; run the smoke action with real assertions; capture concise evidence; `TaskStop` when done. No large log dumps.
 
 ## 4. Perspectives
 
