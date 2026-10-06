@@ -10,6 +10,8 @@ node bench/orchestration/run.mjs --models     # token expiries and Pi's model li
 node bench/orchestration/run.mjs --freshen    # the polygon's freshen step: refresh the volume's tokens (needs polygon/run.mjs to name Pi's 'openai' provider)
 ```
 
+`node bench/orchestration/inside.mjs --remeasure <run dirs>` recomputes a finished run's metrics on the host from its saved transcripts, and re-judges t1 (no repo needed) and, with `BENCH_PRISTINE=<export of 4080d62>`, t2, t4 and t5; `repo.patch` holds every run's changes for replaying t3's check.
+
 A run directory that already holds `result.json` is skipped, so re-invoking a run resumes it. Scheduling stops at the first `quota` (a Claude `rate_limit_event` rejected) or `no-login` (the staged access token would expire inside the run's time box).
 
 ## Tasks
@@ -18,7 +20,7 @@ All run on a `git archive` export of this repository (history-free, `AGENTS.md` 
 
 | Task | Commit | Structural success |
 |---|---|---|
-| t1 multi-agent review | `e020683^` | a schema-valid finding in `extensions/runtime/service/messaging.ts` within lines 185-225, the inbox page that `e020683` fixed |
+| t1 multi-agent review | `e020683^` | a schema-valid finding at either site of the bug `e020683` fixed: `messaging.ts` 185-225 (the inbox page is marked read) or `protocol.ts` 112-132 (the oversized response is then replaced by an error); `fix_file_hit` says whether the fixed file itself was named |
 | t2 fan-out summary | `4080d62` | all 13 extension modules present once, schema-valid; `ts_files` exactness against the checkout is reported |
 | t3 implement-and-review | `4080d62`, regex un-fixed | a hidden vitest file passes, tests the agents changed pass, `approved` with 1-3 review rounds |
 | t4 44-agent fan-out | `4080d62` | all 44 test files present, schema-valid; `tests` exactness against a regex count is reported |
