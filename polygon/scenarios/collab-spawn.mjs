@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { eventually, exec, herdr, rpc, sleep } from "../drive.mjs";
 import { notifications, requests, toolCalls } from "../look.mjs";
 
-// A Claude writer and a Codex reviewer start in their own collaborator tabs with no prompt left for a human.
+// A Claude writer, a Codex reviewer and a Codex writer start in their own collaborator tabs with no prompt left for a
+// human, and a message reaches the Codex writer in its fresh worktree.
 export default {
 	name: "collab-spawn",
 	gate: "M6",
@@ -22,17 +23,21 @@ export default {
 			{ id: "s1", tool: "collaborator_manage", args: { action: "start", participants: [
 				{ participantId: "writer", model: "claude:opus", profile: "workspace-write" },
 				{ participantId: "reviewer", model: "codex:puppet", profile: "read-only" },
+				{ participantId: "coder", model: "codex:puppet", profile: "workspace-write" },
 			] } },
-			{ id: "s2", text: "started" },
+			{ id: "s2", tool: "SendMessage", args: { to: "coder", message: "spawn-codex-mark" } },
+			{ id: "s3", text: "started" },
 		] });
 		await lead.until((e) => e.type === "agent_settled", 180_000, "both starts");
 		const [start] = toolCalls(lead.events);
 		writeFileSync(join(t.dir, "start.json"), JSON.stringify(start, null, 2));
 		assert.equal(start.isError, false, start.text);
-		assert.deepEqual(start.details.results.map((r) => r.status), ["started", "started"], start.text);
+		assert.deepEqual(start.details.results.map((r) => r.status), ["started", "started", "started"], start.text);
 		const labels = (await cli("tab", "list")).tabs.map((tab) => tab.label);
-		for (const name of ["writer", "reviewer"]) assert.ok(labels.includes(`collaborator:${name}`), `no collaborator:${name} tab in ${labels}`);
+		for (const name of ["writer", "reviewer", "coder"]) assert.ok(labels.includes(`collaborator:${name}`), `no collaborator:${name} tab in ${labels}`);
 		await eventually(() => requests(t).some((r) => r.wire === "responses"), 30_000, "the reviewer's first request");
+		t.marks.push("spawn-codex-mark");
+		await eventually(() => requests(t).some((r) => r.wire === "responses" && r.marks.includes("spawn-codex-mark")), 30_000, "the message in the Codex writer's request");
 		const reviewer = requests(t).find((r) => r.wire === "responses");
 		assert.ok(!reviewer.tools.some((name) => name === "apply_patch"), `the reviewer was offered a patch tool: ${reviewer.tools}`);
 		const listed = (await cli("agent", "list")).agents;

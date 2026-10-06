@@ -43,7 +43,8 @@ it.each(["claude-code", "codex"] as const)("compiles %s native configuration wit
 	expect(compiled.args.join(" ")).toContain(unattended);
 	expect(compiled.args[compiled.args.indexOf("--model") + 1]).toBe(config.model);
 	expect(compiled.args.join("\n")).not.toContain("developer_instructions=");
-	expect(compiled.args.join("\n")).not.toContain("trust_level");
+	// A fresh worktree is a folder Codex has not trusted; until it is, typed prompts never reach the TUI.
+	if (driver === "codex") expect(compiled.args.join("\n")).toContain(`projects={ ${JSON.stringify(config.root)} = { trust_level = "trusted" } }`);
 	const context = driver === "claude-code" ? compiled.args[compiled.args.indexOf("--append-system-prompt") + 1]! : compiled.args.at(-1)!;
 	expect(context).toContain("Selected persona context.");
 	expect(context).toContain("tell main with SendMessage");
@@ -57,7 +58,7 @@ it.each(["claude-code", "codex"] as const)("compiles %s native configuration wit
 		expect(servers[compiled.serverName]).toEqual({ command: realpathSync(process.execPath), args: [resolve("extensions/runtime/mcp/main.mjs"), compiled.descriptorPath] });
 	} else {
 		expect(compiled.args.slice(0, 2)).toEqual(["--sandbox", "workspace-write"]);
-		expect(compiled.args[compiled.args.indexOf("--config") + 1]).toBe(`mcp_servers.${compiled.serverName}={command=${JSON.stringify(realpathSync(process.execPath))},args=${JSON.stringify([resolve("extensions/runtime/mcp/main.mjs"), compiled.descriptorPath])}}`);
+		expect(compiled.args.find((arg) => arg.startsWith("mcp_servers."))).toBe(`mcp_servers.${compiled.serverName}={command=${JSON.stringify(realpathSync(process.execPath))},args=${JSON.stringify([resolve("extensions/runtime/mcp/main.mjs"), compiled.descriptorPath])}}`);
 		expect(compiled.args.at(-2)).toBe("--");
 	}
 });

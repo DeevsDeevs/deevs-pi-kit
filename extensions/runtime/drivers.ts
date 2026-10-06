@@ -141,9 +141,9 @@ function codexCommand(input: DriverCommandInput): string[] {
 	const startup = mcp
 		? ["--", `${NATIVE_STARTUP_MESSAGE} ${mcp.context}`]
 		: input.persona ? ["--config", `developer_instructions=${JSON.stringify(input.persona.prompt)}`] : [];
-	if (isWriter(input.profile)) return ["--sandbox", "workspace-write", "--ask-for-approval", "never", ...server, ...model, ...startup];
-	const trustedProject = `projects={ ${JSON.stringify(input.cwd)} = { trust_level = "trusted" } }`;
-	return ["--ask-for-approval", "never", "--sandbox", "read-only", "--disable", "hooks", "--config", trustedProject, ...server, ...model, ...startup];
+	const trustedProject = ["--config", `projects={ ${JSON.stringify(input.cwd)} = { trust_level = "trusted" } }`];
+	if (isWriter(input.profile)) return ["--sandbox", "workspace-write", "--ask-for-approval", "never", ...trustedProject, ...server, ...model, ...startup];
+	return ["--ask-for-approval", "never", "--sandbox", "read-only", "--disable", "hooks", ...trustedProject, ...server, ...model, ...startup];
 }
 
 function codexServerValue(mcp: NativeMessagingConfiguration): string {
