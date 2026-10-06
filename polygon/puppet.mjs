@@ -3,6 +3,7 @@
 // A string arg "$/re/" is replaced by the last match of re in the transcript (ids the script cannot know upfront).
 import { createServer } from "node:http";
 import { appendFileSync } from "node:fs";
+import { zstdDecompressSync } from "node:zlib";
 
 const text = (c) => typeof c === "string" ? c
 	: (c ?? []).map((b) => b.type === "tool_use" ? `toolCall:${b.id}` : b.type === "tool_result" ? text(b.content) : b.text ?? "").join("\n");
@@ -33,14 +34,17 @@ const reply = (step) => step.id ? `[polygon:${step.id}] ${step.text ?? ""}` : st
 
 export function startPuppet(logFile) {
 	const log = (wire, url, request, step, messages) => appendFileSync(logFile, JSON.stringify({
-		at: Date.now(), wire, url, agent: step.agent ?? null, step: step.id ?? null, tool: step.tool ?? null, model: request.model,
+		at: Date.now(), wire, url, agent: step.agent ?? null, step: step.id ?? null, tool: step.tool ?? null, model: request.model, tier: request.service_tier ?? null,
 		messages: messages.length, images: images(messages), tools: (request.tools ?? []).map((t) => t.function?.name ?? t.name ?? t.type),
 	}) + "\n");
 	const server = createServer((req, res) => {
-		let body = "";
-		req.on("data", (d) => { body += d; });
+		const chunks = [];
+		req.on("data", (d) => { chunks.push(d); });
 		req.on("end", () => {
-			const request = JSON.parse(body || "{}");
+			// Pi's openai-codex wire compresses its request bodies.
+			const raw = Buffer.concat(chunks);
+			const body = req.headers["content-encoding"] === "zstd" ? zstdDecompressSync(raw) : raw;
+			const request = JSON.parse(body.toString() || "{}");
 			if (req.url.includes("/responses")) return responses(res, request, log, req.url);
 			const wire = req.url.includes("/chat/completions") ? "chat" : req.url.includes("/messages") ? "anthropic" : null;
 			// Token counts and health probes such as Claude's /api/hello are answered outside the request log.
@@ -87,7 +91,7 @@ function responses(res, request, log, url) {
 	const items = typeof request.input === "string" ? [{ type: "message", role: "user", content: request.input }] : request.input ?? [];
 	const messages = items.map((i) => i.type === "function_call" ? { role: "assistant", content: `toolCall:${i.call_id}` }
 		: i.type === "function_call_output" ? { role: "tool", content: typeof i.output === "string" ? i.output : JSON.stringify(i.output) }
-		: i.type === "message" ? { role: i.role, content: typeof i.content === "string" ? i.content : i.content ?? [] }
+		: i.type === "message" || i.role ? { role: i.role, content: typeof i.content === "string" ? i.content : i.content ?? [] }
 		: { role: "other", content: "" });
 	const step = nextStep(messages);
 	log("responses", url, request, step, messages);
