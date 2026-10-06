@@ -58,7 +58,7 @@ export class WikiService {
 		if (input.dryRun) return { path: root, dryRun: true, created };
 		await assertEmptyOrMissing(root);
 		for (const dir of CORE_DIRS) await mkdir(join(root, dir), { recursive: true });
-		const now = today();
+		const now = new Date().toISOString().slice(0, 10);
 		const title = input.title?.trim() || `${domain} Wiki`;
 		await writeFile(join(root, "SCHEMA.md"), schemaTemplate(domain, now), "utf8");
 		await writeFile(join(root, "index.md"), indexTemplate(title, now), "utf8");
@@ -112,12 +112,12 @@ export class WikiService {
 		for (const page of pages) {
 			const content = await readBounded(page.path);
 			const metadata = parseMetadata(content);
-			const missing = ["title", "type", "tags", "sources"].filter((field) => {
-				if (field === "title") return !metadata.title && !/^#\s+/.test(stripFrontmatter(content));
-				if (field === "tags") return metadata.tags.length === 0;
-				if (field === "sources") return metadata.sources.length === 0;
-				return !(metadata as unknown as Record<string, unknown>)[field];
-			});
+			const missing = [
+				!metadata.title && !/^#\s+/.test(stripFrontmatter(content)) && "title",
+				!metadata.type && "type",
+				!metadata.tags.length && "tags",
+				!metadata.sources.length && "sources",
+			].filter(Boolean);
 			if (missing.length) add("warning", "frontmatter", `${page.relativePath} missing metadata: ${missing.join(", ")}`, page.relativePath);
 			if (taxonomy) for (const tag of page.tags) if (!taxonomy.has(tag)) add("warning", "unknown-tag", `${page.relativePath} uses tag not in SCHEMA.md taxonomy: ${tag}`, page.relativePath);
 			if (page.confidence === "low") add("notice", "low-confidence", `${page.relativePath} is marked confidence: low`, page.relativePath);
@@ -142,12 +142,7 @@ export class WikiService {
 		const maxNodes = clamp(input.maxNodes ?? 500, 1, 5000);
 		const maxEdges = clamp(input.maxEdges ?? 2000, 1, 20_000);
 		const nodes = await this.pages(root);
-		const byId = new Map(nodes.map((node) => [node.id, node]));
-		const byBase = new Map<string, WikiPageInfo[]>();
-		for (const node of nodes) {
-			const base = basenameId(node.relativePath);
-			byBase.set(base, [...(byBase.get(base) ?? []), node]);
-		}
+		const targets = linkTargets(nodes);
 		const edges: WikiGraphEdge[] = [];
 		const brokenLinks: WikiBrokenLink[] = [];
 		const ambiguousLinks: WikiAmbiguousLink[] = [];
@@ -155,7 +150,7 @@ export class WikiService {
 			const content = await readBounded(node.path);
 			for (const link of parseWikiLinks(content)) {
 				if (link.local || link.asset) continue;
-				const resolved = resolveLink(node.id, link.target, byId, byBase);
+				const resolved = resolveLink(node.id, link.target, targets);
 				if (resolved.kind === "ok") edges.push({ from: node.id, to: resolved.id, raw: link.raw });
 				else if (resolved.kind === "ambiguous") ambiguousLinks.push({ from: node.id, target: link.target, candidates: resolved.candidates, raw: link.raw, line: link.line });
 				else brokenLinks.push({ from: node.id, target: link.target, raw: link.raw, line: link.line });
@@ -175,7 +170,7 @@ export class WikiService {
 		const mode = input.mode ?? "lookup";
 		const maxResults = clamp(input.maxResults ?? DEFAULT_MAX_RESULTS, 1, MAX_RESULTS);
 		if (mode === "lookup") return this.lookup(root, query, maxResults);
-		return this.textSearch(root, query, mode === "regex", maxResults, clamp(input.contextLines ?? 2, 0, 10), !!input.caseSensitive);
+		return this.textSearch(root, query, mode === "regex" ? "regex" : "text", maxResults, clamp(input.contextLines ?? 2, 0, 10), !!input.caseSensitive);
 	}
 
 	async context(input: WikiContextInput): Promise<WikiContextResult> {
@@ -242,15 +237,12 @@ export class WikiService {
 	private async indexLinks(root: string): Promise<{ resolved: Set<string>; missing: string[] }> {
 		const path = join(root, "index.md");
 		if (!(await exists(path))) return { resolved: new Set(), missing: [] };
-		const pages = await this.pages(root);
-		const byId = new Map(pages.map((page) => [page.id, page]));
-		const byBase = new Map<string, WikiPageInfo[]>();
-		for (const page of pages) byBase.set(basenameId(page.relativePath), [...(byBase.get(basenameId(page.relativePath)) ?? []), page]);
+		const targets = linkTargets(await this.pages(root));
 		const resolved = new Set<string>();
 		const missing: string[] = [];
 		for (const link of parseWikiLinks(await readBounded(path))) {
 			if (link.local || link.asset) continue;
-			const result = resolveLink("index", link.target, byId, byBase);
+			const result = resolveLink("index", link.target, targets);
 			if (result.kind === "ok") resolved.add(result.id);
 			else if (result.kind === "missing") missing.push(link.target);
 		}
@@ -264,19 +256,18 @@ export class WikiService {
 	}
 
 	private async lookup(root: string, query: string, maxResults: number): Promise<WikiSearchResult> {
-		const terms = tokenize(query).slice(0, MAX_LOOKUP_TERMS);
+		const terms = unicodeTerms(query).slice(0, MAX_LOOKUP_TERMS);
 		if (!terms.length) return { path: root, query, mode: "lookup", matches: [], truncated: false };
 		const pages = await this.pages(root);
-		const docs = [] as Array<{ page: WikiPageInfo; content: string; lines: string[]; tf: Map<string, number>; length: number }>;
+		const docs: Array<{ page: WikiPageInfo; lines: string[]; tf: Map<string, number>; length: number }> = [];
 		const df = new Map<string, number>();
 		for (const page of pages) {
-			const content = await readBounded(page.path);
-			const weighted = `${page.title}\n${page.tags.join(" ")}\n${stripFrontmatter(content)}`;
-			const tokens = tokenize(weighted);
+			const body = stripFrontmatter(await readBounded(page.path));
+			const tokens = unicodeTerms(`${page.title}\n${page.tags.join(" ")}\n${body}`);
 			const tf = new Map<string, number>();
 			for (const token of tokens) tf.set(token, (tf.get(token) ?? 0) + 1);
 			for (const term of new Set(tokens)) df.set(term, (df.get(term) ?? 0) + 1);
-			docs.push({ page, content, lines: stripFrontmatter(content).split(/\r?\n/), tf, length: Math.max(tokens.length, 1) });
+			docs.push({ page, lines: body.split(/\r?\n/), tf, length: Math.max(tokens.length, 1) });
 		}
 		const avgLength = docs.reduce((sum, doc) => sum + doc.length, 0) / Math.max(docs.length, 1);
 		const matches: WikiSearchMatch[] = [];
@@ -293,28 +284,28 @@ export class WikiService {
 				if (doc.page.title.toLowerCase().includes(term)) score += 0.75;
 				if (doc.page.tags.some((tag) => tag.toLowerCase().includes(term))) score += 0.35;
 			}
-			if (score > 0) matches.push({ page: doc.page, line: bestLine(doc.lines, terms), snippet: snippetAround(doc.lines, bestLine(doc.lines, terms), 2), score, matchedTerms });
+			if (score <= 0) continue;
+			const line = bestLine(doc.lines, terms);
+			matches.push({ page: doc.page, line, snippet: snippetAround(doc.lines, line, 2), score, matchedTerms });
 		}
 		matches.sort((a, b) => (b.score ?? 0) - (a.score ?? 0) || a.page.id.localeCompare(b.page.id));
 		return { path: root, query, mode: "lookup", matches: matches.slice(0, maxResults), truncated: matches.length > maxResults };
 	}
 
-	private async textSearch(root: string, query: string, regex: boolean, maxResults: number, contextLines: number, caseSensitive: boolean): Promise<WikiSearchResult> {
-		const matches: WikiSearchMatch[] = [];
-		const pages = await this.pages(root);
-		const pattern = regex ? new RegExp(query, caseSensitive ? "" : "i") : null;
+	private async textSearch(root: string, query: string, mode: "text" | "regex", maxResults: number, contextLines: number, caseSensitive: boolean): Promise<WikiSearchResult> {
+		const pattern = mode === "regex" ? new RegExp(query, caseSensitive ? "" : "i") : undefined;
 		const needle = caseSensitive ? query : query.toLowerCase();
-		for (const page of pages) {
+		const matchesLine = (line: string) => pattern ? pattern.test(line) : (caseSensitive ? line : line.toLowerCase()).includes(needle);
+		const matches: WikiSearchMatch[] = [];
+		for (const page of await this.pages(root)) {
 			const lines = (await readBounded(page.path)).split(/\r?\n/);
 			for (let index = 0; index < lines.length; index++) {
-				const hay = caseSensitive ? lines[index]! : lines[index]!.toLowerCase();
-				if (regex ? pattern!.test(lines[index]!) : hay.includes(needle)) {
-					matches.push({ page, line: index + 1, snippet: snippetAround(lines, index + 1, contextLines) });
-					if (matches.length >= maxResults) return { path: root, query, mode: regex ? "regex" : "text", matches, truncated: true };
-				}
+				if (!matchesLine(lines[index]!)) continue;
+				matches.push({ page, line: index + 1, snippet: snippetAround(lines, index + 1, contextLines) });
+				if (matches.length >= maxResults) return { path: root, query, mode, matches, truncated: true };
 			}
 		}
-		return { path: root, query, mode: regex ? "regex" : "text", matches, truncated: false };
+		return { path: root, query, mode, matches, truncated: false };
 	}
 
 	private async resolveExistingRoot(inputPath: string): Promise<string> {
@@ -337,7 +328,21 @@ export class WikiService {
 	}
 }
 
-function resolveLink(fromId: string, target: string, byId: Map<string, WikiPageInfo>, byBase: Map<string, WikiPageInfo[]>): { kind: "ok"; id: string } | { kind: "missing" } | { kind: "ambiguous"; candidates: string[] } {
+interface LinkTargets {
+	byId: Map<string, WikiPageInfo>;
+	byBase: Map<string, WikiPageInfo[]>;
+}
+
+function linkTargets(pages: WikiPageInfo[]): LinkTargets {
+	const byBase = new Map<string, WikiPageInfo[]>();
+	for (const page of pages) {
+		const base = basenameId(page.relativePath);
+		byBase.set(base, [...(byBase.get(base) ?? []), page]);
+	}
+	return { byId: new Map(pages.map((page) => [page.id, page])), byBase };
+}
+
+function resolveLink(fromId: string, target: string, { byId, byBase }: LinkTargets): { kind: "ok"; id: string } | { kind: "missing" } | { kind: "ambiguous"; candidates: string[] } {
 	if (target.includes("/") && byId.has(target)) return { kind: "ok", id: target };
 	const sameDir = sameDirCandidate(fromId, target);
 	if (byId.has(sameDir)) return { kind: "ok", id: sameDir };
@@ -360,7 +365,7 @@ async function markdownFiles(root: string): Promise<string[]> {
 	const entries = await readdir(root, { withFileTypes: true });
 	const files: string[] = [];
 	for (const entry of entries) {
-		if (entry.name === ".git" || entry.name === "node_modules" || entry.name.startsWith(".")) continue;
+		if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
 		const path = join(root, entry.name);
 		if (entry.isDirectory()) files.push(...await markdownFiles(path));
 		else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) files.push(path);
@@ -369,8 +374,7 @@ async function markdownFiles(root: string): Promise<string[]> {
 }
 
 async function readBounded(path: string): Promise<string> {
-	const content = await readFile(path, "utf8");
-	return Buffer.byteLength(content, "utf8") > MAX_FILE_BYTES ? utf8Head(content, MAX_FILE_BYTES) : content;
+	return utf8Head(await readFile(path, "utf8"), MAX_FILE_BYTES);
 }
 
 async function assertEmptyOrMissing(path: string): Promise<void> {
@@ -439,11 +443,6 @@ function truncateText(value: string, maxBytes: number, label: string): { text: s
 	return { text: `${utf8Head(value, Math.max(0, maxBytes - suffixBytes))}${suffix}`, truncated: true };
 }
 
-
-function tokenize(text: string): string[] {
-	return unicodeTerms(text);
-}
-
 function bestLine(lines: string[], terms: string[]): number {
 	let best = 1;
 	let score = -1;
@@ -459,10 +458,6 @@ function snippetAround(lines: string[], line: number, context: number): string {
 	const start = Math.max(1, line - context);
 	const end = Math.min(lines.length, line + context);
 	return lines.slice(start - 1, end).map((text, index) => `${start + index}: ${text}`).join("\n");
-}
-
-function today(): string {
-	return new Date().toISOString().slice(0, 10);
 }
 
 function schemaTemplate(domain: string, date: string): string {

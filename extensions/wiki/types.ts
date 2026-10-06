@@ -68,8 +68,6 @@ export interface WikiPageInfo {
 	lines: number;
 }
 
-export interface WikiGraphNode extends WikiPageInfo {}
-
 export interface WikiGraphEdge {
 	from: string;
 	to: string;
@@ -93,9 +91,9 @@ export interface WikiAmbiguousLink {
 
 export interface WikiGraphResult {
 	path: string;
-	nodes: WikiGraphNode[];
+	nodes: WikiPageInfo[];
 	edges: WikiGraphEdge[];
-	orphans: WikiGraphNode[];
+	orphans: WikiPageInfo[];
 	brokenLinks: WikiBrokenLink[];
 	ambiguousLinks: WikiAmbiguousLink[];
 	backlinks?: Record<string, string[]>;

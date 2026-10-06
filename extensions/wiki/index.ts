@@ -2,17 +2,13 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { WikiService } from "./service.ts";
 import { registerWikiTools } from "./tools.ts";
 
-const SURFACE_KEY = Symbol.for("deevs-pi-kit.wiki-surface");
-
-interface WikiSurfaceState { active: boolean }
-interface GlobalWithWikiSurface { [SURFACE_KEY]?: WikiSurfaceState }
+const SURFACE = Symbol.for("deevs-pi-kit.wiki-surface");
 
 export default function wikiExtension(pi: ExtensionAPI): void {
-	const globalState = globalThis as GlobalWithWikiSurface;
-	const existing = globalState[SURFACE_KEY];
-	if (existing?.active) return;
-	const surfaceState: WikiSurfaceState = { active: true };
-	globalState[SURFACE_KEY] = surfaceState;
+	const global = globalThis as { [SURFACE]?: { active: boolean } };
+	if (global[SURFACE]?.active) return;
+	const surface = { active: true };
+	global[SURFACE] = surface;
 
 	const service = new WikiService(process.cwd());
 	registerWikiTools(pi, service);
@@ -22,6 +18,6 @@ export default function wikiExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", async () => {
-		surfaceState.active = false;
+		surface.active = false;
 	});
 }
