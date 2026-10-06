@@ -451,7 +451,8 @@ async function scan(conversation: Durable.Conversation, context: Ctx): Promise<D
 		entries.push(...page.items);
 		cursor = page.next;
 	} while (cursor);
-	return entries;
+	// Pages come newest first.
+	return entries.reverse();
 }
 
 function text(message: Message | undefined): string {
