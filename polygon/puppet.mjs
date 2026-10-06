@@ -15,8 +15,9 @@ export function nextStep(messages, fallback) {
 	if (!host && !fallback) return { text: "polygon:no-script" };
 	const raw = host ? text(host.content) : "";
 	// The last script that starts a line: a workflow agent's own task follows the lead's request it relays, and scripts
-	// nested in a lead's tool arguments sit inside its JSON line.
-	const script = host ? JSON.parse([...raw.matchAll(/^\s*POLYGON (.*)$/gm)].at(-1)[1]) : fallback;
+	// nested in a lead's tool arguments sit inside its JSON line. A message that only quotes one (a collaborator's) uses it.
+	const line = [...raw.matchAll(/^\s*POLYGON (.*)$/gm)].at(-1)?.[1] ?? raw.slice(raw.indexOf("POLYGON ") + 8).split("\n")[0];
+	const script = host ? JSON.parse(line) : fallback;
 	const said = messages.filter((m) => m.role === "assistant")
 		.map((m) => `${text(m.content)}\n${(m.tool_calls ?? []).map((t) => `toolCall:${t.id}`).join("\n")}`).join("\n");
 	const last = messages.findLastIndex((m) => m.role === "assistant");
