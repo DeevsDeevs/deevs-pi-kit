@@ -44,7 +44,7 @@ export function todoIcon(status: TodoStatus, theme: Theme): string {
 	return theme.fg("dim", "○");
 }
 
-function formatTodoLine(todo: TodoItem, theme: Theme): string {
+export function formatTodoLine(todo: TodoItem, theme: Theme): string {
 	const id = theme.fg("accent", `${todo.id}.`);
 	const title = todo.status === "done"
 		? theme.fg("dim", theme.strikethrough(todo.title))

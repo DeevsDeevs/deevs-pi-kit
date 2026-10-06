@@ -2,8 +2,8 @@ import { StringEnum, Type } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
 import type { AgentToolResult, ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { TODO_TOOL_NAME, validateTodos, type TodoState } from "./state.ts";
-import type { TodoDetails, TodoListInput, TodoStatus } from "./types.ts";
-import { formatTodoText, todoIcon, updateTodoWidget } from "./ui.ts";
+import type { TodoDetails, TodoListInput } from "./types.ts";
+import { formatTodoLine, formatTodoText, updateTodoWidget } from "./ui.ts";
 
 const TodoItemSchema = Type.Object({
 	id: Type.String({ description: "Stable short id, usually 1, 2, 3...; keep the same id when updating" }),
@@ -58,7 +58,7 @@ export function registerTodoTools(pi: ExtensionAPI, state: TodoState): void {
 			if (details.todos.length === 0) return new Text(theme.fg("dim", "No todos"), 0, 0);
 			let text = theme.fg("success", "✓ ") + theme.fg("muted", `${details.stats.done}/${details.stats.total} done`);
 			const visible = expanded ? details.todos : details.todos.slice(0, 5);
-			for (const todo of visible) text += `\n  ${todoIcon(todo.status, theme)} ${theme.fg("accent", `${todo.id}.`)} ${renderTitle(todo.status, todo.title, theme)}`;
+			for (const todo of visible) text += `\n${formatTodoLine(todo, theme)}`;
 			if (!expanded && details.todos.length > visible.length) text += `\n${theme.fg("dim", `  … ${details.todos.length - visible.length} more`)}`;
 			return new Text(text, 0, 0);
 		},
@@ -69,11 +69,4 @@ function result(operation: TodoDetails["operation"], state: TodoState, ctx: Exte
 	updateTodoWidget(ctx, state);
 	const details: TodoDetails = { operation, todos: state.read(), stats: state.stats() };
 	return { content: [{ type: "text" as const, text: text ?? formatTodoText(details.todos, details.stats) }], details, isError: false };
-}
-
-function renderTitle(status: TodoStatus, title: string, theme: Theme): string {
-	if (status === "done") return theme.fg("dim", title);
-	if (status === "in_progress") return theme.fg("warning", title);
-	if (status === "blocked") return theme.fg("error", title);
-	return theme.fg("muted", title);
 }
