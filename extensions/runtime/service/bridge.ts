@@ -11,7 +11,7 @@ import { boundAgentNames, draftAgentBind, type BindAgentInput } from "./bind-req
 import type { HostedHostVerifier } from "./identity.ts";
 import { RuntimeRegistrationManager, type HostedLiveRegistration } from "./registration.ts";
 import { deriveParticipantKey, HostedStateStore } from "./state.ts";
-import { resolveRepoRoot } from "./worktree.ts";
+import { resolveCollaboratorRepo } from "./worktree.ts";
 
 export interface BoundAgentResult {
 	registration: HostedLiveRegistration;
@@ -58,7 +58,7 @@ export class RuntimeAgentBinder {
 		const verified = await this.host.getAgent(names.agentName);
 		const participant = this.store.read().participants[deriveParticipantKey(projectRoot, names.protocol, names.participantId)];
 		const repo = input.repo ?? participant?.repo;
-		const repoRoot = repo === undefined ? undefined : await resolveRepoRoot(projectRoot, repo, names.participantId);
+		const repoRoot = repo === undefined ? undefined : await resolveCollaboratorRepo(projectRoot, repo, names.participantId);
 		const bind = await draftAgentBind({
 			store: this.store,
 			caller,

@@ -14,7 +14,7 @@ import {
 import { RuntimeError } from "./errors.ts";
 import { delay, throwIfAborted } from "./herdr.ts";
 import { isAutonomous } from "../shared/autonomy.ts";
-import { resolveRepoRoot } from "./service/worktree.ts";
+import { resolveCollaboratorRepo } from "./service/worktree.ts";
 import { type HostedCollaboratorProfile, isEnded, isHeld, isVacant, isWriter } from "./schemas/state.ts";
 import type { NativeAgentService } from "./native-agents.ts";
 import {
@@ -449,7 +449,7 @@ async function resolveCandidateRepo(
 	if (candidate.repo === undefined && existing?.repo !== undefined) candidate.repo = existing.repo;
 	if (candidate.repo === undefined && !isWriter(candidate.profile)) return;
 	try {
-		const repoRoot = await resolveRepoRoot(projectRoot, candidate.repo, candidate.participantId);
+		const repoRoot = await resolveCollaboratorRepo(projectRoot, candidate.repo, candidate.participantId);
 		if (repoRoot !== projectRoot) candidate.repoRoot = repoRoot;
 	} catch (error) {
 		if (error instanceof RuntimeError) throw new HostedRuntimeClientError(error.code, error.message);

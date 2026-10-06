@@ -5,7 +5,8 @@ import { RuntimeError } from "../errors.ts";
 import type { HerdrAgentStatus } from "../schemas/herdr.ts";
 import type { HostedHostVerifier } from "./identity.ts";
 import { HostedStateStore, piTargetKey } from "./state.ts";
-import { isProjectWorktree, resolveRepoRoot } from "./worktree.ts";
+import { isProjectWorktree } from "../../shared/worktree.ts";
+import { resolveCollaboratorRepo } from "./worktree.ts";
 
 const REGISTRATION_LEASE_MS = 30_000;
 
@@ -56,7 +57,7 @@ export class RuntimeRegistrationManager {
 	async register(input: RegisterPiInput): Promise<HostedLiveRegistration> {
 		const projectRoot = canonicalDirectory(input.projectRoot, "project root");
 		const piSessionFile = canonicalFile(input.piSessionFile, "Pi session file");
-		const repoRoot = input.repo === undefined ? undefined : await resolveRepoRoot(projectRoot, input.repo, input.piSessionId);
+		const repoRoot = input.repo === undefined ? undefined : await resolveCollaboratorRepo(projectRoot, input.repo, input.piSessionId);
 		const worktreePath = input.worktreePath === undefined ? undefined : canonicalDirectory(input.worktreePath, "collaborator worktree");
 		const base = repoRoot ?? projectRoot;
 		if (worktreePath !== undefined && (worktreePath === base || !await isProjectWorktree(worktreePath, base))) {

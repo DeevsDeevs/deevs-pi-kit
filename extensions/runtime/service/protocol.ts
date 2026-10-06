@@ -1,5 +1,6 @@
 import { type Static, type TSchema } from "typebox";
 import { Value } from "typebox/value";
+import { GitError } from "../../shared/worktree.ts";
 import { RuntimeError, type RuntimeErrorCode } from "../errors.ts";
 import { HOSTED_MAILBOX_MAX_BODY_BYTES, HOSTED_PROTOCOL_VERSION, schemaError } from "../schemas/common.ts";
 import {
@@ -89,6 +90,7 @@ export async function dispatchHostedLine(line: string, context: HostedProtocolCo
 		return await handle(value.id, value.params, context);
 	} catch (error) {
 		if (error instanceof RuntimeError) return failure(candidateId, error.code, error.message);
+		if (error instanceof GitError) return failure(candidateId, "host_unavailable", error.message);
 		return failure(candidateId, "invalid_request", error instanceof Error ? error.message : "Invalid request.");
 	}
 }

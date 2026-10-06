@@ -13,7 +13,7 @@ import type { HostedAgentBind } from "./state/operations.ts";
 import type { HostedLiveAgent } from "./identity.ts";
 import type { HostedLiveRegistration } from "./registration.ts";
 import { deriveAgentTargetKey, deriveParticipantKey, HostedStateStore } from "./state.ts";
-import { isProjectWorktree } from "./worktree.ts";
+import { isProjectWorktree } from "../../shared/worktree.ts";
 
 export interface BindAgentInput {
 	agentName: string;
