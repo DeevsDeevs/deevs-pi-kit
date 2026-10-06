@@ -76,7 +76,7 @@ Include exact file paths, command results, subagent run/group IDs, background pr
 
 ## Subagent context passing
 
-Chains are a context bus, not automatic subagent memory: save or load a focused branch link, call `chain_context` for a bounded pack, include the formatted excerpt directly in the `Agent` prompt, and after its report save a link referencing its agentId and decision impact.
+Chains are a context bus, not automatic subagent memory: save or load a focused branch link, call `chain_context` for a bounded pack, and include the formatted excerpt directly in the `Agent` prompt. If the report changes decisions, save a link naming its agentId and the impact.
 
 ```text
 Agent({
@@ -93,7 +93,6 @@ Agent({
 - 80% context usage marks a checkpoint due and adds one reminder to the system prompt, including for read-only/no-edit tasks; no tool is blocked;
 - descendant HEAD advances and new branches mark a checkpoint due; ordinary edits and bounded Jobs do not;
 - `chain_save` clears due state;
-- `/chains` browses active state and saved links; `/chains <query>` searches them;
 - it never auto-saves because durable links need handoff-quality summaries.
 
 ## Guardrails

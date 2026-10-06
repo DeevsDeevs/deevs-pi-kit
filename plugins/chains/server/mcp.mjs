@@ -11,7 +11,7 @@ const num = (description) => ({ type: "number", description });
 const bool = (description) => ({ type: "boolean", description });
 const object = (properties, required = []) => ({ type: "object", properties, required, additionalProperties: false });
 
-export const TOOLS = [
+const TOOLS = [
 	{
 		name: "chain_save",
 		description: "Save a markdown chain link under .chains/<chain>. Include the current request, decisions, files changed/read, blockers, pending tasks and next step. Supports branches via branch and parent metadata.",
@@ -103,9 +103,9 @@ function projectDir() {
 	return process.env.CLAUDE_PROJECT_DIR || process.cwd();
 }
 
-export async function handle(request, service = new ChainService(projectDir())) {
+async function handle(request, service) {
 	const reply = (result) => ({ jsonrpc: "2.0", id: request.id, result });
-	const fail = (code, message) => ({ jsonrpc: "2.0", id: request.id ?? null, error: { code, message } });
+	const fail = (code, message) => ({ jsonrpc: "2.0", id: request.id, error: { code, message } });
 	if (request.id === undefined) return undefined;
 	switch (request.method) {
 		case "initialize":

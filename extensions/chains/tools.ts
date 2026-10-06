@@ -2,7 +2,7 @@ import { Type } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
 import type { AgentToolResult, ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import type { ChainService } from "./service.ts";
-import type { ChainContextInput, ChainForkInput, ChainListInput, ChainLoadInput, ChainSaveInput, ChainSearchInput, ChainSearchResult } from "./types.ts";
+import type { ChainContextInput, ChainForkInput, ChainListInput, ChainLoadInput, ChainRankedSearchResult, ChainSaveInput, ChainSearchInput, ChainSearchResult } from "./types.ts";
 import { formatList, formatLoad, formatRankedSearch, formatSearch } from "./format.ts";
 
 const SaveSchema = Type.Object({
@@ -146,20 +146,16 @@ export function registerChainTools(pi: ExtensionAPI, service: ChainService): voi
 		promptSnippet: "Search durable work chains by relevance, exact text, or regex.",
 		promptGuidelines: ["Use default lookup mode for ideas/topics; use mode=text or mode=regex for exact matching."],
 		parameters: SearchSchema,
-		renderCall: (args, theme) => chainCall("search", args.query, theme),
-		renderResult: (result, options, theme) => {
-			// SAFETY: chain_search details come only from the two typed execute branches below.
-			return chainResult(result.details as ChainResultDetails | undefined, options.expanded, theme);
-		},
-		async execute(_toolCallId, params: ChainSearchInput): Promise<AgentToolResult<ChainSearchResult | Awaited<ReturnType<ChainService["rankedSearch"]>>>> {
-			const mode = params.mode ?? "lookup";
-			if (mode === "lookup") {
+		async execute(_toolCallId, params: ChainSearchInput): Promise<AgentToolResult<ChainSearchResult | ChainRankedSearchResult>> {
+			if ((params.mode ?? "lookup") === "lookup") {
 				const result = await service.rankedSearch(params);
 				return { content: [{ type: "text", text: formatRankedSearch(result) }], details: result };
 			}
 			const result = await service.search(params);
 			return { content: [{ type: "text", text: formatSearch(result) }], details: result };
 		},
+		renderCall: (args, theme) => chainCall("search", args.query, theme),
+		renderResult: (result, options, theme) => chainResult(result.details, options.expanded, theme),
 	});
 }
 
@@ -176,8 +172,7 @@ interface ChainResultDetails {
 	branch?: string;
 }
 
-function chainResult(details: ChainResultDetails | undefined, expanded: boolean, theme: Theme): Text {
-	const value = details;
+function chainResult(value: ChainResultDetails | undefined, expanded: boolean, theme: Theme): Text {
 	const link = value?.link;
 	if (link) {
 		let text = `${theme.fg("success", "✓")} ${theme.fg("accent", `${link.chain ?? "chain"}@${link.branch ?? "main"}`)} ${theme.fg("muted", link.filename ?? "")}`;

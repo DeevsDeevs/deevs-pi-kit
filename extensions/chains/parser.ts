@@ -75,7 +75,6 @@ export function truncateText(value: string, maxBytes: number) {
 	return { text, truncated: true };
 }
 
-
 function dateFromFilename(filename: string): Date | null {
 	const match = /^(\d{4})-(\d{2})-(\d{2})-(\d{4,9})-/.exec(filename);
 	if (!match) return null;
