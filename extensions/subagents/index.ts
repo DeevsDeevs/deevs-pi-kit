@@ -32,11 +32,18 @@ type AgentParams = Static<typeof AgentSchema>;
 
 const AGENT_DESCRIPTION = [
 	"Launch an agent that works on a task by itself, with its own context and tools, and reports back once.",
+	"subagent_type picks one of the agent types listed in your system prompt; general-purpose when omitted. When you already know the file or symbol, use read, grep or find yourself: agents are for open questions across the code and for work that matches a type.",
 	"",
-	"Agents run in the background by default: the call returns at once and a <task-notification> arrives in your conversation when the agent finishes. Do not poll, sleep or read its output file while it runs; keep working or answer the user. Do not do the same work yourself in parallel, and do not report a result before its notification arrives.",
-	"Launch independent agents in one message with several Agent calls so they run at the same time. Set run_in_background: false only when you cannot go on without the answer.",
+	"- By default an agent runs in the background: the call returns at once and a <task-notification> arrives in your conversation when the agent finishes. Do not poll, sleep or read its output file meanwhile; keep working or answer the user.",
+	"- Use run_in_background: false only if your next step cannot start without the answer and nothing else useful can happen meanwhile.",
+	"- Do not race: until the notification arrives you know nothing of the result, so never guess or pre-write it, and do not redo the agent's work yourself. If the user asks, say it is still running.",
+	"- Launch independent agents in one message with several Agent calls so they run at the same time.",
+	"- The user never sees the report: tell them what matters in it. A report says what the agent meant to do; when it changed code, look at the change before calling the work done.",
+	"- SendMessage to an agentId or name continues that agent with its context; a new Agent call starts from nothing.",
+	"- A type sets the model, effort and tools; `model` overrides them for this call.",
+	"- isolation: \"worktree\" puts the agent in its own worktree and branch: an unchanged one is removed, a changed one is kept and its path and branch reported. Give each parallel writer one.",
 	"",
-	"The agent starts with none of your context. Write the prompt as a complete brief: the goal, what you already know, the files and constraints involved, and what to return. Say whether it should change code or only research. Never delegate your own understanding: synthesize what agents report before acting on it.",
+	"The agent has seen none of this conversation. Brief it like a capable colleague who just walked in: the goal and why it matters, what you know or have ruled out, the files and constraints involved, and the form and length of answer you want. Say whether it should change code or only research. For a lookup, hand over the exact command; for an investigation, hand over the question rather than a list of steps. Never delegate understanding: instead of \"fix it based on your findings\", name the paths, lines and change you want, and synthesize what agents report before you act on it.",
 ].join("\n");
 
 export default function subagentsExtension(pi: ExtensionAPI): void {
