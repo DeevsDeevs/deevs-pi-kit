@@ -2,8 +2,6 @@ import { fileURLToPath } from "node:url";
 import { registerMessagingMcp } from "./mcp/pi.ts";
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { runtimeDelivery } from "../shared/runtime-delivery.ts";
-import { registerRuntimeEventRenderer } from "../shared/runtime-ui.ts";
 import type { ClientParticipantStatus } from "./responses.ts";
 import type { CollaboratorManageInput, CollaboratorManageResult, CollaboratorWorktreeInput } from "./collaborators.ts";
 import { HostedRuntimeIntegration } from "./hosted-integration.ts";
@@ -31,8 +29,6 @@ function manageLines(results: CollaboratorManageResult[]): string {
 }
 
 export default function runtimeExtension(pi: ExtensionAPI): void {
-	registerRuntimeEventRenderer(pi);
-	runtimeDelivery.initialize(pi);
 	const hosted = new HostedRuntimeIntegration(pi);
 	hosted.deliverMailWith(registerMessagingMcp(pi, fileURLToPath(import.meta.url), ctx => hosted.messagingDescriptor(ctx)));
 	registerCollaboratorListTool(pi, hosted);
@@ -106,29 +102,10 @@ function registerCollaboratorWorkspaceTool(pi: ExtensionAPI, hosted: HostedRunti
 }
 
 function registerRuntimeEvents(pi: ExtensionAPI, hosted: HostedRuntimeIntegration): void {
-	pi.on("session_start", async (_event, ctx) => {
-		runtimeDelivery.restore(ctx);
-		void runtimeDelivery.maybeDeliver();
-		void hosted.sessionStart(ctx);
-	});
-	pi.on("session_tree", (_event, ctx) => {
-		runtimeDelivery.restore(ctx);
-		hosted.sessionTree(ctx);
-		void runtimeDelivery.maybeDeliver();
-	});
+	pi.on("session_start", (_event, ctx) => void hosted.sessionStart(ctx));
+	pi.on("session_tree", (_event, ctx) => hosted.sessionTree(ctx));
 	pi.on("session_compact", (_event, ctx) => hosted.sessionCompact(ctx));
-	pi.on("message_start", (event) => runtimeDelivery.acknowledgeMessage(event.message));
-	pi.on("before_agent_start", (event, ctx) => {
-		runtimeDelivery.setContext(ctx);
-		return hosted.beforeAgentStart(event.systemPrompt, ctx);
-	});
+	pi.on("before_agent_start", (event, ctx) => hosted.beforeAgentStart(event.systemPrompt, ctx));
 	pi.on("tool_call", (event, ctx) => hosted.guardCollaboratorTool(event.toolName, event.input, ctx.cwd));
-	pi.on("agent_settled", (_event, ctx) => {
-		runtimeDelivery.setContext(ctx);
-		void runtimeDelivery.maybeDeliver();
-	});
-	pi.on("session_shutdown", async () => {
-		runtimeDelivery.clearContext();
-		await hosted.sessionShutdown();
-	});
+	pi.on("session_shutdown", () => hosted.sessionShutdown());
 }

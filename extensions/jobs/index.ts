@@ -3,7 +3,6 @@ import { Text } from "@earendil-works/pi-tui";
 import { isToolCallEventType, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import type { JobReadInput, JobReadResult, JobRecord, JobStartInput } from "./types.ts";
 import { guardBashCall } from "../shared/guard.ts";
-import { formatDuration } from "../shared/runtime-ui.ts";
 import { claimJobManager, releaseJobManager } from "./registry.ts";
 import { tasks } from "../shared/tasks.ts";
 
@@ -105,4 +104,13 @@ function renderJob(job: JobRecord | undefined, expanded: boolean, theme: Theme):
 	if (expanded) text += `\n${theme.fg("dim", job.spec.command ?? job.spec.argv?.join(" ") ?? "")}`;
 	if (expanded && job.runtime.error) text += `\n${theme.fg("error", job.runtime.error)}`;
 	return text;
+}
+
+function formatDuration(ms: number): string {
+	if (!Number.isFinite(ms) || ms < 0) return "—";
+	if (ms < 1_000) return `${Math.round(ms)}ms`;
+	const seconds = Math.round(ms / 1_000);
+	if (seconds < 60) return `${seconds}s`;
+	const minutes = Math.floor(seconds / 60);
+	return seconds % 60 ? `${minutes}m ${seconds % 60}s` : `${minutes}m`;
 }
