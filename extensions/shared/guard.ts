@@ -88,7 +88,8 @@ export function guardBashCall(command: string, cwd: string, root = cwd, project 
 /** The shell command of a Claude Code or Codex PreToolUse payload, under the rules configured for its cwd. */
 export function guardHookPayload(payload: string): string | undefined {
 	const input: unknown = JSON.parse(payload);
-	if (!Value.Check(HookPayload, input) || input.tool_input?.command === undefined) return undefined;
+	if (!Value.Check(HookPayload, input)) throw new Error("the hook payload is not a PreToolUse object with a string or argv command");
+	if (input.tool_input?.command === undefined) return undefined;
 	const command = input.tool_input.command;
 	const cwd = input.cwd || process.cwd();
 	const options = { cwd, config: loadGuardConfig(cwd) };
