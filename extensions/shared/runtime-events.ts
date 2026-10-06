@@ -3,7 +3,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export const RUNTIME_EVENT_ENTRY = "deevs.runtime-event-op.v1";
 
-const RUNTIME_SOURCE_KINDS = ["subagent", "subagent-group", "job", "mission"] as const;
+const RUNTIME_SOURCE_KINDS = ["subagent", "subagent-group", "mission"] as const;
 type RuntimeSourceKind = typeof RUNTIME_SOURCE_KINDS[number];
 type RuntimeEventType = "attention" | "terminal";
 export type RuntimeTerminalStatus = "completed" | "partial" | "failed" | "cancelled" | "timeout" | "limited" | "blocked" | "lost";

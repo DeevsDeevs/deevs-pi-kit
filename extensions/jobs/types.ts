@@ -24,6 +24,7 @@ export interface JobSpec {
 	createdAt: number;
 	/** Exact parent Pi session that owns this durable Job. Legacy records may omit it. */
 	parentSessionFile?: string;
+	ownerSession?: string;
 	artifactsDir: string;
 	runtimePath: string;
 	logPath: string;
@@ -40,7 +41,7 @@ export interface JobRuntime {
 	heartbeatAt?: number;
 	endedAt?: number;
 	exitCode?: number | null;
-	exitSignal?: string | null;
+	exitSignal?: NodeJS.Signals | null;
 	ready: boolean;
 	readyAt?: number;
 	lastOutputAt?: number;

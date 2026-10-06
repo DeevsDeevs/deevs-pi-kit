@@ -10,6 +10,7 @@ This repository is a portable pi package. Keep it minimal and intentional.
 - Extensions live in `extensions/<name>/index.ts`; the `pi.extensions` manifest globs `./extensions/*/index.ts` only.
 - Pi is pinned exactly: `pi-ai`, `pi-coding-agent` and `pi-tui` at 1.0.4 in devDependencies, which is also the Pi release the polygon image runs, and `typebox` at 1.3.27, Pi 1.0.4's own pin. Bump them together, in one commit gated on the polygon.
 - Host-provided packages, including `typebox`, are peers with `"*"` ranges, never production dependencies under their host names. The standalone Runtime daemon and `guard-hook.mjs` use the pinned `runtime-typebox` npm alias through their entrypoints' Node import hook; Pi extensions must never import that alias. The MCP server needs no TypeBox. Everything else is peer or dev only; justify any addition.
+- State that extensions share lives on `globalThis[Symbol.for("pi-kit.<name>")]`, as in `shared/tasks.ts`: Pi's loader gives each extension its own module graph, so a module-level singleton exists once per extension.
 - Document user-facing resources in `README.md` when they are added.
 - Never add AI attribution to commits or PRs: no `Co-Authored-By: Claude`, no session links, no "Generated with" footers. The author is the user alone.
 - Settings live in one file, `pi-kit.json` (global `~/.pi/agent/`, project `.pi/`), read only through `extensions/shared/config.ts`. The kit registers exactly two commands, `/agents` and `/chains`; anything else is a tool the lead calls or a `pi-kit.json` key.
