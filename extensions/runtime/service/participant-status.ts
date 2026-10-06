@@ -27,6 +27,7 @@ export interface HostedParticipantStatus {
 	repo?: string;
 	repoRoot?: string;
 	unreadMail?: number;
+	awaitingReply?: boolean;
 	lastTransition: HostedParticipant["transition"];
 }
 
@@ -72,13 +73,23 @@ export function participantStatus(
 		const agentStatus = holderTargetKey ? registrations.agentStatus(holderTargetKey) : undefined;
 		if (agentStatus) status.agentStatus = agentStatus;
 	}
-	if (includeQueue) status.unreadMail = unreadMail(store, participant.participantKey);
+	if (includeQueue) Object.assign(status, mailQueue(store, participant.participantKey));
 	return status;
 }
 
-/** Mail is read by `messaging.read`, never claimed, so unread depth is the absence of a read time. */
-function unreadMail(store: HostedStateStore, participantKey: string): number {
-	return Object.values(store.read().events)
-		.filter((event) => event.recipientParticipantKey === participantKey && event.readAt === undefined)
-		.length;
+/**
+ * Mail is read by `messaging.read`, never claimed, so unread depth is the absence of a read time.
+ * A reply is owed while mail is unread or the latest read is newer than the participant's latest send.
+ */
+function mailQueue(store: HostedStateStore, participantKey: string): Pick<HostedParticipantStatus, "unreadMail" | "awaitingReply"> {
+	let unreadMail = 0;
+	let lastRead = -1;
+	let lastSent = -1;
+	for (const event of Object.values(store.read().events)) {
+		if (event.source.id === participantKey) lastSent = Math.max(lastSent, event.createdAt);
+		if (event.recipientParticipantKey !== participantKey) continue;
+		if (event.readAt === undefined) unreadMail++;
+		else lastRead = Math.max(lastRead, event.readAt);
+	}
+	return { unreadMail, awaitingReply: unreadMail > 0 || lastRead > lastSent };
 }

@@ -45,7 +45,8 @@ export interface CollaboratorToolBlock {
 	reason: string;
 }
 
-export function resolveCollaboratorCandidate(candidate: CollaboratorCandidate): ResolvedCollaboratorCandidate {
+/** `piCodexModels` is Pi's `openai-codex` catalog, the same ChatGPT backend Codex serves. */
+export function resolveCollaboratorCandidate(candidate: CollaboratorCandidate, piCodexModels: readonly string[] = []): ResolvedCollaboratorCandidate {
 	const participantId = collaboratorName(candidate.participantId, "participant ID");
 	const driver = collaboratorDriver(candidate.driver);
 	const spec = DRIVERS[driver];
@@ -55,7 +56,7 @@ export function resolveCollaboratorCandidate(candidate: CollaboratorCandidate): 
 	const profile = requestedProfile ?? (persona ? "read-only" : spec.defaultProfile);
 	const model = requestedModel ?? (spec.personaModel ? collaboratorModel(persona?.model) : undefined);
 	assertUnambiguousCollaboratorModel(spec.qualifiedModel, model);
-	if (driver === "codex" && model) assertKnownCodexModel(model);
+	if (driver === "codex" && model) assertKnownCodexModel(model, piCodexModels);
 	const resolved: ResolvedCollaboratorCandidate = { participantId, driver };
 	if (model) resolved.model = model;
 	if (profile) resolved.profile = profile;
@@ -170,17 +171,33 @@ function collaboratorModel(value: string | undefined): string | undefined {
 	return value;
 }
 
-const CODEX_MODELS_CACHE = join(homedir(), ".codex", "models_cache.json");
+const CODEX_HOME = process.env.CODEX_HOME ?? join(homedir(), ".codex");
 const CodexModelCache = Type.Object({ models: Type.Array(Type.Object({ slug: Type.String() })) });
+const TOML_TOP_LEVEL_MODEL = /^\s*model\s*=\s*(["'])([^"']+)\1/;
 
-/** Codex accepts any --model and fails only at its first request; its own catalog cache catches a wrong name before a tab opens. */
-export function assertKnownCodexModel(model: string, cachePath = CODEX_MODELS_CACHE): void {
+/**
+ * Codex accepts any --model and fails only at its first request, so a wrong name is caught before a tab opens.
+ * Its cache refreshes only when Codex runs, so the configured default and Pi's catalog count as known too.
+ */
+export function assertKnownCodexModel(model: string, piCodexModels: readonly string[] = [], codexHome = CODEX_HOME): void {
 	let cache: unknown;
-	try { cache = JSON.parse(readFileSync(cachePath, "utf8")); } catch { return; }
+	try { cache = JSON.parse(readFileSync(join(codexHome, "models_cache.json"), "utf8")); } catch { return; }
 	if (!Value.Check(CodexModelCache, cache)) return;
-	const slugs = cache.models.map((entry) => entry.slug);
-	if (slugs.includes(model)) return;
-	throw new HostedRuntimeClientError("invalid_request", `Unknown Codex model ${model}; Codex knows ${slugs.join(", ")}.`);
+	const known = new Set([...cache.models.map((entry) => entry.slug), ...configuredCodexModel(codexHome), ...piCodexModels]);
+	if (known.has(model)) return;
+	throw new HostedRuntimeClientError("invalid_request", `Unknown Codex model ${model}; Codex knows ${[...known].join(", ")}.`);
+}
+
+/** The top-level `model` key of Codex's config.toml: the lines before its first table header. */
+function configuredCodexModel(codexHome: string): string[] {
+	let config: string;
+	try { config = readFileSync(join(codexHome, "config.toml"), "utf8"); } catch { return []; }
+	for (const line of config.split("\n")) {
+		if (line.trimStart().startsWith("[")) return [];
+		const model = TOML_TOP_LEVEL_MODEL.exec(line)?.[2];
+		if (model) return [model];
+	}
+	return [];
 }
 
 function assertUnambiguousCollaboratorModel(qualified: boolean, model: string | undefined): void {

@@ -160,6 +160,7 @@ export const ParticipantStatusResult = Type.Object({
 	repo: Type.Optional(PathText),
 	repoRoot: Type.Optional(PathText),
 	unreadMail: Type.Optional(Count),
+	awaitingReply: Type.Optional(Type.Boolean()),
 	lastTransition: Type.Object({ cause: IdText }),
 });
 

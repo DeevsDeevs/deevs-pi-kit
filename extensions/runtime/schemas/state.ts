@@ -128,7 +128,8 @@ export const HostedMessagingGrantSchema = Type.Object({
 	targetKey: IdText,
 	configurationHash: HashText,
 	createdAt: Timestamp,
-	expiresAt: Timestamp,
+	/** Written by older builds; a grant never expires by time, only when superseded or its holder leaves. */
+	expiresAt: Type.Optional(Timestamp),
 	status: Type.Union([Type.Literal("active"), Type.Literal("expired")]),
 	/** Operation ID to published event ID; a repeated operation ID returns its original event. */
 	operations: keyedRecord(IdText),

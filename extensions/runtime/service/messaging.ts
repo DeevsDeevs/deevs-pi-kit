@@ -1,7 +1,6 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { closeSync, constants, fsyncSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HOSTED_ACK_RETENTION_MS } from "../schemas/common.ts";
 import {
 	type HostedMailboxMessageEvent,
 	type HostedMessagingGrant,
@@ -47,7 +46,6 @@ interface MessagingMailHint {
 interface MessagingIssued {
 	namespaceId: string;
 	descriptorPath: string;
-	expiresAt: number;
 }
 
 interface MessagingPeer {
@@ -118,14 +116,13 @@ export class RuntimeMessaging {
 		if (!target || !stillHeldBy(currentParticipant, expectedGeneration, registration.targetKey)) {
 			throw new RuntimeError("registration_stale", "Messaging recipient authority changed during issuance.");
 		}
-		const createdAt = this.now();
 		const descriptorPath = messagingDescriptorPath(this.store.root, target.targetKey);
 		const current = this.store.read();
 		const existing = Object.values(current.messaging)
-			.find((grant) => reusableGrant(current, grant, target, expectedGeneration, createdAt));
+			.find((grant) => reusableGrant(current, grant, target, expectedGeneration));
 		// The reused secret only exists on disk, so a descriptor that names another namespace forces a fresh grant.
 		if (existing && descriptorNames(descriptorPath, existing.namespaceId)) {
-			return { namespaceId: existing.namespaceId, descriptorPath, expiresAt: existing.expiresAt };
+			return { namespaceId: existing.namespaceId, descriptorPath };
 		}
 		const secret = randomBytes(32).toString("base64url");
 		const grant: HostedMessagingGrant = {
@@ -135,13 +132,12 @@ export class RuntimeMessaging {
 			holderGeneration: expectedGeneration,
 			targetKey: target.targetKey,
 			configurationHash: messagingConfigurationHash(target),
-			createdAt,
-			expiresAt: createdAt + HOSTED_ACK_RETENTION_MS,
+			createdAt: this.now(),
 			status: "active",
 			operations: {},
 		};
 		this.writeDescriptor(descriptorPath, grant, secret);
-		return { namespaceId: grant.namespaceId, descriptorPath, expiresAt: grant.expiresAt };
+		return { namespaceId: grant.namespaceId, descriptorPath };
 	}
 
 	/** The live descriptor is replaced only once its successor grant is durable, never truncated in place. */
@@ -169,7 +165,7 @@ export class RuntimeMessaging {
 	/** Best-effort idle hint for a Pi holder: the oldest unread message in its sole live namespace. */
 	unread(registration: HostedLiveRegistration): MessagingMailHint | undefined {
 		const state = this.store.read();
-		const grant = liveTargetNamespace(state, registration, this.now());
+		const grant = liveTargetNamespace(state, registration);
 		if (!grant) return undefined;
 		const [event] = unreadMailEvents(state, grant.participantKey);
 		return event ? { namespaceId: grant.namespaceId, eventId: event.eventId } : undefined;
@@ -290,13 +286,8 @@ export class RuntimeMessaging {
 		if (!grant || !timingSafeEqual(Buffer.from(grant.secretDigest, "hex"), Buffer.from(digest(secret), "hex"))) {
 			throw new RuntimeError("registration_stale", "Messaging credential is absent or invalid.");
 		}
-		if (this.now() >= grant.expiresAt) {
-			this.store.apply({ type: "messaging.expire", namespaceId });
-			const message = "Messaging namespace expired; do not republish an uncertain operation under a new namespace.";
-			throw new RuntimeError("registration_stale", message);
-		}
-		if (!messagingGrantIsLive(this.store.read(), grant, this.now())) {
-			throw new RuntimeError("registration_stale", "Messaging authority is expired or no longer bound to this holder.");
+		if (!messagingGrantIsLive(this.store.read(), grant)) {
+			throw new RuntimeError("registration_stale", "Messaging authority is superseded or no longer bound to this holder.");
 		}
 	}
 
@@ -332,11 +323,10 @@ function reusableGrant(
 	grant: HostedMessagingGrant,
 	target: HostedTarget,
 	expectedGeneration: string,
-	at: number,
 ): boolean {
 	return grant.targetKey === target.targetKey
 		&& grant.holderGeneration === expectedGeneration
-		&& messagingGrantIsLive(state, grant, at);
+		&& messagingGrantIsLive(state, grant);
 }
 
 function isPeerOf(sender: HostedParticipant, candidate: HostedParticipant): boolean {
@@ -359,13 +349,9 @@ export function messagingDescriptorPath(root: string, targetKey: string): string
 	return join(root, `messaging-${digest(targetKey)}.json`);
 }
 
-function liveTargetNamespace(
-	state: HostedRuntimeState,
-	registration: HostedLiveRegistration,
-	at: number,
-): HostedMessagingGrant | undefined {
+function liveTargetNamespace(state: HostedRuntimeState, registration: HostedLiveRegistration): HostedMessagingGrant | undefined {
 	const eligible = Object.values(state.messaging)
-		.filter(grant => grant.targetKey === registration.targetKey && messagingGrantIsLive(state, grant, at));
+		.filter(grant => grant.targetKey === registration.targetKey && messagingGrantIsLive(state, grant));
 	return eligible.length === 1 ? eligible[0] : undefined;
 }
 
