@@ -205,8 +205,11 @@ export function backgroundTasks(D: D, docs: Docs, host: BackgroundHost) {
 			committing = committing.then(() => emit(input, runtime, context, checkpoint, text, mark));
 		};
 		child.stdout?.on("data", (chunk: Buffer) => {
-			const parts = (rest + chunk.toString("utf8")).split("\n");
-			rest = parts.pop()!.slice(0, LINE_CHARS);
+			// Bun keeps filling a paused pipe's buffer, so one chunk can hold megabytes: parse only what a batch can take.
+			const head = chunk.subarray(0, 3_000 + LINE_CHARS);
+			const parts = (rest + head.toString("utf8")).split("\n");
+			const tail = parts.pop()!;
+			rest = head.length < chunk.length ? "" : tail.slice(0, LINE_CHARS);
 			for (const line of parts) {
 				if (chars >= 3_000) break;
 				lines.push(line.slice(0, LINE_CHARS));
