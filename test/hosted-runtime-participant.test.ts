@@ -9,7 +9,8 @@ import { dispatchHostedLine } from "../extensions/runtime/service/protocol.ts";
 import { protocolContext } from "./fixtures/runtime-protocol.ts";
 import type { HostedHostVerifier, HostedLiveAgent } from "../extensions/runtime/service/identity.ts";
 import { RuntimeRegistrationManager, type HostedLiveRegistration, type RegisterPiInput } from "../extensions/runtime/service/registration.ts";
-import { deriveAgentTargetKey, HostedStateStore } from "../extensions/runtime/service/state.ts";
+import { deriveAgentTargetKey, HostedStateStore, messagingConfigurationHash } from "../extensions/runtime/service/state.ts";
+import { replyInFlight } from "../extensions/runtime/collaborators.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -160,6 +161,34 @@ describe("hosted participant coordinator", () => {
 		expect(stopped).toMatchObject({ outcome: "stopped", participant: { state: "vacant", generation: vacant.generation, lastTransition: { cause: "stop" } } });
 		expect(test.stoppedTargets).toEqual([fable.targetKey]);
 		await expect(test.participants.stopConfirmed(main, fableParticipant.participantKey, vacant.generation)).rejects.toMatchObject({ code: "conflict" });
+	});
+
+	it("counts a reply as owed while mail is unread or was read after the participant's last send", async () => {
+		const test = setup();
+		const { main, fable, mainParticipant, fableParticipant } = await acquirePair(test);
+		const owed = () => test.participants.get(main, fableParticipant.participantKey).awaitingReply;
+		expect(owed()).toBe(false);
+		const request = test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "send_1", "Review it.");
+		expect(owed()).toBe(true);
+		const namespaceId = "msg_00000000-0000-0000-0000-000000000001";
+		const configurationHash = messagingConfigurationHash(test.store.read().targets[fable.targetKey]!);
+		const grant = { namespaceId, secretDigest: "a".repeat(64), participantKey: fableParticipant.participantKey, holderGeneration: fableParticipant.generation, targetKey: fable.targetKey, configurationHash, createdAt: 1_000, status: "active" as const, operations: {} };
+		test.store.apply({ type: "messaging.issue", grant });
+		test.setNow(2_000);
+		test.store.apply({ type: "messaging.read", namespaceId, eventIds: [request.eventId], at: 2_000 });
+		expect(test.participants.get(main, fableParticipant.participantKey)).toMatchObject({ unreadMail: 0, awaitingReply: true });
+		test.setNow(3_000);
+		test.participants.send(fable, fableParticipant.participantKey, fableParticipant.generation, mainParticipant.participantKey, "reply_1", "Done.");
+		expect(owed()).toBe(false);
+	});
+
+	it("holds a stand-down only for a live holder that is mid-turn or owes a reply", () => {
+		const status = { participantKey: "p", protocol: "review", participantId: "fable", state: "held" as const, generation: "lease_1", holderLive: true, lastTransition: { cause: "acquire" } };
+		expect(replyInFlight(status)).toBe(false);
+		expect(replyInFlight({ ...status, awaitingReply: true })).toBe(true);
+		expect(replyInFlight({ ...status, agentStatus: "working" })).toBe(true);
+		expect(replyInFlight({ ...status, agentStatus: "blocked", awaitingReply: true })).toBe(false);
+		expect(replyInFlight({ ...status, holderLive: false, agentStatus: "working" })).toBe(false);
 	});
 
 	it("refuses to stop a target that now holds another participant", async () => {

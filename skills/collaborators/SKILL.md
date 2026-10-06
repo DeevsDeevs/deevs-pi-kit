@@ -18,7 +18,7 @@ Collaborators are persistent interactive peers in real Herdr tabs (Pi, Claude Co
 ## State
 
 - `collaborator_list` is the only source of current state: held/vacant/ended, live or not, and `blocked` when a tab waits on a human prompt (you are also told once per blockage; answer it or stop the collaborator).
-- Stop needs the participant still held; once it vacated, repeating the stop is a conflict, so re-read the list. Stand-down keeps the process dormant and a later start replaces it. A start whose caller name is held by a Pi session that is no longer live takes that name over (confirmed unless auto mode is on); release, revival and takeover from a live holder stay explicit user commands.
+- Stop needs the participant still held; once it vacated, repeating the stop is a conflict, so re-read the list. Stand-down lets a pending reply land, then closes the tab. A start whose caller name is held by a Pi session that is no longer live takes that name over (confirmed unless auto mode is on); release, revival and takeover from a live holder stay explicit user commands.
 
 ## Safety
 

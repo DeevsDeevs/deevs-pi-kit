@@ -12,7 +12,7 @@ import {
 	type ResolvedCollaboratorCandidate,
 } from "./collaborator-policy.ts";
 import { RuntimeError } from "./errors.ts";
-import { throwIfAborted } from "./herdr.ts";
+import { delay, throwIfAborted } from "./herdr.ts";
 import { resolveRepoRoot } from "./service/worktree.ts";
 import { type HostedCollaboratorProfile, isEnded, isHeld, isVacant, isWriter } from "./schemas/state.ts";
 import type { NativeAgentService } from "./native-agents.ts";
@@ -33,6 +33,9 @@ import {
 import type { RuntimeSession } from "./runtime-session.ts";
 
 const COLLABORATOR_BATCH_LIMIT = 12;
+/** The foreground-wait rail: a stand-down never holds the lead longer than this for a final reply. */
+const STAND_DOWN_GRACE_MS = 120_000;
+const STAND_DOWN_POLL_MS = 1_000;
 
 type CollaboratorManageAction = "start" | "stand_down" | "stop";
 
@@ -306,7 +309,7 @@ export class CollaboratorService {
 		const name = `${protocol}/${participant.participantId}`;
 		try {
 			const status = action === "stand_down"
-				? await this.standDownParticipant(participant, registration)
+				? await this.standDownParticipant(participant, registration, signal)
 				: await this.stopParticipant(participant, registration);
 			return { participant: name, status };
 		} catch (error) {
@@ -314,7 +317,14 @@ export class CollaboratorService {
 		}
 	}
 
-	private async standDownParticipant(participant: ClientParticipantStatus, registration: LiveClientRegistration): Promise<"stood_down"> {
+	/** Another target's collaborator keeps its mail authority until its reply in flight lands, then vacates and its tab closes. */
+	private async standDownParticipant(
+		participant: ClientParticipantStatus,
+		registration: LiveClientRegistration,
+		signal?: AbortSignal,
+	): Promise<"stood_down"> {
+		const other = participant.holderTargetKey !== registration.targetKey;
+		if (other) await this.awaitFinalReply(participant, registration, signal);
 		const params = {
 			...auth(registration),
 			participantKey: participant.participantKey,
@@ -326,7 +336,19 @@ export class CollaboratorService {
 		if (identity?.participantKey === changed.participantKey) {
 			this.session.store.persistIdentity({ ...identity, generation: changed.generation, disposition: "vacant" });
 		}
+		if (other) await this.stopParticipant({ ...changed, holderTargetKey: participant.holderTargetKey }, registration);
 		return "stood_down";
+	}
+
+	private async awaitFinalReply(participant: ClientParticipantStatus, registration: LiveClientRegistration, signal?: AbortSignal): Promise<void> {
+		const params = { ...auth(registration), participantKey: participant.participantKey };
+		const deadline = Date.now() + STAND_DOWN_GRACE_MS;
+		while (Date.now() < deadline) {
+			throwIfAborted(signal);
+			const current = parseParticipant(await this.client.call("participant.get", params));
+			if (current.generation !== participant.generation || !replyInFlight(current)) return;
+			await delay(STAND_DOWN_POLL_MS);
+		}
 	}
 
 	private async stopParticipant(
@@ -393,6 +415,12 @@ function settled(
 	return { participant: `${protocol}/${participant.participantId}`, status };
 }
 
+/** Herdr's status and the mail counters say a reply may still come; a blocked or offline holder sends none. */
+export function replyInFlight(status: ClientParticipantStatus): boolean {
+	if (!status.holderLive || status.agentStatus === "blocked") return false;
+	return status.agentStatus === "working" || status.awaitingReply === true;
+}
+
 /** A cancelled batch reports cancellation, not failure, for whatever its abort interrupted. */
 function outcome(signal: AbortSignal | undefined): CollaboratorManageResult["status"] {
 	return signal?.aborted ? "cancelled" : "failed";
@@ -451,7 +479,7 @@ function confirmChange(
 ): Promise<boolean> {
 	const summary = actionable.map((participant) => `${protocol}/${participant.participantId}`).join("\n");
 	const detail = action === "stand_down"
-		? "Vacate these collaborators and preserve their queued messages?"
+		? "Let these collaborators land a reply in flight (up to 2 min), then vacate them and close their exact plugin-managed Herdr tabs, preserving queued messages and transcripts?"
 		: "Vacate these collaborators, preserve queued messages, and terminate only their exact plugin-managed Herdr tabs?";
 	const title = `${action === "stand_down" ? "Stand down" : "Stop"} Runtime collaborators?`;
 	return ctx.ui.confirm(title, `${detail}\n\n${summary}`, { signal });
