@@ -281,6 +281,14 @@ describe("guard: configuration and hooks", () => {
 		expect(loadGuardConfig(cwd, agentDir)).toEqual({ rmRf: false, block: ["kubectl delete", "npm publish"] });
 	});
 
+	it("applies the project's block patterns to an agent whose rm root is a worktree without .pi/", () => {
+		const { root, cwd } = fixture();
+		const worktree = join(root, "worktree");
+		mkdirSync(worktree);
+		writeFileSync(join(cwd, ".pi", "pi-kit.json"), JSON.stringify({ guard: { block: ["npm publish"] } }));
+		expect(guardBashCall("npm publish", worktree, worktree, cwd)?.reason).toBe("Blocked by the guard.block pattern \"npm publish\".");
+	});
+
 	it("never lets a project file switch a rule off", () => {
 		const { cwd } = fixture();
 		writeFileSync(join(cwd, ".pi", "pi-kit.json"), JSON.stringify({ guard: { rmRf: false, detached: false, forcePush: false } }));

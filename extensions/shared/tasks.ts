@@ -13,7 +13,8 @@ export interface RosterEntry {
 	/** `ctx.sessionManager.getSessionId()` of the lead session that owns the task. */
 	ownerSession: string;
 	startedAt: number;
-	stop?: () => Promise<void>;
+	/** Resolves once stopped; an agent's report carries the worktree it kept. */
+	stop?: () => Promise<{ worktree?: { path: string; branch: string } } | undefined | void>;
 	/** The shell command that opens this task in its own CLI, for `/agents attach`. */
 	attach?: string;
 }
@@ -93,8 +94,8 @@ export const tasks = {
 	list(ownerSession?: string): RosterEntry[] {
 		return [...state.roster.values()].filter((entry) => ownerSession === undefined || entry.ownerSession === ownerSession);
 	},
-	find(idOrName: string, ownerSession?: string): RosterEntry | undefined {
-		const entries = tasks.list(ownerSession);
+	find(idOrName: string, ownerSession?: string, kind?: TaskKind): RosterEntry | undefined {
+		const entries = tasks.list(ownerSession).filter((entry) => kind === undefined || entry.kind === kind);
 		return entries.find((entry) => entry.id === idOrName)
 			?? entries.filter((entry) => entry.name === idOrName).sort((a, b) => b.startedAt - a.startedAt)[0];
 	},
@@ -251,8 +252,8 @@ export function agentLaunchedResult(launch: AgentLaunch): string {
 		"It works in the background and you will be notified when it finishes. Until then you know nothing about its result: do not guess it, wait for it, or redo its work. Carry on with other work or answer the user.",
 		`output_file: ${launch.outputFile}`,
 		"Do not read this file while the agent runs; it is written when the agent finishes, and the notification carries the result.",
-		...(launch.model ? [`model: ${launch.model}`] : []),
-		...(launch.limits ? [`limits: ${launch.limits}`] : []),
+		...(launch.model ? [`Model: ${launch.model}`] : []),
+		...(launch.limits ? [`Limits: ${launch.limits}`] : []),
 		...(launch.queued ? ["Queued: 16 agents are running; this one starts when a slot frees."] : []),
 		...(launch.sharesCwd ? ["Another agent that can write already works in this directory. For parallel code-writing agents, dispatch each with isolation: \"worktree\"."] : []),
 	].join("\n");
@@ -261,6 +262,9 @@ export function agentLaunchedResult(launch: AgentLaunch): string {
 export interface AgentForeground {
 	text: string;
 	agentId: string;
+	/** The summary of a run its limit stopped. */
+	limited?: string;
+	limits?: string;
 	worktree?: { path: string; branch: string };
 	usage: { subagentTokens: number; toolUses: number; durationMs: number };
 }
@@ -269,6 +273,8 @@ export function agentForegroundResult(result: AgentForeground): string {
 	return [
 		result.text || "(The agent finished without output.)",
 		`agentId: ${result.agentId} (use SendMessage with to: '${result.agentId}' to continue this agent)`,
+		...(result.limited ? [`Limited: ${result.limited}`] : []),
+		...(result.limits ? [`Limits: ${result.limits}`] : []),
 		...(result.worktree ? [`worktreePath: ${result.worktree.path}`, `worktreeBranch: ${result.worktree.branch}`] : []),
 		`<usage>subagent_tokens: ${result.usage.subagentTokens}\ntool_uses: ${result.usage.toolUses}\nduration_ms: ${result.usage.durationMs}</usage>`,
 	].join("\n");

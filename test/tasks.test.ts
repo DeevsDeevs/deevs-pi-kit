@@ -115,14 +115,16 @@ describe("task notification contract", () => {
 			"It works in the background and you will be notified when it finishes. Until then you know nothing about its result: do not guess it, wait for it, or redo its work. Carry on with other work or answer the user.",
 			"output_file: /out/a1.md",
 			"Do not read this file while the agent runs; it is written when the agent finishes, and the notification carries the result.",
-			"model: openai-codex/gpt-6.1-sol:high",
-			"limits: maxTurns 20",
+			"Model: openai-codex/gpt-6.1-sol:high",
+			"Limits: maxTurns 20",
 			"Queued: 16 agents are running; this one starts when a slot frees.",
 			"Another agent that can write already works in this directory. For parallel code-writing agents, dispatch each with isolation: \"worktree\".",
 		].join("\n"));
-		expect(shared.agentForegroundResult({ text: "", agentId: "a1", worktree: { path: "/wt/a1", branch: "agent/a1" }, usage: { subagentTokens: 3, toolUses: 2, durationMs: 1 } })).toBe([
+		expect(shared.agentForegroundResult({ text: "", agentId: "a1", limited: "stopped", limits: "maxTurns 1", worktree: { path: "/wt/a1", branch: "agent/a1" }, usage: { subagentTokens: 3, toolUses: 2, durationMs: 1 } })).toBe([
 			"(The agent finished without output.)",
 			"agentId: a1 (use SendMessage with to: 'a1' to continue this agent)",
+			"Limited: stopped",
+			"Limits: maxTurns 1",
 			"worktreePath: /wt/a1",
 			"worktreeBranch: agent/a1",
 			"<usage>subagent_tokens: 3\ntool_uses: 2\nduration_ms: 1</usage>",

@@ -6,7 +6,6 @@ import { dirname, join, relative, sep } from "node:path";
 
 const MAX_GIT_BUFFER = 1024 * 1024;
 const GIT_TIMEOUT_MS = 30_000;
-const SHARED_CWD_WARNING = "For parallel code-writing agents, dispatch each with isolation: \"worktree\".";
 
 /** A git command that failed or timed out; Runtime reports it as `host_unavailable`. */
 export class GitError extends Error {}
@@ -67,10 +66,10 @@ export async function finishAgentWorktree(worktree: AgentWorktree): Promise<Agen
 	return undefined;
 }
 
-/** CC's nudge when another running agent writes in, above or below `cwd`. */
-export function sharedCwdWarning(running: RunningAgentCwd[], cwd: string): string | undefined {
+/** Whether another running writer works in, above or below `cwd`: the launch result then nudges toward worktrees. */
+export function sharesCwd(running: RunningAgentCwd[], cwd: string): boolean {
 	const overlaps = (a: string, b: string) => a === b || a.startsWith(b + sep) || b.startsWith(a + sep);
-	return running.some((agent) => overlaps(agent.cwd, cwd)) ? SHARED_CWD_WARNING : undefined;
+	return running.some((agent) => overlaps(agent.cwd, cwd));
 }
 
 /** The top level of the repository holding `cwd`; a folder of repositories names them so the caller can pick one. */

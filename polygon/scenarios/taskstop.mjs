@@ -19,7 +19,7 @@ export default {
 			{ id: "s4", tool: "TaskStop", args: { task_id: "stoppable" } },
 			{ id: "s5", text: "stopped" },
 		] });
-		await lead.until((_, events) => taskNotifications(events).length >= 1, 30_000, "the stopped agent's report");
+		await lead.until((_, events) => taskNotifications(events).length >= 1 && toolCalls(events).filter((c) => c.name === "TaskStop").length >= 2, 30_000, "the stopped agent's report and both stops");
 		const [stop, again] = toolCalls(lead.events).filter((c) => c.name === "TaskStop");
 		assert.equal(stop.isError, false);
 		assert.equal(again.isError, true, "a second stop of a stopped agent succeeded");

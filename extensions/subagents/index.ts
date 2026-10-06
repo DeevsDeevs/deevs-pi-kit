@@ -4,12 +4,12 @@ import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadKitConfig, modelLabel, modelsTable, resolveLead, resolveModel, type ModelContext } from "../shared/models.ts";
-import { newAgentId, tasks, type RosterEntry, type TaskNotification } from "../shared/tasks.ts";
+import { agentForegroundResult, agentLaunchedResult, newAgentId, taskNotRunningResult, taskStoppedResult, tasks, type RosterEntry } from "../shared/tasks.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
-import { createAgentWorktree, sharedCwdWarning } from "../shared/worktree.ts";
+import { createAgentWorktree, finishAgentWorktree, sharesCwd } from "../shared/worktree.ts";
 import { remindSilentTurns } from "./silent-turns.ts";
 import { agentTypes, agentTypesSection, findAgentType, workerPrompt } from "./definitions.ts";
-import { AGENT_SLOTS, closeAll, ensureEngine, launch, queuedAhead, reinstall, resumeSession, send, settle, stop, writerCwds, type Limits } from "./engine/index.ts";
+import { closeAll, ensureEngine, launch, queuedAhead, reinstall, resumeSession, send, settle, stop, writerCwds, type Limits } from "./engine/index.ts";
 
 const FOREGROUND_MS = 120_000;
 const RESERVED_NAMES = new Set(["main", "user", "system"]);
@@ -68,25 +68,32 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			const worktree = (params.isolation ?? type.isolation) === "worktree" ? await createAgentWorktree({ cwd: requested, agentId, agentDir: getAgentDir() }) : undefined;
 			const cwd = worktree ? join(worktree.path, relative(worktree.repoRoot, realpathSync(requested))) : requested;
 			const writer = type.tools.includes("edit") || type.tools.includes("write");
-			const sharesCwd = writer ? sharedCwdWarning(await writerCwds(engine), cwd) : undefined;
+			const shared = writer && sharesCwd(await writerCwds(engine), cwd);
 			const queued = queuedAhead();
-			const { outputFile, done } = await launch(engine, {
-				agentId,
-				description: params.description,
-				prompt: params.prompt,
-				name: params.name,
-				model: resolved.model,
-				level: resolved.level,
-				tools: type.tools,
-				instructions: workerPrompt(type, cwd, worktree),
-				cwd,
-				writer,
-				toolUseId: toolCallId,
-				limits,
-				foreground,
-				worktree,
-			});
-			const launched = launchText(agentId, outputFile, modelLabel(resolved), limits, queued, sharesCwd);
+			let started: Awaited<ReturnType<typeof launch>>;
+			try {
+				started = await launch(engine, {
+					agentId,
+					description: params.description,
+					prompt: params.prompt,
+					name: params.name,
+					model: resolved.model,
+					level: resolved.level,
+					tools: type.tools,
+					instructions: workerPrompt(type, cwd, worktree),
+					cwd,
+					writer,
+					toolUseId: toolCallId,
+					limits,
+					foreground,
+					worktree,
+				});
+			} catch (error) {
+				if (worktree) await finishAgentWorktree(worktree).catch(() => undefined);
+				throw error;
+			}
+			const { outputFile, done } = started;
+			const launched = agentLaunchedResult({ agentId, outputFile, model: modelLabel(resolved), limits: limitsText(limits), queued, sharesCwd: shared });
 			if (!done) return { content: [{ type: "text" as const, text: launched }], details: { agentId, outputFile, status: "async_launched" } };
 			const outcome = await settle(agentId, done, FOREGROUND_MS, signal);
 			if (outcome === "background") return { content: [{ type: "text" as const, text: launched }], details: { agentId, outputFile, status: "async_launched" } };
@@ -95,7 +102,8 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				throw new Error(`Agent "${params.description}" was stopped`);
 			}
 			if (outcome.status !== "completed") throw new Error([outcome.summary, outcome.result].filter(Boolean).join("\n"));
-			return { content: [{ type: "text" as const, text: foregroundText(agentId, outcome, limits) }], details: { agentId, outputFile, status: outcome.status } };
+			const text = agentForegroundResult({ text: outcome.result ?? "", agentId, limited: outcome.limited && outcome.summary, limits: limitsText(limits), worktree: outcome.worktree, usage: { subagentTokens: outcome.usage?.subagentTokens ?? 0, toolUses: outcome.usage?.toolUses ?? 0, durationMs: outcome.usage?.durationMs ?? 0 } });
+			return { content: [{ type: "text" as const, text }], details: { agentId, outputFile, status: outcome.status } };
 		},
 	});
 
@@ -108,10 +116,11 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		async execute(_toolCallId, params: { task_id: string }, _signal, _onUpdate, ctx) {
 			const entry = tasks.find(params.task_id, ctx.sessionManager.getSessionId());
 			if (!entry) throw new Error(`No task found with ID: ${params.task_id}`);
-			if (entry.status !== "running" || !entry.stop) throw new Error(`Task ${entry.id} is not running (status: ${entry.status})`);
-			await entry.stop();
-			tasks.update(entry.id, { status: "killed" });
-			return { content: [{ type: "text" as const, text: `Successfully stopped task: ${entry.id} (${entry.description})` }], details: { taskId: entry.id, kind: entry.kind } };
+			if (entry.status !== "running" || !entry.stop) throw new Error(taskNotRunningResult(entry.id, entry.status));
+			const stopped = await entry.stop();
+			if (tasks.find(entry.id)?.status === "running") tasks.update(entry.id, { status: "killed" });
+			const text = taskStoppedResult(entry.id, entry.description, stopped?.worktree ? [stopped.worktree] : []);
+			return { content: [{ type: "text" as const, text }], details: { taskId: entry.id, kind: entry.kind } };
 		},
 	});
 
@@ -130,13 +139,13 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		}),
 		async execute(toolCallId, params: { to: string; message: string }, _signal, _onUpdate, ctx) {
 			const session = ctx.sessionManager.getSessionId();
-			const entry = tasks.find(params.to, session);
-			if (!entry || entry.kind !== "agent") {
+			const entry = tasks.find(params.to, session, "agent");
+			if (!entry) {
 				const known = tasks.list(session).filter((task) => task.kind === "agent").map((task) => task.name ?? task.id);
 				throw new Error(`No agent named '${params.to}'. Known agents: ${known.join(", ") || "none"}`);
 			}
 			const outcome = await send(await ensureEngine(ctx), entry.id, params.message, toolCallId);
-			if (outcome === "refused") throw new Error(`Agent "${params.to}" was stopped by the user and was not resumed. Ask the user before starting it again, or launch a new agent.`);
+			if (outcome === "refused") throw new Error(`Agent "${params.to}" was stopped by the user and was not resumed. Start a new agent for this work only if the user explicitly asks for it.`);
 			const text = outcome === "steered" ? `Message queued for delivery to ${params.to} at its next tool round.` : `Resuming agent ${params.to}`;
 			return { content: [{ type: "text" as const, text }], details: { agentId: entry.id, outcome } };
 		},
@@ -166,7 +175,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			if (entry.status !== "running") return ctx.ui.notify(`Task ${entry.id} is not running (status: ${entry.status})`, "warning");
 			if (entry.kind === "agent") await stop(await ensureEngine(ctx), entry.id, "user");
 			else await entry.stop?.();
-			tasks.update(entry.id, { status: "killed" });
+			if (tasks.find(entry.id)?.status === "running") tasks.update(entry.id, { status: "killed" });
 			ctx.ui.notify(`Stopped ${entry.id} (${entry.description})`, "info");
 		},
 	});
@@ -194,35 +203,9 @@ async function useLeadModel(pi: ExtensionAPI, ctx: ExtensionContext): Promise<vo
 	if (lead.level) pi.setThinkingLevel(lead.level);
 }
 
-function limitsLine(limits: Limits): string | undefined {
+function limitsText(limits: Limits): string | undefined {
 	const set = [limits.maxTurns && `maxTurns ${limits.maxTurns}`, limits.maxTokens && `maxTokens ${limits.maxTokens}`, limits.timeout && `timeout ${limits.timeout} ms`].filter(Boolean);
-	return set.length ? `Limits: ${set.join(", ")}` : undefined;
-}
-
-function launchText(agentId: string, outputFile: string, model: string, limits: Limits, queued: boolean, sharedCwd: string | undefined): string {
-	return [
-		"Async agent launched successfully.",
-		`agentId: ${agentId} (internal ID; to continue this agent, use SendMessage with to: '${agentId}')`,
-		"The agent works in the background and you will be notified when it finishes. Until then you know nothing about its result: do not guess or report it; continue other work or answer the user.",
-		"Do not duplicate its work or edit the files it is working on.",
-		`output_file: ${outputFile}`,
-		"Do not read or tail output_file; it is written when the agent finishes. If the user asks for progress, say the agent is still running.",
-		`Model: ${model}`,
-		limitsLine(limits),
-		queued && `Queued: ${AGENT_SLOTS} agents are running; this one starts when a slot frees.`,
-		sharedCwd,
-	].filter(Boolean).join("\n");
-}
-
-function foregroundText(agentId: string, n: TaskNotification, limits: Limits): string {
-	return [
-		n.result || "(Subagent completed but returned no output.)",
-		`agentId: ${agentId} (use SendMessage with to: '${agentId}' to continue this agent)`,
-		n.limited && `Limited: ${n.summary}`,
-		limitsLine(limits),
-		n.worktree && `worktreePath: ${n.worktree.path}\nworktreeBranch: ${n.worktree.branch}`,
-		`<usage>subagent_tokens: ${n.usage?.subagentTokens ?? 0}\ntool_uses: ${n.usage?.toolUses ?? 0}\nduration_ms: ${n.usage?.durationMs ?? 0}</usage>`,
-	].filter(Boolean).join("\n");
+	return set.length ? set.join(", ") : undefined;
 }
 
 function rosterLines(entries: RosterEntry[]): string[] {
