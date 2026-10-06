@@ -21,8 +21,8 @@ const BATCH_MS = 200;
 export interface BackgroundHost {
 	/** Set on quit: a child the reaper killed is Pi closing, not the command ending. */
 	closing: boolean;
-	/** When this process opened each session's engine; a checkpoint older than that was taken before Pi closed. */
-	opened: Map<string, number>;
+	/** Each session's closed window: from the engine's last heartbeat or unlock to when this process opened it. */
+	closed: Map<string, { from?: number; to: number }>;
 }
 
 export interface BackgroundRecord {
@@ -268,8 +268,9 @@ export function backgroundTasks(D: D, docs: Docs, host: BackgroundHost) {
 	}
 
 	function closedSince(session: string, lastAt: number): string | undefined {
-		const opened = host.opened.get(session) ?? 0;
-		return lastAt < opened ? `closed from ${formatLocalTime(lastAt)} to ${formatLocalTime(opened)}` : undefined;
+		const closed = host.closed.get(session);
+		if (!closed || lastAt >= closed.to) return undefined;
+		return `closed from ${formatLocalTime(Math.max(lastAt, closed.from ?? 0))} to ${formatLocalTime(closed.to)}`;
 	}
 
 	return { Job, Monitor };

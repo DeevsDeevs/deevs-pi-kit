@@ -3,7 +3,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
-import { access, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import type { Api, Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
@@ -171,6 +171,8 @@ export interface Engine {
 	root: Durable.Conversation;
 	registry: Durable.Registry;
 	kit: Kit;
+	/** Touches the storage folder while this Pi holds the engine. */
+	heartbeat: NodeJS.Timeout;
 }
 
 interface Modules { D: D; openStorage(file: string): Promise<Durable.Storage> }
@@ -195,12 +197,12 @@ interface Host extends BackgroundHost {
 const KEY = Symbol.for("pi-kit.agents");
 // SAFETY: this package exclusively owns the symbol-keyed slot and only ever stores the host in it.
 const slot = globalThis as typeof globalThis & { [KEY]?: Host };
-const host: Host = slot[KEY] ??= { engines: new Map(), running: 0, queue: [], waiters: new Map(), closing: false, opened: new Map(), live: new Map(), workflows: new Map(), workers: new Map() };
+const host: Host = slot[KEY] ??= { engines: new Map(), running: 0, queue: [], waiters: new Map(), closing: false, closed: new Map(), live: new Map(), workflows: new Map(), workers: new Map() };
 host.live ??= new Map();
 host.workflows ??= new Map();
 host.workers ??= new Map();
-// A host kept from a kit version before Jobs and Monitors joined the engine.
-host.opened ??= new Map();
+// A host kept from an older kit version.
+host.closed ??= new Map();
 
 tasks.addSource({
 	name: "agents",
@@ -261,6 +263,7 @@ export async function closeAll(): Promise<void> {
 	for (const pending of engines) {
 		const engine = await pending.catch(() => undefined);
 		if (!engine) continue;
+		clearInterval(engine.heartbeat);
 		await engine.harness.close(CTX).catch(() => {});
 		await reap(engine.dir);
 		await unlock(join(engine.dir, "engine.lock"));
@@ -487,6 +490,8 @@ async function stopBackground(engine: Engine, id: string): Promise<void> {
 
 async function open(session: string, cwd: string): Promise<Engine> {
 	const dir = await storageDir(cwd, session);
+	// The folder's mtime is its last heartbeat or unlock: about when Pi last held this engine.
+	const from = await stat(dir).then((info) => info.mtimeMs, () => undefined);
 	await mkdir(join(dir, "out"), { recursive: true });
 	await lock(join(dir, "engine.lock"));
 	await reap(dir);
@@ -501,7 +506,9 @@ async function open(session: string, cwd: string): Promise<Engine> {
 		onReport: () => {},
 	}, CTX);
 	const root = await harness.root(CTX);
-	const engine: Engine = { session, dir, project: cwd, harness, root, registry, kit };
+	const heartbeat = setInterval(() => void utimes(dir, new Date(), new Date()).catch(() => {}), 30_000);
+	heartbeat.unref();
+	const engine: Engine = { session, dir, project: cwd, harness, root, registry, kit, heartbeat };
 	const records = agentRecords(await harness.snapshot(kit.Agents, root.id, CTX));
 	const workflows = workflowRecords(await harness.snapshot(kit.Workflows, root.id, CTX));
 	installSchemas(D, registry, session, [...Object.values(records), ...Object.values(workflows)]);
@@ -510,7 +517,7 @@ async function open(session: string, cwd: string): Promise<Engine> {
 	}
 	for (const [id, record] of Object.entries(workflows)) registerWorkflow(engine, id, record);
 	for (const [id, record] of Object.entries(backgroundRecords(await harness.snapshot(kit.Background, root.id, CTX)))) registerBackground(engine, id, record);
-	host.opened.set(session, Date.now());
+	host.closed.set(session, { from, to: Date.now() });
 	await root.commit(async (tx) => pruneOutbox(await tx.doc(kit.Outbox, root.id), session), CTX);
 	harness.resume();
 	for (const item of outboxItems(await harness.snapshot(kit.Outbox, root.id, CTX))) if (!item.silent) await tasks.notify(item);
