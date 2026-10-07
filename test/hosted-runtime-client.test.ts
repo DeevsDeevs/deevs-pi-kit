@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { HostedRuntimeClient, HostedRuntimeClientError } from "../extensions/runtime/client.ts";
 import { HostedRuntimeIntegration } from "../extensions/runtime/hosted-integration.ts";
 import { startRuntimeService } from "../extensions/runtime/service-launch.ts";
+import { HOSTED_SESSION_ENTRY } from "../extensions/runtime/session-record.ts";
 import { RUNTIME_BUILD } from "../extensions/runtime/service/build.ts";
 import type { HostedHostVerifier, HostedLiveAgent } from "../extensions/runtime/service/herdr-cli.ts";
 import { startRuntimeServer, type RuntimeServerHandle } from "../extensions/runtime/service/server.ts";
@@ -125,6 +126,14 @@ describe("hosted runtime client vertical", () => {
 		}
 		expect(methods).toEqual(["hello", "service.exit"]);
 		expect(await client.hello()).toMatchObject({ build: RUNTIME_BUILD });
+	});
+
+	it("guards a collaborator whose launch names no profile as read-only", () => {
+		const integration = new HostedRuntimeIntegration({} as never, join(tmpdir(), "pi-kit-runtime-unused"));
+		const entry = { type: "custom", customType: HOSTED_SESSION_ENTRY, data: { version: 3, launch: { driver: "pi" } } };
+		integration.restoreSessionState({ cwd: tmpdir(), sessionManager: { getBranch: () => [entry] } } as never);
+		expect(integration.collaborators.guardTool("edit", { path: "x" }, tmpdir())).toMatchObject({ block: true });
+		expect(integration.collaborators.guardTool("read", { path: "x" }, tmpdir())).toBeUndefined();
 	});
 
 	it("returns a typed unavailable error for an absent socket", async () => {

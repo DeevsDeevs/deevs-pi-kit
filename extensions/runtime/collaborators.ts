@@ -103,10 +103,10 @@ export class CollaboratorService {
 	}
 
 	guardTool(toolName: string, input: ToolCallEvent["input"] | undefined, cwd: string): CollaboratorToolBlock | undefined {
-		const configured = this.session.store.launch?.profile;
-		if (!configured) return undefined;
+		const launch = this.session.store.launch;
+		if (!launch) return undefined;
 		const path = input && "path" in input ? input.path : undefined;
-		return collaboratorToolBlock(this.effectiveProfile(configured), toolName, path, cwd);
+		return collaboratorToolBlock(this.effectiveProfile(launch.profile ?? "read-only"), toolName, path, cwd);
 	}
 
 	/** A workspace-write collaborator falls back to read-only until its worktree and held identity are both proven. */

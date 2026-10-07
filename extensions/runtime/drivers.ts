@@ -30,7 +30,7 @@ type HerdrAgentKind = "pi" | "claude" | "codex";
 
 /** Everything one driver may need to compose its own startup argv. */
 interface DriverCommandInput {
-	profile?: HostedCollaboratorProfile;
+	profile: HostedCollaboratorProfile;
 	cwd: string;
 	sessionFile?: string;
 	model?: string;
@@ -60,7 +60,6 @@ export interface DriverSpec {
 	kind: HerdrAgentKind;
 	/** Absent when the driver registers itself from its prepared Pi session instead of a Runtime bind. */
 	bind?: HostedNativeCollaboratorDriver;
-	defaultProfile?: HostedCollaboratorProfile;
 	command(input: DriverCommandInput): string[];
 	verify(agent: StartedAgentIdentity): boolean;
 }
@@ -81,14 +80,12 @@ export const DRIVERS: DriverTable = {
 	"claude-code": {
 		kind: "claude",
 		bind: "claude-code",
-		defaultProfile: "read-only",
 		command: claudeCommand,
 		verify: startedAs("claude"),
 	},
 	"codex": {
 		kind: "codex",
 		bind: "codex",
-		defaultProfile: "read-only",
 		command: codexCommand,
 		verify: startedAs("codex"),
 	},
@@ -119,8 +116,7 @@ export function collaboratorProfileTools(profile: HostedCollaboratorProfile): re
 
 function piCommand(input: DriverCommandInput): string[] {
 	const session = input.sessionFile ? ["--session", input.sessionFile] : [];
-	const allowed = input.profile ? ["--tools", collaboratorProfileTools(input.profile).join(",")] : [];
-	return ["--approve", ...session, ...allowed, ...modelArguments(input.model)];
+	return ["--approve", ...session, "--tools", collaboratorProfileTools(input.profile).join(","), ...modelArguments(input.model)];
 }
 
 function claudeCommand(input: DriverCommandInput): string[] {

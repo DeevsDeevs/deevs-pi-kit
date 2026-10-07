@@ -112,7 +112,6 @@ export class CollaboratorLauncher {
 			if (launchCwd !== start.projectRoot) await waitForHerdrPaneCwd(this.pi, tab, launchCwd, start.signal);
 			this.session.requireCurrentScope(request.current);
 			const mcp = spec.bind ? await this.native.messagingConfiguration(plan, candidate.persona?.prompt) : undefined;
-			if (mcp) notifyNativePrompt(start.ctx, tab.paneId);
 			if (!spec.bind) ({ sessionFile, created } = this.collaboratorSession(start, launchCwd, candidate));
 			const input = { profile: candidate.profile, cwd: launchCwd, sessionFile, model: candidate.model, persona: candidate.persona, mcp, resume: candidate.resume };
 			const argv = driverLaunchArgv({ driver: candidate.driver, agentName: plan.agentName, paneId: tab.paneId, input });
@@ -131,7 +130,6 @@ export class CollaboratorLauncher {
 		const { start, candidate, existing, spec, plan } = request;
 		const driver = spec.bind;
 		if (!driver) return;
-		if (!candidate.profile) throw new HostedRuntimeClientError("conflict", "Native collaborator launch requires a resolved profile.");
 		await this.native.bindLaunched({
 			ctx: start.ctx,
 			registration: start.registration,
@@ -211,9 +209,8 @@ export class CollaboratorLauncher {
 }
 
 function piCollaboratorLaunch(candidate: ResolvedCollaboratorCandidate): CollaboratorLaunch {
-	const launch: CollaboratorLaunch = { driver: "pi" };
+	const launch: CollaboratorLaunch = { driver: "pi", profile: candidate.profile };
 	if (candidate.model) launch.model = candidate.model;
-	if (candidate.profile) launch.profile = candidate.profile;
 	if (candidate.persona) launch.persona = candidate.persona;
 	return launch;
 }
@@ -222,12 +219,6 @@ function piCollaboratorLaunch(candidate: ResolvedCollaboratorCandidate): Collabo
 function tabEnvironment(spec: DriverSpec, start: CollaboratorStart, candidate: ResolvedCollaboratorCandidate): string[] {
 	if (spec.bind) return [];
 	return [`${COLLABORATOR_ENV}=${start.protocol}:${candidate.participantId}`];
-}
-
-function notifyNativePrompt(ctx: ExtensionContext, paneId: string): void {
-	const prompt = `Complete any native trust or permission prompt in ${paneId}.`
-		+ " Runtime will not accept it for you; startup has a bounded timeout.";
-	ctx.ui.notify(prompt, "info");
 }
 
 export function standingDown(participant: ClientParticipantStatus | undefined): participant is ClientParticipantStatus {

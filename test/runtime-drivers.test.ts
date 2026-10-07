@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { findAgent, loadBuiltinAgents } from "../extensions/subagents/agents.ts";
+import { loadBuiltinAgents } from "../extensions/subagents/agents.ts";
 import { resolveCollaboratorCandidate } from "../extensions/runtime/collaborator-policy.ts";
 import type { ModelContext } from "../extensions/shared/models.ts";
 import { DRIVERS, driverLaunchArgv } from "../extensions/runtime/drivers.ts";
@@ -59,7 +59,7 @@ it("counts the herdr prefix against the escaped command limit", () => {
 
 /** A persona body is real markdown: every native launch must still reach Herdr free of control characters. */
 it.each(["claude-code", "codex"] as const)("collapses a multi-line built-in persona into the %s launch argv", (driver) => {
-	const definition = findAgent(loadBuiltinAgents(), "reviewer");
+	const definition = loadBuiltinAgents().find((agent) => agent.name === "reviewer");
 	const prompt = definition?.body.trim() ?? "";
 	expect(prompt).toMatch(/\n/);
 	const registry = { getAll: () => [{ provider: "anthropic", id: "claude-opus-5-5" }], getAvailable: () => [], find: () => undefined };
@@ -82,4 +82,15 @@ it("resumes a stood-down Claude or Codex collaborator in its own native session"
 	expect(startup[0]).toBe("resume");
 	expect(startup.slice(startup.lastIndexOf("--") + 1, startup.lastIndexOf("--") + 2)).toEqual([session]);
 	expect(launchArgv("codex", representativeInput("codex"))).not.toContain("resume");
+});
+
+it("starts a collaborator with no profile read-only, a Pi one included, and names personas as Agent does", () => {
+	const model = { provider: "anthropic", id: "claude-opus-5-5" };
+	const registry = { getAll: () => [model], getAvailable: () => [model], find: () => model };
+	const models = { config: { models: {}, lead: null }, registry, codex: { slugs: [] } } as unknown as ModelContext;
+	const candidate = resolveCollaboratorCandidate({ participantId: "child", model: "anthropic/claude-opus-5-5", persona: "Explore" }, models);
+	expect(candidate).toMatchObject({ driver: "pi", profile: "read-only", persona: { name: "explorer" } });
+	const argv = launchArgv("pi", { profile: candidate.profile, cwd: "/project" });
+	expect(argv[argv.indexOf("--tools") + 1]).not.toMatch(/\b(edit|write)\b/);
+	expect(() => resolveCollaboratorCandidate({ participantId: "child", persona: "nobody" }, models)).toThrow(/nobody/);
 });
