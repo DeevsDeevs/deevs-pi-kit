@@ -63,5 +63,6 @@ it("scales autonomy to the task with one trigger: short fixes done and verified 
 		expect(text).toMatch(/one-agent workflow/);
 		expect(text).toMatch(/deliverable the task names \(a file or binary at a path, a commit, a branch\) work first, committed when it is a commit, before/);
 	}
+	expect(AUTONOMY_REMINDERS.full).toMatch(/Make the change the deliverable depends on yourself; never end the turn with it unwritten\./);
 	expect(AUTONOMY_REMINDERS.sparse).toMatch(/orchestrate work that splits into independent parts taking minutes each, or that needs an independent review; work directly on short fixes/);
 });
