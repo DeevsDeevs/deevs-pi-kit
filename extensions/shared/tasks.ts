@@ -3,7 +3,7 @@ import { VERSION, type ExtensionAPI, type ExtensionContext } from "@earendil-wor
 import { migrateLegacyConfig } from "./config.ts";
 
 export type TaskKind = "agent" | "workflow" | "job" | "monitor" | "collaborator";
-export type TaskStatus = "running" | "completed" | "failed" | "killed" | "paused";
+export type TaskStatus = "running" | "completed" | "failed" | "killed";
 
 export interface RosterEntry {
 	id: string;

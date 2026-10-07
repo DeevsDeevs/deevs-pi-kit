@@ -37,10 +37,10 @@ export function parseMetadata(content: string): ChainLinkMetadata {
 
 export function withMetadata(content: string, metadata: Required<Pick<ChainLinkMetadata, "chain" | "branch" | "created">> & Pick<ChainLinkMetadata, "parent" | "nextStep">): string {
 	const body = stripFrontmatter(content).trim();
-	const lines = ["---", `chain: ${quoteYaml(metadata.chain)}`, `branch: ${quoteYaml(metadata.branch)}`];
-	if (metadata.parent) lines.push(`parent: ${quoteYaml(metadata.parent)}`);
-	if (metadata.nextStep) lines.push(`nextStep: ${quoteYaml(metadata.nextStep)}`);
-	lines.push(`created: ${quoteYaml(metadata.created)}`, "---", "", body, "");
+	const lines = ["---", `chain: ${JSON.stringify(metadata.chain)}`, `branch: ${JSON.stringify(metadata.branch)}`];
+	if (metadata.parent) lines.push(`parent: ${JSON.stringify(metadata.parent)}`);
+	if (metadata.nextStep) lines.push(`nextStep: ${JSON.stringify(metadata.nextStep)}`);
+	lines.push(`created: ${JSON.stringify(metadata.created)}`, "---", "", body, "");
 	return lines.join("\n");
 }
 
@@ -85,8 +85,4 @@ function dateFromFilename(filename: string): Date | null {
 	const millisecond = stamp.length >= 9 ? Number(stamp.slice(6, 9)) : 0;
 	const date = new Date(Number(year), Number(month) - 1, Number(day), hour, minute, second, millisecond);
 	return Number.isNaN(date.getTime()) ? null : date;
-}
-
-function quoteYaml(value: string): string {
-	return JSON.stringify(value);
 }

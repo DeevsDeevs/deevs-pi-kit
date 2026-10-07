@@ -32,5 +32,7 @@ describe("bespoke dashboards", () => {
 		expect(new ChainsDashboard(chains as never, checkpoint as never, theme, noop, noop, () => 8, async () => "preview", noop).render(40).length).toBeLessThanOrEqual(8);
 		expect(lines.join("\n")).toContain("deevs-pi-kit@main");
 		expect(lines.join("\n")).toContain("Ship");
+		const idle = new ChainsDashboard(chains as never, { ...checkpoint, status: "idle", dueReasons: [] } as never, theme, noop, noop, () => 30, async () => "", noop);
+		expect(idle.render(80).join("\n")).toContain("● deevs-pi-kit@main · idle");
 	});
 });

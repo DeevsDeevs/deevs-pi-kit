@@ -32,36 +32,10 @@ export async function ownsProcessIdentity(pid: number, expected: string | undefi
 	return expected !== undefined && await readProcessIdentity(pid) === expected;
 }
 
-export async function quiesceProcessGroup(pgid: number, options: { graceful?: boolean; graceMs?: number; killWaitMs?: number } = {}): Promise<boolean> {
-	if (!isProcessGroupAlive(pgid)) return true;
-	if (options.graceful !== false) {
-		trySignalGroup(pgid, "SIGTERM");
-		await waitForGroupExit(pgid, options.graceMs ?? 250);
-	}
-	if (!isProcessGroupAlive(pgid)) return true;
-	trySignalGroup(pgid, "SIGKILL");
-	await waitForGroupExit(pgid, options.killWaitMs ?? 2_000);
-	return !isProcessGroupAlive(pgid);
-}
-
-function isProcessGroupAlive(pgid: number): boolean {
-	try {
-		process.kill(-pgid, 0);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
 export function trySignalGroup(pgid: number, signal: NodeJS.Signals): void {
 	try {
 		process.kill(-pgid, signal);
 	} catch {
 		// Group already exited.
 	}
-}
-
-async function waitForGroupExit(pgid: number, timeoutMs: number): Promise<void> {
-	const deadline = Date.now() + timeoutMs;
-	while (isProcessGroupAlive(pgid) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
 }

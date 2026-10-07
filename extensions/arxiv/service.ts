@@ -41,17 +41,13 @@ export class ArxivService {
 		if (waitMs) await new Promise((resolve) => setTimeout(resolve, waitMs));
 		this.lastRequestAt = Date.now();
 
-		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 		try {
-			const response = await fetch(url, { headers: { "User-Agent": USER_AGENT }, signal: controller.signal });
+			const response = await fetch(url, { headers: { "User-Agent": USER_AGENT }, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
 			if (!response.ok) throw new Error(`arXiv API HTTP ${response.status}: ${response.statusText}`);
 			return await response.text();
 		} catch (error) {
-			if (error instanceof Error && error.name === "AbortError") throw new Error(`arXiv API request timed out after ${REQUEST_TIMEOUT_MS}ms`);
+			if (error instanceof Error && error.name === "TimeoutError") throw new Error(`arXiv API request timed out after ${REQUEST_TIMEOUT_MS}ms`);
 			throw error;
-		} finally {
-			clearTimeout(timeout);
 		}
 	}
 }
