@@ -1,3 +1,6 @@
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TaskNotification } from "../extensions/shared/tasks.ts";
@@ -13,7 +16,7 @@ beforeEach(async () => {
 });
 
 /** A fake Pi whose session file records what was delivered, unless the run's steer queue is cleared. */
-function lead() {
+function lead(project = { cwd: "/", trusted: false }) {
 	const handlers = new Map<string, Handler>();
 	const sessions = new Map<string, Array<{ type: string; customType: string; details: { notificationId: string } }>>();
 	const sent: Array<{ session: string; id: string; options: unknown }> = [];
@@ -30,6 +33,8 @@ function lead() {
 	} as unknown as ExtensionAPI;
 	const entries = (id: string) => sessions.get(id) ?? sessions.set(id, []).get(id)!;
 	const ctx = () => ({
+		cwd: project.cwd,
+		isProjectTrusted: () => project.trusted,
 		isIdle: () => idle,
 		ui: { setStatus: (_key: string, text?: string) => statuses.push(text) },
 		sessionManager: { getSessionId: () => session, getEntries: () => entries(session) },
@@ -277,5 +282,32 @@ describe("task delivery", () => {
 		expect(shared.tasks.find("a1", "s2")).toBeUndefined();
 		shared.tasks.remove("a2");
 		expect(shared.tasks.list().map((entry) => entry.id)).toEqual(["a1"]);
+	});
+});
+
+describe("kit start-up", () => {
+	it("moves a trusted project's legacy config into pi-kit.json at session start, and leaves an untrusted one alone", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-kit-start-"));
+		vi.stubEnv("PI_CODING_AGENT_DIR", join(cwd, "agent"));
+		mkdirSync(join(cwd, ".pi"));
+		writeFileSync(join(cwd, ".pi", "runtime.json"), JSON.stringify({ auto: true }));
+		const untrusted = lead({ cwd, trusted: false });
+		shared.tasks.install(untrusted.pi);
+		await untrusted.start("s1");
+		expect(existsSync(join(cwd, ".pi", "pi-kit.json"))).toBe(false);
+		const trusted = lead({ cwd, trusted: true });
+		shared.tasks.install(trusted.pi);
+		await trusted.start("s1");
+		expect(JSON.parse(readFileSync(join(cwd, ".pi", "pi-kit.json"), "utf8"))).toEqual({ autonomy: true });
+		expect(existsSync(join(cwd, ".pi", "runtime.json"))).toBe(false);
+		vi.unstubAllEnvs();
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	it("warns about a Pi older than 1.0.4", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		for (const version of ["1.0.1", "1.0.4", "1.0.10", "1.1.0"]) shared.warnOldPi(version);
+		expect(warn.mock.calls).toEqual([["pi-kit: needs Pi 1.0.4 or newer, and this is Pi 1.0.1; update Pi."]]);
+		warn.mockRestore();
 	});
 });

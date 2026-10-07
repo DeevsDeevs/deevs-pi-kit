@@ -13,6 +13,7 @@ const faux = createFauxCore({ provider: "faux", models: [{ id: "m" }] });
 // SAFETY: the engine reads only these members of the context.
 const ctx = {
 	cwd,
+	isProjectTrusted: () => false,
 	modelRegistry: { find: (_provider: string, id: string) => faux.getModel(id), streamSimple: faux.streamSimple },
 	sessionManager: { getSessionId: () => "s", getEntries: () => [] },
 } as unknown as ExtensionContext;

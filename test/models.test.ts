@@ -241,21 +241,28 @@ describe("loadKitConfig", () => {
 
 	it("returns the kit defaults without files", async () => {
 		const { cwd, agentDir } = dirs();
-		expect(await loadKitConfig(cwd, agentDir)).toEqual(KIT_DEFAULTS);
+		expect(await loadKitConfig({ cwd, isProjectTrusted: () => true }, agentDir)).toEqual(KIT_DEFAULTS);
 	});
 
 	it("merges per name, project over global over defaults, and rereads on every load", async () => {
 		const { cwd, agentDir } = dirs();
 		writeFileSync(join(agentDir, "pi-kit.json"), JSON.stringify({ models: { deep: "astra:max", sol: "openai-codex/gpt-5.6-sol" }, lead: "astra", autonomy: true }));
 		writeFileSync(join(cwd, ".pi", "pi-kit.json"), JSON.stringify({ models: { deep: "openai-codex/gpt-*-sol:xhigh" } }));
-		const config = await loadKitConfig(cwd, agentDir);
+		const config = await loadKitConfig({ cwd, isProjectTrusted: () => true }, agentDir);
 		expect(config.models).toEqual({ ...KIT_DEFAULTS.models, sol: "openai-codex/gpt-5.6-sol", deep: "openai-codex/gpt-*-sol:xhigh" });
 		expect(config.lead).toBe("astra");
 		writeFileSync(join(cwd, ".pi", "pi-kit.json"), JSON.stringify({ models: { deep: "luna" }, lead: null }));
-		const edited = await loadKitConfig(cwd, agentDir);
+		const edited = await loadKitConfig({ cwd, isProjectTrusted: () => true }, agentDir);
 		expect(edited.models.deep).toBe("luna");
 		expect(edited.lead).toBeNull();
 		expect(KIT_DEFAULTS.models).not.toHaveProperty("deep");
+	});
+
+	it("ignores an untrusted project's names and lead", async () => {
+		const { cwd, agentDir } = dirs();
+		writeFileSync(join(agentDir, "pi-kit.json"), JSON.stringify({ models: { deep: "luna" } }));
+		writeFileSync(join(cwd, ".pi", "pi-kit.json"), JSON.stringify({ models: { default: "claude:opus", deep: "claude:opus" }, lead: null }));
+		expect(await loadKitConfig({ cwd, isProjectTrusted: () => false }, agentDir)).toEqual({ ...KIT_DEFAULTS, models: { ...KIT_DEFAULTS.models, deep: "luna" } });
 	});
 
 	it("keeps the valid names over the defaults and warns with the file and the field that is wrong", async () => {
@@ -263,7 +270,7 @@ describe("loadKitConfig", () => {
 		const { cwd, agentDir } = dirs();
 		writeFileSync(join(cwd, ".pi", "pi-kit.json"), JSON.stringify({ models: { opus: ["anthropic/claude-opus-*", "claude:opus"], deep: "luna" } }));
 		writeFileSync(join(agentDir, "pi-kit.json"), "{ nope");
-		expect(await loadKitConfig(cwd, agentDir)).toEqual({ ...KIT_DEFAULTS, models: { ...KIT_DEFAULTS.models, deep: "luna" } });
+		expect(await loadKitConfig({ cwd, isProjectTrusted: () => true }, agentDir)).toEqual({ ...KIT_DEFAULTS, models: { ...KIT_DEFAULTS.models, deep: "luna" } });
 		expect(warn).toHaveBeenCalledWith(expect.stringContaining(`${join(cwd, ".pi", "pi-kit.json")}: /models/opus must be string`));
 		expect(warn).toHaveBeenCalledWith(expect.stringContaining(join(agentDir, "pi-kit.json")));
 		warn.mockRestore();

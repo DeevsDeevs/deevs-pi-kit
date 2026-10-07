@@ -2,7 +2,7 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { spawn } from "node:child_process";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { kitValues, migrateLegacyConfig, type KitValue } from "../shared/config.ts";
+import { kitValues, type KitValue } from "../shared/config.ts";
 
 type ResolvedConfig = Required<Omit<KitValue<"notifier">, "command" | "jsonl">> & {
 	command?: string[];
@@ -103,10 +103,6 @@ async function notify(ctx: ExtensionContext, config: ResolvedConfig): Promise<vo
 
 export default function (pi: ExtensionAPI): void {
 	let lastNotificationAt = 0;
-
-	pi.on("session_start", async (_event, ctx) => {
-		if (ctx.isProjectTrusted()) await migrateLegacyConfig(ctx.cwd);
-	});
 
 	pi.on("agent_settled", async (_event, ctx) => {
 		const config = loadConfig(ctx);

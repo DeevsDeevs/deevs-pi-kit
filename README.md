@@ -69,14 +69,14 @@ The only settings file: `~/.pi/agent/pi-kit.json` for every project, `.pi/pi-kit
 }
 ```
 
-- `models`: names for models or patterns (`*` stands for a version, the newest wins), each with an optional `:level`; `a|b` takes the first that resolves, and a trailing `:level` applies to every alternative. Built in: `sol`, `astra`, `luna` and `terra` (the newest OpenAI GPT of that name, on your ChatGPT login under `openai`, else the legacy `openai-codex`) and `opus`, `sonnet`, `haiku` and `fable` (Claude Code workers). An `openai` login through `OPENAI_API_KEY` also matches, and bills the API. A project's names add to the global ones.
-- `lead`: the model a new session switches to when started without `--model` or `--provider` (`"sol:xhigh"` sets the level too); `null` turns this off. Restored sessions keep their model.
+- `models`: names for models or patterns (`*` stands for a version, the newest wins), each with an optional `:level`; `a|b` takes the first that resolves, and a trailing `:level` applies to every alternative. Built in: `sol`, `astra`, `luna` and `terra` (the newest OpenAI GPT of that name, on your ChatGPT login under `openai`, else the legacy `openai-codex`) and `opus`, `sonnet`, `haiku` and `fable` (Claude Code workers). An `openai` login through `OPENAI_API_KEY` also matches, and bills the API. A trusted project's names add to the global ones.
+- `lead`: the model a new session switches to when started without `--model` or `--provider` (`"sol:xhigh"` sets the level too); `null` turns this off. Restored sessions keep their model. An untrusted project's `models` and `lead` are ignored.
 - `autonomy` (default `true`): orchestration never waits on a dialog, and the lead takes it as standing permission to run workflows. `false` asks before each collaborator change and stops Mission continues. A project's value counts only once the project is trusted.
 - `guard`: in the global file, `"detached"`, `"forcePush"` or `"rmRf": false` turns a rule off; a project file can only add `block` patterns, and the patterns from both files add up (`"terraform destroy"` matches `terraform` with `destroy` among its arguments).
-- `codexFast`: sends `service_tier: "priority"` on ChatGPT-auth `openai-codex` requests.
+- `codexFast`: sends `service_tier: "priority"` on requests made with your ChatGPT login, under `openai` or the legacy `openai-codex`; never with an API key. A project's value counts only once the project is trusted.
 - `notifier`: `enabled`, `title`, `body`, `terminal`, `bell`, `terminalRequiresTty`, `minIntervalMs`, `command` (an argv with `{title}`, `{body}`, `{cwd}`, `{project}`, killed if it runs past 10 s) and `jsonl`; an untrusted project's `command` and `jsonl` are ignored.
 
-A trusted project's old `.pi/codex-fast.json`, `.pi/notifier.json`, `.pi/runtime.json` and `.pi/subagents.json` move into `.pi/pi-kit.json` once, and an old `"autonomy": "auto"` or `"ask"` becomes `true` or `false`.
+A trusted project's old `.pi/codex-fast.json`, `.pi/notifier.json`, `.pi/runtime.json` and `.pi/subagents.json` move into `.pi/pi-kit.json` once at session start, and an old `"autonomy": "auto"` or `"ask"` becomes `true` or `false`.
 
 ## Skills
 

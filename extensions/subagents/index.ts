@@ -97,7 +97,7 @@ const MONITOR_DESCRIPTION = [
 export default function subagentsExtension(pi: ExtensionAPI): void {
 	tasks.install(pi);
 	const modelContext = async (ctx: ExtensionContext): Promise<ModelContext> => ({
-		config: await loadKitConfig(ctx.cwd, getAgentDir()),
+		config: await loadKitConfig(ctx),
 		registry: ctx.modelRegistry,
 		lead: ctx.model ? { model: ctx.model, level: pi.getThinkingLevel() } : undefined,
 		codex: readCodexCatalog(process.env.CODEX_HOME || join(homedir(), ".codex")),
@@ -198,6 +198,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				scriptPath: file,
 				args: coerceArgs(params.args),
 				cwd: ctx.cwd,
+				trusted: ctx.isProjectTrusted(),
 				dir,
 				request: request && request.length <= MAX_REQUEST_CHARS ? request : undefined,
 				lead: ctx.model && { provider: ctx.model.provider, id: ctx.model.id, level: pi.getThinkingLevel() },
@@ -452,7 +453,7 @@ function directory(base: string, cwd: string | undefined): string {
 async function useLeadModel(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
 	if (process.argv.includes("--model") || process.argv.includes("--provider")) return;
 	if (ctx.sessionManager.getEntries().some((entry) => entry.type === "message" && entry.message.role === "assistant")) return;
-	const lead = resolveLead({ config: await loadKitConfig(ctx.cwd, getAgentDir()), registry: ctx.modelRegistry });
+	const lead = resolveLead({ config: await loadKitConfig(ctx), registry: ctx.modelRegistry });
 	if (!lead) return;
 	if (!await pi.setModel(lead.model)) throw new Error(`${lead.model.provider} is not logged in.`);
 	if (lead.level) pi.setThinkingLevel(lead.level);

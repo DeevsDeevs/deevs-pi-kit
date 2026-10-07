@@ -124,6 +124,8 @@ export interface WorkflowInput {
 	scriptPath: string;
 	args?: JsonValue;
 	cwd: string;
+	/** Whether Pi trusted the project at launch, so agent() reads its pi-kit.json `models`; absent on runs launched before it existed. */
+	trusted?: boolean;
 	/** The transcript dir: journal.jsonl, progress.jsonl, `<runId>.json` and each agent's transcript. */
 	dir: string;
 	request?: string;
@@ -1211,7 +1213,7 @@ async function modelContext(input: WorkflowInput): Promise<ModelContext> {
 	const registry = host.models!;
 	const model = input.lead && registry.find(input.lead.provider, input.lead.id);
 	return {
-		config: await loadKitConfig(input.cwd, getAgentDir()),
+		config: await loadKitConfig({ cwd: input.cwd, isProjectTrusted: () => input.trusted === true }),
 		registry,
 		lead: model && input.lead ? { model, level: input.lead.level } : undefined,
 		codex: readCodexCatalog(process.env.CODEX_HOME || join(homedir(), ".codex")),

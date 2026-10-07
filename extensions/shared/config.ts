@@ -28,6 +28,7 @@ const LegacyAutonomy = Type.Union([Type.Literal("auto"), Type.Literal("ask")]);
 export type KitKey = keyof typeof KEYS;
 export type KitValue<K extends KitKey> = Static<(typeof KEYS)[K]>;
 type Kit = Static<typeof KitFile>;
+export type Trust = { cwd: string; isProjectTrusted(): boolean };
 
 /** Pi's `getAgentDir()` without importing Pi, so the standalone guard hook can read pi-kit.json too. */
 export function agentDir(): string {
@@ -49,10 +50,16 @@ export function kitValues<K extends KitKey>(key: K, cwd: string, dir = agentDir(
 	return [global, project];
 }
 
-/** `key` from a trusted project's pi-kit.json, else from the global one. */
-export function trustedKitValue<K extends KitKey>(key: K, ctx: { cwd: string; isProjectTrusted(): boolean }): KitValue<K> | undefined {
-	const [global, project] = kitValues(key, ctx.cwd);
-	return (ctx.isProjectTrusted() ? project : undefined) ?? global;
+/** `key` like kitValues, with the project's value dropped until Pi trusts the project. */
+export function trustedKitValues<K extends KitKey>(key: K, ctx: Trust, dir = agentDir()): [global: KitValue<K> | undefined, project: KitValue<K> | undefined] {
+	const [global, project] = kitValues(key, ctx.cwd, dir);
+	return [global, ctx.isProjectTrusted() ? project : undefined];
+}
+
+/** `"autonomy"` in pi-kit.json, re-read on every use: a trusted project's value overrides the global one; absent means true. */
+export function isAutonomous(ctx: Trust): boolean {
+	const [global, project] = trustedKitValues("autonomy", ctx);
+	return project ?? global ?? true;
 }
 
 function readKitKey<K extends KitKey>(path: string, key: K): KitValue<K> | undefined {
