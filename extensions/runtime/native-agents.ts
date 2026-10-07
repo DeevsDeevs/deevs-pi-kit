@@ -7,7 +7,7 @@ import type { HerdrAgentStatus } from "./schemas/herdr.ts";
 import { type HostedCollaboratorProfile, type HostedNativeCollaboratorDriver, isHeld } from "./schemas/state.ts";
 import { nativeMessagingConfiguration, type NativeMessagingConfiguration } from "./mcp/native.ts";
 import type { MessagingClient } from "./messaging-client.ts";
-import { parseBoundAgent, parseManagedAgent, type BoundAgent, type ManagedAgentStatus } from "./native-parse.ts";
+import { parseBoundAgent, parseManagedAgent, type BoundAgent } from "./native-parse.ts";
 import { auth, parseHeartbeat, text, type LiveClientRegistration } from "./responses.ts";
 import type { RuntimeSession } from "./runtime-session.ts";
 import type { ManagedAgentControl, ManagedAgentSession } from "./schemas/session.ts";
@@ -28,25 +28,7 @@ interface StartAgentRequest {
 	argv: string[];
 }
 
-interface BindLaunchedRequest {
-	ctx: ExtensionContext;
-	registration: LiveClientRegistration;
-	plan: ManagedAgentPlan;
-	driver: HostedNativeCollaboratorDriver;
-	profile: HostedCollaboratorProfile;
-	protocol: string;
-	participantId: string;
-	projectRoot: string;
-	cwd: string;
-	tab: CollaboratorTab;
-	agentSession: ManagedAgentSession;
-	callerParticipantKey: string;
-	expectedCallerGeneration: string;
-	expectedParticipantGeneration?: string;
-	repo?: string;
-	messagingConfigured: boolean;
-}
-
+/** The `bridge.bind` params beside the caller's target key; an absent optional field is simply not sent. */
 interface AgentBindRequest {
 	agentName: string;
 	driver: HostedNativeCollaboratorDriver;
@@ -57,6 +39,18 @@ interface AgentBindRequest {
 	expectedCallerGeneration: string;
 	expectedParticipantGeneration?: string;
 	repo?: string;
+}
+
+interface BindLaunchedRequest {
+	ctx: ExtensionContext;
+	registration: LiveClientRegistration;
+	plan: ManagedAgentPlan;
+	projectRoot: string;
+	cwd: string;
+	tab: CollaboratorTab;
+	agentSession: ManagedAgentSession;
+	messagingConfigured: boolean;
+	bind: AgentBindRequest;
 }
 
 /** Starts, binds and re-verifies collaborators as real Herdr agents. */
@@ -134,7 +128,7 @@ export class NativeAgentService {
 
 	/** Binds one started agent to its participant lease and records the reconnection authority. */
 	async bindLaunched(request: BindLaunchedRequest): Promise<void> {
-		const bound = await this.bindAgent(request.registration, bindRequestFor(request));
+		const bound = await this.bindAgent(request.registration, request.bind);
 		if (!boundAgentMatchesLaunch(bound, request)) {
 			throw new HostedRuntimeClientError("identity_mismatch", "Runtime bound another Herdr agent identity than the one this launch started.");
 		}
@@ -145,10 +139,10 @@ export class NativeAgentService {
 			cwd: request.cwd,
 			agentName: request.plan.agentName,
 			targetKey: request.plan.targetKey,
-			driver: request.driver,
-			profile: request.profile,
-			protocol: request.protocol,
-			participantId: request.participantId,
+			driver: request.bind.driver,
+			profile: request.bind.profile,
+			protocol: request.bind.protocol,
+			participantId: request.bind.participantId,
 			holderGeneration: bound.holderGeneration,
 			paneId: request.tab.paneId,
 			terminalId: request.tab.terminalId,
@@ -291,31 +285,15 @@ export class NativeAgentService {
 	}
 }
 
-function startedAsAuthorized(agent: ManagedAgentStatus, request: StartAgentRequest): boolean {
-	if (agent.name !== request.agentName) return false;
-	if (agent.paneId !== request.tab.paneId) return false;
-	if (agent.terminalId !== request.tab.terminalId) return false;
-	return request.spec.verify(agent);
-}
-
-function bindRequestFor(request: BindLaunchedRequest): AgentBindRequest {
-	const bind: AgentBindRequest = {
-		agentName: request.plan.agentName,
-		driver: request.driver,
-		profile: request.profile,
-		protocol: request.protocol,
-		participantId: request.participantId,
-		callerParticipantKey: request.callerParticipantKey,
-		expectedCallerGeneration: request.expectedCallerGeneration,
-	};
-	if (request.expectedParticipantGeneration) bind.expectedParticipantGeneration = request.expectedParticipantGeneration;
-	if (request.repo !== undefined) bind.repo = request.repo;
-	return bind;
+function startedAsAuthorized(agent: StartedAgentIdentity, request: StartAgentRequest): boolean {
+	const { kind } = request.spec;
+	if (agent.name !== request.agentName || agent.paneId !== request.tab.paneId || agent.terminalId !== request.tab.terminalId) return false;
+	return agent.agentSession.agent === kind && agent.agentSession.source === `herdr:${kind}`;
 }
 
 function boundAgentMatchesLaunch(bound: BoundAgent, request: BindLaunchedRequest): boolean {
 	return bound.registration.targetKey === request.plan.targetKey
-		&& bound.driver === request.driver
-		&& bound.profile === request.profile
+		&& bound.driver === request.bind.driver
+		&& bound.profile === request.bind.profile
 		&& bound.cwd === request.cwd;
 }

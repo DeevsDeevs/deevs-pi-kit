@@ -5,6 +5,7 @@ import { HostedCollaboratorProfileSchema, HostedNativeCollaboratorDriverSchema }
 import { parseRegistration, strictObject, text, type LiveClientRegistration, type RuntimeResponse } from "./responses.ts";
 import { decodeHerdr, herdrResult, HerdrStartedAgentSchema, type HerdrStartedAgent } from "./schemas/herdr.ts";
 import type { ManagedAgentSession } from "./schemas/session.ts";
+import type { StartedAgentIdentity } from "./drivers.ts";
 
 /** The lease Runtime reports for one bound managed Herdr agent. */
 export interface BoundAgent {
@@ -15,16 +16,6 @@ export interface BoundAgent {
 	profile: HostedCollaboratorProfile;
 	projectRoot: string;
 	cwd: string;
-}
-
-/** The agent identity and pane Herdr reports for one started managed agent. */
-export interface ManagedAgentStatus {
-	name: string;
-	paneId: string;
-	terminalId: string;
-	status: "idle" | "working" | "blocked" | "done" | "unknown";
-	focused: boolean;
-	agentSession: ManagedAgentSession;
 }
 
 export function parseBoundAgent(value: RuntimeResponse): BoundAgent {
@@ -46,7 +37,8 @@ export function parseBoundAgent(value: RuntimeResponse): BoundAgent {
 	};
 }
 
-export function parseManagedAgent(value: string): ManagedAgentStatus {
+/** The agent identity and pane Herdr reports for one started managed agent. */
+export function parseManagedAgent(value: string): StartedAgentIdentity {
 	let agent: HerdrStartedAgent;
 	try {
 		agent = decodeHerdr(HerdrStartedAgentSchema, herdrResult(value), "Herdr agent").agent;
@@ -63,8 +55,6 @@ export function parseManagedAgent(value: string): ManagedAgentStatus {
 		name: agent.name,
 		paneId: agent.pane_id,
 		terminalId: agent.terminal_id,
-		status: agent.agent_status,
-		focused: agent.focused,
 		agentSession: session,
 	};
 }

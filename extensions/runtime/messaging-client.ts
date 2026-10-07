@@ -8,7 +8,7 @@ import { escapeMarkup } from "../shared/tasks.ts";
 import { decodeMail, encodeMail } from "./mail-body.ts";
 import { isJsonObject, type JsonObject, type JsonValue } from "./schemas/json.ts";
 import { isHeld } from "./schemas/state.ts";
-import { auth, strictObject, text, type ClientParticipantStatus, type LiveClientRegistration, type MailHint } from "./responses.ts";
+import { confirmed, strictObject, text, type ClientParticipantStatus, type LiveClientRegistration, type MailHint } from "./responses.ts";
 import type { RuntimeSession } from "./runtime-session.ts";
 import type { ManagedAgentControl, ParticipantIdentity } from "./schemas/session.ts";
 import { messagingDescriptorPath } from "./service/messaging.ts";
@@ -57,12 +57,11 @@ export class MessagingClient {
 		const current = this.session.scope(ctx, registration);
 		this.session.requireCurrentScope(current);
 		const identity = this.session.requireParticipantIdentity();
-		const participantKey = identity.participantKey;
-		const expectedGeneration = identity.generation;
-		if (!this.holdsIdentity(registration, identity) || !participantKey || !expectedGeneration) {
+		const { participantKey, generation } = identity;
+		if (!this.holdsIdentity(registration, identity) || !participantKey || !generation) {
 			throw new HostedRuntimeClientError("conflict", "Current collaborator identity is not authoritatively held.");
 		}
-		const params = { ...auth(registration), participantKey, expectedGeneration, confirmed: true };
+		const params = confirmed(registration, { participantKey, generation });
 		const issued = strictObject(await this.session.scopedCall(current, "messaging.issue", params), "Messaging issuance");
 		if (!this.identityUnchanged(registration, identity)) {
 			throw new HostedRuntimeClientError("registration_stale", "Collaborator changed during messaging provisioning.");
@@ -81,13 +80,7 @@ export class MessagingClient {
 		if (!participant || !managedParticipantConfigured(control, participant)) {
 			throw new HostedRuntimeClientError("identity_mismatch", "Native messaging requires its exact live configured participant.");
 		}
-		const params = {
-			...auth(registration),
-			participantKey: participant.participantKey,
-			expectedGeneration: participant.generation,
-			confirmed: true,
-		};
-		const issued = strictObject(await this.session.scopedCall(current, "messaging.issue", params), "Native messaging descriptor");
+		const issued = strictObject(await this.session.scopedCall(current, "messaging.issue", confirmed(registration, participant)), "Native messaging descriptor");
 		if (issued.descriptorPath !== messagingDescriptorPath(this.session.root, control.targetKey)) {
 			throw new HostedRuntimeClientError("identity_mismatch", "Native messaging descriptor differs from its configured client.");
 		}

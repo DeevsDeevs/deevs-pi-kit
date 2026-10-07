@@ -46,6 +46,11 @@ export function auth(registration: LiveClientRegistration): RegistrationAuth {
 	return { targetKey: registration.targetKey };
 }
 
+/** A trusted call on one participant at the generation the caller last saw. */
+export function confirmed(registration: LiveClientRegistration, participant: { participantKey: string; generation: string }) {
+	return { ...auth(registration), participantKey: participant.participantKey, expectedGeneration: participant.generation, confirmed: true };
+}
+
 /** One RPC result decode: the same schema the service answered with, checked before any field is read. */
 function decode<Schema extends TSchema>(schema: Schema, value: RuntimeResponse, name: string): Static<Schema> {
 	if (!Value.Check(schema, value)) throw new HostedRuntimeClientError("invalid_response", schemaError(schema, value, name).message);

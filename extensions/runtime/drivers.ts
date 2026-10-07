@@ -61,7 +61,6 @@ export interface DriverSpec {
 	/** Absent when the driver registers itself from its prepared Pi session instead of a Runtime bind. */
 	bind?: HostedNativeCollaboratorDriver;
 	command(input: DriverCommandInput): string[];
-	verify(agent: StartedAgentIdentity): boolean;
 }
 
 /** One owner contract per supported driver: no open dictionary, no driver absent from the lifecycle. */
@@ -72,23 +71,9 @@ interface DriverTable {
 }
 
 export const DRIVERS: DriverTable = {
-	"pi": {
-		kind: "pi",
-		command: piCommand,
-		verify: startedAs("pi"),
-	},
-	"claude-code": {
-		kind: "claude",
-		bind: "claude-code",
-		command: claudeCommand,
-		verify: startedAs("claude"),
-	},
-	"codex": {
-		kind: "codex",
-		bind: "codex",
-		command: codexCommand,
-		verify: startedAs("codex"),
-	},
+	"pi": { kind: "pi", command: piCommand },
+	"claude-code": { kind: "claude", bind: "claude-code", command: claudeCommand },
+	"codex": { kind: "codex", bind: "codex", command: codexCommand },
 };
 
 /** The one launch gate: the exact `herdr agent start` argv is bounded and shell-safe before Herdr hands it to a shell. */
@@ -156,11 +141,4 @@ function codexServerValue(mcp: NativeMessagingConfiguration): string {
 
 function modelArguments(model: string | undefined): string[] {
 	return model ? ["--model", model] : [];
-}
-
-function startedAs(kind: HerdrAgentKind): DriverSpec["verify"] {
-	return (agent) => {
-		if (agent.agentSession.agent !== kind) return false;
-		return agent.agentSession.source === `herdr:${kind}`;
-	};
 }

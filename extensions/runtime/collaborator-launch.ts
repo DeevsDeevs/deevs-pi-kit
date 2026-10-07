@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -15,9 +15,10 @@ import { DRIVERS, driverLaunchArgv, type DriverSpec } from "./drivers.ts";
 import { createCollaboratorTab, throwIfAborted, waitForHerdrPaneCwd, type CollaboratorTab } from "./herdr.ts";
 import { isVacant, isWriter } from "./schemas/state.ts";
 import type { ManagedAgentPlan, NativeAgentService } from "./native-agents.ts";
-import { auth, strictObject, text, type ClientParticipantStatus, type LiveClientRegistration, type RegistrationAuth } from "./responses.ts";
+import { auth, confirmed, strictObject, text, type ClientParticipantStatus, type LiveClientRegistration, type RegistrationAuth } from "./responses.ts";
 import type { RuntimeSession } from "./runtime-session.ts";
 import type { CollaboratorLaunch, ManagedAgentSession } from "./schemas/session.ts";
+import { projectScope } from "./service/state/keys.ts";
 import { COLLABORATOR_ENV, HOSTED_SESSION_ENTRY, type HostedSessionRecord } from "./session-record.ts";
 
 /** The authority one confirmed start batch shares across its launches. */
@@ -134,19 +135,22 @@ export class CollaboratorLauncher {
 			ctx: start.ctx,
 			registration: start.registration,
 			plan,
-			driver,
-			profile: candidate.profile,
-			protocol: start.protocol,
-			participantId: candidate.participantId,
 			projectRoot: start.projectRoot,
 			cwd: started.cwd,
 			tab: started.tab,
 			agentSession: started.agentSession,
-			callerParticipantKey: start.caller.participantKey,
-			expectedCallerGeneration: start.caller.generation,
-			expectedParticipantGeneration: existing?.generation,
-			repo: candidate.repo,
 			messagingConfigured: started.messagingConfigured,
+			bind: {
+				agentName: plan.agentName,
+				driver,
+				profile: candidate.profile,
+				protocol: start.protocol,
+				participantId: candidate.participantId,
+				callerParticipantKey: start.caller.participantKey,
+				expectedCallerGeneration: start.caller.generation,
+				expectedParticipantGeneration: existing?.generation,
+				repo: candidate.repo,
+			},
 		});
 	}
 
@@ -174,7 +178,7 @@ export class CollaboratorLauncher {
 	private collaboratorSession(start: CollaboratorStart, cwd: string, candidate: ResolvedCollaboratorCandidate): CollaboratorSession {
 		const { projectRoot, protocol } = start;
 		const directory = join(this.session.root, "collaborator-sessions");
-		const sessionFile = join(directory, `${createHash("sha256").update(projectRoot).digest("hex").slice(0, 16)}__${protocol}__${candidate.participantId}.jsonl`);
+		const sessionFile = join(directory, `${projectScope(projectRoot)}__${protocol}__${candidate.participantId}.jsonl`);
 		if (existsSync(sessionFile)) return { sessionFile, created: false };
 		const sessionId = randomUUID();
 		const timestamp = new Date().toISOString();
@@ -195,13 +199,7 @@ export class CollaboratorLauncher {
 	}
 
 	private async replaceStoodDown(existing: ClientParticipantStatus, registration: LiveClientRegistration): Promise<void> {
-		const params = {
-			...auth(registration),
-			participantKey: existing.participantKey,
-			expectedGeneration: existing.generation,
-			confirmed: true,
-		};
-		const stopped = strictObject(await this.client.call("participant.stop_confirmed", params), "Stood-down collaborator replacement");
+		const stopped = strictObject(await this.client.call("participant.stop_confirmed", confirmed(registration, existing)), "Stood-down collaborator replacement");
 		if (stopped.outcome !== "stopped" && stopped.outcome !== "already_stopped") {
 			throw new HostedRuntimeClientError("conflict", "The exact stood-down collaborator process could not be replaced safely.");
 		}

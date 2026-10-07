@@ -23,6 +23,7 @@ import { decodeHerdr, herdrResult, HerdrLiveAgentResultSchema, HerdrTabResultSch
 import type { NativeAgentService } from "./native-agents.ts";
 import {
 	auth,
+	confirmed,
 	findParticipant,
 	parseAcquireResult,
 	parseParticipant,
@@ -370,10 +371,6 @@ export class CollaboratorService {
 
 function settled(participant: ClientParticipantStatus, status: CollaboratorManageResult["status"]): CollaboratorManageResult {
 	return { participant: participant.participantId, status };
-}
-
-function confirmed(registration: LiveClientRegistration, participant: ClientParticipantStatus) {
-	return { ...auth(registration), participantKey: participant.participantKey, expectedGeneration: participant.generation, confirmed: true };
 }
 
 /** Herdr's status and the mail counters say a reply may still come; a blocked or offline holder sends none. */
