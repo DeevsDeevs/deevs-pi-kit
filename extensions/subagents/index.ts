@@ -2,12 +2,12 @@ import { createHash } from "node:crypto";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { Type } from "@earendil-works/pi-ai";
+import { StringEnum, Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
 import { getAgentDir, isToolCallEventType, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { guardBashCall, guardShell, loadGuardConfig } from "../shared/guard.ts";
 import { loadKitConfig, modelContext, modelLabel, modelsTable, resolveLead, resolveModel, type ModelContext } from "../shared/models.ts";
-import { agentForegroundResult, agentLaunchedResult, jobLaunchedResult, monitorStartedResult, newAgentId, newBackgroundTaskId, newWorkflowRunId, newWorkflowTaskId, recent, sendMessageResult, taskNotFound, taskNotRunningResult, taskStoppedResult, tasks, unknownAgentResult, workflowLaunchedResult, type RosterEntry } from "../shared/tasks.ts";
+import { agentForegroundResult, agentLaunchedResult, jobLaunchedResult, monitorStartedResult, newAgentId, newBackgroundTaskId, newWorkflowRunId, newWorkflowTaskId, recent, sendMessageResult, TASK_KINDS, TASK_STATUSES, taskNotFound, taskNotRunningResult, taskStoppedResult, tasks, unknownAgentResult, workflowLaunchedResult, type RosterEntry } from "../shared/tasks.ts";
 import { activateWithSkill, isHeadless } from "../shared/surface.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
 import { finishAgentWorktree, sharesCwd } from "../shared/worktree.ts";
@@ -114,6 +114,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		// Base prompt options, unlike a before_agent_start section, also reach runs a task notification starts.
 		promptGuidelines: [...WORKING_RULES, "Anything short of irreversible or destructive: state the default you assume and continue."],
 		parameters: AgentSchema,
+		outputSchema: Type.Object({ agentId: Type.String(), outputFile: Type.String() }),
 		async execute(toolCallId, params: AgentParams, signal, _onUpdate, ctx) {
 			const type = findAgentType(params.subagent_type);
 			if (params.name !== undefined && !AGENT_NAME.test(params.name)) throw new Error("A name is 1-64 letters, digits, _ or -, starting with a letter or digit.");
@@ -142,7 +143,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				throw error;
 			}
 			const { outputFile, done } = started;
-			const launched = { content: [{ type: "text" as const, text: agentLaunchedResult({ agentId, outputFile, model: modelLabel(resolved), limits: limitsSet, queued, sharesCwd: shared }) }], details: { agentId, outputFile, status: "async_launched" } };
+			const launched = { content: [{ type: "text" as const, text: agentLaunchedResult({ agentId, outputFile, model: modelLabel(resolved), limits: limitsSet, queued, sharesCwd: shared }) }], details: { agentId, outputFile, status: "async_launched" }, structuredContent: { agentId, outputFile } };
 			if (!done) return launched;
 			const outcome = await settle(agentId, done, FOREGROUND_MS, signal);
 			if (outcome === "background") return launched;
@@ -152,7 +153,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			}
 			if (outcome.status !== "completed") throw new Error([outcome.summary, outcome.result].filter(Boolean).join("\n"));
 			const text = agentForegroundResult({ text: outcome.result ?? "", agentId, limited: outcome.limited && outcome.summary, limits: limitsSet, worktree: outcome.worktree, usage: { subagentTokens: outcome.usage?.subagentTokens ?? 0, toolUses: outcome.usage?.toolUses ?? 0, durationMs: outcome.usage?.durationMs ?? 0 } });
-			return { content: [{ type: "text" as const, text }], details: { agentId, outputFile, status: outcome.status } };
+			return { content: [{ type: "text" as const, text }], details: { agentId, outputFile, status: outcome.status }, structuredContent: { agentId, outputFile } };
 		},
 	});
 
@@ -227,13 +228,14 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		promptSnippet: "Run a command in the background; notified when it exits.",
 		parameters: JobSchema,
 		defaultActive: false,
+		outputSchema: Type.Object({ taskId: Type.String(), outputFile: Type.String() }),
 		async execute(toolCallId, params: JobParams, _signal, _onUpdate, ctx) {
 			const cwd = directory(ctx.cwd, params.cwd);
 			const blocked = guardShell(params.command, { cwd, root: ctx.cwd, config: loadGuardConfig(ctx.cwd) });
 			if (blocked) throw new Error(blocked);
 			const id = newBackgroundTaskId();
 			const outputFile = await startJob(await ensureEngine(ctx), { id, command: params.command, description: params.description, cwd, toolUseId: toolCallId, timeout: params.timeout });
-			return { content: [{ type: "text" as const, text: jobLaunchedResult(id, outputFile, params.timeout, isHeadless(ctx)) }], details: { taskId: id, outputFile } };
+			return { content: [{ type: "text" as const, text: jobLaunchedResult(id, outputFile, params.timeout, isHeadless(ctx)) }], details: { taskId: id, outputFile }, structuredContent: { taskId: id, outputFile } };
 		},
 	});
 
@@ -302,11 +304,18 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		label: "ListAgents",
 		description: "List this session's background tasks, each labelled by kind (agent, workflow, job, monitor, collaborator), with its id, name, status and description.",
 		parameters: Type.Object({}),
+		outputSchema: Type.Object({ tasks: Type.Array(Type.Object({
+			id: Type.String(),
+			kind: StringEnum(TASK_KINDS),
+			name: Type.Union([Type.String(), Type.Null()]),
+			status: StringEnum(TASK_STATUSES),
+			description: Type.String(),
+		})) }),
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 			const entries = recent(tasks.list(ctx.sessionManager.getSessionId()));
 			const lines = rosterLines(entries);
 			if (entries.some((entry) => entry.status === "running")) lines.push("Running tasks notify you when they end: to wait, end your turn instead of polling.");
-			return { content: [{ type: "text" as const, text: lines.join("\n") }], details: { count: entries.length } };
+			return { content: [{ type: "text" as const, text: lines.join("\n") }], details: { count: entries.length }, structuredContent: { tasks: entries.map(({ id, kind, name, status, description }) => ({ id, kind, name: name ?? null, status, description })) } };
 		},
 	});
 
