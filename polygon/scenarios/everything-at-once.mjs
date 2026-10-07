@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { agentStep, eventually, rpc, sleep } from "../drive.mjs";
-import { owned, sessionNotes, toolCalls } from "../look.mjs";
+import { owned, requests, sessionNotes, toolCalls } from "../look.mjs";
 import { say } from "./wf-shapes.mjs";
 
 // Background agents, a workflow, a job, a monitor and a SendMessage in flight together when Pi is killed: on reopen
@@ -19,6 +19,7 @@ export default {
 			'export const meta = { name: "all", description: "Two agents at once" };',
 			`return await parallel([() => agent(${say("w1", [busy("w1"), { id: "c", text: "w1 out" }])}), () => agent(${say("w2")})]);`,
 		].join("\n");
+		t.marks.push("polygon-steer");
 		const lead = rpc(t);
 		await lead.script({ agent: "lead", steps: [
 			agentStep("s1", { agent: "a", steps: [busy("a"), { id: "c", text: "a out" }] }, { run_in_background: true }),
@@ -43,5 +44,7 @@ export default {
 		await sleep(2_000);
 		assert.deepEqual(ids.map((id) => of(id).length), ids.map(() => 1), "a task did not report exactly once");
 		assert.equal(new Set(sessionNotes(t).map((n) => n.notificationId)).size, sessionNotes(t).length, "a notification reached the session twice");
+		assert.deepEqual(ids.map((id) => of(id)[0].status ?? of(id)[0].event), ["completed", "completed", "completed", "failed", "added new.txt"], "agents and workflow complete, the job is interrupted, the monitor sees new.txt");
+		assert.ok(requests(t).some((r) => r.agent === "a" && r.marks.includes("polygon-steer")), "the steer never reached agent a");
 	},
 };
