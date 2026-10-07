@@ -327,6 +327,8 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 
 	pi.on("tool_call", (event, ctx) => isToolCallEventType("bash", event) ? guardBashCall(event.input.command, ctx.cwd) : undefined);
 	pi.on("session_start", async (event, ctx) => {
+		// A --tools allowlist without codemode leaves it unregistered; "-codemode" in any defaultTools layer keeps it off.
+		if (pi.getAllTools().some((tool) => tool.name === "codemode") && !pi.getSettings().defaultTools?.includes("-codemode") && !pi.getActiveTools().includes("codemode")) pi.setActiveTools([...pi.getActiveTools(), "codemode"]);
 		clearInterval(widget);
 		let shown = "";
 		widget = setInterval(() => {

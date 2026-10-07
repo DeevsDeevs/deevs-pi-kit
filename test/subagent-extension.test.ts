@@ -44,6 +44,7 @@ describe("Subagent extension surface", () => {
 				registerTool() {}, registerCommand() {},
 				on(name: string, fn: typeof handler) { if (name === "session_start") handler = fn; },
 				setModel: async (model: { id: string }) => { seen.push(`set ${model.id}`); return true; },
+				getAllTools: () => [],
 			} as unknown as ExtensionAPI;
 			subagentsExtension(pi);
 			await handler!({ reason: "startup" }, {
