@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { isAutonomous } from "../shared/config.ts";
 import { systemReminder } from "../shared/tasks.ts";
@@ -15,7 +14,7 @@ Call it ONLY after the user has opted into multi-agent orchestration: a workflow
 
 Otherwise do NOT call it, even when parallel work would clearly help: use Agent, or sketch the workflow and its rough cost and ask; mention that saying "use a workflow" next time skips the question.
 
-Before you write a script, load the \`workflow-authoring\` skill (script API, pitfalls, resume, patterns) unless your system prompt already holds it. Send the script inline as \`script\`.`;
+Before you write a script, load the \`workflow-authoring\` skill (script API, pitfalls, resume, patterns). Send the script inline as \`script\`.`;
 
 export const WORKFLOW_FIELDS = {
 	script: "Plain JavaScript: `export const meta = { name, description, phases }` as a pure literal first, then the body using agent(), parallel(), pipeline() and phase().",
@@ -25,11 +24,9 @@ export const WORKFLOW_FIELDS = {
 	resumeFromRunId: "Run ID of an earlier run in this session: its unchanged prefix of agent() calls replays from the journal. Stop the run with TaskStop first if it still runs.",
 } as const;
 
-const REFERENCE = readFileSync(new URL("../../skills/workflow-authoring/SKILL.md", import.meta.url), "utf8").replace(/^---\n[\s\S]*?\n---\n+/, "");
-
 export const AUTONOMY_REMINDERS = {
-	full: systemReminder("Autonomy is on: the user has opted into orchestration for this session. Run every substantive task through the Workflow tool and aim for the most complete, best-verified answer; speed and token cost come second. The Autonomy section and the quality patterns of the workflow authoring reference say how. Work alone only on conversational or trivial turns."),
-	sparse: systemReminder("Autonomy is still on: run substantive tasks through the Workflow tool; see Autonomy in the workflow authoring reference."),
+	full: systemReminder("Autonomy is on: the user has opted into orchestration for this session. Run every substantive task through the Workflow tool and aim for the most complete, best-verified answer; speed and token cost come second. Load the workflow-authoring skill before your first script: its Autonomy section and quality patterns say how. Work alone only on conversational or trivial turns."),
+	sparse: systemReminder("Autonomy is still on: run substantive tasks through the Workflow tool; see Autonomy in the workflow-authoring skill."),
 	off: systemReminder("Autonomy is off: the Workflow tool's own opt-in rule applies again."),
 };
 type ReminderKind = keyof typeof AUTONOMY_REMINDERS;
@@ -39,15 +36,13 @@ const SPARSE_AFTER_PROMPTS = 10;
 
 /**
  * Autonomy is the standing Workflow opt-in. Each user prompt may carry one hidden reminder: full when it turns on,
- * sparse after 10 more prompts, off when it turns off. The authoring reference is a system prompt section for leads
- * off Anthropic, and for every lead under autonomy. Both stay away while the Workflow tool is inactive.
+ * sparse after 10 more prompts, off when it turns off; none while the Workflow tool is inactive. The authoring
+ * reference is the workflow-authoring skill, loaded on demand as in Claude Code.
  */
 export function promptWorkflow(pi: ExtensionAPI): void {
-	pi.on("before_agent_start", async (event, ctx) => {
+	pi.on("before_agent_start", async (_event, ctx) => {
 		if (!pi.getActiveTools().includes("Workflow")) return;
-		const autonomous = isAutonomous(ctx);
-		if (autonomous || ctx.model?.provider !== "anthropic") event.systemPromptOptions.sections.workflow_authoring = REFERENCE;
-		const kind = reminderDue(ctx.sessionManager.getBranch(), autonomous);
+		const kind = reminderDue(ctx.sessionManager.getBranch(), isAutonomous(ctx));
 		if (kind) return { message: { customType: REMINDER, content: AUTONOMY_REMINDERS[kind], display: false, details: kind } };
 	});
 }

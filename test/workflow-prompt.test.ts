@@ -40,19 +40,17 @@ it("reminds in full when autonomy starts, sparsely after ten more prompts, and o
 	expect(reminderDue([reminder("full"), user(), compaction(), user()], true)).toBe("full");
 });
 
-it("inlines the authoring reference and the reminder only while the Workflow tool is active", async () => {
+it("reminds only while the Workflow tool is active, and never inlines the authoring reference", async () => {
 	expect(await lead(["Agent"])("anthropic")).toEqual({ section: undefined, message: undefined });
-	const on = await lead(["Agent", "Workflow"])("anthropic");
-	expect(on.section).toMatch(/^# Writing Workflow scripts\n/);
+	const on = await lead(["Agent", "Workflow"])("openai-codex");
+	expect(on.section).toBeUndefined();
 	expect(on.message).toEqual({ customType: "autonomy-reminder", content: AUTONOMY_REMINDERS.full, display: false, details: "full" });
 	expect(AUTONOMY_REMINDERS.full).toMatch(/^<system-reminder>\n[\s\S]+\n<\/system-reminder>$/);
 });
 
-it("keeps the reference inline for leads off Anthropic when autonomy is off", async () => {
-	writeFileSync(join(agentDir, "pi-kit.json"), JSON.stringify({ autonomy: "ask" }));
+it("says once that autonomy is off", async () => {
+	writeFileSync(join(agentDir, "pi-kit.json"), JSON.stringify({ autonomy: false }));
 	const prompt = lead(["Workflow"]);
 	expect(await prompt("anthropic")).toEqual({ section: undefined, message: undefined });
-	const codex = await prompt("openai-codex", [reminder("full"), user()]);
-	expect(codex.section).toMatch(/^# Writing Workflow scripts\n/);
-	expect(codex.message?.details).toBe("off");
+	expect((await prompt("openai-codex", [reminder("full"), user()])).message?.details).toBe("off");
 });

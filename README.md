@@ -38,7 +38,7 @@ Upgrade with `claude plugin marketplace update deevs-pi-kit` or `codex plugin ma
 > Start a mission: move the CLI to the new config format; done when npm test passes.
 ```
 
-Ask in chat. Collaborators need Pi running inside Herdr in a trusted project; nothing else needs setting up. Agents, workflows and jobs report once as a `<task-notification>`, a monitor once per event; a collaborator's reply arrives as a message that starts a turn. No start, stop or cleanup opens a dialog unless `autonomy` is `false`.
+Ask in chat. Collaborators need Pi running inside Herdr in a trusted project; nothing else needs setting up. Agents, workflows and jobs report once as a `<task-notification>`, a monitor once per event; a collaborator's reply arrives as a message that starts a turn. No start, stop or cleanup opens a dialog unless `autonomy` is `false`. Autonomy is on by default, and it costs tokens: the lead takes it as standing permission to run each substantive task as a Workflow, aiming for the most complete, best-verified answer, and a workflow spends the tokens of every agent it starts. The lead's prompt carries only a short reminder; the authoring reference (the `workflow-authoring` skill, about 2.2k tokens) loads when the lead writes its first script. `"autonomy": false` in `pi-kit.json` turns it off: the lead then runs a workflow only when you ask for one.
 
 ## What each piece does
 
