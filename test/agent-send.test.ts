@@ -1,6 +1,6 @@
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { createFauxCore, fauxAssistantMessage, type FauxResponseStep } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -99,5 +99,16 @@ describe("SendMessage to an agent", () => {
 		await ensureEngine(many);
 		const ids = tasks.list("many").map((task) => task.id);
 		expect([ids.length, ids.includes("slow"), ids.includes("quick21")]).toEqual([21, true, true]);
+	});
+
+	it("unlocks a store whose open failed, so a later open takes it", async () => {
+		const broken = { ...ctx, sessionManager: { getSessionId: () => "broken", getEntries: () => [] } } as unknown as ExtensionContext;
+		const dir = join(dirname((await ensureEngine(ctx)).dir), "broken");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "engine.sqlite"), "not a database");
+		await expect(ensureEngine(broken)).rejects.toThrow();
+		expect(existsSync(join(dir, "engine.lock"))).toBe(false);
+		rmSync(join(dir, "engine.sqlite"));
+		expect((await ensureEngine(broken)).dir).toBe(dir);
 	});
 });

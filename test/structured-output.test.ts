@@ -6,6 +6,12 @@ import { createFauxCore, fauxAssistantMessage, fauxToolCall, type FauxResponseSt
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { checkSchema, closeAll, ensureEngine, launchWorkflow } from "../extensions/subagents/engine/index.ts";
 
+const compiles = vi.hoisted(() => ({ count: 0 }));
+vi.mock("typebox/compile", async (importOriginal) => {
+	const original = await importOriginal<typeof import("typebox/compile")>();
+	return { ...original, Compile: (...args: Parameters<typeof original.Compile>) => { compiles.count++; return original.Compile(...args); } };
+});
+
 process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "pi-kit-so-"));
 const cwd = mkdtempSync(join(tmpdir(), "pi-kit-so-cwd-"));
 const faux = createFauxCore({ provider: "faux", models: [{ id: "m" }] });
@@ -39,6 +45,14 @@ describe("StructuredOutput in a workflow agent()", () => {
 		expect(() => checkSchema({ type: "array", items: {} })).toThrow(/^agent\(\{schema\}\) received an unusable JSON Schema — .*The subagent was not started/);
 		expect(() => checkSchema({ type: "object", properties: {}, required: ["n"] })).toThrow(/unusable JSON Schema — required names n,/);
 		expect(() => checkSchema({ type: "object", properties: { s: { type: "string", pattern: "(" } } })).toThrow("agent({schema}) received an invalid JSON Schema");
+	});
+
+	it("compiles each schema once per process", () => {
+		const fresh = { type: "object", properties: { once: { type: "string" } } };
+		const before = compiles.count;
+		checkSchema(fresh);
+		checkSchema(structuredClone(fresh));
+		expect(compiles.count - before).toBe(1);
 	});
 
 	it("ends the run at the first valid call and returns its validated object", async () => {
