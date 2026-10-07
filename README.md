@@ -76,6 +76,7 @@ The only settings file: `~/.pi/agent/pi-kit.json` for every project, `.pi/pi-kit
   "autonomy": true,
   "guard": { "rmRf": true, "block": ["terraform destroy", "npm publish"] },
   "codexFast": false,
+  "verify": false,
   "notifier": { "bell": false, "command": ["notify-send", "{title}", "{body}"] }
 }
 ```
@@ -85,6 +86,7 @@ The only settings file: `~/.pi/agent/pi-kit.json` for every project, `.pi/pi-kit
 - `autonomy` (default `true`): orchestration never waits on a dialog, and the lead takes it as standing permission to run workflows. `false` asks before each collaborator change and stops Mission continues. A project's value counts only once the project is trusted.
 - `guard`: in the global file, `"detached"`, `"forcePush"` or `"rmRf": false` turns a rule off; a project file can only add `block` patterns, and the patterns from both files add up (`"terraform destroy"` matches `terraform` with `destroy` among its arguments).
 - `codexFast`: sends `service_tier: "priority"` on requests made with your ChatGPT login, under `openai` or the legacy `openai-codex`; never with an API key. A project's value counts only once the project is trusted.
+- `verify` (default `false`): the lead (a rule of its Agent tool) and every Pi agent get one rule of about 100 tokens: unless you or the project's instructions say otherwise, run the relevant tests before calling a code change done, in the project's own environment (venv, conda, tox, uv, poetry, package scripts), never pip-install into the system Python, and say which tests ran or that none did. Claude and Codex workers keep their own. The lead reads it at session start and `/reload`, an agent when it starts. A project's value counts only once the project is trusted.
 - `notifier`: `enabled`, `title`, `body`, `terminal`, `bell`, `terminalRequiresTty`, `minIntervalMs`, `command` (an argv with `{title}`, `{body}`, `{cwd}`, `{project}`, killed if it runs past 10 s) and `jsonl`; an untrusted project's `command` and `jsonl` are ignored.
 
 A trusted project's old `.pi/codex-fast.json`, `.pi/notifier.json`, `.pi/runtime.json` and `.pi/subagents.json` move into `.pi/pi-kit.json` once at session start, and an old `"autonomy": "auto"` or `"ask"` becomes `true` or `false`.

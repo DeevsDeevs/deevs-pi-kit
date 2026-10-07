@@ -6,7 +6,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { TObject, TSchema } from "typebox";
 import { Value } from "typebox/value";
 import subagentsExtension from "../extensions/subagents/index.ts";
-import { agentTypesList, findAgentType, workerPrompt } from "../extensions/subagents/definitions.ts";
+import { agentTypesList, findAgentType, VERIFY_RULE, workerPrompt } from "../extensions/subagents/definitions.ts";
 
 describe("Subagent extension surface", () => {
 	it("registers Agent, Workflow, TaskStop, job_start, Monitor, SendMessage, ListAgents and /agents", () => {
@@ -81,5 +81,22 @@ describe("Subagent extension surface", () => {
 		const names = [...workerPrompt(findAgentType(undefined), process.env.PI_CODING_AGENT_DIR).matchAll(/<name>(.*)<\/name>/g)].map((m) => m[1]);
 		expect(names).toContain("diagnose");
 		expect(names.filter((name) => ["workflow-authoring", "collaborators", "background-tasks", "todos", "ask-user", "chain-system"].includes(name!))).toEqual([]);
+	});
+
+	it("gives the Pi lead (an Agent tool guideline) and Pi workers the verification rule only when pi-kit.json sets verify, and a Claude or Codex worker never", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-kit-verify-"));
+		process.env.PI_CODING_AGENT_DIR = dir;
+		const agents: Array<{ name: string; promptGuidelines?: string[] }> = [];
+		const starts: Array<(event: object, ctx: object) => unknown> = [];
+		subagentsExtension({ registerTool(tool: (typeof agents)[number]) { if (tool.name === "Agent") agents.push(tool); }, registerCommand() {}, on(name: string, fn: (typeof starts)[number]) { if (name === "session_start") starts.push(fn); } } as unknown as ExtensionAPI);
+		const ctx = { cwd: dir, isProjectTrusted: () => false };
+		await starts[0]!({ reason: "startup" }, ctx);
+		expect(agents.map((tool) => tool.promptGuidelines)).toEqual([undefined]);
+		writeFileSync(join(dir, "pi-kit.json"), JSON.stringify({ verify: true }));
+		await starts[0]!({ reason: "startup" }, ctx);
+		expect(agents.map((tool) => tool.promptGuidelines)).toEqual([undefined, [VERIFY_RULE]]);
+		expect(workerPrompt(findAgentType(undefined), dir)).not.toContain(VERIFY_RULE);
+		expect(workerPrompt(findAgentType("reviewer"), dir, undefined, { verify: true }).split(VERIFY_RULE)).toHaveLength(2);
+		expect(workerPrompt(findAgentType(undefined), dir, undefined, { cli: true, verify: true })).not.toContain(VERIFY_RULE);
 	});
 });
