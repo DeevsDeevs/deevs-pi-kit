@@ -169,3 +169,28 @@ it("runs at most two closing-review rounds before a review mission closes", asyn
 	expect((await call("mission_update", { log: "still missing", next: "none", verdict: "changes_requested" })).details.status).toBe("done");
 	expect(currentMission(cwd)?.state).toMatchObject({ status: "done", reviews: 2, reviewing: false });
 });
+
+it("starts a session with the mission tools only while a mission is open", () => {
+	const start = (status?: string) => {
+		rmSync(join(cwd, ".missions"), { recursive: true, force: true });
+		if (status) {
+			mkdirSync(join(cwd, ".missions", "m"), { recursive: true });
+			writeFileSync(join(cwd, ".missions", "m", "state.json"), JSON.stringify({ status, next: "", quietContinues: 0 }));
+		}
+		const handlers: [string, (event: object, ctx: object) => void][] = [];
+		let active = ["read"];
+		missionExtension({
+			on: (name: string, handler: (event: object, ctx: object) => void) => handlers.push([name, handler]),
+			registerTool: () => {},
+			getActiveTools: () => active,
+			setActiveTools: (tools: string[]) => { active = tools; },
+		} as unknown as ExtensionAPI);
+		for (const [name, handler] of handlers) if (name === "session_start") handler({ reason: "new" }, { cwd, sessionManager: { getBranch: () => [] } });
+		return active;
+	};
+	expect(start()).toEqual(["read"]);
+	expect(start("paused")).toEqual(["read"]);
+	expect(start("done")).toEqual(["read"]);
+	expect(start("waiting_user")).toEqual(["read", "mission_start", "mission_update", "mission_get"]);
+	expect(start("active")).toEqual(["read", "mission_start", "mission_update", "mission_get"]);
+});

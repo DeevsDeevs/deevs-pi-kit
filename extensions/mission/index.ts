@@ -4,6 +4,7 @@ import { StringEnum, Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isAutonomous } from "../shared/config.ts";
 import { ownsProcessIdentity, readProcessIdentity } from "../shared/process-group.ts";
+import { activateTools, activateWithSkill } from "../shared/surface.ts";
 import { systemReminder, tasks } from "../shared/tasks.ts";
 import { git } from "../shared/worktree.ts";
 import { createMission, currentMission, missionBrief, reviewPath, saveMission, STATUSES, type Mission, type MissionStatus, type Owner } from "./store.ts";
@@ -14,6 +15,7 @@ const MISSION_CONTINUE = "mission-continue";
 const MISSION_NOTICE = "mission-notice";
 
 const OPEN: readonly MissionStatus[] = ["active", "waiting_user"];
+const TOOLS = ["mission_start", "mission_update", "mission_get"];
 
 const GUIDANCE = [
 	"Work toward the done criteria without waiting for the user. After each meaningful step, call mission_update with what happened and the next step.",
@@ -28,6 +30,7 @@ const gitHead = (cwd: string): Promise<string | undefined> => git(cwd, ["rev-par
 const text = (value: string, details: Record<string, string | boolean>) => ({ content: [{ type: "text" as const, text: value }], details });
 
 export default function missionExtension(pi: ExtensionAPI): void {
+	activateWithSkill(pi, TOOLS, ["missions"]);
 	let interrupted = false;
 	// Deferred past agent_settled so a notification turn queued in the same settle runs first and the idle check sees it.
 	const later = (ctx: ExtensionContext): void => {
@@ -38,6 +41,9 @@ export default function missionExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_start", (event, ctx) => {
 		interrupted = false;
+		// In a Pi collaborator, whose --tools leaves them unregistered, this adds nothing.
+		const mission = currentMission(ctx.cwd);
+		if (mission && OPEN.includes(mission.state.status)) activateTools(pi, TOOLS);
 		// The agents the engine resumes are running work: check only once they are on the roster.
 		if (event.reason === "startup" || event.reason === "resume") void tasks.resumed(ctx.sessionManager.getSessionId()).then(() => later(ctx));
 	});
@@ -63,6 +69,7 @@ export default function missionExtension(pi: ExtensionAPI): void {
 			"While it is active you are prompted to continue each time you finish with nothing running, so start one only when the user asks for a mission or for long work to carry on unattended.",
 		].join("\n"),
 		promptSnippet: "Start a Mission that keeps going on its own until its done criteria hold.",
+		defaultActive: false,
 		parameters: Type.Object({
 			title: Type.String({ description: "A short title" }),
 			goal: Type.String({ description: "What the mission must achieve, with its constraints" }),
@@ -84,6 +91,7 @@ export default function missionExtension(pi: ExtensionAPI): void {
 		label: "Mission update",
 		description: "Log progress on the project's Mission and set its next step. Set status to change its state: active resumes it, paused or abandoned when the user asks, waiting_user when only the user can unblock you, done when its done criteria hold (a review mission first runs its closing review).",
 		promptSnippet: "Log Mission progress and its next step, or change its status.",
+		defaultActive: false,
 		parameters: Type.Object({
 			log: Type.String({ description: "What happened since the last update: progress, evidence, decisions" }),
 			next: Type.String({ description: "The next concrete step" }),
@@ -123,6 +131,7 @@ export default function missionExtension(pi: ExtensionAPI): void {
 		label: "Mission get",
 		description: "Show the project's Mission: its status, goal, done criteria, latest log entries and next step.",
 		promptSnippet: "Show the project's Mission and where it stands.",
+		defaultActive: false,
 		parameters: Type.Object({}),
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 			const mission = currentMission(ctx.cwd);

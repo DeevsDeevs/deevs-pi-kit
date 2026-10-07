@@ -21,7 +21,7 @@ export interface AgentType {
 
 const KIT_SKILLS = fileURLToPath(new URL("../../skills", import.meta.url));
 /** Skills for tools only the lead has; a worker's skill index leaves them out. */
-const LEAD_SKILLS = new Set(["workflow-authoring", "collaborators", "background-tasks", "todos", "ask-user", "chain-system"]);
+const LEAD_SKILLS = new Set(["workflow-authoring", "collaborators", "background-tasks", "todos", "ask-user", "chain-system", "missions"]);
 const NOTES = [
 	"Notes:",
 	"- Each bash call starts in the working directory again; use absolute paths.",
