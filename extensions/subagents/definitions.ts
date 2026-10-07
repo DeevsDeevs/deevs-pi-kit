@@ -31,7 +31,7 @@ const NOTES = [
 const PRECEDENCE = "The user's and the project's own instructions take precedence over these rules.";
 const SHARED_RULES = [
 	"Make the smallest change that resolves the task, in the files that already hold the behaviour. Add no new modules, vendored code or dependencies unless the task asks for them.",
-	"Run the relevant tests before calling a code change done, in the project's own environment (.venv or venv, conda envs, tox, uv, poetry, package.json or Makefile scripts), not the first python on PATH. A missing module or test runner usually means the wrong environment: look for the project's own once. If the project has none, create one in the project (uv venv or python -m venv) instead of pip-installing into a system or base Python. Say which tests ran, or that none did.",
+	"Run the relevant tests before calling a code change done, in the project's own environment (.venv or venv, conda envs, tox, uv, poetry, package.json or Makefile scripts), not the first python on PATH. A missing module or test runner usually means the wrong environment: look for the project's own once. If the project has none, create one outside the project tree, for example under /tmp (uv venv or python -m venv), instead of pip-installing into a system or base Python. Say which tests ran, or that none did.",
 	"Run long builds and tests with a timeout.",
 ];
 /** The lead reads these as Agent tool guidelines and each Pi worker the shared ones; Claude and Codex workers bring their own. */

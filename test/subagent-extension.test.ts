@@ -116,7 +116,7 @@ describe("Subagent extension surface", () => {
 		expect(finish).toMatch(/within your turn[\s\S]*to wait for agents, workflows and timed jobs[\s\S]*When the user asked for action, a plan/);
 		expect(output).toMatch(/output file or binary at a path, write a working version at that path first/);
 		expect(scope).toMatch(/Add no new modules, vendored code or dependencies unless the task asks for them/);
-		expect(tests).toMatch(/If the project has none, create one in the project \(uv venv or python -m venv\)/);
+		expect(tests).toMatch(/If the project has none, create one outside the project tree, for example under \/tmp \(uv venv or python -m venv\)/);
 		expect(report).toMatch(/what changed, how you verified it, and what remains/);
 		const worker = workerPrompt(findAgentType("reviewer"), dir);
 		for (const rule of [precedence, scope, tests, timeout]) expect(worker.split(rule!)).toHaveLength(2);
