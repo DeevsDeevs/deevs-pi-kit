@@ -160,10 +160,6 @@ export class RuntimeMessaging {
 			switch (input.method) {
 				case "inbox": return this.inbox(grant);
 				case "send": return this.publish(registration, grant, input.operationId, this.recipientKey(grant, input.participantId), input.body);
-				default: {
-					const unsupported: never = input;
-					throw new RuntimeError("invalid_request", `Unsupported messaging method ${JSON.stringify(unsupported)}.`);
-				}
 			}
 		} finally {
 			this.inFlight--;

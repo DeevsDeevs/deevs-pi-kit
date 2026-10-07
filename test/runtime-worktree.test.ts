@@ -10,6 +10,8 @@ import { HostedStateStore } from "../extensions/runtime/service/state.ts";
 import { RuntimeWorktrees } from "../extensions/runtime/service/worktree.ts";
 import { deriveAgentTargetKey } from "../extensions/runtime/service/state.ts";
 import { RuntimeAgentBinder } from "../extensions/runtime/service/bridge.ts";
+import { WorktreeRemoveParams } from "../extensions/runtime/schemas/rpc.ts";
+import { Value } from "typebox/value";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -78,7 +80,8 @@ describe("Runtime collaborator worktrees", () => {
 
 		await expect(test.worktrees.remove(main, { ...authority, discardConfirmed: true })).rejects.toThrow("Stop the collaborator");
 		test.participants.standDownConfirmed(writer, held.participantKey, held.generation);
-		await expect(test.worktrees.remove(main, { ...authority, discardConfirmed: false })).rejects.toThrow("confirmed discard");
+		expect(Value.Check(WorktreeRemoveParams, { targetKey: main.targetKey, ...authority, discardConfirmed: true })).toBe(true);
+		expect(Value.Check(WorktreeRemoveParams, { targetKey: main.targetKey, ...authority, discardConfirmed: false })).toBe(false);
 		expect(await test.worktrees.remove(main, { ...authority, discardConfirmed: true })).toEqual({ removed: true });
 		expect(existsSync(worktree.path)).toBe(false);
 		expect(git(test.project, ["branch", "--list", "runtime/collab/review/writer"])).toBe("");
@@ -105,7 +108,7 @@ describe("Runtime collaborator worktrees", () => {
 
 		expect(build.path).not.toBe(review.path);
 		expect(build.branchRef).toBe("refs/heads/runtime/collab/build/writer");
-		const removal = { ...authority, protocol: "build", participantId: "writer", discardConfirmed: true };
+		const removal = { ...authority, protocol: "build", participantId: "writer", discardConfirmed: true as const };
 		expect(await test.worktrees.remove(main, removal)).toEqual({ removed: true });
 		expect(existsSync(build.path)).toBe(false);
 		expect(existsSync(review.path)).toBe(true);

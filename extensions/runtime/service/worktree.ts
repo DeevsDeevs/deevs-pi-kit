@@ -2,7 +2,6 @@ import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { addWorktree, git, gitTopLevel, repositoriesUnder } from "../../shared/worktree.ts";
 import { RuntimeError } from "../errors.ts";
-import { PARTICIPANT_NAME } from "../schemas/common.ts";
 import { type HostedParticipant, isHeld, isPiTarget } from "../schemas/state.ts";
 import type { HostedCaller } from "./live.ts";
 import { deriveParticipantKey, HostedStateStore, projectScope } from "./state.ts";
@@ -29,7 +28,7 @@ interface EnsureWorktreeInput extends WorktreeAuthority {
 }
 
 interface RemoveWorktreeInput extends EnsureWorktreeInput {
-	discardConfirmed: boolean;
+	discardConfirmed: true;
 }
 
 interface RemovedWorktree {
@@ -105,9 +104,6 @@ export class RuntimeWorktrees {
 	}
 
 	async remove(caller: HostedCaller, input: RemoveWorktreeInput): Promise<RemovedWorktree> {
-		if (input.discardConfirmed !== true) {
-			throw new RuntimeError("invalid_request", "Worktree removal requires an explicit confirmed discard.");
-		}
 		const projectRoot = this.authorize(caller, input);
 		const participantKey = this.participantKey(projectRoot, input);
 		const participant = this.store.read().participants[participantKey];
@@ -139,9 +135,6 @@ export class RuntimeWorktrees {
 
 	private authorize(caller: HostedCaller, input: EnsureWorktreeInput): string {
 		const projectRoot = this.projectRoot(caller);
-		if (!PARTICIPANT_NAME.test(input.protocol) || !PARTICIPANT_NAME.test(input.participantId)) {
-			throw new RuntimeError("invalid_request", "Protocol and participant ID have invalid syntax.");
-		}
 		const participant = this.store.read().participants[input.callerParticipantKey];
 		if (!callerHoldsAuthority(participant, input, caller, projectRoot)) {
 			throw new RuntimeError("conflict", "Worktree caller authority is absent or no longer held.");

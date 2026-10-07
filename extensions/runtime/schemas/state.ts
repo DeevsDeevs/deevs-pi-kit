@@ -151,7 +151,6 @@ export type HostedRuntimeInstance = Static<typeof HostedRuntimeInstanceSchema>;
 export type HostedCollaboratorProfile = Static<typeof HostedCollaboratorProfileSchema>;
 export type HostedNativeCollaboratorDriver = Static<typeof HostedNativeCollaboratorDriverSchema>;
 export type HostedCollaboratorDriver = Static<typeof HostedCollaboratorDriverSchema>;
-export type HostedHerdrLocator = Static<typeof HostedHerdrLocatorSchema>;
 type HostedPiTarget = Static<typeof HostedPiTargetSchema>;
 export type HostedAgentTarget = Static<typeof HostedAgentTargetSchema>;
 export type HostedTarget = Static<typeof HostedTargetSchema>;

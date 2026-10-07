@@ -5,7 +5,7 @@ import type { HostedRuntimeClient } from "./client.ts";
 import { HostedRuntimeClientError } from "./client.ts";
 import { schemaError } from "./schemas/common.ts";
 import type { HerdrAgentStatus } from "./schemas/herdr.ts";
-import { isJsonBoolean, isJsonObject, isJsonString, type JsonObject, type JsonValue } from "./schemas/json.ts";
+import { isJsonObject, isJsonString, type JsonObject, type JsonValue } from "./schemas/json.ts";
 import {
 	HeartbeatResult,
 	LiveRegistrationResult,
@@ -88,10 +88,6 @@ export function findParticipant(
 	return participants.find((participant) => participant.protocol === protocol && participant.participantId === participantId);
 }
 
-export function errorCode(cause: unknown): string {
-	return cause instanceof HostedRuntimeClientError ? cause.code : "internal";
-}
-
 export function strictObject(value: RuntimeResponse, name: string): JsonObject {
 	if (!isJsonObject(value)) throw new HostedRuntimeClientError("invalid_response", `${name} must be an object.`);
 	return value;
@@ -105,11 +101,6 @@ export function asRecord(value: RestoredSessionData): JsonObject | undefined {
 
 export function text(value: JsonValue | undefined): string {
 	if (!isJsonString(value) || value.length === 0) throw new HostedRuntimeClientError("invalid_response", "Expected non-empty text.");
-	return value;
-}
-
-export function booleanValue(value: JsonValue | undefined): boolean {
-	if (!isJsonBoolean(value)) throw new HostedRuntimeClientError("invalid_response", "Expected a boolean.");
 	return value;
 }
 

@@ -69,7 +69,7 @@ export const BridgeBindParams = Type.Object({
 }, STRICT_OBJECT);
 
 export const WorktreeEnsureParams = Type.Object({ ...AUTH, ...WORKTREE }, STRICT_OBJECT);
-export const WorktreeRemoveParams = Type.Object({ ...AUTH, ...WORKTREE, discardConfirmed: Type.Boolean() }, STRICT_OBJECT);
+export const WorktreeRemoveParams = Type.Object({ ...AUTH, ...WORKTREE, discardConfirmed: Type.Literal(true) }, STRICT_OBJECT);
 
 export const ParticipantAcquireParams = Type.Object({
 	...AUTH,
