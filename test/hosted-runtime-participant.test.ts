@@ -135,6 +135,10 @@ describe("hosted participant coordinator", () => {
 		const ordinary = send(test, main, mainParticipant.participantKey, mainParticipant.generation, managed.participantKey, "send_managed", "Please inspect.");
 		expect(test.store.read().events[ordinary.eventId]).toMatchObject({ type: "mailbox.message", recipientParticipantKey: managed.participantKey });
 		expect(test.participants.get(main, managed.participantKey).unreadMail).toBe(1);
+		// K1: once stood down, the roster still says codex, so a resume never starts it as Pi.
+		test.setNow(2_000);
+		test.participants.standDownConfirmed(main, managed.participantKey, "lease_managed");
+		expect(test.participants.list(main).find((participant) => participant.participantId === "fable")).toMatchObject({ state: "vacant", driver: "codex", profile: "read-only" });
 	});
 
 	it("rejects cross-protocol send after a target changes identity", async () => {

@@ -66,11 +66,16 @@ export function participantStatus(
 	if (holderTargetKey) status.holderTargetKey = holderTargetKey;
 	if (participant.repo) status.repo = participant.repo;
 	if (participant.repoRoot) status.repoRoot = participant.repoRoot;
-	if (isPiTarget(holder)) status.driver = "pi";
-	if (isAgentTarget(holder)) {
-		status.driver = holder.driver;
-		status.profile = holder.profile;
-		const agentStatus = holderTargetKey ? live.agentStatus(holderTargetKey) : undefined;
+	// A vacant participant keeps the driver and profile of the target it last ran in: a resume must not start it as Pi.
+	const previous = participant.transition.previousHolderTargetKey;
+	const last = holder ?? (previous ? store.read().targets[previous] : undefined);
+	if (isPiTarget(last)) status.driver = "pi";
+	if (isAgentTarget(last)) {
+		status.driver = last.driver;
+		status.profile = last.profile;
+	}
+	if (isAgentTarget(holder) && holderTargetKey) {
+		const agentStatus = live.agentStatus(holderTargetKey);
 		if (agentStatus) status.agentStatus = agentStatus;
 	}
 	if (includeQueue) Object.assign(status, mailQueue(store, participant.participantKey));

@@ -46,7 +46,7 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 	/** A stood-down collaborator resumes in a new tab: a Pi one from its session file, a Claude or Codex one from its native session. */
 	private async relaunch(name: string, driver: string | undefined, ctx: ExtensionContext): Promise<void> {
 		const spec = this.store.started.get(name);
-		if (!spec && driver && driver !== "pi") throw new Error(`${name} ran ${driver} and its start spec is gone; start it again with collaborator_start and its model.`);
+		if (!spec && driver !== "pi") throw new Error(`${name} ran ${driver ?? "an unknown driver"} and its start spec is gone; start it again with collaborator_start and its model.`);
 		const [result] = await this.start([spec ?? { participantId: name }], ctx);
 		if (result?.status !== "started") throw new Error(`${name} did not resume: ${result?.error ?? result?.status}`);
 	}
