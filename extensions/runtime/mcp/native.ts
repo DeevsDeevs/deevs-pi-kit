@@ -18,7 +18,8 @@ interface NativeMessagingServer {
 }
 
 /** Decision 28, plus how messages reach a collaborator; Pi collaborators get the same lines. */
-export const COLLABORATOR_GUIDANCE = "You collaborate with the lead, main. Messages reach you by themselves as \"Message from <name>: ...\"."
+export const COLLABORATOR_GUIDANCE = "You collaborate with the lead, main. Messages arrive between your turns as \"Message from <name>: ...\";"
+	+ " end your turn to wait for one."
 	+ " Reply or report with SendMessage (to: \"main\"); attach images by path. If the user changes your task in this tab, tell main with SendMessage.";
 
 export interface NativeMessagingConfiguration {

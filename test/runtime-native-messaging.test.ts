@@ -48,6 +48,8 @@ it.each(["claude-code", "codex"] as const)("compiles %s native configuration wit
 	const context = driver === "claude-code" ? compiled.args[compiled.args.indexOf("--append-system-prompt") + 1]! : compiled.args.at(-1)!;
 	expect(context).toContain("Selected persona context.");
 	expect(context).toContain("tell main with SendMessage");
+	// A live Codex collaborator slept 60 s waiting for peer mail, which only arrives once its turn ends.
+	expect(context).toContain("end your turn to wait for one");
 	expect(context.length).toBeLessThan(400);
 	expect(escapedCommandBytes(compiled.argv)).toBeLessThanOrEqual(4000);
 	expect(launch({ ...config, personaPrompt: "Selected persona context." }).args).toEqual(compiled.args);
