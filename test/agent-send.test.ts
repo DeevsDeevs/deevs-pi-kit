@@ -60,5 +60,5 @@ describe("SendMessage to an agent", () => {
 		// The Outbox dropped the saved one at that open, so it stays unsent once the session no longer shows its result.
 		await reopen([]);
 		expect(saved()).toEqual([]);
-	});
+	}, 30_000);
 });

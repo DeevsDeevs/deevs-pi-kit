@@ -8,17 +8,14 @@ import type { Static } from "typebox";
 import { getAgentDir, isToolCallEventType, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { guardBashCall, guardShell, loadGuardConfig } from "../shared/guard.ts";
 import { loadKitConfig, modelLabel, modelsTable, readCodexCatalog, resolveLead, resolveModel, type ModelContext } from "../shared/models.ts";
-import { agentForegroundResult, agentLaunchedResult, newAgentId, newBackgroundTaskId, newWorkflowRunId, newWorkflowTaskId, taskNotRunningResult, taskStoppedResult, tasks, workflowLaunchedResult, type RosterEntry } from "../shared/tasks.ts";
+import { agentForegroundResult, agentLaunchedResult, jobLaunchedResult, monitorStartedResult, newAgentId, newBackgroundTaskId, newWorkflowRunId, newWorkflowTaskId, sendMessageResult, taskNotFound, taskNotRunningResult, taskStoppedResult, tasks, unknownAgentResult, workflowLaunchedResult, type RosterEntry } from "../shared/tasks.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
 import { finishAgentWorktree, sharesCwd } from "../shared/worktree.ts";
 import { currentMission, saveMission } from "../mission/store.ts";
 import { remindSilentTurns } from "./silent-turns.ts";
 import { promptWorkflow, WORKFLOW_DESCRIPTION, WORKFLOW_FIELDS, WORKFLOW_SNIPPET } from "./workflow-prompt.ts";
 import { agentTypes, agentTypesList, findAgentType, workerPrompt } from "./definitions.ts";
-import { nextFire } from "./engine/background.ts";
-import { formatLocalTime } from "./engine/cron.ts";
 import { cliWorker, closeAll, ensureEngine, launch, launchWorkflow, placeAgent, queuedAhead, reinstall, resumeSession, send, settle, startJob, startMonitor, stop, userRequests, workflowProgress, writerCwds, type Limits } from "./engine/index.ts";
-import { lookAtPath, lookAtUrl } from "./engine/watch.ts";
 import { parseWorkflow } from "./workflow/meta.ts";
 import type { Progress } from "./workflow/run.ts";
 
@@ -212,7 +209,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		parameters: Type.Object({ task_id: Type.String({ description: "The id or name of the task to stop" }) }),
 		async execute(_toolCallId, params: { task_id: string }, _signal, _onUpdate, ctx) {
 			const entry = tasks.find(params.task_id, ctx.sessionManager.getSessionId());
-			if (!entry) throw new Error(`No task found with ID: ${params.task_id}`);
+			if (!entry) throw new Error(taskNotFound(params.task_id));
 			if (entry.status !== "running" || !entry.stop) throw new Error(taskNotRunningResult(entry.id, entry.status));
 			const stopped = await entry.stop();
 			if (tasks.find(entry.id)?.status === "running") tasks.update(entry.id, { status: "killed" });
@@ -233,12 +230,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			if (blocked) throw new Error(blocked);
 			const id = newBackgroundTaskId();
 			const outputFile = await startJob(await ensureEngine(ctx), { id, command: params.command, description: params.description, cwd, toolUseId: toolCallId, timeout: params.timeout });
-			const text = [
-				`Command running in background with ID: ${id}. Output is being written to: ${outputFile}`,
-				"You will be notified when it exits. Do not poll, sleep or wait for it; keep working, and read the output file once the notification arrives.",
-				params.timeout && `Timeout: ${params.timeout} ms`,
-			].filter(Boolean).join("\n");
-			return { content: [{ type: "text" as const, text }], details: { taskId: id, outputFile } };
+			return { content: [{ type: "text" as const, text: jobLaunchedResult(id, outputFile, params.timeout) }], details: { taskId: id, outputFile } };
 		},
 	});
 
@@ -256,32 +248,17 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			const every = (params.every ?? (source === "url" ? 60 : 2)) * 1000;
 			if (every < (source === "url" ? 30_000 : 1_000)) throw new Error(`every must be at least ${source === "url" ? 30 : 1} seconds for ${source}.`);
 			const cwd = ctx.cwd;
-			let target = params[source]!;
-			let look: Awaited<ReturnType<typeof lookAtPath>> | Awaited<ReturnType<typeof lookAtUrl>> | undefined;
-			let baseline: string | undefined;
-			if (source === "command") {
-				const blocked = guardShell(target, { cwd, config: loadGuardConfig(cwd) });
-				if (blocked) throw new Error(blocked);
-			} else if (source === "cron") {
-				const next = nextFire(target, Date.now());
-				if (next === Infinity) throw new Error(`Cron expression ${JSON.stringify(target)} has no fire within five years.`);
-				baseline = `next fire ${formatLocalTime(next)}`;
-			} else if (source === "path") {
-				target = resolve(cwd, target);
-				look = await lookAtPath(target, undefined);
-			} else {
-				if (!/^https?:\/\//.test(target)) throw new Error("url must start with http:// or https://.");
-				look = await lookAtUrl(target, undefined, signal ?? new AbortController().signal);
-			}
-			baseline ??= look?.baseline;
+			const target = source === "path" ? resolve(cwd, params.path!) : params[source]!;
+			const blocked = source === "command" && guardShell(target, { cwd, config: loadGuardConfig(cwd) });
+			if (blocked) throw new Error(blocked);
+			if (source === "url" && !/^https?:\/\//.test(target)) throw new Error("url must start with http:// or https://.");
 			const id = newBackgroundTaskId();
-			const outputFile = await startMonitor(await ensureEngine(ctx), { id, description: params.description, cwd, source, target, prompt: params.prompt, every, once: params.once ?? false, timeoutMs: params.timeout_ms, seen: look?.seen });
+			const { outputFile, baseline } = await startMonitor(await ensureEngine(ctx), { id, description: params.description, cwd, source, target, prompt: params.prompt, every, once: params.once ?? false, timeoutMs: params.timeout_ms }, signal);
 			const until = params.timeout_ms ? `it expires after ${Math.round(params.timeout_ms / 1000)}s`
 				: params.once ? "its first event or TaskStop"
 				: source === "command" ? "the script exits or you stop it with TaskStop"
 				: "you stop it with TaskStop";
-			const text = `Monitor started (task ${id}${baseline ? `; ${baseline}` : ""}). It runs until ${until}. You will be notified on each event. Keep working; do not poll or sleep. An event is not the user's reply.`;
-			return { content: [{ type: "text" as const, text }], details: { taskId: id, outputFile, baseline } };
+			return { content: [{ type: "text" as const, text: monitorStartedResult(id, baseline, until) }], details: { taskId: id, outputFile, baseline } };
 		},
 	});
 
@@ -308,14 +285,11 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			}
 			if (!entry) {
 				const known = tasks.list(session).filter((task) => task.kind === "agent" || task.send).map((task) => task.name ?? task.id);
-				throw new Error(`No agent named '${params.to}'. Known agents: ${known.join(", ") || "none"}`);
+				throw new Error(unknownAgentResult(params.to, known));
 			}
 			const outcome = await send(await ensureEngine(ctx), entry.id, params.message, toolCallId);
-			if (outcome === "refused") throw new Error(`Agent "${params.to}" was stopped by the user and was not resumed. Start a new agent for this work only if the user explicitly asks for it.`);
-			const text = outcome === "steered" ? `Message queued for delivery to ${params.to} at its next tool round.`
-				: outcome === "queued" ? `Message queued for delivery to ${params.to} when its current run ends.`
-				: `Resuming agent ${params.to}`;
-			return { content: [{ type: "text" as const, text }], details: { agentId: entry.id, outcome } };
+			if (outcome === "refused") throw new Error(sendMessageResult(params.to, outcome));
+			return { content: [{ type: "text" as const, text: sendMessageResult(params.to, outcome) }], details: { agentId: entry.id, outcome } };
 		},
 	});
 
@@ -343,8 +317,8 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				saveMission(mission, "Paused by the user from /agents.");
 				return ctx.ui.notify(`Paused mission ${id}`, "info");
 			}
-			if (!entry) return ctx.ui.notify(`No task found with ID: ${id}`, "warning");
-			if (entry.status !== "running") return ctx.ui.notify(`Task ${entry.id} is not running (status: ${entry.status})`, "warning");
+			if (!entry) return ctx.ui.notify(taskNotFound(id), "warning");
+			if (entry.status !== "running") return ctx.ui.notify(taskNotRunningResult(entry.id, entry.status), "warning");
 			if (entry.kind === "agent") await stop(await ensureEngine(ctx), entry.id, "user");
 			else {
 				try {
@@ -372,6 +346,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		if (event.reason === "reload") await reinstall();
 		else await useLeadModel(pi, ctx).catch((error) => ctx.ui.notify(`The lead stays on Pi's model: ${error instanceof Error ? error.message : String(error)}`, "warning"));
 		await resumeSession(ctx).catch((error) => ctx.ui.notify(`Agents of this session did not resume: ${error instanceof Error ? error.message : String(error)}`, "error"));
+		tasks.markResumed(ctx.sessionManager.getSessionId());
 	});
 	pi.on("session_shutdown", async (event) => {
 		clearInterval(widget);

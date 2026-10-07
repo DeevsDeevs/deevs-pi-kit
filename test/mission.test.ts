@@ -78,6 +78,39 @@ it("continues only when active, autonomous, idle, owned and nothing runs; three 
 	}
 });
 
+it("at startup reads the roster only once the engine has resumed the session's agents", async () => {
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = join(cwd, "agent");
+	tasks.install({ on: () => {} } as unknown as ExtensionAPI);
+	const sent: string[] = [];
+	const handlers = new Map<string, (event: object, ctx: object) => void>();
+	const tools = new Map<string, Tool>();
+	missionExtension({
+		on: (name: string, handler: (event: object, ctx: object) => void) => handlers.set(name, handler),
+		registerTool: (tool: Tool & { name: string }) => tools.set(tool.name, tool),
+		sendMessage: (message: { customType: string }) => sent.push(message.customType),
+		getActiveTools: () => [...tools.keys()],
+	} as unknown as ExtensionAPI);
+	const ctx = { cwd, isProjectTrusted: () => true, isIdle: () => true, hasPendingMessages: () => false, sessionManager: { getSessionId: () => "boot" } };
+	const pause = () => new Promise((resolve) => setTimeout(resolve, 300));
+	try {
+		await tools.get("mission_start")!.execute("call", { title: "t", goal: "g", done: "d" }, undefined, undefined, ctx);
+		handlers.get("session_start")!({ reason: "startup" }, ctx);
+		await pause();
+		tasks.register({ id: "a9", kind: "agent", description: "resumed", status: "running", ownerSession: "boot", startedAt: 0 });
+		tasks.markResumed("boot");
+		await pause();
+		expect(sent).toEqual([]);
+		tasks.remove("a9");
+		handlers.get("session_start")!({ reason: "resume" }, ctx);
+		await pause();
+		expect(sent).toEqual(["mission-continue"]);
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+	}
+});
+
 it("leaves a mission whose owner is another live Pi to that Pi", async () => {
 	const sent: string[] = [];
 	const handlers = new Map<string, (event: object, ctx: object) => void>();

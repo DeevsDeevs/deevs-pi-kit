@@ -23,7 +23,7 @@ import { parseWorkflow } from "../workflow/meta.ts";
 import { driveWorkflow, framePrompt, newProgress, runRecord, usage, type AgentRunner, type CallOutcome, type Progress } from "../workflow/run.ts";
 import type { AgentOptions, JsonValue } from "../workflow/sandbox.ts";
 import { cliArgv, dropNulls, lastMessageFile, newProgress as newCliProgress, readEvent, schemaFile, strictify, type CliProgress, type CliWorker } from "./cli.ts";
-import { backgroundTasks, json, outboxItems, post, pruneOutbox, unsent, type BackgroundDoc, type BackgroundHost, type BackgroundRecord, type JobInput, type MonitorInput, type OutboxDoc, type OutboxItem } from "./background.ts";
+import { backgroundTasks, firstLook, json, outboxItems, post, pruneOutbox, unsent, type BackgroundDoc, type BackgroundHost, type BackgroundRecord, type JobInput, type MonitorInput, type OutboxDoc, type OutboxItem } from "./background.ts";
 import { bunSqlite, lock, prune, reap, unlock } from "./storage.ts";
 
 type D = typeof Durable;
@@ -473,7 +473,12 @@ type Launch<T> = Omit<T, "session" | "owner" | "outputFile" | "startedAt">;
 
 /** `job_start`: the command runs in its own process group; its exit code and report are committed together. Returns the log. */
 export const startJob = (engine: Engine, input: Launch<JobInput>): Promise<string> => startBackground(engine, "job", input);
-export const startMonitor = (engine: Engine, input: Launch<MonitorInput>): Promise<string> => startBackground(engine, "monitor", input);
+
+/** Monitor: a path, url or cron watch looks first, so it reports what changes from now on. Returns the log and that look. */
+export async function startMonitor(engine: Engine, input: Omit<Launch<MonitorInput>, "seen">, signal: AbortSignal | undefined): Promise<{ outputFile: string; baseline?: string }> {
+	const look = await firstLook(input.source, input.target, signal ?? new AbortController().signal);
+	return { outputFile: await startBackground(engine, "monitor", { ...input, seen: look.seen }), baseline: look.baseline };
+}
 
 async function startBackground(engine: Engine, kind: "job" | "monitor", launch: Launch<JobInput> | Launch<MonitorInput>): Promise<string> {
 	const { kit, root } = engine;

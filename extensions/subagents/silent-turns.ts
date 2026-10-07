@@ -1,10 +1,11 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { systemReminder } from "../shared/tasks.ts";
 
 const SILENT_TURNS = 5;
 const MAX_REMINDERS = 3;
 const USER_CHANNEL_TOOLS = new Set(["ask_user"]);
-export const SILENT_TURN_REMINDER = "<system-reminder>\nThe user hasn't heard from you in a while. As you continue, keep them updated when there's something to tell — a finding, a change of plan.\n</system-reminder>";
+export const SILENT_TURN_REMINDER = systemReminder("The user hasn't heard from you in a while. As you continue, keep them updated when there's something to tell — a finding, a change of plan.");
 
 /** After 5 assistant turns in a row without text for the user, one hidden reminder; at most 3 between user messages. */
 export function remindSilentTurns(pi: ExtensionAPI): void {

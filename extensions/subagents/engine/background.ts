@@ -5,7 +5,7 @@ import { createWriteStream, statSync } from "node:fs";
 import { constants } from "node:os";
 import type * as Durable from "@earendil-works/pi-durable";
 import { trySignalGroup } from "../../shared/process-group.ts";
-import { jobSummary, tasks, type JobEnd, type TaskNotification, type TaskStatus } from "../../shared/tasks.ts";
+import { jobSummary, MONITOR_FLOODED, monitorExpired, monitorSummary, monitorSuppressed, tasks, type JobEnd, type TaskNotification, type TaskStatus } from "../../shared/tasks.ts";
 import { formatLocalTime, nextCronRun, parseCron } from "./cron.ts";
 import { cut, LINE_CHARS, lookAtPath, lookAtUrl, RateLimit, type PathSeen, type UrlSeen } from "./watch.ts";
 
@@ -183,10 +183,10 @@ export function backgroundTasks(D: D, docs: Docs, host: BackgroundHost) {
 			const verdict = limit.take(Date.now());
 			if (verdict === "drop") return;
 			if (verdict === "stop") {
-				final ??= { status: "failed", event: STOPPED };
+				final ??= { status: "failed", event: MONITOR_FLOODED };
 				return kill(child.pid);
 			}
-			const text = suppressed(verdict, event);
+			const text = monitorSuppressed(verdict, event);
 			const mark = caughtUp;
 			caughtUp = undefined;
 			if (input.once) {
@@ -268,18 +268,10 @@ export function backgroundTasks(D: D, docs: Docs, host: BackgroundHost) {
 	return { Job, Monitor };
 }
 
-const STOPPED = "[Monitor stopped — too much output. Arm it again with a tighter filter.]";
-
-function expired(input: MonitorInput, events: number): string {
-	return `[Monitor expired after ${Math.round((input.timeoutMs ?? 0) / 1000)}s with ${events} events delivered. Re-arm it if you still need the watch.]`;
-}
-
-function suppressed(dropped: number, event: string): string {
-	return dropped ? `[${dropped} events suppressed — output rate too high]\n${event}` : event;
-}
+const expired = (input: MonitorInput, events: number): string => monitorExpired(Math.round((input.timeoutMs ?? 0) / 1000), events);
 
 function monitorEvent(input: MonitorInput, seq: string, event: string, caughtUp: string | undefined): TaskNotification {
-	return { notificationId: `${input.id}:${seq}`, taskId: input.id, kind: "monitor", ownerSession: input.session, outputFile: input.outputFile, summary: `Monitor event: "${input.description}"`, event, caughtUp };
+	return { notificationId: `${input.id}:${seq}`, taskId: input.id, kind: "monitor", ownerSession: input.session, outputFile: input.outputFile, summary: monitorSummary(input.description), event, caughtUp };
 }
 
 export const unsent = (answered: Set<string>) => (item: OutboxItem) => !item.silent || !answered.has(item.toolUseId ?? "");
@@ -298,6 +290,16 @@ export function pruneOutbox(outbox: OutboxDoc, session: string): void {
 export function post(outbox: OutboxDoc, item: OutboxItem): void {
 	pruneOutbox(outbox, item.ownerSession);
 	outbox.items.push(json(item));
+}
+
+/** A watch's first look, so it reports what changes from now on. */
+export async function firstLook(source: MonitorInput["source"], target: string, signal: AbortSignal): Promise<{ baseline?: string; seen?: PathSeen | UrlSeen }> {
+	if (source === "path") return lookAtPath(target, undefined);
+	if (source === "url") return lookAtUrl(target, undefined, signal);
+	if (source === "command") return {};
+	const next = nextFire(target, Date.now());
+	if (next === Infinity) throw new Error(`Cron expression ${JSON.stringify(target)} has no fire within five years.`);
+	return { baseline: `next fire ${formatLocalTime(next)}` };
 }
 
 export function nextFire(cron: string, from: number): number {
