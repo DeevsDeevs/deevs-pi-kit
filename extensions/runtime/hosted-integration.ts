@@ -51,8 +51,10 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 		if (result?.status !== "started") throw new Error(`${name} did not resume: ${result?.error ?? result?.status}`);
 	}
 
+	/** A collaborator's rows only send: it neither stands down nor resumes its peers. */
 	private row(ctx: ExtensionContext, name: string, description: string, held: boolean, driver?: string): void {
 		const current = () => this.session.context ?? ctx;
+		const lead = !this.store.launch;
 		tasks.register({
 			id: name,
 			kind: "collaborator",
@@ -61,21 +63,21 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 			status: held ? "running" : "completed",
 			ownerSession: ctx.sessionManager.getSessionId(),
 			startedAt: Date.now(),
-			stop: name === LEAD ? undefined : () => this.standDown(name, current()),
+			stop: name === LEAD || !lead ? undefined : () => this.standDown(name, current()),
 			send: async (message, images) => {
-				if (!held) await this.relaunch(name, driver, current());
+				if (!held && lead) await this.relaunch(name, driver, current());
 				return this.messaging.send(current(), name, message, images);
 			},
 		});
 	}
 
-	/** Collaborators join the shared roster: the lead sees each one by name, a collaborator sees main. */
+	/** Collaborators join the shared roster: the lead sees each one by name, a collaborator sees main and its peers. */
 	private async syncRoster(ctx: ExtensionContext): Promise<void> {
 		const identity = this.store.identity;
 		if (!identity || !isHeld(identity.disposition)) return;
-		if (this.store.launch) return this.row(ctx, LEAD, "the lead", true);
+		if (this.store.launch) this.row(ctx, LEAD, "the lead", true);
 		for (const participant of await this.collaborators.list(ctx)) {
-			if (participant.protocol !== identity.protocol || participant.participantId === identity.participantId) continue;
+			if (participant.protocol !== identity.protocol || participant.participantId === identity.participantId || participant.participantId === LEAD) continue;
 			const profile = participant.profile ?? this.store.started.get(participant.participantId)?.profile ?? "read-only";
 			const description = `${participant.driver ?? "pi"} ${profile}${participant.repo ? ` in ${participant.repo}` : ""}`;
 			this.row(ctx, participant.participantId, description, isHeld(participant.state), participant.driver);
@@ -103,7 +105,9 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 		await this.syncRoster(ctx);
 	}
 
-	afterHeartbeat(registration: LiveClientRegistration, ctx: ExtensionContext, heartbeat: HostedHeartbeat): Promise<void> {
+	async afterHeartbeat(registration: LiveClientRegistration, ctx: ExtensionContext, heartbeat: HostedHeartbeat): Promise<void> {
+		// A collaborator's turns start from mail: its roster lists its peers again just before the delivery that starts one.
+		if (heartbeat.mail && this.store.launch && ctx.isIdle()) await this.syncRoster(ctx).catch(() => {});
 		return this.messaging.deliverMail(registration, ctx, heartbeat.mail);
 	}
 
