@@ -120,10 +120,10 @@ export function captures(dir, prefix) {
 	const out = {};
 	for (const [label, range] of Object.entries(phases)) {
 		if (!Array.isArray(range)) continue;
-		const slice = bodies.slice(...range);
+		const slice = bodies.slice(...range).filter((e) => label !== "pi-worker" || e.agent === "pi-worker");
 		const main = slice.filter((e) => (e.body.tools ?? []).length || e.wire === "responses").sort((a, b) => JSON.stringify(b.body).length - JSON.stringify(a.body).length)[0] ?? slice[0];
 		if (!main) continue;
-		const name = label === "pi-kit" ? `pi-kit-${prefix}` : label;
+		const name = ["pi-kit", "pi-worker"].includes(label) ? `${label}-${prefix}` : label;
 		out[name] = label === "pi-kit" ? slice[0] : main;
 		if (label === "pi-kit") slice.forEach((e, i) => { out[`${name}#${i}`] = e; });
 	}
@@ -167,7 +167,7 @@ async function countOpenRouter(out, only) {
 	// `only` recounts some configs and keeps the rest of an earlier result.
 	const result = only && existsSync(out) ? { ...JSON.parse(readFileSync(out, "utf8")), errors: {} } : { model, configs: {}, errors: {} };
 	const before = result.calls ?? 0, spentBefore = result.inputTokens ?? 0;
-	for (const label of only ?? ["claude-print-live", "pi-vanilla", "pi-kit-new", "pi-kit-old", "claude-print", "claude-interactive"]) {
+	for (const label of only ?? ["claude-print-live", "pi-vanilla", "pi-kit-new", "pi-kit-old", "pi-worker-new", "pi-worker-old", "claude-print", "claude-interactive"]) {
 		const entry = sources[label];
 		if (!entry) continue;
 		try {

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { eventually, exec, pi, rpc, script } from "../drive.mjs";
-import { runs } from "../look.mjs";
+import { runs, taskNotifications } from "../look.mjs";
 
 // Captures the full first request of each harness (puppet bodies.jsonl) for bench/context-wire; it asserts nothing about prose.
 // Each capture is tagged by the next request's position: `phases` maps a label to the bodies.jsonl line range it produced.
@@ -34,16 +34,28 @@ export default {
 		});
 		editJson(settings(t), (s) => ({ ...s, packages: kitPackages }));
 
-		// User turn, the tool-result continuation, then a turn woken only by the job's task-notification.
+		// User turn, the skill read that loads job_start, the tool-result continuation, then a turn woken only by the job's task-notification.
 		await phase("pi-kit", async () => {
 			const lead = rpc(t, { model: "polygon/puppet" });
 			await lead.script({ agent: "pi-kit", steps: [
+				{ id: "s0", tool: "read", args: { path: join(t.kit, "skills", "background-tasks", "SKILL.md") } },
 				{ id: "s1", tool: "job_start", args: { command: "sleep 1; echo polygon-ok", description: "probe" } },
 				{ id: "s2", text: "started" },
 				{ id: "s3", text: "woke" },
 			] });
 			await lead.until((_, events) => runs(events) >= 2, 60_000, "a lead run started by the finished job");
 			await lead.until((_, events) => events.filter((e) => e.type === "agent_settled").length >= 2, 60_000, "the woken turn to settle");
+			await lead.close();
+		});
+
+		// A Pi Agent worker's first request; bench/context-wire takes only the worker's requests from this phase.
+		await phase("pi-worker", async () => {
+			const lead = rpc(t, { model: "polygon/puppet" });
+			await lead.script({ agent: "pi-worker-lead", steps: [
+				{ id: "w1", tool: "Agent", args: { description: "probe", prompt: once("pi-worker") } },
+				{ id: "w2", text: "launched" },
+			] });
+			await lead.until((_, events) => taskNotifications(events).length >= 1, 60_000, "the worker's report");
 			await lead.close();
 		});
 
