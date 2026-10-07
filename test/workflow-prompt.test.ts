@@ -64,5 +64,7 @@ it("scales autonomy to the task with one trigger: short fixes done and verified 
 		expect(text).toMatch(/deliverable the task names \(a file or binary at a path, a commit, a branch\) work first, committed when it is a commit, before/);
 	}
 	expect(AUTONOMY_REMINDERS.full).toMatch(/Make the change the deliverable depends on yourself; never end the turn with it unwritten\./);
+	const review = readFileSync(join(import.meta.dirname, "../skills/validation-review/SKILL.md"), "utf8");
+	for (const text of [AUTONOMY_REMINDERS.full, review]) expect(text).toMatch(/[Aa]sk (each reviewer an open question|reviewers open questions)[\s\S]*hange (work that already passes|passing work) only for a finding backed by a stated requirement or a failing check; for a concrete defect[\s\S]*write the check that reproduces it first/);
 	expect(AUTONOMY_REMINDERS.sparse).toMatch(/orchestrate work that splits into independent parts taking minutes each, or that needs an independent review; work directly on short fixes/);
 });
