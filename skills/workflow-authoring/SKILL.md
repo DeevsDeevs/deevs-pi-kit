@@ -72,7 +72,7 @@ const checked = await parallel(unique.map(i => () => agent(checkPrompt(i), { sch
 
 ## Scale
 
-At most 16 agents run at once across this Pi; the rest queue. Nothing limits how many a run starts, so give every loop an exit. Exhaustive review, until two rounds find nothing new:
+At most 16 agents run at once across this Pi, CPUs − 2 on a smaller machine (at least 2); the rest queue. Nothing limits how many a run starts, so give every loop an exit. Exhaustive review, until two rounds find nothing new:
 
 ```js
 const seen = new Set(), kept = []

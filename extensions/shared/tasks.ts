@@ -375,7 +375,7 @@ export function agentLaunchedResult(launch: { agentId: string; outputFile: strin
 		"Do not read this file while the agent runs; it is written when the agent finishes, and the notification carries the result.",
 		...(launch.model ? [`Model: ${launch.model}`] : []),
 		...(launch.limits ? [`Limits: ${launch.limits}`] : []),
-		...(launch.queued ? ["Queued: 16 agents are running; this one starts when a slot frees."] : []),
+		...(launch.queued ? ["Queued: every agent slot is busy; this one starts when a slot frees."] : []),
 		...(launch.sharesCwd ? ["Another agent that can write already works in this directory. For parallel code-writing agents, dispatch each with isolation: \"worktree\"."] : []),
 	].join("\n");
 }

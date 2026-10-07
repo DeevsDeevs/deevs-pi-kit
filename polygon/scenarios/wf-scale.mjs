@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { availableParallelism } from "node:os";
 import { LOOP_PROBE, rpc } from "../drive.mjs";
 import { taskNotifications } from "../look.mjs";
 import { launches, progressEvents, usageOf } from "./wf-shapes.mjs";
@@ -10,7 +11,7 @@ const SOURCE = [
 	"return results.filter((r) => r !== null).length;",
 ].join("\n");
 
-// 2,000 agent() calls: no cap, never more than 16 running, and the lead's event loop never stalls 150 ms.
+// 2,000 agent() calls: no cap, never more than the slots running (16 here, CPUs − 2 on a smaller machine), and the lead's event loop never stalls 150 ms.
 export default {
 	name: "wf-scale",
 	gate: "M3",
@@ -35,7 +36,8 @@ export default {
 			if (e.state === "start") peak = Math.max(peak, ++running);
 			else if (e.state === "done" || e.state === "error") running--;
 		}
-		assert.equal(peak, 16, "the run did not peak at 16 running agents");
+		const slots = Math.min(16, Math.max(2, availableParallelism() - 2));
+		assert.equal(peak, slots, `the run did not peak at ${slots} running agents`);
 		assert.ok(worst < 150, `worst lead stall ${worst} ms over ${N} agents`);
 	},
 };
