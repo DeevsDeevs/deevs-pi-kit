@@ -5,8 +5,9 @@ A [Pi](https://github.com/earendil-works/pi) package: background agents, workflo
 ## Requirements
 
 - Pi 1.0.4 or newer and Node 22.19 or newer.
+- Linux for the cleanup after a crash: the processes a killed Pi's tasks left behind are found through `/proc`. macOS has none, so there they keep running, and a resumed Claude or Codex worker runs beside its old one.
 - Herdr, for collaborators only.
-- The Claude Code or Codex CLI, only for `claude:` or `codex:` models.
+- Claude Code 2.1.292 or Codex 0.160.1 or newer, only for `claude:` or `codex:` models and collaborators: the releases the worker fixtures were recorded on.
 
 ## Install
 
@@ -17,6 +18,14 @@ pi update git:github.com/DeevsDeevs/deevs-pi-kit         # later upgrades
 ```
 
 Run `/reload` after installing or updating. `pi config` toggles single extensions and skills.
+
+The install brings `@earendil-works/pi-durable`, the engine that keeps agents, workflows and monitors alive across `/reload` and Pi restarts. It carries its own copy of `pi-ai` with the provider SDKs (Anthropic, OpenAI, Google, AWS Bedrock) and esbuild: about 90 packages and 125 MB on disk.
+
+Upgrade notes:
+
+- An update that changes pi-durable's version needs Pi quit and restarted: `/reload` keeps the loaded engine, since a fresh copy would fail its own type checks.
+- Agents now keep their state under `~/.pi/agent/pi-kit/`. Nothing reads the old `~/.pi/agent/subagents` folder any more; delete it.
+- pi-durable migrates an older `engine.sqlite` forward when its session reopens and refuses one written by a newer pi-durable, after a downgrade; that session's agents then do not resume, and Pi says so. Running work is not finished on the old version first, so let it end, or stop it, before such an update.
 
 Chains also ships as a Claude Code and Codex plugin over the same `.chains/`, with the same 80% checkpoint reminder (needs Node 22.19+ on `PATH`):
 
