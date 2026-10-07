@@ -2,7 +2,8 @@ import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { lookAtPath, RateLimit } from "../extensions/subagents/engine/watch.ts";
+import { createServer } from "node:http";
+import { lookAtPath, lookAtUrl, RateLimit } from "../extensions/subagents/engine/watch.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -29,6 +30,43 @@ describe("Monitor looks", () => {
 		mkdirSync(dir);
 		writeFileSync(join(dir, "a.txt"), "a");
 		expect((await lookAtPath(dir, first.seen)).event).toBe("added a.txt");
+	});
+
+	it("reports a file that became a folder, or a folder that became a file, as one event", async () => {
+		const path = join(scratch(), "p");
+		writeFileSync(path, "old\n");
+		const file = await lookAtPath(path, undefined);
+		rmSync(path);
+		mkdirSync(path);
+		writeFileSync(join(path, "a.txt"), "a");
+		writeFileSync(join(path, "b.txt"), "b");
+		const folder = await lookAtPath(path, file.seen);
+		expect(folder.event).toBe("The file is now a folder.");
+		rmSync(path, { recursive: true });
+		writeFileSync(path, "new\n");
+		expect((await lookAtPath(path, folder.seen)).event).toBe("The folder is now a file.");
+	});
+
+	it("skips node_modules and .git", async () => {
+		const dir = scratch();
+		for (const skipped of ["node_modules", ".git"]) {
+			mkdirSync(join(dir, skipped));
+			writeFileSync(join(dir, skipped, "x"), "x");
+		}
+		writeFileSync(join(dir, "a.txt"), "a");
+		expect(Object.keys((await lookAtPath(dir, undefined)).seen)).toEqual(["files"]);
+		expect((await lookAtPath(dir, undefined)).baseline).toBe("1 files");
+	});
+
+	it("reads at most 1 MB of a URL's body", async () => {
+		const server = createServer((_request, response) => response.end("x".repeat(3_000_000)));
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		try {
+			const { port } = server.address() as { port: number };
+			expect((await lookAtUrl(`http://127.0.0.1:${port}/`, undefined, new AbortController().signal)).baseline).toBe("200, 976.6 KB");
+		} finally {
+			server.close();
+		}
 	});
 
 	it("reports a file's new lines from its stored offset", async () => {
