@@ -118,6 +118,18 @@ describe("resolveModel", () => {
 		expect(label("codex:", context({ lead: { model: OPENAI[1]!, level: "high" } }))).toBe("codex:gpt-6-astra");
 	});
 
+	it("runs a built-in name on a Pi OAuth login before an API key; an explicit provider/id or your own a|b keeps its order", () => {
+		const keyAndCodexLogin = context({ registry: registry(["openai", "openai-codex"], CATALOG, ["openai-codex"]) });
+		expect(label("astra", keyAndCodexLogin)).toBe("openai-codex/gpt-6-astra:high");
+		expect(label("sol:max", keyAndCodexLogin)).toBe("openai-codex/gpt-6.1-sol:max");
+		expect(label("openai/gpt-*-astra", keyAndCodexLogin)).toBe("openai/gpt-6-astra:high");
+		expect(label("astra", context({ registry: registry(["openai", "openai-codex"], CATALOG, []) }))).toBe("openai/gpt-6-astra:high");
+		const config: KitConfig = { ...KIT_DEFAULTS, models: { ...KIT_DEFAULTS.models, deep: "astra", mine: KIT_DEFAULTS.models.astra } };
+		expect(label("deep", { ...keyAndCodexLogin, config })).toBe("openai-codex/gpt-6-astra:high");
+		expect(label("mine", { ...keyAndCodexLogin, config })).toBe("openai/gpt-6-astra:high");
+		expect(modelsTable({ ...keyAndCodexLogin, config: { ...KIT_DEFAULTS, models: { astra: KIT_DEFAULTS.models.astra } } })).toEqual(["astra → openai-codex/gpt-6-astra:high"]);
+	});
+
 	it("inherits the lead's model and level by default", () => {
 		const lead = { model: byId("gpt-5.6-sol"), level: "max" as const };
 		expect(label(undefined, context({ lead }))).toBe("openai-codex/gpt-5.6-sol:max");
@@ -235,13 +247,14 @@ describe("resolveLead", () => {
 		expect(resolveLead(context({ config: unset, registry: registry([]) }))).toBeUndefined();
 	});
 
-	it("takes the built-in default only through a Pi OAuth login, never an API key; a lead or sol you set may bill a key", () => {
+	it("takes the built-in default only through a Pi OAuth login, never an API key; a lead or sol you set may bill a key without one", () => {
 		const unset = { models: KIT_DEFAULTS.models };
 		const keyAndCodexLogin = registry(["openai", "openai-codex"], CATALOG, ["openai-codex"]);
 		expect(resolveLead(context({ config: unset, registry: keyAndCodexLogin }))).toMatchObject({ model: { provider: "openai-codex", id: "gpt-6.1-sol" } });
 		expect(resolveLead(context({ config: unset, registry: registry(["openai"], CATALOG, []) }))).toBeUndefined();
 		expect(resolveLead(context({ config: unset, registry: registry(["openai"]) }))).toMatchObject({ model: { provider: "openai", id: "gpt-6.1-sol" } });
-		expect(resolveLead(context({ config: { ...unset, lead: "sol" }, registry: keyAndCodexLogin }))).toMatchObject({ model: { provider: "openai" } });
+		expect(resolveLead(context({ config: { ...unset, lead: "sol" }, registry: keyAndCodexLogin }))).toMatchObject({ model: { provider: "openai-codex" } });
+		expect(resolveLead(context({ config: { ...unset, lead: "sol" }, registry: registry(["openai"], CATALOG, []) }))).toMatchObject({ model: { provider: "openai" } });
 		expect(resolveLead(context({ config: { models: { ...unset.models, sol: "openai/gpt-*-sol" } }, registry: keyAndCodexLogin }))).toMatchObject({ model: { provider: "openai" } });
 	});
 });

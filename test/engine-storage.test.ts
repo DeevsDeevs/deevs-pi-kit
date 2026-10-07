@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { readProcessIdentity } from "../extensions/shared/process-group.ts";
 import { cappedLog } from "../extensions/subagents/engine/background.ts";
-import { lock, prune, SETTLED, unlock } from "../extensions/subagents/engine/storage.ts";
+import { bunSqlite, lock, prune, SETTLED, unlock } from "../extensions/subagents/engine/storage.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -53,6 +53,29 @@ describe("engine storage", () => {
 		expect(JSON.parse(readFileSync(file, "utf8")).pid).toBe(process.pid);
 		await unlock(file);
 		expect(existsSync(file)).toBe(false);
+	});
+
+	it("runs bunSqlite's queued operations in order, one per macrotask so a timer fires between them, and rejects only the one that fails", async () => {
+		const log: string[] = [];
+		const step = (sql: string) => {
+			if (sql === "bad") throw new Error("bad sql");
+			const until = performance.now() + 2;
+			while (performance.now() < until);
+			log.push(sql);
+		};
+		// SAFETY: bunSqlite calls only exec, query().run/get/all and close.
+		const db = bunSqlite(class {
+			exec = step;
+			query = (sql: string) => ({ run: () => step(sql), get: () => (step(sql), null), all: () => (step(sql), []) });
+			close = () => step("close");
+		} as never, ":memory:");
+		log.length = 0;
+		setTimeout(() => log.push("timer"), 0);
+		const ops = [db.run("a"), db.exec("bad"), db.get("b"), db.transaction(async (tx) => tx.run("c")), db.all("d"), db.close()];
+		await expect(ops[1]).rejects.toThrow("bad sql");
+		await Promise.allSettled(ops);
+		expect(log.filter((entry) => entry !== "timer")).toEqual(["a", "b", "BEGIN IMMEDIATE", "c", "COMMIT", "d", "close"]);
+		expect(log.slice(0, log.indexOf("d"))).toContain("timer");
 	});
 
 	it("cuts a command's output file at 10 MB across runs", async () => {
