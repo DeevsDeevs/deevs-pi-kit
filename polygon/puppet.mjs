@@ -17,20 +17,49 @@ export function nextStep(messages, fallback) {
 	const raw = host ? text(host.content) : "";
 	// The last script that starts a line: a workflow agent's own task follows the lead's request it relays, and scripts
 	// nested in a lead's tool arguments sit inside its JSON line. A message that only quotes one (a collaborator's) uses it.
-	const line = [...raw.matchAll(/^\s*POLYGON (.*)$/gm)].at(-1)?.[1] ?? raw.slice(raw.indexOf("POLYGON ") + 8).split("\n")[0];
-	const script = host ? JSON.parse(line) : fallback;
-	const said = messages.filter((m) => m.role === "assistant")
-		.map((m) => `${text(m.content)}\n${(m.tool_calls ?? []).map((t) => `toolCall:${t.id}`).join("\n")}`).join("\n");
+	const line = [...raw.matchAll(/^\s*POLYGON (.*)$/gm)].at(-1)?.[1];
+	const script = host ? quoted(line ?? raw.slice(raw.indexOf("POLYGON ") + 8).split("\n")[0]) : fallback;
+	const spoke = (m) => `${text(m.content)}\n${(m.tool_calls ?? []).map((t) => `toolCall:${t.id}`).join("\n")}`;
+	const said = messages.filter((m) => m.role === "assistant").map(spoke).join("\n");
 	const last = messages.findLastIndex((m) => m.role === "assistant");
+	const lastSaid = last < 0 ? "" : spoke(messages[last]);
 	const fresh = messages.slice(last + 1).map((m) => text(m.content)).join("\n");
-	const step = script.steps.find((s) => !said.includes(`toolCall:${s.id}`) && !said.includes(`[polygon:${s.id}]`) && (!s.on || fresh.includes(s.on)));
-	if (!step) return { text: "[polygon:idle]", agent: script.agent };
+	const isSaid = (s, hay) => hay.includes(`toolCall:${s.id}`) || hay.includes(`[polygon:${s.id}]`);
+	// `then` chains a step to the one before it, so one gate (`on`) can open a run of steps.
+	const step = script.steps.find((s, i) => !isSaid(s, said) && (s.then ? i > 0 && isSaid(script.steps[i - 1], lastSaid) : !s.on || fresh.includes(s.on)));
+	// `idleMs` makes an idle answer take as long as a real model's, so a terminal agent is seen working.
+	if (!step) return { text: "[polygon:idle]", agent: script.agent, delayMs: script.idleMs };
 	const transcript = messages.map((m) => text(m.content)).join("\n");
 	const args = Object.fromEntries(Object.entries(step.args ?? {}).map(([k, v]) => [k, resolveRef(v, transcript)]));
 	return { ...step, args, agent: script.agent };
 }
 
+/**
+ * The script's JSON with whatever follows it on its line, such as the rest of a native's wake line
+ * `Message from main: POLYGON {...} Message from x: ...`: the longest prefix that parses. ponytail: O(n²) on a long line; a streaming JSON scanner if lines grow.
+ */
+function quoted(raw) {
+	for (let end = raw.lastIndexOf("}"); end > 0; end = raw.lastIndexOf("}", end - 1)) {
+		try { return JSON.parse(raw.slice(0, end + 1)); } catch {}
+	}
+	return { steps: [] };
+}
+
+/** A tool "~suffix" is the offered tool ending in suffix (MCP tools carry a server name the script cannot know), or one inside a Responses namespace. */
+function offered(step, request) {
+	if (!step.tool?.startsWith("~")) return step;
+	const suffix = step.tool.slice(1);
+	for (const tool of request.tools ?? []) {
+		const name = tool.function?.name ?? tool.name;
+		if (name?.endsWith(suffix)) return { ...step, tool: name };
+		const inner = (tool.tools ?? []).map((t) => t.function?.name ?? t.name).find((n) => n?.endsWith(suffix));
+		if (inner) return { ...step, tool: inner, namespace: name };
+	}
+	return step;
+}
+
 function resolveRef(value, transcript) {
+	if (Array.isArray(value)) return value.map((v) => resolveRef(v, transcript));
 	if (typeof value !== "string" || !/^\$\/.+\/$/.test(value)) return value;
 	return transcript.match(new RegExp(value.slice(2, -1), "g"))?.at(-1) ?? value;
 }
@@ -99,9 +128,7 @@ export function startPuppet(logFile, marks = [], scripts = {}, { live = false, b
 			if (req.url.includes("count_tokens")) { res.writeHead(200, { "content-type": "application/json" }); return res.end('{"input_tokens":1}'); }
 			if (!wire) { res.writeHead(200, { "content-type": "application/json" }); return res.end("{}"); }
 			const messages = request.messages ?? [];
-			const step = autoSchema(nextStep(messages, scripts[request.model]), request);
-			// A tool "~suffix" is the offered tool ending in suffix: MCP tools carry a server name the script cannot know.
-			if (step.tool?.startsWith("~")) step.tool = (request.tools ?? []).map((t) => t.function?.name ?? t.name).find((n) => n?.endsWith(step.tool.slice(1))) ?? step.tool;
+			const step = offered(autoSchema(nextStep(messages, scripts[request.model]), request), request);
 			log(wire, req.url, request, step, messages);
 			if (wire === "anthropic") return anthropic(res, request, step);
 			chat(res, request, step);
@@ -161,8 +188,10 @@ function responseMessages(request) {
 
 function responses(res, request, log, url) {
 	res.writeHead(200, { "content-type": "text/event-stream" });
-	respond(request, log, url, (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`));
-	res.end();
+	setTimeout(() => {
+		respond(request, log, url, (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`));
+		res.end();
+	}, nextStep(responseMessages(request)).delayMs ?? 0);
 }
 
 /**
@@ -206,10 +235,10 @@ function codexWebSocket(req, socket, log) {
 /** One Responses answer as events; returns its output item. */
 function respond(request, log, url, ev) {
 	const messages = responseMessages(request);
-	const step = autoSchema(nextStep(messages), request);
+	const step = offered(autoSchema(nextStep(messages), request), request);
 	log("responses", url, request, step, messages);
 	const item = step.tool
-		? { type: "function_call", id: `fc_${step.id}`, call_id: step.id, name: step.tool, arguments: JSON.stringify(step.args), status: "completed" }
+		? { type: "function_call", id: `fc_${step.id}`, call_id: step.id, name: step.tool, ...(step.namespace && { namespace: step.namespace }), arguments: JSON.stringify(step.args), status: "completed" }
 		: { type: "message", id: "msg_polygon", role: "assistant", status: "completed", content: [{ type: "output_text", text: reply(step), annotations: [] }] };
 	ev("response.created", { response: { id: "resp_polygon", object: "response", status: "in_progress", model: request.model, output: [] } });
 	ev("response.output_item.added", { output_index: 0, item: { ...item, status: "in_progress", ...(item.content ? { content: [] } : {}) } });
