@@ -101,13 +101,14 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	});
 	let widget: NodeJS.Timeout | undefined;
 	promptWorkflow(pi);
-	pi.on("before_agent_start", (event) => { event.systemPromptOptions.sections.verification = VERIFY_RULE; });
 
 	pi.registerTool({
 		name: "Agent",
 		label: "Agent",
 		description: AGENT_DESCRIPTION + agentTypesList(),
 		promptSnippet: "Delegate a self-contained task to a background agent.",
+		// Base prompt options, unlike a before_agent_start section, also reach runs a task notification starts.
+		promptGuidelines: [VERIFY_RULE],
 		parameters: AgentSchema,
 		async execute(toolCallId, params: AgentParams, signal, _onUpdate, ctx) {
 			const type = findAgentType(params.subagent_type);

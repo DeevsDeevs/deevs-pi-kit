@@ -83,14 +83,12 @@ describe("Subagent extension surface", () => {
 		expect(names.filter((name) => ["workflow-authoring", "collaborators", "background-tasks", "todos", "ask-user", "chain-system"].includes(name!))).toEqual([]);
 	});
 
-	it("gives every Pi lead and Pi worker the verification rule once, and a Claude or Codex worker none", async () => {
+	it("gives every Pi lead (an Agent tool guideline) and Pi worker the verification rule once, and a Claude or Codex worker none", () => {
 		const dir = mkdtempSync(join(tmpdir(), "pi-kit-verify-"));
 		process.env.PI_CODING_AGENT_DIR = dir;
-		const handlers: Array<(event: object, ctx: object) => unknown> = [];
-		subagentsExtension({ registerTool() {}, registerCommand() {}, getActiveTools: () => [], on(name: string, fn: (typeof handlers)[number]) { if (name === "before_agent_start") handlers.push(fn); } } as unknown as ExtensionAPI);
-		const sections: Record<string, string> = {};
-		for (const handler of handlers) await handler({ systemPromptOptions: { sections } }, {});
-		expect(sections.verification).toBe(VERIFY_RULE);
+		let agent: { name: string; promptGuidelines?: string[] } | undefined;
+		subagentsExtension({ registerTool(tool: NonNullable<typeof agent>) { if (tool.name === "Agent") agent = tool; }, registerCommand() {}, on() {} } as unknown as ExtensionAPI);
+		expect(agent?.promptGuidelines).toEqual([VERIFY_RULE]);
 		expect(workerPrompt(findAgentType(undefined), dir).split(VERIFY_RULE)).toHaveLength(2);
 		expect(workerPrompt(findAgentType("reviewer"), dir).split(VERIFY_RULE)).toHaveLength(2);
 		expect(workerPrompt(findAgentType(undefined), dir, undefined, true)).not.toContain(VERIFY_RULE);
