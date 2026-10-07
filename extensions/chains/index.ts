@@ -3,7 +3,7 @@ import { registerChainCommands } from "./commands.ts";
 import { ChainCheckpointService, registerChainCheckpoint } from "./checkpoint.ts";
 import { ChainService } from "./service.ts";
 import { registerChainTools } from "./register.ts";
-import { claimSurface } from "../shared/surface.ts";
+import { activateWithSkill, claimSurface } from "../shared/surface.ts";
 
 export default function chainsExtension(pi: ExtensionAPI): void {
 	if (!claimSurface(pi, "chains")) return;
@@ -11,6 +11,7 @@ export default function chainsExtension(pi: ExtensionAPI): void {
 	const service = new ChainService(process.cwd());
 	const checkpoints = new ChainCheckpointService(pi);
 	registerChainTools(pi, service);
+	activateWithSkill(pi, ["chain"], ["chain-system", "wiki", "grill-me"]);
 	registerChainCommands(pi, service, checkpoints);
 	registerChainCheckpoint(pi, checkpoints);
 

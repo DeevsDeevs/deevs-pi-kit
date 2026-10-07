@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import chainsExtension from "../extensions/chains/index.ts";
 import subagentsExtension from "../extensions/subagents/index.ts";
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
@@ -30,6 +31,7 @@ const skillFile = (skill: string) => fileURLToPath(new URL(`../skills/${skill}/S
 
 const FAMILIES = [
 	{ extension: subagentsExtension, tools: ["job_start", "Monitor"], skills: ["background-tasks", "diagnose", "validation-review", "datadog-pup"] },
+	{ extension: chainsExtension, tools: ["chain"], skills: ["chain-system", "wiki", "grill-me"] },
 ];
 
 it.each(FAMILIES)("registers $tools inactive and loads them when any of $skills is read", ({ extension, tools, skills }) => {

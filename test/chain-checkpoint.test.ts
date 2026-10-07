@@ -42,11 +42,14 @@ describe("Chain checkpoint state", () => {
 		expect(replayed).toEqual(emptyChainCheckpoint());
 	});
 
-	it("reminds once per 80% crossing, also across a reload, never blocks a tool, and gives a commit or fork no reminder", () => {
+	it("reminds once per 80% crossing, also across a reload, with chain loaded, never blocks a tool, and gives a commit or fork no reminder", () => {
 		const branch: Array<Record<string, unknown>> = [];
 		const handlers = new Map<string, (...args: any[]) => unknown>();
 		let percent = 85;
+		let active = ["read"];
 		const pi = {
+			getActiveTools: () => active,
+			setActiveTools: (tools: string[]) => { active = tools; },
 			appendEntry(customType: string, data: unknown) { branch.push({ type: "custom", customType, data }); },
 			on(name: string, handler: (...args: any[]) => unknown) { handlers.set(name, handler); },
 			registerEntryRenderer() {},
@@ -75,6 +78,7 @@ describe("Chain checkpoint state", () => {
 		expect(handlers.has("tool_call")).toBe(false);
 		expect(handlers.has("turn_start")).toBe(false);
 		expect(run()).toContain("context reached 80%");
+		expect(active).toEqual(["read", "chain"]);
 		expect(run()).toBeUndefined();
 		service = load();
 		expect(run()).toBeUndefined();

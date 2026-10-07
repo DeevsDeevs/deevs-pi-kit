@@ -10,6 +10,7 @@ export function registerChainTools(pi: ExtensionAPI, service: ChainService): voi
 		description: CHAIN_TOOL.description,
 		promptSnippet: "Save, load, search and fork durable .chains handoffs.",
 		parameters: CHAIN_TOOL.inputSchema,
+		defaultActive: false,
 		async execute(_toolCallId, params: ChainArgs) {
 			const { text, details } = await runChain(service, params);
 			return { content: [{ type: "text", text }], details };
