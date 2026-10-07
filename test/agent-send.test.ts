@@ -61,4 +61,16 @@ describe("SendMessage to an agent", () => {
 		await reopen([]);
 		expect(saved()).toEqual([]);
 	}, 30_000);
+
+	it("reports a run that throws as failed instead of leaving the agent running", async () => {
+		const engine = await ensureEngine(ctx);
+		const agentId = newAgentId();
+		const notRepo = mkdtempSync(join(tmpdir(), "pi-kit-send-norepo-"));
+		const worktree = { path: join(notRepo, "gone"), branch: "agent/x", repoRoot: notRepo, base: "HEAD" };
+		const cli = { harness: "claude" as const, model: "m", cwd, instructions: "", tools: [], writer: false, dir: join(engine.dir, "cli", agentId) };
+		const { done } = await launch(engine, { agentId, description: "d", prompt: "task", cwd, writer: false, toolUseId: "t3", foreground: true, worktree, cli });
+		const report = await done!;
+		expect([report.status, report.summary.startsWith('Agent "d" failed: ')]).toEqual(["failed", true]);
+		expect(tasks.find(agentId)?.status).toBe("failed");
+	});
 });

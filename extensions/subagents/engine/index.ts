@@ -465,14 +465,14 @@ function buildKit(D: D, owner: string, project: string): Kit {
 		name: "pi-kit.agent-reporter",
 		version: 1,
 		initial: () => ({ phase: "run" }),
-		phases: { run: (task, runtime, context) => report(D, { Outbox, Agents }, task.input, runtime, context) },
+		phases: { run: (task, runtime, context) => report(D, { Outbox, Agents }, task.input, runtime, context).catch(failRun({ Outbox, Agents }, task.input, runtime, context)) },
 		abort: terminal("aborted"),
 	});
 	const CliTask: Kit["CliTask"] = D.defineTask<CliInput, { phase: "run" }, null>({
 		name: "pi-kit.cli-worker",
 		version: 1,
 		initial: () => ({ phase: "run" }),
-		phases: { run: (task, runtime, context) => runCli({ Outbox, Agents, CliTask }, owner, task.input, runtime, context) },
+		phases: { run: (task, runtime, context) => runCli({ Outbox, Agents, CliTask }, owner, task.input, runtime, context).catch(failRun({ Outbox, Agents }, task.input, runtime, context)) },
 		abort: terminal("aborted"),
 	});
 	// SAFETY: one entry for every PI_TOOLS name.
@@ -594,7 +594,7 @@ async function report(D: D, docs: Pick<Kit, "Outbox" | "Agents">, input: Reporte
 }
 
 type Outcome = Pick<TaskNotification, "summary" | "result" | "usage" | "limited"> & Required<Pick<TaskNotification, "status">>;
-type RunRuntime = Pick<Durable.TaskRuntime<unknown, { phase: "run" }, null, object>, "taskId" | "conversationId" | "commit">;
+type RunRuntime = Pick<Durable.TaskRuntime<unknown, { phase: "run" }, null, object>, "taskId" | "conversationId" | "commit" | "signal">;
 
 /** Commits a run's report: the record's status, the notification in the Outbox and, for a CLI worker with queued messages, its next run. */
 async function commitReport(docs: Pick<Kit, "Outbox" | "Agents"> & { CliTask?: Kit["CliTask"] }, input: RunInput, runtime: RunRuntime, context: Ctx, log: string, outcome: Outcome): Promise<{ n: OutboxItem; claimed: boolean }> {
@@ -618,6 +618,18 @@ async function commitReport(docs: Pick<Kit, "Outbox" | "Agents"> & { CliTask?: K
 	tasks.update(input.agentId, { status: next ? "running" : outcome.status });
 	return { n, claimed: Boolean(waiter?.claimed) };
 }
+
+/** A run that threw, other than because Pi is closing, still reports: durable would end it silently and leave the lead waiting. */
+const failRun = (docs: Pick<Kit, "Outbox" | "Agents">, input: RunInput, runtime: RunRuntime, context: Ctx) => async (error: Error): Promise<void> => {
+	if (host.closing || runtime.signal.aborted) throw error;
+	const { n, claimed } = await commitReport(docs, input, runtime, context, "", {
+		status: "failed",
+		summary: agentSummary(input.description, "failed", { error: error instanceof Error ? error.message : String(error) }),
+		result: "",
+		usage: { subagentTokens: 0, toolUses: 0, durationMs: Date.now() - input.startedAt },
+	});
+	await deliver(input.agentId, n, claimed);
+};
 
 /** The report goes to the foreground call that waits for it, or to the lead. */
 async function deliver(agentId: string, n: OutboxItem, claimed: boolean): Promise<void> {
