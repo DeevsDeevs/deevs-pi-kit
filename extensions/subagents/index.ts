@@ -33,7 +33,7 @@ const AgentSchema = Type.Object({
 	prompt: Type.String({ description: "The whole brief: the agent sees nothing else" }),
 	subagent_type: Type.Optional(Type.String()),
 	model: Type.Optional(Type.String({ description: "Omit to run your model and level. Else a configured name (astra, luna, opus) or provider/id[:level]; a model the user named, exactly" })),
-	run_in_background: Type.Optional(Type.Boolean({ description: "Default true. false waits up to 2 minutes for the result, except in a codemode script: only when nothing useful can happen without it" })),
+	run_in_background: Type.Optional(Type.Boolean({ description: "Default true. false waits up to 2 minutes for the result: only when nothing useful can happen without it" })),
 	name: Type.Optional(Type.String({ description: "A name to address the agent by; a later agent with the same name takes it over" })),
 	isolation: Type.Optional(Type.Literal("worktree")),
 	cwd: Type.Optional(Type.String({ description: "Working directory, for one repo inside a multi-repo parent folder; defaults to yours" })),
@@ -105,11 +105,6 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	let widget: NodeJS.Timeout | undefined;
 	promptWorkflow(pi);
 	activateWithSkill(pi, ["job_start", "Monitor"], ["background-tasks", "diagnose", "validation-review", "datadog-pup"]);
-	// A codemode script cannot wait on a foreground agent, and its call id never reaches the transcript that acks a foreground report.
-	const scripted = new Set<string>();
-	pi.on("tool_call", (event) => {
-		if (event.toolName === "Agent" && event.parentToolCallId) scripted.add(event.toolCallId);
-	});
 
 	pi.registerTool({
 		name: "Agent",
@@ -119,9 +114,8 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		// Base prompt options, unlike a before_agent_start section, also reach runs a task notification starts.
 		promptGuidelines: [...WORKING_RULES, "Anything short of irreversible or destructive: state the default you assume and continue."],
 		parameters: AgentSchema,
-		outputSchema: Type.Object({ agentId: Type.String(), outputFile: Type.String() }),
+		exposure: "model-only",
 		async execute(toolCallId, params: AgentParams, signal, _onUpdate, ctx) {
-			const foreground = !scripted.delete(toolCallId) && params.run_in_background === false;
 			const type = findAgentType(params.subagent_type);
 			if (params.name !== undefined && !AGENT_NAME.test(params.name)) throw new Error("A name is 1-64 letters, digits, _ or -, starting with a letter or digit.");
 			if (params.name && RESERVED_NAMES.has(params.name)) throw new Error(`The name '${params.name}' is reserved; pick another.`);
@@ -131,6 +125,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			const limits: Limits = { maxTurns: params.maxTurns, maxTokens: params.maxTokens, timeout: params.timeout };
 			const limitsSet = limitsText(limits);
 			if (resolved.harness !== "pi" && limitsSet) throw new Error(`maxTurns, maxTokens and timeout apply to Pi models only; ${modelLabel(resolved)} runs as a CLI worker.`);
+			const foreground = params.run_in_background === false;
 			const engine = await ensureEngine(ctx);
 			const agentId = newAgentId();
 			const at = await placeAgent(type, resolved, requested, agentId, params.isolation);
@@ -148,7 +143,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				throw error;
 			}
 			const { outputFile, done } = started;
-			const launched = { content: [{ type: "text" as const, text: agentLaunchedResult({ agentId, outputFile, model: modelLabel(resolved), limits: limitsSet, queued, sharesCwd: shared }) }], details: { agentId, outputFile, status: "async_launched" }, structuredContent: { agentId, outputFile } };
+			const launched = { content: [{ type: "text" as const, text: agentLaunchedResult({ agentId, outputFile, model: modelLabel(resolved), limits: limitsSet, queued, sharesCwd: shared }) }], details: { agentId, outputFile, status: "async_launched" } };
 			if (!done) return launched;
 			const outcome = await settle(agentId, done, FOREGROUND_MS, signal);
 			if (outcome === "background") return launched;
@@ -158,7 +153,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			}
 			if (outcome.status !== "completed") throw new Error([outcome.summary, outcome.result].filter(Boolean).join("\n"));
 			const text = agentForegroundResult({ text: outcome.result ?? "", agentId, limited: outcome.limited && outcome.summary, limits: limitsSet, worktree: outcome.worktree, usage: { subagentTokens: outcome.usage?.subagentTokens ?? 0, toolUses: outcome.usage?.toolUses ?? 0, durationMs: outcome.usage?.durationMs ?? 0 } });
-			return { content: [{ type: "text" as const, text }], details: { agentId, outputFile, status: outcome.status }, structuredContent: { agentId, outputFile } };
+			return { content: [{ type: "text" as const, text }], details: { agentId, outputFile, status: outcome.status } };
 		},
 	});
 
