@@ -225,7 +225,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			if (blocked) throw new Error(blocked);
 			const id = newBackgroundTaskId();
 			const outputFile = await startJob(await ensureEngine(ctx), { id, command: params.command, description: params.description, cwd, toolUseId: toolCallId, timeout: params.timeout });
-			return { content: [{ type: "text" as const, text: jobLaunchedResult(id, outputFile, params.timeout) }], details: { taskId: id, outputFile } };
+			return { content: [{ type: "text" as const, text: jobLaunchedResult(id, outputFile, params.timeout, headless(ctx)) }], details: { taskId: id, outputFile } };
 		},
 	});
 
@@ -253,7 +253,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				: params.once ? "its first event or TaskStop"
 				: source === "command" ? "the script exits or you stop it with TaskStop"
 				: "you stop it with TaskStop";
-			return { content: [{ type: "text" as const, text: monitorStartedResult(id, baseline, until) }], details: { taskId: id, outputFile, baseline } };
+			return { content: [{ type: "text" as const, text: monitorStartedResult(id, baseline, until, headless(ctx)) }], details: { taskId: id, outputFile, baseline } };
 		},
 	});
 
@@ -439,6 +439,8 @@ function limitsText(limits: Limits): string | undefined {
 	const set = [limits.maxTurns && `maxTurns ${limits.maxTurns}`, limits.maxTokens && `maxTokens ${limits.maxTokens}`, limits.timeout && `timeout ${limits.timeout} ms`].filter(Boolean);
 	return set.length ? set.join(", ") : undefined;
 }
+
+const headless = (ctx: ExtensionContext): boolean => ctx.mode === "print" || ctx.mode === "json";
 
 function rosterLines(entries: RosterEntry[]): string[] {
 	return [

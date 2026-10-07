@@ -150,6 +150,11 @@ describe("task notification contract", () => {
 		expect(shared.taskStoppedResult("a1", "Review", [{ path: "/wt/a1", branch: "agent/a1" }])).toBe("Successfully stopped task: a1 (Review)\nKept worktrees with changes: /wt/a1 (agent/a1)");
 		expect(shared.taskStoppedResult("bx", "make")).toBe("Successfully stopped task: bx (make)");
 		expect(shared.taskNotRunningResult("a1", "completed")).toBe("Task a1 is not running (status: completed)");
+		expect(shared.jobLaunchedResult("b1", "/o", undefined, true).split("\n")[1]).toBe("Non-interactive run: Pi exits when your turn ends and waits only for agents, workflows and jobs started with a timeout. This job has none: start long work with a timeout, or keep working until it exits.");
+		expect(shared.jobLaunchedResult("b1", "/o", 5_000, true).split("\n").slice(1)).toEqual(["You will be notified when it exits. Do not poll, sleep or wait for it; keep working, and read the output file once the notification arrives.", "Timeout: 5000 ms"]);
+		expect(shared.jobLaunchedResult("b1", "/o").split("\n")[1]).toMatch(/^You will be notified when it exits\./);
+		expect(shared.monitorStartedResult("b2", undefined, "x").includes("Non-interactive")).toBe(false);
+		expect(shared.monitorStartedResult("b2", undefined, "x", true).split("\n")[1]).toBe("Non-interactive run: Pi exits when your turn ends and does not wait for monitor events.");
 		expect(shared.unknownAgentResult("wf_1", [])).toBe("No agent named 'wf_1'. Known agents: none");
 		expect(shared.unknownAgentResult("wf_1", ["a1"], ["w1", "w2"])).toBe("No agent named 'wf_1'. Known agents: a1\nWorkflows (w1, w2) and the agents inside them take no messages: wait for the workflow's <task-notification>, or TaskStop it, edit its script and call Workflow({scriptPath, resumeFromRunId}) to change course.");
 		expect(shared.workflowLaunchedResult({ taskId: "w12345678", summary: "Audit", transcriptDir: "/wf/r", scriptPath: "/wf/s.js", runId: "wf_12345678-abc" }).split("\n")).toEqual([
