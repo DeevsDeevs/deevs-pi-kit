@@ -1,8 +1,11 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { HostedRuntimeClientError } from "./client.ts";
+import { agentDir } from "../shared/config.ts";
 import { guardHookArgs, shellQuote } from "../shared/guard.ts";
 import { collapsePrompt } from "./herdr.ts";
 import { type HostedCollaboratorDriver, type HostedCollaboratorProfile, type HostedNativeCollaboratorDriver, isWriter } from "./schemas/state.ts";
-import type { NativeMessagingConfiguration } from "./mcp/native.ts";
+import { COLLABORATOR_GUIDANCE, type NativeMessagingConfiguration } from "./mcp/native.ts";
 import { toolDefinitions } from "./mcp/tools.ts";
 import type { CollaboratorPersona, ManagedAgentSession } from "./schemas/session.ts";
 
@@ -100,9 +103,14 @@ export function collaboratorProfileTools(profile: HostedCollaboratorProfile): re
 	return PROFILE_TOOLS[profile];
 }
 
+/** Mail starts a Pi collaborator's turns and fires no before_agent_start, so its guidance and persona ride on the launch. */
 function piCommand(input: DriverCommandInput): string[] {
 	const session = input.sessionFile ? ["--session", input.sessionFile] : [];
-	return ["--approve", ...session, "--tools", collaboratorProfileTools(input.profile).join(","), ...modelArguments(input.model)];
+	const persona = input.persona ? ` # Collaborator persona: ${input.persona.name} ${collapsePrompt(input.persona.prompt)}` : "";
+	// A CLI append replaces Pi's own APPEND_SYSTEM.md lookup, so the file Pi would have found (project first) goes first.
+	const own = [join(input.cwd, ".pi", "APPEND_SYSTEM.md"), join(agentDir(), "APPEND_SYSTEM.md")].find((path) => existsSync(path));
+	const prompt = [...(own ? ["--append-system-prompt", own] : []), "--append-system-prompt", `# Collaborator ${COLLABORATOR_GUIDANCE}${persona}`];
+	return ["--approve", ...session, "--tools", collaboratorProfileTools(input.profile).join(","), ...modelArguments(input.model), ...prompt];
 }
 
 function claudeCommand(input: DriverCommandInput): string[] {

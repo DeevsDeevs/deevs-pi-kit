@@ -5,7 +5,6 @@ import { CollaboratorService, LEAD, type CollaboratorManageResult } from "./coll
 import { agentDir } from "../shared/config.ts";
 import { tasks } from "../shared/tasks.ts";
 import { isHeld } from "./schemas/state.ts";
-import { COLLABORATOR_GUIDANCE } from "./mcp/native.ts";
 import { MessagingClient } from "./messaging-client.ts";
 import { NativeAgentService } from "./native-agents.ts";
 import type { HostedHeartbeat, LiveClientRegistration } from "./responses.ts";
@@ -82,15 +81,6 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 			const description = `${participant.driver ?? "pi"} ${profile}${participant.repo ? ` in ${participant.repo}` : ""}`;
 			this.row(ctx, participant.participantId, description, isHeld(participant.state), participant.driver);
 		}
-	}
-
-	/** A collaborator session gets the collaborator guidance and any persona prompt. */
-	beforeAgentStart(systemPrompt: string, ctx: ExtensionContext): { systemPrompt: string } | undefined {
-		this.session.setContext(ctx);
-		const launch = this.store.launch;
-		if (!this.session.isActive || !launch) return undefined;
-		const persona = launch.persona ? `\n\n# Collaborator persona: ${launch.persona.name}\n\n${launch.persona.prompt}` : "";
-		return { systemPrompt: `${systemPrompt}\n\n# Collaborator\n\n${COLLABORATOR_GUIDANCE}${persona}` };
 	}
 
 	restoreSessionState(ctx: ExtensionContext): void {

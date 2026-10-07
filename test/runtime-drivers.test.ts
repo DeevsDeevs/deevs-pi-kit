@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { expect, it } from "vitest";
 import { loadBuiltinAgents } from "../extensions/subagents/agents.ts";
 import { resolveCollaboratorCandidate } from "../extensions/runtime/collaborator-policy.ts";
@@ -53,7 +56,7 @@ it.each(DRIVER_NAMES)("rejects an oversized or control-character %s launch befor
 
 // 3950 escaped bytes of driver argv alone, which only exceeds the limit once the herdr agent start prefix is counted.
 it("counts the herdr prefix against the escaped command limit", () => {
-	const input = { ...representativeInput("pi"), model: `openai-codex/${"m".repeat(3730)}` };
+	const input = { ...representativeInput("pi"), model: `openai-codex/${"m".repeat(3395)}` };
 	expect(() => launchArgv("pi", input)).toThrow("4000-byte");
 });
 
@@ -71,6 +74,20 @@ it.each(["claude-code", "codex"] as const)("collapses a multi-line built-in pers
 	const argv = launchArgv(driver, input);
 	for (const argument of argv) expect(argument).not.toMatch(/\p{Cc}/u);
 	expect(argv.join(" ")).toContain(prompt.split("\n")[0]);
+});
+
+// A Pi collaborator's turns start from mail, which fires no before_agent_start: the guidance never reached its model.
+it("launches a Pi collaborator with the collaborator guidance and its persona in its system prompt", () => {
+	const argv = launchArgv("pi", representativeInput("pi"));
+	const prompt = argv[argv.indexOf("--append-system-prompt") + 1];
+	expect(prompt).toContain("You collaborate with the lead, main.");
+	expect(prompt).toContain(`# Collaborator persona: reviewer ${PERSONA.prompt}`);
+	const project = realpathSync(mkdtempSync(join(tmpdir(), "pi-append-")));
+	mkdirSync(join(project, ".pi"));
+	writeFileSync(join(project, ".pi", "APPEND_SYSTEM.md"), "the user's own addendum");
+	const own = launchArgv("pi", { ...representativeInput("pi"), cwd: project });
+	expect(own.slice(own.indexOf("--append-system-prompt"), own.indexOf("--append-system-prompt") + 2)).toEqual(["--append-system-prompt", join(project, ".pi", "APPEND_SYSTEM.md")]);
+	rmSync(project, { recursive: true, force: true });
 });
 
 it("resumes a stood-down Claude or Codex collaborator in its own native session", () => {
