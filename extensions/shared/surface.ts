@@ -2,7 +2,7 @@ import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isToolCallEventType, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 /** One registration per Pi process across hot reloads: false while an earlier load of the same extension is active. */
 export function claimSurface(pi: ExtensionAPI, name: string): boolean {
@@ -18,30 +18,40 @@ export function claimSurface(pi: ExtensionAPI, name: string): boolean {
 }
 
 /**
- * Keeps an inactive tool off the model's tool list until the kit skill that documents it is loaded: the model reads
- * `skills/<skill>/SKILL.md`, or the user runs `/skill:<skill>`. Pi appends the new declaration before the next request.
- * A resumed, reloaded or re-navigated branch that already read the skill or used the tool gets it back.
+ * Adds the missing tools in one loadout change. Never removes one: after a removal, Responses and Completions providers
+ * resend the whole tool list for the rest of the session instead of appending to the cached one.
  */
-export function activateWithSkill(pi: ExtensionAPI, tool: string, skill: string): void {
-	const skillFile = realPath(fileURLToPath(new URL(`../../skills/${skill}/SKILL.md`, import.meta.url)));
-	const isSkillFile = (cwd: string, path: string) => realPath(resolve(cwd, path.replace(/^~(?=$|\/)/, homedir()))) === skillFile;
-	const activate = () => {
-		const active = pi.getActiveTools();
-		if (!active.includes(tool)) pi.setActiveTools([...active, tool]);
-	};
+export function activateTools(pi: ExtensionAPI, tools: readonly string[]): void {
+	const active = pi.getActiveTools();
+	const missing = tools.filter((tool) => !active.includes(tool));
+	if (missing.length) pi.setActiveTools([...active, ...missing]);
+}
+
+/**
+ * Keeps inactive tools off the model's tool list until a kit skill that documents them is loaded: the model reads
+ * `skills/<skill>/SKILL.md` with read or bash, or the user runs `/skill:<skill>`. Pi appends the new declarations before
+ * the next request. A resumed, reloaded or re-navigated branch that already read the skill or used a tool gets them back.
+ */
+export function activateWithSkill(pi: ExtensionAPI, tools: readonly string[], skills: readonly string[]): void {
+	const skillFiles = new Set(skills.map((skill) => realPath(fileURLToPath(new URL(`../../skills/${skill}/SKILL.md`, import.meta.url)))));
+	const readsSkill = (tool: string, args: Record<string, unknown>, cwd: string) => tool === "read"
+		? skillFiles.has(realPath(resolve(cwd, String(args.path ?? "").replace(/^~(?=$|\/)/, homedir()))))
+		: tool === "bash" && skills.some((skill) => String(args.command ?? "").includes(`skills/${skill}/SKILL.md`));
+	const activate = () => activateTools(pi, tools);
 	pi.on("tool_call", (event, ctx) => {
-		if (isToolCallEventType("read", event) && isSkillFile(ctx.cwd, event.input.path)) activate();
+		if (readsSkill(event.toolName, event.input, ctx.cwd)) activate();
 	});
 	const restore = (ctx: ExtensionContext) => {
 		const used = ctx.sessionManager.getBranch().some((entry) => entry.type === "message" && (
-			entry.message.role === "toolResult" && entry.message.toolName === tool
-			|| entry.message.role === "assistant" && entry.message.content.some((block) => block.type === "toolCall" && block.name === "read" && isSkillFile(ctx.cwd, String(block.arguments.path ?? "")))));
+			entry.message.role === "toolResult" && tools.includes(entry.message.toolName)
+			|| entry.message.role === "assistant" && entry.message.content.some((block) => block.type === "toolCall" && readsSkill(block.name, block.arguments, ctx.cwd))));
 		if (used) activate();
 	};
 	pi.on("session_start", (_event, ctx) => restore(ctx));
 	pi.on("session_tree", (_event, ctx) => restore(ctx));
 	pi.on("input", (event) => {
-		if (event.text.trimStart().split(/\s/, 1)[0] === `/skill:${skill}`) activate();
+		const command = event.text.trimStart().split(/\s/, 1)[0];
+		if (skills.some((skill) => command === `/skill:${skill}`)) activate();
 		return { action: "continue" };
 	});
 }

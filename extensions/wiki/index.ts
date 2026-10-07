@@ -7,7 +7,7 @@ export default function wikiExtension(pi: ExtensionAPI): void {
 	if (!claimSurface(pi, "wiki")) return;
 	const service = new WikiService(process.cwd());
 	registerWikiTools(pi, service);
-	activateWithSkill(pi, "wiki", "wiki");
+	activateWithSkill(pi, ["wiki"], ["wiki"]);
 	pi.on("session_start", async (_event, ctx) => {
 		service.setCwd(ctx.cwd);
 	});
