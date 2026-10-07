@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { rpc } from "../drive.mjs";
@@ -19,9 +19,9 @@ export default {
 	timeoutMs: 600_000,
 	async run(t) {
 		assert.ok(recorded.length, "polygon/private/ holds no recorded scripts");
-		// Every agent is a puppet Pi agent: Claude names point at the puppet too.
-		writeFileSync(join(t.agentDir, "pi-kit.json"), JSON.stringify({ models: Object.fromEntries(["opus", "sonnet", "haiku", "fable"].map((n) => [n, "polygon/puppet"])) }));
-		t.scripts.puppet = { agent: "wf", steps: [{ id: "a1", schema: "auto", text: "stub" }] };
+		// opus, sonnet, haiku and fable run as Claude Code workers: every agent gets the stub, whatever model id it sends.
+		const stub = { agent: "wf", steps: [{ id: "a1", schema: "auto", text: "stub" }] };
+		Object.setPrototypeOf(t.scripts, new Proxy({}, { get: (_, key) => (typeof key === "string" ? stub : undefined) }));
 		const launches = recorded.map((file, i) => {
 			const argsFile = join(PRIVATE, file.replace(/\.js$/, ".args.json"));
 			const args = existsSync(argsFile) ? JSON.parse(readFileSync(argsFile, "utf8")) : undefined;

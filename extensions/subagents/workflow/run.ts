@@ -127,20 +127,24 @@ export async function driveWorkflow(workflow: ParsedWorkflow, args: JsonValue | 
 				agentEvent(row, { resultPreview: preview(step.result) });
 				return step.result;
 			}
+			let outcome: CallOutcome;
 			try {
-				const outcome = await runner.run(crashKey, prompt, options, (agentId) => {
+				outcome = await runner.run(crashKey, prompt, options, (agentId) => {
 					Object.assign(row, { state: "start", agentId, startedAt: Date.now() });
 					agentEvent(row);
 					if (stored === undefined) write({ type: "started", key: step.key, agentId, label: options.label, phase: options.phase });
 				});
-				return settle(row, outcome, step.key, false);
 			} catch (error) {
+				// An abort leaves the call live for the rerun; any other throw is journaled as CC does, so a resume reruns it.
 				if (!signal.aborted) {
 					row.state = "error";
 					agentEvent(row, { error: error instanceof Error ? error.message : String(error) });
+					if (row.agentId) write({ type: "failed", key: step.key, agentId: row.agentId });
 				}
 				throw error;
 			}
+			// Outside the try: settle journals its own failure before it throws a schema error.
+			return settle(row, outcome, step.key, false);
 		},
 	});
 }

@@ -301,12 +301,9 @@ export default function askUserExtension(pi: ExtensionAPI): void {
 		label: "Ask User",
 		description:
 			"Ask the user 1-5 focused questions about an irreversible or destructive choice in an interactive UI. Gather repo/docs/tool evidence first; do not ask questions you can answer yourself.",
-		promptSnippet: "Ask the user about an irreversible or destructive choice through an interactive UI.",
+		promptSnippet: "Ask the user before an irreversible or destructive step.",
 		promptGuidelines: [
-			"Call ask_user only for irreversible or destructive choices; for anything else, state the default you assume and continue.",
-			"Gather available evidence first; do not ask questions tools can answer.",
-			"Batch related questions in one call, each decision-shaped; prefer 2-5 short options with trade-off descriptions, allowing freeform when useful.",
-			"An answer the user types in chat counts as the answer. If the dialog is cancelled with no answer, do not take the irreversible step.",
+			"Anything short of irreversible or destructive: state the default you assume and continue. An answer typed in chat counts; after a cancelled dialog, do not take the step.",
 		],
 		parameters: AskUserSchema,
 		executionMode: "sequential",

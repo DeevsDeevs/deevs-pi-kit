@@ -22,13 +22,9 @@ export function registerTodoTools(pi: ExtensionAPI, state: TodoState): void {
 		name: TODO_TOOL_NAME,
 		label: "Todo List",
 		description: "Manage a compact session-scoped todo list for non-trivial multi-step work. Use for planning and progress tracking; avoid for trivial one-shot tasks.",
-		promptSnippet: "Maintain a compact todo list for multi-step work.",
+		promptSnippet: "Track multi-step work in a todo list.",
 		promptGuidelines: [
-			"Use for non-trivial multi-step implementation, review, research, or debugging work; do not use for one-step answers.",
-			"Keep lists short and actionable, usually 3-8 items.",
-			"Before starting a todo, write the complete list with that item marked in_progress; mark it done or blocked as soon as its outcome is known.",
-			"Use blocked with a short notes reason instead of pretending progress is complete.",
-			"write is a complete replacement: include every todo, preserving stable ids.",
+			"Keep todo lists to 3-8 items. Each write replaces the whole list, stable ids kept: mark the item you start in_progress, and an item done, or blocked with a notes reason, once its outcome is known.",
 		],
 		parameters: TodoListSchema,
 		async execute(_toolCallId, params: TodoListInput, _signal, _onUpdate, ctx): Promise<AgentToolResult<TodoDetails>> {

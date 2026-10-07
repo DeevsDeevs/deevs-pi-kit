@@ -1,6 +1,6 @@
 ---
 name: todos
-description: "Track non-trivial current-session work with todo_list: multi-step implementation, debugging, validation, research, subagent coordination. Not for one-shot answers."
+description: "Track multi-step session work with todo_list: implementation, debugging, validation, research, agent coordination."
 ---
 
 # Managed Todos

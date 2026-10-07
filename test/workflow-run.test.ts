@@ -70,6 +70,20 @@ describe("workflow run driver", () => {
 		expect(progress.agents.map((row) => row.cached)).toEqual([true, true, true]);
 	});
 
+	it("journals a call that throws after it started as failed, so a resume reruns it", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "wf-run-"));
+		const runner: AgentRunner = {
+			stored: async () => undefined,
+			run: async (_key, _prompt, _options, start) => {
+				start("a1");
+				throw new Error("lost");
+			},
+		};
+		await expect(drive(dir, runner)).rejects.toThrow("lost");
+		const journal = readFileSync(join(dir, "journal.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+		expect(journal.filter((record) => record.type === "failed").map((record) => record.agentId)).toEqual(["a1", "a1", "a1"]);
+	});
+
 	it("frames the snapshotted request before the computed task, every line indented", () => {
 		expect(framePrompt("fix it\nplease", "POLYGON {}").split("\n")).toEqual([
 			expect.stringMatching(/^\[Workflow harness — user request\] /),
