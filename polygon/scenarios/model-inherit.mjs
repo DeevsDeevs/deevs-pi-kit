@@ -16,6 +16,6 @@ export default {
 		const { data: state } = await lead.send({ type: "get_state" });
 		const leadModel = `${state.model.provider}/${state.model.id}`;
 		assert.match(toolCalls(lead.events).find((c) => c.name === "Agent").text, new RegExp(`^Model: ${leadModel}:${state.thinkingLevel}$`, "m"));
-		assert.deepEqual([...new Set(agentReplyModels(t))], [leadModel]);
+		assert.deepEqual([...new Set(agentReplyModels(t))], [leadModel], "the agents' replies in pi-kit/agents/**/engine.sqlite, read through pi-durable's entries table");
 	},
 };
