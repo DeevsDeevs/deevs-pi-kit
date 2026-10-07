@@ -173,6 +173,30 @@ describe("hosted runtime client vertical", () => {
 		await reloaded.session.sessionShutdown();
 	}, 20_000);
 
+	it("tells the user to close an older service that does not know service.exit, and starts no second one", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-kit-runtime-old-"));
+		roots.push(root);
+		const client = new HostedRuntimeClient(join(root, "runtime.sock"), 500);
+		const old = createServer((socket) => socket.on("data", (line) => {
+			const request = JSON.parse(String(line)) as { id: string; method: string };
+			const response = request.method === "hello"
+				? { v: 1, id: request.id, ok: true, result: { version: 1, runtimeId: "rt_old" } }
+				: { v: 1, id: request.id, ok: false, error: { code: "invalid_request", message: "Unknown method." } };
+			socket.end(`${JSON.stringify(response)}\n`);
+		}));
+		await new Promise<void>((resolve) => old.listen(client.socketPath, resolve));
+		const exec = vi.fn();
+		vi.stubEnv("HERDR_ENV", "1");
+		try {
+			await expect(startRuntimeService({ exec } as never, client, root, { isProjectTrusted: () => true }, true))
+				.rejects.toMatchObject({ code: "conflict", message: expect.stringContaining("close its pi-kit-services Herdr workspace") });
+		} finally {
+			vi.unstubAllEnvs();
+			old.close();
+		}
+		expect(exec).not.toHaveBeenCalled();
+	}, 15_000);
+
 	it("guards a collaborator whose launch names no profile as read-only", () => {
 		const integration = new HostedRuntimeIntegration({} as never, join(tmpdir(), "pi-kit-runtime-unused"));
 		const entry = { type: "custom", customType: HOSTED_SESSION_ENTRY, data: { version: 3, launch: { driver: "pi" } } };
