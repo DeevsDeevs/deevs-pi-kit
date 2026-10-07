@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -20,7 +20,7 @@ describe("Subagent extension surface", () => {
 		expect(commands).toEqual(["agents"]);
 	});
 
-	it("switches only a new session to the lead model, with one warning when it is not logged in", async () => {
+	it("switches only a new session to the lead model; an unresolved default stays silent, a set lead warns once", async () => {
 		process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "pi-kit-lead-"));
 		const sol = { provider: "openai-codex", id: "gpt-6.1-sol" };
 		const start = async (loggedIn: boolean, assistant: boolean) => {
@@ -42,7 +42,10 @@ describe("Subagent extension surface", () => {
 			return seen;
 		};
 		expect(await start(true, false)).toEqual(["set gpt-6.1-sol"]);
+		expect(await start(false, false)).toEqual([]);
+		writeFileSync(join(process.env.PI_CODING_AGENT_DIR, "pi-kit.json"), JSON.stringify({ lead: "sol" }));
 		expect(await start(false, false)).toEqual(["warning"]);
+		expect(await start(false, false)).toEqual([]);
 		expect(await start(true, true)).toEqual([]);
 	});
 

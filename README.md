@@ -38,7 +38,7 @@ Upgrade with `claude plugin marketplace update deevs-pi-kit` or `codex plugin ma
 > Start a mission: move the CLI to the new config format; done when npm test passes.
 ```
 
-Ask in chat. Collaborators need Pi running inside Herdr in a trusted project; nothing else needs setting up. Agents, workflows and jobs report once as a `<task-notification>`, a monitor once per event; a collaborator's reply arrives as a message that starts a turn. No start, stop or cleanup opens a dialog unless `autonomy` is `false`.
+Ask in chat. Collaborators need Pi running inside Herdr in a trusted project; nothing else needs setting up. With an OpenAI login (`openai` or `openai-codex`), a new session switches to the newest `sol`; `"lead": null` in [pi-kit.json](#pi-kitjson) keeps Pi's own model. Agents, workflows and jobs report once as a `<task-notification>`, a monitor once per event; a collaborator's reply arrives as a message that starts a turn. No start, stop or cleanup opens a dialog unless `autonomy` is `false`.
 
 ## What each piece does
 
@@ -70,7 +70,7 @@ The only settings file: `~/.pi/agent/pi-kit.json` for every project, `.pi/pi-kit
 ```
 
 - `models`: names for models or patterns (`*` stands for a version, the newest wins), each with an optional `:level`; `a|b` takes the first that resolves, and a trailing `:level` applies to every alternative. Built in: `sol`, `astra`, `luna` and `terra` (the newest OpenAI GPT of that name, on your ChatGPT login under `openai`, else the legacy `openai-codex`) and `opus`, `sonnet`, `haiku` and `fable` (Claude Code workers). An `openai` login through `OPENAI_API_KEY` also matches, and bills the API. A trusted project's names add to the global ones.
-- `lead`: the model a new session switches to when started without `--model` or `--provider` (`"sol:xhigh"` sets the level too); `null` turns this off. Restored sessions keep their model. An untrusted project's `models` and `lead` are ignored.
+- `lead`: the model a new session switches to when started without `--model` or `--provider` (`"sol:xhigh"` sets the level too); `null` turns this off. Unset, it is `sol` and is skipped silently without an OpenAI login; a `lead` you set warns once when it does not resolve. Restored sessions keep their model. An untrusted project's `models` and `lead` are ignored.
 - `autonomy` (default `true`): orchestration never waits on a dialog, and the lead takes it as standing permission to run workflows. `false` asks before each collaborator change and stops Mission continues. A project's value counts only once the project is trusted.
 - `guard`: in the global file, `"detached"`, `"forcePush"` or `"rmRf": false` turns a rule off; a project file can only add `block` patterns, and the patterns from both files add up (`"terraform destroy"` matches `terraform` with `destroy` among its arguments).
 - `codexFast`: sends `service_tier: "priority"` on requests made with your ChatGPT login, under `openai` or the legacy `openai-codex`; never with an API key. A project's value counts only once the project is trusted.
