@@ -2,12 +2,12 @@ import { expect, it } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { remindSilentTurns, SILENT_TURN_REMINDER } from "../extensions/subagents/silent-turns.ts";
 
-type Handler = (event: Record<string, unknown>) => { entries?: Array<{ content?: unknown; display?: boolean }> } | undefined;
+type Handler = (event: Record<string, unknown>, ctx?: { mode: string }) => { entries?: Array<{ content?: unknown; display?: boolean }> } | undefined;
 
-function lead() {
+function lead(mode = "tui") {
 	const handlers = new Map<string, Handler>();
 	remindSilentTurns({ on(name: string, handler: Handler) { handlers.set(name, handler); } } as unknown as ExtensionAPI);
-	const turn = (...content: Array<Record<string, unknown>>) => handlers.get("turn_end")!({ message: { role: "assistant", content }, toolResults: [{}], entries: [] })?.entries ?? [];
+	const turn = (...content: Array<Record<string, unknown>>) => handlers.get("turn_end")!({ message: { role: "assistant", content }, toolResults: [{}], entries: [] }, { mode })?.entries ?? [];
 	return { turn, input: () => handlers.get("input")!({}) };
 }
 
@@ -30,4 +30,8 @@ it("restarts the count on text or ask_user, and caps reminders at three between 
 	expect(silentTurns(20, turn).filter(Boolean)).toHaveLength(3);
 	input();
 	expect(silentTurns(5, turn)).toEqual([0, 0, 0, 0, 1]);
+});
+
+it("never reminds in print or json mode, where nobody reads the updates", () => {
+	for (const mode of ["print", "json"]) expect(silentTurns(20, lead(mode).turn).filter(Boolean)).toHaveLength(0);
 });

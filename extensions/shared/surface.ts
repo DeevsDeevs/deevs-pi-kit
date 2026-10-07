@@ -17,6 +17,18 @@ export function claimSurface(pi: ExtensionAPI, name: string): boolean {
 	return true;
 }
 
+export const HEADLESS_GUIDELINE = "Non-interactive run: nobody will reply before Pi exits. Where you would ask the user or leave them a decision, apply the default you would propose and name it in your final answer. Do not take an irreversible or destructive step you would have asked about; name it in your final answer instead.";
+
+/** Print and json mode: nobody will reply and no UI shows. */
+export const isHeadless = (ctx: Pick<ExtensionContext, "mode">): boolean => ctx.mode === "print" || ctx.mode === "json";
+
+/** Keeps tools that need a person or Herdr's UI off the model's tool list in print and json mode, as Claude Code's -p drops AskUserQuestion. */
+export function interactiveOnly(pi: ExtensionAPI, tools: string[]): void {
+	pi.on("session_start", (_event, ctx) => {
+		if (isHeadless(ctx)) pi.setActiveTools(pi.getActiveTools().filter((tool) => !tools.includes(tool)));
+	});
+}
+
 /**
  * Keeps an inactive tool off the model's tool list until the kit skill that documents it is loaded: the model reads
  * `skills/<skill>/SKILL.md`, or the user runs `/skill:<skill>`. Pi appends the new declaration before the next request.
