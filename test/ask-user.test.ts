@@ -97,7 +97,7 @@ describe("ask_user mode behavior", () => {
 	});
 });
 
-it("tells a print or json mode lead to apply its proposed default instead of asking", () => {
+it("tells a print or json mode lead to apply its proposed default instead of asking, but never to take an irreversible or destructive step", () => {
 	const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();
 	askUserExtension({ registerTool() {}, on(name: string, handler: (event: unknown, ctx: unknown) => void) { handlers.set(name, handler); } } as unknown as ExtensionAPI);
 	const guidelines = (mode: string) => {
@@ -106,4 +106,5 @@ it("tells a print or json mode lead to apply its proposed default instead of ask
 		return event.systemPromptOptions.promptGuidelines;
 	};
 	expect([guidelines("print"), guidelines("json"), guidelines("rpc"), guidelines("tui")]).toEqual([[HEADLESS_GUIDELINE], [HEADLESS_GUIDELINE], [], []]);
+	expect(HEADLESS_GUIDELINE).toContain("Do not take an irreversible or destructive step you would have asked about; name it in your final answer instead.");
 });
