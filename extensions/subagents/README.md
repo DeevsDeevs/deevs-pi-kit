@@ -33,7 +33,7 @@ Personas are `agents/*.md` with Claude Code's frontmatter (`name`, `description`
 
 ## Workflow
 
-`Workflow({script | scriptPath | name, args?, resumeFromRunId?})` runs a plain JavaScript script in a `node:vm` sandbox inside a durable task and returns at once; the run reports once as a `<task-notification>` with the result (cut at 8,000 chars), the failed agents and usage counters. `name` looks in `.pi/workflows/<name>.js`, then `~/.pi/agent/workflows/<name>.js`.
+`Workflow({script | scriptPath | name, args?, resumeFromRunId?})` runs a plain JavaScript script in a `node:vm` sandbox inside a durable task and returns at once; the run reports once as a `<task-notification>` with the result (cut at 8,000 chars), the failed agents and usage counters. `name` looks in `.pi/workflows/<name>.js` when the project is trusted, then `~/.pi/agent/workflows/<name>.js`.
 
 - `agent(prompt, opts)` starts an agent behind the same throttle of 16 as `Agent`; a failed one returns `null`. There is no cap on calls or items.
 - Each agent gets the user's request as it was when the run launched, framed apart from the script's task, so a question asked mid-run never becomes its task.
@@ -45,7 +45,7 @@ Personas are `agents/*.md` with Claude Code's frontmatter (`name`, `description`
 
 ## Engine
 
-`engine/` is the only code that imports pi-durable: `index.ts` opens the stores and runs agents, `workflow.ts` runs workflows and StructuredOutput, `host.ts` holds what they share (the throttle, agent placement), `background.ts` jobs and monitors, `cli.ts` Claude and Codex workers. Each lead session has a store under `<agent dir>/pi-kit/agents/<project hash>/<session id>/` (`engine.sqlite`, `engine.lock`, `out/<agentId>.md`). A store untouched for 14 days and held by no Pi is removed when an engine opens, with workflow runs and saved scripts as old. Agents run Pi's own `read`, `grep`, `find`, `ls`, `bash`, `edit` and `write` with the kit guard on every `bash`. The engine survives `/reload`; when Pi exits, agents pause, and the next start of their session reaps orphaned tool processes (`PI_KIT_OWNER`), resumes them, and delivers each report once: the session file is the acknowledgement.
+`engine/` is the only code that imports pi-durable: `index.ts` opens the stores and runs agents, `workflow.ts` runs workflows and StructuredOutput, `host.ts` holds what they share (the throttle, agent placement), `background.ts` jobs and monitors, `cli.ts` Claude and Codex workers. Each lead session has a store under `<agent dir>/pi-kit/agents/<project hash>/<session id>/` (`engine.sqlite`, `engine.lock`, `out/<agentId>.md`). When an engine opens it removes a store that closed settled (nothing running or paused, every report in the session file), is held by no Pi and is untouched for 14 days, workflow runs as old that ended (`<runId>.json` exists), and saved scripts as old. Agents run Pi's own `read`, `grep`, `find`, `ls`, `bash`, `edit` and `write` with the kit guard on every `bash`. The engine survives `/reload`; when Pi exits, agents pause, and the next start of their session reaps orphaned tool processes (`PI_KIT_OWNER`), resumes them, and delivers each report once: the session file is the acknowledgement.
 
 ## Claude Code and Codex workers
 

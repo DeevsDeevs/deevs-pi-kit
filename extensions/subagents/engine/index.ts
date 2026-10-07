@@ -136,8 +136,9 @@ export async function reinstall(): Promise<void> {
 	}
 }
 
-/** On quit: close each harness, which aborts its tools and leaves work pending for the next start, then reap what survived and unlock. */
-export async function closeAll(): Promise<void> {
+/** On quit: close each harness, which aborts its tools and leaves work pending for the next start, then reap what survived and unlock. The roster has let go of the quitting session by then, so its acks come from `ctx`. */
+export async function closeAll(ctx?: ExtensionContext): Promise<void> {
+	const onScreen = ctx && { session: ctx.sessionManager.getSessionId(), acks: sessionAcks(ctx) };
 	host.closing = true;
 	const engines = [...host.engines.values()];
 	host.engines.clear();
@@ -145,7 +146,7 @@ export async function closeAll(): Promise<void> {
 		const engine = await pending.catch(() => undefined);
 		if (!engine) continue;
 		clearInterval(engine.heartbeat);
-		const idle = await settled(engine).catch(() => false);
+		const idle = await settled(engine, onScreen?.session === engine.session ? onScreen.acks : undefined).catch(() => false);
 		await engine.harness.close(CTX).catch(() => {});
 		await reap(`PI_KIT_OWNER=${engine.dir}`);
 		if (idle) await writeFile(join(engine.dir, SETTLED), "").catch(() => {});
@@ -155,8 +156,8 @@ export async function closeAll(): Promise<void> {
 }
 
 /** Nothing running or paused, and every report in the session file: only such a store may be pruned. */
-async function settled({ harness, kit, root, session }: Engine): Promise<boolean> {
-	await root.commit(async (tx) => pruneOutbox(await tx.doc(kit.Outbox, root.id), session), CTX);
+async function settled({ harness, kit, root, session }: Engine, acks: ReturnType<typeof sessionAcks> | undefined): Promise<boolean> {
+	await root.commit(async (tx) => pruneOutbox(await tx.doc(kit.Outbox, root.id), session, acks), CTX);
 	const records = [agentRecords(await harness.snapshot(kit.Agents, root.id, CTX)), workflowRecords(await harness.snapshot(kit.Workflows, root.id, CTX)), backgroundRecords(await harness.snapshot(kit.Background, root.id, CTX))].flatMap(Object.values);
 	return records.every((record) => record.status !== "running") && outboxItems(await harness.snapshot(kit.Outbox, root.id, CTX)).length === 0;
 }

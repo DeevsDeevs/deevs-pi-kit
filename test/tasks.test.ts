@@ -169,13 +169,13 @@ describe("task notification contract", () => {
 });
 
 describe("task delivery", () => {
-	it("in print mode holds a settled run until a running task reports, so its turn runs before Pi exits; never for a job without a timeout", async () => {
+	it("in print mode holds a settled run until a running task reports, so its turn runs before Pi exits; past a timed job's deadline too, since its timer reports it; never for a job without a timeout", async () => {
 		const pi = lead("print");
 		shared.tasks.install(pi.pi);
 		await pi.start("s1");
 		shared.tasks.register({ id: "b0", kind: "job", description: "no timeout", status: "running", ownerSession: "s1", startedAt: 0 });
 		await pi.settle();
-		shared.tasks.register({ id: "b1", kind: "job", description: "d", status: "running", ownerSession: "s1", startedAt: 0, deadline: Date.now() + 60_000 });
+		shared.tasks.register({ id: "b1", kind: "job", description: "d", status: "running", ownerSession: "s1", startedAt: 0, deadline: 1 });
 		let settled = false;
 		const settling = Promise.resolve(pi.settle()).then(() => { settled = true; });
 		await new Promise((resolve) => setTimeout(resolve, 300));

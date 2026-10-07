@@ -13,7 +13,7 @@ Keep each workflow one well-scoped fan-out: **understand** (readers per subsyste
 
 ## Calling the tool
 
-Send the script inline as `script`. Each call saves the script and returns its path; to change a run, edit that file and call `Workflow({scriptPath})`. `name` runs `.pi/workflows/<name>.js` or `~/.pi/agent/workflows/<name>.js`. `args` reaches the script as the global `args`; a string that starts with `{` or `[` is parsed as JSON.
+Send the script inline as `script`. Each call saves the script and returns its path; to change a run, edit that file and call `Workflow({scriptPath})`. `name` runs `.pi/workflows/<name>.js` in a trusted project, or `~/.pi/agent/workflows/<name>.js`. `args` reaches the script as the global `args`; a string that starts with `{` or `[` is parsed as JSON.
 
 The script opens with the meta block, a plain literal (no variables, calls, spreads or `${}`):
 

@@ -19,7 +19,7 @@ const ctx = {
 	sessionManager: { getSessionId: () => "s", getEntries: () => [] },
 } as unknown as ExtensionContext;
 
-afterAll(closeAll);
+afterAll(() => closeAll());
 
 describe("SendMessage to an agent", () => {
 	it("steers a message sent before the prompt is placed in right after it, and reports once", async () => {
@@ -86,6 +86,20 @@ describe("SendMessage to an agent", () => {
 		await startJob(await ensureEngine(idle), { id: "j1", command: "sleep 30", description: "d", cwd, toolUseId: "t" });
 		await closeAll();
 		expect(existsSync(join(dir, SETTLED))).toBe(false);
+	});
+
+	it("closes a store settled at quit once its session holds the last report, though the roster already let go of the session", async () => {
+		const entries: object[] = [];
+		const handlers = new Map<string, (event: object, context: ExtensionContext) => Promise<void> | void>();
+		tasks.install({ on: (name: string, handler: (event: object, context: ExtensionContext) => void) => handlers.set(name, handler), sendMessage: (message: object) => entries.push({ type: "custom_message", ...message }) } as unknown as ExtensionAPI);
+		const quitting = { ...ctx, isIdle: () => true, hasPendingMessages: () => false, ui: { setStatus() {} }, sessionManager: { getSessionId: () => "quit", getEntries: () => entries } } as unknown as ExtensionContext;
+		await handlers.get("session_start")!({ reason: "startup" }, quitting);
+		const engine = await ensureEngine(quitting);
+		await startJob(engine, { id: "once", command: "true", description: "d", cwd, toolUseId: "t" });
+		await vi.waitFor(() => expect(entries).toHaveLength(1), { timeout: 10_000 });
+		await handlers.get("session_shutdown")!({ reason: "quit" }, quitting);
+		await closeAll(quitting);
+		expect(existsSync(join(engine.dir, SETTLED))).toBe(true);
 	});
 
 	it("puts running tasks and the 20 finished most recently started back on the roster at reopen", async () => {

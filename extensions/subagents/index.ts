@@ -334,9 +334,9 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		await resumeSession(ctx).catch((error) => ctx.ui.notify(`Agents of this session did not resume: ${error instanceof Error ? error.message : String(error)}`, "error"));
 		tasks.markResumed(ctx.sessionManager.getSessionId());
 	});
-	pi.on("session_shutdown", async (event) => {
+	pi.on("session_shutdown", async (event, ctx) => {
 		clearInterval(widget);
-		if (event.reason === "quit") await closeAll();
+		if (event.reason === "quit") await closeAll(ctx);
 	});
 }
 

@@ -174,9 +174,9 @@ function resumeGate(session: string): { done: Promise<void>; resolve(): void } {
 	return gates.get(session)!;
 }
 
-/** Waits until a notification beyond `before` is sent, or no agent, workflow or job before its timeout of the session runs. */
+/** Waits until a notification beyond `before` is sent, or no agent, workflow or job with a timeout (its timer always ends it) of the session runs. */
 async function nextReport(session: string, before: Set<string>): Promise<void> {
-	const running = () => tasks.list(session).some((task) => task.status === "running" && (task.kind === "agent" || task.kind === "workflow" || (task.deadline ?? 0) > Date.now()));
+	const running = () => tasks.list(session).some((task) => task.status === "running" && (task.kind === "agent" || task.kind === "workflow" || task.deadline !== undefined));
 	while (running() && [...state.sent.keys()].every((id) => before.has(id))) await new Promise((resolve) => setTimeout(resolve, 200));
 }
 

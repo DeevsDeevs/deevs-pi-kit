@@ -37,7 +37,7 @@ async function run(responses: FauxResponseStep[]): Promise<{ status: string; res
 	return vi.waitFor(() => JSON.parse(readFileSync(record, "utf8")), { timeout: 10_000 });
 }
 
-afterAll(closeAll);
+afterAll(() => closeAll());
 
 describe("StructuredOutput in a workflow agent()", () => {
 	it("refuses a schema agent() cannot use before anything starts", async () => {

@@ -279,8 +279,7 @@ const outboxItem = (item: Durable.JsonObject) => decoded<OutboxItem>(item)!;
 export const outboxItems = (doc: OutboxDoc | undefined): OutboxItem[] => (doc?.items ?? []).map(outboxItem);
 
 /** Drops what the session file already holds: delivered reports, and silent ones whose foreground call it answered. */
-export function pruneOutbox(outbox: OutboxDoc, session: string): void {
-	const acks = tasks.acks(session);
+export function pruneOutbox(outbox: OutboxDoc, session: string, acks = tasks.acks(session)): void {
 	if (acks) outbox.items = outbox.items.filter((item) => !acks.delivered.has(outboxItem(item).notificationId) && unsent(acks.answered)(outboxItem(item)));
 }
 
