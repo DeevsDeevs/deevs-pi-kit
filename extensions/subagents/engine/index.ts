@@ -17,7 +17,7 @@ import { guardBashCall } from "../../shared/guard.ts";
 import { loadKitConfig, readCodexCatalog, resolveModel, type ModelContext } from "../../shared/models.ts";
 import { trySignalGroup } from "../../shared/process-group.ts";
 import { agentSummary, newAgentId, sessionAcks, tasks, workflowDiagnostics, workflowRecovery, workflowSummary, type TaskNotification, type TaskStatus } from "../../shared/tasks.ts";
-import { addWorktree, agentWorktreeAt, createAgentWorktree, finishAgentWorktree, git, type AgentWorktree } from "../../shared/worktree.ts";
+import { addWorktree, agentWorktreeAt, createAgentWorktree, finishAgentWorktree, git, gitTopLevel, type AgentWorktree } from "../../shared/worktree.ts";
 import { LEVELS, PI_TOOLS, workerPrompt, workflowAgentType, type PiToolName } from "../definitions.ts";
 import { parseWorkflow } from "../workflow/meta.ts";
 import { driveWorkflow, framePrompt, newProgress, runRecord, usage, type AgentRunner, type CallOutcome, type Progress } from "../workflow/run.ts";
@@ -344,6 +344,7 @@ export async function send(engine: Engine, agentId: string, message: string, too
 	const from = { entries: (await scan(conversation, CTX)).length, tokens: totalTokens(await engine.harness.snapshot(D.UsageDoc, conversationId, CTX)) };
 	const outcome = await engine.root.commit(async (tx) => {
 		const current = agentRecords(await tx.doc(engine.kit.Agents, engine.root.id))[agentId]!;
+		if (current.stoppedBy === "user") return "refused" as const;
 		// Its reporter has not placed the prompt yet (queued, just launched or reopened): it steers `pending` in right after.
 		if (current.status === "running") {
 			if (host.live.get(agentId)?.placed) return "placed" as const;
@@ -1099,10 +1100,12 @@ function callRunner(D: D, docs: WorkflowDocs, engine: Engine, input: WorkflowInp
 		const resolved = resolveModel(options.model ?? type.model, await modelContext(input), LEVELS.find((level) => level === options.effort) ?? type.effort);
 		const agentId = newAgentId();
 		const requested = resolve(input.cwd, options.cwd ?? ".");
-		const worktree = (options.isolation ?? type.isolation) === "worktree" ? await createAgentWorktree({ cwd: requested, agentId, agentDir: getAgentDir() }) : undefined;
+		const writer = type.tools.includes("edit") || type.tools.includes("write");
+		// As with Agent: Claude workers bypass permissions, so a Claude writer in a repository always gets its own worktree.
+		const isolate = (options.isolation ?? type.isolation) === "worktree" || resolved.harness === "claude" && writer && await gitTopLevel(requested) !== undefined;
+		const worktree = isolate ? await createAgentWorktree({ cwd: requested, agentId, agentDir: getAgentDir() }) : undefined;
 		const cwd = worktree ? join(worktree.path, relative(worktree.repoRoot, realpathSync(requested))) : requested;
 		if (resolved.harness !== "pi") {
-			const writer = type.tools.includes("edit") || type.tools.includes("write");
 			const call: CallRecord = { agentId, isolated: worktree, cli: { harness: resolved.harness, model: resolved.model, level: resolved.level, cwd, instructions: workerPrompt(type, cwd, worktree, true), tools: type.tools, writer, schema: options.schema, dir: join(engine.dir, "cli", agentId) } };
 			await save(key, agentId, call);
 			return call;

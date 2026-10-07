@@ -349,7 +349,13 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			if (!entry) return ctx.ui.notify(`No task found with ID: ${id}`, "warning");
 			if (entry.status !== "running") return ctx.ui.notify(`Task ${entry.id} is not running (status: ${entry.status})`, "warning");
 			if (entry.kind === "agent") await stop(await ensureEngine(ctx), entry.id, "user");
-			else await entry.stop?.();
+			else {
+				try {
+					await entry.stop?.();
+				} catch (error) {
+					return ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
+				}
+			}
 			if (tasks.find(entry.id)?.status === "running") tasks.update(entry.id, { status: "killed" });
 			ctx.ui.notify(`Stopped ${entry.id} (${entry.description})`, "info");
 		},

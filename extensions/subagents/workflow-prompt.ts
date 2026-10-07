@@ -19,7 +19,7 @@ Before you write a script, load the \`workflow-authoring\` skill (script API, pi
 export const WORKFLOW_FIELDS = {
 	script: "Plain JavaScript: `export const meta = { name, description, phases }` as a pure literal first, then the body using agent(), parallel(), pipeline() and phase().",
 	scriptPath: "A script file. Every call saves its script and returns this path: edit the file and pass it here to iterate. Wins over `name` and `script`.",
-	name: "A saved workflow: .pi/workflows/<name>.js or ~/.pi/agent/workflows/<name>.js.",
+	name: "A saved workflow: .pi/workflows/<name>.js or ~/.pi/agent/workflows/<name>.js. Leave unset when sending `script`.",
 	args: "The script's global `args`; a string that starts with `{` or `[` is parsed as JSON.",
 	resumeFromRunId: "Run ID of an earlier run in this session: its unchanged prefix of agent() calls replays from the journal. Stop the run with TaskStop first if it still runs.",
 } as const;
