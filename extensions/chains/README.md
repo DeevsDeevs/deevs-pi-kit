@@ -1,8 +1,6 @@
 # Chains
 
-Durable work handoffs stored as markdown links under project-local `.chains/`.
-
-Chains remain deliberate human-readable summaries; Pi Kit never auto-generates noisy links.
+Work handoffs as markdown links under the project's `.chains/`. The model writes every link; nothing is saved automatically. When to save and what a link holds is in [skills/chain-system](../../skills/chain-system/SKILL.md).
 
 ## Tool
 
@@ -16,18 +14,14 @@ One `chain` tool with an `action`: `save`, `load`, `fork`, `context` (a bounded 
 
 Saving, loading, forking and searching go through the lead's `chain` tool; ask in chat.
 
-## State-aware checkpoint discipline
+## Checkpoint reminder
 
-Pi custom entries track:
+Pi session entries track the active chain and branch, `saved` or `checkpoint due`, the due reasons and the latest link, and are restored on resume and tree navigation.
 
-- the active Chain and branch;
-- `saved` versus `checkpoint due`;
-- concrete due reasons;
-- latest saved link.
-
-Checkpoint state is restored after resume/tree navigation. At 80% context usage the checkpoint becomes due and one reminder to save a concise Chain link joins the system prompt; no tool is blocked and Pi's own compaction runs as configured. Dropping below 80% or compacting resets the one-shot threshold. Successful `chain` calls update state directly. Descendant advances of repository HEAD are detected without parsing shell commands, while sideways checkouts and resets are ignored. Chain forks also mark checkpoints due. Ordinary edits and bounded Jobs do not: activity is not automatically a durable milestone.
-
-The footer stays quiet while saved and shows compact `chain!` only when attention is needed. Before the next agent turn, a due/resume reminder is set as the `chain_checkpoint` system-prompt section from state.
+- At 80% context the checkpoint becomes due and one reminder to save a link joins the system prompt as the `chain_checkpoint` section. No tool is blocked and Pi's compaction runs as configured. Dropping below 80% or compacting re-arms it.
+- A descendant advance of the repository HEAD (not a sideways checkout or reset) and a chain fork also make it due; ordinary edits and jobs do not.
+- A successful `chain` call updates the state; a save clears it.
+- The footer shows `chain!` only while a checkpoint is due.
 
 ## Storage
 
@@ -35,4 +29,4 @@ The footer stays quiet while saved and shows compact `chain!` only when attentio
 .chains/<chain>/<timestamp>-<slug>.md
 ```
 
-Links include frontmatter for chain, branch, parent, and creation time. Older links without metadata are treated as branch `main`. Checkpoint operations live in Pi session entries; `.chains` remains the cross-session/cross-harness content format.
+Links carry frontmatter for chain, branch, parent, next step and creation time; a link without it is on branch `main`. `.chains/` is the format shared across sessions and with the Claude Code and Codex plugin.

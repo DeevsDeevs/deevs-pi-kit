@@ -6,8 +6,8 @@
 
 ```text
 general-purpose  research, search and multi-step work, edits included
-explorer         targeted code/context reconnaissance (Explore)
-architect        design and migration planning (Plan)
+explorer         targeted code/context reconnaissance
+architect        design and migration planning
 reviewer         correctness, security, and regression review
 tester           validation strategy and coverage gaps
 logic-hunter     spec-vs-implementation logic bug hunting
@@ -18,7 +18,7 @@ rust-dev         Rust correctness and idioms
 anti-slop        simplify overbuilt or noisy changes
 ```
 
-Personas are `agents/*.md` with Claude Code's frontmatter (`name, description, tools, model, effort, isolation`). They are read-only: every Pi tool but `edit` and `write`. Type names match ignoring case, `-`, `_` and spaces.
+Personas are `agents/*.md` with Claude Code's frontmatter (`name`, `description`, `tools`, `model`, `effort`, `isolation`). Without `tools` a persona gets `read`, `grep`, `find`, `ls` and `bash`: no `edit` or `write`. Type names match ignoring case, `-`, `_` and spaces; `Explore` is `explorer` and `Plan` is `architect`.
 
 ## Behaviour
 
@@ -34,7 +34,7 @@ Personas are `agents/*.md` with Claude Code's frontmatter (`name, description, t
 
 `Workflow({script | scriptPath | name, args?, resumeFromRunId?})` runs a plain JavaScript script in a `node:vm` sandbox inside a durable task and returns at once; the run reports once as a `<task-notification>` with the result (cut at 8,000 chars), the failed agents and usage counters. `name` looks in `.pi/workflows/<name>.js`, then `~/.pi/agent/workflows/<name>.js`.
 
-- `agent(prompt, opts)` starts a Pi agent behind the same throttle of 16 as `Agent`; a failed one returns `null`. There is no cap on calls or items.
+- `agent(prompt, opts)` starts an agent behind the same throttle of 16 as `Agent`; a failed one returns `null`. There is no cap on calls or items.
 - Each agent gets the user's request as it was when the run launched, framed apart from the script's task, so a question asked mid-run never becomes its task.
 - Files live under `<agent dir>/pi-kit/workflows/<project hash>/`: `scripts/<name>-<runId>.js`, and per run `journal.jsonl`, `progress.jsonl`, `<runId>.json` and `agent-<agentId>.md`.
 - A run interrupted by a Pi exit re-runs its script when the session reopens; every agent that already finished answers from the run's record, so none asks the model twice.

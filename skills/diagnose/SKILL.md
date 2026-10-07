@@ -12,7 +12,7 @@ Use when correctness is uncertain. Do not patch from vibes: make the bug observa
 ```text
 Expected: ...
 Actual: ...
-Observed in: command/log/file/process id/subagent run id/artifact id
+Observed in: command/log/file/process id/agent id/artifact id
 ```
 
 If the report is vague, ask for the missing observable (exact command, stack trace, id, log path, repro steps). Do not chase unrelated warnings until they connect to this symptom.

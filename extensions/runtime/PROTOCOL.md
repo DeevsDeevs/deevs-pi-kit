@@ -1,14 +1,6 @@
 # Runtime protocol
 
-Runtime is a local daemon with two jobs: durable participant identity and mail, and lifecycle authority over persistent collaborators living in real Herdr agent tabs. It accepts only state schema v23; a store written by another version is discarded and the daemon starts fresh.
-
-## Primitives
-
-| Primitive | Lifetime | Interaction | Settlement | Authority |
-|---|---|---|---|---|
-| Job | One bounded command | No tab | Exit or timeout | Parent Pi |
-| Subagent | One bounded delegated run | Result artifact | Terminal result | Subagent service |
-| Collaborator | Persistent named peer | Real Herdr agent tab | Stand-down or stop | Participant generation |
+Runtime is a local daemon with two jobs: durable participant identity and mail, and lifecycle authority over persistent collaborators living in real Herdr agent tabs. It accepts only its current state schema version; a store written by another version is discarded and the daemon starts fresh.
 
 ## Guarantees
 
@@ -52,7 +44,13 @@ One confirmation, then one path for every driver: a driver table supplies the ag
 2. Provision the writer's worktree, reusing an existing checkout (a Claude worktree inherits the folder trust Claude Code already recorded for its repository, since the dialog would otherwise block every launch), then create one empty no-focus Herdr tab at the intended cwd and run `herdr agent start <collab-hash> --kind pi|claude|codex --pane <id>` with the driver's startup arguments after `--`, accepting that agent only when its name, pane, terminal and agent kind are the authorized ones.
 3. Native drivers call `bridge.bind` with held participant authority, agent name, driver, profile and expected generation — idempotent for that exact tuple, so an uncertain response is retried; Pi registers itself from its prepared session instead. Runtime then re-verifies `herdr agent get`, binds the target and acquires the participant in one state operation, and hands the target back to the caller.
 
-A failing step stops what that launch started and reports the original error, withdrawing the persisted control if the bind already happened; nothing half-launched is preserved, and the participant generation is the only lease. Claude receives appended system context, an inline MCP server entry and `--permission-mode bypassPermissions` with the kit guard as its Bash PreToolUse hook (`--settings`); its one-time bypass acceptance and a worktree's folder trust, inherited from the repository, are pre-seeded in its config, and a read-only Claude gets `Bash,Read,Glob,Grep` plus the mail tool as its whole tool list. Codex gets a server-configuration override, startup user context, `--ask-for-approval never` inside `--sandbox workspace-write` or, read-only, `--sandbox read-only`, the kit guard as its PreToolUse hook (`--dangerously-bypass-hook-trust`, since the kit vets its own hook), and its cwd pre-trusted, since an untrusted folder never takes a typed prompt; each carries one sentence of mail instructions, and `participant.list` and `bridge.heartbeat` report Herdr's `agent_status` for a live native holder, so a `blocked` tab is visible and the launching Pi session is told once per blockage, and the whole invocation is capped at 4000 escaped bytes and fails closed rather than truncating. A stood-down Claude or Codex collaborator resumes its own session (`--resume <id>`, `codex resume <id>`): the lead reads the id from Herdr's `agent_session` at stand-down and keeps it, with the start spec and tab id, in its session record.
+A failing step stops what that launch started and reports the original error, withdrawing the persisted control if the bind already happened; nothing half-launched is preserved, and the participant generation is the only lease.
+
+- **Claude** gets appended system context, an inline MCP server entry, and `--permission-mode bypassPermissions` with the kit guard as its Bash PreToolUse hook (`--settings`). Its one-time bypass acceptance and a worktree's folder trust, inherited from the repository, are pre-seeded in its config. A read-only Claude gets `Bash,Read,Glob,Grep` plus the mail tool as its whole tool list.
+- **Codex** gets a server-configuration override, startup user context, `--ask-for-approval never` inside `--sandbox workspace-write` (read-only: `--sandbox read-only`), the kit guard as its Bash PreToolUse hook (`--dangerously-bypass-hook-trust`, since the kit vets its own hook), and its cwd pre-trusted, since an untrusted folder never takes a typed prompt.
+- Each carries one sentence of mail instructions, and the whole invocation is capped at 4000 escaped bytes and fails closed rather than truncating.
+- `participant.list` and `bridge.heartbeat` report Herdr's `agent_status` for a live native holder, so a `blocked` tab is visible and the launching Pi session is told once per blockage.
+- A stood-down Claude or Codex collaborator resumes its own session (`--resume <id>`, `codex resume <id>`): the lead reads the id from Herdr's `agent_session` at stand-down and keeps it, with the start spec and tab id, in its session record. The lead closes that tab only while Herdr still shows it as the collaborator's lone tab in its workspace.
 
 ## Mail
 
