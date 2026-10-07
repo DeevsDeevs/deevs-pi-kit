@@ -2,6 +2,7 @@ import type { AgentToolResult, ExtensionAPI, ExtensionContext, Theme, ToolRender
 import { Type } from "@earendil-works/pi-ai";
 import { Container, Editor, Key, matchesKey, SelectList, Spacer, Text, truncateToWidth, type Component, type Focusable, type SelectItem, type TUI } from "@earendil-works/pi-tui";
 import { framePanelLines } from "../shared/panel.ts";
+import { HEADLESS_GUIDELINE, interactiveOnly, isHeadless } from "../shared/surface.ts";
 
 type AskOptionInput = string | { title: string; description?: string };
 
@@ -345,5 +346,9 @@ export default function askUserExtension(pi: ExtensionAPI): void {
 			const lines = [prefix, ...answers.map((answer) => `  ${renderAnswer(answer, theme)}`)];
 			return new Text(lines.join("\n"), 0, 0);
 		},
+	});
+	interactiveOnly(pi, ["ask_user"]);
+	pi.on("before_agent_start", (event, ctx) => {
+		if (isHeadless(ctx)) event.systemPromptOptions.promptGuidelines.push(HEADLESS_GUIDELINE);
 	});
 }

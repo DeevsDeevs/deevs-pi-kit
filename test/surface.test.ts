@@ -3,7 +3,7 @@ import { relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { activateWithSkill } from "../extensions/shared/surface.ts";
+import { activateWithSkill, interactiveOnly } from "../extensions/shared/surface.ts";
 
 function fakePi() {
 	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => void>();
@@ -33,4 +33,14 @@ it("brings a skill's tool back on a branch that already used it or read the skil
 	const path = `~/${relative(homedir(), skillFile)}`;
 	read.handlers.get("session_start")!({}, branch([{ type: "message", message: { role: "assistant", content: [{ type: "toolCall", name: "read", arguments: { path } }] } }]));
 	expect(read.active()).toEqual(["read", "wiki"]);
+});
+
+it("drops tools that need a person or Herdr's UI in print and json mode only", () => {
+	for (const [mode, expected] of [["print", ["read"]], ["json", ["read"]], ["rpc", ["read", "ask_user"]], ["tui", ["read", "ask_user"]]] as const) {
+		const lead = fakePi();
+		lead.pi.setActiveTools(["read", "ask_user"]);
+		interactiveOnly(lead.pi, ["ask_user"]);
+		lead.handlers.get("session_start")!({}, { mode } as ExtensionContext);
+		expect(lead.active()).toEqual(expected);
+	}
 });

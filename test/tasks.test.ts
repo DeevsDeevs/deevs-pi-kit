@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { HEADLESS_GUIDELINE } from "../extensions/shared/surface.ts";
 import type { TaskNotification } from "../extensions/shared/tasks.ts";
 
 type Tasks = typeof import("../extensions/shared/tasks.ts");
@@ -20,6 +21,7 @@ function lead(mode = "tui", project = { cwd: "/", trusted: false }) {
 	const handlers = new Map<string, Handler>();
 	const sessions = new Map<string, Array<{ type: string; customType: string; details: { notificationId: string } }>>();
 	const sent: Array<{ session: string; id: string; options: unknown }> = [];
+	const contents: string[] = [];
 	let session = "s1";
 	let idle = true;
 	let dropSteers = false;
@@ -27,8 +29,9 @@ function lead(mode = "tui", project = { cwd: "/", trusted: false }) {
 	const notes: string[] = [];
 	const pi = {
 		on: (name: string, handler: Handler) => handlers.set(name, handler),
-		sendMessage(message: { customType: string; details: { notificationId: string } }, options: unknown) {
+		sendMessage(message: { customType: string; content: string; details: { notificationId: string } }, options: unknown) {
 			sent.push({ session, id: message.details.notificationId, options });
+			contents.push(message.content);
 			if (idle || !dropSteers) entries(session).push({ type: "custom_message", customType: message.customType, details: message.details });
 		},
 	} as unknown as ExtensionAPI;
@@ -43,7 +46,7 @@ function lead(mode = "tui", project = { cwd: "/", trusted: false }) {
 	}) as unknown as ExtensionContext;
 	const emit = (name: string, event: object = {}) => handlers.get(name)?.({ type: name, ...event }, ctx());
 	return {
-		pi, sent, statuses, notes, entries, emit,
+		pi, sent, contents, statuses, notes, entries, emit,
 		start: (id: string, reason = "startup") => { session = id; return emit("session_start", { reason }); },
 		busy: (dropping: boolean) => { idle = false; dropSteers = dropping; },
 		settle: () => { idle = true; return emit("agent_settled"); },
@@ -214,6 +217,19 @@ describe("task delivery", () => {
 		await pi.start("s1");
 		await shared.tasks.notify(job("b1"));
 		expect(pi.sent).toEqual([{ session: "s1", id: "b1:g", options: { triggerTurn: true, deliverAs: "steer" } }]);
+	});
+
+	it("repeats the headless rule in a report that wakes a print or json mode lead, whose run skips before_agent_start", async () => {
+		const reminder = `\n${shared.systemReminder(HEADLESS_GUIDELINE)}`;
+		const woken = async (mode: string, busy: boolean) => {
+			const pi = lead(mode);
+			shared.tasks.install(pi.pi);
+			await pi.start("s1");
+			if (busy) pi.busy(false);
+			await shared.tasks.notify(job("b1"));
+			return pi.contents[0]!.endsWith(reminder);
+		};
+		expect([await woken("print", false), await woken("json", false), await woken("json", true), await woken("tui", false), await woken("rpc", false)]).toEqual([true, true, false, false, false]);
 	});
 
 	it("never sends a notification that is already in the session", async () => {

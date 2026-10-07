@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import askUserExtension from "../extensions/ask-user/index.ts";
+import { HEADLESS_GUIDELINE } from "../extensions/shared/surface.ts";
 
 function askUserTool(): { execute: (...args: unknown[]) => Promise<{ details: unknown }> } {
 	let tool: ReturnType<typeof askUserTool> | undefined;
-	askUserExtension({ registerTool(value: typeof tool) { tool = value; } } as unknown as ExtensionAPI);
+	askUserExtension({ registerTool(value: typeof tool) { tool = value; }, on() {} } as unknown as ExtensionAPI);
 	return tool!;
 }
 
@@ -95,4 +96,16 @@ describe("ask_user mode behavior", () => {
 		expect((result.details as { cancelled: boolean }).cancelled).toBe(true);
 		expect(selections).toBe(1);
 	});
+});
+
+it("tells a print or json mode lead to apply its proposed default instead of asking, but never to take an irreversible or destructive step", () => {
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();
+	askUserExtension({ registerTool() {}, on(name: string, handler: (event: unknown, ctx: unknown) => void) { handlers.set(name, handler); } } as unknown as ExtensionAPI);
+	const guidelines = (mode: string) => {
+		const event = { systemPromptOptions: { promptGuidelines: [] as string[] } };
+		handlers.get("before_agent_start")!(event, { mode });
+		return event.systemPromptOptions.promptGuidelines;
+	};
+	expect([guidelines("print"), guidelines("json"), guidelines("rpc"), guidelines("tui")]).toEqual([[HEADLESS_GUIDELINE], [HEADLESS_GUIDELINE], [], []]);
+	expect(HEADLESS_GUIDELINE).toContain("Do not take an irreversible or destructive step you would have asked about; name it in your final answer instead.");
 });
