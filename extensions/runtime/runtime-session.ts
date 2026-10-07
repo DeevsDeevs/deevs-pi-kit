@@ -72,6 +72,11 @@ export class RuntimeSession {
 		this.hooks.restoreSessionState(ctx);
 		this.startHeartbeat();
 		if (!existsSync(this.client.socketPath)) return;
+		try {
+			await startRuntimeService(this.pi, this.client, this.root, ctx, true);
+		} catch (error) {
+			ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
+		}
 		try { await this.register(ctx); } catch {}
 	}
 

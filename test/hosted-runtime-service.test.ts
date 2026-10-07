@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, statSync, wri
 import { createConnection, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { RUNTIME_BUILD } from "../extensions/runtime/service/build.ts";
 import { dispatchHostedLine, HOSTED_MAX_REQUEST_BYTES } from "../extensions/runtime/service/protocol.ts";
 import { HostedStateStore } from "../extensions/runtime/service/state.ts";
 import type { HostedTarget } from "../extensions/runtime/schemas/state.ts";
@@ -44,6 +45,7 @@ describe("hosted runtime protocol", () => {
 			result: {
 				version: 1,
 				runtimeId: "rt_test",
+				build: RUNTIME_BUILD,
 				capabilities: {
 					targets: ["pi", "claude-code", "codex"],
 					mailbox: { maxBodyBytes: 16_384 },

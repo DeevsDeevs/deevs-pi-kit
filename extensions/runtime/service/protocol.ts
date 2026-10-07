@@ -12,6 +12,7 @@ import {
 	MessagingIssueParams,
 	MessagingNamespaceParams,
 	MessagingSendParams,
+	NoParams,
 	ParticipantAcquireParams,
 	ParticipantAuthParams,
 	ParticipantConfirmedParams,
@@ -24,6 +25,7 @@ import {
 	type MessagingNamespaceAuth,
 } from "../schemas/rpc.ts";
 import { RuntimeAgentBinder, type BoundAgentResult } from "./bridge.ts";
+import { RUNTIME_BUILD } from "./build.ts";
 import { RuntimeMessaging, type MessagingInput } from "./messaging.ts";
 import { HostedParticipantCoordinator } from "./participant.ts";
 import { LiveTargets, type HostedCaller } from "./live.ts";
@@ -40,6 +42,8 @@ export interface HostedProtocolContext {
 	participants: HostedParticipantCoordinator;
 	bridges: RuntimeAgentBinder;
 	worktrees: RuntimeWorktrees;
+	/** Closes this daemon once the current response is written. */
+	exit(): void;
 }
 
 type HostedResponse =
@@ -112,7 +116,7 @@ function hello(id: string, value: JsonValue | undefined, context: HostedProtocol
 		interactiveAgent: { bind: "herdr_agent_name" },
 		worktree: { isolatedWrite: true },
 	};
-	return success(id, { version: 1, runtimeId: context.runtimeId, capabilities });
+	return success(id, { version: 1, runtimeId: context.runtimeId, build: RUNTIME_BUILD, capabilities });
 }
 
 async function callMessaging(call: HostedCall, namespace: MessagingNamespaceAuth, input: MessagingInput): Promise<HostedResponse> {
@@ -147,6 +151,10 @@ async function bindAgent(call: HostedCall, params: Static<typeof BridgeBindParam
 }
 
 const HOSTED_METHODS = new Map<string, HostedMethodHandler>([
+	["service.exit", method(NoParams, (call) => {
+		call.context.exit();
+		return success(call.id, { exiting: true });
+	})],
 	["messaging.issue", method(MessagingIssueParams, async (call, params) => success(
 		call.id,
 		await call.context.messaging.issue(authorize(call, params), params.participantKey, params.expectedGeneration),

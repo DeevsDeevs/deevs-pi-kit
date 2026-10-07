@@ -169,7 +169,7 @@ export class CollaboratorService {
 			config: await loadKitConfig(ctx.cwd, getAgentDir()),
 			registry: ctx.modelRegistry,
 			lead: ctx.model ? { model: ctx.model, level: this.session.pi.getThinkingLevel() } : undefined,
-			codex: readCodexCatalog(process.env.CODEX_HOME ?? join(homedir(), ".codex")),
+			codex: readCodexCatalog(process.env.CODEX_HOME || join(homedir(), ".codex")),
 		};
 		const candidates = requested.map((participant) => resolveCollaboratorCandidate(participant, models));
 		const registration = await this.session.requireRegistration(ctx);

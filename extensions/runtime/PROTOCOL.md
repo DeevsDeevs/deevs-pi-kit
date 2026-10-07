@@ -16,20 +16,20 @@ One Unix socket per Pi agent directory. A missing daemon starts in the initial t
 
 ## Wire
 
-Newline-delimited JSON, capped at 64 KiB per request line and 128 KiB per messaging response; invalid framing or JSON closes the connection after an error response. Every method declares one TypeBox params schema, and the dispatcher validates envelope and params — unknown fields and out-of-bound sizes included — before resolving any capability, so a malformed call is always `invalid_request`. Every method except `hello` and `pi.register` then names a known target, and mutations are idempotent on typed durable keys.
+Newline-delimited JSON, capped at 64 KiB per request line and 128 KiB per messaging response; invalid framing or JSON closes the connection after an error response. Every method declares one TypeBox params schema, and the dispatcher validates envelope and params — unknown fields and out-of-bound sizes included — before resolving any capability, so a malformed call is always `invalid_request`. Every method except `hello`, `service.exit` and `pi.register` then names a known target, and mutations are idempotent on typed durable keys.
 
 ```json
 {"v":1,"id":"req_1","method":"hello","params":{"minVersion":1,"maxVersion":1}}
 {"v":1,"id":"req_1","ok":false,"error":{"code":"not_found","message":"diagnostic"}}
 ```
 
-`hello` returns `{version, runtimeId, capabilities}` with `targets`, `mailbox`, `interactiveAgent` and `worktree`; `runtimeId` persists across service starts. Error codes: `invalid_request`, `unsupported_version`, `not_found`, `conflict`, `busy`, `registration_stale`, `identity_mismatch`, `host_unavailable`, `storage_error`, `internal`.
+`hello` returns `{version, runtimeId, build, capabilities}` with `targets`, `mailbox`, `interactiveAgent` and `worktree`; `runtimeId` persists across service starts, and `build` hashes the daemon's source. A Pi session that finds a daemon of another build at session start or collaborator start, inside Herdr in a trusted project, calls `service.exit` and starts its own, so an updated kit never keeps talking to the daemon of an older one. Error codes: `invalid_request`, `unsupported_version`, `not_found`, `conflict`, `busy`, `registration_stale`, `identity_mismatch`, `host_unavailable`, `storage_error`, `internal`.
 
 ## Methods
 
 | Responsibility | Methods |
 |---|---|
-| Service | `hello` |
+| Service | `hello`, `service.exit` |
 | Pi registration | `pi.register`, `pi.heartbeat`, `pi.unregister` |
 | Interactive agent | `bridge.bind`, `bridge.heartbeat` |
 | Participants | `participant.acquire`, `participant.get`, `participant.list`, `participant.stand_down_confirmed`, `participant.stop_confirmed`, `participant.takeover` |

@@ -41,6 +41,8 @@ interface RuntimeServerOptions {
 	registration?: LiveTargetOptions;
 	participant?: HostedParticipantCoordinatorOptions;
 	bridge?: AgentBinderOptions;
+	/** Runs once a `service.exit` closed the server; the daemon's process exits here. */
+	onExit?: () => void;
 }
 
 export interface RuntimeServerHandle {
@@ -90,9 +92,13 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 		participants,
 		bridges,
 		worktrees,
+		exit: () => {},
 	};
 	const lifecycle = { sweep: startRetentionSweep(store, options), wake: startNativeWakeSweep(wake, options), live };
-	return await serve(options, context, socketPath, lifecycle);
+	const handle = await serve(options, context, socketPath, lifecycle);
+	// The exit response is written before the sockets close; a client that loses it sees the socket go away all the same.
+	context.exit = () => setImmediate(() => void handle.close().then(options.onExit));
+	return handle;
 }
 
 async function serve(
