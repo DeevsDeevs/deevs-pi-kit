@@ -150,6 +150,8 @@ describe("task notification contract", () => {
 		expect(shared.taskStoppedResult("a1", "Review", [{ path: "/wt/a1", branch: "agent/a1" }])).toBe("Successfully stopped task: a1 (Review)\nKept worktrees with changes: /wt/a1 (agent/a1)");
 		expect(shared.taskStoppedResult("bx", "make")).toBe("Successfully stopped task: bx (make)");
 		expect(shared.taskNotRunningResult("a1", "completed")).toBe("Task a1 is not running (status: completed)");
+		expect(shared.unknownAgentResult("wf_1", [])).toBe("No agent named 'wf_1'. Known agents: none");
+		expect(shared.unknownAgentResult("wf_1", ["a1"], ["w1", "w2"])).toBe("No agent named 'wf_1'. Known agents: a1\nWorkflows (w1, w2) and the agents inside them take no messages: wait for the workflow's <task-notification>, or TaskStop it, edit its script and call Workflow({scriptPath, resumeFromRunId}) to change course.");
 		expect(shared.workflowLaunchedResult({ taskId: "w12345678", summary: "Audit", transcriptDir: "/wf/r", scriptPath: "/wf/s.js", runId: "wf_12345678-abc" }).split("\n")).toEqual([
 			"Workflow launched in background. Task ID: w12345678",
 			"Summary: Audit",

@@ -280,7 +280,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			}
 			if (!entry) {
 				const known = tasks.list(session).filter((task) => task.kind === "agent" || task.send).map((task) => task.name ?? task.id);
-				throw new Error(unknownAgentResult(params.to, known));
+				throw new Error(unknownAgentResult(params.to, known, tasks.list(session).filter((task) => task.kind === "workflow").map((task) => task.id)));
 			}
 			const outcome = await send(await ensureEngine(ctx), entry.id, params.message, toolCallId);
 			if (outcome === "refused") throw new Error(sendMessageResult(params.to, outcome));

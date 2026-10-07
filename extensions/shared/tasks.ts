@@ -424,7 +424,10 @@ export const MONITOR_FLOODED = "[Monitor stopped — too much output. Arm it aga
 export const monitorExpired = (seconds: number, events: number): string => `[Monitor expired after ${seconds}s with ${events} events delivered. Re-arm it if you still need the watch.]`;
 export const monitorSuppressed = (dropped: number, event: string): string => (dropped ? `[${dropped} events suppressed — output rate too high]\n${event}` : event);
 
-export const unknownAgentResult = (to: string, known: string[]): string => `No agent named '${to}'. Known agents: ${known.join(", ") || "none"}`;
+export function unknownAgentResult(to: string, known: string[], workflows: string[] = []): string {
+	const text = `No agent named '${to}'. Known agents: ${known.join(", ") || "none"}`;
+	return workflows.length ? `${text}\nWorkflows (${workflows.join(", ")}) and the agents inside them take no messages: wait for the workflow's <task-notification>, or TaskStop it, edit its script and call Workflow({scriptPath, resumeFromRunId}) to change course.` : text;
+}
 
 /** SendMessage's result; `refused` is its error. */
 export function sendMessageResult(to: string, outcome: "steered" | "queued" | "resumed" | "refused"): string {
