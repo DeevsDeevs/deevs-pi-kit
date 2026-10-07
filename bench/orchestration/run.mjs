@@ -1,5 +1,6 @@
 // Orchestration bench, host side: one polygon container per (task, config, repetition), then a chart-ready summary.
 //   node bench/orchestration/run.mjs --tasks t1,t2 --configs cc-opus --reps 2 --parallel 4
+//   node bench/orchestration/run.mjs --tasks t2u,t4u --configs pi-sol --kit '{"autonomy": false}' --run off
 //   node bench/orchestration/run.mjs --summarize <run> [--out file]
 // Logins come only from the polygon's pi-kit-polygon-login volume, mounted read-only; see README.md.
 import { spawn, spawnSync } from "node:child_process";
@@ -18,9 +19,9 @@ const CONFIGS = ["cc-opus", "pi-sol", "pi-opus", "pi-opus-or"];
 const OPENROUTER_KEY = join(homedir(), ".config/pi-kit-bench/openrouter.key");
 
 const { values: opts } = parseArgs({ options: {
-	tasks: { type: "string", default: Object.keys(TASKS).join(",") }, configs: { type: "string", default: "cc-opus" },
+	tasks: { type: "string", default: Object.keys(TASKS).filter((id) => !TASKS[id].unprompted).join(",") }, configs: { type: "string", default: "cc-opus" },
 	reps: { type: "string", default: "1" }, parallel: { type: "string", default: "4" }, run: { type: "string" },
-	summarize: { type: "string" }, out: { type: "string" }, models: { type: "boolean" }, freshen: { type: "boolean" },
+	summarize: { type: "string" }, out: { type: "string" }, models: { type: "boolean" }, freshen: { type: "boolean" }, kit: { type: "string" },
 } });
 
 /** The polygon's image, same tag rule as polygon/run.mjs; build it there with `npm run polygon -- --list` first if missing. */
@@ -52,7 +53,8 @@ function runOne(img, bare, dir, task, config) {
 	const name = `bench-orch-${dir.split("/").slice(-2).join("-")}`;
 	const started = Date.now();
 	return new Promise((resolve) => {
-		const child = spawn("podman", ["run", "--rm", "--userns=keep-id", "--name", name, ...mounts.flatMap((m) => ["-v", m]), img, "node", "/bench/inside.mjs", task, config], { stdio: ["ignore", "pipe", "pipe"] });
+		const kit = opts.kit ? ["-e", `BENCH_PI_KIT_JSON=${opts.kit}`] : [];
+		const child = spawn("podman", ["run", "--rm", "--userns=keep-id", "--name", name, ...mounts.flatMap((m) => ["-v", m]), ...kit, img, "node", "/bench/inside.mjs", task, config], { stdio: ["ignore", "pipe", "pipe"] });
 		child.stdout.on("data", (d) => writeFileSync(join(dir, "container.log"), d, { flag: "a" }));
 		child.stderr.on("data", (d) => writeFileSync(join(dir, "container.log"), d, { flag: "a" }));
 		// The inside runner enforces the task timeout; this is the backstop for a wedged container.
@@ -75,7 +77,8 @@ function summarize(run) {
 	const rows = sets.flatMap((set) => readdirSync(join(RESULTS, set), { withFileTypes: true }).filter((d) => d.isDirectory() && existsSync(join(RESULTS, set, d.name, "result.json")))
 		.map((d) => ({ set, id: d.name, ...JSON.parse(readFileSync(join(RESULTS, set, d.name, "result.json"), "utf8")) })));
 	const runs = rows.map((r) => ({
-		set: r.set, id: r.id, task: r.task, config: r.config, model: r.model ?? null, status: r.status, success: r.status === "pass",
+		set: r.set, id: r.id, task: r.task, config: r.config, arm: r.kit ? `${r.config} ${JSON.stringify(r.kit)}` : r.config, kit: r.kit ?? null, model: r.model ?? null, status: r.status, success: r.status === "pass",
+		orchestrated: ["Agent", "Task", "Workflow"].some((tool) => r.lead_tool_calls?.[tool]), workflows: r.lead_tool_calls?.Workflow ?? 0,
 		wall_s: r.wall_ms ? Math.round(r.wall_ms / 1000) : null, lead_context_tokens: r.lead_context_tokens ?? null,
 		tokens_total: r.tokens?.total ?? null, tokens_input: r.tokens?.input ?? null, tokens_output: r.tokens?.output ?? null,
 		tokens_cache_read: r.tokens?.cacheRead ?? null, tokens_cache_write: r.tokens?.cacheWrite ?? null,
@@ -86,9 +89,9 @@ function summarize(run) {
 		check: r.check ?? null, error: r.error ?? null,
 	}));
 	const cells = {};
-	for (const r of runs) ((cells[r.task] ??= {})[r.config] ??= []).push(r);
+	for (const r of runs) ((cells[r.task] ??= {})[r.arm] ??= []).push(r);
 	const matrix = Object.fromEntries(Object.entries(cells).map(([task, byConfig]) => [task, Object.fromEntries(Object.entries(byConfig).map(([config, rs]) => [config, {
-		n: rs.length, pass: rs.filter((r) => r.success).length,
+		n: rs.length, pass: rs.filter((r) => r.success).length, orchestrated: rs.filter((r) => r.orchestrated).length, workflows_median: median(rs.map((r) => r.workflows)),
 		wall_s_median: median(rs.map((r) => r.wall_s)), lead_context_tokens_median: median(rs.map((r) => r.lead_context_tokens)),
 		tokens_total_median: median(rs.map((r) => r.tokens_total)), tokens_output_median: median(rs.map((r) => r.tokens_output)),
 		cost_usd_list_estimate_median: median(rs.map((r) => r.cost_usd_list_estimate ?? r.cost_usd)),
@@ -117,6 +120,7 @@ async function main() {
 	const tasks = opts.tasks.split(","), configs = opts.configs.split(",");
 	for (const t of tasks) if (!TASKS[t]) throw new Error(`unknown task ${t}`);
 	for (const c of configs) if (!CONFIGS.includes(c)) throw new Error(`unknown config ${c}`);
+	if (opts.kit) JSON.parse(opts.kit);
 	const run = opts.run ?? new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
 	const img = image(), bare = fixture();
 	// Repetitions interleave so a quota stop leaves every task covered once before any runs twice.

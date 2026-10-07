@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, expect, it } from "vitest";
@@ -53,4 +53,15 @@ it("says once that autonomy is off", async () => {
 	const prompt = lead(["Workflow"]);
 	expect(await prompt("anthropic")).toEqual({ section: undefined, message: undefined });
 	expect((await prompt("openai-codex", [reminder("full"), user()])).message?.details).toBe("off");
+});
+
+it("scales autonomy to the task with one trigger: short fixes done and verified directly, independent parts or a needed review orchestrated, no one-agent workflows, a named output file first", () => {
+	const skill = /\*\*Autonomy\.\*\*.*/.exec(readFileSync(join(import.meta.dirname, "../skills/workflow-authoring/SKILL.md"), "utf8"))![0];
+	for (const text of [AUTONOMY_REMINDERS.full, skill]) {
+		expect(text).not.toMatch(/token cost|substantive task|an answer|verification/);
+		expect(text).toMatch(/Work directly on single-file or short fixes, and verify them yourself\. Orchestrate when the work splits into independent parts taking minutes each.*, or when the user asks for, or a large multi-file change needs, an independent review/);
+		expect(text).toMatch(/one-agent workflow/);
+		expect(text).toMatch(/output file or binary at a path, write a working version there before you orchestrate/);
+	}
+	expect(AUTONOMY_REMINDERS.sparse).toMatch(/orchestrate work that splits into independent parts taking minutes each, or that needs an independent review; work directly on short fixes/);
 });

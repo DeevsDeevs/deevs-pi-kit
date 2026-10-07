@@ -17,6 +17,8 @@ export const CONFIGS = {
 const HOME = "/tmp/home";
 const REPO = "/tmp/work/repo";
 const OUT = "/results";
+/** run.mjs --kit: merged into each Pi run's global pi-kit.json, so arms such as autonomy off or verify on share one image. */
+const KIT = process.env.BENCH_PI_KIT_JSON ? JSON.parse(process.env.BENCH_PI_KIT_JSON) : null;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const jsonl = (file) => { try { return readFileSync(file, "utf8").split("\n").filter(Boolean).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } }); } catch { return []; } };
 
@@ -143,7 +145,7 @@ async function pi(config, prompt, task, e) {
 	const agentDir = join(HOME, ".pi/agent");
 	mkdirSync(agentDir, { recursive: true });
 	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: "always", packages: ["/kit"] }, null, 2));
-	writeFileSync(join(agentDir, "pi-kit.json"), JSON.stringify({ lead: null }, null, 2));
+	writeFileSync(join(agentDir, "pi-kit.json"), JSON.stringify({ lead: null, ...KIT }, null, 2));
 	const { rpc } = await import("/polygon/drive.mjs");
 	const { dialogs, taskNotifications, toolCalls } = await import("/polygon/look.mjs");
 	const t = { repo: REPO, env: e, dir: OUT, closers: [] };
@@ -275,7 +277,7 @@ async function main() {
 	if (out) cpSync(join(REPO, RESULT), join(OUT, "task-result.json"));
 	writeFileSync(join(OUT, "repo.diff"), execSync("git diff HEAD --stat; git status --porcelain", { cwd: REPO, encoding: "utf8" }));
 	writeFileSync(join(OUT, "result.json"), JSON.stringify({
-		task: taskId, config: configId, harness: config.harness, model: config.model, commit: task.commit === PIN ? PIN : task.commit, staged,
+		task: taskId, config: configId, harness: config.harness, model: config.model, kit: config.harness === "pi" ? KIT : null, commit: task.commit === PIN ? PIN : task.commit, staged,
 		status: metrics.quota ? "quota" : check.success ? "pass" : "fail", wall_ms: wall, result_parse_error: parseError ?? null, check, ...metrics,
 	}, null, 2));
 }
