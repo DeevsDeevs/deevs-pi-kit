@@ -10,3 +10,4 @@ node_modules/
 bench/results/*
 polygon/results/
 polygon/private/
+__pycache__/

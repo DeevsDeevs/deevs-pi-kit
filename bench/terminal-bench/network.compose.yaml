@@ -1,0 +1,5 @@
+# On this host, compose bridge networks under rootless Podman 4.9 have no working DNS (aardvark-dns refuses)
+# and drop UDP; per-container slirp4netns works. Multi-service tasks lose service-name discovery.
+services:
+  main:
+    network_mode: slirp4netns
