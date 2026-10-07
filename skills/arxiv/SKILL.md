@@ -1,6 +1,6 @@
 ---
 name: arxiv
-description: "Search, triage and cite arXiv papers with the arxiv tool. Use for preprint or paper discovery, metadata, abstracts, BibTeX."
+description: "Search, triage and cite arXiv papers: preprint discovery, metadata, abstracts, BibTeX."
 ---
 
 # arXiv Research
