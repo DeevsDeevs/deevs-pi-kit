@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
@@ -28,8 +28,7 @@ async function run(responses: FauxResponseStep[]): Promise<{ status: string; res
 	const source = `export const meta = { name: "so", description: "d" };\nreturn await agent("p", { schema: ${JSON.stringify(schema)} });`;
 	await launchWorkflow(await ensureEngine(ctx), { taskId: `w${runs}`, runId, session: "s", toolUseId: "t", source, scriptPath: join(dir, "so.js"), cwd, dir, lead: { provider: "faux", id: "m", level: "off" }, startedAt: Date.now() }, "d");
 	const record = join(dir, `${runId}.json`);
-	await vi.waitFor(() => expect(existsSync(record)).toBe(true), { timeout: 10_000 });
-	return JSON.parse(readFileSync(record, "utf8"));
+	return vi.waitFor(() => JSON.parse(readFileSync(record, "utf8")), { timeout: 10_000 });
 }
 
 afterAll(closeAll);
@@ -93,8 +92,7 @@ describe("a workflow agent()'s model names", () => {
 			const source = `export const meta = { name: "t", description: "d" };\nreturn await agent("p", { model: "fx" });`;
 			await launchWorkflow(await ensureEngine(ctx), { taskId: `w${runs}`, runId, session: "s", toolUseId: "t", source, scriptPath: join(dir, "t.js"), cwd, trusted, dir, startedAt: Date.now() }, "d");
 			const record = join(dir, `${runId}.json`);
-			await vi.waitFor(() => expect(existsSync(record)).toBe(true), { timeout: 10_000 });
-			return JSON.parse(readFileSync(record, "utf8")).status;
+			return (await vi.waitFor(() => JSON.parse(readFileSync(record, "utf8")), { timeout: 10_000 })).status;
 		};
 		expect([await launch(true), await launch(false)]).toEqual(["completed", "failed"]);
 	});
