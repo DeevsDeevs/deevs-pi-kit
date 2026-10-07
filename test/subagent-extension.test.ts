@@ -22,6 +22,15 @@ describe("Subagent extension surface", () => {
 		expect(commands).toEqual(["agents"]);
 	});
 
+	it("refuses a malformed agent name or a limit below its floor in execute, where the schema no longer spends tokens on them", async () => {
+		let agent: { execute: (id: string, params: object) => Promise<unknown> } | undefined;
+		subagentsExtension({ registerTool(tool: NonNullable<typeof agent> & { name: string }) { if (tool.name === "Agent") agent = tool; }, registerCommand() {}, on() {} } as unknown as ExtensionAPI);
+		const brief = { description: "probe", prompt: "probe" };
+		await expect(agent!.execute("call", { ...brief, name: "two words" })).rejects.toThrow(/^A name is 1-64 letters/);
+		await expect(agent!.execute("call", { ...brief, name: "main" })).rejects.toThrow(/reserved/);
+		for (const limit of [{ maxTurns: 0 }, { maxTokens: 0 }, { timeout: 999 }]) await expect(agent!.execute("call", { ...brief, ...limit })).rejects.toThrow(/at least/);
+	});
+
 	it("switches only a new session to the lead model; an unresolved default stays silent, a set lead warns once", async () => {
 		process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "pi-kit-lead-"));
 		const sol = { provider: "openai-codex", id: "gpt-6.1-sol" };

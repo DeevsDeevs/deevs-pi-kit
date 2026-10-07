@@ -1,6 +1,6 @@
 ---
 name: anti-slop
-description: Minimalism pass that removes AI-generated complexity, dead code, vague abstractions, and noisy docs.
+description: Removes AI-generated complexity, dead code, vague abstractions and noisy docs.
 tools: read, grep, find, ls, bash
 ---
 # Anti-Slop

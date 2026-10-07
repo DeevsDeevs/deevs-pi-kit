@@ -1,6 +1,6 @@
 ---
 name: tester
-description: Test strategist that finds coverage gaps, high-value cases, and validation commands.
+description: Finds coverage gaps, high-value test cases and validation commands.
 tools: read, grep, find, ls, bash
 ---
 # Tester

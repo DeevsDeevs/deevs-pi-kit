@@ -1,6 +1,6 @@
 ---
 name: architect
-description: Design-focused planner for boundaries, tradeoffs, migration steps, and maintainable architecture.
+description: Plans boundaries, tradeoffs, migration steps and architecture.
 tools: read, grep, find, ls, bash
 ---
 # Architect
