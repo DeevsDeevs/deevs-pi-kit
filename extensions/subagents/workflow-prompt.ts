@@ -1,6 +1,7 @@
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { isAutonomous } from "../shared/config.ts";
 import { systemReminder } from "../shared/tasks.ts";
+import { DELIVERABLE_FIRST } from "./definitions.ts";
 
 export const WORKFLOW_SNIPPET = "Orchestrate many background agents with a script, once the user has opted in.";
 
@@ -25,7 +26,7 @@ export const WORKFLOW_FIELDS = {
 } as const;
 
 export const AUTONOMY_REMINDERS = {
-	full: systemReminder("Autonomy is on: the user has opted into orchestration for this session; start agents and workflows without asking. Work directly on single-file or short fixes, and verify them yourself. Orchestrate when the work splits into independent parts taking minutes each (a review across several files, an audit per package), or when the user asks for, or a large multi-file change needs, an independent review: a Workflow for several agents, an Agent for one, never a one-agent workflow. When the task names an output file or binary at a path, write a working version there before you orchestrate work on it. Load the workflow-authoring skill before your first script."),
+	full: systemReminder(`Autonomy is on: the user has opted into orchestration for this session; start agents and workflows without asking. Work directly on single-file or short fixes, and verify them yourself. Orchestrate when the work splits into independent parts taking minutes each (a review across several files, an audit per package), or when the user asks for, or a large multi-file change needs, an independent review: a Workflow for several agents, an Agent for one, never a one-agent workflow. ${DELIVERABLE_FIRST} Load the workflow-authoring skill before your first script.`),
 	sparse: systemReminder("Autonomy is still on: orchestrate work that splits into independent parts taking minutes each, or that needs an independent review; work directly on short fixes. See Autonomy in the workflow-authoring skill."),
 	off: systemReminder("Autonomy is off: the Workflow tool's own opt-in rule applies again."),
 };

@@ -9,6 +9,7 @@ import { Value } from "typebox/value";
 import { jobLaunchedResult } from "../extensions/shared/tasks.ts";
 import subagentsExtension from "../extensions/subagents/index.ts";
 import { agentTypesList, findAgentType, WORKING_RULES, workerPrompt } from "../extensions/subagents/definitions.ts";
+import { AUTONOMY_REMINDERS } from "../extensions/subagents/workflow-prompt.ts";
 
 describe("Subagent extension surface", () => {
 	it("registers Agent, Workflow, TaskStop, job_start, Monitor, SendMessage, ListAgents and /agents", () => {
@@ -114,7 +115,8 @@ describe("Subagent extension surface", () => {
 		const [precedence, finish, output, scope, tests, timeout, report] = WORKING_RULES;
 		expect(precedence).toMatch(/user's and the project's own instructions take precedence/);
 		expect(finish).toMatch(/within your turn[\s\S]*to wait for agents, workflows and timed jobs[\s\S]*When the user asked for action, a plan/);
-		expect(output).toMatch(/output file or binary at a path, write a working version at that path first/);
+		expect(output).toMatch(/deliverable the task names \(a file or binary at a path, a commit, a branch\) work first, committed when it is a commit, before any review, delegated side work or long run/);
+		expect(AUTONOMY_REMINDERS.full).toContain(output);
 		expect(scope).toMatch(/Add no new modules, vendored code or dependencies unless the task asks for them/);
 		expect(tests).toMatch(/If the project has none, create one outside the project tree, for example under \/tmp \(uv venv or python -m venv\)/);
 		expect(report).toMatch(/what changed, how you verified it, and what remains/);
@@ -123,6 +125,6 @@ describe("Subagent extension surface", () => {
 		for (const rule of [finish, output, report]) expect(worker).not.toContain(rule);
 		expect(workerPrompt(findAgentType(undefined), dir).split(tests!)).toHaveLength(2);
 		expect(workerPrompt(findAgentType(undefined), dir, undefined, true)).not.toContain(tests);
-		expect(getEncoding("o200k_base").encode(WORKING_RULES.map((rule) => `- ${rule}`).join("\n")).length).toBeLessThanOrEqual(300);
+		expect(getEncoding("o200k_base").encode(WORKING_RULES.map((rule) => `- ${rule}`).join("\n")).length).toBeLessThanOrEqual(315);
 	});
 });

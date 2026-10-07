@@ -61,7 +61,7 @@ it("scales autonomy to the task with one trigger: short fixes done and verified 
 		expect(text).not.toMatch(/token cost|substantive task|an answer|verification/);
 		expect(text).toMatch(/Work directly on single-file or short fixes, and verify them yourself\. Orchestrate when the work splits into independent parts taking minutes each.*, or when the user asks for, or a large multi-file change needs, an independent review/);
 		expect(text).toMatch(/one-agent workflow/);
-		expect(text).toMatch(/output file or binary at a path, write a working version there before you orchestrate/);
+		expect(text).toMatch(/deliverable the task names \(a file or binary at a path, a commit, a branch\) work first, committed when it is a commit, before/);
 	}
 	expect(AUTONOMY_REMINDERS.sparse).toMatch(/orchestrate work that splits into independent parts taking minutes each, or that needs an independent review; work directly on short fixes/);
 });
