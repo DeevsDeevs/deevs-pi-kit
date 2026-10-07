@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import subagentsExtension from "../extensions/subagents/index.ts";
-import { agentTypesList, findAgentType } from "../extensions/subagents/definitions.ts";
+import { agentTypesList, findAgentType, workerPrompt } from "../extensions/subagents/definitions.ts";
 
 describe("Subagent extension surface", () => {
 	it("registers Agent, Workflow, TaskStop, job_start, Monitor, SendMessage, ListAgents and /agents", () => {
@@ -55,5 +55,12 @@ describe("Subagent extension surface", () => {
 		expect(findAgentType("Explore").tools).toEqual(["read", "grep", "find", "ls", "bash"]);
 		expect(() => findAgentType("nobody")).toThrow(/^Agent type 'nobody' not found\. Available agents: general-purpose, .*\breviewer\b/);
 		expect(agentTypesList()).toMatch(/\n- general-purpose: .* \(read, grep, find, ls, bash, edit, write\)\n- anti-slop: [^(]*\n/);
+	});
+
+	it("gives a worker the skill index without the lead's orchestration skills", () => {
+		process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "pi-kit-worker-"));
+		const names = [...workerPrompt(findAgentType(undefined), process.env.PI_CODING_AGENT_DIR).matchAll(/<name>(.*)<\/name>/g)].map((m) => m[1]);
+		expect(names).toContain("diagnose");
+		expect(names.filter((name) => ["workflow-authoring", "collaborators", "background-tasks", "todos", "ask-user", "chain-system"].includes(name!))).toEqual([]);
 	});
 });
