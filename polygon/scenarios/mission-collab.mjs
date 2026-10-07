@@ -13,7 +13,7 @@ export default {
 		fixtureModels(t, "polygon", ["quiet"]);
 		const lead = rpc(t);
 		await lead.script({ agent: "lead", steps: [
-			{ id: "s1", tool: "collaborator_manage", args: { action: "start", participants: [{ participantId: "quiet", model: "polygon/quiet", profile: "read-only" }] } },
+			{ id: "s1", tool: "collaborator_start", args: { participants: [{ name: "quiet", model: "polygon/quiet", profile: "read-only" }] } },
 			{ id: "s2", tool: "mission_start", args: { title: "collab probe", goal: "Continue beside an idle collaborator.", done: "A continue arrived." } },
 			{ id: "s3", tool: "ListAgents", args: {} },
 			{ id: "s4", text: "started" },
