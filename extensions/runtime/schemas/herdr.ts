@@ -8,7 +8,7 @@ const OptionalId = Type.Optional(IdText);
 
 /** Herdr may add fields at any time, so every shape below names only what Runtime reads. */
 const HerdrPaneSchema = Type.Object({ pane_id: IdText, terminal_id: OptionalId, cwd: Type.Optional(PathText) });
-const HerdrTabSchema = Type.Object({ tab_id: IdText, workspace_id: OptionalId, pane_count: Type.Optional(Count) });
+const HerdrTabSchema = Type.Object({ tab_id: IdText, workspace_id: OptionalId, label: Type.Optional(boundedText(200)), pane_count: Type.Optional(Count) });
 
 export const HerdrTabCreatedSchema = Type.Object({ tab: HerdrTabSchema, root_pane: HerdrPaneSchema });
 export const HerdrPaneResultSchema = Type.Object({ pane: HerdrPaneSchema });

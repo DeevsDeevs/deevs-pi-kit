@@ -19,7 +19,7 @@ import { delay, throwIfAborted } from "./herdr.ts";
 import { isAutonomous } from "../shared/autonomy.ts";
 import { resolveCollaboratorRepo } from "./service/worktree.ts";
 import { type HostedCollaboratorProfile, isHeld, isVacant, isWriter } from "./schemas/state.ts";
-import { decodeHerdr, herdrResult, HerdrLiveAgentResultSchema } from "./schemas/herdr.ts";
+import { decodeHerdr, herdrResult, HerdrLiveAgentResultSchema, HerdrTabResultSchema } from "./schemas/herdr.ts";
 import type { NativeAgentService } from "./native-agents.ts";
 import {
 	auth,
@@ -36,6 +36,7 @@ import {
 	type RegistrationAuth,
 } from "./responses.ts";
 import type { RuntimeSession } from "./runtime-session.ts";
+import { AGENT_NAME } from "./schemas/common.ts";
 
 /** The lead is main and its collaborators share one protocol per project, so neither needs naming. */
 export const LEAD = "main";
@@ -287,7 +288,10 @@ export class CollaboratorService {
 		const reported = await this.session.pi.exec("herdr", ["agent", "get", control.agentName], { timeout: 2_000 }).catch(() => undefined);
 		try {
 			const session = decodeHerdr(HerdrLiveAgentResultSchema, herdrResult(reported?.stdout ?? ""), "Herdr agent").agent.agent_session;
-			if (session?.kind === "id" && session.source === control.agentSession.source) this.session.store.persistStarted({ ...spec, nativeSession: session.value });
+			// The id lands in the CLI's argv after --resume, so it must not read as a flag.
+			if (session?.kind === "id" && session.source === control.agentSession.source && AGENT_NAME.test(session.value)) {
+				this.session.store.persistStarted({ ...spec, nativeSession: session.value });
+			}
 		} catch {}
 	}
 
@@ -318,12 +322,20 @@ export class CollaboratorService {
 		await this.closeTab(participant.participantId);
 	}
 
-	/** The tab the collaborator was started in closes, whatever Herdr reports about its agent. */
+	/** The tab the collaborator was started in closes, whatever Herdr reports about its agent, while Herdr still shows it as
+	 * that collaborator's lone tab in this workspace: a persisted id can outlive its Herdr server and name someone else's tab. */
 	private async closeTab(participantId: string): Promise<void> {
 		const spec = this.session.store.started.get(participantId);
 		if (!spec?.tabId) return;
 		const { tabId, ...rest } = spec;
 		this.session.store.persistStarted(rest);
+		const shown = await this.session.pi.exec("herdr", ["tab", "get", tabId], { timeout: 2_000 }).catch(() => undefined);
+		try {
+			const tab = decodeHerdr(HerdrTabResultSchema, herdrResult(shown?.stdout ?? ""), "Herdr tab").tab;
+			if (tab.label !== `collaborator:${participantId}` || tab.workspace_id !== process.env.HERDR_WORKSPACE_ID || tab.pane_count !== 1) return;
+		} catch {
+			return;
+		}
 		await this.session.pi.exec("herdr", ["tab", "close", tabId], { timeout: 5_000 }).catch(() => undefined);
 	}
 

@@ -74,6 +74,8 @@ export const ParticipantAcquireParams = Type.Object({
 	...AUTH,
 	protocol: ParticipantNameText,
 	participantId: ParticipantNameText,
+	// ponytail: accepted and ignored so a not-yet-reloaded Pi lead (which still sends revive:false) keeps registering; drop next release.
+	revive: Type.Optional(Type.Boolean()),
 }, STRICT_OBJECT);
 export const ParticipantConfirmedParams = Type.Object({
 	...AUTH,
