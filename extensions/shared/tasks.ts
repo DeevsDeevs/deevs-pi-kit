@@ -152,13 +152,9 @@ export const tasks = {
 
 function resumeGate(session: string): { done: Promise<void>; resolve(): void } {
 	const gates = state.resumed ??= new Map();
-	let gate = gates.get(session);
-	if (!gate) {
-		let resolve = () => {};
-		gate = { done: new Promise<void>((settle) => { resolve = settle; }), resolve: () => resolve() };
-		gates.set(session, gate);
-	}
-	return gate;
+	let resolve = () => {};
+	if (!gates.has(session)) gates.set(session, { done: new Promise<void>((settle) => { resolve = settle; }), resolve: () => resolve() });
+	return gates.get(session)!;
 }
 
 /** Waits until a notification beyond `before` is sent, or no agent, workflow or job of the session runs. */
@@ -404,9 +400,7 @@ export const MONITOR_FLOODED = "[Monitor stopped — too much output. Arm it aga
 export const monitorExpired = (seconds: number, events: number): string => `[Monitor expired after ${seconds}s with ${events} events delivered. Re-arm it if you still need the watch.]`;
 export const monitorSuppressed = (dropped: number, event: string): string => (dropped ? `[${dropped} events suppressed — output rate too high]\n${event}` : event);
 
-export function unknownAgentResult(to: string, known: string[]): string {
-	return `No agent named '${to}'. Known agents: ${known.join(", ") || "none"}`;
-}
+export const unknownAgentResult = (to: string, known: string[]): string => `No agent named '${to}'. Known agents: ${known.join(", ") || "none"}`;
 
 /** SendMessage's result; `refused` is its error. */
 export function sendMessageResult(to: string, outcome: "steered" | "queued" | "resumed" | "refused"): string {

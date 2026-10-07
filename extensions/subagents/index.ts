@@ -208,11 +208,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		description: "Stop a running background task: an agent, by its agentId or name; a workflow, by its task id (w…) or run id (wf_…), with no notification after; a job or monitor, by its id; or a collaborator, by its name (a graceful stand-down).",
 		parameters: Type.Object({ task_id: Type.String({ description: "The id or name of the task to stop" }) }),
 		async execute(_toolCallId, params: { task_id: string }, _signal, _onUpdate, ctx) {
-			const entry = tasks.find(params.task_id, ctx.sessionManager.getSessionId());
-			if (!entry) throw new Error(taskNotFound(params.task_id));
-			if (entry.status !== "running" || !entry.stop) throw new Error(taskNotRunningResult(entry.id, entry.status));
-			const stopped = await entry.stop();
-			if (tasks.find(entry.id)?.status === "running") tasks.update(entry.id, { status: "killed" });
+			const { entry, stopped } = await stopTask(ctx, params.task_id);
 			const text = taskStoppedResult(entry.id, entry.description, stopped?.worktree ? [stopped.worktree] : []);
 			return { content: [{ type: "text" as const, text }], details: { taskId: entry.id, kind: entry.kind } };
 		},
@@ -310,25 +306,18 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			const [verb = "", id = ""] = args.trim().split(/\s+/);
 			if (!verb) return showTextViewer(ctx, "Agents", overview(ctx, await modelContext(ctx)));
 			if (verb !== "stop") return ctx.ui.notify("Usage: /agents [stop <id>]", "warning");
-			const entry = tasks.find(id, ctx.sessionManager.getSessionId());
 			const mission = currentMission(ctx.cwd);
-			if (!entry && mission?.slug === id) {
+			if (!tasks.find(id, ctx.sessionManager.getSessionId()) && mission?.slug === id) {
 				mission.state.status = "paused";
 				saveMission(mission, "Paused by the user from /agents.");
 				return ctx.ui.notify(`Paused mission ${id}`, "info");
 			}
-			if (!entry) return ctx.ui.notify(taskNotFound(id), "warning");
-			if (entry.status !== "running") return ctx.ui.notify(taskNotRunningResult(entry.id, entry.status), "warning");
-			if (entry.kind === "agent") await stop(await ensureEngine(ctx), entry.id, "user");
-			else {
-				try {
-					await entry.stop?.();
-				} catch (error) {
-					return ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
-				}
+			try {
+				const { entry } = await stopTask(ctx, id, "user");
+				ctx.ui.notify(`Stopped ${entry.id} (${entry.description})`, "info");
+			} catch (error) {
+				ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
 			}
-			if (tasks.find(entry.id)?.status === "running") tasks.update(entry.id, { status: "killed" });
-			ctx.ui.notify(`Stopped ${entry.id} (${entry.description})`, "info");
 		},
 	});
 
@@ -352,6 +341,16 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		clearInterval(widget);
 		if (event.reason === "quit") await closeAll();
 	});
+}
+
+/** TaskStop and `/agents stop`; the user's stop also keeps SendMessage from resuming an agent. */
+async function stopTask(ctx: ExtensionContext, id: string, by?: "user") {
+	const entry = tasks.find(id, ctx.sessionManager.getSessionId());
+	if (!entry) throw new Error(taskNotFound(id));
+	if (entry.status !== "running" || !entry.stop) throw new Error(taskNotRunningResult(entry.id, entry.status));
+	const stopped = by && entry.kind === "agent" ? await stop(await ensureEngine(ctx), entry.id, by) : await entry.stop();
+	if (tasks.find(entry.id)?.status === "running") tasks.update(entry.id, { status: "killed" });
+	return { entry, stopped };
 }
 
 /** `scriptPath`, then `name`, then `script`; only a scriptPath is run from its own file, the others get a persisted copy. */

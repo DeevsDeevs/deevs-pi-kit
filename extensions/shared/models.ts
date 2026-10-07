@@ -39,7 +39,7 @@ export const KIT_DEFAULTS = {
 	lead: "sol",
 } satisfies KitConfig;
 
-const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ModelThinkingLevel[];
+export const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ModelThinkingLevel[];
 const DATED = /-\d{8}$/;
 const CodexCache = Type.Object({ models: Type.Array(Type.Object({ slug: Type.String() })) });
 
