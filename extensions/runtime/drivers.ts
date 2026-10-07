@@ -144,7 +144,7 @@ function codexCommand(input: DriverCommandInput): string[] {
 	const trustedProject = ["--config", `projects={ ${JSON.stringify(input.cwd)} = { trust_level = "trusted" } }`];
 	// Decision 8: the kit guard as a PreToolUse hook; the kit vets its own hook, so its trust is bypassed for this launch.
 	const hook = `${shellQuote(mcp?.server.command ?? "node")} ${shellQuote(GUARD_HOOK)}`;
-	const guard = ["--dangerously-bypass-hook-trust", "--config", `hooks.PreToolUse=[{hooks=[{type="command",command=${JSON.stringify(hook)}}]}]`];
+	const guard = ["--dangerously-bypass-hook-trust", "--config", `hooks.PreToolUse=[{matcher="^Bash$",hooks=[{type="command",command=${JSON.stringify(hook)}}]}]`];
 	const sandbox = isWriter(input.profile) ? "workspace-write" : "read-only";
 	return ["--sandbox", sandbox, "--ask-for-approval", "never", ...guard, ...trustedProject, ...server, ...model, ...startup];
 }

@@ -46,7 +46,7 @@ export class WikiService {
 
 	async init(input: WikiInitInput): Promise<WikiInitResult> {
 		const domain = input.domain.trim();
-		if (!domain) throw new Error("wiki_init requires a non-empty domain.");
+		if (!domain) throw new Error("wiki init needs a non-empty domain.");
 		const root = await this.resolveRootForInit(input.path);
 		const created = [
 			...CORE_DIRS.map((dir) => join(root, dir)),

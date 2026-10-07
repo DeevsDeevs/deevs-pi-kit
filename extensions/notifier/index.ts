@@ -57,9 +57,11 @@ function runCommand(command: string[], ctx: ExtensionContext, config: ResolvedCo
 	if (!program) return;
 
 	// Bounded, never detached (AGENTS.md process ownership): a notifier that has not exited in 10 s is killed.
-	const child = spawn(program, args, { cwd: ctx.cwd, stdio: "ignore", timeout: 10_000 });
+	const child = spawn(program, args, { cwd: ctx.cwd, stdio: "ignore" });
 	child.on("error", () => undefined);
 	child.unref();
+	const timer = setTimeout(() => child.kill(), 10_000).unref();
+	child.once("exit", () => clearTimeout(timer));
 }
 
 async function appendJsonl(path: string, ctx: ExtensionContext, config: ResolvedConfig): Promise<void> {

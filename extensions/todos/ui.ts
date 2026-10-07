@@ -37,7 +37,7 @@ export function renderTodoWidgetLines(todos: TodoItem[], stats: TodoStats, theme
 	return lines;
 }
 
-export function todoIcon(status: TodoStatus, theme: Theme): string {
+function todoIcon(status: TodoStatus, theme: Theme): string {
 	if (status === "done") return theme.fg("success", "✓");
 	if (status === "in_progress") return theme.fg("warning", "◉");
 	if (status === "blocked") return theme.fg("error", "!");
