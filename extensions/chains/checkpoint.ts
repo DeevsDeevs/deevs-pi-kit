@@ -1,16 +1,24 @@
 import { Text } from "@earendil-works/pi-tui";
-import type { CustomEntry, ExtensionAPI, ExtensionContext, ToolExecutionEndEvent, ToolExecutionStartEvent } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ToolExecutionStartEvent } from "@earendil-works/pi-coding-agent";
+import { Type, type Static } from "typebox";
+import { Value } from "typebox/value";
 
 export const CHAIN_CHECKPOINT_ENTRY = "deevs.chain-checkpoint.v1";
 
-type CheckpointPayload = CustomEntry["data"] | ToolExecutionStartEvent["args"] | ToolExecutionEndEvent["result"];
-type CheckpointValue = null | boolean | number | string | CheckpointValue[] | CheckpointObject;
-
-interface CheckpointObject {
-	[key: string]: CheckpointValue | undefined;
-}
-
-export type ChainDueCode = "context_pressure" | "material_change" | "branch_created" | "other";
+const DueCode = Type.Union([Type.Literal("context_pressure"), Type.Literal("material_change"), Type.Literal("branch_created"), Type.Literal("other")]);
+export type ChainDueCode = Static<typeof DueCode>;
+const Target = { chain: Type.String(), branch: Type.String(), at: Type.Number() };
+/** A persisted operation; `due` keeps an unknown code, read as `other`. */
+const Operation = Type.Union([
+	Type.Object({ type: Type.Literal("activate"), ...Target }),
+	Type.Object({ type: Type.Literal("due"), reason: Type.String(), code: Type.Optional(Type.Unknown()), at: Type.Number() }),
+	Type.Object({ type: Type.Literal("saved"), ...Target, link: Type.Optional(Type.String()) }),
+	Type.Object({ type: Type.Literal("waived"), reason: Type.String(), at: Type.Number() }),
+	Type.Object({ type: Type.Literal("context_reset"), at: Type.Number() }),
+]);
+const CheckpointEntry = Type.Object({ type: Type.Literal("custom"), customType: Type.Literal(CHAIN_CHECKPOINT_ENTRY), data: Operation });
+const ChainCall = Type.Object({ action: Type.String(), chain: Type.String(), branch: Type.Optional(Type.String()) });
+const SavedResult = Type.Object({ details: Type.Object({ link: Type.Object({ filename: Type.String() }) }) });
 
 export interface ChainCheckpointState {
 	chain?: string;
@@ -59,10 +67,9 @@ export function checkpointLabel(state: ChainCheckpointState): string | undefined
 export function replayChainCheckpoint(entries: readonly unknown[]): ChainCheckpointState {
 	let state = emptyChainCheckpoint();
 	for (const entry of entries) {
-		const record = asRecord(entry);
-		if (record?.type !== "custom" || record.customType !== CHAIN_CHECKPOINT_ENTRY) continue;
-		const operation = parseOperation(record.data);
-		if (operation) state = reduceChainCheckpoint(state, operation);
+		if (!Value.Check(CheckpointEntry, entry)) continue;
+		const operation = entry.data;
+		state = reduceChainCheckpoint(state, operation.type === "due" ? { ...operation, code: Value.Check(DueCode, operation.code) ? operation.code : "other" } : operation);
 	}
 	return state;
 }
@@ -197,25 +204,14 @@ export function registerChainCheckpoint(pi: ExtensionAPI, service: ChainCheckpoi
 	});
 	pi.on("tool_execution_end", (event, ctx) => {
 		service.restore(ctx);
-		const args = asRecord(toolArgs.get(event.toolCallId));
+		const args = toolArgs.get(event.toolCallId);
 		toolArgs.delete(event.toolCallId);
-		if (event.isError) return;
-		const chain = stringValue(args?.chain);
-		if (event.toolName !== "chain" || chain === undefined) return;
-		const action = stringValue(args?.action);
-		const parsedBranch = stringValue(args?.branch);
-		const branch = parsedBranch ?? "main";
-		if (action === "save") {
-			const filename = stringValue(asRecord(asRecord(asRecord(event.result)?.details)?.link)?.filename);
-			service.saved(chain, branch, filename);
-			return;
-		}
-		if (action === "load" || action === "context") {
+		if (event.isError || event.toolName !== "chain" || !Value.Check(ChainCall, args)) return;
+		const { action, chain, branch } = args;
+		if (action === "save") service.saved(chain, branch, Value.Check(SavedResult, event.result) ? event.result.details.link.filename : undefined);
+		else if (action === "load" || action === "context") service.activate(chain, branch);
+		else if (action === "fork" && branch !== undefined) {
 			service.activate(chain, branch);
-			return;
-		}
-		if (action === "fork" && parsedBranch !== undefined) {
-			service.activate(chain, parsedBranch);
 			service.due("new Chain branch has no checkpoint", "branch_created");
 		}
 	});
@@ -240,45 +236,4 @@ async function gitFingerprint(pi: ExtensionAPI, cwd: string): Promise<string | u
 	} catch {
 		return undefined;
 	}
-}
-
-function parseOperation(value: CustomEntry["data"]): ChainCheckpointOperation | undefined {
-	const operation = asRecord(value);
-	if (!operation) return undefined;
-	const type = stringValue(operation.type);
-	const at = numberValue(operation.at);
-	if (type === undefined || at === undefined) return undefined;
-	const chain = stringValue(operation.chain);
-	const branch = stringValue(operation.branch);
-	if (type === "activate" && chain !== undefined && branch !== undefined) return { type, chain, branch, at };
-	const reason = stringValue(operation.reason);
-	if (type === "due" && reason !== undefined) return { type, reason, code: chainDueCode(operation.code) ?? "other", at };
-	const link = stringValue(operation.link);
-	if (type === "saved" && chain !== undefined && branch !== undefined && (operation.link === undefined || link !== undefined)) return { type, chain, branch, link, at };
-	if (type === "waived" && reason !== undefined) return { type, reason, at };
-	if (type === "context_reset") return { type, at };
-	return undefined;
-}
-
-function chainDueCode(value: CheckpointValue | undefined): ChainDueCode | undefined {
-	if (value === "context_pressure" || value === "material_change" || value === "branch_created" || value === "other") return value;
-	return undefined;
-}
-
-function asRecord(value: CheckpointPayload): CheckpointObject | undefined {
-	if (value === null || Array.isArray(value)) return undefined;
-	try {
-		const prototype = Object.getPrototypeOf(value);
-		return prototype === Object.prototype || prototype === null ? Object.fromEntries(Object.entries(value)) : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-function stringValue(value: CheckpointValue | undefined): string | undefined {
-	try { return String.prototype.valueOf.call(value) === value ? value : undefined; } catch { return undefined; }
-}
-
-function numberValue(value: CheckpointValue | undefined): number | undefined {
-	try { return Number.prototype.valueOf.call(value) === value ? value : undefined; } catch { return undefined; }
 }

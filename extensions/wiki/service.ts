@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { lstat, mkdir, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import { utf8Head } from "../shared/bytes.ts";
-import { clampInt as clamp, lineMatcher, unicodeTerms, validateQuery } from "../shared/terms.ts";
-import { basenameId, extractTitle, pageId, parseMetadata, parseTaxonomyTags, parseWikiLinks, sameDirCandidate, stripFrontmatter } from "./parser.ts";
+import { truncateText, utf8Head } from "../shared/bytes.ts";
+import { bm25, clampInt as clamp, lineMatcher, snippet, stripFrontmatter, unicodeTerms, validateQuery } from "../shared/terms.ts";
+import { basenameId, extractTitle, pageId, parseMetadata, parseTaxonomyTags, parseWikiLinks, sameDirCandidate } from "./parser.ts";
 import type {
 	WikiAmbiguousLink,
 	WikiBrokenLink,
@@ -281,15 +281,13 @@ export class WikiService {
 				const frequency = doc.tf.get(term) ?? 0;
 				if (!frequency) continue;
 				matchedTerms.push(term);
-				const idf = Math.log(1 + (docs.length - (df.get(term) ?? 0) + 0.5) / ((df.get(term) ?? 0) + 0.5));
-				const denom = frequency + 1.2 * (1 - 0.75 + 0.75 * (doc.length / avgLength));
-				score += idf * ((frequency * 2.2) / denom);
+				score += bm25(frequency, df.get(term) ?? 0, docs.length, doc.length, avgLength, 1.2);
 				if (doc.page.title.toLowerCase().includes(term)) score += 0.75;
 				if (doc.page.tags.some((tag) => tag.toLowerCase().includes(term))) score += 0.35;
 			}
 			if (score <= 0) continue;
 			const line = bestLine(doc.lines, terms);
-			matches.push({ page: doc.page, line, snippet: snippetAround(doc.lines, line, 2), score, matchedTerms });
+			matches.push({ page: doc.page, line, snippet: snippet(doc.lines, line - 1, 2), score, matchedTerms });
 		}
 		matches.sort((a, b) => (b.score ?? 0) - (a.score ?? 0) || a.page.id.localeCompare(b.page.id));
 		return { path: root, query, mode: "lookup", matches: matches.slice(0, maxResults), truncated: matches.length > maxResults };
@@ -302,7 +300,7 @@ export class WikiService {
 			const lines = (await readBounded(page.path)).split(/\r?\n/);
 			for (let index = 0; index < lines.length; index++) {
 				if (!matchesLine(lines[index]!)) continue;
-				matches.push({ page, line: index + 1, snippet: snippetAround(lines, index + 1, contextLines) });
+				matches.push({ page, line: index + 1, snippet: snippet(lines, index, contextLines) });
 				if (matches.length >= maxResults) return { path: root, query, mode, matches, truncated: true };
 			}
 		}
@@ -427,13 +425,6 @@ function compactPage(content: string, maxBytes: number): string {
 	return truncateText(preferred, maxBytes, "page").text;
 }
 
-function truncateText(value: string, maxBytes: number, label: string) {
-	if (Buffer.byteLength(value, "utf8") <= maxBytes) return { text: value, truncated: false };
-	const suffix = `\n\n[${label} truncated to ${maxBytes} bytes]`;
-	const suffixBytes = Buffer.byteLength(suffix, "utf8");
-	return { text: `${utf8Head(value, Math.max(0, maxBytes - suffixBytes))}${suffix}`, truncated: true };
-}
-
 function bestLine(lines: string[], terms: string[]): number {
 	let best = 1;
 	let score = -1;
@@ -443,12 +434,6 @@ function bestLine(lines: string[], terms: string[]): number {
 		if (current > score) { best = index + 1; score = current; }
 	}
 	return best;
-}
-
-function snippetAround(lines: string[], line: number, context: number): string {
-	const start = Math.max(1, line - context);
-	const end = Math.min(lines.length, line + context);
-	return lines.slice(start - 1, end).map((text, index) => `${start + index}: ${text}`).join("\n");
 }
 
 function schemaTemplate(domain: string, date: string): string {

@@ -1,5 +1,6 @@
 import { randomBytes, randomInt, randomUUID } from "node:crypto";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { VERSION, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { migrateLegacyConfig } from "./config.ts";
 
 export type TaskKind = "agent" | "workflow" | "job" | "monitor" | "collaborator";
 export type TaskStatus = "running" | "completed" | "failed" | "killed";
@@ -52,6 +53,11 @@ export interface NotificationSource {
 
 export const TASK_NOTIFICATION = "task-notification";
 
+/** The kit is proven on Pi 1.0.4, the release the polygon runs. */
+export function warnOldPi(version: string): void {
+	if (version.localeCompare("1.0.4", undefined, { numeric: true }) < 0) console.warn(`pi-kit: needs Pi 1.0.4 or newer, and this is Pi ${version}; update Pi.`);
+}
+
 const AGENT_NOTE = "A task-notification fires each time this agent stops. A SendMessage to it resumes it, so the same task-id may notify more than once.";
 
 interface TasksState {
@@ -74,8 +80,10 @@ const globalRegistry = globalThis as typeof globalThis & { [TASKS]?: TasksState 
 const state: TasksState = globalRegistry[TASKS] ??= { installed: new WeakSet(), roster: new Map(), sources: new Map(), outstanding: new Map(), sent: new Map() };
 
 export const tasks = {
+	/** The kit's start-up: the roster's delivery hooks, the one legacy-config migration per session, and the Pi version warning. */
 	install(pi: ExtensionAPI): void {
 		if (state.installed.has(pi)) return;
+		if (!state.pi) warnOldPi(VERSION);
 		state.installed.add(pi);
 		state.pi = pi;
 		pi.on("session_start", async (event, ctx) => {
@@ -83,6 +91,7 @@ export const tasks = {
 			if (event.reason !== "reload") state.sent.clear();
 			state.ctx = ctx;
 			await redeliver(ctx);
+			if (ctx.isProjectTrusted()) await migrateLegacyConfig(ctx.cwd);
 		});
 		pi.on("agent_settled", async (_event, ctx) => {
 			if (state.pi !== pi) return;
@@ -409,15 +418,7 @@ export function sendMessageResult(to: string, outcome: "steered" | "queued" | "r
 	return outcome === "queued" ? `Message queued for delivery to ${to} when its current run ends.` : `Resuming agent ${to}`;
 }
 
-export interface WorkflowLaunch {
-	taskId: string;
-	summary: string;
-	transcriptDir: string;
-	scriptPath: string;
-	runId: string;
-}
-
-export function workflowLaunchedResult(launch: WorkflowLaunch): string {
+export function workflowLaunchedResult(launch: { taskId: string; summary: string; transcriptDir: string; scriptPath: string; runId: string }): string {
 	return [
 		`Workflow launched in background. Task ID: ${launch.taskId}`,
 		`Summary: ${launch.summary}`,

@@ -3,15 +3,13 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Message, ModelThinkingLevel } from "@earendil-works/pi-ai";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
 import { Type, type TSchema } from "typebox";
 import { Compile } from "typebox/compile";
 import { Value } from "typebox/value";
-import { LEVELS, loadKitConfig, readCodexCatalog, resolveModel, type ModelContext } from "../../shared/models.ts";
+import { LEVELS, modelContext, resolveModel, type ModelContext } from "../../shared/models.ts";
 import { newAgentId, tasks, workflowDiagnostics, workflowRecovery, workflowSummary, type TaskNotification, type TaskStatus } from "../../shared/tasks.ts";
 import { finishAgentWorktree, type AgentWorktree } from "../../shared/worktree.ts";
 import { workerPrompt, workflowAgentType } from "../definitions.ts";
@@ -36,6 +34,8 @@ export interface WorkflowInput {
 	scriptPath: string;
 	args?: JsonValue;
 	cwd: string;
+	/** Whether Pi trusted the project at launch, so agent() reads its pi-kit.json `models`; absent on runs launched before it existed. */
+	trusted?: boolean;
 	/** The transcript dir: journal.jsonl, progress.jsonl, `<runId>.json` and each agent's transcript. */
 	dir: string;
 	request?: string;
@@ -245,11 +245,11 @@ function callRunner(D: D, docs: WorkflowDocs, engine: Engine, input: WorkflowInp
 		return undefined;
 	}, context);
 	let creating = Promise.resolve();
-	// The run's pi-kit.json and Codex catalog are read once, at its first agent() call.
+	// The run's pi-kit.json and Codex catalog are read once, at its first agent() call; a failed read is tried again.
 	let models: Promise<ModelContext> | undefined;
 	const create = async (key: string, options: AgentOptions): Promise<CallRecord> => {
 		const type = workflowAgentType(options.agentType);
-		const resolved = resolveModel(options.model ?? type.model, await (models ??= modelContext(input)), LEVELS.find((level) => level === options.effort) ?? type.effort);
+		const resolved = resolveModel(options.model ?? type.model, await (models ??= workflowModels(input).catch((error: Error) => { models = undefined; throw error; })), LEVELS.find((level) => level === options.effort) ?? type.effort);
 		const agentId = newAgentId();
 		const at = await placeAgent(type, resolved, resolve(input.cwd, options.cwd ?? "."), agentId, options.isolation);
 		const { worktree, cwd } = at;
@@ -347,13 +347,8 @@ function callRunner(D: D, docs: WorkflowDocs, engine: Engine, input: WorkflowInp
 	};
 }
 
-async function modelContext(input: WorkflowInput): Promise<ModelContext> {
+async function workflowModels(input: WorkflowInput): Promise<ModelContext> {
 	const registry = host.models!;
 	const model = input.lead && registry.find(input.lead.provider, input.lead.id);
-	return {
-		config: await loadKitConfig(input.cwd, getAgentDir()),
-		registry,
-		lead: model && input.lead ? { model, level: input.lead.level } : undefined,
-		codex: readCodexCatalog(process.env.CODEX_HOME || join(homedir(), ".codex")),
-	};
+	return modelContext({ cwd: input.cwd, isProjectTrusted: () => input.trusted === true, modelRegistry: registry }, model && input.lead ? { model, level: input.lead.level } : undefined);
 }

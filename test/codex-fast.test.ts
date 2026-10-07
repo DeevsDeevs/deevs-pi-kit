@@ -30,6 +30,7 @@ function inject(model: { provider: string; api: string; id: string }, payload: u
 }
 
 const codex = { provider: "openai-codex", api: "openai-codex-responses", id: "gpt-6.0-codex" };
+const openai = { provider: "openai", api: "openai-responses", id: "gpt-6.1-sol" };
 
 describe("codex fast", () => {
 	it("applies priority tier to future OpenAI Codex OAuth models without a version allowlist", () => {
@@ -42,10 +43,15 @@ describe("codex fast", () => {
 		expect(inject(codex, { model: "gpt-6.0-codex" })).toBeUndefined();
 	});
 
+	it("applies it to Pi 1.0.4's openai provider signed in with ChatGPT", () => {
+		expect(inject(openai, { model: "gpt-6.1-sol" })).toEqual({ model: "gpt-6.1-sol", service_tier: "priority" });
+	});
+
 	it.each([
-		["other provider", { provider: "openai", api: "openai-responses", id: "gpt-6.0" }, { model: "gpt-6.0" }, true],
+		["other provider", { provider: "anthropic", api: "anthropic-messages", id: "claude" }, { model: "claude" }, true],
 		["wrong API", { provider: "openai-codex", api: "openai-responses", id: "gpt-6.0-codex" }, { model: "gpt-6.0-codex" }, true],
 		["API-key auth", codex, { model: "gpt-6.0-codex" }, false],
+		["openai with an API key", openai, { model: "gpt-6.1-sol" }, false],
 		["payload model mismatch", codex, { model: "other" }, true],
 		["existing tier", codex, { model: "gpt-6.0-codex", service_tier: "flex" }, true],
 		["non-object payload", codex, [], true],

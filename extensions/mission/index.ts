@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { isAutonomous } from "../shared/autonomy.ts";
+import { isAutonomous } from "../shared/config.ts";
 import { ownsProcessIdentity, readProcessIdentity } from "../shared/process-group.ts";
 import { systemReminder, tasks } from "../shared/tasks.ts";
 import { git } from "../shared/worktree.ts";
@@ -143,7 +143,7 @@ async function maybeContinue(pi: ExtensionAPI, ctx: ExtensionContext): Promise<v
 		if (state.owner && await ownsProcessIdentity(state.owner.pid, state.owner.identity)) return;
 		state.owner = me;
 	}
-	if (!await isAutonomous(ctx)) return;
+	if (!isAutonomous(ctx)) return;
 	// Monitors and collaborators wake the lead themselves, by notification or by mail.
 	if (tasks.list(ctx.sessionManager.getSessionId()).some((task) => task.status === "running" && task.kind !== "monitor" && task.kind !== "collaborator")) return;
 	const head = await gitHead(ctx.cwd);

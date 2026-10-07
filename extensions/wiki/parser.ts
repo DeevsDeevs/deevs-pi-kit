@@ -1,4 +1,5 @@
 import { basename, dirname, extname, posix } from "node:path";
+import { stripFrontmatter } from "../shared/terms.ts";
 
 interface WikiMetadata {
 	title?: string;
@@ -16,10 +17,6 @@ interface WikiLinkRef {
 	line: number;
 	local: boolean;
 	asset: boolean;
-}
-
-export function stripFrontmatter(content: string): string {
-	return content.replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, "");
 }
 
 export function parseMetadata(content: string): WikiMetadata {

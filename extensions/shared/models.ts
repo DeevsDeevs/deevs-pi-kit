@@ -1,10 +1,11 @@
 import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { clampThinkingLevel, type Api, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { kitValues } from "./config.ts";
+import { trustedKitValues, type Trust } from "./config.ts";
 
 export type ModelCatalog = Pick<ModelRegistry, "getAll" | "getAvailable" | "find">;
 export type KitConfig = { models: Record<string, string>; lead: string | null };
@@ -43,11 +44,16 @@ export const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"
 const DATED = /-\d{8}$/;
 const CodexCache = Type.Object({ models: Type.Array(Type.Object({ slug: Type.String() })) });
 
-/** Project over global over kit defaults, per name. Callers load it again for every resolution, so an edit applies to the next call. */
-export async function loadKitConfig(cwd: string, agentDir: string): Promise<KitConfig> {
-	const leads = kitValues("lead", cwd, agentDir);
+/** What a resolution takes, built fresh for each one so an edit to pi-kit.json or Codex's catalog applies to the next call. */
+export async function modelContext(ctx: Trust & { modelRegistry: ModelCatalog }, lead?: ModelContext["lead"]): Promise<ModelContext> {
+	return { config: await loadKitConfig(ctx), registry: ctx.modelRegistry, lead, codex: readCodexCatalog(process.env.CODEX_HOME || join(homedir(), ".codex")) };
+}
+
+/** A trusted project over global over kit defaults, per name; an untrusted project could point every Agent at a `bypassPermissions` Claude worker. */
+export async function loadKitConfig(ctx: Trust, dir?: string): Promise<KitConfig> {
+	const leads = trustedKitValues("lead", ctx, dir);
 	return {
-		models: Object.assign({}, KIT_DEFAULTS.models, ...kitValues("models", cwd, agentDir)),
+		models: Object.assign({}, KIT_DEFAULTS.models, ...trustedKitValues("models", ctx, dir)),
 		lead: leads.reduce<string | null>((lead, file) => (file === undefined ? lead : file), KIT_DEFAULTS.lead),
 	};
 }

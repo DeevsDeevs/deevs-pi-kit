@@ -1,6 +1,5 @@
 import { basename } from "node:path";
-import { utf8Head } from "../shared/bytes.ts";
-import { truncateGraphemes } from "../shared/terms.ts";
+import { stripFrontmatter, truncateGraphemes } from "../shared/terms.ts";
 
 const STALE_AFTER_DAYS = 7;
 
@@ -37,15 +36,11 @@ export function parseMetadata(content: string): ChainLinkMetadata {
 
 export function withMetadata(content: string, metadata: Required<Pick<ChainLinkMetadata, "chain" | "branch" | "created">> & Pick<ChainLinkMetadata, "parent" | "nextStep">): string {
 	const body = stripFrontmatter(content).trim();
-	const lines = ["---", `chain: ${quoteYaml(metadata.chain)}`, `branch: ${quoteYaml(metadata.branch)}`];
-	if (metadata.parent) lines.push(`parent: ${quoteYaml(metadata.parent)}`);
-	if (metadata.nextStep) lines.push(`nextStep: ${quoteYaml(metadata.nextStep)}`);
-	lines.push(`created: ${quoteYaml(metadata.created)}`, "---", "", body, "");
+	const lines = ["---", `chain: ${JSON.stringify(metadata.chain)}`, `branch: ${JSON.stringify(metadata.branch)}`];
+	if (metadata.parent) lines.push(`parent: ${JSON.stringify(metadata.parent)}`);
+	if (metadata.nextStep) lines.push(`nextStep: ${JSON.stringify(metadata.nextStep)}`);
+	lines.push(`created: ${JSON.stringify(metadata.created)}`, "---", "", body, "");
 	return lines.join("\n");
-}
-
-export function stripFrontmatter(content: string): string {
-	return content.replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, "");
 }
 
 export function parseCreatedAt(filename: string, metadata?: ChainLinkMetadata) {
@@ -66,15 +61,6 @@ export function slugify(value: string): string {
 	return truncateGraphemes(slug, 80, 228) || "chain-link";
 }
 
-export function truncateText(value: string, maxBytes: number) {
-	const bytes = Buffer.byteLength(value, "utf8");
-	if (bytes <= maxBytes) return { text: value, truncated: false };
-	const suffix = `\n\n[chain content truncated to ${maxBytes} bytes]`;
-	const suffixBytes = Buffer.byteLength(suffix, "utf8");
-	const text = suffixBytes >= maxBytes ? utf8Head(suffix, maxBytes) : `${utf8Head(value, maxBytes - suffixBytes)}${suffix}`;
-	return { text, truncated: true };
-}
-
 function dateFromFilename(filename: string): Date | null {
 	const match = /^(\d{4})-(\d{2})-(\d{2})-(\d{4,9})-/.exec(filename);
 	if (!match) return null;
@@ -85,8 +71,4 @@ function dateFromFilename(filename: string): Date | null {
 	const millisecond = stamp.length >= 9 ? Number(stamp.slice(6, 9)) : 0;
 	const date = new Date(Number(year), Number(month) - 1, Number(day), hour, minute, second, millisecond);
 	return Number.isNaN(date.getTime()) ? null : date;
-}
-
-function quoteYaml(value: string): string {
-	return JSON.stringify(value);
 }

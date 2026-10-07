@@ -114,6 +114,7 @@ describe("Chain checkpoint state", () => {
 
 		handlers.get("tool_execution_start")!({ toolCallId: "save", toolName: "chain", args: { action: "save", chain: "kit", branch: "main" } });
 		handlers.get("tool_execution_end")!({ toolCallId: "save", toolName: "chain", isError: false, result: { details: { link: { filename: "checkpoint.md" } } } }, ctx);
+		expect(branch.at(-1)?.data).toMatchObject({ type: "saved", chain: "kit", branch: "main", link: "checkpoint.md" });
 		expect(run()).toBeUndefined();
 		expect(sent).toHaveLength(1);
 
@@ -121,6 +122,11 @@ describe("Chain checkpoint state", () => {
 		handlers.get("session_compact")!({}, ctx);
 		expect(service.read()).toMatchObject({ status: "saved", contextPressureHandled: false });
 		expect(run()).toContain("Load this Chain before rediscovery");
+
+		handlers.get("tool_execution_start")!({ toolCallId: "fork", toolName: "chain", args: { action: "fork", chain: "kit", branch: "alt" } });
+		handlers.get("tool_execution_end")!({ toolCallId: "fork", toolName: "chain", isError: false, result: {} }, ctx);
+		expect(service.read()).toMatchObject({ chain: "kit", branch: "alt", status: "due", dueCodes: ["branch_created"] });
+		expect(replayChainCheckpoint([{ type: "custom", customType: CHAIN_CHECKPOINT_ENTRY, data: { type: "due", reason: "r", code: "bogus", at: 1 } }]).dueCodes).toEqual(["other"]);
 	});
 
 	it("keeps colliding long Chain names separately visible in the dashboard", async () => {

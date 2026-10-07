@@ -21,4 +21,9 @@ describe("ArxivService", () => {
 		expect(result.papers).toHaveLength(1);
 		expect(result.truncated).toBe(false);
 	});
+
+	it("names the timeout when the request runs out of time", async () => {
+		vi.stubGlobal("fetch", vi.fn(async () => { throw new DOMException("The operation timed out.", "TimeoutError"); }));
+		await expect(new ArxivService().search({ query: "logic", maxResults: 1 })).rejects.toThrow("arXiv API request timed out after 15000ms");
+	});
 });

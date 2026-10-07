@@ -4,8 +4,7 @@ import type { ChainService } from "./service.ts";
 import type { ChainLoadResult } from "./types.ts";
 import { formatList, formatLoad, formatRankedSearch } from "./format.ts";
 import { checkpointLabel, type ChainCheckpointService } from "./checkpoint.ts";
-import { FULL_SCREEN_OVERLAY } from "../shared/dashboard.ts";
-import { ChainsDashboard } from "./ui.ts";
+import { ChainsDashboard, FULL_SCREEN_OVERLAY } from "./ui.ts";
 
 export function registerChainCommands(pi: ExtensionAPI, service: ChainService, checkpoints: ChainCheckpointService): void {
 	pi.registerCommand("chains", {

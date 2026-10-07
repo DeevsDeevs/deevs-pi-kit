@@ -1,13 +1,12 @@
 import { createHash } from "node:crypto";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { appendFile, mkdir, readFile, utimes, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
 import { getAgentDir, isToolCallEventType, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { guardBashCall, guardShell, loadGuardConfig } from "../shared/guard.ts";
-import { loadKitConfig, modelLabel, modelsTable, readCodexCatalog, resolveLead, resolveModel, type ModelContext } from "../shared/models.ts";
+import { loadKitConfig, modelContext, modelLabel, modelsTable, resolveLead, resolveModel, type ModelContext } from "../shared/models.ts";
 import { agentForegroundResult, agentLaunchedResult, jobLaunchedResult, monitorStartedResult, newAgentId, newBackgroundTaskId, newWorkflowRunId, newWorkflowTaskId, sendMessageResult, taskNotFound, taskNotRunningResult, taskStoppedResult, tasks, unknownAgentResult, workflowLaunchedResult, type RosterEntry } from "../shared/tasks.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
 import { finishAgentWorktree, sharesCwd } from "../shared/worktree.ts";
@@ -93,12 +92,7 @@ const MONITOR_DESCRIPTION = [
 
 export default function subagentsExtension(pi: ExtensionAPI): void {
 	tasks.install(pi);
-	const modelContext = async (ctx: ExtensionContext): Promise<ModelContext> => ({
-		config: await loadKitConfig(ctx.cwd, getAgentDir()),
-		registry: ctx.modelRegistry,
-		lead: ctx.model ? { model: ctx.model, level: pi.getThinkingLevel() } : undefined,
-		codex: readCodexCatalog(process.env.CODEX_HOME || join(homedir(), ".codex")),
-	});
+	const models = (ctx: ExtensionContext) => modelContext(ctx, ctx.model && { model: ctx.model, level: pi.getThinkingLevel() });
 	remindSilentTurns(pi);
 	// A side question typed while the turn runs, or a message an extension sends, is not the request.
 	pi.on("input", (event, ctx) => {
@@ -117,7 +111,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			const type = findAgentType(params.subagent_type);
 			if (params.name && RESERVED_NAMES.has(params.name)) throw new Error(`The name '${params.name}' is reserved; pick another.`);
 			const requested = directory(ctx.cwd, params.cwd);
-			const resolved = resolveModel(params.model ?? type.model, await modelContext(ctx), type.effort);
+			const resolved = resolveModel(params.model ?? type.model, await models(ctx), type.effort);
 			const limits: Limits = { maxTurns: params.maxTurns, maxTokens: params.maxTokens, timeout: params.timeout };
 			const limitsSet = limitsText(limits);
 			if (resolved.harness !== "pi" && limitsSet) throw new Error(`maxTurns, maxTokens and timeout apply to Pi models only; ${modelLabel(resolved)} runs as a CLI worker.`);
@@ -194,6 +188,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				scriptPath: file,
 				args: coerceArgs(params.args),
 				cwd: ctx.cwd,
+				trusted: ctx.isProjectTrusted(),
 				dir,
 				request: request && request.length <= MAX_REQUEST_CHARS ? request : undefined,
 				lead: ctx.model && { provider: ctx.model.provider, id: ctx.model.id, level: pi.getThinkingLevel() },
@@ -306,7 +301,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		description: "Background tasks, the Mission, agent types and models; /agents stop <id> stops a task or pauses the Mission",
 		handler: async (args, ctx) => {
 			const [verb = "", id = ""] = args.trim().split(/\s+/);
-			if (!verb) return showTextViewer(ctx, "Agents", overview(ctx, await modelContext(ctx)));
+			if (!verb) return showTextViewer(ctx, "Agents", overview(ctx, await models(ctx)));
 			if (verb !== "stop") return ctx.ui.notify("Usage: /agents [stop <id>]", "warning");
 			const mission = currentMission(ctx.cwd);
 			if (!tasks.find(id, ctx.sessionManager.getSessionId()) && mission?.slug === id) {
@@ -426,7 +421,7 @@ function directory(base: string, cwd: string | undefined): string {
 async function useLeadModel(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
 	if (process.argv.includes("--model") || process.argv.includes("--provider")) return;
 	if (ctx.sessionManager.getEntries().some((entry) => entry.type === "message" && entry.message.role === "assistant")) return;
-	const lead = resolveLead({ config: await loadKitConfig(ctx.cwd, getAgentDir()), registry: ctx.modelRegistry });
+	const lead = resolveLead({ config: await loadKitConfig(ctx), registry: ctx.modelRegistry });
 	if (!lead) return;
 	if (!await pi.setModel(lead.model)) throw new Error(`${lead.model.provider} is not logged in.`);
 	if (lead.level) pi.setThinkingLevel(lead.level);

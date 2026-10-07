@@ -1,6 +1,6 @@
-// Chains checkpoint reminder for Claude Code and Codex, the same rule Pi applies:
-// at 80% context the first stop is refused once with a reminder to save a Chain link,
-// and after compaction the latest link is handed back so work continues from it.
+// Chains checkpoint reminder for Claude Code and Codex: at 80% context the first stop is refused once with a reminder
+// to save a Chain link (Pi puts the same reminder in its system prompt instead), and after compaction the latest link
+// is handed back so work continues from it.
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";

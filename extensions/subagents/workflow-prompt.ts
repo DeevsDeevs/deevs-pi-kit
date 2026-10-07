@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
-import { isAutonomous } from "../shared/autonomy.ts";
+import { isAutonomous } from "../shared/config.ts";
 import { systemReminder } from "../shared/tasks.ts";
 
 export const WORKFLOW_SNIPPET = "Orchestrate many background agents with a script, once the user has opted in.";
@@ -45,7 +45,7 @@ const SPARSE_AFTER_PROMPTS = 10;
 export function promptWorkflow(pi: ExtensionAPI): void {
 	pi.on("before_agent_start", async (event, ctx) => {
 		if (!pi.getActiveTools().includes("Workflow")) return;
-		const autonomous = await isAutonomous(ctx);
+		const autonomous = isAutonomous(ctx);
 		if (autonomous || ctx.model?.provider !== "anthropic") event.systemPromptOptions.sections.workflow_authoring = REFERENCE;
 		const kind = reminderDue(ctx.sessionManager.getBranch(), autonomous);
 		if (kind) return { message: { customType: REMINDER, content: AUTONOMY_REMINDERS[kind], display: false, details: kind } };

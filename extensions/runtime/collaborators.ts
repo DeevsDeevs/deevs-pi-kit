@@ -1,8 +1,6 @@
 import { realpathSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { getAgentDir, type ExtensionContext, type ToolCallEvent } from "@earendil-works/pi-coding-agent";
-import { loadKitConfig, readCodexCatalog, type ModelContext } from "../shared/models.ts";
+import type { ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent";
+import { modelContext } from "../shared/models.ts";
 import { HostedRuntimeClient, HostedRuntimeClientError } from "./client.ts";
 import { CollaboratorLauncher, standingDown, type CollaboratorStart } from "./collaborator-launch.ts";
 import {
@@ -16,7 +14,7 @@ import {
 } from "./collaborator-policy.ts";
 import { RuntimeError } from "./errors.ts";
 import { delay, throwIfAborted } from "./herdr.ts";
-import { isAutonomous } from "../shared/autonomy.ts";
+import { isAutonomous } from "../shared/config.ts";
 import { resolveCollaboratorRepo } from "./service/worktree.ts";
 import { type HostedCollaboratorProfile, isHeld, isVacant, isWriter } from "./schemas/state.ts";
 import { decodeHerdr, herdrResult, HerdrLiveAgentResultSchema, HerdrTabResultSchema } from "./schemas/herdr.ts";
@@ -166,12 +164,7 @@ export class CollaboratorService {
 		const identity = this.session.store.identity;
 		const protocol = identity?.protocol ?? DEFAULT_PROTOCOL;
 		const callerParticipantId = identity?.participantId ?? LEAD;
-		const models: ModelContext = {
-			config: await loadKitConfig(ctx.cwd, getAgentDir()),
-			registry: ctx.modelRegistry,
-			lead: ctx.model ? { model: ctx.model, level: this.session.pi.getThinkingLevel() } : undefined,
-			codex: readCodexCatalog(process.env.CODEX_HOME || join(homedir(), ".codex")),
-		};
+		const models = await modelContext(ctx, ctx.model && { model: ctx.model, level: this.session.pi.getThinkingLevel() });
 		const candidates = requested.map((participant) => resolveCollaboratorCandidate(participant, models));
 		const registration = await this.session.requireRegistration(ctx);
 		const participants = await this.session.listParticipants(registration);
@@ -403,7 +396,7 @@ async function resolveCandidateRepo(
 
 /** Without autonomy a lifecycle change needs a dialog, so a UI; it always needs a trusted project. Returns autonomy. */
 async function assertLifecycleAllowed(ctx: ExtensionContext, what: string): Promise<boolean> {
-	const auto = await isAutonomous(ctx);
+	const auto = isAutonomous(ctx);
 	if (!auto && !ctx.hasUI) throw new HostedRuntimeClientError("host_unavailable", `${what} confirmation requires an interactive Pi session.`);
 	if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", `${what} requires a trusted project.`);
 	return auto;

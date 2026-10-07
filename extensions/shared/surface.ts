@@ -6,7 +6,7 @@ import { isToolCallEventType, type ExtensionAPI, type ExtensionContext } from "@
 
 /** One registration per Pi process across hot reloads: false while an earlier load of the same extension is active. */
 export function claimSurface(pi: ExtensionAPI, name: string): boolean {
-	const key = Symbol.for(`deevs-pi-kit.${name}-surface`);
+	const key = Symbol.for(`pi-kit.${name}-surface`);
 	const slot: { [key: symbol]: { active: boolean } | undefined } = globalThis;
 	if (slot[key]?.active) return false;
 	const surface = { active: true };
