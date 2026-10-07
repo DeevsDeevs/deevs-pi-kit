@@ -28,7 +28,7 @@ Personas are `agents/*.md` with Claude Code's frontmatter (`name`, `description`
 - `maxTurns`, `maxTokens` and `timeout` exist only when the user asks for them, and show in the launch result and the report.
 - `SendMessage` to a running agent arrives at its next tool round, to one still waiting for a slot right after its prompt (kept in its record across a restart); to one that finished, failed or was stopped by `TaskStop`, it resumes the agent under the same `agentId`, with its context, and the agent notifies again. An agent stopped with `/agents stop` is not resumed. A name addresses its latest agent.
 - `isolation: "worktree"` runs the agent in a worktree under `<agent dir>/pi-kit/worktrees/` on branch `agent/<agentId>`. A worktree with changes is kept and its path and branch reach the report; an unchanged one is removed with its branch.
-- In print mode (`pi -p`, `--mode json`) Pi waits, as `claude -p` does, until the running agents, workflows and jobs have reported and the lead has answered them, then exits.
+- In print mode (`pi -p`, `--mode json`) Pi waits, as `claude -p` does, until the running agents, workflows and jobs have reported and the lead has answered them, then exits at once: quitting also closes the agents' provider connections, such as a cached openai-codex WebSocket.
 - `TaskStop` stops an agent (by id or name), a workflow (by `w…` task id or `wf_…` run id; no notification follows), a job or a monitor; the agent's and the job's report say it was stopped, a monitor just ends. `ListAgents` and `/agents` list every task of the session by kind; `/agents` adds the agent types and what each model name resolves to now.
 
 ## Workflow

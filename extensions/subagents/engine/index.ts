@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { access, mkdir, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { cleanupSessionResources, type Api, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { createBashTool, createEditTool, createFindTool, createGrepTool, createLsTool, createReadTool, createWriteTool, getAgentDir, type ExtensionContext, type ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
 import { guardBashCall } from "../../shared/guard.ts";
@@ -152,6 +152,8 @@ export async function closeAll(ctx?: ExtensionContext): Promise<void> {
 		if (idle) await writeFile(join(engine.dir, SETTLED), "").catch(() => {});
 		await unlock(join(engine.dir, "engine.lock"));
 	}
+	// Pi releases only the lead's provider session; an agent's, such as its cached openai-codex WebSocket, would hold the event loop open for its 5 min idle TTL, so print mode would not exit.
+	cleanupSessionResources();
 	host.closing = false;
 }
 
