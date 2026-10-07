@@ -2,7 +2,7 @@ import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { addWorktree, git, gitTopLevel, repositoriesUnder } from "../../shared/worktree.ts";
 import { RuntimeError } from "../errors.ts";
-import { type HostedParticipant, isHeld, isPiTarget } from "../schemas/state.ts";
+import { type HostedParticipant, holds, isHeld, isPiTarget } from "../schemas/state.ts";
 import type { HostedCaller } from "./live.ts";
 import { deriveParticipantKey, HostedStateStore, projectScope } from "./state.ts";
 
@@ -136,7 +136,7 @@ export class RuntimeWorktrees {
 	private authorize(caller: HostedCaller, input: EnsureWorktreeInput): string {
 		const projectRoot = this.projectRoot(caller);
 		const participant = this.store.read().participants[input.callerParticipantKey];
-		if (!callerHoldsAuthority(participant, input, caller, projectRoot)) {
+		if (!holds(participant, caller.targetKey, input.expectedCallerGeneration) || participant?.projectRoot !== projectRoot) {
 			throw new RuntimeError("conflict", "Worktree caller authority is absent or no longer held.");
 		}
 		if (this.participantKey(projectRoot, input) === input.callerParticipantKey) {
@@ -156,18 +156,6 @@ export class RuntimeWorktrees {
 	private participantKey(projectRoot: string, input: EnsureWorktreeInput): string {
 		return deriveParticipantKey(projectRoot, input.protocol, input.participantId);
 	}
-}
-
-function callerHoldsAuthority(
-	participant: HostedParticipant | undefined,
-	input: EnsureWorktreeInput,
-	caller: HostedCaller,
-	projectRoot: string,
-): boolean {
-	if (!participant || !isHeld(participant.state)) return false;
-	return participant.generation === input.expectedCallerGeneration
-		&& participant.holderTargetKey === caller.targetKey
-		&& participant.projectRoot === projectRoot;
 }
 
 interface ParticipantIdentity {

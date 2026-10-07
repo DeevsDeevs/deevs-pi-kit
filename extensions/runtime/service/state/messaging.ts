@@ -1,6 +1,6 @@
 import { RuntimeError } from "../../errors.ts";
 import { Value } from "typebox/value";
-import { type HostedMailboxMessageEvent, type HostedMessagingGrant, type HostedRuntimeState, isHeld } from "../../schemas/state.ts";
+import { type HostedMailboxMessageEvent, type HostedMessagingGrant, type HostedRuntimeState, holds } from "../../schemas/state.ts";
 import type { HostedMessagingSend, HostedStateOperation } from "./operations.ts";
 import { HOSTED_MAX_STATE_RECORDS } from "../../schemas/common.ts";
 import { HostedMessagingGrantSchema } from "../../schemas/state.ts";
@@ -142,6 +142,6 @@ export function messagingGrantIsLive(state: HostedRuntimeState, grant: HostedMes
 	const holder = state.participants[grant.participantKey];
 	const target = state.targets[grant.targetKey];
 	if (grant.status !== "active") return false;
-	if (!isHeld(holder?.state) || holder.generation !== grant.holderGeneration || holder.holderTargetKey !== grant.targetKey) return false;
+	if (!holds(holder, grant.targetKey, grant.holderGeneration)) return false;
 	return target !== undefined && messagingConfigurationHash(target) === grant.configurationHash;
 }

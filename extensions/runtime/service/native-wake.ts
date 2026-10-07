@@ -1,4 +1,4 @@
-import { type HostedAgentTarget, type HostedRuntimeState, isAgentTarget, isHeld } from "../schemas/state.ts";
+import { type HostedAgentTarget, type HostedRuntimeState, isAgentTarget, holds } from "../schemas/state.ts";
 import type { HostedHostVerifier } from "./herdr-cli.ts";
 import { unreadMailEvents } from "./messaging.ts";
 import type { HostedStateStore } from "./state.ts";
@@ -93,7 +93,7 @@ export class NativeWakeSweeper {
 
 function pendingWake(state: HostedRuntimeState, target: HostedAgentTarget): PendingWake | undefined {
 	const participant = state.participants[target.participantKey];
-	if (!isHeld(participant?.state) || participant.holderTargetKey !== target.targetKey) return undefined;
+	if (!holds(participant, target.targetKey)) return undefined;
 	// Without an issued namespace the tab has no SendMessage to answer with.
 	const grant = Object.values(state.messaging).find((candidate) => candidate.targetKey === target.targetKey && candidate.status === "active");
 	const unread = unreadMailEvents(state, target.participantKey);

@@ -1,5 +1,5 @@
 import { RuntimeError } from "../../errors.ts";
-import { type HostedParticipant, type HostedRuntimeState, isHeld, isPiTarget, isVacant, isWriter } from "../../schemas/state.ts";
+import { type HostedParticipant, type HostedRuntimeState, holds, isPiTarget, isVacant, isWriter } from "../../schemas/state.ts";
 import type { HostedAgentBind, HostedStateOperation } from "./operations.ts";
 import { sameTarget } from "./compare.ts";
 import { deriveAgentTargetKey, deriveParticipantKey } from "./keys.ts";
@@ -25,9 +25,7 @@ export function bindAgentTarget(state: HostedRuntimeState, operation: BindAgentO
 	assertAgentBindCaller(state, bind);
 	assertAgentBindIdentity(bind);
 	const participant = state.participants[target.participantKey];
-	const alreadyBound = isHeld(participant?.state)
-		&& participant.holderTargetKey === target.targetKey
-		&& participant.generation === target.holderGeneration;
+	const alreadyBound = holds(participant, target.targetKey, target.holderGeneration);
 	if (!alreadyBound && !reservedForBind(participant, bind.expectedParticipantGeneration)) {
 		throw new RuntimeError("conflict", "Agent bind participant generation is unavailable.");
 	}
@@ -64,10 +62,7 @@ function assertAgentBindIdentity(bind: HostedAgentBind): void {
 function assertAgentBindCaller(state: HostedRuntimeState, bind: HostedAgentBind): void {
 	const caller = state.participants[bind.callerParticipantKey];
 	const callerTarget = state.targets[bind.callerTargetKey];
-	const held = isHeld(caller?.state)
-		&& caller.generation === bind.callerGeneration
-		&& caller.holderTargetKey === bind.callerTargetKey;
-	if (!held) throw new RuntimeError("conflict", "Agent bind caller authority changed.");
+	if (!holds(caller, bind.callerTargetKey, bind.callerGeneration)) throw new RuntimeError("conflict", "Agent bind caller authority changed.");
 	if (!isPiTarget(callerTarget) || caller.projectRoot !== bind.target.projectRoot) {
 		throw new RuntimeError("conflict", "Agent bind caller is outside its Pi project.");
 	}

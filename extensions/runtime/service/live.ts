@@ -1,7 +1,7 @@
 import { lstatSync, realpathSync } from "node:fs";
 import { RuntimeError } from "../errors.ts";
 import type { HerdrAgentStatus } from "../schemas/herdr.ts";
-import { type HostedAgentTarget, type HostedTarget, isAgentTarget, isHeld } from "../schemas/state.ts";
+import { type HostedAgentTarget, type HostedTarget, isAgentTarget, holds } from "../schemas/state.ts";
 import type { HostedHostVerifier } from "./herdr-cli.ts";
 import { HostedStateStore, piTargetKey } from "./state.ts";
 import { isProjectWorktree } from "../../shared/worktree.ts";
@@ -119,7 +119,7 @@ export class LiveTargets {
 			throw new RuntimeError("identity_mismatch", "Herdr reports this agent under another name or cwd.");
 		}
 		const participant = this.store.read().participants[target.participantKey];
-		if (!isHeld(participant?.state) || participant.holderTargetKey !== target.targetKey || participant.generation !== target.holderGeneration) {
+		if (!holds(participant, target.targetKey, target.holderGeneration)) {
 			throw new RuntimeError("registration_stale", "Herdr agent no longer holds its participant.");
 		}
 		if (live.agentStatus) this.statuses.set(target.targetKey, live.agentStatus);

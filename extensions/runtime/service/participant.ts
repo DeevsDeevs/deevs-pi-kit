@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { type HostedParticipant, type HostedTarget, isHeld, isVacant } from "../schemas/state.ts";
+import { type HostedParticipant, type HostedTarget, holds, isHeld, isVacant } from "../schemas/state.ts";
 import { RuntimeError } from "../errors.ts";
 import {
 	type HostedParticipantStatus,
@@ -229,8 +229,7 @@ export class HostedParticipantCoordinator {
 		this.assertTargetNotStopping(holderTargetKey);
 		const otherHolder = Object.values(this.store.read().participants)
 			.find((candidate) => candidate.participantKey !== participant.participantKey
-				&& isHeld(candidate.state)
-				&& candidate.holderTargetKey === holderTargetKey);
+				&& holds(candidate, holderTargetKey));
 		if (otherHolder) {
 			throw new RuntimeError("conflict", `Collaborator target now holds ${otherHolder.protocol}/${otherHolder.participantId}.`);
 		}
@@ -239,7 +238,7 @@ export class HostedParticipantCoordinator {
 
 	private settleStopped(participant: HostedParticipant, holderTargetKey: string, expectedGeneration: string): void {
 		const current = requireParticipant(this.store, participant.participantKey, participant.projectRoot);
-		if (!isHeld(current.state) || current.generation !== expectedGeneration || current.holderTargetKey !== holderTargetKey) {
+		if (!holds(current, holderTargetKey, expectedGeneration)) {
 			throw new RuntimeError("conflict", "Participant changed while its collaborator process was stopping.");
 		}
 		this.applyStandDown(participant.participantKey, holderTargetKey, expectedGeneration, "stop");
