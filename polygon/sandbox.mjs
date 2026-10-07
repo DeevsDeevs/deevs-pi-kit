@@ -6,6 +6,9 @@ import { join } from "node:path";
 import { startPuppet } from "./puppet.mjs";
 import { procs } from "./look.mjs";
 
+/** The Pi logins a live lead can start on, in the order the kit's default `lead` (sol) prefers them. */
+export const PI_LOGINS = ["openai", "openai-codex", "anthropic"];
+
 /** `logins` (live runs only) is a staged copy of the polygon's logins, laid out like a HOME, refresh tokens already invalid. */
 export async function sandbox({ run, name, kit, results, logins, bodies }) {
 	const live = Boolean(logins);
@@ -37,7 +40,7 @@ export async function sandbox({ run, name, kit, results, logins, bodies }) {
 	// ponytail: a live `openai` lead (Sign in with ChatGPT) calls api.openai.com directly and skips the request log; Pi detects that
 	// login by its stock baseUrl, so routing it through the puppet needs a forward that drops the fields the login rejects.
 	const staged = live ? Object.keys(JSON.parse(readFileSync(join(logins, ".pi/agent/auth.json"), "utf8"))) : [];
-	const model = live ? { defaultProvider: ["openai-codex", "openai", "anthropic"].find((p) => staged.includes(p)) } : { defaultProvider: "polygon", defaultModel: "puppet" };
+	const model = live ? { defaultProvider: PI_LOGINS.find((p) => staged.includes(p)) } : { defaultProvider: "polygon", defaultModel: "puppet" };
 	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: "always", ...model, packages: [kit], transport: "sse" }, null, 2));
 	writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: {
 		polygon: { baseUrl: `http://127.0.0.1:${port}/v1`, api: "openai-completions", apiKey: "polygon", models: [{ id: "puppet", contextWindow: 200000, maxTokens: 8000 }] },
