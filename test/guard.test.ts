@@ -297,6 +297,14 @@ describe("guard: configuration and hooks", () => {
 		expect(guardBashCall("git push -f origin main", cwd)?.reason).toMatch(/^Force push to a protected branch/);
 	});
 
+	it("blocks a foreground bash that starts with a sleep of 60 s or more, and leaves job_start and Monitor commands alone", () => {
+		const { cwd } = fixture();
+		const sleeps = (command: string) => guardBashCall(command, cwd)?.reason.startsWith("A foreground sleep of 60 s or more is blocked.") ?? false;
+		expect(["sleep 60", "sleep 600 && cat out.log", "sleep 1m; ls", "sleep 30 30", "FOO=1 /bin/sleep 90", "# wait\nsleep 120", "( sleep 0.5h )"].filter((command) => !sleeps(command))).toEqual([]);
+		expect(["sleep 59", "sleep 5 && curl localhost:3000", "make && sleep 600", "until curl -s localhost; do sleep 2; done", "echo sleep 600", "sleep $DELAY"].filter(sleeps)).toEqual([]);
+		expect(guardShell("sleep 600 && make", { cwd })).toBeUndefined();
+	});
+
 	it("keeps every rule on and the valid block patterns when a file is broken", () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		const { agentDir, cwd } = fixture();

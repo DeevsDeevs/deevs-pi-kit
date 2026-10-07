@@ -24,6 +24,8 @@ const PUSH_VALUE_OPTIONS = new Set(["-o", "--push-option", "--repo", "--receive-
 const DETACH_ERROR = "Detached process launch or dynamically-computed command detected (backgrounding, nohup/setsid/disown, or a command name that cannot be statically verified). Use a literal command, or Herdr for persistent or independently owned processes.";
 const FORCE_PUSH_ERROR = "Force push to a protected branch (main, master, release/*) or to an unnamed branch, or deleting a protected branch, is blocked. Name a non-protected target branch explicitly, e.g. `git push --force-with-lease origin feature/x`.";
 const RM_ERROR = "Recursive rm outside the project and the temp directories ($TMPDIR, /tmp) is blocked. Use literal paths inside the project or a temp directory.";
+const SLEEP_ERROR = "A foreground sleep of 60 s or more is blocked. Agents, workflows and jobs send a task notification that starts your next turn: end your turn instead of sleeping for one. Wait for a condition with Monitor or an until-loop of short sleeps, run long work with job_start, or sleep less than 60 s.";
+const SLEEP_UNITS = new Map([["m", 60], ["h", 3600], ["d", 86400]]);
 
 const HookPayload = Type.Object({
 	cwd: Type.Optional(Type.String()),
@@ -89,8 +91,24 @@ export function guardArgv(argv: string[], options: GuardOptions = { cwd: process
 /** A Pi `tool_call` result for a bash command run in `cwd`, under the rules configured for the project at `root`. */
 /** `project` holds the pi-kit.json whose `guard` applies; an isolated agent's rm root is its worktree, where `.pi/` is usually absent. */
 export function guardBashCall(command: string, cwd: string, root = cwd, project = root): { block: true; reason: string } | undefined {
-	const reason = guardShell(command, { cwd, root, config: loadGuardConfig(project) });
+	const reason = guardShell(command, { cwd, root, config: loadGuardConfig(project) }) ?? (leadingSleep(command) >= 60 ? SLEEP_ERROR : undefined);
 	return reason ? { block: true, reason } : undefined;
+}
+
+/** The seconds a command's leading `sleep` blocks for; GNU sleep adds up its operands, each with an optional s, m, h or d unit. */
+function leadingSleep(command: string): number {
+	const words: string[] = [];
+	for (const token of shellTokens(command).tokens) {
+		if (!token.operator) words.push(token.value);
+		else if (words.length) break;
+	}
+	let index = 0;
+	while (isAssignment(words[index])) index++;
+	if (executableName(words[index] ?? "") !== "sleep") return 0;
+	return words.slice(index + 1).reduce((total, word) => {
+		const [, amount = "0", unit = ""] = /^(\d+(?:\.\d+)?)([smhd]?)$/.exec(word) ?? [];
+		return total + Number(amount) * (SLEEP_UNITS.get(unit) ?? 1);
+	}, 0);
 }
 
 export const BASH_TIMEOUT_LIMITS = "bash stops a command after 120 s unless you pass a timeout of up to 600 s.";

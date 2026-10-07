@@ -10,7 +10,7 @@ export default {
 	timeoutMs: 200_000,
 	async run(t) {
 		const quick = { agent: "quick", steps: [{ id: "q1", text: "quick answer" }] };
-		const slow = { agent: "slow", steps: [{ id: "w1", tool: "bash", args: { command: "sleep 130", timeout: 200 } }, { id: "c1", text: "slow done" }] };
+		const slow = { agent: "slow", steps: [{ id: "w1", tool: "bash", args: { command: "echo slow; sleep 130", timeout: 200 } }, { id: "c1", text: "slow done" }] };
 		const lead = rpc(t);
 		await lead.script({ agent: "lead", steps: [
 			{ id: "s1", tool: "Agent", args: { description: "quick", prompt: script(quick), run_in_background: false } },
