@@ -18,8 +18,9 @@ export default {
 		await lead.until((_, events) => taskNotifications(events).length >= 2, 30_000, "both reports");
 		const launches = toolCalls(lead.events);
 		assert.deepEqual(launches.map((c) => [c.name, c.isError]), [["Agent", false], ["Agent", false]]);
-		assert.doesNotMatch(launches[0].text, /^Limits:/m);
-		assert.match(launches[1].text, /^Limits: maxTurns 1$/m);
+		const launch = (id) => launches.find((c) => c.id === id).text;
+		assert.doesNotMatch(launch("s1"), /^Limits:/m);
+		assert.match(launch("s2"), /^Limits: maxTurns 1$/m);
 		const [free1, limited1] = ["s1", "s2"].map((id) => taskNotifications(lead.events).find((n) => n.toolUseId === id));
 		assert.equal(free1.status, "completed");
 		assert.equal(free1.limited, undefined);

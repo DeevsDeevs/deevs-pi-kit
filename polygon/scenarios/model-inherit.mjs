@@ -14,7 +14,7 @@ export default {
 		await lead.until((_, events) => taskNotifications(events).length >= 1, 30_000, "the agent's report");
 		// Read after the run: on --live the kit may switch a new session's lead to the newest sol just after start.
 		const { data: state } = await lead.send({ type: "get_state" });
-		assert.match(toolCalls(lead.events)[0].text, new RegExp(`^Model: ${state.model.provider}/${state.model.id}:${state.thinkingLevel}$`, "m"));
+		assert.match(toolCalls(lead.events).find((c) => c.name === "Agent").text, new RegExp(`^Model: ${state.model.provider}/${state.model.id}:${state.thinkingLevel}$`, "m"));
 		const [leadModel] = requests(t).filter((r) => r.agent === "lead").map((r) => r.model);
 		assert.deepEqual([...new Set(requests(t).filter((r) => r.agent === "child").map((r) => r.model))], [leadModel]);
 	},

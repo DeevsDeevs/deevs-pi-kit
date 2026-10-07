@@ -13,7 +13,7 @@ npm run polygon -- --pi-runtime node     # Pi from npm on Node instead of the Bu
 npm run polygon -- --list
 ```
 
-Scenarios run twelve at a time (four on `--live`); those marked `timing: true` bound latency and run alone afterwards, so a bound measures the kit rather than the load. Results land in `polygon/results/<run>/` (`latest` points at the newest): `summary.json` (with the image's exact `pi`, `claude`, `codex` and `herdr` versions), and per scenario `result.json`, `events.jsonl` (the RPC lead), `requests.jsonl` (the puppet), `pi-stderr.log` and the sandbox `home/` and `repo/`. On red, read `polygon/results/latest/<name>/` before changing code. The exit code is non-zero on any failure.
+Scenarios run up to twelve at a time (a quarter of the CPUs; four on `--live`); those marked `timing: true` bound latency and run alone afterwards, so a bound measures the kit rather than the load. Results land in `polygon/results/<run>/` (`latest` points at the newest): `summary.json` (with the image's exact `pi`, `claude`, `codex` and `herdr` versions), and per scenario `result.json`, `events.jsonl` (the RPC lead), `requests.jsonl` (the puppet), `pi-stderr.log` and the sandbox `home/` and `repo/`. On red, read `polygon/results/latest/<name>/` before changing code. The exit code is non-zero on any failure.
 
 ## Sandbox
 

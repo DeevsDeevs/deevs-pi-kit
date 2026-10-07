@@ -92,7 +92,7 @@ async function host() {
 	if (opts.login) {
 		console.error(`polygon: three logins follow; everything lands in the ${LOGIN_VOLUME} Podman volume, never in your own homes.`);
 		const steps = [
-			"echo; echo 'polygon login 1/3, Pi: type /login, choose Sign in with ChatGPT (OpenAI) or Anthropic, finish in your browser, then /quit.'", "pi",
+			"echo; echo 'polygon login 1/3, Pi: type /login, choose OpenAI (ChatGPT Plus/Pro), which the request guard covers (or Sign in with ChatGPT, or Anthropic), finish in your browser, then /quit.'", "pi",
 			"echo; echo 'polygon login 2/3, Claude Code:'", "claude auth login",
 			"echo; echo 'polygon login 3/3, Codex (device code):'", "codex login --device-auth",
 		];
@@ -112,16 +112,16 @@ async function host() {
 	// A worktree's node_modules is often a symlink out of the kit; mount its target at the same path.
 	const modules = join(kit, "node_modules");
 	try { if (lstatSync(modules).isSymbolicLink()) mounts.push(`${realpathSync(modules)}:${realpathSync(modules)}:ro`); } catch {}
+	if (opts.kit === "clone") {
+		const install = spawnSync("podman", ["run", "--rm", "--userns=keep-id", "-v", `${kit}:/kit`, "-w", "/kit", "-e", "npm_config_update_notifier=false", image,
+			"npm", "install", "--omit=dev", "--legacy-peer-deps", "--no-audit", "--no-fund", "--loglevel=error"], { stdio: ["ignore", 2, 2] });
+		if (install.status !== 0) process.exit(install.status ?? 1);
+	}
 	if (opts.live) {
 		// The one serial refresher: it alone mounts the volume, and leaves the scenarios a copy with dead refresh tokens.
 		const fresh = spawnSync("podman", ["run", "--rm", "--userns=keep-id", "-v", `${LOGIN_VOLUME}:/login:U`, "-v", `${HERE}:/polygon:ro`, "-v", `${results}:/results`,
 			...LOGIN_ENV.flatMap((e) => ["-e", e]), "-e", "POLYGON_FRESHEN=1", "-w", "/tmp", image, "node", "/polygon/run.mjs"], { stdio: "inherit" });
 		if (fresh.status !== 0) process.exit(fresh.status ?? 1);
-	}
-	if (opts.kit === "clone") {
-		const install = spawnSync("podman", ["run", "--rm", "--userns=keep-id", "-v", `${kit}:/kit`, "-w", "/kit", "-e", "npm_config_update_notifier=false", image,
-			"npm", "install", "--omit=dev", "--legacy-peer-deps", "--no-audit", "--no-fund", "--loglevel=error"], { stdio: ["ignore", 2, 2] });
-		if (install.status !== 0) process.exit(install.status ?? 1);
 	}
 	// Only the live tier reaches the internet; a puppet run has loopback alone, so nothing in it can call a real API.
 	const child = spawn("podman", ["run", "--rm", "--userns=keep-id", "--name", `polygon-${run}`, ...(opts.live ? [] : ["--network=none"]),
