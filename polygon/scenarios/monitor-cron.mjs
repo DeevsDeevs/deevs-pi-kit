@@ -4,7 +4,7 @@ import { requests, runs, taskNotifications, toolCalls } from "../look.mjs";
 
 // A stopped every-minute timer and a one-shot for the next minute: exactly one fire, then a quiet minute after it.
 export default {
-	name: "ext-cron",
+	name: "monitor-cron",
 	gate: ["M0", "M5"],
 	slow: true,
 	timeoutMs: 200_000,

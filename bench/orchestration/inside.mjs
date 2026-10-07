@@ -145,7 +145,7 @@ async function pi(config, prompt, task, e) {
 	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: "always", packages: ["/kit"] }, null, 2));
 	writeFileSync(join(agentDir, "pi-kit.json"), JSON.stringify({ lead: null }, null, 2));
 	const { rpc } = await import("/polygon/drive.mjs");
-	const { dialogs, taskNotes, toolCalls } = await import("/polygon/look.mjs");
+	const { dialogs, taskNotifications, toolCalls } = await import("/polygon/look.mjs");
 	const t = { repo: REPO, env: e, dir: OUT, closers: [] };
 	const lead = rpc(t, { model: config.model, answer: true });
 	const deadline = Date.now() + task.timeoutMin * 60_000;
@@ -154,7 +154,7 @@ async function pi(config, prompt, task, e) {
 	const settled = () => lead.events.findLast((ev) => ["agent_start", "agent_settled"].includes(ev.type))?.type === "agent_settled";
 	const running = () => {
 		const launched = toolCalls(lead.events).filter((c) => c.name === "Agent" && !c.isError).length;
-		return launched - new Set(taskNotes(lead.events).map((n) => n.taskId)).size;
+		return launched - new Set(taskNotifications(lead.events).map((n) => n.taskId)).size;
 	};
 	await lead.prompt(prompt);
 	if (task.restart) {
@@ -178,7 +178,7 @@ async function pi(config, prompt, task, e) {
 	try { stats = (await lead.send({ type: "get_session_stats" }, 10_000)).data; } catch {}
 	const events = lead.events;
 	const calls = toolCalls(events);
-	const notes = taskNotes(events);
+	const notes = taskNotifications(events);
 	await Promise.all(t.closers.map((c) => c().catch(() => {})));
 	const sessions = join(agentDir, "sessions");
 	if (existsSync(sessions)) cpSync(sessions, join(OUT, "pi-sessions"), { recursive: true });

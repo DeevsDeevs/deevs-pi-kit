@@ -8,7 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { requests } from "./look.mjs";
-import { sandbox } from "./sandbox.mjs";
+import { PI_LOGINS, sandbox } from "./sandbox.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
@@ -30,7 +30,6 @@ const LOGIN_ENV = ["HOME=/login", "PI_CODING_AGENT_DIR=/login/.pi/agent", "CLAUD
 // Pi refreshes each OAuth login without a model call, early so no token expires mid-run; a refresh must clear the minimum,
 // and Sign in with ChatGPT (`openai`) tokens live only 60 minutes. Claude and Codex refresh on one tiny request.
 const PI_AUTH = ".pi/agent/auth.json";
-const PI_LOGINS = { "openai-codex": "2h", openai: "45m", anthropic: "2h" };
 const LOGINS = [
 	{ name: "Claude Code", requests: 1, files: [".claude/.credentials.json", ".claude/.claude.json"], argv: ["claude", "-p", "Reply with the single word ok."] },
 	{ name: "Codex", requests: 1, files: [".codex/auth.json"], argv: ["codex", "exec", "--skip-git-repo-check", "Reply with the single word ok."] },
@@ -144,11 +143,11 @@ const deadRefresh = (value) => Array.isArray(value) ? value.map(deadRefresh)
 function freshen() {
 	const auth = existsSync(join("/login", PI_AUTH)) ? JSON.parse(readFileSync(join("/login", PI_AUTH), "utf8")) : {};
 	// Only the login the sandbox's lead defaults to (the first present) must refresh; a stale other one is warned about.
-	const pi = Object.keys(PI_LOGINS).filter((provider) => auth[provider]?.type === "oauth").map((provider, index) => ({
-		name: `Pi (${provider})`, required: index === 0, requests: 0, files: [PI_AUTH], argv: ["pi", "auth", "print-bearer-token", "--provider", provider, "--min-expiry", PI_LOGINS[provider]],
+	const pi = PI_LOGINS.filter((provider) => auth[provider]?.type === "oauth").map((provider, index) => ({
+		name: `Pi (${provider})`, required: index === 0, requests: 0, files: [PI_AUTH], argv: ["pi", "auth", "print-bearer-token", "--provider", provider, "--min-expiry", provider === "openai" ? "45m" : "2h"],
 	}));
 	if (!pi.length) {
-		console.error(`polygon: the ${LOGIN_VOLUME} volume holds no Pi OAuth login (${Object.keys(PI_LOGINS).join(", ")}). Run \`npm run polygon -- --login\` once and log in there; live runs never read your own ~/.pi, ~/.claude or ~/.codex.`);
+		console.error(`polygon: the ${LOGIN_VOLUME} volume holds no Pi OAuth login (${PI_LOGINS.join(", ")}). Run \`npm run polygon -- --login\` once and log in there; live runs never read your own ~/.pi, ~/.claude or ~/.codex.`);
 		process.exit(3);
 	}
 	const present = [...pi, ...LOGINS.filter((login) => existsSync(join("/login", login.files[0])))];
@@ -219,9 +218,10 @@ async function inside() {
 	const started = Date.now();
 	const out = chosen.filter(isSkipped).map((s) => ({ name: s.name, gate: s.gate, status: "pending", ms: 0, error: s.pending }));
 	const versions = Object.fromEntries(["pi", "claude", "codex", "herdr"].map((cli) => [cli, /\d+\.\d+\.\d+/.exec(spawnSync(cli, ["--version"], { encoding: "utf8" }).stdout)?.[0]]));
-	// The unit tests parse CLI output recorded on these versions; a newer image needs a re-recording, not a silent pass.
+	// The unit tests parse CLI output recorded on these versions; a run of the workers it is recorded from on a newer image
+	// needs a re-recording, not a silent pass.
 	const fixtures = "/kit/test/fixtures/cli/versions.json";
-	const drift = existsSync(fixtures) ? Object.entries(JSON.parse(readFileSync(fixtures, "utf8"))).filter(([cli, version]) => versions[cli] !== version) : [];
+	const drift = existsSync(fixtures) && chosen.some((s) => ["claude-worker", "codex-worker"].includes(s.name)) ? Object.entries(JSON.parse(readFileSync(fixtures, "utf8"))).filter(([cli, version]) => versions[cli] !== version) : [];
 	if (drift.length) {
 		const error = `test/fixtures/cli was recorded on ${drift.map(([cli, v]) => `${cli} ${v}`).join(", ")}, the image runs ${drift.map(([cli]) => `${cli} ${versions[cli]}`).join(", ")}: re-record it from the claude-worker and codex-worker results`;
 		console.error(`polygon: ${error}`);
