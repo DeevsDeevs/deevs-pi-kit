@@ -105,29 +105,24 @@ describe("Subagent extension surface", () => {
 		expect(names.filter((name) => ["workflow-authoring", "collaborators", "background-tasks", "todos", "ask-user", "chain-system"].includes(name!))).toEqual([]);
 	});
 
-	it("gives the Pi lead (as Agent tool guidelines) every working rule and Pi workers the shared ones only when pi-kit.json sets verify, and a Claude or Codex worker none", async () => {
+	it("gives the Pi lead (as Agent tool guidelines) every working rule and Pi workers the shared ones, each yielding to the user's and the project's instructions, and a Claude or Codex worker none", () => {
 		const dir = mkdtempSync(join(tmpdir(), "pi-kit-verify-"));
 		process.env.PI_CODING_AGENT_DIR = dir;
-		const agents: Array<{ name: string; promptGuidelines?: string[] }> = [];
-		const starts: Array<(event: object, ctx: object) => unknown> = [];
-		subagentsExtension({ registerTool(tool: (typeof agents)[number]) { if (tool.name === "Agent") agents.push(tool); }, registerCommand() {}, on(name: string, fn: (typeof starts)[number]) { if (name === "session_start") starts.push(fn); } } as unknown as ExtensionAPI);
-		const ctx = { cwd: dir, isProjectTrusted: () => false };
-		await starts[0]!({ reason: "startup" }, ctx);
-		expect(agents.map((tool) => tool.promptGuidelines)).toEqual([undefined]);
-		writeFileSync(join(dir, "pi-kit.json"), JSON.stringify({ verify: true }));
-		await starts[0]!({ reason: "startup" }, ctx);
-		expect(agents.map((tool) => tool.promptGuidelines)).toEqual([undefined, WORKING_RULES]);
-		const [finish, output, scope, tests, timeout, report] = WORKING_RULES;
+		let agent: { name: string; promptGuidelines?: string[] } | undefined;
+		subagentsExtension({ registerTool(tool: NonNullable<typeof agent>) { if (tool.name === "Agent") agent = tool; }, registerCommand() {}, on() {} } as unknown as ExtensionAPI);
+		expect(agent?.promptGuidelines).toEqual(WORKING_RULES);
+		const [precedence, finish, output, scope, tests, timeout, report] = WORKING_RULES;
+		expect(precedence).toMatch(/user's and the project's own instructions take precedence/);
 		expect(finish).toMatch(/within your turn[\s\S]*to wait for agents, workflows and timed jobs[\s\S]*When the user asked for action, a plan/);
 		expect(output).toMatch(/output file or binary at a path, write a working version at that path first/);
 		expect(scope).toMatch(/Add no new modules, vendored code or dependencies unless the task asks for them/);
 		expect(tests).toMatch(/If the project has none, create one in the project \(uv venv or python -m venv\)/);
 		expect(report).toMatch(/what changed, how you verified it, and what remains/);
-		const worker = workerPrompt(findAgentType("reviewer"), dir, undefined, { verify: true });
-		for (const rule of [scope, tests, timeout]) expect(worker.split(rule!)).toHaveLength(2);
+		const worker = workerPrompt(findAgentType("reviewer"), dir);
+		for (const rule of [precedence, scope, tests, timeout]) expect(worker.split(rule!)).toHaveLength(2);
 		for (const rule of [finish, output, report]) expect(worker).not.toContain(rule);
-		expect(workerPrompt(findAgentType(undefined), dir)).not.toContain(tests);
-		expect(workerPrompt(findAgentType(undefined), dir, undefined, { cli: true, verify: true })).not.toContain(tests);
+		expect(workerPrompt(findAgentType(undefined), dir).split(tests!)).toHaveLength(2);
+		expect(workerPrompt(findAgentType(undefined), dir, undefined, true)).not.toContain(tests);
 		expect(getEncoding("o200k_base").encode(WORKING_RULES.map((rule) => `- ${rule}`).join("\n")).length).toBeLessThanOrEqual(300);
 	});
 });
