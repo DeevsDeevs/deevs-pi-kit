@@ -5,15 +5,16 @@ import { expect, it } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { activateWithSkill } from "../extensions/shared/surface.ts";
 
-function fakePi() {
-	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => void>();
+/** `registered` stands for a --tools allowlist: setActiveTools drops the names it leaves out, as Pi does. */
+function fakePi(registered?: string[]) {
+	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
 	let active = ["read"];
 	let changes = 0;
 	// SAFETY: activateWithSkill uses only these members.
 	const pi = {
-		on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => void) => handlers.set(name, handler),
+		on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(name, handler),
 		getActiveTools: () => active,
-		setActiveTools: (tools: string[]) => { active = tools; changes++; },
+		setActiveTools: (tools: string[]) => { active = registered ? tools.filter((tool) => registered.includes(tool)) : tools; changes++; },
 	} as unknown as ExtensionAPI;
 	return { pi, handlers, active: () => active, changes: () => changes };
 }
@@ -65,4 +66,34 @@ it("loads a whole family in one change from any of its skills, read with read, c
 	expect(slash.active()).toEqual(["read"]);
 	slash.handlers.get("input")!({ text: " /skill:diagnose why" }, ctx);
 	expect(slash.active()).toEqual(["read", ...tools]);
+});
+
+it("a direct call to an unloaded tool loads its family and says to call again, or that the tool is not available", () => {
+	const tools = ["job_start", "Monitor"];
+	const ctx = branch([]);
+	const call = (id: string, name: string) => ({ type: "toolCall", id, name, arguments: name === "read" ? { path: skillFile("background-tasks") } : {} });
+	const assistant = (...calls: unknown[]) => ({ message: { role: "assistant", content: calls } });
+	const failed = (id: string, toolName: string) => ({ message: { role: "toolResult", toolCallId: id, toolName, isError: true, content: [{ type: "text", text: `Tool ${toolName} not found` }] } });
+	const text = (result: unknown) => (result as { message: { content: { text: string }[] } } | undefined)?.message.content[0]!.text;
+
+	const lead = fakePi();
+	activateWithSkill(lead.pi, tools, ["background-tasks"]);
+	const end = lead.handlers.get("message_end")!;
+	end(assistant(call("c1", "Monitor")), ctx);
+	expect(text(end(failed("c1", "Monitor"), ctx))).toBe("Monitor was not loaded yet; it is loaded now. Call it again.");
+	expect(lead.active()).toEqual(["read", ...tools]);
+	end(assistant(call("c2", "job_start")), ctx);
+	expect(end(failed("c2", "job_start"), ctx), "a loaded tool's own error stays").toBeUndefined();
+
+	const batch = fakePi();
+	activateWithSkill(batch.pi, tools, ["background-tasks"]);
+	batch.handlers.get("message_end")!(assistant(call("c3", "read"), call("c4", "job_start")), ctx);
+	batch.handlers.get("tool_call")!({ toolName: "read", input: call("c3", "read").arguments }, ctx);
+	expect(text(batch.handlers.get("message_end")!(failed("c4", "job_start"), ctx)), "the read in the same batch loaded it after Pi looked").toBe("job_start was not loaded yet; it is loaded now. Call it again.");
+
+	const allowlist = fakePi(["read", "bash", "chain"]);
+	activateWithSkill(allowlist.pi, tools, ["background-tasks"]);
+	allowlist.handlers.get("message_end")!(assistant(call("c5", "job_start")), ctx);
+	expect(text(allowlist.handlers.get("message_end")!(failed("c5", "job_start"), ctx))).toBe("job_start is not available in this session.");
+	expect(allowlist.active()).toEqual(["read"]);
 });

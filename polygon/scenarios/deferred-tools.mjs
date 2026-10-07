@@ -6,7 +6,8 @@ import { DEFERRED_TOOLS } from "../sandbox.mjs";
 
 // chain is on from the first request. Each other kit tool family joins the lead's tool list once a skill that documents
 // it is read, keeps it across /reload and resume, an open mission starts a session with its tools, and a --tools
-// allowlist (a Pi collaborator's launch) is never widened. Print mode loads and uses a family the same way.
+// allowlist (a Pi collaborator's launch) is never widened. A direct call to an unloaded tool loads its family, or under
+// the allowlist says the tool is not available. Print mode loads and uses a family the same way.
 const KIT_TOOLS = ["chain", ...DEFERRED_TOOLS];
 
 export default {
@@ -67,11 +68,22 @@ export default {
 			[["job_start", false], ["chain", false], ["todo_list", false], ["mission_start", false], ["mission_update", false], ["Monitor", false]]);
 		await lead.close();
 
-		// A new session in the project: the open mission brings its tools.
+		// A new session in the project: the open mission brings its tools, and a direct call to job_start, before any skill
+		// read, loads its family and tells the model to call again.
+		const loaded = "job_start was not loaded yet; it is loaded now. Call it again.";
+		const unavailable = "job_start is not available in this session.";
+		t.marks.push(loaded, unavailable);
 		const fresh = rpc(t);
-		await fresh.script({ agent: "fresh", steps: [{ id: "n1", text: "fresh" }] });
-		await fresh.until((e) => e.type === "agent_settled", 30_000, "the fresh session's first turn");
+		await fresh.script({ agent: "fresh", steps: [
+			{ id: "n1", tool: "job_start", args: { command: "echo direct-job", description: "probe" } },
+			{ id: "n2", then: true, tool: "job_start", args: { command: "echo direct-job", description: "probe" } },
+			{ id: "n3", then: true, text: "fresh" },
+		] });
+		await quiet(fresh, 1);
 		assert.deepEqual(offered("fresh", "n1"), ["chain", "mission_start", "mission_update", "mission_get"], "an open mission starts the session with its tools");
+		assert.deepEqual(offered("fresh", "n2"), ["chain", "job_start", "Monitor", "mission_start", "mission_update", "mission_get"], "a direct call loads its family");
+		assert.deepEqual(requests(t).find((r) => r.agent === "fresh" && r.step === "n2").marks, [loaded]);
+		assert.deepEqual(toolCalls(fresh.events).map((c) => [c.name, c.isError]), [["job_start", true], ["job_start", false]]);
 		await fresh.close();
 
 		// Print mode: a skill read with bash loads job_start, and the run waits for the job's report.
@@ -87,12 +99,15 @@ export default {
 		assert.deepEqual(offered("print", "p2"), ["chain", "job_start", "Monitor", "mission_start", "mission_update", "mission_get"]);
 
 		// A --tools allowlist, as a Pi collaborator launches: a skill read and the open mission add nothing it does not name.
+		// A direct call there is told the tool is not available.
 		const allow = await pi(t, ["-p", "--no-session", "--model", "polygon/puppet", "--tools", "read,bash,SendMessage,chain", script({ agent: "allow", steps: [
 			{ id: "q1", tool: "read", args: { path: skill("background-tasks") } },
-			{ id: "q2", text: "done" },
+			{ id: "q2", then: true, tool: "job_start", args: { command: "echo denied", description: "probe" } },
+			{ id: "q3", then: true, text: "done" },
 		] })], { timeoutMs: 45_000 });
 		assert.equal(allow.status, 0, allow.stderr);
 		assert.deepEqual(offered("allow", "q1"), ["chain"]);
-		assert.deepEqual(offered("allow", "q2"), ["chain"], "a skill read widened a --tools allowlist");
+		assert.deepEqual(offered("allow", "q3"), ["chain"], "a skill read or a direct call widened a --tools allowlist");
+		assert.deepEqual(requests(t).find((r) => r.agent === "allow" && r.step === "q3").marks, [unavailable]);
 	},
 };

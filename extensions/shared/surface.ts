@@ -31,6 +31,8 @@ export function activateTools(pi: ExtensionAPI, tools: readonly string[]): void 
  * Keeps inactive tools off the model's tool list until a kit skill that documents them is loaded: the model reads
  * `skills/<skill>/SKILL.md` with read or bash, or the user runs `/skill:<skill>`. Pi appends the new declarations before
  * the next request. A resumed, reloaded or re-navigated branch that already read the skill or used a tool gets them back.
+ * Pi answers a call to an inactive tool with a bare "not found" before any tool_call event, so the call's result loads
+ * the family and says to call again, or, under a --tools allowlist that leaves the tool out, that it is not available.
  */
 export function activateWithSkill(pi: ExtensionAPI, tools: readonly string[], skills: readonly string[]): void {
 	const skillFiles = new Set(skills.map((skill) => realPath(fileURLToPath(new URL(`../../skills/${skill}/SKILL.md`, import.meta.url)))));
@@ -40,6 +42,20 @@ export function activateWithSkill(pi: ExtensionAPI, tools: readonly string[], sk
 	const activate = () => activateTools(pi, tools);
 	pi.on("tool_call", (event, ctx) => {
 		if (readsSkill(event.toolName, event.input, ctx.cwd)) activate();
+	});
+	let unloaded: string[] = [];
+	pi.on("message_end", (event) => {
+		const message = event.message;
+		if (message.role === "assistant") {
+			const active = pi.getActiveTools();
+			unloaded = message.content.flatMap((block) => block.type === "toolCall" && tools.includes(block.name) && !active.includes(block.name) ? [block.id] : []);
+		}
+		if (message.role !== "toolResult" || !message.isError || !unloaded.includes(message.toolCallId)) return;
+		activate();
+		const text = pi.getActiveTools().includes(message.toolName)
+			? `${message.toolName} was not loaded yet; it is loaded now. Call it again.`
+			: `${message.toolName} is not available in this session.`;
+		return { message: { ...message, content: [{ type: "text", text }] } };
 	});
 	const restore = (ctx: ExtensionContext) => {
 		const used = ctx.sessionManager.getBranch().some((entry) => entry.type === "message" && (
