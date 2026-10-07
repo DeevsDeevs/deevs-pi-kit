@@ -31,11 +31,7 @@ const users = (file) => readFileSync(file, "utf8").split("\n").flatMap((l) => { 
 const files = (dir) => existsSync(dir) ? readdirSync(dir, { recursive: true }).filter((f) => f.endsWith(".jsonl")).map((f) => join(dir, f)) : [];
 // Kit bugs this scenario confirms that the kit has not fixed yet: report.json lists each hit under `known`; they never fail a run.
 const KNOWN = {
-	F1: "a Pi collaborator cannot SendMessage a peer: its roster holds only main",
-	K1: "after the lead reopens, a stood-down Claude or Codex collaborator's roster row says pi",
-	K2: "a Claude or Codex turn too short for Herdr's state count gets the same wake prompt again 30 s later",
-	K3: "a stood-down Claude collaborator resumes in a fresh session: no native session id was recorded at its stand-down",
-	K4: "TaskStop waits its whole 120 s grace for an idle Claude or Codex collaborator whose last mail was marked read after its last send",
+	K2: "a Claude or Codex turn too short for Herdr's state count and with no SendMessage gets the same wake prompt again, up to 3 times 30 s apart",
 };
 const pct = (xs, p) => xs.length ? xs.toSorted((a, b) => a - b)[Math.min(xs.length - 1, Math.floor(p * xs.length))] : null;
 
@@ -44,7 +40,7 @@ export default {
 	gate: "M6",
 	live: true,
 	timing: true,
-	// K4 makes each Claude or Codex stand-down wait up to 120 s, so the wind-down alone can take minutes.
+	// Eight real collaborators, a kill -9 and a resume: the run takes minutes even when every stand-down is quick.
 	slow: true,
 	timeoutMs: 1_200_000,
 	async run(t) {
@@ -188,7 +184,7 @@ export default {
 				const got = roster(call);
 				for (const c of SWARM) {
 					const want = `${status(c.name)} ${c.driver} ${c.profile}`;
-					check(got[c.name] === want, `${label}: ${c.name} is ${got[c.name]}, want ${want}`, got[c.name] === `completed pi ${c.profile}` && status(c.name) === "completed" ? "K1" : undefined);
+					check(got[c.name] === want, `${label}: ${c.name} is ${got[c.name]}, want ${want}`);
 				}
 			};
 			const sent = await phase("tasks", 180_000);
@@ -223,10 +219,10 @@ export default {
 			const resumedAt = Date.now();
 			const [resumed] = await phase("resume", 240_000);
 			check(!resumed.isError, `resuming cc-fix: ${resumed.text}`);
-			await eventually(() => mail().some((e) => e.from === "cc-fix" && e.to === "main" && e.createdAt > resumedAt), 120_000, "the resumed cc-fix's report").catch((e) => check(false, e.message, "K3"));
+			await eventually(() => mail().some((e) => e.from === "cc-fix" && e.to === "main" && e.createdAt > resumedAt), 120_000, "the resumed cc-fix's report").catch((e) => check(false, e.message));
 			check((await cli("tab", "list")).tabs.filter((tab) => tab.label === "collaborator:cc-fix").length === 1, "the resumed cc-fix has other than one tab");
 			report.findings.resumeArgv = procs(t).filter((p) => p.argv.some((a) => a.includes("claude")) && p.argv.includes("--resume")).map((p) => p.argv.slice(0, 4).join(" "));
-			check(report.findings.resumeArgv.length > 0, "no claude --resume process after the resume", "K3");
+			check(report.findings.resumeArgv.length > 0, "no claude --resume process after the resume");
 			await eventually(() => mail().some((e) => e.from === "pi-ask" && e.to === "main"), 120_000, "pi-ask's report");
 			const relayedAt = Date.now();
 			await phase("relay");
@@ -237,7 +233,8 @@ export default {
 			const down = await phase("down", 1_200_000);
 			const stopMs = lead.events.filter((e) => e.type === "tool_execution_end" && e.toolName === "TaskStop").map((e) => [e.toolCallId, e.receivedAt - lead.events.find((x) => x.type === "tool_execution_start" && x.toolCallId === e.toolCallId)?.receivedAt]);
 			report.findings.stopMs = stopMs;
-			for (const [id, ms] of stopMs) check(ms < 100_000, `TaskStop ${id} took ${ms} ms`, "K4");
+						// cx-duration, the K2 probe, holds its follow-up unconfirmed until its third prompt counts it read.
+			for (const [id, ms] of stopMs) check(ms < (t.live ? 100_000 : 20_000), `TaskStop ${id} took ${ms} ms`, id === "l-down-cx-duration" ? "K2" : undefined);
 			const busy = down.filter((c) => c.name === "TaskStop" && c.isError);
 			report.findings.F2 = { together: report.phases.down.together, errors: busy.map((c) => c.text.slice(0, 200)) };
 			// A live lead may call the stops together; each one that lost the lifecycle race is retried alone (live only: the puppet's scripts are fixed).
@@ -301,9 +298,10 @@ export default {
 			for (const e of final.filter((x) => x.to === "main" && !x.readAt)) check(false, `${e.from}>main left unread: ${e.body.slice(0, 60)}`);
 			report.unreadByCollaborators = final.filter((e) => e.to !== "main" && !e.readAt).map((e) => `${e.from}>${e.to}: ${e.body.slice(0, 60)}`);
 			check(report.findings.image.tagged === report.findings.image.atLead, "an image sent by absolute path did not reach the lead as an image");
-			if (report.findings.F1.errors.length) check(false, report.findings.F1.errors[0], "F1");
+			if (report.findings.F1.errors.length) check(false, `pi-ask>pi-cli: ${report.findings.F1.errors[0]}`);
 			if (!t.live) {
 				check(report.pairs["cc-review>cx-money"] && report.pairs["cx-money>cc-review"], "the Claude and Codex peers did not message each other");
+				check(report.pairs["pi-ask>pi-cli"] === 1, "the Pi peers did not message each other");
 				check(report.findings.image.tagged === 1, "cc-image's image did not travel");
 			}
 			check(dialogs(lead.events) === 0, "a dialog reached the lead");
