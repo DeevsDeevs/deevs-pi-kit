@@ -9,7 +9,7 @@ import { createBashTool, createEditTool, createFindTool, createGrepTool, createL
 import type * as Durable from "@earendil-works/pi-durable";
 import { guardBashCall } from "../../shared/guard.ts";
 import { trySignalGroup } from "../../shared/process-group.ts";
-import { agentSummary, sessionAcks, tasks, type TaskNotification, type TaskStatus } from "../../shared/tasks.ts";
+import { agentSummary, recent, sessionAcks, tasks, type TaskNotification, type TaskStatus } from "../../shared/tasks.ts";
 import { addWorktree, agentWorktreeAt, finishAgentWorktree, git, type AgentWorktree } from "../../shared/worktree.ts";
 import { PI_TOOLS, type PiToolName } from "../definitions.ts";
 import { cliAnswer, CONTINUE, newProgress as newCliProgress, spawnWorker, type CliExit, type CliWorker } from "./cli.ts";
@@ -408,9 +408,11 @@ async function resume(engine: Engine, D: D, from: number | undefined, acks: Retu
 	const workflows = workflowRecords(await harness.snapshot(kit.Workflows, root.id, CTX));
 	installSchemas(D, registry, session, workflows);
 	void prune(join(getAgentDir(), "pi-kit")).catch(() => {});
-	for (const [id, record] of Object.entries(records)) registerAgent(engine, id, record);
-	for (const [id, record] of Object.entries(workflows)) registerWorkflow(engine, id, record);
-	for (const [id, record] of Object.entries(backgroundRecords(await harness.snapshot(kit.Background, root.id, CTX)))) registerBackground(engine, id, record);
+	const background = backgroundRecords(await harness.snapshot(kit.Background, root.id, CTX));
+	const shown = new Set(recent([records, workflows, background].flatMap((doc) => Object.entries(doc).map(([id, record]) => ({ id, ...record })))).map((entry) => entry.id));
+	for (const [id, record] of Object.entries(records)) if (shown.has(id)) registerAgent(engine, id, record);
+	for (const [id, record] of Object.entries(workflows)) if (shown.has(id)) registerWorkflow(engine, id, record);
+	for (const [id, record] of Object.entries(background)) if (shown.has(id)) registerBackground(engine, id, record);
 	// ponytail: a resumed run takes its slot without waiting; reopening a session while another fills the 16 exceeds them until the extra runs end.
 	const unsettled = new Set((await harness.inspect(CTX)).submissions.map((submission) => submission.conversationId));
 	for (const [id, record] of Object.entries(records)) {

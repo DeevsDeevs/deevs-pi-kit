@@ -58,6 +58,12 @@ export function warnOldPi(version: string): void {
 	if (version.localeCompare("1.0.4", undefined, { numeric: true }) < 0) console.warn(`pi-kit: needs Pi 1.0.4 or newer, and this is Pi ${version}; update Pi.`);
 }
 
+/** The rows worth showing and resuming: every running task and the 20 finished most recently started. */
+export function recent<T extends { status: TaskStatus; startedAt: number }>(entries: T[]): T[] {
+	const finished = entries.filter((entry) => entry.status !== "running").sort((a, b) => b.startedAt - a.startedAt).slice(0, 20);
+	return entries.filter((entry) => entry.status === "running" || finished.includes(entry));
+}
+
 const AGENT_NOTE = "A task-notification fires each time this agent stops. A SendMessage to it resumes it, so the same task-id may notify more than once.";
 
 interface TasksState {

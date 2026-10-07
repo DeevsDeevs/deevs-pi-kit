@@ -7,7 +7,7 @@ import type { Static } from "typebox";
 import { getAgentDir, isToolCallEventType, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { guardBashCall, guardShell, loadGuardConfig } from "../shared/guard.ts";
 import { loadKitConfig, modelContext, modelLabel, modelsTable, resolveLead, resolveModel, type ModelContext } from "../shared/models.ts";
-import { agentForegroundResult, agentLaunchedResult, jobLaunchedResult, monitorStartedResult, newAgentId, newBackgroundTaskId, newWorkflowRunId, newWorkflowTaskId, sendMessageResult, taskNotFound, taskNotRunningResult, taskStoppedResult, tasks, unknownAgentResult, workflowLaunchedResult, type RosterEntry } from "../shared/tasks.ts";
+import { agentForegroundResult, agentLaunchedResult, jobLaunchedResult, monitorStartedResult, newAgentId, newBackgroundTaskId, newWorkflowRunId, newWorkflowTaskId, recent, sendMessageResult, taskNotFound, taskNotRunningResult, taskStoppedResult, tasks, unknownAgentResult, workflowLaunchedResult, type RosterEntry } from "../shared/tasks.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
 import { finishAgentWorktree, sharesCwd } from "../shared/worktree.ts";
 import { currentMission, saveMission } from "../mission/store.ts";
@@ -292,7 +292,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		description: "List this session's background tasks, each labelled by kind (agent, workflow, job, monitor, collaborator), with its id, name, status and description.",
 		parameters: Type.Object({}),
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
-			const entries = tasks.list(ctx.sessionManager.getSessionId());
+			const entries = recent(tasks.list(ctx.sessionManager.getSessionId()));
 			return { content: [{ type: "text" as const, text: rosterLines(entries).join("\n") }], details: { count: entries.length } };
 		},
 	});
@@ -446,7 +446,7 @@ function missionLines(cwd: string): string[] {
 
 function overview(ctx: ExtensionContext, models: ModelContext): string {
 	return [
-		...rosterLines(tasks.list(ctx.sessionManager.getSessionId())),
+		...rosterLines(recent(tasks.list(ctx.sessionManager.getSessionId()))),
 		...workflowProgress(ctx.sessionManager.getSessionId()).flatMap(workflowLines),
 		...missionLines(ctx.cwd),
 		"",
