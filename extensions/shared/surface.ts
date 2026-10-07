@@ -34,7 +34,7 @@ export function activateTools(pi: ExtensionAPI, tools: readonly string[]): void 
  */
 export function activateWithSkill(pi: ExtensionAPI, tools: readonly string[], skills: readonly string[]): void {
 	const skillFiles = new Set(skills.map((skill) => realPath(fileURLToPath(new URL(`../../skills/${skill}/SKILL.md`, import.meta.url)))));
-	const readsSkill = (tool: string, args: Record<string, unknown>, cwd: string) => tool === "read"
+	const readsSkill = (tool: string, args: { path?: unknown; command?: unknown }, cwd: string) => tool === "read"
 		? skillFiles.has(realPath(resolve(cwd, String(args.path ?? "").replace(/^~(?=$|\/)/, homedir()))))
 		: tool === "bash" && skills.some((skill) => String(args.command ?? "").includes(`skills/${skill}/SKILL.md`));
 	const activate = () => activateTools(pi, tools);
