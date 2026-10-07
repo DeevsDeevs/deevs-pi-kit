@@ -3,16 +3,17 @@ import { rpc, script } from "../drive.mjs";
 import { agentIds, taskNotifications, toolCalls } from "../look.mjs";
 
 // A lead's codemode script launches an agent, starts a job and lists the roster: Agent, job_start and ListAgents resolve to
-// structured values, and the agent reports once. A detached bash from a script is still refused.
+// structured values, and the agent reports once. A detached bash from a script is still refused, and ask_user,
+// collaborator_start and Workflow are not callable: one waits on a person, one opens Herdr tabs, one runs its own script.
 const child = (agent) => JSON.stringify(script({ agent, steps: [{ id: "r1", text: `${agent} done` }] }));
 const CODE = [
 	`const agents = await Promise.allSettled([tools.Agent({ description: "one", prompt: ${child("one")} })]);`,
 	"const job = await tools.job_start({ command: 'echo job-ok', description: 'probe', timeout: 30000 });",
 	"const listed = await tools.ListAgents({});",
 	"const bg = await tools.bash({ command: 'sleep 30 & echo bg' }).then(() => 'ran', () => 'refused');",
-	"return JSON.stringify({ agents: agents.map((a) => a.status === 'fulfilled' ? Object.keys(a.value).sort().join() : 'rejected'), job: Object.keys(job).sort().join(), kinds: listed.tasks.map((task) => task.kind).sort().join(), bg });",
+	"return JSON.stringify({ agents: agents.map((a) => a.status === 'fulfilled' ? Object.keys(a.value).sort().join() : 'rejected'), job: Object.keys(job).sort().join(), kinds: listed.tasks.map((task) => task.kind).sort().join(), bg, callable: ['Agent', 'ListAgents', 'job_start', 'bash', 'ask_user', 'collaborator_start', 'Workflow'].filter((name) => name in tools).join() });",
 ].join("\n");
-const EXPECTED = { agents: ["agentId,outputFile"], job: "outputFile,taskId", kinds: "agent,job", bg: "refused" };
+const EXPECTED = { agents: ["agentId,outputFile"], job: "outputFile,taskId", kinds: "agent,job", bg: "refused", callable: "Agent,ListAgents,job_start,bash" };
 const agentNotes = (notes) => notes.filter((n) => agentIds(n.taskId ?? "").length);
 
 export default {
