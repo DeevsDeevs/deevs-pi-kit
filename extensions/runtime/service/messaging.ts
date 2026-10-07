@@ -27,7 +27,8 @@ const INBOX_PAGE = 50;
 const INBOX_PAGE_BYTES = 96 * 1024;
 
 export type MessagingInput =
-	| { method: "inbox" }
+	| { method: "inbox"; peek: boolean }
+	| { method: "read"; eventIds: string[] }
 	| { method: "send"; participantId: string; operationId: string; body: string };
 
 interface VerifiedNamespace {
@@ -49,7 +50,11 @@ interface MessagingEventResult {
 	eventId: string;
 }
 
-type MessagingResult = MessagingInboxView | MessagingEventResult;
+interface MessagingReadResult {
+	read: number;
+}
+
+type MessagingResult = MessagingInboxView | MessagingEventResult | MessagingReadResult;
 
 export class RuntimeMessaging {
 	private inFlight = 0;
@@ -157,7 +162,8 @@ export class RuntimeMessaging {
 		try {
 			const { grant, registration } = await this.verify(namespaceId, secret);
 			switch (input.method) {
-				case "inbox": return this.inbox(grant);
+				case "inbox": return this.inbox(grant, input.peek);
+				case "read": return this.read(grant, input.eventIds);
 				case "send": return this.publish(registration, grant, input.operationId, this.recipientKey(grant, input.participantId), input.body);
 			}
 		} finally {
@@ -165,8 +171,8 @@ export class RuntimeMessaging {
 		}
 	}
 
-	/** Delivery is the read: whatever this page returns is marked read in the same state write. */
-	private inbox(grant: HostedMessagingGrant): MessagingInboxView {
+	/** Unless peeked, delivery is the read: whatever this page returns is marked read in the same state write. */
+	private inbox(grant: HostedMessagingGrant, peek: boolean): MessagingInboxView {
 		const unread = unreadMailEvents(this.store.read(), grant.participantKey);
 		const messages: MessagingInboxMessageView[] = [];
 		let bytes = 0;
@@ -178,10 +184,14 @@ export class RuntimeMessaging {
 			if (messages.length === INBOX_PAGE || (messages.length > 0 && bytes > INBOX_PAGE_BYTES)) break;
 			messages.push(message);
 		}
-		if (messages.length > 0) {
-			this.store.apply({ type: "messaging.read", namespaceId: grant.namespaceId, eventIds: messages.map((message) => message.eventId), at: this.now() });
-		}
+		if (!peek && messages.length > 0) this.read(grant, messages.map((message) => message.eventId));
 		return { messages, truncated: unread.length > messages.length };
+	}
+
+	/** A peeking reader marks what it has delivered: a Pi once its session holds the message. */
+	private read(grant: HostedMessagingGrant, eventIds: string[]): MessagingReadResult {
+		this.store.apply({ type: "messaging.read", namespaceId: grant.namespaceId, eventIds, at: this.now() });
+		return { read: eventIds.length };
 	}
 
 	private publish(

@@ -84,7 +84,8 @@ export const ParticipantConfirmedParams = Type.Object({
 }, STRICT_OBJECT);
 
 export const MessagingIssueParams = ParticipantConfirmedParams;
-export const MessagingNamespaceParams = Type.Object({ ...NAMESPACE }, STRICT_OBJECT);
+export const MessagingInboxParams = Type.Object({ ...NAMESPACE, peek: Type.Optional(Type.Literal(true)) }, STRICT_OBJECT);
+export const MessagingReadParams = Type.Object({ ...NAMESPACE, eventIds: Type.Array(IdText, { minItems: 1, maxItems: 50 }) }, STRICT_OBJECT);
 export const MessagingSendParams = Type.Object({
 	...NAMESPACE,
 	operationId: IdText,

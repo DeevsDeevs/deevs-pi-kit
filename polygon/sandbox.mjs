@@ -61,7 +61,9 @@ export async function sandbox({ run, name, kit, results, logins, bodies }) {
 	const t = { name, dir, home, repo, kit, agentDir, env, port, tag, requestLog, marks, scripts, git, closers: [] };
 	t.teardown = async () => {
 		for (const close of t.closers.reverse()) await close().catch(() => {});
-		const leaked = procs(t);
+		// A pane process Herdr's stop just killed can still be exiting under load once Herdr is gone; only what stays 3 s leaked.
+		let leaked = procs(t);
+		for (let i = 0; i < 30 && leaked.length; i++) { await new Promise((r) => setTimeout(r, 100)); leaked = procs(t); }
 		for (const p of leaked) try { process.kill(p.pid, "SIGKILL"); } catch {}
 		const closed = new Promise((r) => server.close(r));
 		server.closeAllConnections();

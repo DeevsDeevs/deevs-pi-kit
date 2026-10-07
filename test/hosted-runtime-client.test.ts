@@ -1,14 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HostedRuntimeClient, HostedRuntimeClientError } from "../extensions/runtime/client.ts";
+import { prepareCollaboratorSession } from "../extensions/runtime/collaborator-launch.ts";
 import { HostedRuntimeIntegration } from "../extensions/runtime/hosted-integration.ts";
 import { encodeMail } from "../extensions/runtime/mail-body.ts";
-import { mailContent } from "../extensions/runtime/messaging-client.ts";
+import { mailContent, MessagingClient } from "../extensions/runtime/messaging-client.ts";
 import { startRuntimeService } from "../extensions/runtime/service-launch.ts";
-import { HOSTED_SESSION_ENTRY } from "../extensions/runtime/session-record.ts";
+import { COLLABORATOR_ENV, HOSTED_SESSION_ENTRY } from "../extensions/runtime/session-record.ts";
 import { RUNTIME_BUILD } from "../extensions/runtime/service/build.ts";
 import type { HostedHostVerifier, HostedLiveAgent } from "../extensions/runtime/service/herdr-cli.ts";
 import { startRuntimeServer, type RuntimeServerHandle } from "../extensions/runtime/service/server.ts";
@@ -130,12 +132,109 @@ describe("hosted runtime client vertical", () => {
 		expect(await client.hello()).toMatchObject({ build: RUNTIME_BUILD });
 	});
 
+	it("marks collaborator mail read only once the session holds it, so a reload in between delivers it again", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-kit-runtime-mail-"));
+		roots.push(root);
+		const projectRoot = join(root, "project");
+		mkdirSync(projectRoot);
+		const leadFile = join(root, "lead.jsonl");
+		const peerFile = join(root, "peer.jsonl");
+		writeFileSync(leadFile, `${JSON.stringify({ type: "session", version: 3, id: "lead", timestamp: "2026-01-01T00:00:00.000Z", cwd: projectRoot })}\n`);
+		writeFileSync(peerFile, `${JSON.stringify({ type: "session", version: 3, id: "peer", timestamp: "2026-01-01T00:00:00.000Z", cwd: projectRoot })}\n`);
+		const runtimeRoot = join(root, "runtime");
+		const server = await startRuntimeServer({ root: runtimeRoot, host: new FakeHost({ name: "pi-main", cwd: projectRoot }), registration: {} });
+		servers.push(server);
+		const sent: Array<{ customType: string; details: unknown }> = [];
+		const entries: unknown[] = [];
+		const pi = { exec: vi.fn(), appendEntry: () => {}, sendMessage: (message: { customType: string; details: unknown }) => sent.push(message) };
+		const identity = { type: "custom", customType: HOSTED_SESSION_ENTRY, data: { version: 3, participant: { protocol: "review", participantId: "main", disposition: "held" } } };
+		const ctx = {
+			cwd: projectRoot, hasUI: true, mode: "rpc", isIdle: () => true, hasPendingMessages: () => false, isProjectTrusted: () => true, ui: { notify: () => {} },
+			sessionManager: { getSessionFile: () => leadFile, getSessionId: () => "lead", getBranch: () => [identity], getEntries: () => entries },
+		};
+		const lead = new HostedRuntimeIntegration(pi as never, runtimeRoot);
+		await lead.session.sessionStart(ctx as never);
+		const client = new HostedRuntimeClient(server.socketPath);
+		const peer = { targetKey: String((await client.call("pi.register", { projectRoot, piSessionId: "peer", piSessionFile: peerFile }) as { targetKey: string }).targetKey) };
+		const { participant } = await client.call("participant.acquire", { ...peer, protocol: "review", participantId: "peer" }) as { participant: { participantKey: string; generation: string } };
+		const issued = await client.call("messaging.issue", { ...peer, participantKey: participant.participantKey, expectedGeneration: participant.generation, confirmed: true }) as { descriptorPath: string };
+		const { namespaceId, secret } = JSON.parse(readFileSync(issued.descriptorPath, "utf8")) as { namespaceId: string; secret: string };
+		await client.call("messaging.send", { namespaceId, secret, operationId: "op-1", participantId: "main", bodyBase64: Buffer.from(encodeMail("hello", [])).toString("base64") });
+		await vi.waitFor(() => expect(sent).toHaveLength(1), { timeout: 5_000 });
+		await lead.session.sessionShutdown();
+		const reloaded = new HostedRuntimeIntegration(pi as never, runtimeRoot);
+		await reloaded.session.sessionStart(ctx as never);
+		await vi.waitFor(() => expect(sent).toHaveLength(2), { timeout: 5_000 });
+		expect(sent[1]).toMatchObject({ customType: "collaborator-message", details: { from: ["peer"], eventIds: [expect.any(String)] } });
+		entries.push({ type: "custom_message", ...sent[1] });
+		const leadAuth = { targetKey: String(reloaded.session.liveRegistration?.targetKey) };
+		await vi.waitFor(async () => expect(await client.call("pi.heartbeat", leadAuth)).not.toHaveProperty("mail"), { timeout: 5_000 });
+		expect(sent).toHaveLength(2);
+		await reloaded.session.sessionShutdown();
+	}, 20_000);
+
+	it("tells the user to close an older service that does not know service.exit, and starts no second one", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-kit-runtime-old-"));
+		roots.push(root);
+		const client = new HostedRuntimeClient(join(root, "runtime.sock"), 500);
+		const old = createServer((socket) => socket.on("data", (line) => {
+			const request = JSON.parse(String(line)) as { id: string; method: string };
+			const response = request.method === "hello"
+				? { v: 1, id: request.id, ok: true, result: { version: 1, runtimeId: "rt_old" } }
+				: { v: 1, id: request.id, ok: false, error: { code: "invalid_request", message: "Unknown method." } };
+			socket.end(`${JSON.stringify(response)}\n`);
+		}));
+		await new Promise<void>((resolve) => old.listen(client.socketPath, resolve));
+		const exec = vi.fn();
+		vi.stubEnv("HERDR_ENV", "1");
+		try {
+			await expect(startRuntimeService({ exec } as never, client, root, { isProjectTrusted: () => true }, true))
+				.rejects.toMatchObject({ code: "conflict", message: expect.stringContaining("close its pi-kit-services Herdr workspace") });
+		} finally {
+			vi.unstubAllEnvs();
+			old.close();
+		}
+		expect(exec).not.toHaveBeenCalled();
+	}, 15_000);
+
 	it("guards a collaborator whose launch names no profile as read-only", () => {
 		const integration = new HostedRuntimeIntegration({} as never, join(tmpdir(), "pi-kit-runtime-unused"));
 		const entry = { type: "custom", customType: HOSTED_SESSION_ENTRY, data: { version: 3, launch: { driver: "pi" } } };
 		integration.restoreSessionState({ cwd: tmpdir(), sessionManager: { getBranch: () => [entry] } } as never);
 		expect(integration.collaborators.guardTool("edit", { path: "x" }, tmpdir())).toMatchObject({ block: true });
 		expect(integration.collaborators.guardTool("read", { path: "x" }, tmpdir())).toBeUndefined();
+	});
+
+	it("restarts a reused collaborator session where and as its new start says", () => {
+		const projectRoot = realpathSync(mkdtempSync(join(tmpdir(), "pi-kit-runtime-relaunch-")));
+		roots.push(projectRoot);
+		const worktree = join(projectRoot, "worktrees", "w");
+		mkdirSync(worktree, { recursive: true });
+		const sessionFile = join(projectRoot, "w.jsonl");
+		const reader = { participantId: "w", driver: "pi", profile: "read-only" } as const;
+		expect(prepareCollaboratorSession(sessionFile, projectRoot, projectRoot, reader)).toBe(true);
+		SessionManager.open(sessionFile).appendMessage({ role: "user", content: [{ type: "text", text: "earlier work" }], timestamp: 1 });
+		expect(prepareCollaboratorSession(sessionFile, worktree, projectRoot, { ...reader, profile: "workspace-write" })).toBe(false);
+		const session = SessionManager.open(sessionFile);
+		expect(session.getCwd()).toBe(worktree);
+		expect(session.getBranch().map((entry) => entry.type)).toEqual(["custom", "message", "custom"]);
+		vi.stubEnv(COLLABORATOR_ENV, "collab:w");
+		try {
+			const integration = new HostedRuntimeIntegration({} as never, join(projectRoot, "runtime"));
+			integration.restoreSessionState({ cwd: session.getCwd(), sessionManager: session } as never);
+			expect(integration.collaborators.guardTool("write", { path: join(worktree, "x") }, worktree)).toBeUndefined();
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	});
+
+	it("sends a Runtime notice only to an idle session, as a hidden collaborator-notice", () => {
+		const sendMessage = vi.fn();
+		const messaging = new MessagingClient({ isActive: true, pi: { sendMessage } } as never);
+		const idle = { hasUI: true, mode: "rpc", isIdle: () => true, hasPendingMessages: () => false };
+		expect(messaging.deliverNotice({ ...idle, isIdle: () => false } as never, "blocked")).toBe(false);
+		expect(messaging.deliverNotice(idle as never, "blocked")).toBe(true);
+		expect(sendMessage.mock.calls).toEqual([[{ customType: "collaborator-notice", content: "blocked", display: false }, { triggerTurn: true, deliverAs: "followUp" }]]);
 	});
 
 	it("neutralizes envelope markup a collaborator puts in its mail", () => {
