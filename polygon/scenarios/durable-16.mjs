@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { agentStep, eventually, rpc, sleep } from "../drive.mjs";
+import { LOOP_PROBE, agentStep, eventually, rpc, sleep } from "../drive.mjs";
 import { sessionNotes, toolCalls } from "../look.mjs";
 
 const N = 16;
@@ -20,7 +20,7 @@ export default {
 	slow: true,
 	timeoutMs: 240_000,
 	async run(t) {
-		const lead = rpc(t);
+		const lead = rpc(t, { args: ["-e", LOOP_PROBE] });
 		await lead.send({ type: "get_state" }, 30_000);
 		const stalls = lead.stallMeter();
 		await lead.script({ agent: "lead", steps: Array.from({ length: N }, (_, i) => agentStep(`s${i}`, child(i), { run_in_background: true })) });

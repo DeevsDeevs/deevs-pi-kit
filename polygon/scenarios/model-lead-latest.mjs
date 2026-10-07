@@ -28,9 +28,11 @@ export default {
 		assert.equal((await turn(t, { model: null, args: ["--continue"] })).ran, "puppet", "a restored session was switched");
 		kit({ lead: null });
 		assert.equal((await turn(t, { model: null })).ran, "puppet", "lead:null still switched the model");
-		// The kit default sol prefers Pi 1.0.4's `openai` ChatGPT login over the legacy openai-codex one.
+		// The kit default sol takes only a Pi OAuth login: an `openai` API key loses to the openai-codex ChatGPT login; a lead you set may bill it.
 		writeFileSync(join(t.agentDir, "pi-kit.json"), "{}");
 		fixtureModels(t, "openai", ["gpt-6.11-sol"]);
-		assert.equal((await turn(t, { model: null })).ran, "gpt-6.11-sol", "the default sol did not resolve over openai first");
+		assert.equal((await turn(t, { model: null })).ran, "gpt-6.1-sol", "the default sol switched to an API key");
+		writeFileSync(join(t.agentDir, "pi-kit.json"), JSON.stringify({ lead: "sol" }));
+		assert.equal((await turn(t, { model: null })).ran, "gpt-6.11-sol", "a set lead did not resolve over openai first");
 	},
 };

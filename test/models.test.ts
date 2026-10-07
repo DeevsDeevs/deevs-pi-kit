@@ -41,12 +41,14 @@ function byId(id: string): Model<Api> {
 	return found;
 }
 
-function registry(loggedIn: string[], all = CATALOG): ModelCatalog {
+/** `oauth`: the providers signed in through Pi's OAuth; the rest of `loggedIn` hold an API key. */
+function registry(loggedIn: string[], all = CATALOG, oauth = loggedIn): ModelCatalog {
 	const available = all.filter((entry) => loggedIn.includes(entry.provider));
 	return {
 		getAll: () => all,
 		getAvailable: () => available,
 		find: (provider, id) => all.find((entry) => entry.provider === provider && entry.id === id),
+		isUsingOAuth: (entry) => oauth.includes(entry.provider),
 	};
 }
 
@@ -231,6 +233,16 @@ describe("resolveLead", () => {
 		const unset = { models: KIT_DEFAULTS.models };
 		expect(resolveLead(context({ config: unset }))).toMatchObject({ model: { id: "gpt-6.1-sol" } });
 		expect(resolveLead(context({ config: unset, registry: registry([]) }))).toBeUndefined();
+	});
+
+	it("takes the built-in default only through a Pi OAuth login, never an API key; a lead or sol you set may bill a key", () => {
+		const unset = { models: KIT_DEFAULTS.models };
+		const keyAndCodexLogin = registry(["openai", "openai-codex"], CATALOG, ["openai-codex"]);
+		expect(resolveLead(context({ config: unset, registry: keyAndCodexLogin }))).toMatchObject({ model: { provider: "openai-codex", id: "gpt-6.1-sol" } });
+		expect(resolveLead(context({ config: unset, registry: registry(["openai"], CATALOG, []) }))).toBeUndefined();
+		expect(resolveLead(context({ config: unset, registry: registry(["openai"]) }))).toMatchObject({ model: { provider: "openai", id: "gpt-6.1-sol" } });
+		expect(resolveLead(context({ config: { ...unset, lead: "sol" }, registry: keyAndCodexLogin }))).toMatchObject({ model: { provider: "openai" } });
+		expect(resolveLead(context({ config: { models: { ...unset.models, sol: "openai/gpt-*-sol" } }, registry: keyAndCodexLogin }))).toMatchObject({ model: { provider: "openai" } });
 	});
 });
 

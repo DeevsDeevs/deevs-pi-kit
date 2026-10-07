@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { getEncoding } from "js-tiktoken";
+import { agentDir } from "../extensions/shared/config.ts";
 
 const repo = dirname(dirname(fileURLToPath(import.meta.url)));
 const results = join(repo, "bench", "results");
@@ -65,7 +66,7 @@ function toolSurface(tools) {
 	return surface("piTools", items);
 }
 
-const INSTALLED_SKILLS = "/home/deevs/.pi/agent/git/github.com/DeevsDeevs/deevs-pi-kit/skills";
+const INSTALLED_SKILLS = join(agentDir(), "git/github.com/DeevsDeevs/deevs-pi-kit/skills");
 
 /** The exact `<skill>` block Pi's formatSkillsForPrompt emits, location included. */
 function skillIndexEntry(skill) {

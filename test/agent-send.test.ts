@@ -6,6 +6,7 @@ import { createFauxCore, fauxAssistantMessage, type FauxResponseStep } from "@ea
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { newAgentId, tasks } from "../extensions/shared/tasks.ts";
 import { closeAll, ensureEngine, launch, send, startJob } from "../extensions/subagents/engine/index.ts";
+import subagentsExtension from "../extensions/subagents/index.ts";
 import { SETTLED } from "../extensions/subagents/engine/storage.ts";
 
 process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "pi-kit-send-"));
@@ -102,17 +103,24 @@ describe("SendMessage to an agent", () => {
 		expect(existsSync(join(engine.dir, SETTLED))).toBe(true);
 	});
 
-	it("puts running tasks and the 20 finished most recently started back on the roster at reopen", async () => {
+	it("puts running tasks and the 20 finished most recently started back on the roster at reopen; SendMessage still finds an older agent", async () => {
 		const many = { ...ctx, sessionManager: { getSessionId: () => "many", getEntries: () => [] } } as unknown as ExtensionContext;
 		const engine = await ensureEngine(many);
+		faux.setResponses([fauxAssistantMessage("first"), fauxAssistantMessage("again")]);
+		const old = newAgentId();
+		await (await launch(engine, { agentId: old, name: "old", description: "d", prompt: "task", model: faux.getModel(), tools: ["read"], instructions: "", cwd, writer: false, toolUseId: "t", limits: {}, foreground: true })).done;
 		for (let i = 0; i < 22; i++) await startJob(engine, { id: `quick${i}`, command: "true", description: "d", cwd, toolUseId: "t" });
 		await startJob(engine, { id: "slow", command: "sleep 30", description: "d", cwd, toolUseId: "t" });
-		await vi.waitFor(() => expect(tasks.list("many").filter((task) => task.status !== "running")).toHaveLength(22), { timeout: 10_000 });
+		await vi.waitFor(() => expect(tasks.list("many").filter((task) => task.status !== "running")).toHaveLength(23), { timeout: 10_000 });
 		await closeAll();
 		for (const task of tasks.list("many")) tasks.remove(task.id);
 		await ensureEngine(many);
 		const ids = tasks.list("many").map((task) => task.id);
-		expect([ids.length, ids.includes("slow"), ids.includes("quick21")]).toEqual([21, true, true]);
+		expect([ids.length, ids.includes("slow"), ids.includes("quick21"), ids.includes(old)]).toEqual([21, true, true, false]);
+		let sendMessage: { name: string; execute(id: string, params: object, signal: undefined, update: undefined, ctx: ExtensionContext): Promise<{ details: object }> } | undefined;
+		subagentsExtension({ registerTool(tool: NonNullable<typeof sendMessage>) { if (tool.name === "SendMessage") sendMessage = tool; }, registerCommand() {}, on() {} } as unknown as ExtensionAPI);
+		expect((await sendMessage!.execute("t2", { to: "old", message: "more" }, undefined, undefined, many)).details).toEqual({ agentId: old, outcome: "resumed" });
+		await vi.waitFor(() => expect(tasks.find(old)?.status).toBe("completed"), { timeout: 10_000 });
 	});
 
 	it("unlocks a store whose open failed, so a later open takes it", async () => {

@@ -9,7 +9,7 @@ import { createBashTool, createEditTool, createFindTool, createGrepTool, createL
 import type * as Durable from "@earendil-works/pi-durable";
 import { guardBashCall } from "../../shared/guard.ts";
 import { trySignalGroup } from "../../shared/process-group.ts";
-import { agentSummary, recent, sessionAcks, tasks, type TaskNotification, type TaskStatus } from "../../shared/tasks.ts";
+import { agentSummary, recent, sessionAcks, tasks, type RosterEntry, type TaskNotification, type TaskStatus } from "../../shared/tasks.ts";
 import { addWorktree, agentWorktreeAt, finishAgentWorktree, git, type AgentWorktree } from "../../shared/worktree.ts";
 import { PI_TOOLS, type PiToolName } from "../definitions.ts";
 import { cliAnswer, CONTINUE, newProgress as newCliProgress, spawnWorker, type CliExit, type CliWorker } from "./cli.ts";
@@ -193,6 +193,16 @@ export async function launch(engine: Engine, spec: LaunchSpec): Promise<{ output
 	}, CTX);
 	registerAgent(engine, agentId, record);
 	return { outputFile, done };
+}
+
+/** An agent of the session's open store that a reopen left off the roster (it lists only the 20 finished most recently started), by id or newest name. */
+export async function storedAgent(ctx: ExtensionContext, idOrName: string): Promise<RosterEntry | undefined> {
+	const engine = await host.engines.get(ctx.sessionManager.getSessionId())?.catch(() => undefined);
+	const records = engine ? Object.entries(agentRecords(await engine.harness.snapshot(engine.kit.Agents, engine.root.id, CTX))) : [];
+	const found = records.find(([id]) => id === idOrName) ?? records.filter(([, record]) => record.name === idOrName).sort(([, a], [, b]) => b.startedAt - a.startedAt)[0];
+	if (!engine || !found) return undefined;
+	registerAgent(engine, ...found);
+	return tasks.find(found[0], engine.session, "agent");
 }
 
 function registerAgent(engine: Engine, id: string, record: AgentRecord): void {
