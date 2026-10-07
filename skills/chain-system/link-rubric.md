@@ -12,7 +12,7 @@ Before saving, reason through the conversation chronologically:
 - files created, modified, read, or intentionally left alone
 - exact command/test outcomes
 - bugs, blockers, failed attempts, and current status
-- active background processes or subagent runs/groups
+- running agents, workflows, jobs and monitors, with their task ids
 - what the next session should do first
 
 Do not save private analysis. Save only the final markdown summary.
@@ -74,7 +74,7 @@ For branch links, include:
 
 When chains are used to coordinate subagents, include:
 
-- group/run IDs
+- agent and workflow task ids
 - each subagent's role and final recommendation
 - which recommendations were accepted/rejected
 - what context was passed to subagents
