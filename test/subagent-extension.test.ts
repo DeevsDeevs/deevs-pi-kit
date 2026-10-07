@@ -34,6 +34,15 @@ describe("Subagent extension surface", () => {
 		expect(timeout("Agent")).toMatch(/ONLY when the user asks/);
 	});
 
+	it("refuses a malformed agent name or a limit below its floor in execute, where the schema no longer spends tokens on them", async () => {
+		let agent: { execute: (id: string, params: object) => Promise<unknown> } | undefined;
+		subagentsExtension({ registerTool(tool: NonNullable<typeof agent> & { name: string }) { if (tool.name === "Agent") agent = tool; }, registerCommand() {}, on() {} } as unknown as ExtensionAPI);
+		const brief = { description: "probe", prompt: "probe" };
+		await expect(agent!.execute("call", { ...brief, name: "two words" })).rejects.toThrow(/^A name is 1-64 letters/);
+		await expect(agent!.execute("call", { ...brief, name: "main" })).rejects.toThrow(/reserved/);
+		for (const limit of [{ maxTurns: 0 }, { maxTokens: 0 }, { timeout: 999 }]) await expect(agent!.execute("call", { ...brief, ...limit })).rejects.toThrow(/at least/);
+	});
+
 	it("switches only a new session to the lead model; an unresolved default stays silent, a set lead warns once", async () => {
 		process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "pi-kit-lead-"));
 		const sol = { provider: "openai-codex", id: "gpt-6.1-sol" };
@@ -102,7 +111,7 @@ describe("Subagent extension surface", () => {
 		process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "pi-kit-worker-"));
 		const names = [...workerPrompt(findAgentType(undefined), process.env.PI_CODING_AGENT_DIR).matchAll(/<name>(.*)<\/name>/g)].map((m) => m[1]);
 		expect(names).toContain("diagnose");
-		expect(names.filter((name) => ["workflow-authoring", "collaborators", "background-tasks", "todos", "ask-user", "chain-system"].includes(name!))).toEqual([]);
+		expect(names.filter((name) => ["workflow-authoring", "collaborators", "background-tasks", "todos", "ask-user", "chain-system", "missions"].includes(name!))).toEqual([]);
 	});
 
 	it("gives the Pi lead (as Agent tool guidelines) every working rule and Pi workers the shared ones, each yielding to the user's and the project's instructions, and a Claude or Codex worker none", () => {
@@ -110,7 +119,7 @@ describe("Subagent extension surface", () => {
 		process.env.PI_CODING_AGENT_DIR = dir;
 		let agent: { name: string; promptGuidelines?: string[] } | undefined;
 		subagentsExtension({ registerTool(tool: NonNullable<typeof agent>) { if (tool.name === "Agent") agent = tool; }, registerCommand() {}, on() {} } as unknown as ExtensionAPI);
-		expect(agent?.promptGuidelines).toEqual(WORKING_RULES);
+		expect(agent?.promptGuidelines).toEqual([...WORKING_RULES, expect.stringMatching(/^Anything short of irreversible or destructive: state the default/)]);
 		const [precedence, finish, output, scope, tests, timeout, report] = WORKING_RULES;
 		expect(precedence).toMatch(/user's and the project's own instructions take precedence/);
 		expect(finish).toMatch(/within your turn[\s\S]*to wait for agents, workflows and timed jobs[\s\S]*When the user asked for action, a plan/);

@@ -8,7 +8,7 @@ import { getAgentDir, isToolCallEventType, type ExtensionAPI, type ExtensionCont
 import { guardBashCall, guardShell, loadGuardConfig } from "../shared/guard.ts";
 import { loadKitConfig, modelContext, modelLabel, modelsTable, resolveLead, resolveModel, type ModelContext } from "../shared/models.ts";
 import { agentForegroundResult, agentLaunchedResult, jobLaunchedResult, monitorStartedResult, newAgentId, newBackgroundTaskId, newWorkflowRunId, newWorkflowTaskId, recent, sendMessageResult, taskNotFound, taskNotRunningResult, taskStoppedResult, tasks, unknownAgentResult, workflowLaunchedResult, type RosterEntry } from "../shared/tasks.ts";
-import { isHeadless } from "../shared/surface.ts";
+import { activateWithSkill, isHeadless } from "../shared/surface.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
 import { finishAgentWorktree, sharesCwd } from "../shared/worktree.ts";
 import { currentMission, saveMission } from "../mission/store.ts";
@@ -24,21 +24,22 @@ const FOREGROUND_MS = 120_000;
 const MAX_REQUEST_CHARS = 4_000;
 const AUTHORING_HINT = "Load the `workflow-authoring` skill for the script format, fix the script, and retry.";
 const RESERVED_NAMES = new Set(["main", "user", "system"]);
+const AGENT_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const ONLY_ON_REQUEST = "ONLY when the user asks for this limit.";
 let leadWarned = false;
 
 const AgentSchema = Type.Object({
 	description: Type.String({ description: "3-5 words naming the task, shown in its notification" }),
 	prompt: Type.String({ description: "The whole brief: the agent sees nothing else" }),
-	subagent_type: Type.Optional(Type.String({ description: "The agent type; general-purpose when omitted" })),
+	subagent_type: Type.Optional(Type.String()),
 	model: Type.Optional(Type.String({ description: "Omit to run your model and level. Else a configured name (astra, luna, opus) or provider/id[:level]; a model the user named, exactly" })),
 	run_in_background: Type.Optional(Type.Boolean({ description: "Default true. false waits up to 2 minutes for the result: only when nothing useful can happen without it" })),
-	name: Type.Optional(Type.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$", description: "A name to address the agent by; a later agent with the same name takes it over" })),
-	isolation: Type.Optional(Type.Literal("worktree", { description: "Run in a fresh git worktree of the repo" })),
+	name: Type.Optional(Type.String({ description: "A name to address the agent by; a later agent with the same name takes it over" })),
+	isolation: Type.Optional(Type.Literal("worktree")),
 	cwd: Type.Optional(Type.String({ description: "Working directory, for one repo inside a multi-repo parent folder; defaults to yours" })),
-	maxTurns: Type.Optional(Type.Integer({ minimum: 1, description: `Model turns before the agent stops. ${ONLY_ON_REQUEST}` })),
-	maxTokens: Type.Optional(Type.Integer({ minimum: 1, description: `Tokens before the agent stops. ${ONLY_ON_REQUEST}` })),
-	timeout: Type.Optional(Type.Integer({ minimum: 1_000, description: `Milliseconds before the agent stops. ${ONLY_ON_REQUEST}` })),
+	maxTurns: Type.Optional(Type.Integer({ description: "Model turns" })),
+	maxTokens: Type.Optional(Type.Integer({ description: "Tokens" })),
+	timeout: Type.Optional(Type.Integer({ description: "Milliseconds. These three stop the agent; set them ONLY when the user asks for a limit" })),
 });
 type AgentParams = Static<typeof AgentSchema>;
 
@@ -103,6 +104,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	});
 	let widget: NodeJS.Timeout | undefined;
 	promptWorkflow(pi);
+	activateWithSkill(pi, ["job_start", "Monitor"], ["background-tasks", "diagnose", "validation-review", "datadog-pup"]);
 
 	pi.registerTool({
 		name: "Agent",
@@ -110,11 +112,13 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		description: AGENT_DESCRIPTION + agentTypesList(),
 		promptSnippet: "Delegate a self-contained task to a background agent.",
 		// Base prompt options, unlike a before_agent_start section, also reach runs a task notification starts.
-		promptGuidelines: WORKING_RULES,
+		promptGuidelines: [...WORKING_RULES, "Anything short of irreversible or destructive: state the default you assume and continue."],
 		parameters: AgentSchema,
 		async execute(toolCallId, params: AgentParams, signal, _onUpdate, ctx) {
 			const type = findAgentType(params.subagent_type);
+			if (params.name !== undefined && !AGENT_NAME.test(params.name)) throw new Error("A name is 1-64 letters, digits, _ or -, starting with a letter or digit.");
 			if (params.name && RESERVED_NAMES.has(params.name)) throw new Error(`The name '${params.name}' is reserved; pick another.`);
+			if ((params.maxTurns ?? 1) < 1 || (params.maxTokens ?? 1) < 1 || (params.timeout ?? 1_000) < 1_000) throw new Error("maxTurns and maxTokens are at least 1, timeout at least 1000 ms.");
 			const requested = directory(ctx.cwd, params.cwd);
 			const resolved = resolveModel(params.model ?? type.model, await models(ctx), type.effort);
 			const limits: Limits = { maxTurns: params.maxTurns, maxTokens: params.maxTokens, timeout: params.timeout };
@@ -222,6 +226,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		description: "Run a shell command in the background. The call returns at once with the job id and its output file; a <task-notification> arrives when the command exits, with its exit code. Read the output file with read; stop the job with TaskStop. A job lives in this Pi: it survives /reload, and if Pi closes first it is killed and reported as interrupted. Servers, watchers and REPLs that must outlive Pi belong in Herdr.",
 		promptSnippet: "Run a command in the background; notified when it exits.",
 		parameters: JobSchema,
+		defaultActive: false,
 		async execute(toolCallId, params: JobParams, _signal, _onUpdate, ctx) {
 			const cwd = directory(ctx.cwd, params.cwd);
 			const blocked = guardShell(params.command, { cwd, root: ctx.cwd, config: loadGuardConfig(ctx.cwd) });
@@ -238,6 +243,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		description: MONITOR_DESCRIPTION,
 		promptSnippet: "Get notified on each event from a command, folder, URL or cron timer.",
 		parameters: MonitorSchema,
+		defaultActive: false,
 		async execute(_toolCallId, params: MonitorParams, signal, _onUpdate, ctx) {
 			const sources = (["command", "path", "url", "cron"] as const).filter((key) => params[key] !== undefined);
 			if (sources.length !== 1) throw new Error("Give exactly one of command, path, url or cron.");

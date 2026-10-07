@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { TodoState } from "./state.ts";
 import { registerTodoTools } from "./tools.ts";
 import { clearTodoWidget, updateTodoWidget } from "./ui.ts";
-import { claimSurface } from "../shared/surface.ts";
+import { activateWithSkill, claimSurface } from "../shared/surface.ts";
 
 export default function todosExtension(pi: ExtensionAPI): void {
 	if (!claimSurface(pi, "todos")) return;
@@ -16,6 +16,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	};
 
 	registerTodoTools(pi, state);
+	activateWithSkill(pi, ["todo_list"], ["todos"]);
 
 	pi.on("session_start", async (_event, ctx) => restore(ctx));
 	pi.on("session_tree", async (_event, ctx) => restore(ctx));

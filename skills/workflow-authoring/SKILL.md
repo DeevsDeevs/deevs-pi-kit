@@ -1,6 +1,6 @@
 ---
 name: workflow-authoring
-description: The Workflow script API, its pitfalls, resume, and quality patterns. Read it before writing a script for a workflow you may already run; it grants no permission to run one.
+description: The Workflow script API, pitfalls, resume, quality patterns. Read before writing a script; it grants no permission to run one.
 ---
 
 # Writing Workflow scripts

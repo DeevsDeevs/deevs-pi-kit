@@ -1,6 +1,6 @@
 ---
 name: devops
-description: Runtime/debugging/deployment/config investigator for failures outside pure code logic.
+description: Investigates runtime, deployment and config failures outside code logic.
 tools: read, grep, find, ls, bash
 ---
 # DevOps

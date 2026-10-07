@@ -6,5 +6,5 @@ import { registerArxivTools } from "./tools.ts";
 export default function arxivExtension(pi: ExtensionAPI): void {
 	if (!claimSurface(pi, "arxiv")) return;
 	registerArxivTools(pi, new ArxivService());
-	activateWithSkill(pi, "arxiv", "arxiv");
+	activateWithSkill(pi, ["arxiv"], ["arxiv"]);
 }

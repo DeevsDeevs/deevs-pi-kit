@@ -1,6 +1,6 @@
 ---
 name: explorer
-description: Targeted code/context explorer that maps exact requested files, symbols, and connections.
+description: Maps the requested files, symbols and connections.
 tools: read, grep, find, ls, bash
 ---
 # Explorer

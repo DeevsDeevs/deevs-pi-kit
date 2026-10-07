@@ -1,6 +1,6 @@
 ---
 name: background-tasks
-description: "Pick between Pi Kit Jobs, Monitors and Herdr-owned persistent processes for background work; never detach shells."
+description: "Read to load job_start and Monitor. Pick between Jobs, Monitors and Herdr-owned persistent processes for background work; never detach shells."
 ---
 
 # Background Tasks

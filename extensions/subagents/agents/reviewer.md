@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Strict code reviewer for correctness, regressions, security, performance, and edge cases.
+description: Strict review for correctness, regressions, security, performance and edge cases.
 tools: read, grep, find, ls, bash
 ---
 # Reviewer
