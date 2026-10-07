@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { link, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { SqliteDatabase, SqliteExecutor, SqliteValue } from "@earendil-works/pi-durable/storage/sqlite";
@@ -14,6 +15,8 @@ interface BunDatabase {
 
 const LockFile = Type.Object({ pid: Type.Number(), identity: Type.Optional(Type.String()) });
 const KEEP_MS = 14 * 86_400_000;
+/** Written at close when nothing in the store is running or paused and its Outbox is empty; removed at open. */
+export const SETTLED = "settled";
 
 /** durable's portable SqliteStorage over Bun's synchronous `bun:sqlite`; every operation is queued behind the last. */
 export function bunSqlite(Database: new (path: string, options: { create: boolean }) => BunDatabase, path: string): SqliteDatabase {
@@ -92,19 +95,21 @@ async function heldBy(file: string): Promise<number | undefined> {
 }
 
 /**
- * At engine open: removes the engine stores (their transcripts, `out/` logs and `cli/` folders) untouched for 14 days
- * and held by no Pi, and the workflow runs and saved scripts as old. `kitDir` is `<agentDir>/pi-kit`.
+ * At engine open: removes the engine stores (their transcripts, `out/` logs and `cli/` folders) that closed settled, are held
+ * by no Pi and were untouched for 14 days; the workflow runs as old that ended (their `<runId>.json` is written), and old saved
+ * scripts. A store or run that Pi left running or paused stays, however old. `kitDir` is `<agentDir>/pi-kit`.
  */
 export async function prune(kitDir: string, now = Date.now()): Promise<void> {
 	const under = async (dir: string) => (await readdir(dir).catch(() => [])).map((name) => join(dir, name));
 	const below = async (dir: string) => (await Promise.all((await under(dir)).map(under))).flat();
 	const old = async (path: string) => ((await stat(path).catch(() => undefined))?.mtimeMs ?? now) < now - KEEP_MS;
 	for (const store of await below(join(kitDir, "agents"))) {
-		if (await old(store) && await heldBy(join(store, "engine.lock")) === undefined) await rm(store, { recursive: true, force: true });
+		if (existsSync(join(store, SETTLED)) && await old(store) && await heldBy(join(store, "engine.lock")) === undefined) await rm(store, { recursive: true, force: true });
 	}
 	const workflows = await below(join(kitDir, "workflows"));
 	const scripts = (await Promise.all(workflows.filter((path) => basename(path) === "scripts").map(under))).flat();
-	for (const path of [...workflows.filter((path) => basename(path) !== "scripts"), ...scripts]) {
+	const ended = workflows.filter((path) => basename(path) !== "scripts" && existsSync(join(path, `${basename(path)}.json`)));
+	for (const path of [...ended, ...scripts]) {
 		if (await old(path)) await rm(path, { recursive: true, force: true });
 	}
 }

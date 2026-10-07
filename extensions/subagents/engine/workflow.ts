@@ -2,7 +2,7 @@
 // StructuredOutput tool and hook a schema call installs.
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { rename, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { Message, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
@@ -191,8 +191,7 @@ export async function runWorkflowTask(D: D, docs: WorkflowDocs, input: WorkflowI
 	progress.status = status;
 	pruneProgress();
 	const durationMs = Date.now() - input.startedAt;
-	const outputFile = join(input.dir, `${input.runId}.json`);
-	await writeFile(outputFile, runRecord({ progress, script: input.source, scriptPath: input.scriptPath, args: input.args, result, error, defaultModel: input.lead && `${input.lead.provider}/${input.lead.id}`, durationMs })).catch(() => {});
+	const outputFile = await writeRunRecord(input, runRecord({ progress, script: input.source, scriptPath: input.scriptPath, args: input.args, result, error, defaultModel: input.lead && `${input.lead.provider}/${input.lead.id}`, durationMs }));
 	const n: TaskNotification = {
 		notificationId: `${input.taskId}:${String(runtime.taskId)}`,
 		taskId: input.taskId,
@@ -218,12 +217,19 @@ export async function runWorkflowTask(D: D, docs: WorkflowDocs, input: WorkflowI
 	await tasks.notify(n);
 }
 
+/** `<runId>.json` through a temp file, so whoever sees it reads it whole. */
+async function writeRunRecord(input: WorkflowInput, record: string): Promise<string> {
+	const file = join(input.dir, `${input.runId}.json`);
+	await writeFile(`${file}.tmp`, record).then(() => rename(`${file}.tmp`, file)).catch(() => {});
+	return file;
+}
+
 /** TaskStop: the owned agents are aborted first; the run record says `killed`, and no notification follows, as in CC. */
 export async function abortWorkflowTask(docs: WorkflowDocs, input: WorkflowInput, runtime: WorkflowRuntime, context: Ctx): Promise<void> {
 	const progress = trackProgress(input);
 	progress.status = "killed";
 	pruneProgress();
-	await writeFile(join(input.dir, `${input.runId}.json`), runRecord({ progress, script: input.source, scriptPath: input.scriptPath, args: input.args, result: undefined, durationMs: Date.now() - input.startedAt })).catch(() => {});
+	await writeRunRecord(input, runRecord({ progress, script: input.source, scriptPath: input.scriptPath, args: input.args, result: undefined, durationMs: Date.now() - input.startedAt }));
 	await runtime.commit(async (tx) => {
 		const record = workflowRecords(await tx.doc(docs.Workflows, runtime.conversationId))[input.taskId];
 		if (record) record.status = "killed";

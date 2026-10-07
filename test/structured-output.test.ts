@@ -1,10 +1,16 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { createFauxCore, fauxAssistantMessage, fauxToolCall, type FauxResponseStep } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { checkSchema, closeAll, ensureEngine, launchWorkflow } from "../extensions/subagents/engine/index.ts";
+
+const compiles = vi.hoisted(() => ({ count: 0 }));
+vi.mock("typebox/compile", async (importOriginal) => {
+	const original = await importOriginal<typeof import("typebox/compile")>();
+	return { ...original, Compile: (...args: Parameters<typeof original.Compile>) => { compiles.count++; return original.Compile(...args); } };
+});
 
 process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "pi-kit-so-"));
 const cwd = mkdtempSync(join(tmpdir(), "pi-kit-so-cwd-"));
@@ -28,8 +34,7 @@ async function run(responses: FauxResponseStep[]): Promise<{ status: string; res
 	const source = `export const meta = { name: "so", description: "d" };\nreturn await agent("p", { schema: ${JSON.stringify(schema)} });`;
 	await launchWorkflow(await ensureEngine(ctx), { taskId: `w${runs}`, runId, session: "s", toolUseId: "t", source, scriptPath: join(dir, "so.js"), cwd, dir, lead: { provider: "faux", id: "m", level: "off" }, startedAt: Date.now() }, "d");
 	const record = join(dir, `${runId}.json`);
-	await vi.waitFor(() => expect(existsSync(record)).toBe(true), { timeout: 10_000 });
-	return JSON.parse(readFileSync(record, "utf8"));
+	return vi.waitFor(() => JSON.parse(readFileSync(record, "utf8")), { timeout: 10_000 });
 }
 
 afterAll(closeAll);
@@ -40,6 +45,14 @@ describe("StructuredOutput in a workflow agent()", () => {
 		expect(() => checkSchema({ type: "array", items: {} })).toThrow(/^agent\(\{schema\}\) received an unusable JSON Schema — .*The subagent was not started/);
 		expect(() => checkSchema({ type: "object", properties: {}, required: ["n"] })).toThrow(/unusable JSON Schema — required names n,/);
 		expect(() => checkSchema({ type: "object", properties: { s: { type: "string", pattern: "(" } } })).toThrow("agent({schema}) received an invalid JSON Schema");
+	});
+
+	it("compiles each schema once per process", () => {
+		const fresh = { type: "object", properties: { once: { type: "string" } } };
+		const before = compiles.count;
+		checkSchema(fresh);
+		checkSchema(structuredClone(fresh));
+		expect(compiles.count - before).toBe(1);
 	});
 
 	it("ends the run at the first valid call and returns its validated object", async () => {
@@ -93,8 +106,7 @@ describe("a workflow agent()'s model names", () => {
 			const source = `export const meta = { name: "t", description: "d" };\nreturn await agent("p", { model: "fx" });`;
 			await launchWorkflow(await ensureEngine(ctx), { taskId: `w${runs}`, runId, session: "s", toolUseId: "t", source, scriptPath: join(dir, "t.js"), cwd, trusted, dir, startedAt: Date.now() }, "d");
 			const record = join(dir, `${runId}.json`);
-			await vi.waitFor(() => expect(existsSync(record)).toBe(true), { timeout: 10_000 });
-			return JSON.parse(readFileSync(record, "utf8")).status;
+			return (await vi.waitFor(() => JSON.parse(readFileSync(record, "utf8")), { timeout: 10_000 })).status;
 		};
 		expect([await launch(true), await launch(false)]).toEqual(["completed", "failed"]);
 	});

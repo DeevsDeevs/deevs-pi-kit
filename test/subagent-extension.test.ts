@@ -1,10 +1,12 @@
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { TObject, TSchema } from "typebox";
+import { Value } from "typebox/value";
 import subagentsExtension from "../extensions/subagents/index.ts";
-import { agentTypesList, findAgentType } from "../extensions/subagents/definitions.ts";
+import { agentTypesList, findAgentType, workerPrompt } from "../extensions/subagents/definitions.ts";
 
 describe("Subagent extension surface", () => {
 	it("registers Agent, Workflow, TaskStop, job_start, Monitor, SendMessage, ListAgents and /agents", () => {
@@ -46,6 +48,20 @@ describe("Subagent extension surface", () => {
 		expect(await start(true, true)).toEqual([]);
 	});
 
+	it("runs a project's saved workflow only when the project is trusted, and takes only a plain name", async () => {
+		process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "pi-kit-saved-"));
+		const cwd = mkdtempSync(join(tmpdir(), "pi-kit-saved-cwd-"));
+		mkdirSync(join(cwd, ".pi", "workflows"), { recursive: true });
+		writeFileSync(join(cwd, ".pi", "workflows", "mine.js"), "not a workflow");
+		let workflow: { parameters: TSchema; execute: (id: string, params: object, signal: undefined, update: undefined, ctx: object) => Promise<unknown> } | undefined;
+		subagentsExtension({ registerTool(tool: NonNullable<typeof workflow> & { name: string }) { if (tool.name === "Workflow") workflow = tool; }, registerCommand() {}, on() {} } as unknown as ExtensionAPI);
+		const run = (trusted: boolean) => workflow!.execute("t", { name: "mine" }, undefined, undefined, { cwd, isProjectTrusted: () => trusted });
+		await expect(run(false)).rejects.toThrow("No workflow named 'mine'");
+		await expect(run(true)).rejects.toThrow(/meta/);
+		const name = (workflow!.parameters as TObject).properties.name!;
+		expect(["mine", "a.b-c_1", "../x", "a/b"].map((value) => Value.Check(name, value))).toEqual([true, true, false, false]);
+	});
+
 	it("matches agent types forgivingly and lists them on a miss", () => {
 		expect(findAgentType(undefined).name).toBe("general-purpose");
 		expect(findAgentType("General_Purpose").name).toBe("general-purpose");
@@ -55,5 +71,12 @@ describe("Subagent extension surface", () => {
 		expect(findAgentType("Explore").tools).toEqual(["read", "grep", "find", "ls", "bash"]);
 		expect(() => findAgentType("nobody")).toThrow(/^Agent type 'nobody' not found\. Available agents: general-purpose, .*\breviewer\b/);
 		expect(agentTypesList()).toMatch(/\n- general-purpose: .* \(read, grep, find, ls, bash, edit, write\)\n- anti-slop: [^(]*\n/);
+	});
+
+	it("gives a worker the skill index without the lead's orchestration skills", () => {
+		process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "pi-kit-worker-"));
+		const names = [...workerPrompt(findAgentType(undefined), process.env.PI_CODING_AGENT_DIR).matchAll(/<name>(.*)<\/name>/g)].map((m) => m[1]);
+		expect(names).toContain("diagnose");
+		expect(names.filter((name) => ["workflow-authoring", "collaborators", "background-tasks", "todos", "ask-user", "chain-system"].includes(name!))).toEqual([]);
 	});
 });

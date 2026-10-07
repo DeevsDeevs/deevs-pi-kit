@@ -1,13 +1,13 @@
 import { createHash } from "node:crypto";
 import { existsSync, realpathSync, statSync } from "node:fs";
-import { appendFile, mkdir, readFile, utimes, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
 import { getAgentDir, isToolCallEventType, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { guardBashCall, guardShell, loadGuardConfig } from "../shared/guard.ts";
 import { loadKitConfig, modelContext, modelLabel, modelsTable, resolveLead, resolveModel, type ModelContext } from "../shared/models.ts";
-import { agentForegroundResult, agentLaunchedResult, jobLaunchedResult, monitorStartedResult, newAgentId, newBackgroundTaskId, newWorkflowRunId, newWorkflowTaskId, sendMessageResult, taskNotFound, taskNotRunningResult, taskStoppedResult, tasks, unknownAgentResult, workflowLaunchedResult, type RosterEntry } from "../shared/tasks.ts";
+import { agentForegroundResult, agentLaunchedResult, jobLaunchedResult, monitorStartedResult, newAgentId, newBackgroundTaskId, newWorkflowRunId, newWorkflowTaskId, recent, sendMessageResult, taskNotFound, taskNotRunningResult, taskStoppedResult, tasks, unknownAgentResult, workflowLaunchedResult, type RosterEntry } from "../shared/tasks.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
 import { finishAgentWorktree, sharesCwd } from "../shared/worktree.ts";
 import { currentMission, saveMission } from "../mission/store.ts";
@@ -56,7 +56,7 @@ const AGENT_DESCRIPTION = [
 const WorkflowSchema = Type.Object({
 	script: Type.Optional(Type.String({ description: WORKFLOW_FIELDS.script })),
 	scriptPath: Type.Optional(Type.String({ description: WORKFLOW_FIELDS.scriptPath })),
-	name: Type.Optional(Type.String({ description: WORKFLOW_FIELDS.name })),
+	name: Type.Optional(Type.String({ pattern: "^[\\w.-]+$", description: WORKFLOW_FIELDS.name })),
 	args: Type.Optional(Type.Any({ description: WORKFLOW_FIELDS.args })),
 	resumeFromRunId: Type.Optional(Type.String({ pattern: "^wf_[a-z0-9-]{6,}$", description: WORKFLOW_FIELDS.resumeFromRunId })),
 });
@@ -154,7 +154,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		promptSnippet: WORKFLOW_SNIPPET,
 		parameters: WorkflowSchema,
 		async execute(toolCallId, params: WorkflowParams, _signal, _onUpdate, ctx) {
-			const { source, scriptPath } = await workflowSource(params, ctx.cwd);
+			const { source, scriptPath } = await workflowSource(params, ctx);
 			let meta;
 			try {
 				({ meta } = parseWorkflow(source));
@@ -168,8 +168,8 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			const runId = resumed ?? newWorkflowRunId();
 			const dir = join(home, runId);
 			if (resumed && !existsSync(join(dir, "journal.jsonl"))) throw new Error(`No journal found for workflow run ${resumed} in this project; call Workflow again without resumeFromRunId.`);
-			// Fresh before the engine opens, so its prune keeps a resumed run however old.
-			if (resumed) await utimes(dir, new Date(), new Date());
+			// Running again: prune keeps a run folder until the run writes its record anew.
+			if (resumed) await rm(join(dir, `${runId}.json`), { force: true });
 			const file = scriptPath ?? join(home, "scripts", `${meta.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${runId}.js`);
 			await mkdir(dir, { recursive: true });
 			if (!scriptPath) {
@@ -292,7 +292,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		description: "List this session's background tasks, each labelled by kind (agent, workflow, job, monitor, collaborator), with its id, name, status and description.",
 		parameters: Type.Object({}),
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
-			const entries = tasks.list(ctx.sessionManager.getSessionId());
+			const entries = recent(tasks.list(ctx.sessionManager.getSessionId()));
 			return { content: [{ type: "text" as const, text: rosterLines(entries).join("\n") }], details: { count: entries.length } };
 		},
 	});
@@ -351,20 +351,20 @@ async function stopTask(ctx: ExtensionContext, id: string, by?: "user") {
 	return { entry, stopped };
 }
 
-/** `scriptPath`, then `name`, then `script`; only a scriptPath is run from its own file, the others get a persisted copy. */
-async function workflowSource(params: WorkflowParams, cwd: string): Promise<{ source: string; scriptPath?: string }> {
+/** `scriptPath`, then `name` (a trusted project's first), then `script`; only a scriptPath is run from its own file, the others get a persisted copy. */
+async function workflowSource(params: WorkflowParams, ctx: ExtensionContext): Promise<{ source: string; scriptPath?: string }> {
 	if (params.scriptPath) {
-		const scriptPath = resolve(cwd, params.scriptPath);
+		const scriptPath = resolve(ctx.cwd, params.scriptPath);
 		const source = await readFile(scriptPath, "utf8").catch(() => undefined);
 		if (source === undefined) throw new Error(`Cannot read the workflow script ${scriptPath}.`);
 		return { source, scriptPath };
 	}
 	if (params.name) {
-		for (const dir of [join(cwd, ".pi", "workflows"), join(getAgentDir(), "workflows")]) {
+		for (const dir of [...(ctx.isProjectTrusted() ? [join(ctx.cwd, ".pi", "workflows")] : []), join(getAgentDir(), "workflows")]) {
 			const source = await readFile(join(dir, `${params.name}.js`), "utf8").catch(() => undefined);
 			if (source !== undefined) return { source };
 		}
-		throw new Error(`No workflow named '${params.name}' in .pi/workflows or ~/.pi/agent/workflows.`);
+		throw new Error(`No workflow named '${params.name}' in ${ctx.isProjectTrusted() ? ".pi/workflows or ~/.pi/agent/workflows" : "~/.pi/agent/workflows; an untrusted project's .pi/workflows is not read"}.`);
 	}
 	if (params.script) return { source: params.script };
 	throw new Error("Workflow needs a script, a scriptPath or a name.");
@@ -446,7 +446,7 @@ function missionLines(cwd: string): string[] {
 
 function overview(ctx: ExtensionContext, models: ModelContext): string {
 	return [
-		...rosterLines(tasks.list(ctx.sessionManager.getSessionId())),
+		...rosterLines(recent(tasks.list(ctx.sessionManager.getSessionId()))),
 		...workflowProgress(ctx.sessionManager.getSessionId()).flatMap(workflowLines),
 		...missionLines(ctx.cwd),
 		"",

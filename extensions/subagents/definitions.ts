@@ -20,6 +20,8 @@ export interface AgentType {
 }
 
 const KIT_SKILLS = fileURLToPath(new URL("../../skills", import.meta.url));
+/** Skills for tools only the lead has; a worker's skill index leaves them out. */
+const LEAD_SKILLS = new Set(["workflow-authoring", "collaborators", "background-tasks", "todos", "ask-user", "chain-system"]);
 const NOTES = [
 	"Notes:",
 	"- Each bash call starts in the working directory again; use absolute paths.",
@@ -80,7 +82,7 @@ export function findAgentType(requested: string | undefined): AgentType {
 export function workerPrompt(type: AgentType, cwd: string, worktree?: { path: string; branch: string; repoRoot: string }, cli = false): string {
 	const agentDir = getAgentDir();
 	const context = cli ? [] : loadProjectContextFiles({ cwd, agentDir }).map((file) => `## ${file.path}\n\n${file.content}`);
-	const skills = cli ? "" : formatSkillsForPrompt(loadSkills({ cwd, agentDir, skillPaths: [KIT_SKILLS], includeDefaults: true }).skills);
+	const skills = cli ? "" : formatSkillsForPrompt(loadSkills({ cwd, agentDir, skillPaths: [KIT_SKILLS], includeDefaults: true }).skills.filter((skill) => !LEAD_SKILLS.has(skill.name)));
 	return [
 		type.prompt,
 		NOTES,

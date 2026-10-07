@@ -1,11 +1,12 @@
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { dirname, join } from "node:path";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { createFauxCore, fauxAssistantMessage, type FauxResponseStep } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { newAgentId, tasks } from "../extensions/shared/tasks.ts";
-import { closeAll, ensureEngine, launch, send } from "../extensions/subagents/engine/index.ts";
+import { closeAll, ensureEngine, launch, send, startJob } from "../extensions/subagents/engine/index.ts";
+import { SETTLED } from "../extensions/subagents/engine/storage.ts";
 
 process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "pi-kit-send-"));
 const cwd = mkdtempSync(join(tmpdir(), "pi-kit-send-cwd-"));
@@ -73,5 +74,41 @@ describe("SendMessage to an agent", () => {
 		const report = await done!;
 		expect([report.status, report.summary.startsWith('Agent "d" failed: ')]).toEqual(["failed", true]);
 		expect(tasks.find(agentId)?.status).toBe("failed");
+	});
+
+	it("closes a store settled only when nothing runs and the Outbox is empty, and reopening unsettles it", async () => {
+		const idle = { ...ctx, sessionManager: { getSessionId: () => "idle", getEntries: () => [] } } as unknown as ExtensionContext;
+		const settled = async () => existsSync(join((await ensureEngine(idle)).dir, SETTLED));
+		const dir = (await ensureEngine(idle)).dir;
+		await closeAll();
+		expect(existsSync(join(dir, SETTLED))).toBe(true);
+		expect(await settled()).toBe(false);
+		await startJob(await ensureEngine(idle), { id: "j1", command: "sleep 30", description: "d", cwd, toolUseId: "t" });
+		await closeAll();
+		expect(existsSync(join(dir, SETTLED))).toBe(false);
+	});
+
+	it("puts running tasks and the 20 finished most recently started back on the roster at reopen", async () => {
+		const many = { ...ctx, sessionManager: { getSessionId: () => "many", getEntries: () => [] } } as unknown as ExtensionContext;
+		const engine = await ensureEngine(many);
+		for (let i = 0; i < 22; i++) await startJob(engine, { id: `quick${i}`, command: "true", description: "d", cwd, toolUseId: "t" });
+		await startJob(engine, { id: "slow", command: "sleep 30", description: "d", cwd, toolUseId: "t" });
+		await vi.waitFor(() => expect(tasks.list("many").filter((task) => task.status !== "running")).toHaveLength(22), { timeout: 10_000 });
+		await closeAll();
+		for (const task of tasks.list("many")) tasks.remove(task.id);
+		await ensureEngine(many);
+		const ids = tasks.list("many").map((task) => task.id);
+		expect([ids.length, ids.includes("slow"), ids.includes("quick21")]).toEqual([21, true, true]);
+	});
+
+	it("unlocks a store whose open failed, so a later open takes it", async () => {
+		const broken = { ...ctx, sessionManager: { getSessionId: () => "broken", getEntries: () => [] } } as unknown as ExtensionContext;
+		const dir = join(dirname((await ensureEngine(ctx)).dir), "broken");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "engine.sqlite"), "not a database");
+		await expect(ensureEngine(broken)).rejects.toThrow();
+		expect(existsSync(join(dir, "engine.lock"))).toBe(false);
+		rmSync(join(dir, "engine.sqlite"));
+		expect((await ensureEngine(broken)).dir).toBe(dir);
 	});
 });
