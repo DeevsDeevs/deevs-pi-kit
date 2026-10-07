@@ -24,11 +24,6 @@ export interface AgentWorktreeInput {
 	agentDir?: string;
 }
 
-/** A running agent, by the directory it writes in: its worktree when isolated. */
-export interface RunningAgentCwd {
-	cwd: string;
-}
-
 let creating: Promise<unknown> = Promise.resolve();
 
 // ponytail: one in-process queue for every repository; per-repo queues if parallel creation ever matters.
@@ -66,8 +61,8 @@ export async function finishAgentWorktree(worktree: AgentWorktree): Promise<Agen
 	return undefined;
 }
 
-/** Whether another running writer works in, above or below `cwd`: the launch result then nudges toward worktrees. */
-export function sharesCwd(running: RunningAgentCwd[], cwd: string): boolean {
+/** Whether another running writer works in, above or below `cwd` (its worktree when isolated): the launch result then nudges toward worktrees. */
+export function sharesCwd(running: { cwd: string }[], cwd: string): boolean {
 	const overlaps = (a: string, b: string) => a === b || a.startsWith(b + sep) || b.startsWith(a + sep);
 	return running.some((agent) => overlaps(agent.cwd, cwd));
 }
