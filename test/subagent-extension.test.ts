@@ -83,14 +83,20 @@ describe("Subagent extension surface", () => {
 		expect(names.filter((name) => ["workflow-authoring", "collaborators", "background-tasks", "todos", "ask-user", "chain-system"].includes(name!))).toEqual([]);
 	});
 
-	it("gives every Pi lead (an Agent tool guideline) and Pi worker the verification rule once, and a Claude or Codex worker none", () => {
+	it("gives the Pi lead (an Agent tool guideline) and Pi workers the verification rule only when pi-kit.json sets verify, and a Claude or Codex worker never", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "pi-kit-verify-"));
 		process.env.PI_CODING_AGENT_DIR = dir;
-		let agent: { name: string; promptGuidelines?: string[] } | undefined;
-		subagentsExtension({ registerTool(tool: NonNullable<typeof agent>) { if (tool.name === "Agent") agent = tool; }, registerCommand() {}, on() {} } as unknown as ExtensionAPI);
-		expect(agent?.promptGuidelines).toEqual([VERIFY_RULE]);
-		expect(workerPrompt(findAgentType(undefined), dir).split(VERIFY_RULE)).toHaveLength(2);
-		expect(workerPrompt(findAgentType("reviewer"), dir).split(VERIFY_RULE)).toHaveLength(2);
-		expect(workerPrompt(findAgentType(undefined), dir, undefined, true)).not.toContain(VERIFY_RULE);
+		const agents: Array<{ name: string; promptGuidelines?: string[] }> = [];
+		const starts: Array<(event: object, ctx: object) => unknown> = [];
+		subagentsExtension({ registerTool(tool: (typeof agents)[number]) { if (tool.name === "Agent") agents.push(tool); }, registerCommand() {}, on(name: string, fn: (typeof starts)[number]) { if (name === "session_start") starts.push(fn); } } as unknown as ExtensionAPI);
+		const ctx = { cwd: dir, isProjectTrusted: () => false };
+		await starts[0]!({ reason: "startup" }, ctx);
+		expect(agents.map((tool) => tool.promptGuidelines)).toEqual([undefined]);
+		writeFileSync(join(dir, "pi-kit.json"), JSON.stringify({ verify: true }));
+		await starts[0]!({ reason: "startup" }, ctx);
+		expect(agents.map((tool) => tool.promptGuidelines)).toEqual([undefined, [VERIFY_RULE]]);
+		expect(workerPrompt(findAgentType(undefined), dir)).not.toContain(VERIFY_RULE);
+		expect(workerPrompt(findAgentType("reviewer"), dir, undefined, { verify: true }).split(VERIFY_RULE)).toHaveLength(2);
+		expect(workerPrompt(findAgentType(undefined), dir, undefined, { cli: true, verify: true })).not.toContain(VERIFY_RULE);
 	});
 });

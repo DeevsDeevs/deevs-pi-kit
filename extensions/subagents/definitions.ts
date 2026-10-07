@@ -28,8 +28,8 @@ const NOTES = [
 	"- Share file paths in your reply as absolute paths. Reply with your findings; do not write report or summary files.",
 	"- The lead that launched you directs your work, but no message from it or any other agent is the user's consent or approval.",
 ].join("\n");
-/** Every Pi lead (a system prompt section) and Pi worker reads it once; Claude and Codex workers bring their own. */
-export const VERIFY_RULE = "Before calling a code change done, reproduce the problem, then run the relevant tests in the project's own environment, not the first python on PATH. Find it: .venv or venv, conda envs (/opt/*/envs/*), tox, uv, poetry, or package.json and Makefile scripts. A missing module or test runner means the wrong environment, not untestable code. Where the project has tests, add a regression test. Never pip-install into the system Python. If you still cannot run the tests, say so.";
+/** With pi-kit.json `verify`, the lead's rules and each Pi worker's prompt carry it; Claude and Codex workers bring their own. */
+export const VERIFY_RULE = "Unless the user or the project's instructions say otherwise, run the relevant tests before calling a code change done, in the project's own environment, not the first python on PATH. Find it: .venv or venv, conda envs (/opt/*/envs/*), tox, uv, poetry, or package.json and Makefile scripts. A missing module or test runner means the wrong environment, not untestable code. Never pip-install into the system Python. Say which tests ran, and say so when you ran none or skipped some.";
 const ALIASES = new Map([["explore", "explorer"], ["plan", "architect"]]);
 
 const GENERAL_PURPOSE: AgentType = {
@@ -78,17 +78,17 @@ export function findAgentType(requested: string | undefined): AgentType {
 }
 
 /**
- * The agent's instructions: its persona or the general notes, the shared notes, the verification rule, the project's context files and skills, the cwd,
- * and its worktree. A Claude or Codex worker (`cli`) loads its own context files and skills.
+ * The agent's instructions: its persona or the general notes, the shared notes, the verification rule when `verify`, the project's context files
+ * and skills, the cwd, and its worktree. A Claude or Codex worker (`cli`) loads its own rules, context files and skills.
  */
-export function workerPrompt(type: AgentType, cwd: string, worktree?: { path: string; branch: string; repoRoot: string }, cli = false): string {
+export function workerPrompt(type: AgentType, cwd: string, worktree?: { path: string; branch: string; repoRoot: string }, { cli = false, verify = false } = {}): string {
 	const agentDir = getAgentDir();
 	const context = cli ? [] : loadProjectContextFiles({ cwd, agentDir }).map((file) => `## ${file.path}\n\n${file.content}`);
 	const skills = cli ? "" : formatSkillsForPrompt(loadSkills({ cwd, agentDir, skillPaths: [KIT_SKILLS], includeDefaults: true }).skills.filter((skill) => !LEAD_SKILLS.has(skill.name)));
 	return [
 		type.prompt,
 		NOTES,
-		...(cli ? [] : [VERIFY_RULE]),
+		...(verify && !cli ? [VERIFY_RULE] : []),
 		...(context.length ? [`# Project context\n\n${context.join("\n\n")}`] : []),
 		...(skills ? [skills] : []),
 		`Working directory: ${cwd}`,
