@@ -7,6 +7,7 @@ import { requests } from "../look.mjs";
 // The kit registers exactly two commands; it loads from settings.json `packages`, as installed.
 const EXPECTED = ["agents", "chains"];
 const UI_ONLY = ["ask_user", "collaborator_start", "collaborator_workspace"];
+const HEADLESS = "Non-interactive run: nobody will reply before Pi exits.";
 
 export default {
 	name: "modes",
@@ -30,14 +31,14 @@ export default {
 		assert.equal(json.status, 0, json.stderr);
 		assert.ok(json.events.some((e) => e.type === "extension_output"), "json mode emitted no extension_output");
 
-		// Nobody will reply in print or json mode: the tools that need a person or Herdr's UI are not offered.
+		// Nobody will reply in print or json mode: the tools that need a person or Herdr's UI are not offered, and the lead is told so.
+		t.marks.push(HEADLESS);
 		for (const mode of [["--print"], ["--mode", "json", "--print"]]) {
 			const run = await pi(t, [...mode, "--no-session", "--model", "polygon/puppet", script({ agent: "lead", steps: [{ id: "x1", text: "ok" }] })]);
 			assert.equal(run.status, 0, run.stderr);
 		}
-		const offered = requests(t).map((r) => r.tools);
-		assert.equal(offered.length, 2);
-		for (const tools of offered) {
+		assert.deepEqual(requests(t).map((r) => r.marks), [[HEADLESS], [HEADLESS]], "a headless lead was not told that nobody will reply");
+		for (const { tools } of requests(t)) {
 			assert.ok(tools.includes("Agent"), "the kit's tools were not offered");
 			assert.deepEqual(tools.filter((name) => UI_ONLY.includes(name)), [], "a UI-only tool was offered in print or json mode");
 		}

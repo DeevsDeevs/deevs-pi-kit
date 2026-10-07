@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import askUserExtension from "../extensions/ask-user/index.ts";
+import askUserExtension, { HEADLESS_GUIDELINE } from "../extensions/ask-user/index.ts";
 
 function askUserTool(): { execute: (...args: unknown[]) => Promise<{ details: unknown }> } {
 	let tool: ReturnType<typeof askUserTool> | undefined;
@@ -95,4 +95,15 @@ describe("ask_user mode behavior", () => {
 		expect((result.details as { cancelled: boolean }).cancelled).toBe(true);
 		expect(selections).toBe(1);
 	});
+});
+
+it("tells a print or json mode lead to apply its proposed default instead of asking", () => {
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();
+	askUserExtension({ registerTool() {}, on(name: string, handler: (event: unknown, ctx: unknown) => void) { handlers.set(name, handler); } } as unknown as ExtensionAPI);
+	const guidelines = (mode: string) => {
+		const event = { systemPromptOptions: { promptGuidelines: [] as string[] } };
+		handlers.get("before_agent_start")!(event, { mode });
+		return event.systemPromptOptions.promptGuidelines;
+	};
+	expect([guidelines("print"), guidelines("json"), guidelines("rpc"), guidelines("tui")]).toEqual([[HEADLESS_GUIDELINE], [HEADLESS_GUIDELINE], [], []]);
 });
