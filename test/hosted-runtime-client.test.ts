@@ -8,7 +8,7 @@ import { HostedRuntimeClient, HostedRuntimeClientError } from "../extensions/run
 import { prepareCollaboratorSession } from "../extensions/runtime/collaborator-launch.ts";
 import { HostedRuntimeIntegration } from "../extensions/runtime/hosted-integration.ts";
 import { encodeMail } from "../extensions/runtime/mail-body.ts";
-import { mailContent } from "../extensions/runtime/messaging-client.ts";
+import { mailContent, MessagingClient } from "../extensions/runtime/messaging-client.ts";
 import { startRuntimeService } from "../extensions/runtime/service-launch.ts";
 import { COLLABORATOR_ENV, HOSTED_SESSION_ENTRY } from "../extensions/runtime/session-record.ts";
 import { RUNTIME_BUILD } from "../extensions/runtime/service/build.ts";
@@ -202,6 +202,15 @@ describe("hosted runtime client vertical", () => {
 		} finally {
 			vi.unstubAllEnvs();
 		}
+	});
+
+	it("sends a Runtime notice only to an idle session, as a hidden collaborator-notice", () => {
+		const sendMessage = vi.fn();
+		const messaging = new MessagingClient({ isActive: true, pi: { sendMessage } } as never);
+		const idle = { hasUI: true, mode: "rpc", isIdle: () => true, hasPendingMessages: () => false };
+		expect(messaging.deliverNotice({ ...idle, isIdle: () => false } as never, "blocked")).toBe(false);
+		expect(messaging.deliverNotice(idle as never, "blocked")).toBe(true);
+		expect(sendMessage.mock.calls).toEqual([[{ customType: "collaborator-notice", content: "blocked", display: false }, { triggerTurn: true, deliverAs: "followUp" }]]);
 	});
 
 	it("neutralizes envelope markup a collaborator puts in its mail", () => {
