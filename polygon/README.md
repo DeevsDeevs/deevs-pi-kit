@@ -23,7 +23,7 @@ One container runs per polygon run, with `--network=none` (loopback only) unless
 
 ## The puppet
 
-One HTTP server per scenario: `/v1/chat/completions` for Pi's `polygon/puppet` provider (`models.json`), `/v1/messages` for Claude (`ANTHROPIC_BASE_URL`) and Pi's built-in `anthropic` (its `baseUrl` repointed), `/v1/responses` for Codex (a `model_providers` entry), and `/codex/responses` for Pi's built-in `openai-codex` (its `baseUrl` repointed in `models.json`, a fake ChatGPT OAuth token in `auth.json`, the SSE transport). The first user message `POLYGON {json}` is the script:
+One HTTP server per scenario: `/v1/chat/completions` for Pi's `polygon/puppet` provider (`models.json`), `/v1/messages` for Claude (`ANTHROPIC_BASE_URL`) and Pi's built-in `anthropic` (its `baseUrl` repointed), `/v1/responses` for Codex (a `model_providers` entry), and `/codex/responses` for Pi's built-in `openai-codex` (its `baseUrl` repointed in `models.json`, a fake ChatGPT OAuth token in `auth.json`; the lead on the SSE transport `settings.json` sets, kit agents on the WebSocket transport, logged as `ws:/codex/responses`). The first user message `POLYGON {json}` is the script:
 
 ```json
 { "agent": "lead", "steps": [

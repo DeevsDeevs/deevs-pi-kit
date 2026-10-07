@@ -1,6 +1,7 @@
 // Scripted model over HTTP. The first user message `POLYGON {json}` is the script; the next step is derived
 // from the transcript, never from server state, so kill -9, resume, CLI children and in-process agents all work.
 // A string arg "$/re/" is replaced by the last match of re in the transcript (ids the script cannot know upfront).
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { appendFileSync } from "node:fs";
 import { zstdDecompressSync } from "node:zlib";
@@ -106,6 +107,7 @@ export function startPuppet(logFile, marks = [], scripts = {}, { live = false, b
 			chat(res, request, step);
 		});
 	});
+	if (!live) server.on("upgrade", (req, socket) => codexWebSocket(req, socket, log));
 	return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve({ server, port: server.address().port })));
 }
 
@@ -158,11 +160,54 @@ function responseMessages(request) {
 }
 
 function responses(res, request, log, url) {
+	res.writeHead(200, { "content-type": "text/event-stream" });
+	respond(request, log, url, (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`));
+	res.end();
+}
+
+/**
+ * Pi's openai-codex WebSocket transport, which a kit agent uses since settings.json's `transport` reaches only the lead: one
+ * `response.create` per text frame, its events back as text frames; a `previous_response_id` continues the connection's transcript.
+ */
+function codexWebSocket(req, socket, log) {
+	const accept = createHash("sha1").update(`${req.headers["sec-websocket-key"]}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
+	socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+	const frame = (op, payload) => {
+		const n = payload.length;
+		const head = n < 126 ? [0x80 | op, n] : n < 65536 ? [0x80 | op, 126, n >> 8, n & 255] : [0x80 | op, 127, 0, 0, 0, 0, ...[24, 16, 8, 0].map((s) => (n >>> s) & 255)];
+		socket.write(Buffer.concat([Buffer.from(head), payload]));
+	};
+	let buf = Buffer.alloc(0);
+	let history = [];
+	socket.on("error", () => {});
+	// The teardown's server.close() waits for this socket, which closeAllConnections() does not reach.
+	socket.on("end", () => socket.end());
+	socket.on("data", (d) => {
+		for (buf = Buffer.concat([buf, d]); buf.length >= 2;) {
+			const op = buf[0] & 15;
+			let len = buf[1] & 127, at = 2;
+			if (len === 126) [len, at] = buf.length < 4 ? [Infinity, 0] : [buf.readUInt16BE(2), 4];
+			else if (len === 127) [len, at] = buf.length < 10 ? [Infinity, 0] : [Number(buf.readBigUInt64BE(2)), 10];
+			const mask = buf[1] & 128 ? buf.subarray(at, at + 4) : undefined;
+			if (mask) at += 4;
+			if (buf.length < at + len) return;
+			const payload = Buffer.from(buf.subarray(at, at + len)).map((byte, i) => (mask ? byte ^ mask[i & 3] : byte));
+			buf = buf.subarray(at + len);
+			if (op === 8) return socket.end(Buffer.from([0x88, 0]));
+			if (op === 9) frame(10, payload);
+			if (op !== 1) continue;
+			const { type: _, previous_response_id: continued, ...request } = JSON.parse(payload.toString());
+			if (continued) request.input = [...history, ...request.input];
+			history = [...request.input, respond(request, log, `ws:${req.url}`, (type, data) => frame(1, Buffer.from(JSON.stringify({ type, ...data }))))];
+		}
+	});
+}
+
+/** One Responses answer as events; returns its output item. */
+function respond(request, log, url, ev) {
 	const messages = responseMessages(request);
 	const step = autoSchema(nextStep(messages), request);
 	log("responses", url, request, step, messages);
-	res.writeHead(200, { "content-type": "text/event-stream" });
-	const ev = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
 	const item = step.tool
 		? { type: "function_call", id: `fc_${step.id}`, call_id: step.id, name: step.tool, arguments: JSON.stringify(step.args), status: "completed" }
 		: { type: "message", id: "msg_polygon", role: "assistant", status: "completed", content: [{ type: "output_text", text: reply(step), annotations: [] }] };
@@ -171,7 +216,7 @@ function responses(res, request, log, url) {
 	if (!step.tool) ev("response.output_text.delta", { item_id: item.id, output_index: 0, content_index: 0, delta: item.content[0].text });
 	ev("response.output_item.done", { output_index: 0, item });
 	ev("response.completed", { response: { id: "resp_polygon", object: "response", status: "completed", model: request.model, output: [item], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2, input_tokens_details: { cached_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } } } });
-	res.end();
+	return item;
 }
 
 const HOP = new Set(["host", "connection", "keep-alive", "content-length", "transfer-encoding", "accept-encoding"]);
