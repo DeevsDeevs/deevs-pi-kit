@@ -4,7 +4,6 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { access, mkdir, readFile, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import type { Api, Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
@@ -14,11 +13,11 @@ import { Type, type TSchema } from "typebox";
 import { Compile } from "typebox/compile";
 import { Value } from "typebox/value";
 import { guardBashCall } from "../../shared/guard.ts";
-import { loadKitConfig, readCodexCatalog, resolveModel, type ModelContext } from "../../shared/models.ts";
+import { LEVELS, modelContext, resolveModel, type ModelContext } from "../../shared/models.ts";
 import { trySignalGroup } from "../../shared/process-group.ts";
 import { agentSummary, newAgentId, sessionAcks, tasks, workflowDiagnostics, workflowRecovery, workflowSummary, type TaskNotification, type TaskStatus } from "../../shared/tasks.ts";
 import { addWorktree, agentWorktreeAt, createAgentWorktree, finishAgentWorktree, git, gitTopLevel, type AgentWorktree } from "../../shared/worktree.ts";
-import { LEVELS, PI_TOOLS, workerPrompt, workflowAgentType, type PiToolName } from "../definitions.ts";
+import { PI_TOOLS, workerPrompt, workflowAgentType, type PiToolName } from "../definitions.ts";
 import { parseWorkflow } from "../workflow/meta.ts";
 import { driveWorkflow, framePrompt, newProgress, runRecord, usage, type AgentRunner, type CallOutcome, type Progress } from "../workflow/run.ts";
 import type { AgentOptions, JsonValue } from "../workflow/sandbox.ts";
@@ -1107,7 +1106,7 @@ function callRunner(D: D, docs: WorkflowDocs, engine: Engine, input: WorkflowInp
 	let creating = Promise.resolve();
 	const create = async (key: string, options: AgentOptions): Promise<CallRecord> => {
 		const type = workflowAgentType(options.agentType);
-		const resolved = resolveModel(options.model ?? type.model, await modelContext(input), LEVELS.find((level) => level === options.effort) ?? type.effort);
+		const resolved = resolveModel(options.model ?? type.model, await workflowModels(input), LEVELS.find((level) => level === options.effort) ?? type.effort);
 		const agentId = newAgentId();
 		const requested = resolve(input.cwd, options.cwd ?? ".");
 		const writer = type.tools.includes("edit") || type.tools.includes("write");
@@ -1209,15 +1208,10 @@ function callRunner(D: D, docs: WorkflowDocs, engine: Engine, input: WorkflowInp
 	};
 }
 
-async function modelContext(input: WorkflowInput): Promise<ModelContext> {
+async function workflowModels(input: WorkflowInput): Promise<ModelContext> {
 	const registry = host.models!;
 	const model = input.lead && registry.find(input.lead.provider, input.lead.id);
-	return {
-		config: await loadKitConfig({ cwd: input.cwd, isProjectTrusted: () => input.trusted === true }),
-		registry,
-		lead: model && input.lead ? { model, level: input.lead.level } : undefined,
-		codex: readCodexCatalog(process.env.CODEX_HOME || join(homedir(), ".codex")),
-	};
+	return modelContext({ cwd: input.cwd, isProjectTrusted: () => input.trusted === true, modelRegistry: registry }, model && input.lead ? { model, level: input.lead.level } : undefined);
 }
 // SAFETY: the kit writes Background only through json() of a BackgroundRecord.
 // oxlint-disable-next-line anti-slop/no-chained-type-assertions

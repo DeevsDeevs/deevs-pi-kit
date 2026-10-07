@@ -361,15 +361,7 @@ export function taskNotRunningResult(id: string, status: TaskStatus): string {
 	return `Task ${id} is not running (status: ${status})`;
 }
 
-export interface WorkflowLaunch {
-	taskId: string;
-	summary: string;
-	transcriptDir: string;
-	scriptPath: string;
-	runId: string;
-}
-
-export function workflowLaunchedResult(launch: WorkflowLaunch): string {
+export function workflowLaunchedResult(launch: { taskId: string; summary: string; transcriptDir: string; scriptPath: string; runId: string }): string {
 	return [
 		`Workflow launched in background. Task ID: ${launch.taskId}`,
 		`Summary: ${launch.summary}`,

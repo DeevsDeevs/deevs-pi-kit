@@ -1,8 +1,6 @@
 import { realpathSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import type { ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent";
-import { loadKitConfig, readCodexCatalog, type ModelContext } from "../shared/models.ts";
+import { modelContext } from "../shared/models.ts";
 import { HostedRuntimeClient, HostedRuntimeClientError } from "./client.ts";
 import { CollaboratorLauncher, standingDown, type CollaboratorStart } from "./collaborator-launch.ts";
 import {
@@ -165,12 +163,7 @@ export class CollaboratorService {
 		const identity = this.session.store.identity;
 		const protocol = identity?.protocol ?? DEFAULT_PROTOCOL;
 		const callerParticipantId = identity?.participantId ?? LEAD;
-		const models: ModelContext = {
-			config: await loadKitConfig(ctx),
-			registry: ctx.modelRegistry,
-			lead: ctx.model ? { model: ctx.model, level: this.session.pi.getThinkingLevel() } : undefined,
-			codex: readCodexCatalog(process.env.CODEX_HOME ?? join(homedir(), ".codex")),
-		};
+		const models = await modelContext(ctx, ctx.model && { model: ctx.model, level: this.session.pi.getThinkingLevel() });
 		const candidates = requested.map((participant) => resolveCollaboratorCandidate(participant, models));
 		const registration = await this.session.requireRegistration(ctx);
 		const participants = await this.session.listParticipants(registration);

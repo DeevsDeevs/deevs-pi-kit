@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, Model, ThinkingLevelMap } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
-import { KIT_DEFAULTS, loadKitConfig, modelLabel, modelsTable, newest, readCodexCatalog, resolveLead, resolveModel, type KitConfig, type ModelCatalog, type ModelContext } from "../extensions/shared/models.ts";
+import { KIT_DEFAULTS, loadKitConfig, modelContext, modelLabel, modelsTable, newest, readCodexCatalog, resolveLead, resolveModel, type KitConfig, type ModelCatalog, type ModelContext } from "../extensions/shared/models.ts";
 
 const ALL_LEVELS: ThinkingLevelMap = { xhigh: "xhigh", max: "max" };
 
@@ -274,6 +274,20 @@ describe("loadKitConfig", () => {
 		expect(warn).toHaveBeenCalledWith(expect.stringContaining(`${join(cwd, ".pi", "pi-kit.json")}: /models/opus must be string`));
 		expect(warn).toHaveBeenCalledWith(expect.stringContaining(join(agentDir, "pi-kit.json")));
 		warn.mockRestore();
+	});
+});
+
+describe("modelContext", () => {
+	it("reads Codex's catalog from ~/.codex when CODEX_HOME is unset or empty", async () => {
+		const home = mkdtempSync(join(tmpdir(), "pi-kit-home-"));
+		mkdirSync(join(home, ".codex"));
+		writeFileSync(join(home, ".codex", "config.toml"), 'model = "gpt-6.1-sol"\n');
+		vi.stubEnv("HOME", home);
+		vi.stubEnv("PI_CODING_AGENT_DIR", join(home, "agent"));
+		vi.stubEnv("CODEX_HOME", "");
+		const models = await modelContext({ cwd: home, isProjectTrusted: () => false, modelRegistry: registry([]) });
+		expect([models.codex?.model, models.lead]).toEqual(["gpt-6.1-sol", undefined]);
+		vi.unstubAllEnvs();
 	});
 });
 

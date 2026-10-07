@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { clampThinkingLevel, type Api, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
@@ -39,14 +40,16 @@ export const KIT_DEFAULTS = {
 	lead: "sol",
 } satisfies KitConfig;
 
-const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ModelThinkingLevel[];
+export const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ModelThinkingLevel[];
 const DATED = /-\d{8}$/;
 const CodexCache = Type.Object({ models: Type.Array(Type.Object({ slug: Type.String() })) });
 
-/**
- * A trusted project over global over kit defaults, per name. Callers load it again for every resolution, so an edit applies to the next call.
- * An untrusted project's names are ignored: they could point every Agent at a `bypassPermissions` Claude worker.
- */
+/** What a resolution takes, built fresh for each one so an edit to pi-kit.json or Codex's catalog applies to the next call. */
+export async function modelContext(ctx: Trust & { modelRegistry: ModelCatalog }, lead?: ModelContext["lead"]): Promise<ModelContext> {
+	return { config: await loadKitConfig(ctx), registry: ctx.modelRegistry, lead, codex: readCodexCatalog(process.env.CODEX_HOME || join(homedir(), ".codex")) };
+}
+
+/** A trusted project over global over kit defaults, per name; an untrusted project could point every Agent at a `bypassPermissions` Claude worker. */
 export async function loadKitConfig(ctx: Trust, dir?: string): Promise<KitConfig> {
 	const leads = trustedKitValues("lead", ctx, dir);
 	return {
