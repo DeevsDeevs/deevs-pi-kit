@@ -23,10 +23,13 @@ export default {
 			{ id: "s7", tool: "chain", args: { action: "list" } },
 			{ id: "s7b", tool: "chain", args: { action: "context", chain: "polygon", mode: "full" } },
 			{ id: "s8", text: "done" },
+			{ id: "s9", text: "still done" },
 		] });
 		await lead.until((e) => e.type === "agent_settled", 30_000, "the first turn to settle");
 		await lead.prompt("continue");
 		await lead.until((_, events) => settled(events) >= 2, 30_000, "the second turn to settle");
+		await lead.prompt("continue");
+		await lead.until((_, events) => settled(events) >= 3, 30_000, "the third turn to settle");
 
 		const calls = toolCalls(lead.events);
 		assert.deepEqual(calls.map((c) => [c.name, c.isError]), [false, false, false, false, false, false, true].map((isError) => ["chain", isError]));
@@ -39,7 +42,7 @@ export default {
 		for (const link of [main.link, side.link]) assert.ok(existsSync(join(t.repo, ".chains", "polygon", link.filename)), `${link.filename} missing on disk`);
 
 		const leadRequests = requests(t).filter((r) => r.agent === "lead");
-		assert.deepEqual(leadRequests.map((r) => r.step), ["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s7b", "s8"]);
-		assert.deepEqual(leadRequests.map((r) => r.marks.includes(REMINDER)), [false, false, false, false, false, false, true, true, true], "the reminder reaches exactly the turn after 85%");
+		assert.deepEqual(leadRequests.map((r) => r.step), ["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s7b", "s8", "s9"]);
+		assert.deepEqual(leadRequests.map((r) => r.marks.includes(REMINDER)), [false, false, false, false, false, false, true, true, true, false], "the reminder reaches exactly one turn, the one after 85%, and no later one");
 	},
 };

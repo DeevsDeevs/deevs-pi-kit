@@ -16,10 +16,10 @@ Saving, loading, forking and searching go through the lead's `chain` tool; ask i
 
 ## Checkpoint reminder
 
-Pi session entries track the active chain and branch, `saved` or `checkpoint due`, the due reasons and the latest link, and are restored on resume and tree navigation.
+Pi session entries track the active chain and branch, `saved` or `checkpoint due`, whether the reminder was shown and the latest link, and are restored on resume and tree navigation.
 
-- At 80% context the checkpoint becomes due and one reminder to save a link joins the system prompt as the `chain_checkpoint` section. No tool is blocked and Pi's compaction runs as configured. Dropping below 80% or compacting re-arms it.
-- A descendant advance of the repository HEAD (not a sideways checkout or reset) and a chain fork also make it due; ordinary edits and jobs do not.
+- At 80% context the checkpoint becomes due and one reminder to save a link joins the system prompt as the `chain_checkpoint` section for one turn; it is recorded as shown, so a reload does not repeat it. No tool is blocked and Pi's compaction runs as configured. Dropping below 80% or compacting re-arms it. Nothing else makes a checkpoint due.
+- After a restart, resume or compaction in a session with an active chain, the next turn is told once to load it.
 - A successful `chain` call updates the state; a save clears it.
 - The footer shows `chain!` only while a checkpoint is due.
 

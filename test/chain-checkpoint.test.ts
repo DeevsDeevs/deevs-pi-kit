@@ -42,38 +42,7 @@ describe("Chain checkpoint state", () => {
 		expect(replayed).toEqual(emptyChainCheckpoint());
 	});
 
-	it("marks a new repository commit without treating ordinary edits as milestones", async () => {
-		const branch: Array<Record<string, unknown>> = [];
-		const statuses: Array<string | undefined> = [];
-		const heads = ["before\n", "before\n", "before\n", "after\n"];
-		const pi = {
-			appendEntry(customType: string, data: unknown) { branch.push({ type: "custom", customType, data }); },
-			exec: async (_command: string, args: string[]) => args[0] === "merge-base"
-				? { code: 0, stdout: "", stderr: "" }
-				: { code: 0, stdout: heads.shift() ?? "after\n", stderr: "" },
-		} as unknown as ExtensionAPI;
-		const ctx = {
-			sessionManager: { getBranch: () => branch },
-			ui: { setStatus: (_key: string, value: string | undefined) => statuses.push(value) },
-		} as unknown as ExtensionContext;
-		const service = new ChainCheckpointService(pi);
-		service.restore(ctx);
-		service.activate("kit", "main");
-		await service.captureGitBeforeTurn("/tmp/project");
-		await service.detectGitMutation("/tmp/project");
-		expect(service.read().status).toBe("idle");
-		await service.captureGitBeforeTurn("/tmp/project");
-		await service.detectGitMutation("/tmp/project");
-
-		expect(service.read().status).toBe("due");
-		expect(service.read().dueReasons).toContain("repository HEAD advanced");
-		expect(statuses.at(-1)).toBe("chain!");
-		expect(service.reminder()).toContain("checkpoint is due");
-		service.due("milestone recorded");
-		expect(service.reminder()).toContain("save a chain link before starting further substantive work");
-	});
-
-	it("reminds once at 85 percent context through a prompt section and never blocks a tool", () => {
+	it("reminds once per 80% crossing, also across a reload, never blocks a tool, and gives a commit or fork no reminder", () => {
 		const branch: Array<Record<string, unknown>> = [];
 		const handlers = new Map<string, (...args: any[]) => unknown>();
 		let percent = 85;
@@ -87,46 +56,45 @@ describe("Chain checkpoint state", () => {
 			sessionManager: { getBranch: () => branch },
 			ui: { setStatus() {} },
 		} as unknown as ExtensionContext;
-		const service = new ChainCheckpointService(pi);
-		registerChainCheckpoint(pi, service);
-		service.activate("kit", "main");
-		expect(handlers.has("tool_call")).toBe(false);
-
-		let current: string | undefined;
-		const sent: string[] = [];
+		const load = () => {
+			const service = new ChainCheckpointService(pi);
+			registerChainCheckpoint(pi, service);
+			handlers.get("session_start")!({}, ctx);
+			return service;
+		};
 		const run = (): string | undefined => {
 			const event = { systemPrompt: "base", systemPromptOptions: { sections: {} as Record<string, string> } };
 			expect(handlers.get("before_agent_start")!(event, ctx)).toBeUndefined();
-			const section = event.systemPromptOptions.sections.chain_checkpoint;
-			if (section !== current && section !== undefined) sent.push(section);
-			current = section;
-			return section;
+			return event.systemPromptOptions.sections.chain_checkpoint;
 		};
-		run();
-		run();
-		percent = 50;
-		run();
-		percent = 85;
-		run();
-		expect(sent).toHaveLength(1);
-		expect(sent[0]).toContain("Context reached 80%");
-		expect(service.read().dueReasons).toEqual(["context usage reached 80%"]);
-
-		handlers.get("tool_execution_start")!({ toolCallId: "save", toolName: "chain", args: { action: "save", chain: "kit", branch: "main" } });
-		handlers.get("tool_execution_end")!({ toolCallId: "save", toolName: "chain", isError: false, result: { details: { link: { filename: "checkpoint.md" } } } }, ctx);
-		expect(branch.at(-1)?.data).toMatchObject({ type: "saved", chain: "kit", branch: "main", link: "checkpoint.md" });
+		const chain = (toolCallId: string, args: Record<string, string>, result: unknown = {}) => {
+			handlers.get("tool_execution_start")!({ toolCallId, toolName: "chain", args });
+			handlers.get("tool_execution_end")!({ toolCallId, toolName: "chain", isError: false, result }, ctx);
+		};
+		let service = load();
+		expect(handlers.has("tool_call")).toBe(false);
+		expect(handlers.has("turn_start")).toBe(false);
+		expect(run()).toContain("context reached 80%");
 		expect(run()).toBeUndefined();
-		expect(sent).toHaveLength(1);
+		service = load();
+		expect(run()).toBeUndefined();
+		percent = 50;
+		expect(run()).toBeUndefined();
+		percent = 85;
+		expect(run()).toContain("context reached 80%");
+		expect(service.read()).toMatchObject({ status: "due", reminded: true, dueReasons: ["context usage reached 80%"] });
+
+		chain("save", { action: "save", chain: "kit", branch: "main" }, { details: { link: { filename: "checkpoint.md" } } });
+		expect(branch.at(-1)?.data).toMatchObject({ type: "saved", chain: "kit", branch: "main", link: "checkpoint.md" });
+		chain("fork", { action: "fork", chain: "kit", branch: "alt" });
+		expect(service.read()).toMatchObject({ chain: "kit", branch: "alt", status: "saved" });
+		expect(run()).toBeUndefined();
 
 		percent = 50;
 		handlers.get("session_compact")!({}, ctx);
 		expect(service.read()).toMatchObject({ status: "saved", contextPressureHandled: false });
-		expect(run()).toContain("Load this Chain before rediscovery");
-
-		handlers.get("tool_execution_start")!({ toolCallId: "fork", toolName: "chain", args: { action: "fork", chain: "kit", branch: "alt" } });
-		handlers.get("tool_execution_end")!({ toolCallId: "fork", toolName: "chain", isError: false, result: {} }, ctx);
-		expect(service.read()).toMatchObject({ chain: "kit", branch: "alt", status: "due", dueCodes: ["branch_created"] });
-		expect(replayChainCheckpoint([{ type: "custom", customType: CHAIN_CHECKPOINT_ENTRY, data: { type: "due", reason: "r", code: "bogus", at: 1 } }]).dueCodes).toEqual(["other"]);
+		expect(run()).toContain("Load it before rediscovery");
+		expect(run()).toBeUndefined();
 	});
 
 	it("keeps colliding long Chain names separately visible in the dashboard", async () => {
@@ -144,21 +112,5 @@ describe("Chain checkpoint state", () => {
 		await command!.handler("", ctx);
 		expect(rendered).toContain(chains[0]!.chain);
 		expect(rendered).toContain(chains[1]!.chain);
-	});
-
-	it("does not checkpoint a sideways or backward HEAD move", async () => {
-		const branch: Array<Record<string, unknown>> = [];
-		const heads = ["before\n", "after\n"];
-		const pi = {
-			appendEntry(customType: string, data: unknown) { branch.push({ type: "custom", customType, data }); },
-			exec: async (_command: string, args: string[]) => args[0] === "merge-base"
-				? { code: 1, stdout: "", stderr: "" }
-				: { code: 0, stdout: heads.shift() ?? "after\n", stderr: "" },
-		} as unknown as ExtensionAPI;
-		const service = new ChainCheckpointService(pi);
-		service.activate("kit", "main");
-		await service.captureGitBeforeTurn("/tmp/project");
-		await service.detectGitMutation("/tmp/project");
-		expect(service.read().status).toBe("idle");
 	});
 });

@@ -5,8 +5,9 @@ A [Pi](https://github.com/earendil-works/pi) package: background agents, workflo
 ## Requirements
 
 - Pi 1.0.4 or newer and Node 22.19 or newer.
+- Linux for the cleanup after a crash: the processes a killed Pi's tasks left behind are found through `/proc`. macOS has none, so there they keep running, and a resumed Claude or Codex worker runs beside its old one.
 - Herdr, for collaborators only.
-- The Claude Code or Codex CLI, only for `claude:` or `codex:` models.
+- Claude Code 2.1.292 or Codex 0.160.1 or newer, only for `claude:` or `codex:` models and collaborators: the releases the worker fixtures were recorded on.
 
 ## Install
 
@@ -17,6 +18,14 @@ pi update git:github.com/DeevsDeevs/deevs-pi-kit         # later upgrades
 ```
 
 Run `/reload` after installing or updating. `pi config` toggles single extensions and skills.
+
+The install brings `@earendil-works/pi-durable`, the engine that keeps agents, workflows and monitors alive across `/reload` and Pi restarts. It carries its own copy of `pi-ai` with the provider SDKs (Anthropic, OpenAI, Google, AWS Bedrock) and esbuild: about 90 packages and 125 MB on disk.
+
+Upgrade notes:
+
+- An update that changes pi-durable's version needs Pi quit and restarted: `/reload` keeps the loaded engine, since a fresh copy would fail its own type checks.
+- Agents now keep their state under `~/.pi/agent/pi-kit/`. Nothing reads the old `~/.pi/agent/subagents` folder any more; delete it.
+- pi-durable migrates an older `engine.sqlite` forward when its session reopens and refuses one written by a newer pi-durable, after a downgrade; that session's agents then do not resume, and Pi says so. Running work is not finished on the old version first, so let it end, or stop it, before such an update.
 
 Chains also ships as a Claude Code and Codex plugin over the same `.chains/`, with the same 80% checkpoint reminder (needs Node 22.19+ on `PATH`):
 
@@ -38,7 +47,7 @@ Upgrade with `claude plugin marketplace update deevs-pi-kit` or `codex plugin ma
 > Start a mission: move the CLI to the new config format; done when npm test passes.
 ```
 
-Ask in chat. Collaborators need Pi running inside Herdr in a trusted project; nothing else needs setting up. Agents, workflows and jobs report once as a `<task-notification>`, a monitor once per event; a collaborator's reply arrives as a message that starts a turn. No start, stop or cleanup opens a dialog unless `autonomy` is `false`. Autonomy is on by default, and it costs tokens: the lead takes it as standing permission to run each substantive task as a Workflow, aiming for the most complete, best-verified answer, and a workflow spends the tokens of every agent it starts. The lead's prompt carries only a short reminder; the authoring reference (the `workflow-authoring` skill, about 2.2k tokens) loads when the lead writes its first script. `"autonomy": false` in `pi-kit.json` turns it off: the lead then runs a workflow only when you ask for one.
+Ask in chat. Collaborators need Pi running inside Herdr in a trusted project; nothing else needs setting up. With an OpenAI login (`openai` or `openai-codex`), a new session switches to the newest `sol`; `"lead": null` in [pi-kit.json](#pi-kitjson) keeps Pi's own model. Agents, workflows and jobs report once as a `<task-notification>`, a monitor once per event; a collaborator's reply arrives as a message that starts a turn. No start, stop or cleanup opens a dialog unless `autonomy` is `false`. Autonomy is on by default, and it costs tokens: the lead takes it as standing permission to run each substantive task as a Workflow, aiming for the most complete, best-verified answer, and a workflow spends the tokens of every agent it starts. The lead's prompt carries only a short reminder; the authoring reference (the `workflow-authoring` skill, about 2.2k tokens) loads when the lead writes its first script. `"autonomy": false` in `pi-kit.json` turns it off: the lead then runs a workflow only when you ask for one.
 
 ## What each piece does
 
@@ -70,7 +79,7 @@ The only settings file: `~/.pi/agent/pi-kit.json` for every project, `.pi/pi-kit
 ```
 
 - `models`: names for models or patterns (`*` stands for a version, the newest wins), each with an optional `:level`; `a|b` takes the first that resolves, and a trailing `:level` applies to every alternative. Built in: `sol`, `astra`, `luna` and `terra` (the newest OpenAI GPT of that name, on your ChatGPT login under `openai`, else the legacy `openai-codex`) and `opus`, `sonnet`, `haiku` and `fable` (Claude Code workers). An `openai` login through `OPENAI_API_KEY` also matches, and bills the API. A trusted project's names add to the global ones.
-- `lead`: the model a new session switches to when started without `--model` or `--provider` (`"sol:xhigh"` sets the level too); `null` turns this off. Restored sessions keep their model. An untrusted project's `models` and `lead` are ignored.
+- `lead`: the model a new session switches to when started without `--model` or `--provider` (`"sol:xhigh"` sets the level too); `null` turns this off. Unset, it is `sol` and is skipped silently without an OpenAI login; a `lead` you set warns once when it does not resolve. Restored sessions keep their model. An untrusted project's `models` and `lead` are ignored.
 - `autonomy` (default `true`): orchestration never waits on a dialog, and the lead takes it as standing permission to run workflows. `false` asks before each collaborator change and stops Mission continues. A project's value counts only once the project is trusted.
 - `guard`: in the global file, `"detached"`, `"forcePush"` or `"rmRf": false` turns a rule off; a project file can only add `block` patterns, and the patterns from both files add up (`"terraform destroy"` matches `terraform` with `destroy` among its arguments).
 - `codexFast`: sends `service_tier: "priority"` on requests made with your ChatGPT login, under `openai` or the legacy `openai-codex`; never with an API key. A project's value counts only once the project is trusted.

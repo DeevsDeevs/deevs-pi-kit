@@ -1,5 +1,5 @@
-import { fileURLToPath } from "node:url";
 import { HostedRuntimeClientError } from "./client.ts";
+import { guardHookArgs } from "../shared/guard.ts";
 import { collapsePrompt, shellQuote } from "./herdr.ts";
 import { type HostedCollaboratorDriver, type HostedCollaboratorProfile, type HostedNativeCollaboratorDriver, isWriter } from "./schemas/state.ts";
 import type { NativeMessagingConfiguration } from "./mcp/native.ts";
@@ -21,7 +21,6 @@ const PROFILE_TOOLS: ProfileToolTable = {
 	"workspace-write": WORKSPACE_WRITE_COLLABORATOR_TOOLS,
 };
 const CLAUDE_READ_ONLY_TOOLS = "Bash,Read,Glob,Grep";
-const GUARD_HOOK = fileURLToPath(new URL("../shared/guard-hook.mjs", import.meta.url));
 const MAX_LAUNCH_COMMAND_BYTES = 4000;
 const LAUNCH_TIMEOUT_MS = "30000";
 export const NATIVE_STARTUP_MESSAGE = "Acknowledge in one line and wait for input.";
@@ -111,11 +110,9 @@ function claudeCommand(input: DriverCommandInput): string[] {
 	const prompt = context ? ["--append-system-prompt", context] : [];
 	const servers = mcp ? ["--mcp-config", JSON.stringify({ mcpServers: { [mcp.serverName]: mcp.server } })] : [];
 	// Decision 15: no permission prompts, the kit guard as a PreToolUse hook on Bash; a reader's tool list has no Edit or Write.
-	const guard = `${shellQuote(mcp?.server.command ?? "node")} ${shellQuote(GUARD_HOOK)}`;
-	const settings = { skipDangerousModePermissionPrompt: true, hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: guard }] }] } };
 	const tools = isWriter(input.profile) ? [] : ["--tools", [CLAUDE_READ_ONLY_TOOLS, ...(mcp ? MESSAGING_TOOLS.map(tool => `mcp__${mcp.serverName}__${tool}`) : [])].join(",")];
 	const resume = input.resume ? ["--resume", input.resume] : [];
-	return [...resume, ...servers, "--permission-mode", "bypassPermissions", "--settings", JSON.stringify(settings), ...tools, ...model, ...prompt];
+	return [...resume, ...servers, "--permission-mode", "bypassPermissions", ...guardHookArgs("claude"), ...tools, ...model, ...prompt];
 }
 
 function codexCommand(input: DriverCommandInput): string[] {
@@ -128,11 +125,9 @@ function codexCommand(input: DriverCommandInput): string[] {
 	const startup = [...persona, ...(positional.length ? ["--", ...positional] : [])];
 	const trustedProject = ["--config", `projects={ ${JSON.stringify(input.cwd)} = { trust_level = "trusted" } }`];
 	// Decision 8: the kit guard as a PreToolUse hook; the kit vets its own hook, so its trust is bypassed for this launch.
-	const hook = `${shellQuote(mcp?.server.command ?? "node")} ${shellQuote(GUARD_HOOK)}`;
-	const guard = ["--dangerously-bypass-hook-trust", "--config", `hooks.PreToolUse=[{matcher="^Bash$",hooks=[{type="command",command=${JSON.stringify(hook)}}]}]`];
 	const sandbox = isWriter(input.profile) ? "workspace-write" : "read-only";
 	const command = input.resume ? ["resume"] : [];
-	return [...command, "--sandbox", sandbox, "--ask-for-approval", "never", ...guard, ...trustedProject, ...server, ...model, ...startup];
+	return [...command, "--sandbox", sandbox, "--ask-for-approval", "never", ...guardHookArgs("codex"), ...trustedProject, ...server, ...model, ...startup];
 }
 
 function codexServerValue(mcp: NativeMessagingConfiguration): string {

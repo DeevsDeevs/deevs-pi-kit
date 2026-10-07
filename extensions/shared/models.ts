@@ -8,7 +8,7 @@ import { Value } from "typebox/value";
 import { trustedKitValues, type Trust } from "./config.ts";
 
 export type ModelCatalog = Pick<ModelRegistry, "getAll" | "getAvailable" | "find">;
-export type KitConfig = { models: Record<string, string>; lead: string | null };
+export type KitConfig = { models: Record<string, string>; lead?: string | null };
 export type CodexCatalog = { slugs: string[]; model?: string };
 
 export interface ModelContext {
@@ -54,7 +54,7 @@ export async function loadKitConfig(ctx: Trust, dir?: string): Promise<KitConfig
 	const leads = trustedKitValues("lead", ctx, dir);
 	return {
 		models: Object.assign({}, KIT_DEFAULTS.models, ...trustedKitValues("models", ctx, dir)),
-		lead: leads.reduce<string | null>((lead, file) => (file === undefined ? lead : file), KIT_DEFAULTS.lead),
+		lead: leads.reduce<string | null | undefined>((lead, file) => (file === undefined ? lead : file), undefined),
 	};
 }
 
@@ -118,8 +118,11 @@ export function resolveModel(spec: string | undefined, ctx: ModelContext, effort
 	}
 }
 
-/** The `lead` key for a new session; `undefined` when it is `null`. The level stays Pi's setting unless the spec carries one. */
+/** The `lead` key for a new session; `undefined` when it is `null`, or unset and the default does not resolve. The level stays Pi's setting unless the spec carries one. */
 export function resolveLead(ctx: ModelContext): Extract<ResolvedModel, { harness: "pi" }> | undefined {
+	if (ctx.config.lead === undefined) {
+		try { return resolveLead({ ...ctx, config: { ...ctx.config, lead: KIT_DEFAULTS.lead } }); } catch { return undefined; }
+	}
 	if (ctx.config.lead === null) return undefined;
 	const resolved = resolveModel(ctx.config.lead, { ...ctx, lead: undefined });
 	if (resolved.harness === "pi") return resolved;

@@ -24,6 +24,7 @@ const MAX_REQUEST_CHARS = 4_000;
 const AUTHORING_HINT = "Load the `workflow-authoring` skill for the script format, fix the script, and retry.";
 const RESERVED_NAMES = new Set(["main", "user", "system"]);
 const ONLY_ON_REQUEST = "ONLY when the user asks for this limit.";
+let leadWarned = false;
 
 const AgentSchema = Type.Object({
 	description: Type.String({ description: "3-5 words naming the task, shown in its notification" }),
@@ -330,7 +331,11 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		}, 1_000);
 		widget.unref();
 		if (event.reason === "reload") await reinstall();
-		else await useLeadModel(pi, ctx).catch((error) => ctx.ui.notify(`The lead stays on Pi's model: ${error instanceof Error ? error.message : String(error)}`, "warning"));
+		else await useLeadModel(pi, ctx).catch((error) => {
+			if (leadWarned) return;
+			leadWarned = true;
+			ctx.ui.notify(`The lead stays on Pi's model: ${error instanceof Error ? error.message : String(error)}`, "warning");
+		});
 		await resumeSession(ctx).catch((error) => ctx.ui.notify(`Agents of this session did not resume: ${error instanceof Error ? error.message : String(error)}`, "error"));
 		tasks.markResumed(ctx.sessionManager.getSessionId());
 	});
