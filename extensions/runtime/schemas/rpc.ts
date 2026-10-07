@@ -42,6 +42,7 @@ export const HostedRequestSchema = Type.Object({
 }, STRICT_OBJECT);
 
 export const HelloParams = Type.Object({ minVersion: Count, maxVersion: Count }, STRICT_OBJECT);
+export const NoParams = Type.Object({}, STRICT_OBJECT);
 
 export const RegistrationAuthParams = Type.Object({ ...AUTH }, STRICT_OBJECT);
 export const ParticipantAuthParams = Type.Object({ ...AUTH, participantKey: IdText }, STRICT_OBJECT);
@@ -68,14 +69,12 @@ export const BridgeBindParams = Type.Object({
 }, STRICT_OBJECT);
 
 export const WorktreeEnsureParams = Type.Object({ ...AUTH, ...WORKTREE }, STRICT_OBJECT);
-export const WorktreeRemoveParams = Type.Object({ ...AUTH, ...WORKTREE, discardConfirmed: Type.Boolean() }, STRICT_OBJECT);
+export const WorktreeRemoveParams = Type.Object({ ...AUTH, ...WORKTREE, discardConfirmed: Type.Literal(true) }, STRICT_OBJECT);
 
 export const ParticipantAcquireParams = Type.Object({
 	...AUTH,
 	protocol: ParticipantNameText,
 	participantId: ParticipantNameText,
-	// ponytail: accepted and ignored so a not-yet-reloaded Pi lead (which still sends revive:false) keeps registering; drop next release.
-	revive: Type.Optional(Type.Boolean()),
 }, STRICT_OBJECT);
 export const ParticipantConfirmedParams = Type.Object({
 	...AUTH,

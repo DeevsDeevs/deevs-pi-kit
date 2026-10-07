@@ -23,6 +23,7 @@ import { decodeHerdr, herdrResult, HerdrLiveAgentResultSchema, HerdrTabResultSch
 import type { NativeAgentService } from "./native-agents.ts";
 import {
 	auth,
+	confirmed,
 	findParticipant,
 	parseAcquireResult,
 	parseParticipant,
@@ -103,10 +104,10 @@ export class CollaboratorService {
 	}
 
 	guardTool(toolName: string, input: ToolCallEvent["input"] | undefined, cwd: string): CollaboratorToolBlock | undefined {
-		const configured = this.session.store.launch?.profile;
-		if (!configured) return undefined;
+		const launch = this.session.store.launch;
+		if (!launch) return undefined;
 		const path = input && "path" in input ? input.path : undefined;
-		return collaboratorToolBlock(this.effectiveProfile(configured), toolName, path, cwd);
+		return collaboratorToolBlock(this.effectiveProfile(launch.profile ?? "read-only"), toolName, path, cwd);
 	}
 
 	/** A workspace-write collaborator falls back to read-only until its worktree and held identity are both proven. */
@@ -169,7 +170,7 @@ export class CollaboratorService {
 			config: await loadKitConfig(ctx.cwd, getAgentDir()),
 			registry: ctx.modelRegistry,
 			lead: ctx.model ? { model: ctx.model, level: this.session.pi.getThinkingLevel() } : undefined,
-			codex: readCodexCatalog(process.env.CODEX_HOME ?? join(homedir(), ".codex")),
+			codex: readCodexCatalog(process.env.CODEX_HOME || join(homedir(), ".codex")),
 		};
 		const candidates = requested.map((participant) => resolveCollaboratorCandidate(participant, models));
 		const registration = await this.session.requireRegistration(ctx);
@@ -370,10 +371,6 @@ export class CollaboratorService {
 
 function settled(participant: ClientParticipantStatus, status: CollaboratorManageResult["status"]): CollaboratorManageResult {
 	return { participant: participant.participantId, status };
-}
-
-function confirmed(registration: LiveClientRegistration, participant: ClientParticipantStatus) {
-	return { ...auth(registration), participantKey: participant.participantKey, expectedGeneration: participant.generation, confirmed: true };
 }
 
 /** Herdr's status and the mail counters say a reply may still come; a blocked or offline holder sends none. */

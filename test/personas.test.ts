@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findAgent, loadBuiltinAgents } from "../extensions/subagents/agents.ts";
+import { loadBuiltinAgents } from "../extensions/subagents/agents.ts";
 
 const expectedAgents = [
   "anti-slop",
@@ -20,14 +20,10 @@ describe("built-in personas", () => {
 
     expect(agents.map((agent) => agent.name)).toEqual(expectedAgents);
     expect(agents.every((agent) => agent.body.length > 0)).toBe(true);
-    expect(findAgent(agents, "tester")?.body).not.toContain("run targeted validation commands through bash");
+    expect(agents.find((agent) => agent.name === "tester")?.body).not.toContain("run targeted validation commands through bash");
   });
 
   it("keeps personas read-only: every Pi tool but edit and write", () => {
     for (const agent of loadBuiltinAgents()) expect(agent.tools).toEqual(["read", "grep", "find", "ls", "bash"]);
-  });
-
-  it("finds names case-insensitively", () => {
-    expect(findAgent(loadBuiltinAgents(), " Reviewer ")?.name).toBe("reviewer");
   });
 });

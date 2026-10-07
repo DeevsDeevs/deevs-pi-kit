@@ -73,6 +73,12 @@ export class RuntimeSession {
 		this.startHeartbeat();
 		if (!existsSync(this.client.socketPath)) return;
 		try { await this.register(ctx); } catch {}
+		// After registering, so a collaborator holds its name as soon as before; a replaced daemon is re-registered by the heartbeat.
+		try {
+			await startRuntimeService(this.pi, this.client, this.root, ctx, true);
+		} catch (error) {
+			ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
+		}
 	}
 
 	sessionTree(ctx: ExtensionContext): void {

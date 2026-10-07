@@ -1,5 +1,4 @@
 import { registerHooks } from "node:module";
-import { homedir } from "node:os";
 import { join } from "node:path";
 
 // Only standalone Node needs a private TypeBox; Pi extensions use the host's peer.
@@ -11,11 +10,12 @@ registerHooks({
 
 try {
 	const { startRuntimeServer } = await import("./server.ts");
-	const options = parseArgs(process.argv.slice(2));
+	const { agentDir } = await import("../../shared/config.ts");
+	const options = parseArgs(process.argv.slice(2), join(agentDir(), "runtime"));
 	if (options.help) {
 		process.stdout.write("Usage: node extensions/runtime/service/main.ts [--root PATH]\n");
 	} else {
-		const server = await startRuntimeServer({ root: options.root });
+		const server = await startRuntimeServer({ root: options.root, onExit: () => process.exit(0) });
 		const ready = { status: "ready", runtimeId: server.runtimeId, socket: server.socketPath };
 		process.stdout.write(`${JSON.stringify(ready)}\n`);
 		let stopping = false;
@@ -48,8 +48,8 @@ interface RuntimeArgs {
 	help: boolean;
 }
 
-function parseArgs(args: string[]): RuntimeArgs {
-	let root = join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "runtime");
+function parseArgs(args: string[], defaultRoot: string): RuntimeArgs {
+	let root = defaultRoot;
 	let help = false;
 	for (let index = 0; index < args.length; index++) {
 		const argument = args[index];

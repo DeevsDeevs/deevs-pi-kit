@@ -151,7 +151,6 @@ export type HostedRuntimeInstance = Static<typeof HostedRuntimeInstanceSchema>;
 export type HostedCollaboratorProfile = Static<typeof HostedCollaboratorProfileSchema>;
 export type HostedNativeCollaboratorDriver = Static<typeof HostedNativeCollaboratorDriverSchema>;
 export type HostedCollaboratorDriver = Static<typeof HostedCollaboratorDriverSchema>;
-export type HostedHerdrLocator = Static<typeof HostedHerdrLocatorSchema>;
 type HostedPiTarget = Static<typeof HostedPiTargetSchema>;
 export type HostedAgentTarget = Static<typeof HostedAgentTargetSchema>;
 export type HostedTarget = Static<typeof HostedTargetSchema>;
@@ -164,6 +163,11 @@ export type HostedRuntimeState = Static<typeof HostedRuntimeStateSchema>;
 
 export function isHeld(state: HostedParticipantState | undefined): boolean {
 	return state === "held";
+}
+
+/** Held by this target, at this generation when one is given: the one test of a holder's authority. */
+export function holds(participant: HostedParticipant | undefined, targetKey: string, generation?: string): boolean {
+	return isHeld(participant?.state) && participant?.holderTargetKey === targetKey && (generation === undefined || participant.generation === generation);
 }
 
 export function isVacant(state: HostedParticipantState | undefined): boolean {

@@ -61,10 +61,6 @@ export class HerdrCliHostVerifier implements HostedHostVerifier {
 		switch (target.kind) {
 			case "agent": return this.closeAgentTarget(target);
 			case "pi": return this.closeCollaboratorTab(target.piSessionFile, runtimeRoot);
-			default: {
-				const unreachable: never = target;
-				throw new RuntimeError("not_found", `Unsupported runtime target ${JSON.stringify(unreachable)}.`);
-			}
 		}
 	}
 

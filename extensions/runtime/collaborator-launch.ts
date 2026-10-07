@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -15,9 +15,10 @@ import { DRIVERS, driverLaunchArgv, type DriverSpec } from "./drivers.ts";
 import { createCollaboratorTab, throwIfAborted, waitForHerdrPaneCwd, type CollaboratorTab } from "./herdr.ts";
 import { isVacant, isWriter } from "./schemas/state.ts";
 import type { ManagedAgentPlan, NativeAgentService } from "./native-agents.ts";
-import { auth, strictObject, text, type ClientParticipantStatus, type LiveClientRegistration, type RegistrationAuth } from "./responses.ts";
+import { auth, confirmed, strictObject, text, type ClientParticipantStatus, type LiveClientRegistration, type RegistrationAuth } from "./responses.ts";
 import type { RuntimeSession } from "./runtime-session.ts";
 import type { CollaboratorLaunch, ManagedAgentSession } from "./schemas/session.ts";
+import { projectScope } from "./service/state/keys.ts";
 import { COLLABORATOR_ENV, HOSTED_SESSION_ENTRY, type HostedSessionRecord } from "./session-record.ts";
 
 /** The authority one confirmed start batch shares across its launches. */
@@ -112,7 +113,6 @@ export class CollaboratorLauncher {
 			if (launchCwd !== start.projectRoot) await waitForHerdrPaneCwd(this.pi, tab, launchCwd, start.signal);
 			this.session.requireCurrentScope(request.current);
 			const mcp = spec.bind ? await this.native.messagingConfiguration(plan, candidate.persona?.prompt) : undefined;
-			if (mcp) notifyNativePrompt(start.ctx, tab.paneId);
 			if (!spec.bind) ({ sessionFile, created } = this.collaboratorSession(start, launchCwd, candidate));
 			const input = { profile: candidate.profile, cwd: launchCwd, sessionFile, model: candidate.model, persona: candidate.persona, mcp, resume: candidate.resume };
 			const argv = driverLaunchArgv({ driver: candidate.driver, agentName: plan.agentName, paneId: tab.paneId, input });
@@ -131,24 +131,26 @@ export class CollaboratorLauncher {
 		const { start, candidate, existing, spec, plan } = request;
 		const driver = spec.bind;
 		if (!driver) return;
-		if (!candidate.profile) throw new HostedRuntimeClientError("conflict", "Native collaborator launch requires a resolved profile.");
 		await this.native.bindLaunched({
 			ctx: start.ctx,
 			registration: start.registration,
 			plan,
-			driver,
-			profile: candidate.profile,
-			protocol: start.protocol,
-			participantId: candidate.participantId,
 			projectRoot: start.projectRoot,
 			cwd: started.cwd,
 			tab: started.tab,
 			agentSession: started.agentSession,
-			callerParticipantKey: start.caller.participantKey,
-			expectedCallerGeneration: start.caller.generation,
-			expectedParticipantGeneration: existing?.generation,
-			repo: candidate.repo,
 			messagingConfigured: started.messagingConfigured,
+			bind: {
+				agentName: plan.agentName,
+				driver,
+				profile: candidate.profile,
+				protocol: start.protocol,
+				participantId: candidate.participantId,
+				callerParticipantKey: start.caller.participantKey,
+				expectedCallerGeneration: start.caller.generation,
+				expectedParticipantGeneration: existing?.generation,
+				repo: candidate.repo,
+			},
 		});
 	}
 
@@ -176,7 +178,7 @@ export class CollaboratorLauncher {
 	private collaboratorSession(start: CollaboratorStart, cwd: string, candidate: ResolvedCollaboratorCandidate): CollaboratorSession {
 		const { projectRoot, protocol } = start;
 		const directory = join(this.session.root, "collaborator-sessions");
-		const sessionFile = join(directory, `${createHash("sha256").update(projectRoot).digest("hex").slice(0, 16)}__${protocol}__${candidate.participantId}.jsonl`);
+		const sessionFile = join(directory, `${projectScope(projectRoot)}__${protocol}__${candidate.participantId}.jsonl`);
 		if (existsSync(sessionFile)) return { sessionFile, created: false };
 		const sessionId = randomUUID();
 		const timestamp = new Date().toISOString();
@@ -197,13 +199,7 @@ export class CollaboratorLauncher {
 	}
 
 	private async replaceStoodDown(existing: ClientParticipantStatus, registration: LiveClientRegistration): Promise<void> {
-		const params = {
-			...auth(registration),
-			participantKey: existing.participantKey,
-			expectedGeneration: existing.generation,
-			confirmed: true,
-		};
-		const stopped = strictObject(await this.client.call("participant.stop_confirmed", params), "Stood-down collaborator replacement");
+		const stopped = strictObject(await this.client.call("participant.stop_confirmed", confirmed(registration, existing)), "Stood-down collaborator replacement");
 		if (stopped.outcome !== "stopped" && stopped.outcome !== "already_stopped") {
 			throw new HostedRuntimeClientError("conflict", "The exact stood-down collaborator process could not be replaced safely.");
 		}
@@ -211,9 +207,8 @@ export class CollaboratorLauncher {
 }
 
 function piCollaboratorLaunch(candidate: ResolvedCollaboratorCandidate): CollaboratorLaunch {
-	const launch: CollaboratorLaunch = { driver: "pi" };
+	const launch: CollaboratorLaunch = { driver: "pi", profile: candidate.profile };
 	if (candidate.model) launch.model = candidate.model;
-	if (candidate.profile) launch.profile = candidate.profile;
 	if (candidate.persona) launch.persona = candidate.persona;
 	return launch;
 }
@@ -222,12 +217,6 @@ function piCollaboratorLaunch(candidate: ResolvedCollaboratorCandidate): Collabo
 function tabEnvironment(spec: DriverSpec, start: CollaboratorStart, candidate: ResolvedCollaboratorCandidate): string[] {
 	if (spec.bind) return [];
 	return [`${COLLABORATOR_ENV}=${start.protocol}:${candidate.participantId}`];
-}
-
-function notifyNativePrompt(ctx: ExtensionContext, paneId: string): void {
-	const prompt = `Complete any native trust or permission prompt in ${paneId}.`
-		+ " Runtime will not accept it for you; startup has a bounded timeout.";
-	ctx.ui.notify(prompt, "info");
 }
 
 export function standingDown(participant: ClientParticipantStatus | undefined): participant is ClientParticipantStatus {

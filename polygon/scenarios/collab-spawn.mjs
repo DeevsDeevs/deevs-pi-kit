@@ -56,6 +56,6 @@ export default {
 		for (const pane of start.details.results.map((r) => r.paneId)) writeFileSync(join(t.dir, `pane-${pane.replace(":", "-")}.txt`), (await exec(t, "herdr", ["pane", "read", pane, "--source", "visible"])).stdout);
 		const agents = (await cli("agent", "list")).agents;
 		assert.ok(agents.every((agent) => agent.agent_status !== "blocked"), `a tab is blocked: ${JSON.stringify(agents.map((a) => [a.name, a.agent_status]))}`);
-		assert.equal(notifications(lead.events).filter((n) => n.customType === "deevs.hosted-runtime.notice.v1").length, 0, "a blocked-tab notice reached the lead");
+		assert.equal(notifications(lead.events).filter((n) => n.customType === "collaborator-notice").length, 0, "a blocked-tab notice reached the lead");
 	},
 };

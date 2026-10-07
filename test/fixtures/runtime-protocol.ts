@@ -29,5 +29,6 @@ export function protocolContext(
 		messaging: new RuntimeMessaging(store, live, participants, `${root}/runtime.sock`),
 		bridges,
 		worktrees: new RuntimeWorktrees(root, store),
+		exit: () => {},
 	};
 }

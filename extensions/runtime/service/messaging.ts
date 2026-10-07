@@ -7,7 +7,7 @@ import {
 	type HostedParticipant,
 	type HostedRuntimeState,
 	type HostedTarget,
-	isHeld,
+	holds, isHeld,
 	isPiTarget,
 } from "../schemas/state.ts";
 import { HostedParticipantCoordinator } from "./participant.ts";
@@ -78,8 +78,7 @@ export class RuntimeMessaging {
 
 	async issue(caller: HostedCaller, participantKey: string, expectedGeneration: string): Promise<MessagingIssued> {
 		const state = this.store.read();
-		const held = (candidate: HostedParticipant) => isHeld(candidate.state) && candidate.holderTargetKey === caller.targetKey;
-		const callerParticipant = Object.values(state.participants).find(held);
+		const callerParticipant = Object.values(state.participants).find((candidate) => holds(candidate, caller.targetKey));
 		const participant = state.participants[participantKey];
 		if (!isPiTarget(state.targets[caller.targetKey]) || !callerParticipant || !participant) throw issuanceMismatch();
 		if (!issuanceScopeMatches(callerParticipant, participant, expectedGeneration)) throw issuanceMismatch();
@@ -87,12 +86,12 @@ export class RuntimeMessaging {
 		if (!holderTargetKey) throw issuanceMismatch();
 		const registration = await this.live.verify(holderTargetKey);
 		const currentCaller = this.store.read().participants[callerParticipant.participantKey];
-		if (!stillHeldBy(currentCaller, callerParticipant.generation, caller.targetKey)) {
+		if (!holds(currentCaller, caller.targetKey, callerParticipant.generation)) {
 			throw new RuntimeError("registration_stale", "Messaging controller changed during verification.");
 		}
 		const target = this.store.read().targets[registration.targetKey];
 		const currentParticipant = this.store.read().participants[participantKey];
-		if (!target || !stillHeldBy(currentParticipant, expectedGeneration, registration.targetKey)) {
+		if (!target || !holds(currentParticipant, registration.targetKey, expectedGeneration)) {
 			throw new RuntimeError("registration_stale", "Messaging recipient authority changed during issuance.");
 		}
 		const descriptorPath = messagingDescriptorPath(this.store.root, target.targetKey);
@@ -160,10 +159,6 @@ export class RuntimeMessaging {
 			switch (input.method) {
 				case "inbox": return this.inbox(grant);
 				case "send": return this.publish(registration, grant, input.operationId, this.recipientKey(grant, input.participantId), input.body);
-				default: {
-					const unsupported: never = input;
-					throw new RuntimeError("invalid_request", `Unsupported messaging method ${JSON.stringify(unsupported)}.`);
-				}
 			}
 		} finally {
 			this.inFlight--;
@@ -258,12 +253,6 @@ function issuanceScopeMatches(caller: HostedParticipant, participant: HostedPart
 		&& caller.protocol === participant.protocol
 		&& isHeld(participant.state)
 		&& participant.generation === expectedGeneration;
-}
-
-function stillHeldBy(participant: HostedParticipant | undefined, generation: string, targetKey: string): boolean {
-	if (!participant || !isHeld(participant.state)) return false;
-	return participant.generation === generation
-		&& participant.holderTargetKey === targetKey;
 }
 
 function reusableGrant(

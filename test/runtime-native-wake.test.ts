@@ -175,7 +175,10 @@ describe("native wake", () => {
 	it("does not prompt an agent Herdr no longer reports", async () => {
 		const test = setup();
 		test.host.absent = true;
+		const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
 		await test.sweeper.sweep();
+		expect(stderr).toHaveBeenCalledWith(expect.stringContaining("wake_skipped"));
+		stderr.mockRestore();
 		expect(test.host.prompts).toEqual([]);
 	});
 

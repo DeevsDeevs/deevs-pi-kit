@@ -1,8 +1,8 @@
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { CollaboratorCandidate } from "./collaborator-policy.ts";
 import { CollaboratorService, LEAD, type CollaboratorManageResult } from "./collaborators.ts";
+import { agentDir } from "../shared/config.ts";
 import { tasks } from "../shared/tasks.ts";
 import { isHeld } from "./schemas/state.ts";
 import { COLLABORATOR_GUIDANCE } from "./mcp/native.ts";
@@ -20,7 +20,7 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 	private readonly native: NativeAgentService;
 	readonly collaborators: CollaboratorService;
 
-	constructor(pi: ExtensionAPI, root = join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "runtime")) {
+	constructor(pi: ExtensionAPI, root = join(agentDir(), "runtime")) {
 		this.store = new HostedSessionStore(pi);
 		this.session = new RuntimeSession(pi, root, this.store, this);
 		this.messaging = new MessagingClient(this.session);

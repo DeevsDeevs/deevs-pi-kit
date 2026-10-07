@@ -1,6 +1,6 @@
 import { RuntimeError } from "../../errors.ts";
 import { HOSTED_MAILBOX_MAX_BODY_BYTES } from "../../schemas/common.ts";
-import { type HostedMailboxMessageEvent, type HostedParticipant, type HostedRuntimeState, isHeld } from "../../schemas/state.ts";
+import { type HostedMailboxMessageEvent, type HostedParticipant, type HostedRuntimeState, holds } from "../../schemas/state.ts";
 import type { HostedStateOperation } from "./operations.ts";
 import { mailboxDedupeKey } from "./keys.ts";
 import { MAX_ID_BYTES } from "../../schemas/common.ts";
@@ -10,7 +10,7 @@ type MailboxSendOperation = Extract<HostedStateOperation, { type: "mailbox.send"
 export function sendMailboxMessage(state: HostedRuntimeState, operation: MailboxSendOperation): HostedRuntimeState {
 	const sender = state.participants[operation.senderParticipantKey];
 	const recipient = state.participants[operation.recipientParticipantKey];
-	if (!sender || !senderHoldsIdentity(sender, operation)) {
+	if (!sender || !holds(sender, operation.senderTargetKey, operation.expectedSenderGeneration)) {
 		throw new RuntimeError("conflict", "Mailbox sender identity or generation changed before send.");
 	}
 	if (!recipient) throw new RuntimeError("conflict", "Mailbox recipient is unavailable.");
@@ -39,12 +39,6 @@ export function sendMailboxMessage(state: HostedRuntimeState, operation: Mailbox
 		events: { ...state.events, [event.eventId]: event },
 		dedupe: { ...state.dedupe, [dedupeKey]: event.eventId },
 	};
-}
-
-function senderHoldsIdentity(sender: HostedParticipant, operation: MailboxSendOperation): boolean {
-	return isHeld(sender.state)
-		&& sender.generation === operation.expectedSenderGeneration
-		&& sender.holderTargetKey === operation.senderTargetKey;
 }
 
 function participantsSharePeerScope(sender: HostedParticipant, recipient: HostedParticipant): boolean {

@@ -4,16 +4,17 @@ import { extname } from "node:path";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { HostedRuntimeClient, HostedRuntimeClientError } from "./client.ts";
+import { escapeMarkup } from "../shared/tasks.ts";
 import { decodeMail, encodeMail } from "./mail-body.ts";
-import { isJsonObject, type JsonValue } from "./schemas/json.ts";
+import { isJsonObject, type JsonObject, type JsonValue } from "./schemas/json.ts";
 import { isHeld } from "./schemas/state.ts";
-import { auth, strictObject, text, type ClientParticipantStatus, type LiveClientRegistration, type MailHint } from "./responses.ts";
+import { confirmed, strictObject, text, type ClientParticipantStatus, type LiveClientRegistration, type MailHint } from "./responses.ts";
 import type { RuntimeSession } from "./runtime-session.ts";
 import type { ManagedAgentControl, ParticipantIdentity } from "./schemas/session.ts";
 import { messagingDescriptorPath } from "./service/messaging.ts";
 
 export const COLLABORATOR_MESSAGE = "collaborator-message";
-const HOSTED_RUNTIME_NOTICE = "deevs.hosted-runtime.notice.v1";
+const COLLABORATOR_NOTICE = "collaborator-notice";
 const IMAGE_TYPES = new Map([[".png", "image/png"], [".jpg", "image/jpeg"], [".jpeg", "image/jpeg"], [".gif", "image/gif"], [".webp", "image/webp"]]);
 
 /** A send's fields; an inbox read takes none. */
@@ -56,12 +57,11 @@ export class MessagingClient {
 		const current = this.session.scope(ctx, registration);
 		this.session.requireCurrentScope(current);
 		const identity = this.session.requireParticipantIdentity();
-		const participantKey = identity.participantKey;
-		const expectedGeneration = identity.generation;
-		if (!this.holdsIdentity(registration, identity) || !participantKey || !expectedGeneration) {
+		const { participantKey, generation } = identity;
+		if (!this.holdsIdentity(registration, identity) || !participantKey || !generation) {
 			throw new HostedRuntimeClientError("conflict", "Current collaborator identity is not authoritatively held.");
 		}
-		const params = { ...auth(registration), participantKey, expectedGeneration, confirmed: true };
+		const params = confirmed(registration, { participantKey, generation });
 		const issued = strictObject(await this.session.scopedCall(current, "messaging.issue", params), "Messaging issuance");
 		if (!this.identityUnchanged(registration, identity)) {
 			throw new HostedRuntimeClientError("registration_stale", "Collaborator changed during messaging provisioning.");
@@ -80,13 +80,7 @@ export class MessagingClient {
 		if (!participant || !managedParticipantConfigured(control, participant)) {
 			throw new HostedRuntimeClientError("identity_mismatch", "Native messaging requires its exact live configured participant.");
 		}
-		const params = {
-			...auth(registration),
-			participantKey: participant.participantKey,
-			expectedGeneration: participant.generation,
-			confirmed: true,
-		};
-		const issued = strictObject(await this.session.scopedCall(current, "messaging.issue", params), "Native messaging descriptor");
+		const issued = strictObject(await this.session.scopedCall(current, "messaging.issue", confirmed(registration, participant)), "Native messaging descriptor");
 		if (issued.descriptorPath !== messagingDescriptorPath(this.session.root, control.targetKey)) {
 			throw new HostedRuntimeClientError("identity_mismatch", "Native messaging descriptor differs from its configured client.");
 		}
@@ -112,13 +106,8 @@ export class MessagingClient {
 		const inbox = await this.mail(ctx, "inbox", {});
 		const messages = isJsonObject(inbox) && Array.isArray(inbox.messages) ? inbox.messages.filter(isJsonObject) : [];
 		if (messages.length === 0) return;
-		const content: (TextContent | ImageContent)[] = [];
-		for (const message of messages) {
-			const { text: body, images } = decodeMail(String(message.body));
-			content.push({ type: "text", text: `Message from ${String(message.from)}:\n${body}` }, ...images.flatMap(imageContent));
-		}
 		const from = [...new Set(messages.map((message) => String(message.from)))];
-		this.session.pi.sendMessage({ customType: COLLABORATOR_MESSAGE, content, display: true, details: { from } }, { triggerTurn: true, deliverAs: "followUp" });
+		this.session.pi.sendMessage({ customType: COLLABORATOR_MESSAGE, content: mailContent(messages), display: true, details: { from } }, { triggerTurn: true, deliverAs: "followUp" });
 	}
 
 	/** One daemon call in this session's own mail namespace, with the credentials of its private descriptor. */
@@ -132,7 +121,7 @@ export class MessagingClient {
 	/** A one-line Runtime notice for the model, delivered only when the session is idle; true once it went out. */
 	deliverNotice(ctx: ExtensionContext, content: string): boolean {
 		if (!this.session.isActive || !deliveryReady(ctx)) return false;
-		this.session.pi.sendMessage({ customType: HOSTED_RUNTIME_NOTICE, content, display: false }, { triggerTurn: true, deliverAs: "followUp" });
+		this.session.pi.sendMessage({ customType: COLLABORATOR_NOTICE, content, display: false }, { triggerTurn: true, deliverAs: "followUp" });
 		return true;
 	}
 
@@ -163,6 +152,14 @@ function managedParticipantConfigured(control: ManagedAgentControl, participant:
 		&& participant.holderLive
 		&& participant.generation === control.holderGeneration
 		&& participant.driver === control.driver;
+}
+
+/** A peer's body is untrusted text: its envelope markup is neutralized (A.5) before it reaches the model. */
+export function mailContent(messages: JsonObject[]): (TextContent | ImageContent)[] {
+	return messages.flatMap((message) => {
+		const { text: body, images } = decodeMail(String(message.body));
+		return [{ type: "text" as const, text: `Message from ${String(message.from)}:\n${escapeMarkup(body)}` }, ...images.flatMap(imageContent)];
+	});
 }
 
 function imageContent(path: string): ImageContent[] {

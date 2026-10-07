@@ -30,7 +30,7 @@ type HerdrAgentKind = "pi" | "claude" | "codex";
 
 /** Everything one driver may need to compose its own startup argv. */
 interface DriverCommandInput {
-	profile?: HostedCollaboratorProfile;
+	profile: HostedCollaboratorProfile;
 	cwd: string;
 	sessionFile?: string;
 	model?: string;
@@ -60,9 +60,7 @@ export interface DriverSpec {
 	kind: HerdrAgentKind;
 	/** Absent when the driver registers itself from its prepared Pi session instead of a Runtime bind. */
 	bind?: HostedNativeCollaboratorDriver;
-	defaultProfile?: HostedCollaboratorProfile;
 	command(input: DriverCommandInput): string[];
-	verify(agent: StartedAgentIdentity): boolean;
 }
 
 /** One owner contract per supported driver: no open dictionary, no driver absent from the lifecycle. */
@@ -73,25 +71,9 @@ interface DriverTable {
 }
 
 export const DRIVERS: DriverTable = {
-	"pi": {
-		kind: "pi",
-		command: piCommand,
-		verify: startedAs("pi"),
-	},
-	"claude-code": {
-		kind: "claude",
-		bind: "claude-code",
-		defaultProfile: "read-only",
-		command: claudeCommand,
-		verify: startedAs("claude"),
-	},
-	"codex": {
-		kind: "codex",
-		bind: "codex",
-		defaultProfile: "read-only",
-		command: codexCommand,
-		verify: startedAs("codex"),
-	},
+	"pi": { kind: "pi", command: piCommand },
+	"claude-code": { kind: "claude", bind: "claude-code", command: claudeCommand },
+	"codex": { kind: "codex", bind: "codex", command: codexCommand },
 };
 
 /** The one launch gate: the exact `herdr agent start` argv is bounded and shell-safe before Herdr hands it to a shell. */
@@ -119,8 +101,7 @@ export function collaboratorProfileTools(profile: HostedCollaboratorProfile): re
 
 function piCommand(input: DriverCommandInput): string[] {
 	const session = input.sessionFile ? ["--session", input.sessionFile] : [];
-	const allowed = input.profile ? ["--tools", collaboratorProfileTools(input.profile).join(",")] : [];
-	return ["--approve", ...session, ...allowed, ...modelArguments(input.model)];
+	return ["--approve", ...session, "--tools", collaboratorProfileTools(input.profile).join(","), ...modelArguments(input.model)];
 }
 
 function claudeCommand(input: DriverCommandInput): string[] {
@@ -160,11 +141,4 @@ function codexServerValue(mcp: NativeMessagingConfiguration): string {
 
 function modelArguments(model: string | undefined): string[] {
 	return model ? ["--model", model] : [];
-}
-
-function startedAs(kind: HerdrAgentKind): DriverSpec["verify"] {
-	return (agent) => {
-		if (agent.agentSession.agent !== kind) return false;
-		return agent.agentSession.source === `herdr:${kind}`;
-	};
 }

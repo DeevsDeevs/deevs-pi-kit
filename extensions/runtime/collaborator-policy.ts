@@ -3,7 +3,7 @@ import { lstatSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { CustomToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { resolveModel, type ModelContext } from "../shared/models.ts";
-import { findAgent, loadBuiltinAgents } from "../subagents/agents.ts";
+import { findAgentType } from "../subagents/definitions.ts";
 import { HostedRuntimeClientError } from "./client.ts";
 import { isNodeError } from "./errors.ts";
 import { collaboratorProfileTools, DRIVERS } from "./drivers.ts";
@@ -12,7 +12,6 @@ import { isJsonString, type JsonValue } from "./schemas/json.ts";
 import { PARTICIPANT_NAME } from "./schemas/common.ts";
 import type { CollaboratorPersona, StartedCollaborator } from "./schemas/session.ts";
 
-const COLLABORATOR_PERSONAS = loadBuiltinAgents();
 const WRITE_TOOLS = new Set(["edit", "write"]);
 
 export type CollaboratorCandidate = Omit<StartedCollaborator, "tabId">;
@@ -21,7 +20,7 @@ export interface ResolvedCollaboratorCandidate {
 	participantId: string;
 	driver: HostedCollaboratorDriver;
 	model?: string;
-	profile?: HostedCollaboratorProfile;
+	profile: HostedCollaboratorProfile;
 	persona?: CollaboratorPersona;
 	repo?: string;
 	/** Resolved by the start path once the project root is known; absent when the collaborator works at the root. */
@@ -47,9 +46,7 @@ export function resolveCollaboratorCandidate(candidate: CollaboratorCandidate, m
 	}
 	const driver: HostedCollaboratorDriver = resolved.harness === "claude" ? "claude-code" : resolved.harness;
 	const model = resolved.harness === "pi" ? `${resolved.model.provider}/${resolved.model.id}` : resolved.model;
-	const profile = candidate.profile ?? (persona ? "read-only" : DRIVERS[driver].defaultProfile);
-	const result: ResolvedCollaboratorCandidate = { participantId, driver, model };
-	if (profile) result.profile = profile;
+	const result: ResolvedCollaboratorCandidate = { participantId, driver, model, profile: candidate.profile ?? "read-only" };
 	if (persona) result.persona = persona.persona;
 	if (candidate.repo !== undefined) result.repo = candidate.repo;
 	if (candidate.nativeSession && driver !== "pi") result.resume = candidate.nativeSession;
@@ -61,23 +58,24 @@ interface ResolvedPersona {
 	model?: string;
 }
 
-/** A persona is one trusted built-in prompt; its tool allowlist is the launched profile's, not the persona's. */
+/** A persona is one trusted built-in prompt, named as for Agent; its tool allowlist is the launched profile's, not the persona's. */
 function resolvePersona(requested: string): ResolvedPersona {
-	const personaName = collaboratorName(requested, "persona");
-	const definition = findAgent(COLLABORATOR_PERSONAS, personaName);
-	if (!definition) {
-		throw new HostedRuntimeClientError("not_found", `Unknown collaborator persona ${personaName}.`);
+	let type;
+	try {
+		type = findAgentType(requested);
+	} catch (error) {
+		throw new HostedRuntimeClientError("not_found", error instanceof Error ? error.message : String(error));
 	}
-	const prompt = definition.body.trim();
+	const prompt = type.prompt.trim();
 	if (!prompt || Buffer.byteLength(prompt) > 32 * 1024) {
-		throw new HostedRuntimeClientError("invalid_request", `Collaborator persona ${personaName} has an invalid prompt.`);
+		throw new HostedRuntimeClientError("invalid_request", `Collaborator persona ${type.name} has an invalid prompt.`);
 	}
 	const persona: CollaboratorPersona = {
-		name: definition.name,
+		name: type.name,
 		prompt,
 		promptHash: createHash("sha256").update(prompt).digest("hex"),
 	};
-	return definition.model ? { persona, model: definition.model } : { persona };
+	return type.model ? { persona, model: type.model } : { persona };
 }
 
 function usesNativeUserConfiguration(candidate: ResolvedCollaboratorCandidate): boolean {
@@ -90,7 +88,7 @@ export function collaboratorConfiguration(candidate: ResolvedCollaboratorCandida
 		`driver ${candidate.driver}`,
 		candidate.model ? `model ${candidate.model}` : `model ${candidate.driver} default`,
 		candidate.persona ? `persona ${candidate.persona.name}` : "persona none",
-		candidate.profile ? `profile ${candidate.profile}` : "profile none",
+		`profile ${candidate.profile}`,
 		...(candidate.repo ? [`repo ${candidate.repo}`] : []),
 	].join(", ");
 	if (!usesNativeUserConfiguration(candidate)) return configuration;

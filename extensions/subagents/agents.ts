@@ -19,10 +19,6 @@ export function loadBuiltinAgents(): AgentDefinition[] {
 	return readdirSync(AGENTS_DIR).filter((file) => file.endsWith(".md")).map((file) => parseAgentFile(join(AGENTS_DIR, file))).sort((a, b) => a.name.localeCompare(b.name));
 }
 
-export function findAgent(agents: AgentDefinition[], name: string): AgentDefinition | undefined {
-	return agents.find((agent) => agent.name.toLowerCase() === name.trim().toLowerCase());
-}
-
 function parseAgentFile(file: string): AgentDefinition {
 	const raw = readFileSync(file, "utf8");
 	const end = raw.startsWith("---\n") ? raw.indexOf("\n---", 4) : -1;
