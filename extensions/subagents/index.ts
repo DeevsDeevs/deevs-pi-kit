@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, realpathSync, statSync } from "node:fs";
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, utimes, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
@@ -174,6 +174,8 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			const runId = resumed ?? newWorkflowRunId();
 			const dir = join(home, runId);
 			if (resumed && !existsSync(join(dir, "journal.jsonl"))) throw new Error(`No journal found for workflow run ${resumed} in this project; call Workflow again without resumeFromRunId.`);
+			// Fresh before the engine opens, so its prune keeps a resumed run however old.
+			if (resumed) await utimes(dir, new Date(), new Date());
 			const file = scriptPath ?? join(home, "scripts", `${meta.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${runId}.js`);
 			await mkdir(dir, { recursive: true });
 			if (!scriptPath) {
@@ -249,7 +251,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			if (blocked) throw new Error(blocked);
 			if (source === "url" && !/^https?:\/\//.test(target)) throw new Error("url must start with http:// or https://.");
 			const id = newBackgroundTaskId();
-			const { outputFile, baseline } = await startMonitor(await ensureEngine(ctx), { id, description: params.description, cwd, source, target, prompt: params.prompt, every, once: params.once ?? false, timeoutMs: params.timeout_ms }, signal);
+			const { outputFile, baseline } = await startMonitor(() => ensureEngine(ctx), { id, description: params.description, cwd, source, target, prompt: params.prompt, every, once: params.once ?? false, timeoutMs: params.timeout_ms }, signal);
 			const until = params.timeout_ms ? `it expires after ${Math.round(params.timeout_ms / 1000)}s`
 				: params.once ? "its first event or TaskStop"
 				: source === "command" ? "the script exits or you stop it with TaskStop"
@@ -347,7 +349,8 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 async function stopTask(ctx: ExtensionContext, id: string, by?: "user") {
 	const entry = tasks.find(id, ctx.sessionManager.getSessionId());
 	if (!entry) throw new Error(taskNotFound(id));
-	if (entry.status !== "running" || !entry.stop) throw new Error(taskNotRunningResult(entry.id, entry.status));
+	if (entry.status !== "running") throw new Error(taskNotRunningResult(entry.id, entry.status));
+	if (!entry.stop) throw new Error(`Task ${entry.id} cannot be stopped`);
 	const stopped = by && entry.kind === "agent" ? await stop(await ensureEngine(ctx), entry.id, by) : await entry.stop();
 	if (tasks.find(entry.id)?.status === "running") tasks.update(entry.id, { status: "killed" });
 	return { entry, stopped };

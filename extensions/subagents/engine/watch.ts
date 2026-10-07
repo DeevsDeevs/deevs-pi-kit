@@ -18,9 +18,10 @@ export async function lookAtPath(path: string, before: PathSeen | undefined): Pr
 	const info = await stat(path).catch(() => undefined);
 	const wasFolder = before !== undefined && "files" in before;
 	if (info?.isDirectory() || (info === undefined && wasFolder)) {
-		const files: Record<string, string | undefined> = {};
-		if (info) await listInto(path, "", files);
-		const baseline = `${Object.keys(files).length} files`;
+		const listed = new Map<string, string>();
+		if (info) await listInto(path, "", listed);
+		const files: Record<string, string | undefined> = Object.fromEntries(listed);
+		const baseline = `${listed.size} files`;
 		if (before && "offset" in before && !before.missing) return { seen: { files }, event: "The file is now a folder.", baseline };
 		// A path that was missing before: everything in the folder is new.
 		const lines = before ? changes("files" in before ? before.files : {}, files) : [];
@@ -42,15 +43,15 @@ export async function lookAtPath(path: string, before: PathSeen | undefined): Pr
 	}
 }
 
-async function listInto(root: string, prefix: string, into: Record<string, string | undefined>): Promise<void> {
+async function listInto(root: string, prefix: string, into: Map<string, string>): Promise<void> {
 	for (const entry of await readdir(join(root, prefix), { withFileTypes: true }).catch(() => [])) {
 		if (SKIPPED.has(entry.name)) continue;
-		if (Object.keys(into).length >= MAX_FILES) return;
+		if (into.size >= MAX_FILES) return;
 		const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
 		if (entry.isDirectory()) await listInto(root, rel, into);
 		else {
 			const info = await stat(join(root, rel)).catch(() => undefined);
-			if (info) into[rel] = `${info.size}:${info.mtimeMs}`;
+			if (info) into.set(rel, `${info.size}:${info.mtimeMs}`);
 		}
 	}
 }

@@ -58,6 +58,12 @@ describe("Monitor looks", () => {
 		expect((await lookAtPath(dir, undefined)).baseline).toBe("1 files");
 	});
 
+	it("lists at most 10,000 files", { timeout: 15_000 }, async () => {
+		const dir = scratch();
+		for (let i = 0; i < 10_050; i++) writeFileSync(join(dir, `${i}`), "");
+		expect((await lookAtPath(dir, undefined)).baseline).toBe("10000 files");
+	});
+
 	it("reads at most 1 MB of a URL's body", async () => {
 		const server = createServer((_request, response) => response.end("x".repeat(3_000_000)));
 		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));

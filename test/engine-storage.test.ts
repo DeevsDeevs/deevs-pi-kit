@@ -38,6 +38,10 @@ describe("engine storage", () => {
 
 	it("takes a lock whole, refuses one a live Pi holds, and replaces a stale one", async () => {
 		const file = join(scratch(), "engine.lock");
+		const live = JSON.stringify({ pid: process.ppid, identity: await readProcessIdentity(process.ppid) });
+		writeFileSync(file, live);
+		await expect(lock(file)).rejects.toThrow(`held by Pi process ${process.ppid}`);
+		expect(readFileSync(file, "utf8")).toBe(live);
 		writeFileSync(file, JSON.stringify({ pid: 1, identity: "gone" }));
 		await lock(file);
 		expect(JSON.parse(readFileSync(file, "utf8")).pid).toBe(process.pid);

@@ -3,7 +3,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { access, mkdir, realpath, stat, utimes, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { createBashTool, createEditTool, createFindTool, createGrepTool, createLsTool, createReadTool, createWriteTool, getAgentDir, type ExtensionContext, type ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
@@ -87,7 +87,6 @@ export interface ReporterInput extends RunInput {
 export interface CliInput extends RunInput {
 	worker: CliWorker;
 }
-
 
 tasks.addSource({
 	name: "agents",
@@ -323,9 +322,10 @@ type Launch<T> = Omit<T, "session" | "owner" | "outputFile" | "startedAt">;
 export const startJob = (engine: Engine, input: Launch<JobInput>): Promise<string> => startBackground(engine, "job", input);
 
 /** Monitor: a path, url or cron watch looks first, so it reports what changes from now on. Returns the log and that look. */
-export async function startMonitor(engine: Engine, input: Omit<Launch<MonitorInput>, "seen">, signal: AbortSignal | undefined): Promise<{ outputFile: string; baseline?: string }> {
+/** The first look comes before `engine()`, so a bad cron, path or URL opens no store. */
+export async function startMonitor(engine: () => Promise<Engine>, input: Omit<Launch<MonitorInput>, "seen">, signal: AbortSignal | undefined): Promise<{ outputFile: string; baseline?: string }> {
 	const look = await firstLook(input.source, input.target, signal ?? new AbortController().signal);
-	return { outputFile: await startBackground(engine, "monitor", { ...input, seen: look.seen }), baseline: look.baseline };
+	return { outputFile: await startBackground(await engine(), "monitor", { ...input, seen: look.seen }), baseline: look.baseline };
 }
 
 async function startBackground(engine: Engine, kind: "job" | "monitor", launch: Launch<JobInput> | Launch<MonitorInput>): Promise<string> {
@@ -366,7 +366,6 @@ async function open(session: string, cwd: string, acks: ReturnType<typeof sessio
 	const from = await stat(dir).then((info) => info.mtimeMs, () => undefined);
 	await mkdir(join(dir, "out"), { recursive: true });
 	await lock(join(dir, "engine.lock"));
-	void prune(join(getAgentDir(), "pi-kit")).catch(() => {});
 	let harness: Durable.Harness | undefined;
 	let heartbeat: NodeJS.Timeout | undefined;
 	try {
@@ -398,6 +397,11 @@ async function resume(engine: Engine, D: D, from: number | undefined, acks: Retu
 	const records = agentRecords(await harness.snapshot(kit.Agents, root.id, CTX));
 	const workflows = workflowRecords(await harness.snapshot(kit.Workflows, root.id, CTX));
 	installSchemas(D, registry, session, workflows);
+	// A run paused past the prune age keeps its folder: touched before the prune.
+	const kitDir = join(getAgentDir(), "pi-kit");
+	const now = new Date();
+	await Promise.all(Object.values(workflows).filter((record) => record.status === "running").map((record) => utimes(join(kitDir, "workflows", basename(dirname(engine.dir)), record.runId), now, now).catch(() => {})));
+	void prune(kitDir).catch(() => {});
 	for (const [id, record] of Object.entries(records)) registerAgent(engine, id, record);
 	for (const [id, record] of Object.entries(workflows)) registerWorkflow(engine, id, record);
 	for (const [id, record] of Object.entries(backgroundRecords(await harness.snapshot(kit.Background, root.id, CTX)))) registerBackground(engine, id, record);
