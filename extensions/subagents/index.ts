@@ -69,7 +69,7 @@ const JobSchema = Type.Object({
 	command: Type.String({ description: "The shell command to run" }),
 	description: Type.String({ description: "A short description of what it does, shown in the notification" }),
 	cwd: Type.Optional(Type.String({ description: "Working directory; defaults to yours" })),
-	timeout: Type.Optional(Type.Integer({ minimum: 1_000, description: `Milliseconds before the command is killed. ${ONLY_ON_REQUEST}` })),
+	timeout: Type.Optional(Type.Integer({ minimum: 1_000, description: "Milliseconds before the command is killed. Set one for builds and tests; in print or json mode Pi waits only for jobs that have one" })),
 });
 type JobParams = Static<typeof JobSchema>;
 

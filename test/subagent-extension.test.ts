@@ -6,6 +6,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getEncoding } from "js-tiktoken";
 import type { TObject, TSchema } from "typebox";
 import { Value } from "typebox/value";
+import { jobLaunchedResult } from "../extensions/shared/tasks.ts";
 import subagentsExtension from "../extensions/subagents/index.ts";
 import { agentTypesList, findAgentType, WORKING_RULES, workerPrompt } from "../extensions/subagents/definitions.ts";
 
@@ -21,6 +22,16 @@ describe("Subagent extension surface", () => {
 		subagentsExtension(pi);
 		expect(tools).toEqual(["Agent", "Workflow", "TaskStop", "job_start", "Monitor", "SendMessage", "ListAgents"]);
 		expect(commands).toEqual(["agents"]);
+	});
+
+	it("asks for a job_start timeout on builds and tests, as print mode's job result does, while Agent limits stay on request only", () => {
+		const params: Record<string, TObject> = {};
+		subagentsExtension({ registerTool(tool: { name: string; parameters: TObject }) { params[tool.name] = tool.parameters; }, registerCommand() {}, on() {} } as unknown as ExtensionAPI);
+		const timeout = (tool: string) => (params[tool]!.properties.timeout as TSchema & { description: string }).description;
+		expect(timeout("job_start")).toMatch(/Set one for builds and tests; in print or json mode Pi waits only for jobs that have one/);
+		expect(timeout("job_start")).not.toMatch(/ONLY/);
+		expect(jobLaunchedResult("b1", "/out", undefined, true)).toMatch(/waits only for .*jobs started with a timeout/);
+		expect(timeout("Agent")).toMatch(/ONLY when the user asks/);
 	});
 
 	it("switches only a new session to the lead model; an unresolved default stays silent, a set lead warns once", async () => {
