@@ -343,7 +343,7 @@ async function startBackground(engine: Engine, kind: "job" | "monitor", launch: 
 	await writeFile(input.outputFile, "");
 	const record: BackgroundRecord = { kind, description: input.description, startedAt: input.startedAt, status: "running", taskId: 0 };
 	// Listed before the commit: a quick command can settle, and update its row, before the commit returns.
-	registerBackground(engine, input.id, record);
+	registerBackground(engine, input.id, record, "timeout" in input && input.timeout ? input.startedAt + input.timeout : undefined);
 	try {
 		await root.commit(async (tx) => {
 			// SAFETY: the kind picks the task whose input this is.
@@ -357,8 +357,8 @@ async function startBackground(engine: Engine, kind: "job" | "monitor", launch: 
 	return input.outputFile;
 }
 
-function registerBackground(engine: Engine, id: string, record: BackgroundRecord): void {
-	tasks.register({ id, kind: record.kind, description: record.description, status: record.status, ownerSession: engine.session, startedAt: record.startedAt, stop: () => stopBackground(engine, id) });
+function registerBackground(engine: Engine, id: string, record: BackgroundRecord, deadline?: number): void {
+	tasks.register({ id, kind: record.kind, description: record.description, status: record.status, ownerSession: engine.session, startedAt: record.startedAt, deadline, stop: () => stopBackground(engine, id) });
 }
 
 /** TaskStop of a job or monitor: the run is signalled (its process group killed), then its abort handler settles it. */

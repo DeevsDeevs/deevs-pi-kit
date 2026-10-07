@@ -14,6 +14,8 @@ export interface RosterEntry {
 	/** `ctx.sessionManager.getSessionId()` of the lead session that owns the task. */
 	ownerSession: string;
 	startedAt: number;
+	/** A job's hard timeout, as the time it ends by; print mode waits on a job only until then. */
+	deadline?: number;
 	/** Resolves once stopped; an agent's report carries the worktree it kept. */
 	stop?: () => Promise<{ worktree?: { path: string; branch: string } } | undefined | void>;
 	/** Set by kinds that take messages through their own channel (collaborators); returns the result line. */
@@ -172,9 +174,9 @@ function resumeGate(session: string): { done: Promise<void>; resolve(): void } {
 	return gates.get(session)!;
 }
 
-/** Waits until a notification beyond `before` is sent, or no agent, workflow or job of the session runs. */
+/** Waits until a notification beyond `before` is sent, or no agent, workflow or job before its timeout of the session runs. */
 async function nextReport(session: string, before: Set<string>): Promise<void> {
-	const running = () => tasks.list(session).some((task) => task.status === "running" && task.kind !== "monitor" && task.kind !== "collaborator");
+	const running = () => tasks.list(session).some((task) => task.status === "running" && (task.kind === "agent" || task.kind === "workflow" || (task.deadline ?? 0) > Date.now()));
 	while (running() && [...state.sent.keys()].every((id) => before.has(id))) await new Promise((resolve) => setTimeout(resolve, 200));
 }
 
