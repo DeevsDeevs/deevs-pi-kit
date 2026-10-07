@@ -249,7 +249,8 @@ export class CollaboratorService {
 				const existing = findParticipant(participants, start.protocol, candidate.participantId);
 				const tab = await this.launcher.launch(start, candidate, existing);
 				const { nativeSession: _resumed, ...spec } = requested[index]!;
-				this.session.store.persistStarted({ ...spec, tabId: tab.tabId });
+				const nativeSession = candidate.resume ?? candidate.sessionId;
+				this.session.store.persistStarted({ ...spec, tabId: tab.tabId, ...(nativeSession && { nativeSession }) });
 				return { participant, status: "started" as const, paneId: tab.paneId, driver: candidate.driver, profile: candidate.profile };
 			} catch (error) {
 				return { participant, status: outcome(start.signal), error: error instanceof Error ? error.message : String(error) };
@@ -274,11 +275,11 @@ export class CollaboratorService {
 		if (other) await this.stopParticipant({ ...changed, holderTargetKey: participant.holderTargetKey }, registration);
 	}
 
-	/** A Claude or Codex collaborator resumes its own session later; Herdr knows its id once it ran. */
+	/** A Codex collaborator resumes its own session later; Herdr knows its id once it ran. A Claude one's id was chosen at start. */
 	private async recordNativeSession(participant: ClientParticipantStatus): Promise<void> {
 		const control = participant.holderTargetKey ? this.session.store.agent(participant.holderTargetKey) : undefined;
 		const spec = this.session.store.started.get(participant.participantId);
-		if (!control || !spec) return;
+		if (!control || !spec || spec.nativeSession) return;
 		const reported = await this.session.pi.exec("herdr", ["agent", "get", control.agentName], { timeout: 2_000 }).catch(() => undefined);
 		try {
 			const session = decodeHerdr(HerdrLiveAgentResultSchema, herdrResult(reported?.stdout ?? ""), "Herdr agent").agent.agent_session;

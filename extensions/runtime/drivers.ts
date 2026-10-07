@@ -37,6 +37,8 @@ interface DriverCommandInput {
 	mcp?: NativeMessagingConfiguration;
 	/** A Claude or Codex session to resume instead of starting a new one. */
 	resume?: string;
+	/** The id a new Claude session is started under, so a stand-down knows what to resume. */
+	sessionId?: string;
 }
 
 /** One authorized collaborator launch: which driver, under which agent name, in which pane. */
@@ -111,7 +113,7 @@ function claudeCommand(input: DriverCommandInput): string[] {
 	const servers = mcp ? ["--mcp-config", JSON.stringify({ mcpServers: { [mcp.serverName]: mcp.server } })] : [];
 	// Decision 15: no permission prompts, the kit guard as a PreToolUse hook on Bash; a reader's tool list has no Edit or Write.
 	const tools = isWriter(input.profile) ? [] : ["--tools", [CLAUDE_READ_ONLY_TOOLS, ...(mcp ? MESSAGING_TOOLS.map(tool => `mcp__${mcp.serverName}__${tool}`) : [])].join(",")];
-	const resume = input.resume ? ["--resume", input.resume] : [];
+	const resume = input.resume ? ["--resume", input.resume] : input.sessionId ? ["--session-id", input.sessionId] : [];
 	return [...resume, ...servers, "--permission-mode", "bypassPermissions", ...guardHookArgs("claude"), ...tools, ...model, ...prompt];
 }
 

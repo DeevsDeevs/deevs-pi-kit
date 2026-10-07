@@ -84,6 +84,21 @@ it("resumes a stood-down Claude or Codex collaborator in its own native session"
 	expect(launchArgv("codex", representativeInput("codex"))).not.toContain("resume");
 });
 
+// K3: Herdr 0.9 never reported a Claude session id, so a resumed Claude collaborator started a fresh transcript.
+it("starts a new Claude collaborator under an id of its own, which its resume then names", () => {
+	const model = { provider: "anthropic", id: "claude-opus-5-5" };
+	const registry = { getAll: () => [model], getAvailable: () => [model], find: () => model };
+	const models = { config: { models: {}, lead: null }, registry, codex: { slugs: ["gpt-6-astra"] } } as unknown as ModelContext;
+	const fresh = resolveCollaboratorCandidate({ participantId: "cc", model: "claude:opus" }, models);
+	expect(fresh.sessionId).toMatch(/^[0-9a-f-]{36}$/u);
+	const argv = launchArgv("claude-code", { ...representativeInput("claude-code"), sessionId: fresh.sessionId });
+	expect(argv.slice(argv.indexOf("--session-id"), argv.indexOf("--session-id") + 2)).toEqual(["--session-id", fresh.sessionId]);
+	const resumed = resolveCollaboratorCandidate({ participantId: "cc", model: "claude:opus", nativeSession: fresh.sessionId }, models);
+	expect(resumed).toMatchObject({ resume: fresh.sessionId });
+	expect(resumed.sessionId).toBeUndefined();
+	expect(resolveCollaboratorCandidate({ participantId: "cx", model: "codex:gpt-6-astra" }, models).sessionId).toBeUndefined();
+});
+
 it("starts a collaborator with no profile read-only, a Pi one included, and names personas as Agent does", () => {
 	const model = { provider: "anthropic", id: "claude-opus-5-5" };
 	const registry = { getAll: () => [model], getAvailable: () => [model], find: () => model };

@@ -114,7 +114,7 @@ export class CollaboratorLauncher {
 				sessionFile = join(this.session.root, "collaborator-sessions", `${projectScope(start.projectRoot)}__${start.protocol}__${candidate.participantId}.jsonl`);
 				created = prepareCollaboratorSession(sessionFile, launchCwd, start.projectRoot, candidate);
 			}
-			const input = { profile: candidate.profile, cwd: launchCwd, sessionFile, model: candidate.model, persona: candidate.persona, mcp, resume: candidate.resume };
+			const input = { profile: candidate.profile, cwd: launchCwd, sessionFile, model: candidate.model, persona: candidate.persona, mcp, resume: candidate.resume, sessionId: candidate.sessionId };
 			const argv = driverLaunchArgv({ driver: candidate.driver, agentName: plan.agentName, paneId: tab.paneId, input });
 			const agent = await this.native.startAgent({ agentName: plan.agentName, spec, tab, argv });
 			this.session.requireCurrentScope(request.current);

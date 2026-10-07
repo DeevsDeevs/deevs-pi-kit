@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { lstatSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { CustomToolCallEvent } from "@earendil-works/pi-coding-agent";
@@ -27,6 +27,8 @@ export interface ResolvedCollaboratorCandidate {
 	repoRoot?: string;
 	/** The Claude or Codex session a stood-down native collaborator resumes. */
 	resume?: string;
+	/** The id a new Claude session starts under; recorded as the session it resumes. */
+	sessionId?: string;
 }
 
 export interface CollaboratorToolBlock {
@@ -50,6 +52,8 @@ export function resolveCollaboratorCandidate(candidate: CollaboratorCandidate, m
 	if (persona) result.persona = persona.persona;
 	if (candidate.repo !== undefined) result.repo = candidate.repo;
 	if (candidate.nativeSession && driver !== "pi") result.resume = candidate.nativeSession;
+	// Herdr need not report a Claude session id, so a new one is chosen here and resumed by it later.
+	else if (driver === "claude-code") result.sessionId = randomUUID();
 	return result;
 }
 
