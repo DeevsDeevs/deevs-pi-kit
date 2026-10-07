@@ -134,7 +134,7 @@ describe("task notification contract", () => {
 			"Do not read this file while the agent runs; it is written when the agent finishes, and the notification carries the result.",
 			"Model: openai-codex/gpt-6.1-sol:high",
 			"Limits: maxTurns 20",
-			"Queued: every agent slot is busy; this one starts when a slot frees.",
+			"Queued: 16 agents are running; this one starts when a slot frees.",
 			"Another agent that can write already works in this directory. For parallel code-writing agents, dispatch each with isolation: \"worktree\".",
 		].join("\n"));
 		expect(shared.agentForegroundResult({ text: "", agentId: "a1", limited: "stopped", limits: "maxTurns 1", worktree: { path: "/wt/a1", branch: "agent/a1" }, usage: { subagentTokens: 3, toolUses: 2, durationMs: 1 } })).toBe([

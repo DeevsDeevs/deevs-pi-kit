@@ -1,8 +1,7 @@
-// What the engine's agents and workflow runs share in this process: the host kept across /reload, the agent throttle,
+// What the engine's agents and workflow runs share in this process: the host kept across /reload, the throttle of 16,
 // where an agent works, and readers of a durable transcript.
 import type { ChildProcess } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { availableParallelism } from "node:os";
 import { join, relative } from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
 import { getAgentDir, type ModelRegistry } from "@earendil-works/pi-coding-agent";
@@ -26,10 +25,8 @@ export type ConversationId = Durable.ConversationId;
 export type AgentsDoc = { agents: Record<string, Durable.JsonObject> };
 export type WorkflowsDoc = { workflows: Record<string, Durable.JsonObject> };
 
-/** Claude Code's workflow concurrency: CPUs − 2, at least 2 and at most 16. */
-export const agentSlots = (cpus = availableParallelism()): number => Math.min(16, Math.max(2, cpus - 2));
-/** One global throttle across every engine and Workflow: at most AGENT_SLOTS agents run, the rest queue FIFO. */
-export const AGENT_SLOTS = agentSlots();
+/** One global throttle across every engine and Workflow: at most 16 agents run, the rest queue FIFO. */
+export const AGENT_SLOTS = 16;
 // ponytail: a structural chord Context that never cancels; import chord's BACKGROUND_CONTEXT if durable starts checking identity.
 export const CTX: Ctx = { abortSignal: undefined, value: () => undefined, toString: () => "pi-kit" };
 export const FailureDetail = Type.Object({ message: Type.String() });
