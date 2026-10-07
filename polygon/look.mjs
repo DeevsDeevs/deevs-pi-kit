@@ -45,6 +45,18 @@ export function entries(t) {
 
 export const requests = (t) => jsonl(t.requestLog);
 
+/** `provider/model` of each reply the kit's in-process agents stored in their durable stores; unlike the request log, it holds on every live login. */
+export function agentReplyModels(t) {
+	const root = join(t.agentDir, "pi-kit", "agents");
+	const { DatabaseSync } = process.getBuiltinModule("node:sqlite");
+	return (existsSync(root) ? readdirSync(root, { recursive: true }) : []).filter((f) => f.endsWith("engine.sqlite")).flatMap((f) => {
+		const db = new DatabaseSync(join(root, f), { readOnly: true });
+		const rows = db.prepare("SELECT record FROM entries").all();
+		db.close();
+		return rows.flatMap(({ record }) => (JSON.parse(record).model ?? []).filter((m) => m.role === "assistant").map((m) => `${m.provider}/${m.model}`));
+	});
+}
+
 /** Every `.missions/<slug>/state.json` in the fixture repo. */
 export function missionStates(t) {
 	const root = join(t.repo, ".missions");
