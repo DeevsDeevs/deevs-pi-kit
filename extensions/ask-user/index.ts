@@ -2,7 +2,7 @@ import type { AgentToolResult, ExtensionAPI, ExtensionContext, Theme, ToolRender
 import { Type } from "@earendil-works/pi-ai";
 import { Container, Editor, Key, matchesKey, SelectList, Spacer, Text, truncateToWidth, type Component, type Focusable, type SelectItem, type TUI } from "@earendil-works/pi-tui";
 import { framePanelLines } from "../shared/panel.ts";
-import { interactiveOnly, isHeadless } from "../shared/surface.ts";
+import { HEADLESS_GUIDELINE, interactiveOnly, isHeadless } from "../shared/surface.ts";
 
 type AskOptionInput = string | { title: string; description?: string };
 
@@ -44,7 +44,6 @@ type MultiQuestionState = {
 	editor?: Editor;
 };
 
-export const HEADLESS_GUIDELINE = "Non-interactive run: nobody will reply before Pi exits. Where you would ask the user or leave them a decision, apply the default you would propose and name it in your final answer. Do not take an irreversible or destructive step you would have asked about; name it in your final answer instead.";
 const FREEFORM_VALUE = "__ask_user_freeform__";
 const MAX_VISIBLE_OPTIONS = 9;
 

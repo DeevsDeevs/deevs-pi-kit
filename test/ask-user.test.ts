@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import askUserExtension, { HEADLESS_GUIDELINE } from "../extensions/ask-user/index.ts";
+import askUserExtension from "../extensions/ask-user/index.ts";
+import { HEADLESS_GUIDELINE } from "../extensions/shared/surface.ts";
 
 function askUserTool(): { execute: (...args: unknown[]) => Promise<{ details: unknown }> } {
 	let tool: ReturnType<typeof askUserTool> | undefined;

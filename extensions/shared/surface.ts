@@ -17,6 +17,8 @@ export function claimSurface(pi: ExtensionAPI, name: string): boolean {
 	return true;
 }
 
+export const HEADLESS_GUIDELINE = "Non-interactive run: nobody will reply before Pi exits. Where you would ask the user or leave them a decision, apply the default you would propose and name it in your final answer. Do not take an irreversible or destructive step you would have asked about; name it in your final answer instead.";
+
 /** Print and json mode: nobody will reply and no UI shows. */
 export const isHeadless = (ctx: Pick<ExtensionContext, "mode">): boolean => ctx.mode === "print" || ctx.mode === "json";
 

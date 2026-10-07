@@ -1,6 +1,7 @@
 import { randomBytes, randomInt, randomUUID } from "node:crypto";
 import { VERSION, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { migrateLegacyConfig } from "./config.ts";
+import { HEADLESS_GUIDELINE, isHeadless } from "./surface.ts";
 
 export type TaskKind = "agent" | "workflow" | "job" | "monitor" | "collaborator";
 export type TaskStatus = "running" | "completed" | "failed" | "killed";
@@ -237,9 +238,10 @@ function send(notification: TaskNotification, ids: string[]): void {
 	if (!pi || !ctx || state.sent.has(notification.notificationId)) return;
 	try {
 		const steered = !ctx.isIdle();
+		// Pi 1.0.4 starts a report's run without before_agent_start, so from that run's second turn its prompt drops the headless rule.
 		pi.sendMessage({
 			customType: TASK_NOTIFICATION,
-			content: formatTaskNotification(notification),
+			content: formatTaskNotification(notification) + (isHeadless(ctx) && !steered ? `\n${systemReminder(HEADLESS_GUIDELINE)}` : ""),
 			display: true,
 			details: { notificationId: notification.notificationId, notificationIds: ids.length > 1 ? ids : undefined },
 		}, { triggerTurn: true, deliverAs: "steer" });
