@@ -31,6 +31,7 @@ export default {
 		assert.match(row(job.details.taskId), /^job\b/, "the job row is not labelled by kind");
 		assert.match(row(monitor.details.taskId), /^monitor\b/, "the monitor row is not labelled by kind");
 		assert.match(row("peer"), /^collaborator\b/, "the collaborator row is missing or not labelled by kind");
+		assert.equal(list.text.split("\n").at(-1), "Running tasks notify you when they end: to wait, end your turn instead of polling.");
 		await lead.until((_, events) => taskNotifications(events).length >= 4, 30_000, "the agents, the job and the monitor to finish");
 	},
 };

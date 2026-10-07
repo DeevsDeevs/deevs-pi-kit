@@ -4,7 +4,7 @@ import { systemReminder } from "../shared/tasks.ts";
 
 export const WORKFLOW_SNIPPET = "Orchestrate many background agents with a script, once the user has opted in.";
 
-export const WORKFLOW_DESCRIPTION = `Run a JavaScript workflow script that orchestrates many agents. It runs in the background: the call returns a task ID at once, a <task-notification> reports the outcome, and /agents shows live progress.
+export const WORKFLOW_DESCRIPTION = `Run a JavaScript workflow script that orchestrates many agents. It runs in the background: the call returns a task ID at once, a <task-notification> reports the outcome, and /agents shows live progress. Until it arrives you know nothing of the result: do not poll, sleep, watch its files or guess it; keep working, or end your turn and the notification starts your next one.
 
 Call it ONLY after the user has opted into multi-agent orchestration: a workflow can start dozens of agents and spend a great many tokens, so that scale must come from the user, never from your own guess. The user has opted in when:
 - a system-reminder says autonomy is on;

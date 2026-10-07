@@ -370,7 +370,7 @@ export function agentLaunchedResult(launch: { agentId: string; outputFile: strin
 	return [
 		"Async agent launched successfully.",
 		`agentId: ${launch.agentId} (internal ID; use SendMessage with to: '${launch.agentId}' to continue this agent)`,
-		"It works in the background and you will be notified when it finishes. Until then you know nothing about its result: do not guess it, wait for it, or redo its work. Carry on with other work or answer the user.",
+		"It works in the background and you will be notified when it finishes. Until then you know nothing about its result: do not guess it, poll or sleep for it, or redo its work. Keep working, or end your turn: Pi stays open and the <task-notification> starts your next turn.",
 		`output_file: ${launch.outputFile}`,
 		"Do not read this file while the agent runs; it is written when the agent finishes, and the notification carries the result.",
 		...(launch.model ? [`Model: ${launch.model}`] : []),
@@ -441,7 +441,7 @@ export function workflowLaunchedResult(launch: { taskId: string; summary: string
 		`Script file: ${launch.scriptPath} (edit it, then call Workflow with this scriptPath to iterate without resending the script)`,
 		`Run ID: ${launch.runId}`,
 		`To resume after editing the script: Workflow({scriptPath: "${launch.scriptPath}", resumeFromRunId: "${launch.runId}"}) — the longest unchanged prefix of agent() calls replays from cache; read journal.jsonl before trusting a cached result.`,
-		"You will be notified when it completes. Use /agents to watch live progress.",
+		"You will be notified when it completes. Until then you know nothing about its result: do not poll, sleep, watch its files or guess it. Keep working, or end your turn: Pi stays open and the <task-notification> starts your next turn. Use /agents to watch live progress.",
 	].join("\n");
 }
 

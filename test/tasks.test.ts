@@ -129,7 +129,7 @@ describe("task notification contract", () => {
 		expect(shared.agentLaunchedResult({ agentId: "a1", outputFile: "/out/a1.md", model: "openai-codex/gpt-6.1-sol:high", limits: "maxTurns 20", queued: true, sharesCwd: true })).toBe([
 			"Async agent launched successfully.",
 			"agentId: a1 (internal ID; use SendMessage with to: 'a1' to continue this agent)",
-			"It works in the background and you will be notified when it finishes. Until then you know nothing about its result: do not guess it, wait for it, or redo its work. Carry on with other work or answer the user.",
+			"It works in the background and you will be notified when it finishes. Until then you know nothing about its result: do not guess it, poll or sleep for it, or redo its work. Keep working, or end your turn: Pi stays open and the <task-notification> starts your next turn.",
 			"output_file: /out/a1.md",
 			"Do not read this file while the agent runs; it is written when the agent finishes, and the notification carries the result.",
 			"Model: openai-codex/gpt-6.1-sol:high",
@@ -157,7 +157,7 @@ describe("task notification contract", () => {
 			"Script file: /wf/s.js (edit it, then call Workflow with this scriptPath to iterate without resending the script)",
 			"Run ID: wf_12345678-abc",
 			'To resume after editing the script: Workflow({scriptPath: "/wf/s.js", resumeFromRunId: "wf_12345678-abc"}) — the longest unchanged prefix of agent() calls replays from cache; read journal.jsonl before trusting a cached result.',
-			"You will be notified when it completes. Use /agents to watch live progress.",
+			"You will be notified when it completes. Until then you know nothing about its result: do not poll, sleep, watch its files or guess it. Keep working, or end your turn: Pi stays open and the <task-notification> starts your next turn. Use /agents to watch live progress.",
 		]);
 	});
 
