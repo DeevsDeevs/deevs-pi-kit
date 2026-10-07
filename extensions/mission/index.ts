@@ -99,7 +99,8 @@ export default function missionExtension(pi: ExtensionAPI): void {
 			if (params.verdict) {
 				if (!state.reviewing) throw new Error("No closing review waits for a verdict.");
 				state.reviewing = false;
-				status = params.verdict === "clear" || rounds >= REVIEW_ROUNDS ? "done" : "active";
+				// A changes_requested verdict reopens only an active mission: one the user paused meanwhile stays paused.
+				status = params.verdict === "clear" || rounds >= REVIEW_ROUNDS ? "done" : state.status;
 			} else if (status === "done" && state.review) {
 				if (state.reviewing) throw new Error(`Closing review round ${rounds} waits for its verdict: pass it as verdict.`);
 				if (rounds < REVIEW_ROUNDS) {
@@ -188,7 +189,7 @@ function writeReviewScript(mission: Mission): void {
 	].join("\n");
 	writeFileSync(join(mission.dir, "review.js"), [
 		`export const meta = { name: "mission-review", description: ${JSON.stringify(`Closing review of mission ${mission.slug}`)} };`,
-		`return await agent(${JSON.stringify(prompt)}, { label: "closing review", schema: ${JSON.stringify(VERDICT_SCHEMA)} });`,
+		`return await agent(${JSON.stringify(prompt)}, { label: "closing review", agentType: "reviewer", schema: ${JSON.stringify(VERDICT_SCHEMA)} });`,
 		"",
 	].join("\n"));
 }

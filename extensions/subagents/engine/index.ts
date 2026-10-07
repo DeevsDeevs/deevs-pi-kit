@@ -513,7 +513,7 @@ async function open(session: string, cwd: string, acks: ReturnType<typeof sessio
 	}
 	for (const [id, record] of Object.entries(workflows)) registerWorkflow(engine, id, record);
 	for (const [id, record] of Object.entries(backgroundRecords(await harness.snapshot(kit.Background, root.id, CTX)))) registerBackground(engine, id, record);
-	// ponytail: a resumed run takes its slot without waiting; reopening a session while another fills the 16 exceeds them until it settles.
+	// ponytail: a resumed run takes its slot without waiting; reopening a session while another fills the 16 exceeds them until the extra runs end.
 	const unsettled = new Set((await harness.inspect(CTX)).submissions.map((submission) => submission.conversationId));
 	for (const [id, record] of Object.entries(records)) {
 		if (record.status !== "running" || record.conversationId === undefined || !unsettled.has(record.conversationId)) continue;
@@ -942,7 +942,8 @@ function acquire(agentId: string): Promise<boolean> {
 
 /** A freed slot passes straight to the oldest queued agent. */
 function release(): void {
-	const next = host.queue.shift();
+	// A slot over the limit (reserved for a resumed run) is given back, not handed to the queue.
+	const next = host.running <= AGENT_SLOTS ? host.queue.shift() : undefined;
 	if (next) next.go(true);
 	else host.running--;
 }
