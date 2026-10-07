@@ -1,6 +1,6 @@
 ---
 name: todos
-description: "Track multi-step session work with todo_list: implementation, debugging, validation, research, agent coordination."
+description: "Loads todo_list. Track multi-step session work with it: implementation, debugging, validation, research, agent coordination."
 ---
 
 # Managed Todos

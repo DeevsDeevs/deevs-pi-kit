@@ -27,6 +27,7 @@ export function registerTodoTools(pi: ExtensionAPI, state: TodoState): void {
 			"Keep todo lists to 3-8 items. Each write replaces the whole list, stable ids kept: mark the item you start in_progress, and an item done, or blocked with a notes reason, once its outcome is known.",
 		],
 		parameters: TodoListSchema,
+		defaultActive: false,
 		async execute(_toolCallId, params: TodoListInput, _signal, _onUpdate, ctx): Promise<AgentToolResult<TodoDetails>> {
 			if (params.operation === "read") return result("read", state, ctx);
 			if (params.operation === "clear") {

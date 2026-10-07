@@ -1,6 +1,6 @@
 # Todos
 
-One `todo_list` tool: a session todo list shown as a widget. How the model should use it is in [skills/todos](../../skills/todos/SKILL.md).
+One `todo_list` tool: a session todo list shown as a widget. It joins the lead's tools once [skills/todos](../../skills/todos/SKILL.md), which says how to use it, loads.
 
 ```json
 { "operation": "read" }

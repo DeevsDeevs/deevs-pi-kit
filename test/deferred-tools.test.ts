@@ -4,6 +4,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import askUserExtension from "../extensions/ask-user/index.ts";
 import chainsExtension from "../extensions/chains/index.ts";
 import subagentsExtension from "../extensions/subagents/index.ts";
+import todosExtension from "../extensions/todos/index.ts";
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
 
@@ -34,6 +35,7 @@ const FAMILIES = [
 	{ extension: subagentsExtension, tools: ["job_start", "Monitor"], skills: ["background-tasks", "diagnose", "validation-review", "datadog-pup"] },
 	{ extension: chainsExtension, tools: ["chain"], skills: ["chain-system", "wiki", "grill-me"] },
 	{ extension: askUserExtension, tools: ["ask_user"], skills: ["ask-user"] },
+	{ extension: todosExtension, tools: ["todo_list"], skills: ["todos"] },
 ];
 
 it.each(FAMILIES)("registers $tools inactive and loads them when any of $skills is read", ({ extension, tools, skills }) => {
