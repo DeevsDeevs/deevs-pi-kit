@@ -54,8 +54,8 @@ export interface NotificationSource {
 export const TASK_NOTIFICATION = "task-notification";
 
 /** The kit is proven on Pi 1.0.4, the release the polygon runs. */
-export function warnOldPi(version: string): void {
-	if (version.localeCompare("1.0.4", undefined, { numeric: true }) < 0) console.warn(`pi-kit: needs Pi 1.0.4 or newer, and this is Pi ${version}; update Pi.`);
+export function oldPiWarning(version: string): string | undefined {
+	return version.localeCompare("1.0.4", undefined, { numeric: true }) < 0 ? `pi-kit: needs Pi 1.0.4 or newer, and this is Pi ${version}; update Pi.` : undefined;
 }
 
 const AGENT_NOTE = "A task-notification fires each time this agent stops. A SendMessage to it resumes it, so the same task-id may notify more than once.";
@@ -72,6 +72,8 @@ interface TasksState {
 	sent: Map<string, boolean>;
 	/** By session: settles once the engine has put the session's resumed tasks on the roster. */
 	resumed?: Map<string, { done: Promise<void>; resolve(): void }>;
+	/** Shown by the first session start; print mode, whose notify does nothing, has the console copy. */
+	oldPi?: string;
 }
 
 const TASKS = Symbol.for("pi-kit.tasks");
@@ -83,12 +85,17 @@ export const tasks = {
 	/** The kit's start-up: the roster's delivery hooks, the one legacy-config migration per session, and the Pi version warning. */
 	install(pi: ExtensionAPI): void {
 		if (state.installed.has(pi)) return;
-		if (!state.pi) warnOldPi(VERSION);
+		if (!state.pi) {
+			state.oldPi = oldPiWarning(VERSION);
+			if (state.oldPi) console.warn(state.oldPi);
+		}
 		state.installed.add(pi);
 		state.pi = pi;
 		pi.on("session_start", async (event, ctx) => {
 			if (state.pi !== pi) return;
 			if (event.reason !== "reload") state.sent.clear();
+			if (state.oldPi) ctx.ui.notify(state.oldPi, "warning");
+			state.oldPi = undefined;
 			state.ctx = ctx;
 			await redeliver(ctx);
 			if (ctx.isProjectTrusted()) await migrateLegacyConfig(ctx.cwd);

@@ -24,6 +24,7 @@ function lead(mode = "tui", project = { cwd: "/", trusted: false }) {
 	let idle = true;
 	let dropSteers = false;
 	const statuses: Array<string | undefined> = [];
+	const notes: string[] = [];
 	const pi = {
 		on: (name: string, handler: Handler) => handlers.set(name, handler),
 		sendMessage(message: { customType: string; details: { notificationId: string } }, options: unknown) {
@@ -37,12 +38,12 @@ function lead(mode = "tui", project = { cwd: "/", trusted: false }) {
 		cwd: project.cwd,
 		isProjectTrusted: () => project.trusted,
 		isIdle: () => idle,
-		ui: { setStatus: (_key: string, text?: string) => statuses.push(text) },
+		ui: { setStatus: (_key: string, text?: string) => statuses.push(text), notify: (text: string) => notes.push(text) },
 		sessionManager: { getSessionId: () => session, getEntries: () => entries(session) },
 	}) as unknown as ExtensionContext;
 	const emit = (name: string, event: object = {}) => handlers.get(name)?.({ type: name, ...event }, ctx());
 	return {
-		pi, sent, statuses, entries, emit,
+		pi, sent, statuses, notes, entries, emit,
 		start: (id: string, reason = "startup") => { session = id; return emit("session_start", { reason }); },
 		busy: (dropping: boolean) => { idle = false; dropSteers = dropping; },
 		settle: () => { idle = true; return emit("agent_settled"); },
@@ -335,10 +336,19 @@ describe("kit start-up", () => {
 		rmSync(cwd, { recursive: true, force: true });
 	});
 
-	it("warns about a Pi older than 1.0.4", () => {
+	it("warns about a Pi older than 1.0.4 once, on the console and at the first session start", async () => {
+		const warning = "pi-kit: needs Pi 1.0.4 or newer, and this is Pi 1.0.1; update Pi.";
+		expect(["1.0.1", "1.0.4", "1.0.10", "1.1.0"].map(shared.oldPiWarning)).toEqual([warning, undefined, undefined, undefined]);
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-		for (const version of ["1.0.1", "1.0.4", "1.0.10", "1.1.0"]) shared.warnOldPi(version);
-		expect(warn.mock.calls).toEqual([["pi-kit: needs Pi 1.0.4 or newer, and this is Pi 1.0.1; update Pi."]]);
+		vi.doMock("@earendil-works/pi-coding-agent", async (original) => ({ ...await original<object>(), VERSION: "1.0.1" }));
+		vi.resetModules();
+		const old = await import("../extensions/shared/tasks.ts");
+		const fake = lead();
+		old.tasks.install(fake.pi);
+		await fake.start("s1");
+		await fake.start("s2", "new");
+		expect([warn.mock.calls, fake.notes]).toEqual([[[warning]], [warning]]);
+		vi.doUnmock("@earendil-works/pi-coding-agent");
 		warn.mockRestore();
 	});
 });
