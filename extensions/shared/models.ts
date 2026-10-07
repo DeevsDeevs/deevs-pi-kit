@@ -7,7 +7,7 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { trustedKitValues, type Trust } from "./config.ts";
 
-export type ModelCatalog = Pick<ModelRegistry, "getAll" | "getAvailable" | "find">;
+export type ModelCatalog = Pick<ModelRegistry, "getAll" | "getAvailable" | "find" | "isUsingOAuth">;
 export type KitConfig = { models: Record<string, string>; lead?: string | null };
 export type CodexCatalog = { slugs: string[]; model?: string };
 
@@ -17,6 +17,8 @@ export interface ModelContext {
 	/** The lead's live model and level: `inherit` takes both, and a Pi spec without a level takes the level. */
 	lead?: { model: Model<Api>; level: ModelThinkingLevel };
 	codex?: CodexCatalog;
+	/** Only Pi OAuth (ChatGPT) logins resolve: the built-in lead never moves a session onto API billing, as `OPENAI_API_KEY` would. */
+	oauthOnly?: boolean;
 }
 
 type Leveled = { level?: ModelThinkingLevel; clampedFrom?: ModelThinkingLevel };
@@ -121,7 +123,8 @@ export function resolveModel(spec: string | undefined, ctx: ModelContext, effort
 /** The `lead` key for a new session; `undefined` when it is `null`, or unset and the default does not resolve. The level stays Pi's setting unless the spec carries one. */
 export function resolveLead(ctx: ModelContext): Extract<ResolvedModel, { harness: "pi" }> | undefined {
 	if (ctx.config.lead === undefined) {
-		try { return resolveLead({ ...ctx, config: { ...ctx.config, lead: KIT_DEFAULTS.lead } }); } catch { return undefined; }
+		const oauthOnly = ctx.config.models.sol === KIT_DEFAULTS.models.sol;
+		try { return resolveLead({ ...ctx, oauthOnly, config: { ...ctx.config, lead: KIT_DEFAULTS.lead } }); } catch { return undefined; }
 	}
 	if (ctx.config.lead === null) return undefined;
 	const resolved = resolveModel(ctx.config.lead, { ...ctx, lead: undefined });
@@ -156,18 +159,20 @@ function resolveSpec(spec: string, body: string, level: ModelThinkingLevel | und
 	if (slash > 0) {
 		const provider = body.slice(0, slash);
 		const id = body.slice(slash + 1);
-		const available = registry.getAvailable().filter((model) => model.provider === provider);
+		const available = loggedIn(ctx).filter((model) => model.provider === provider);
 		if (!available.length) return { reason: registry.getAll().some((model) => model.provider === provider) ? `${provider} is not logged in` : `${provider} is not a Pi provider` };
 		const chosen = newest(id, available.map((model) => model.id));
 		const found = available.find((model) => model.id === chosen);
 		if (found) return pi(found, level ?? lead?.level);
 		return { reason: id.includes("*") ? `no logged-in ${provider} model matches ${id}` : `${body} is not in Pi's catalog` };
 	}
-	const matches = registry.getAvailable().filter((model) => model.id === body);
+	const matches = loggedIn(ctx).filter((model) => model.id === body);
 	if (matches.length === 1) return pi(matches[0], level ?? lead?.level);
 	if (matches.length > 1) return { reason: `${body} is logged in under several providers: ${matches.map(ref).join(", ")}` };
 	return { reason: `${body} is not a configured name or a logged-in model id` };
 }
+
+const loggedIn = ({ registry, oauthOnly }: ModelContext): Model<Api>[] => registry.getAvailable().filter((model) => !oauthOnly || registry.isUsingOAuth(model));
 
 function pi(model: Model<Api>, level: ModelThinkingLevel | undefined): ResolvedModel {
 	return { harness: "pi", model, ...clamp(model, level) };

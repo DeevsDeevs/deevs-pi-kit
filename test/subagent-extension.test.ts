@@ -37,7 +37,7 @@ describe("Subagent extension surface", () => {
 			await handler!({ reason: "startup" }, {
 				cwd: process.env.PI_CODING_AGENT_DIR,
 				isProjectTrusted: () => true,
-				modelRegistry: { getAll: () => [sol], getAvailable: () => (loggedIn ? [sol] : []), find: () => sol },
+				modelRegistry: { getAll: () => [sol], getAvailable: () => (loggedIn ? [sol] : []), find: () => sol, isUsingOAuth: () => true },
 				sessionManager: { getSessionId: () => "s", getEntries: () => (assistant ? [{ type: "message", message: { role: "assistant" } }] : []) },
 				ui: { notify: (_text: string, level: string) => seen.push(level) },
 			});
