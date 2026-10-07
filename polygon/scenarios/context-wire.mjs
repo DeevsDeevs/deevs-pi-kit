@@ -33,7 +33,8 @@ export default {
 		});
 		editJson(settings(t), (s) => ({ ...s, packages: kitPackages }));
 
-		// User turn, the tool-result continuation, then a turn woken only by the job's task-notification.
+		// User turn, the tool-result continuation, then a turn woken only by the job's task-notification; `verify` on, so the working rules are measured.
+		editJson(join(t.agentDir, "pi-kit.json"), (k) => ({ ...k, verify: true }));
 		await phase("pi-kit", async () => {
 			const lead = rpc(t, { model: "polygon/puppet" });
 			await lead.script({ agent: "pi-kit", steps: [

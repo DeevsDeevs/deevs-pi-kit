@@ -3,10 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getEncoding } from "js-tiktoken";
 import type { TObject, TSchema } from "typebox";
 import { Value } from "typebox/value";
 import subagentsExtension from "../extensions/subagents/index.ts";
-import { agentTypesList, findAgentType, VERIFY_RULE, workerPrompt } from "../extensions/subagents/definitions.ts";
+import { agentTypesList, findAgentType, WORKING_RULES, workerPrompt } from "../extensions/subagents/definitions.ts";
 
 describe("Subagent extension surface", () => {
 	it("registers Agent, Workflow, TaskStop, job_start, Monitor, SendMessage, ListAgents and /agents", () => {
@@ -83,7 +84,7 @@ describe("Subagent extension surface", () => {
 		expect(names.filter((name) => ["workflow-authoring", "collaborators", "background-tasks", "todos", "ask-user", "chain-system"].includes(name!))).toEqual([]);
 	});
 
-	it("gives the Pi lead (an Agent tool guideline) and Pi workers the verification rule only when pi-kit.json sets verify, and a Claude or Codex worker never", async () => {
+	it("gives the Pi lead (as Agent tool guidelines) every working rule and Pi workers the shared ones only when pi-kit.json sets verify, and a Claude or Codex worker none", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "pi-kit-verify-"));
 		process.env.PI_CODING_AGENT_DIR = dir;
 		const agents: Array<{ name: string; promptGuidelines?: string[] }> = [];
@@ -94,9 +95,18 @@ describe("Subagent extension surface", () => {
 		expect(agents.map((tool) => tool.promptGuidelines)).toEqual([undefined]);
 		writeFileSync(join(dir, "pi-kit.json"), JSON.stringify({ verify: true }));
 		await starts[0]!({ reason: "startup" }, ctx);
-		expect(agents.map((tool) => tool.promptGuidelines)).toEqual([undefined, [VERIFY_RULE]]);
-		expect(workerPrompt(findAgentType(undefined), dir)).not.toContain(VERIFY_RULE);
-		expect(workerPrompt(findAgentType("reviewer"), dir, undefined, { verify: true }).split(VERIFY_RULE)).toHaveLength(2);
-		expect(workerPrompt(findAgentType(undefined), dir, undefined, { cli: true, verify: true })).not.toContain(VERIFY_RULE);
+		expect(agents.map((tool) => tool.promptGuidelines)).toEqual([undefined, WORKING_RULES]);
+		const [finish, output, scope, tests, timeout, report] = WORKING_RULES;
+		expect(finish).toMatch(/within your turn[\s\S]*to wait for agents, workflows and timed jobs[\s\S]*When the user asked for action, a plan/);
+		expect(output).toMatch(/output file or binary at a path, write a working version at that path first/);
+		expect(scope).toMatch(/Add no new modules, vendored code or dependencies unless the task asks for them/);
+		expect(tests).toMatch(/If the project has none, create one in the project \(uv venv or python -m venv\)/);
+		expect(report).toMatch(/what changed, how you verified it, and what remains/);
+		const worker = workerPrompt(findAgentType("reviewer"), dir, undefined, { verify: true });
+		for (const rule of [scope, tests, timeout]) expect(worker.split(rule!)).toHaveLength(2);
+		for (const rule of [finish, output, report]) expect(worker).not.toContain(rule);
+		expect(workerPrompt(findAgentType(undefined), dir)).not.toContain(tests);
+		expect(workerPrompt(findAgentType(undefined), dir, undefined, { cli: true, verify: true })).not.toContain(tests);
+		expect(getEncoding("o200k_base").encode(WORKING_RULES.map((rule) => `- ${rule}`).join("\n")).length).toBeLessThanOrEqual(300);
 	});
 });

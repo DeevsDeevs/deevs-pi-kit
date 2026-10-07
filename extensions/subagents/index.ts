@@ -14,7 +14,7 @@ import { finishAgentWorktree, sharesCwd } from "../shared/worktree.ts";
 import { currentMission, saveMission } from "../mission/store.ts";
 import { remindSilentTurns } from "./silent-turns.ts";
 import { promptWorkflow, WORKFLOW_DESCRIPTION, WORKFLOW_FIELDS, WORKFLOW_SNIPPET } from "./workflow-prompt.ts";
-import { agentTypes, agentTypesList, findAgentType, VERIFY_RULE, workerPrompt } from "./definitions.ts";
+import { agentTypes, agentTypesList, findAgentType, WORKING_RULES, workerPrompt } from "./definitions.ts";
 import { cliWorker, closeAll, ensureEngine, launch, launchWorkflow, placeAgent, queuedAhead, reinstall, resumeSession, send, settle, startJob, startMonitor, stop, storedAgent, userRequests, workflowProgress, writerCwds, type Limits } from "./engine/index.ts";
 import { parseWorkflow } from "./workflow/meta.ts";
 import type { Progress } from "./workflow/run.ts";
@@ -95,7 +95,7 @@ const MONITOR_DESCRIPTION = [
 
 export default function subagentsExtension(pi: ExtensionAPI): void {
 	// A tool guideline lives in the base prompt, which runs a task notification starts keep; this runs before tasks' redelivery can start one.
-	pi.on("session_start", (_event, ctx) => { if (isVerifying(ctx)) pi.registerTool({ ...agentTool, promptGuidelines: [VERIFY_RULE] }); });
+	pi.on("session_start", (_event, ctx) => { if (isVerifying(ctx)) pi.registerTool({ ...agentTool, promptGuidelines: WORKING_RULES }); });
 	tasks.install(pi);
 	const models = (ctx: ExtensionContext) => modelContext(ctx, ctx.model && { model: ctx.model, level: pi.getThinkingLevel() });
 	remindSilentTurns(pi);

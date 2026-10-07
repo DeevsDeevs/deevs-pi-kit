@@ -15,7 +15,7 @@ export default {
 		writeFileSync(join(t.repo, ".pi", "pi-kit.json"), JSON.stringify({ verify: true }));
 		const persona = readFileSync(join(t.kit, "extensions/subagents/agents/explorer.md"), "utf8").split("\n---\n")[1];
 		const personaLine = persona.split("\n").find((line) => line.trim() && !line.startsWith("#"));
-		const marks = { sandboxSkill: "<name>polygon-skill</name>", kitSkill: "<name>diagnose</name>", persona: JSON.stringify(personaLine).slice(1, -1), verify: "Never pip-install into the system Python." };
+		const marks = { sandboxSkill: "<name>polygon-skill</name>", kitSkill: "<name>diagnose</name>", persona: JSON.stringify(personaLine).slice(1, -1), verify: "instead of pip-installing into a system or base Python.", lead: "how you verified it, and what remains." };
 		t.marks.push(...Object.values(marks));
 
 		const lead = rpc(t);
@@ -37,7 +37,8 @@ export default {
 		assert.ok(leadMarks.has(marks.sandboxSkill), "the sandbox skill is missing from the lead's system prompt");
 		assert.ok(leadMarks.has(marks.kitSkill), "the kit's skills are missing from the lead's system prompt");
 		assert.ok(childMarks.has(marks.persona), "the explorer persona body is missing from the subagent's system prompt");
-		assert.ok(seen.filter((r) => r.agent === "lead").every((r) => r.marks.includes(marks.verify)) && childMarks.has(marks.verify), "the verification rule is missing from a lead request or the subagent's system prompt");
+		assert.ok(seen.filter((r) => r.agent === "lead").every((r) => r.marks.includes(marks.verify) && r.marks.includes(marks.lead)) && childMarks.has(marks.verify), "the working rules are missing from a lead request or the subagent's system prompt");
+		assert.ok(!childMarks.has(marks.lead), "a subagent got the lead-only working rules");
 		const systems = jsonl(join(t.dir, "bodies.jsonl")).filter((b) => b.agent === "lead").map((b) => JSON.stringify(b.body.messages.filter((m) => m.role === "system")));
 		assert.equal(new Set(systems).size, 1, "the lead's system messages changed between its requests");
 	},
