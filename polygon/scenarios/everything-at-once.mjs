@@ -5,8 +5,10 @@ import { agentStep, eventually, rpc, sleep } from "../drive.mjs";
 import { owned, requests, sessionNotes, toolCalls } from "../look.mjs";
 import { say } from "./wf-shapes.mjs";
 
-// Background agents, a workflow, a job, a monitor and a SendMessage in flight together when Pi is killed: on reopen
-// everything settles, each task reports exactly once and no process outlives its task.
+// Background agents, an 8-agent workflow, a job, a monitor and a SendMessage in flight together when Pi is killed: on reopen
+// everything settles, each task reports exactly once and no process outlives its task. Narrower than PLAN M7's row on purpose:
+// a kill -9 stands in for /polygon-reload (reload-mid-run covers that), the collaborator image needs a live login (collab-image),
+// the Mission continue rule has its mission-* scenarios, and the 150 ms stall bound needs a lone run (durable-16, wf-scale).
 export default {
 	name: "everything-at-once",
 	gate: "M7",
@@ -16,8 +18,8 @@ export default {
 		const busy = (name) => ({ id: "b", tool: "bash", args: { command: `touch ${started(name)}; sleep 30` } });
 		mkdirSync(join(t.repo, "watched"));
 		const workflow = [
-			'export const meta = { name: "all", description: "Two agents at once" };',
-			`return await parallel([() => agent(${say("w1", [busy("w1"), { id: "c", text: "w1 out" }])}), () => agent(${say("w2")})]);`,
+			'export const meta = { name: "all", description: "Eight agents at once" };',
+			`return await parallel([() => agent(${say("w1", [busy("w1"), { id: "c", text: "w1 out" }])}), ${[2, 3, 4, 5, 6, 7, 8].map((i) => `() => agent(${say(`w${i}`)})`).join(", ")}]);`,
 		].join("\n");
 		t.marks.push("polygon-steer");
 		const lead = rpc(t);
