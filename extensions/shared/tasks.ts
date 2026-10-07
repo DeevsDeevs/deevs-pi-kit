@@ -3,8 +3,10 @@ import { VERSION, type ExtensionAPI, type ExtensionContext } from "@earendil-wor
 import { migrateLegacyConfig } from "./config.ts";
 import { HEADLESS_GUIDELINE, isHeadless } from "./surface.ts";
 
-export type TaskKind = "agent" | "workflow" | "job" | "monitor" | "collaborator";
-export type TaskStatus = "running" | "completed" | "failed" | "killed";
+export const TASK_KINDS = ["agent", "workflow", "job", "monitor", "collaborator"] as const;
+export const TASK_STATUSES = ["running", "completed", "failed", "killed"] as const;
+export type TaskKind = typeof TASK_KINDS[number];
+export type TaskStatus = typeof TASK_STATUSES[number];
 
 export interface RosterEntry {
 	id: string;
