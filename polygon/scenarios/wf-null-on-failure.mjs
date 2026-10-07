@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { rpc } from "../drive.mjs";
-import { taskNotifications } from "../look.mjs";
+import { requests, taskNotifications } from "../look.mjs";
 import { journal, launches, out, say, usageOf } from "./wf-shapes.mjs";
 
-// A 500 and a 429 that outlast every retry each turn one agent into null; the run still completes.
+// A 500 and a 429 that outlast every retry (5, about 62 s of backoff) each turn one agent into null; the run still completes.
 const SOURCE = [
 	'export const meta = { name: "nulls", description: "Failures become null" };',
 	`return await parallel([`,
@@ -31,5 +31,6 @@ export default {
 		assert.deepEqual([usage.agent_count, usage.agents_done, usage.agents_error], [3, 1, 2]);
 		const [run] = launches(lead.events);
 		assert.equal(journal(run).filter((r) => r.type === "failed").length, 2);
+		assert.deepEqual(["e500", "e429"].map((agent) => requests(t).filter((r) => r.agent === agent).length), [6, 6], "each failing agent: 1 request and 5 retries");
 	},
 };

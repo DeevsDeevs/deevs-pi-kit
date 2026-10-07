@@ -398,7 +398,8 @@ async function open(session: string, cwd: string, acks: ReturnType<typeof sessio
 		harness = await D.Harness.open(await openStorage(join(dir, "engine.sqlite")), {
 			models: modelsAdapter(),
 			registry,
-			settings: { progress: { partialIntervalMs: 500, outputIntervalMs: 500 } },
+			// pi-durable's default 3 retries back off about 14 s; 5 ride out about a minute of 429s from many agents on one account.
+			settings: { retry: { maxRetries: 5 }, progress: { partialIntervalMs: 500, outputIntervalMs: 500 } },
 			onReport: () => {},
 		}, CTX);
 		heartbeat = setInterval(() => void utimes(dir, new Date(), new Date()).catch(() => {}), 30_000);
