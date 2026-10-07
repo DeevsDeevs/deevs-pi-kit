@@ -14,7 +14,7 @@ import { currentMission, saveMission } from "../mission/store.ts";
 import { remindSilentTurns } from "./silent-turns.ts";
 import { promptWorkflow, WORKFLOW_DESCRIPTION, WORKFLOW_FIELDS, WORKFLOW_SNIPPET } from "./workflow-prompt.ts";
 import { agentTypes, agentTypesList, findAgentType, workerPrompt } from "./definitions.ts";
-import { cliWorker, closeAll, ensureEngine, launch, launchWorkflow, placeAgent, queuedAhead, reinstall, resumeSession, send, settle, startJob, startMonitor, stop, userRequests, workflowProgress, writerCwds, type Limits } from "./engine/index.ts";
+import { cliWorker, closeAll, ensureEngine, launch, launchWorkflow, placeAgent, queuedAhead, reinstall, resumeSession, send, settle, startJob, startMonitor, stop, storedAgent, userRequests, workflowProgress, writerCwds, type Limits } from "./engine/index.ts";
 import { parseWorkflow } from "./workflow/meta.ts";
 import type { Progress } from "./workflow/run.ts";
 
@@ -272,7 +272,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		}),
 		async execute(toolCallId, params: { to: string; message: string; images?: string[] }, _signal, _onUpdate, ctx) {
 			const session = ctx.sessionManager.getSessionId();
-			const entry = tasks.find(params.to, session, "agent") ?? tasks.find(params.to, session, "collaborator");
+			const entry = tasks.find(params.to, session, "agent") ?? tasks.find(params.to, session, "collaborator") ?? await storedAgent(ctx, params.to);
 			if (entry?.send) {
 				const text = await entry.send(params.message, (params.images ?? []).map((image) => resolve(ctx.cwd, image)));
 				return { content: [{ type: "text" as const, text }], details: { taskId: entry.id, kind: entry.kind } };
