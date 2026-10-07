@@ -32,7 +32,7 @@ const AgentSchema = Type.Object({
 	prompt: Type.String({ description: "The whole brief: the agent sees nothing else" }),
 	subagent_type: Type.Optional(Type.String({ description: "The agent type; general-purpose when omitted" })),
 	model: Type.Optional(Type.String({ description: "Omit to run your model and level. Else a configured name (astra, luna, opus) or provider/id[:level]; a model the user named, exactly" })),
-	run_in_background: Type.Optional(Type.Boolean({ description: "Default true. false waits up to 2 minutes for the result: only when nothing useful can happen without it" })),
+	run_in_background: Type.Optional(Type.Boolean({ description: "Default true. false waits up to 2 minutes for the result, except in a codemode script: only when nothing useful can happen without it" })),
 	name: Type.Optional(Type.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$", description: "A name to address the agent by; a later agent with the same name takes it over" })),
 	isolation: Type.Optional(Type.Literal("worktree", { description: "Run in a fresh git worktree of the repo" })),
 	cwd: Type.Optional(Type.String({ description: "Working directory, for one repo inside a multi-repo parent folder; defaults to yours" })),
@@ -103,6 +103,11 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	});
 	let widget: NodeJS.Timeout | undefined;
 	promptWorkflow(pi);
+	// A codemode script cannot wait on a foreground agent, and its call id never reaches the transcript that acks a foreground report.
+	const scripted = new Set<string>();
+	pi.on("tool_call", (event) => {
+		if (event.toolName === "Agent" && event.parentToolCallId) scripted.add(event.toolCallId);
+	});
 
 	pi.registerTool({
 		name: "Agent",
@@ -114,6 +119,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		parameters: AgentSchema,
 		outputSchema: Type.Object({ agentId: Type.String(), outputFile: Type.String() }),
 		async execute(toolCallId, params: AgentParams, signal, _onUpdate, ctx) {
+			const foreground = !scripted.delete(toolCallId) && params.run_in_background === false;
 			const type = findAgentType(params.subagent_type);
 			if (params.name && RESERVED_NAMES.has(params.name)) throw new Error(`The name '${params.name}' is reserved; pick another.`);
 			const requested = directory(ctx.cwd, params.cwd);
@@ -121,7 +127,6 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			const limits: Limits = { maxTurns: params.maxTurns, maxTokens: params.maxTokens, timeout: params.timeout };
 			const limitsSet = limitsText(limits);
 			if (resolved.harness !== "pi" && limitsSet) throw new Error(`maxTurns, maxTokens and timeout apply to Pi models only; ${modelLabel(resolved)} runs as a CLI worker.`);
-			const foreground = params.run_in_background === false;
 			const engine = await ensureEngine(ctx);
 			const agentId = newAgentId();
 			const at = await placeAgent(type, resolved, requested, agentId, params.isolation);
