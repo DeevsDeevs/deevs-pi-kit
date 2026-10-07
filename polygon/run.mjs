@@ -160,7 +160,7 @@ function freshen() {
 
 async function runOne(s, run) {
 	const started = Date.now();
-	const t = await sandbox({ run, name: s.name, kit: "/kit", results: "/results", logins: opts.live ? "/results/.login" : undefined });
+	const t = await sandbox({ run, name: s.name, kit: "/kit", results: "/results", logins: opts.live ? "/results/.login" : undefined, bodies: s.bodies });
 	t.live = Boolean(opts.live);
 	t.piRuntime = opts["pi-runtime"];
 	let status = "pass", error;

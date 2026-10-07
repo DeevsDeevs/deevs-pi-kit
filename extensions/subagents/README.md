@@ -47,7 +47,7 @@ Personas are `agents/*.md` with Claude Code's frontmatter (`name, description, t
 
 ## Claude Code and Codex workers
 
-A `claude:` or `codex:` model (`opus`, `sonnet`, `haiku` and `fable` are `claude:` names) runs the agent as `claude -p` or `codex exec` in its own process group, tagged with `PI_KIT_OWNER`, from `engine/cli.ts`. The lead gets the same launch result and notification as for a Pi agent, and `SendMessage` and `TaskStop` work alike.
+A `claude:` or `codex:` model (`opus`, `sonnet`, `haiku` and `fable` are `claude:` names) runs the agent as `claude -p` or `codex exec` in its own process group, tagged with `PI_KIT_OWNER`, from `engine/cli.ts`. The lead gets the same launch result and notification as for a Pi agent, and `SendMessage` and `TaskStop` work alike. A workflow `agent()` on such a model runs the same way: its `schema` goes in as `--json-schema` or `--output-schema`, and a rerun after a crash resumes the CLI session.
 
 - Claude: `--permission-mode bypassPermissions --permission-prompts none`, the type's denied tools plus `Agent`, `Workflow`, `AskUserQuestion`, `ScheduleWakeup`, `CronCreate` and `SendUserMessage` in `--disallowedTools`, and the kit guard as a PreToolUse hook through `--settings`. A writer in a Git repository always gets a worktree.
 - Codex: `approval_policy=never` and `sandbox_mode=workspace-write` for writers, `read-only` otherwise, passed with `-c` on `exec` and `exec resume` alike. The guard is a PreToolUse hook passed with `-c`; `--dangerously-bypass-hook-trust` lets it run without a stored trust entry.

@@ -2,46 +2,26 @@ import { readFileSync } from "node:fs";
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { isAutonomous } from "../shared/autonomy.ts";
 
-export const WORKFLOW_SNIPPET = "Run a JavaScript workflow that orchestrates many agents in the background, once the user has opted in.";
+export const WORKFLOW_SNIPPET = "Orchestrate many background agents with a script, once the user has opted in.";
 
-export const WORKFLOW_DESCRIPTION = `Run a workflow script that orchestrates many agents with deterministic JavaScript. The run goes to the background: this tool returns a task ID at once, and a <task-notification> reports the outcome when the run ends. /agents shows live progress.
+export const WORKFLOW_DESCRIPTION = `Run a JavaScript workflow script that orchestrates many agents. It runs in the background: the call returns a task ID at once, a <task-notification> reports the outcome, and /agents shows live progress.
 
-Call this tool ONLY after the user has opted into multi-agent orchestration. A workflow can start dozens of agents and spend a great many tokens, so that scale has to come from the user, never from your own guess. The user has opted in when:
-- autonomy is on (a system-reminder says so); see **Autonomy** in the workflow authoring reference;
-- the user asked, in their own words, for a workflow or for multi-agent orchestration ("use a workflow", "fan out agents on this", "orchestrate it with subagents"). A task that would merely gain from one does not count;
+Call it ONLY after the user has opted into multi-agent orchestration: a workflow can start dozens of agents and spend a great many tokens, so that scale must come from the user, never from your own guess. The user has opted in when:
+- a system-reminder says autonomy is on;
+- the user asked in their own words for a workflow or multi-agent orchestration ("use a workflow", "fan out agents on this"); a task that would merely gain from one does not count;
 - a skill or command the user invoked says to use Workflow;
-- the user named a particular saved workflow to run.
+- the user named a saved workflow to run.
 
-Otherwise do NOT call it, even when parallel work would clearly help. Use the Agent tool for single agents, or sketch what a workflow would do and roughly what it would cost and ask whether to run it; mention that saying "use a workflow" next time skips the question.
+Otherwise do NOT call it, even when parallel work would clearly help: use Agent, or sketch the workflow and its rough cost and ask; mention that saying "use a workflow" next time skips the question.
 
-Every script starts with \`export const meta = {...}\`, a plain literal (constants only: no variables, function calls or \${}) giving \`name\`, a single-line \`description\` that the workflow widget displays, and optional \`phases\`: \`{ title, detail? }\` for each phase() call, titles identical. Send the script inline as \`script\`, with no need to save it to a file beforehand, and leave the tool's \`name\` unset (that runs a saved workflow). Scripts are JavaScript; TypeScript syntax does not parse.
-
-The usual multi-stage shape is a pipeline, so each item moves on as soon as its own stage finishes:
-  export const meta = {
-    name: 'audit-routes',
-    description: 'Audit each API route, then try to disprove every issue found',
-    phases: [{ title: 'Audit' }, { title: 'Check' }],
-  }
-  const ROUTES = [{ id: 'auth', prompt: '...' }, { id: 'billing', prompt: '...' }]
-  const checked = await pipeline(
-    ROUTES,
-    r => agent(r.prompt, { label: \`audit:\${r.id}\`, phase: 'Audit', schema: ISSUES }),
-    audit => parallel(audit.issues.map(i => () =>
-      agent(\`Try to disprove: \${i.title}\`, { label: \`check:\${i.file}\`, phase: 'Check', schema: VERDICT })
-        .then(v => ({ ...i, verdict: v }))
-    ))
-  )
-  return { real: checked.flat().filter(Boolean).filter(i => i.verdict?.holds) }
-  // The auth issues are being checked while billing is still under audit.
-
-Load the \`workflow-authoring\` skill (the script API and its pitfalls, resume, quality patterns, examples) before you write a script, unless your system prompt already holds it.`;
+Before you write a script, load the \`workflow-authoring\` skill (script API, pitfalls, resume, patterns) unless your system prompt already holds it. Send the script inline as \`script\`.`;
 
 export const WORKFLOW_FIELDS = {
-	script: "The workflow script, self-contained: `export const meta = { name, description, phases }` (a plain literal) first, then the body using agent(), parallel(), pipeline() and phase().",
-	scriptPath: "Path of a workflow script on disk. Every call saves its script and returns the path; edit that file and pass it here to iterate without resending the script. Wins over `name` and `script`.",
-	name: "A saved workflow, from .pi/workflows/<name>.js or ~/.pi/agent/workflows/<name>.js.",
-	args: "A value the script reads as the global `args`. Give arrays and objects as JSON values; a string that starts with `{` or `[` is parsed as JSON.",
-	resumeFromRunId: "The Run ID of an earlier run in this session. The longest unchanged prefix of agent() calls replays from its journal; changed and new calls run live. Stop that run first with TaskStop if it is still running.",
+	script: "Plain JavaScript: `export const meta = { name, description, phases }` as a pure literal first, then the body using agent(), parallel(), pipeline() and phase().",
+	scriptPath: "A script file. Every call saves its script and returns this path: edit the file and pass it here to iterate. Wins over `name` and `script`.",
+	name: "A saved workflow: .pi/workflows/<name>.js or ~/.pi/agent/workflows/<name>.js.",
+	args: "The script's global `args`; a string that starts with `{` or `[` is parsed as JSON.",
+	resumeFromRunId: "Run ID of an earlier run in this session: its unchanged prefix of agent() calls replays from the journal. Stop the run with TaskStop first if it still runs.",
 } as const;
 
 const REFERENCE = readFileSync(new URL("../../skills/workflow-authoring/SKILL.md", import.meta.url), "utf8").replace(/^---\n[\s\S]*?\n---\n+/, "");
