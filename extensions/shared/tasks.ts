@@ -124,9 +124,9 @@ export const tasks = {
 		}
 		showHeld();
 	},
-	/** The notification ids the owner session's file already holds, when that session is on screen. */
-	delivered(ownerSession: string): Set<string> | undefined {
-		return state.ctx && activeSession() === ownerSession ? sessionAcks(state.ctx).delivered : undefined;
+	/** What the owner session's file already acknowledges, when that session is on screen. */
+	acks(ownerSession: string): ReturnType<typeof sessionAcks> | undefined {
+		return state.ctx && activeSession() === ownerSession ? sessionAcks(state.ctx) : undefined;
 	},
 	/** Whether the owner session's lead could take a new turn now; a session not on screen counts as idle (its reports are held). */
 	idle(ownerSession: string): boolean {
@@ -279,7 +279,9 @@ function capResult(text: string, cap: number, outputFile: string | undefined): s
 	return `${text.slice(0, cap)}\n... (truncated ${text.length - cap} chars${outputFile ? `, full result in ${outputFile}` : ""})`;
 }
 
-export function agentSummary(description: string, status: TaskNotification["status"], detail: { error?: string; byUser?: boolean } = {}): string {
+/** `limited` names the limit that stopped the run, whatever its status. */
+export function agentSummary(description: string, status: TaskNotification["status"], detail: { error?: string; byUser?: boolean; limited?: string } = {}): string {
+	if (detail.limited) return `Agent "${description}" stopped at its ${detail.limited} limit (partial result)`;
 	if (status === "completed") return `Agent "${description}" finished`;
 	if (status === "failed") return `Agent "${description}" failed: ${detail.error ?? "unknown error"}`;
 	return `Agent "${description}" was stopped${detail.byUser ? " by user" : ""}`;

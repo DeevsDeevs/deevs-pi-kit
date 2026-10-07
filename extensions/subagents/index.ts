@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
 import { getAgentDir, isToolCallEventType, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -10,14 +10,14 @@ import { guardBashCall, guardShell, loadGuardConfig } from "../shared/guard.ts";
 import { loadKitConfig, modelLabel, modelsTable, readCodexCatalog, resolveLead, resolveModel, type ModelContext } from "../shared/models.ts";
 import { agentForegroundResult, agentLaunchedResult, newAgentId, newBackgroundTaskId, newWorkflowRunId, newWorkflowTaskId, taskNotRunningResult, taskStoppedResult, tasks, workflowLaunchedResult, type RosterEntry } from "../shared/tasks.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
-import { createAgentWorktree, finishAgentWorktree, gitTopLevel, sharesCwd } from "../shared/worktree.ts";
+import { finishAgentWorktree, sharesCwd } from "../shared/worktree.ts";
 import { currentMission, saveMission } from "../mission/store.ts";
 import { remindSilentTurns } from "./silent-turns.ts";
 import { promptWorkflow, WORKFLOW_DESCRIPTION, WORKFLOW_FIELDS, WORKFLOW_SNIPPET } from "./workflow-prompt.ts";
 import { agentTypes, agentTypesList, findAgentType, workerPrompt } from "./definitions.ts";
 import { nextFire } from "./engine/background.ts";
 import { formatLocalTime } from "./engine/cron.ts";
-import { closeAll, ensureEngine, launch, launchWorkflow, queuedAhead, reinstall, resumeSession, send, settle, startJob, startMonitor, stop, userRequests, workflowProgress, writerCwds, type Limits } from "./engine/index.ts";
+import { cliWorker, closeAll, ensureEngine, launch, launchWorkflow, placeAgent, queuedAhead, reinstall, resumeSession, send, settle, startJob, startMonitor, stop, userRequests, workflowProgress, writerCwds, type Limits } from "./engine/index.ts";
 import { lookAtPath, lookAtUrl } from "./engine/watch.ts";
 import { parseWorkflow } from "./workflow/meta.ts";
 import type { Progress } from "./workflow/run.ts";
@@ -127,11 +127,8 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			const foreground = params.run_in_background === false;
 			const engine = await ensureEngine(ctx);
 			const agentId = newAgentId();
-			const writer = type.tools.includes("edit") || type.tools.includes("write");
-			// Claude workers bypass permissions, so every writer in a repository gets its own worktree.
-			const isolate = (params.isolation ?? type.isolation) === "worktree" || resolved.harness === "claude" && writer && await gitTopLevel(requested) !== undefined;
-			const worktree = isolate ? await createAgentWorktree({ cwd: requested, agentId, agentDir: getAgentDir() }) : undefined;
-			const cwd = worktree ? join(worktree.path, relative(worktree.repoRoot, realpathSync(requested))) : requested;
+			const at = await placeAgent(type, resolved, requested, agentId, params.isolation);
+			const { writer, worktree, cwd } = at;
 			const shared = writer && sharesCwd(await writerCwds(engine), cwd);
 			const queued = queuedAhead();
 			const base = { agentId, description: params.description, prompt: params.prompt, name: params.name, cwd, writer, toolUseId: toolCallId, foreground, worktree };
@@ -139,7 +136,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			try {
 				started = await launch(engine, resolved.harness === "pi"
 					? { ...base, model: resolved.model, level: resolved.level, tools: type.tools, instructions: workerPrompt(type, cwd, worktree), limits }
-					: { ...base, cli: { harness: resolved.harness, model: resolved.model, level: resolved.level, cwd, instructions: workerPrompt(type, cwd, worktree, true), tools: type.tools, writer, dir: join(engine.dir, "cli", agentId) } });
+					: { ...base, cli: cliWorker(engine, type, resolved, at, agentId) });
 			} catch (error) {
 				if (worktree) await finishAgentWorktree(worktree).catch(() => undefined);
 				throw error;

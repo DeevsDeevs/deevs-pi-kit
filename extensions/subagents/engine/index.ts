@@ -14,22 +14,22 @@ import { Type, type TSchema } from "typebox";
 import { Compile } from "typebox/compile";
 import { Value } from "typebox/value";
 import { guardBashCall } from "../../shared/guard.ts";
-import { loadKitConfig, readCodexCatalog, resolveModel, type ModelContext } from "../../shared/models.ts";
+import { loadKitConfig, readCodexCatalog, resolveModel, type ModelContext, type ResolvedModel } from "../../shared/models.ts";
 import { trySignalGroup } from "../../shared/process-group.ts";
 import { agentSummary, newAgentId, sessionAcks, tasks, workflowDiagnostics, workflowRecovery, workflowSummary, type TaskNotification, type TaskStatus } from "../../shared/tasks.ts";
 import { addWorktree, agentWorktreeAt, createAgentWorktree, finishAgentWorktree, git, gitTopLevel, type AgentWorktree } from "../../shared/worktree.ts";
-import { LEVELS, PI_TOOLS, workerPrompt, workflowAgentType, type PiToolName } from "../definitions.ts";
+import { LEVELS, PI_TOOLS, workerPrompt, workflowAgentType, type AgentType, type PiToolName } from "../definitions.ts";
 import { parseWorkflow } from "../workflow/meta.ts";
 import { driveWorkflow, framePrompt, newProgress, runRecord, usage, type AgentRunner, type CallOutcome, type Progress } from "../workflow/run.ts";
 import type { AgentOptions, JsonValue } from "../workflow/sandbox.ts";
 import { cliArgv, dropNulls, lastMessageFile, newProgress as newCliProgress, readEvent, schemaFile, strictify, type CliProgress, type CliWorker } from "./cli.ts";
-import { backgroundTasks, pruneOutbox, type BackgroundDoc, type BackgroundHost, type BackgroundRecord, type JobInput, type MonitorInput, type OutboxDoc } from "./background.ts";
-import { bunSqlite, lock, reap, unlock } from "./storage.ts";
+import { backgroundTasks, json, outboxItems, post, pruneOutbox, unsent, type BackgroundDoc, type BackgroundHost, type BackgroundRecord, type JobInput, type MonitorInput, type OutboxDoc, type OutboxItem } from "./background.ts";
+import { bunSqlite, lock, prune, reap, unlock } from "./storage.ts";
 
 type D = typeof Durable;
 type Ctx = Parameters<Durable.Harness["close"]>[0];
 type ConversationId = Durable.ConversationId;
-// Documents hold strict JSON; these shapes are read and written through `json()`.
+// Documents hold strict JSON; these shapes are written through `json()`.
 type AgentsDoc = { agents: Record<string, Durable.JsonObject> };
 type WorkflowsDoc = { workflows: Record<string, Durable.JsonObject> };
 
@@ -90,9 +90,6 @@ interface AgentRecord {
 	/** SendMessage text for a run its reporter has not placed yet; the reporter steers it in right after the prompt. */
 	pending?: string[];
 }
-/** `silent`: a foreground Agent call returned the report as its result, so it is sent only if Pi closed before that result was saved. */
-type OutboxItem = TaskNotification & { silent?: boolean };
-const unsent = (answered: Set<string>) => (item: OutboxItem) => !item.silent || !answered.has(item.toolUseId ?? "");
 interface RunInput {
 	agentId: string;
 	session: string;
@@ -198,14 +195,14 @@ const KEY = Symbol.for("pi-kit.agents");
 // SAFETY: this package exclusively owns the symbol-keyed slot and only ever stores the host in it.
 const slot = globalThis as typeof globalThis & { [KEY]?: Host };
 const host: Host = slot[KEY] ??= { engines: new Map(), running: 0, reserved: new Set(), queue: [], waiters: new Map(), closing: false, closed: new Map(), live: new Map(), workflows: new Map(), workers: new Map(), requests: new Map() };
+// A host kept by /reload from an older kit version.
 host.live ??= new Map();
 host.workflows ??= new Map();
 host.workers ??= new Map();
 host.reserved ??= new Set();
 host.requests ??= new Map();
-export const userRequests = host.requests;
-// A host kept from an older kit version.
 host.closed ??= new Map();
+export const userRequests = host.requests;
 
 tasks.addSource({
 	name: "agents",
@@ -275,8 +272,12 @@ export function queuedAhead(): boolean {
 	return host.running >= AGENT_SLOTS;
 }
 
-/** Throws CC's error for a schema that `agent()` refuses before anything starts. */
+const checkedSchemas = new Set<string>();
+
+/** Throws CC's error for a schema that `agent()` refuses before anything starts; each schema compiles once per process. */
 export function checkSchema(schema: Durable.JsonObject): void {
+	const key = JSON.stringify(schema);
+	if (checkedSchemas.has(key)) return;
 	try {
 		Compile(schema);
 	} catch {
@@ -286,21 +287,37 @@ export function checkSchema(schema: Durable.JsonObject): void {
 	if (!Value.Check(ObjectRoot, schema)) throw unusable("its root must be {type: 'object', properties: {...}}, with required a list of property names");
 	const missing = (schema.required ?? []).filter((key) => !Object.hasOwn(schema.properties, key));
 	if (missing.length) throw unusable(`required names ${missing.join(", ")}, which properties lacks`);
+	checkedSchemas.add(key);
+}
+
+export interface Placement { writer: boolean; worktree?: AgentWorktree; cwd: string }
+
+/** Where an agent works. Claude workers bypass permissions, so a Claude writer in a repository always gets its own worktree. */
+export async function placeAgent(type: AgentType, resolved: ResolvedModel, requested: string, agentId: string, isolation: "worktree" | undefined): Promise<Placement> {
+	const writer = type.tools.includes("edit") || type.tools.includes("write");
+	const isolate = (isolation ?? type.isolation) === "worktree" || resolved.harness === "claude" && writer && await gitTopLevel(requested) !== undefined;
+	const worktree = isolate ? await createAgentWorktree({ cwd: requested, agentId, agentDir: getAgentDir() }) : undefined;
+	return { writer, worktree, cwd: worktree ? join(worktree.path, relative(worktree.repoRoot, realpathSync(requested))) : requested };
+}
+
+/** The worker of a `claude:` or `codex:` model. */
+export function cliWorker(engine: Engine, type: AgentType, resolved: Extract<ResolvedModel, { harness: "claude" | "codex" }>, at: Placement, agentId: string, schema?: Durable.JsonObject): CliWorker {
+	return { harness: resolved.harness, model: resolved.model, level: resolved.level, cwd: at.cwd, instructions: workerPrompt(type, at.cwd, at.worktree, true), tools: type.tools, writer: at.writer, schema, dir: join(engine.dir, "cli", agentId) };
 }
 
 export async function launch(engine: Engine, spec: LaunchSpec): Promise<{ outputFile: string; done?: Promise<TaskNotification> }> {
 	const { D } = await host.modules!;
 	const { agentId } = spec;
-	const outputFile = join(engine.dir, "out", `${agentId}.md`);
+	const outputFile = agentOutput(engine, agentId);
 	const startedAt = Date.now();
 	const done = spec.foreground ? new Promise<TaskNotification>((resolve) => host.waiters.set(agentId, { claimed: false, timedOut: false, resolve })) : undefined;
 	const { kit, root } = engine;
+	const record: AgentRecord = { name: spec.name, description: spec.description, startedAt, status: "running", cwd: spec.cwd, writer: spec.writer, worktree: spec.worktree };
 	await root.commit(async (tx) => {
-		const record: AgentRecord = { name: spec.name, description: spec.description, startedAt, status: "running", cwd: spec.cwd, writer: spec.writer, worktree: spec.worktree };
 		if (spec.cli) {
-			const input: CliInput = { agentId, session: engine.session, prompt: spec.prompt, description: spec.description, toolUseId: spec.toolUseId, startedAt, outputFile, worktree: spec.worktree, worker: spec.cli };
-			await tx.createTask(kit.CliTask, input, BACKGROUND);
-			(await tx.doc(kit.Agents, root.id)).agents[agentId] = json({ ...record, cli: spec.cli });
+			const cliRecord: AgentRecord = { ...record, cli: spec.cli };
+			await tx.createTask(kit.CliTask, { ...cliInput({ session: engine.session, outputFile }, agentId, cliRecord, spec.prompt, spec.toolUseId), startedAt }, BACKGROUND);
+			(await tx.doc(kit.Agents, root.id)).agents[agentId] = json(cliRecord);
 			return;
 		}
 		const anchor = await tx.createTask(kit.Anchor, null, BACKGROUND);
@@ -317,8 +334,12 @@ export async function launch(engine: Engine, spec: LaunchSpec): Promise<{ output
 		await tx.createTask(kit.Reporter, input, BACKGROUND);
 		(await tx.doc(kit.Agents, root.id)).agents[agentId] = json({ ...record, conversationId: child.id });
 	}, CTX);
-	tasks.register({ id: agentId, kind: "agent", name: spec.name, description: spec.description, status: "running", ownerSession: engine.session, startedAt, stop: () => stop(engine, agentId) });
+	registerAgent(engine, agentId, record);
 	return { outputFile, done };
+}
+
+function registerAgent(engine: Engine, id: string, record: AgentRecord): void {
+	tasks.register({ id, kind: "agent", name: record.name, description: record.description, status: record.status, ownerSession: engine.session, startedAt: record.startedAt, stop: () => stop(engine, id) });
 }
 
 /**
@@ -356,7 +377,7 @@ export async function send(engine: Engine, agentId: string, message: string, too
 		current.status = "running";
 		current.stopped = false;
 		if (worktree) current.worktree = worktree;
-		const input: ReporterInput = { agentId, session: engine.session, conversationId, prompt: message, requestId: `send:${randomUUID()}`, description: record.description, toolUseId, limits: {}, startedAt: Date.now(), outputFile: join(engine.dir, "out", `${agentId}.md`), worktree: current.worktree, from };
+		const input: ReporterInput = { agentId, session: engine.session, conversationId, prompt: message, requestId: `send:${randomUUID()}`, description: record.description, toolUseId, limits: {}, startedAt: Date.now(), outputFile: agentOutput(engine, agentId), worktree: current.worktree, from };
 		await tx.createTask(engine.kit.Reporter, input, BACKGROUND);
 		return "resumed" as const;
 	}, CTX);
@@ -374,15 +395,17 @@ async function sendCli(engine: Engine, agentId: string, message: string, toolUse
 		}
 		current.status = "running";
 		current.stopped = false;
-		await tx.createTask(engine.kit.CliTask, cliInput(engine.session, join(engine.dir, "out", `${agentId}.md`), agentId, current, message, toolUseId), BACKGROUND);
+		await tx.createTask(engine.kit.CliTask, cliInput({ session: engine.session, outputFile: agentOutput(engine, agentId) }, agentId, current, message, toolUseId), BACKGROUND);
 		return "resumed" as const;
 	}, CTX);
 	if (outcome === "resumed") tasks.update(agentId, { status: "running" });
 	return outcome;
 }
 
-function cliInput(session: string, outputFile: string, agentId: string, record: AgentRecord, prompt: string, toolUseId: string): CliInput {
-	return { agentId, session, prompt, description: record.description, toolUseId, startedAt: Date.now(), outputFile, worktree: record.worktree, worker: record.cli! };
+const agentOutput = (engine: Engine, agentId: string): string => join(engine.dir, "out", `${agentId}.md`);
+
+function cliInput(at: Pick<RunInput, "session" | "outputFile">, agentId: string, record: AgentRecord, prompt: string, toolUseId: string): CliInput {
+	return { agentId, session: at.session, prompt, description: record.description, toolUseId, startedAt: Date.now(), outputFile: at.outputFile, worktree: record.worktree, worker: record.cli! };
 }
 
 async function agentRecord(engine: Engine, agentId: string): Promise<AgentRecord> {
@@ -490,27 +513,39 @@ async function open(session: string, cwd: string, acks: ReturnType<typeof sessio
 	const from = await stat(dir).then((info) => info.mtimeMs, () => undefined);
 	await mkdir(join(dir, "out"), { recursive: true });
 	await lock(join(dir, "engine.lock"));
-	await reap(`PI_KIT_OWNER=${dir}`);
-	const { D, openStorage } = await (host.modules ??= loadModules());
-	const registry = D.createRegistry();
-	const kit = buildKit(D, dir, cwd);
-	registry.install(kit.extension);
-	const harness = await D.Harness.open(await openStorage(join(dir, "engine.sqlite")), {
-		models: modelsAdapter(),
-		registry,
-		settings: { progress: { partialIntervalMs: 500, outputIntervalMs: 500 } },
-		onReport: () => {},
-	}, CTX);
-	const root = await harness.root(CTX);
-	const heartbeat = setInterval(() => void utimes(dir, new Date(), new Date()).catch(() => {}), 30_000);
-	heartbeat.unref();
-	const engine: Engine = { session, dir, project: cwd, harness, root, registry, kit, heartbeat };
+	void prune(join(getAgentDir(), "pi-kit")).catch(() => {});
+	let harness: Durable.Harness | undefined;
+	let heartbeat: NodeJS.Timeout | undefined;
+	try {
+		await reap(`PI_KIT_OWNER=${dir}`);
+		const { D, openStorage } = await (host.modules ??= loadModules());
+		const registry = D.createRegistry();
+		const kit = buildKit(D, dir, cwd);
+		registry.install(kit.extension);
+		harness = await D.Harness.open(await openStorage(join(dir, "engine.sqlite")), {
+			models: modelsAdapter(),
+			registry,
+			settings: { progress: { partialIntervalMs: 500, outputIntervalMs: 500 } },
+			onReport: () => {},
+		}, CTX);
+		heartbeat = setInterval(() => void utimes(dir, new Date(), new Date()).catch(() => {}), 30_000);
+		heartbeat.unref();
+		return await resume({ session, dir, project: cwd, harness, root: await harness.root(CTX), registry, kit, heartbeat }, D, from, acks);
+	} catch (error) {
+		clearInterval(heartbeat);
+		await harness?.close(CTX).catch(() => {});
+		await unlock(join(dir, "engine.lock"));
+		throw error;
+	}
+}
+
+/** Lists the session's tasks on the roster, holds the slots of runs Pi closed mid-way, then lets durable continue them. */
+async function resume(engine: Engine, D: D, from: number | undefined, acks: ReturnType<typeof sessionAcks>): Promise<Engine> {
+	const { session, harness, root, registry, kit } = engine;
 	const records = agentRecords(await harness.snapshot(kit.Agents, root.id, CTX));
 	const workflows = workflowRecords(await harness.snapshot(kit.Workflows, root.id, CTX));
 	installSchemas(D, registry, session, workflows);
-	for (const [id, record] of Object.entries(records)) {
-		tasks.register({ id, kind: "agent", name: record.name, description: record.description, status: record.status, ownerSession: session, startedAt: record.startedAt, stop: () => stop(engine, id) });
-	}
+	for (const [id, record] of Object.entries(records)) registerAgent(engine, id, record);
 	for (const [id, record] of Object.entries(workflows)) registerWorkflow(engine, id, record);
 	for (const [id, record] of Object.entries(backgroundRecords(await harness.snapshot(kit.Background, root.id, CTX)))) registerBackground(engine, id, record);
 	// ponytail: a resumed run takes its slot without waiting; reopening a session while another fills the 16 exceeds them until the extra runs end.
@@ -668,9 +703,8 @@ function installSchemas(D: D, registry: Durable.Registry, session: string, recor
 	for (const schema of new Map(used.map((schema) => [JSON.stringify(schema), schema])).values()) registry.install(schemaExtension(D, session, schema));
 }
 
-/** Checks the schema, then installs its StructuredOutput extension once per process. */
+/** Installs a checked schema's StructuredOutput extension once per process. */
 function useSchema(D: D, engine: Engine, schema: Durable.JsonObject): Durable.Extension {
-	checkSchema(schema);
 	const extension = schemaExtension(D, engine.session, schema);
 	if (!engine.registry.snapshot().extension(extension.name)) engine.registry.install(extension);
 	return extension;
@@ -752,9 +786,7 @@ async function report(D: D, docs: Pick<Kit, "Outbox" | "Agents">, input: Reporte
 			: settled === undefined || settled.status === "unanswered" && settled.reason === "aborted" ? "killed" : "failed";
 		const outcome: Outcome = {
 			status,
-			summary: limited
-				? `Agent "${input.description}" stopped at its ${limited} limit (partial result)`
-				: agentSummary(input.description, status, { error: failure(settled), byUser: (await record())?.stoppedBy === "user" }),
+			summary: agentSummary(input.description, status, { error: failure(settled), byUser: (await record())?.stoppedBy === "user", limited }),
 			result: output,
 			usage: {
 				subagentTokens: tokens,
@@ -785,12 +817,12 @@ async function commitReport(docs: Pick<Kit, "Outbox" | "Agents"> & { CliTask?: K
 	await runtime.commit(async (tx) => {
 		const record = agentRecords(await tx.doc(docs.Agents, runtime.conversationId))[input.agentId];
 		if (record?.queued?.length && docs.CliTask && !record.stopped) {
-			await tx.createTask(docs.CliTask, cliInput(input.session, input.outputFile, input.agentId, record, record.queued.join("\n\n"), input.toolUseId), BACKGROUND);
+			await tx.createTask(docs.CliTask, cliInput(input, input.agentId, record, record.queued.join("\n\n"), input.toolUseId), BACKGROUND);
 			record.queued = [];
 			next = true;
 		} else if (record) record.status = outcome.status;
 		if (waiter && !waiter.timedOut) waiter.claimed = true;
-		(await tx.doc(docs.Outbox, runtime.conversationId)).items.push(json({ ...n, silent: waiter?.claimed || undefined }));
+		post(await tx.doc(docs.Outbox, runtime.conversationId), { ...n, silent: waiter?.claimed || undefined });
 		return { status: "terminal", outcome: { status: "completed", result: null } };
 	}, context);
 	tasks.update(input.agentId, { status: next ? "running" : outcome.status });
@@ -815,7 +847,7 @@ async function runCli(docs: Pick<Kit, "Outbox" | "Agents" | "CliTask">, owner: s
 	const run = interrupted ? { resume: interrupted, prompt: CONTINUE } : { resume: intent.resume ?? undefined, prompt: intent.prompt };
 	const worktree = input.worktree && await reopenWorktree(input.worktree);
 	const progress = newCliProgress();
-	let exit: { code: number | null; stderr: string } | undefined;
+	let exit: CliExit | undefined;
 	const held = await acquire(input.agentId);
 	try {
 		if (held && !(await record())?.stopped) {
@@ -900,8 +932,10 @@ async function spawnWorker(input: Pick<CliInput, "agentId" | "worker">, owner: s
 	return { code, stderr };
 }
 
-/** `maxTurns`, `maxTokens` and `timeout` exist only when the user asked; the first one reached stops the agent. */
-/** `turns` already taken counts toward `maxTurns`, so a run reopened after Pi exits keeps its count. */
+/**
+ * `maxTurns`, `maxTokens` and `timeout` exist only when the user asked; the first one reached stops the agent.
+ * `turns` already taken counts toward `maxTurns`, so a run reopened after Pi exits keeps its count.
+ */
 function watchLimits(D: D, engine: Engine, input: ReporterInput, turns: number, hit: (limit: string) => void): () => void {
 	const { maxTurns, maxTokens, timeout } = input.limits;
 	if (!maxTurns && !maxTokens && !timeout) return () => {};
@@ -978,15 +1012,7 @@ function failure(settled: Durable.SettledSubmissionRecord | undefined): string {
 	return Value.Check(FailureDetail, settled.detail) ? settled.detail.message : settled.reason;
 }
 
-/** Documents hold strict JSON: optional fields that are `undefined` are dropped. */
-function json(value: AgentRecord | OutboxItem | WorkflowRecord | CallRecord | CallOutcome | BackgroundRecord): Durable.JsonObject {
-	return JSON.parse(JSON.stringify(value));
-}
-
 // Documents hold JsonObject, which no interface with optional fields can be asserted from directly.
-// SAFETY: the kit writes the Outbox only through json() of an OutboxItem.
-// oxlint-disable-next-line anti-slop/no-chained-type-assertions
-const outboxItems = (doc: OutboxDoc | undefined) => (doc?.items ?? []) as unknown as OutboxItem[];
 // SAFETY: the kit writes Agents only through json() of an AgentRecord.
 // oxlint-disable-next-line anti-slop/no-chained-type-assertions
 const agentRecords = (doc: AgentsDoc | undefined) => (doc?.agents ?? {}) as unknown as Record<string, AgentRecord>;
@@ -1067,7 +1093,7 @@ async function runWorkflowTask(D: D, docs: WorkflowDocs, input: WorkflowInput, r
 		usage: usage(progress, durationMs),
 	};
 	await runtime.commit(async (tx) => {
-		(await tx.doc(docs.Outbox, runtime.conversationId)).items.push(json(n));
+		post(await tx.doc(docs.Outbox, runtime.conversationId), n);
 		const record = workflowRecords(await tx.doc(docs.Workflows, runtime.conversationId))[input.taskId];
 		if (record) record.status = status;
 		return { status: "terminal", outcome: { status: "completed", result: null } };
@@ -1103,18 +1129,16 @@ function callRunner(D: D, docs: WorkflowDocs, engine: Engine, input: WorkflowInp
 		return undefined;
 	}, context);
 	let creating = Promise.resolve();
+	// The run's pi-kit.json and Codex catalog are read once, at its first agent() call.
+	let models: Promise<ModelContext> | undefined;
 	const create = async (key: string, options: AgentOptions): Promise<CallRecord> => {
 		const type = workflowAgentType(options.agentType);
-		const resolved = resolveModel(options.model ?? type.model, await modelContext(input), LEVELS.find((level) => level === options.effort) ?? type.effort);
+		const resolved = resolveModel(options.model ?? type.model, await (models ??= modelContext(input)), LEVELS.find((level) => level === options.effort) ?? type.effort);
 		const agentId = newAgentId();
-		const requested = resolve(input.cwd, options.cwd ?? ".");
-		const writer = type.tools.includes("edit") || type.tools.includes("write");
-		// As with Agent: Claude workers bypass permissions, so a Claude writer in a repository always gets its own worktree.
-		const isolate = (options.isolation ?? type.isolation) === "worktree" || resolved.harness === "claude" && writer && await gitTopLevel(requested) !== undefined;
-		const worktree = isolate ? await createAgentWorktree({ cwd: requested, agentId, agentDir: getAgentDir() }) : undefined;
-		const cwd = worktree ? join(worktree.path, relative(worktree.repoRoot, realpathSync(requested))) : requested;
+		const at = await placeAgent(type, resolved, resolve(input.cwd, options.cwd ?? "."), agentId, options.isolation);
+		const { worktree, cwd } = at;
 		if (resolved.harness !== "pi") {
-			const call: CallRecord = { agentId, isolated: worktree, cli: { harness: resolved.harness, model: resolved.model, level: resolved.level, cwd, instructions: workerPrompt(type, cwd, worktree, true), tools: type.tools, writer, schema: options.schema, dir: join(engine.dir, "cli", agentId) } };
+			const call: CallRecord = { agentId, isolated: worktree, cli: cliWorker(engine, type, resolved, at, agentId, options.schema) };
 			await save(key, agentId, call);
 			return call;
 		}

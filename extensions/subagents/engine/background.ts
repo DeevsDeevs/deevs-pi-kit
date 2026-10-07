@@ -1,7 +1,7 @@
 // Jobs and Monitors: background commands and watches that live in the engine beside agents. A job's process group is
 // reaped when Pi exits and reported once as interrupted on reopen; a monitor resumes from its last committed look.
 import { spawn } from "node:child_process";
-import { createWriteStream } from "node:fs";
+import { createWriteStream, statSync } from "node:fs";
 import { constants } from "node:os";
 import type * as Durable from "@earendil-works/pi-durable";
 import { trySignalGroup } from "../../shared/process-group.ts";
@@ -13,6 +13,8 @@ type D = typeof Durable;
 type Ctx = Parameters<Durable.Harness["close"]>[0];
 export type OutboxDoc = { items: Durable.JsonObject[] };
 export type BackgroundDoc = { tasks: Record<string, Durable.JsonObject> };
+/** `silent`: a foreground Agent call returned the report as its result, so it is sent only if Pi closed before that result was saved. */
+export type OutboxItem = TaskNotification & { silent?: boolean };
 type Docs = { Outbox: Durable.ConversationDocToken<OutboxDoc>; Background: Durable.ConversationDocToken<BackgroundDoc> };
 
 const LOG_BYTES = 10_000_000;
@@ -73,18 +75,10 @@ export function backgroundTasks(D: D, docs: Docs, host: BackgroundHost) {
 		// Memoed before the spawn: a command is never known to be idempotent, so a reopen reports it rather than running it twice.
 		if (await runtime.memo<boolean>("spawned", context)) return finishJob(input, runtime, context, "interrupted");
 		await runtime.memo("spawned", true, context);
-		const log = createWriteStream(input.outputFile, { flags: "a" });
-		let bytes = 0;
-		let logCut = false;
-		const write = (chunk: Buffer) => {
-			const part = chunk.subarray(0, Math.max(0, LOG_BYTES - bytes));
-			logCut ||= part.length < chunk.length;
-			bytes += part.length;
-			if (part.length) log.write(part);
-		};
+		const log = cappedLog(input.outputFile);
 		const child = start(input.command, input);
-		child.stdout?.on("data", write);
-		child.stderr?.on("data", write);
+		child.stdout?.on("data", log.write);
+		child.stderr?.on("data", log.write);
 		let limited: string | undefined;
 		const timer = input.timeout ? setTimeout(() => {
 			limited = `timeout ${input.timeout} ms`;
@@ -92,9 +86,9 @@ export function backgroundTasks(D: D, docs: Docs, host: BackgroundHost) {
 		}, input.timeout) : undefined;
 		const exitCode = await exited(child, runtime.signal);
 		clearTimeout(timer);
-		await new Promise((resolve) => log.end(resolve));
+		await log.end();
 		await unlessClosing(runtime.signal);
-		await finishJob(input, runtime, context, { exitCode }, limited, logCut);
+		await finishJob(input, runtime, context, { exitCode }, limited, log.cut);
 	}
 
 	async function finishJob(input: JobInput, runtime: Runtime<JobInput, { phase: "run" }>, context: Ctx, end: JobEnd, limited?: string, logCut?: boolean): Promise<void> {
@@ -167,9 +161,9 @@ export function backgroundTasks(D: D, docs: Docs, host: BackgroundHost) {
 		const resumed = await runtime.memo<boolean>("spawned", context);
 		if (!resumed) await runtime.memo("spawned", true, context);
 		let caughtUp = resumed ? closedSince(input.session, at.lastAt) : undefined;
-		const log = createWriteStream(input.outputFile, { flags: "a" });
+		const log = cappedLog(input.outputFile);
 		const child = start(input.target, input);
-		child.stderr?.on("data", (chunk: Buffer) => log.write(chunk));
+		child.stderr?.on("data", log.write);
 		// In memory: it survives /reload with this process; a reopen runs the script again with a full bucket.
 		const limit = new RateLimit(Date.now());
 		let events = at.events;
@@ -225,7 +219,7 @@ export function backgroundTasks(D: D, docs: Docs, host: BackgroundHost) {
 		const code = await exited(child, runtime.signal);
 		clearTimeout(timer);
 		clearTimeout(batch);
-		log.end();
+		void log.end();
 		await committing;
 		await unlessClosing(runtime.signal);
 		if (rest) lines.push(rest);
@@ -236,9 +230,7 @@ export function backgroundTasks(D: D, docs: Docs, host: BackgroundHost) {
 	async function emit<S extends MonitorState>(input: MonitorInput, runtime: Runtime<MonitorInput, MonitorState>, context: Ctx, next: S, event: string, caughtUp: string | undefined): Promise<void> {
 		const n = monitorEvent(input, String(next.events), event, caughtUp);
 		await runtime.commit(async (tx) => {
-			const outbox = await tx.doc(docs.Outbox, runtime.conversationId);
-			pruneOutbox(outbox, input.session);
-			outbox.items.push(json(n));
+			post(await tx.doc(docs.Outbox, runtime.conversationId), n);
 			return { status: "running", checkpoint: next };
 		}, context);
 		await tasks.notify(n);
@@ -253,7 +245,7 @@ export function backgroundTasks(D: D, docs: Docs, host: BackgroundHost) {
 		await runtime.commit(async (tx) => {
 			const record = (await tx.doc(docs.Background, runtime.conversationId)).tasks[id];
 			if (record) record.status = status;
-			if (n) (await tx.doc(docs.Outbox, runtime.conversationId)).items.push(json(n));
+			if (n) post(await tx.doc(docs.Outbox, runtime.conversationId), n);
 			return { status: "terminal", outcome: outcome === "completed" ? { status: outcome, result: null } : { status: outcome } };
 		}, context);
 		tasks.update(id, { status });
@@ -290,10 +282,22 @@ function monitorEvent(input: MonitorInput, seq: string, event: string, caughtUp:
 	return { notificationId: `${input.id}:${seq}`, taskId: input.id, kind: "monitor", ownerSession: input.session, outputFile: input.outputFile, summary: `Monitor event: "${input.description}"`, event, caughtUp };
 }
 
-/** Drops the items the session file already acknowledges, so a long-lived monitor does not grow the Outbox forever. */
+export const unsent = (answered: Set<string>) => (item: OutboxItem) => !item.silent || !answered.has(item.toolUseId ?? "");
+// SAFETY: the kit writes the Outbox only through post().
+// oxlint-disable-next-line anti-slop/no-chained-type-assertions
+const outboxItem = (item: Durable.JsonObject) => item as unknown as OutboxItem;
+export const outboxItems = (doc: OutboxDoc | undefined): OutboxItem[] => (doc?.items ?? []).map(outboxItem);
+
+/** Drops what the session file already holds: delivered reports, and silent ones whose foreground call it answered. */
 export function pruneOutbox(outbox: OutboxDoc, session: string): void {
-	const delivered = tasks.delivered(session);
-	if (delivered) outbox.items = outbox.items.filter((item) => !delivered.has(String(item.notificationId)));
+	const acks = tasks.acks(session);
+	if (acks) outbox.items = outbox.items.filter((item) => !acks.delivered.has(outboxItem(item).notificationId) && unsent(acks.answered)(outboxItem(item)));
+}
+
+/** Appends a report after pruning, so the Outbox does not grow with a long session. */
+export function post(outbox: OutboxDoc, item: OutboxItem): void {
+	pruneOutbox(outbox, item.ownerSession);
+	outbox.items.push(json(item));
 }
 
 export function nextFire(cron: string, from: number): number {
@@ -319,7 +323,24 @@ function exited(child: ReturnType<typeof start>, signal: AbortSignal): Promise<n
 	}).finally(() => signal.removeEventListener("abort", onAbort));
 }
 
+/** The output file, cut at 10 MB across runs, so a long-lived command cannot fill the disk. */
+export function cappedLog(file: string) {
+	const stream = createWriteStream(file, { flags: "a" });
+	let bytes = statSync(file, { throwIfNoEntry: false })?.size ?? 0;
+	const log = {
+		cut: false,
+		write: (chunk: Buffer) => {
+			const part = chunk.subarray(0, Math.max(0, LOG_BYTES - bytes));
+			log.cut ||= part.length < chunk.length;
+			bytes += part.length;
+			if (part.length) stream.write(part);
+		},
+		end: () => new Promise<void>((resolve) => stream.end(resolve)),
+	};
+	return log;
+}
+
 /** Documents hold strict JSON: optional fields that are `undefined` are dropped. */
-function json(value: TaskNotification): Durable.JsonObject {
+export function json<T>(value: T): Durable.JsonObject {
 	return JSON.parse(JSON.stringify(value));
 }

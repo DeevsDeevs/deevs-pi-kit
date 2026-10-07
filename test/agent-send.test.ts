@@ -36,12 +36,17 @@ describe("SendMessage to an agent", () => {
 		expect(asked.at(-1)).toContain("steer");
 	});
 
-	it("sends a foreground report again after a restart only when its Agent result was never saved", async () => {
-		faux.setResponses([fauxAssistantMessage("answer")]);
-		const agentId = newAgentId();
-		const { done } = await launch(await ensureEngine(ctx), { agentId, description: "d", prompt: "task", model: faux.getModel(), tools: ["read"], instructions: "", cwd, writer: false, toolUseId: "fg", limits: {}, foreground: true });
-		await done;
+	it("sends a foreground report again after a restart only while its Agent result is unsaved, then prunes it", async () => {
+		faux.setResponses([fauxAssistantMessage("answer"), fauxAssistantMessage("other")]);
+		const foreground = async (toolUseId: string) => {
+			const agentId = newAgentId();
+			const { done } = await launch(await ensureEngine(ctx), { agentId, description: "d", prompt: "task", model: faux.getModel(), tools: ["read"], instructions: "", cwd, writer: false, toolUseId, limits: {}, foreground: true });
+			await done;
+			return () => sent.filter((id) => id.startsWith(`${agentId}:`));
+		};
 		const sent: string[] = [];
+		const saved = await foreground("fg");
+		const unsaved = await foreground("fg2");
 		let start: ((event: object, context: ExtensionContext) => Promise<void>) | undefined;
 		tasks.install({ on: (name: string, handler: typeof start) => { if (name === "session_start") start = handler; }, sendMessage: (message: { details: { notificationId: string } }) => sent.push(message.details.notificationId) } as unknown as ExtensionAPI);
 		const reopen = async (entries: object[]) => {
@@ -50,10 +55,10 @@ describe("SendMessage to an agent", () => {
 			await start!({ reason: "startup" }, restarted);
 			await ensureEngine(restarted);
 		};
-		const mine = () => sent.filter((id) => id.startsWith(`${agentId}:`));
 		await reopen([{ type: "message", message: { role: "toolResult", toolCallId: "fg" } }]);
-		expect(mine()).toEqual([]);
+		expect([saved(), unsaved()].map((ids) => ids.length)).toEqual([0, 1]);
+		// The Outbox dropped the saved one at that open, so it stays unsent once the session no longer shows its result.
 		await reopen([]);
-		expect(mine()).toHaveLength(1);
+		expect(saved()).toEqual([]);
 	});
 });
