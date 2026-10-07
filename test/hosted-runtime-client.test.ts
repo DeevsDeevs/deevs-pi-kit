@@ -1,14 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HostedRuntimeClient, HostedRuntimeClientError } from "../extensions/runtime/client.ts";
+import { prepareCollaboratorSession } from "../extensions/runtime/collaborator-launch.ts";
 import { HostedRuntimeIntegration } from "../extensions/runtime/hosted-integration.ts";
 import { encodeMail } from "../extensions/runtime/mail-body.ts";
 import { mailContent } from "../extensions/runtime/messaging-client.ts";
 import { startRuntimeService } from "../extensions/runtime/service-launch.ts";
-import { HOSTED_SESSION_ENTRY } from "../extensions/runtime/session-record.ts";
+import { COLLABORATOR_ENV, HOSTED_SESSION_ENTRY } from "../extensions/runtime/session-record.ts";
 import { RUNTIME_BUILD } from "../extensions/runtime/service/build.ts";
 import type { HostedHostVerifier, HostedLiveAgent } from "../extensions/runtime/service/herdr-cli.ts";
 import { startRuntimeServer, type RuntimeServerHandle } from "../extensions/runtime/service/server.ts";
@@ -177,6 +179,29 @@ describe("hosted runtime client vertical", () => {
 		integration.restoreSessionState({ cwd: tmpdir(), sessionManager: { getBranch: () => [entry] } } as never);
 		expect(integration.collaborators.guardTool("edit", { path: "x" }, tmpdir())).toMatchObject({ block: true });
 		expect(integration.collaborators.guardTool("read", { path: "x" }, tmpdir())).toBeUndefined();
+	});
+
+	it("restarts a reused collaborator session where and as its new start says", () => {
+		const projectRoot = realpathSync(mkdtempSync(join(tmpdir(), "pi-kit-runtime-relaunch-")));
+		roots.push(projectRoot);
+		const worktree = join(projectRoot, "worktrees", "w");
+		mkdirSync(worktree, { recursive: true });
+		const sessionFile = join(projectRoot, "w.jsonl");
+		const reader = { participantId: "w", driver: "pi", profile: "read-only" } as const;
+		expect(prepareCollaboratorSession(sessionFile, projectRoot, projectRoot, reader)).toBe(true);
+		SessionManager.open(sessionFile).appendMessage({ role: "user", content: [{ type: "text", text: "earlier work" }], timestamp: 1 });
+		expect(prepareCollaboratorSession(sessionFile, worktree, projectRoot, { ...reader, profile: "workspace-write" })).toBe(false);
+		const session = SessionManager.open(sessionFile);
+		expect(session.getCwd()).toBe(worktree);
+		expect(session.getBranch().map((entry) => entry.type)).toEqual(["custom", "message", "custom"]);
+		vi.stubEnv(COLLABORATOR_ENV, "collab:w");
+		try {
+			const integration = new HostedRuntimeIntegration({} as never, join(projectRoot, "runtime"));
+			integration.restoreSessionState({ cwd: session.getCwd(), sessionManager: session } as never);
+			expect(integration.collaborators.guardTool("write", { path: join(worktree, "x") }, worktree)).toBeUndefined();
+		} finally {
+			vi.unstubAllEnvs();
+		}
 	});
 
 	it("neutralizes envelope markup a collaborator puts in its mail", () => {

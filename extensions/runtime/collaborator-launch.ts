@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import {
 	CURRENT_SESSION_VERSION,
+	parseSessionEntries,
 	type CustomEntry,
 	type ExtensionAPI,
 	type ExtensionContext,
+	type FileEntry,
 	type SessionHeader,
 } from "@earendil-works/pi-coding-agent";
 import { seedClaude } from "./claude-trust.ts";
@@ -13,9 +15,10 @@ import { HostedRuntimeClient, HostedRuntimeClientError } from "./client.ts";
 import type { ResolvedCollaboratorCandidate } from "./collaborator-policy.ts";
 import { DRIVERS, driverLaunchArgv, type DriverSpec } from "./drivers.ts";
 import { createCollaboratorTab, throwIfAborted, waitForHerdrPaneCwd, type CollaboratorTab } from "./herdr.ts";
+import type { JsonObject } from "./schemas/json.ts";
 import { isVacant, isWriter } from "./schemas/state.ts";
 import type { ManagedAgentPlan, NativeAgentService } from "./native-agents.ts";
-import { auth, confirmed, strictObject, text, type ClientParticipantStatus, type LiveClientRegistration, type RegistrationAuth } from "./responses.ts";
+import { asRecord, auth, confirmed, strictObject, text, type ClientParticipantStatus, type LiveClientRegistration, type RegistrationAuth } from "./responses.ts";
 import type { RuntimeSession } from "./runtime-session.ts";
 import type { CollaboratorLaunch, ManagedAgentSession } from "./schemas/session.ts";
 import { projectScope } from "./service/state/keys.ts";
@@ -54,12 +57,6 @@ interface StartedCollaborator {
 	cwd: string;
 	agentSession: ManagedAgentSession;
 	messagingConfigured: boolean;
-}
-
-/** A Pi collaborator's own session file, and whether this launch created it. */
-interface CollaboratorSession {
-	sessionFile: string;
-	created: boolean;
 }
 
 /** Turns one confirmed candidate into a running, bound collaborator: worktree, tab, agent start, bind and record. */
@@ -113,7 +110,10 @@ export class CollaboratorLauncher {
 			if (launchCwd !== start.projectRoot) await waitForHerdrPaneCwd(this.pi, tab, launchCwd, start.signal);
 			this.session.requireCurrentScope(request.current);
 			const mcp = spec.bind ? await this.native.messagingConfiguration(plan, candidate.persona?.prompt) : undefined;
-			if (!spec.bind) ({ sessionFile, created } = this.collaboratorSession(start, launchCwd, candidate));
+			if (!spec.bind) {
+				sessionFile = join(this.session.root, "collaborator-sessions", `${projectScope(start.projectRoot)}__${start.protocol}__${candidate.participantId}.jsonl`);
+				created = prepareCollaboratorSession(sessionFile, launchCwd, start.projectRoot, candidate);
+			}
 			const input = { profile: candidate.profile, cwd: launchCwd, sessionFile, model: candidate.model, persona: candidate.persona, mcp, resume: candidate.resume };
 			const argv = driverLaunchArgv({ driver: candidate.driver, agentName: plan.agentName, paneId: tab.paneId, input });
 			const agent = await this.native.startAgent({ agentName: plan.agentName, spec, tab, argv });
@@ -174,36 +174,39 @@ export class CollaboratorLauncher {
 		return text(strictObject(await this.client.call("worktree.ensure", params), "Collaborator worktree").path);
 	}
 
-	/** One session file per collaborator name: a later start resumes its transcript instead of beginning a new one. */
-	private collaboratorSession(start: CollaboratorStart, cwd: string, candidate: ResolvedCollaboratorCandidate): CollaboratorSession {
-		const { projectRoot, protocol } = start;
-		const directory = join(this.session.root, "collaborator-sessions");
-		const sessionFile = join(directory, `${projectScope(projectRoot)}__${protocol}__${candidate.participantId}.jsonl`);
-		if (existsSync(sessionFile)) return { sessionFile, created: false };
-		const sessionId = randomUUID();
-		const timestamp = new Date().toISOString();
-		const sessionCwd = realpathSync(cwd);
-		mkdirSync(directory, { recursive: true, mode: 0o700 });
-		const record: HostedSessionRecord = { version: 3, launch: piCollaboratorLaunch(candidate) };
-		if (sessionCwd !== projectRoot) {
-			record.worktree = { projectRoot };
-			if (candidate.repo !== undefined) record.worktree.repo = candidate.repo;
-			if (sessionCwd !== candidate.repoRoot) record.worktree.worktreePath = sessionCwd;
-		}
-		const entries: Array<SessionHeader | CustomEntry<HostedSessionRecord>> = [
-			{ type: "session", version: CURRENT_SESSION_VERSION, id: sessionId, timestamp, cwd: sessionCwd },
-			{ type: "custom", customType: HOSTED_SESSION_ENTRY, data: record, id: randomUUID(), parentId: null, timestamp },
-		];
-		writeFileSync(sessionFile, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`, { flag: "wx", mode: 0o600 });
-		return { sessionFile, created: true };
-	}
-
 	private async replaceStoodDown(existing: ClientParticipantStatus, registration: LiveClientRegistration): Promise<void> {
 		const stopped = strictObject(await this.client.call("participant.stop_confirmed", confirmed(registration, existing)), "Stood-down collaborator replacement");
 		if (stopped.outcome !== "stopped" && stopped.outcome !== "already_stopped") {
 			throw new HostedRuntimeClientError("conflict", "The exact stood-down collaborator process could not be replaced safely.");
 		}
 	}
+}
+
+/**
+ * Writes the one session file a Pi collaborator name has. A later start resumes its transcript and record, but runs where
+ * and as that start says: the header's cwd and the launch and worktree records are always this start's. True when created.
+ */
+export function prepareCollaboratorSession(sessionFile: string, launchCwd: string, projectRoot: string, candidate: ResolvedCollaboratorCandidate): boolean {
+	const cwd = realpathSync(launchCwd);
+	const timestamp = new Date().toISOString();
+	const fresh: SessionHeader = { type: "session", version: CURRENT_SESSION_VERSION, id: randomUUID(), timestamp, cwd };
+	const parsed: FileEntry[] = existsSync(sessionFile) ? parseSessionEntries(readFileSync(sessionFile, "utf8")) : [];
+	const created = parsed[0]?.type !== "session";
+	const [header, ...entries] = created ? [fresh] : parsed;
+	let previous: JsonObject | undefined;
+	for (const entry of entries) if (entry.type === "custom" && entry.customType === HOSTED_SESSION_ENTRY) previous = asRecord(entry.data);
+	const record: HostedSessionRecord = { ...previous, version: 3, launch: piCollaboratorLaunch(candidate), worktree: undefined };
+	if (cwd !== projectRoot) {
+		record.worktree = { projectRoot };
+		if (candidate.repo !== undefined) record.worktree.repo = candidate.repo;
+		if (cwd !== candidate.repoRoot) record.worktree.worktreePath = cwd;
+	}
+	const entry: CustomEntry<HostedSessionRecord> = { type: "custom", customType: HOSTED_SESSION_ENTRY, data: record, id: randomUUID(), parentId: entries.at(-1)?.id ?? null, timestamp };
+	mkdirSync(dirname(sessionFile), { recursive: true, mode: 0o700 });
+	const pending = `${sessionFile}.${randomUUID()}.tmp`;
+	writeFileSync(pending, `${[{ ...header, cwd }, ...entries, entry].map((line) => JSON.stringify(line)).join("\n")}\n`, { flag: "wx", mode: 0o600 });
+	renameSync(pending, sessionFile);
+	return created;
 }
 
 function piCollaboratorLaunch(candidate: ResolvedCollaboratorCandidate): CollaboratorLaunch {
