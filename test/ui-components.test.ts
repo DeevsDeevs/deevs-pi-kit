@@ -61,7 +61,8 @@ describe("shared compact UI", () => {
 	});
 
 	it("renders expanded wiki context from its pages field", () => {
-		const rendered = wikiResult({ path: "wiki", pages: [{ id: "one" }], context: "packed context" }, true, theme).render(80).join("\n");
+		const page = { id: "one", path: "/w/one.md", relativePath: "one.md", title: "One", type: null, tags: [], sources: [], confidence: null, contested: false, bytes: 1, lines: 1 };
+		const rendered = wikiResult({ path: "wiki", pages: [page], context: "packed context", searchMatches: [], truncated: false }, true, theme).render(80).join("\n");
 		expect(rendered).toContain("context from 1 page(s)");
 		expect(rendered).toContain("packed context");
 	});

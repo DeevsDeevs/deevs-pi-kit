@@ -1,7 +1,7 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { spawn } from "node:child_process";
-import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { kitValues, migrateLegacyConfig, type KitValue } from "../shared/config.ts";
 
 type ResolvedConfig = Required<Omit<KitValue<"notifier">, "command" | "jsonl">> & {
@@ -20,6 +20,7 @@ const DEFAULT_CONFIG: ResolvedConfig = {
 };
 
 function stripControl(text: string): string {
+	// oxlint-disable-next-line no-control-regex -- strips control characters before they reach a terminal escape.
 	return text.replace(/[\x00-\x1f\x7f\x9b]/g, " ").replace(/\s+/g, " ").trim();
 }
 
@@ -42,12 +43,9 @@ function writeTerminalNotification(config: ResolvedConfig): void {
 	if (process.env.KITTY_WINDOW_ID) {
 		process.stdout.write(`\x1b]99;i=pi-ready:d=0;${safeTitle}\x1b\\`);
 		process.stdout.write(`\x1b]99;i=pi-ready:p=body;${safeBody}\x1b\\`);
-	} else if (isGhostty()) {
-		// Ghostty documents desktop notifications via OSC 9 and OSC 777.
-		process.stdout.write(`\x1b]9;${safeTitle}: ${safeBody}\x07`);
-		process.stdout.write(`\x1b]777;notify;${safeTitle};${safeBody}\x07`);
 	} else {
-		// OSC 777 is used by iTerm2/WezTerm/rxvt-style integrations.
+		// Ghostty documents desktop notifications via OSC 9 and OSC 777; iTerm2, WezTerm and rxvt-style integrations read OSC 777.
+		if (isGhostty()) process.stdout.write(`\x1b]9;${safeTitle}: ${safeBody}\x07`);
 		process.stdout.write(`\x1b]777;notify;${safeTitle};${safeBody}\x07`);
 	}
 
@@ -58,11 +56,8 @@ function runCommand(command: string[], ctx: ExtensionContext, config: ResolvedCo
 	const [program, ...args] = command.map((part) => renderTemplate(part, ctx, config));
 	if (!program) return;
 
-	const child = spawn(program, args, {
-		cwd: ctx.cwd,
-		detached: true,
-		stdio: "ignore",
-	});
+	// Bounded, never detached (AGENTS.md process ownership): a notifier that has not exited in 10 s is killed.
+	const child = spawn(program, args, { cwd: ctx.cwd, stdio: "ignore", timeout: 10_000 });
 	child.on("error", () => undefined);
 	child.unref();
 }
@@ -83,7 +78,7 @@ async function appendJsonl(path: string, ctx: ExtensionContext, config: Resolved
 
 /** `notifier` in pi-kit.json, re-read on every use: the project's fields over the global ones over the defaults. */
 function loadConfig(ctx: ExtensionContext): ResolvedConfig {
-	const [global, project] = kitValues("notifier", ctx.cwd, getAgentDir());
+	const [global, project] = kitValues("notifier", ctx.cwd);
 	const config = { ...DEFAULT_CONFIG, ...global, ...project };
 	return trustedNotifierConfig(ctx, { ...config, minIntervalMs: Math.max(0, config.minIntervalMs) });
 }

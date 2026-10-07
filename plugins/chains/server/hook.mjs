@@ -1,17 +1,16 @@
 // Chains checkpoint reminder for Claude Code and Codex, the same rule Pi applies:
 // at 80% context the first stop is refused once with a reminder to save a Chain link,
 // and after compaction the latest link is handed back so work continues from it.
-import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
-export const CHECKPOINT_RATIO = 0.8;
+const CHECKPOINT_RATIO = 0.8;
 const TAIL_BYTES = 512 * 1024;
 const RESUME_BYTES = 16 * 1024;
 
 /** Last known context use of the session: Codex rollouts report the window; Claude transcripts report usage only. */
-export function contextUse(transcriptPath, claudeWindow = claudeContextWindow) {
+function contextUse(transcriptPath) {
 	if (!transcriptPath || !existsSync(transcriptPath)) return undefined;
 	const lines = tail(transcriptPath).split("\n").reverse();
 	for (const line of lines) {
@@ -25,7 +24,7 @@ export function contextUse(transcriptPath, claudeWindow = claudeContextWindow) {
 		const usage = entry.type === "assistant" && !entry.isSidechain ? entry.message?.usage : undefined;
 		if (usage) {
 			const used = (usage.input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0);
-			return { used, window: claudeWindow(used) };
+			return { used, window: claudeContextWindow(used) };
 		}
 	}
 	return undefined;
@@ -62,7 +61,7 @@ function stateFile(sessionId) {
 }
 
 /** Newest link write under .chains, so a save through any harness satisfies the checkpoint. */
-export function newestLinkTime(cwd) {
+function newestLinkTime(cwd) {
 	const root = join(cwd, ".chains");
 	if (!existsSync(root)) return 0;
 	let newest = 0;
@@ -84,9 +83,10 @@ function projectDir(input) {
  * One reminder per pressure cycle: the first stop at or past the line, unless a link was written since the last stop
  * below it. Rearms once use drops below the line.
  */
-export function checkpointDue(input, now = Date.now()) {
+function checkpointDue(input) {
 	const use = contextUse(input.transcript_path);
 	if (!use) return undefined;
+	const now = Date.now();
 	const path = stateFile(input.session_id ?? "unknown");
 	if (use.used < use.window * CHECKPOINT_RATIO) {
 		writeFileSync(path, JSON.stringify({ belowAt: now }));
@@ -99,7 +99,7 @@ export function checkpointDue(input, now = Date.now()) {
 }
 
 function pressureReason(percent) {
-	return `Context is at ${percent}%. Save a Chain checkpoint with chain_save before compaction drops detail: `
+	return `Context is at ${percent}%. Save a Chain checkpoint (chain action save) before compaction drops detail: `
 		+ "the current request, decisions, files changed or read, blockers, pending tasks, and a structured nextStep. "
 		+ "If no Chain is active, choose a concise task-specific chain name. After saving, continue; compaction will hand the link back";
 }
@@ -110,9 +110,8 @@ async function sessionStart(input) {
 	const { ChainService } = await import("../lib/chains/service.ts");
 	const { formatLoad } = await import("../lib/chains/format.ts");
 	const service = new ChainService(cwd);
-	const chains = await service.list({});
-	if (chains.length === 0) return undefined;
-	const latest = chains.map((chain) => chain.latest).filter(Boolean).sort((a, b) => String(b.createdAt ?? b.filename).localeCompare(String(a.createdAt ?? a.filename)))[0];
+	const chains = await service.list();
+	const latest = chains.map((chain) => chain.latest).filter(Boolean).sort((a, b) => (b.createdAt ?? b.filename).localeCompare(a.createdAt ?? a.filename))[0];
 	if (!latest) return undefined;
 	if (input.source === "compact") {
 		const loaded = await service.load({ chain: latest.chain, branch: latest.branch, maxBytes: RESUME_BYTES });
@@ -120,10 +119,10 @@ async function sessionStart(input) {
 	}
 	const next = latest.nextStep ? ` Next step: ${latest.nextStep.replace(/\.?$/, ".")}` : "";
 	return `This project keeps Chains in .chains/ (${chains.length} chain(s)). Latest: ${latest.chain}@${latest.branch} "${latest.title}".${next} `
-		+ "Use chain_load or chain_search to resume prior work; save progress with chain_save.";
+		+ "Resume prior work with the chain tool (action load or search); save progress with action save.";
 }
 
-export async function run(input) {
+async function run(input) {
 	switch (input.hook_event_name) {
 		case "SessionStart": {
 			const context = await sessionStart(input);
@@ -139,11 +138,9 @@ export async function run(input) {
 	}
 }
 
-if (realpathSync(process.argv[1] ?? ".") === fileURLToPath(import.meta.url)) {
-	try {
-		const output = await run(JSON.parse(readFileSync(0, "utf8")));
-		if (output) process.stdout.write(JSON.stringify(output));
-	} catch (error) {
-		process.stderr.write(`chains hook: ${error instanceof Error ? error.message : String(error)}\n`);
-	}
+try {
+	const output = await run(JSON.parse(readFileSync(0, "utf8")));
+	if (output) process.stdout.write(JSON.stringify(output));
+} catch (error) {
+	process.stderr.write(`chains hook: ${error instanceof Error ? error.message : String(error)}\n`);
 }

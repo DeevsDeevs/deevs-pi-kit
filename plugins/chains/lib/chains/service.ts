@@ -2,7 +2,7 @@ import type { Dirent } from "node:fs";
 import { lstat, mkdir, open, readdir, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { extractTitle, parseCreatedAt, parseMetadata, slugify, stripFrontmatter, truncateText, withMetadata } from "./parser.ts";
-import { unicodeTerms } from "../shared/terms.ts";
+import { clampInt as clamp, lineMatcher, unicodeTerms, validateQuery } from "../shared/terms.ts";
 import type {
 	ChainBranchInfo,
 	ChainContextInput,
@@ -14,6 +14,8 @@ import type {
 	ChainListItem,
 	ChainLoadInput,
 	ChainLoadResult,
+	ChainRankedMatch,
+	ChainRankedSearchResult,
 	ChainSaveInput,
 	ChainSaveResult,
 	ChainSearchInput,
@@ -26,11 +28,10 @@ const DEFAULT_MAX_BYTES = 65_536;
 const MAX_BYTES = 262_144;
 const DEFAULT_MAX_RESULTS = 20;
 const MAX_RESULTS = 100;
-const MAX_QUERY_CHARS = 1000;
 const MAX_LOOKUP_TERMS = 32;
 const MAX_FULL_LINK_BYTES = 1_000_000;
-const DEFAULT_LOOKUP_HALF_LIFE_DAYS = 30;
-const DEFAULT_LOOKUP_RECENCY_WEIGHT = 0.15;
+const LOOKUP_HALF_LIFE_DAYS = 30;
+const LOOKUP_RECENCY_WEIGHT = 0.15;
 const DEFAULT_CONTEXT_PARENT_LINKS = 2;
 const DEFAULT_CONTEXT_RECENT_LINKS = 3;
 const DEFAULT_CONTEXT_SEARCH_MATCHES = 8;
@@ -44,18 +45,18 @@ export class ChainService {
 		this.cwd = cwd;
 	}
 
-	root(): string {
-		return join(this.cwd, ".chains");
+	private root(): string {
+		return resolve(this.cwd, ".chains");
 	}
 
 	async save(input: ChainSaveInput): Promise<ChainSaveResult> {
-		const chain = validateChainName(input.chain);
-		const branch = validateBranchName(input.branch ?? DEFAULT_BRANCH);
+		const chain = validateName(input.chain, "chain");
+		const branch = validateName(input.branch ?? DEFAULT_BRANCH, "branch");
 		const rawContent = normalizeContent(input.content);
 		const title = input.title?.trim() || extractTitle(rawContent, "chain-link.md");
 		const slug = slugify(input.slug || title);
 		const latest = await this.latest(chain, branch);
-		if (!input.parent && branch !== DEFAULT_BRANCH && !latest) throw new Error("First link on a non-main branch requires a parent link. Use /chain-fork or pass parent.");
+		if (!input.parent && branch !== DEFAULT_BRANCH && !latest) throw new Error("First link on a non-main branch requires a parent link. Run chain action fork or pass parent.");
 		const parent = input.parent ? validateLinkName(input.parent) : latest?.filename;
 		const dir = await this.ensureChainDir(chain, true);
 
@@ -81,10 +82,10 @@ export class ChainService {
 	}
 
 	async load(input: ChainLoadInput): Promise<ChainLoadResult> {
-		const chain = validateChainName(input.chain);
-		const branch = input.branch ? validateBranchName(input.branch) : input.link ? undefined : DEFAULT_BRANCH;
+		const chain = validateName(input.chain, "chain");
+		const branch = input.branch ? validateName(input.branch, "branch") : input.link ? undefined : DEFAULT_BRANCH;
 		const links = await this.links(chain, branch);
-		if (links.length === 0) throw new Error(`No chain links found for ${chain}${branch ? ` branch ${branch}` : ""}. Use /chain-list to see chains.`);
+		if (links.length === 0) throw new Error(`No chain links found for ${chain}${branch ? ` branch ${branch}` : ""}. Run chain action list to see chains.`);
 		const filename = input.link ? validateLinkName(input.link) : links[0]!.filename;
 		const link = links.find((item) => item.filename === filename) ?? (input.link ? await this.findLink(chain, filename) : null);
 		if (!link || (branch && link.branch !== branch)) throw new Error(`Chain link not found: ${chain}/${filename}${branch ? ` on branch ${branch}` : ""}`);
@@ -95,10 +96,10 @@ export class ChainService {
 	}
 
 	async fork(input: ChainForkInput): Promise<ChainForkResult> {
-		const chain = validateChainName(input.chain);
-		const branch = validateBranchName(input.branch);
+		const chain = validateName(input.chain, "chain");
+		const branch = validateName(input.branch, "branch");
 		if (branch === DEFAULT_BRANCH) throw new Error("Refusing to fork into main. Choose a new branch name.");
-		const fromBranch = input.fromBranch ? validateBranchName(input.fromBranch) : undefined;
+		const fromBranch = input.fromBranch ? validateName(input.fromBranch, "branch") : undefined;
 		const parent = input.from ? await this.findLink(chain, validateLinkName(input.from)) : await this.latest(chain, fromBranch);
 		if (!parent) throw new Error(`No parent link found for ${chain}${fromBranch ? ` branch ${fromBranch}` : ""}.`);
 		const existing = await this.links(chain, branch);
@@ -107,7 +108,7 @@ export class ChainService {
 			chain,
 			branch,
 			parent,
-			prompt: `Create the first link on branch "${branch}" from parent "${parent.filename}". Call chain_save with chain="${chain}", branch="${branch}", parent="${parent.filename}".`,
+			prompt: `Create the first link on branch "${branch}" from parent "${parent.filename}". Call chain with action="save", chain="${chain}", branch="${branch}", parent="${parent.filename}".`,
 		};
 	}
 
@@ -139,17 +140,16 @@ export class ChainService {
 
 	async search(input: ChainSearchInput): Promise<ChainSearchResult> {
 		const query = validateQuery(input.query);
-		const branch = input.branch ? validateBranchName(input.branch) : undefined;
+		const branch = input.branch ? validateName(input.branch, "branch") : undefined;
 		const maxResults = clamp(input.maxResults ?? DEFAULT_MAX_RESULTS, 1, MAX_RESULTS);
 		const contextLines = clamp(input.contextLines ?? 1, 0, 5);
-		const chains = input.chain ? [{ chain: validateChainName(input.chain), count: 0, latest: null }] : await this.list();
-		const regex = input.mode === "regex";
-		const matcher = createMatcher(query, regex, Boolean(input.caseSensitive));
+		const chains = await this.chainNames(input.chain);
+		const regex = input.searchMode === "regex";
+		const matcher = lineMatcher(query, regex, Boolean(input.caseSensitive));
 		const matches: ChainSearchMatch[] = [];
 
-		for (const item of chains) {
-			const links = await this.links(item.chain, branch);
-			for (const link of links) {
+		for (const chain of chains) {
+			for (const link of await this.links(chain, branch)) {
 				const content = await this.readFullLinkContent(link.chain, link.filename);
 				const lines = content.split(/\r?\n/);
 				for (let index = 0; index < lines.length; index++) {
@@ -162,21 +162,18 @@ export class ChainService {
 		return { query, matches, truncated: false, regex };
 	}
 
-	async rankedSearch(input: RankedSearchInput): Promise<RankedSearchResult> {
+	async rankedSearch(input: ChainSearchInput): Promise<ChainRankedSearchResult> {
 		const query = validateQuery(input.query);
-		const branch = input.branch ? validateBranchName(input.branch) : undefined;
+		const branch = input.branch ? validateName(input.branch, "branch") : undefined;
 		const maxResults = clamp(input.maxResults ?? DEFAULT_MAX_RESULTS, 1, MAX_RESULTS);
-		const halfLifeDays = clamp(input.recencyHalfLifeDays ?? DEFAULT_LOOKUP_HALF_LIFE_DAYS, 1, 3650);
-		const recencyWeight = clampFloat(input.recencyWeight ?? DEFAULT_LOOKUP_RECENCY_WEIGHT, 0, 1);
-		const chains = input.chain ? [{ chain: validateChainName(input.chain), count: 0, latest: null }] : await this.list();
-		const queryTerms = tokenize(query).slice(0, MAX_LOOKUP_TERMS);
+		const chains = await this.chainNames(input.chain);
+		const queryTerms = unicodeTerms(query).slice(0, MAX_LOOKUP_TERMS);
 		if (queryTerms.length === 0) throw new Error("Lookup query has no searchable terms.");
 		const queryTermSet = new Set(queryTerms);
 		const docs: LookupDocument[] = [];
 
-		for (const item of chains) {
-			const links = await this.links(item.chain, branch);
-			for (const link of links) docs.push(await this.lookupDocument(link));
+		for (const chain of chains) {
+			for (const link of await this.links(chain, branch)) docs.push(await this.lookupDocument(link));
 		}
 		if (docs.length === 0) return { query, matches: [], truncated: false };
 
@@ -185,13 +182,13 @@ export class ChainService {
 			for (const term of queryTermSet) if (doc.termFrequency.has(term)) documentFrequency.set(term, (documentFrequency.get(term) ?? 0) + 1);
 		}
 		const averageLength = docs.reduce((sum, doc) => sum + doc.length, 0) / docs.length || 1;
-		const matches: RankedSearchMatch[] = [];
+		const matches: ChainRankedMatch[] = [];
 		for (const doc of docs) {
 			const matchedTerms = [...queryTermSet].filter((term) => doc.termFrequency.has(term));
 			if (matchedTerms.length === 0) continue;
 			const lexicalScore = bm25Score(doc, matchedTerms, documentFrequency, docs.length, averageLength) + phraseBoost(doc, query);
-			const recencyScore = Math.exp(-Math.max(0, doc.link.ageDays ?? 0) / halfLifeDays);
-			const score = lexicalScore * (1 - recencyWeight) + recencyScore * recencyWeight;
+			const recencyScore = Math.exp(-Math.max(0, doc.link.ageDays ?? 0) / LOOKUP_HALF_LIFE_DAYS);
+			const score = lexicalScore * (1 - LOOKUP_RECENCY_WEIGHT) + recencyScore * LOOKUP_RECENCY_WEIGHT;
 			matches.push({ link: doc.link, score, lexicalScore, recencyScore, matchedTerms, snippet: bestLookupSnippet(doc, matchedTerms) });
 		}
 		matches.sort((left, right) => right.score - left.score || (right.link.createdAt ?? "").localeCompare(left.link.createdAt ?? ""));
@@ -201,13 +198,12 @@ export class ChainService {
 	async context(input: ChainContextInput): Promise<ChainContextResult> {
 		const maxBytes = clamp(input.maxBytes ?? DEFAULT_MAX_BYTES, 1, MAX_BYTES);
 		const loaded = await this.load({ chain: input.chain, branch: input.branch, link: input.link, maxBytes });
-		const mode = input.mode ?? "pack";
-		const compact = input.compact ?? mode === "pack";
-		if (mode === "latest") {
-			const context = formatContextPack({ link: loaded.link, content: loaded.content, truncated: loaded.truncated });
+		if (input.mode === "latest") {
+			const context = [`# Chain Context: ${loaded.link.chain}@${loaded.link.branch}/${loaded.link.filename}`, formatLinkBlock("Current link", loaded.link, loaded.content), loaded.truncated ? "[truncated]" : ""].filter(Boolean).join("\n\n");
 			return { link: loaded.link, context, truncated: loaded.truncated, includedLinks: [loaded.link], searchMatches: [] };
 		}
 
+		const compact = input.compact ?? true;
 		const parts: string[] = [];
 		const includedLinks: ChainLinkInfo[] = [loaded.link];
 		let truncated = loaded.truncated;
@@ -244,25 +240,25 @@ export class ChainService {
 		}
 
 		let searchMatches: ChainSearchMatch[] = [];
-		if (input.searchQuery?.trim()) {
+		if (input.query?.trim()) {
 			const searchMode = input.searchMode ?? "lookup";
 			if (searchMode === "lookup") {
-				const lookup = await this.rankedSearch({ chain: loaded.link.chain, branch: loaded.link.branch, query: input.searchQuery, maxResults: input.maxSearchMatches ?? DEFAULT_CONTEXT_SEARCH_MATCHES });
+				const lookup = await this.rankedSearch({ chain: loaded.link.chain, branch: loaded.link.branch, query: input.query, maxResults: input.maxResults ?? DEFAULT_CONTEXT_SEARCH_MATCHES });
 				searchMatches = lookup.matches.map((match) => ({ link: match.link, line: Number(match.snippet.split(":", 1)[0]) || 1, snippet: match.snippet }));
-				if (lookup.matches.length > 0) append(`\n## Relevant hits for ${JSON.stringify(input.searchQuery)}\n${lookup.matches.map((match) => `### ${match.link.filename} score=${match.score.toFixed(3)}\n${match.snippet}`).join("\n\n")}\n`);
+				if (lookup.matches.length > 0) append(`\n## Relevant hits for ${JSON.stringify(input.query)}\n${lookup.matches.map((match) => `### ${match.link.filename} score=${match.score.toFixed(3)}\n${match.snippet}`).join("\n\n")}\n`);
 			} else {
-				const search = await this.search({ chain: loaded.link.chain, branch: loaded.link.branch, query: input.searchQuery, maxResults: input.maxSearchMatches ?? DEFAULT_CONTEXT_SEARCH_MATCHES, contextLines: 1, mode: searchMode });
+				const search = await this.search({ chain: loaded.link.chain, branch: loaded.link.branch, query: input.query, maxResults: input.maxResults ?? DEFAULT_CONTEXT_SEARCH_MATCHES, contextLines: 1, searchMode });
 				searchMatches = search.matches;
-				if (searchMatches.length > 0) append(`\n## Search hits for ${JSON.stringify(input.searchQuery)}\n${searchMatches.map((match) => `### ${match.link.filename}:${match.line}\n${match.snippet}`).join("\n\n")}\n`);
+				if (searchMatches.length > 0) append(`\n## Search hits for ${JSON.stringify(input.query)}\n${searchMatches.map((match) => `### ${match.link.filename}:${match.line}\n${match.snippet}`).join("\n\n")}\n`);
 			}
 		}
 
 		return { link: loaded.link, context: parts.join("\n"), truncated, includedLinks, searchMatches };
 	}
 
-	async links(chainName: string, branchName?: string): Promise<ChainLinkInfo[]> {
-		const chain = validateChainName(chainName);
-		const branch = branchName ? validateBranchName(branchName) : undefined;
+	private async links(chainName: string, branchName?: string): Promise<ChainLinkInfo[]> {
+		const chain = validateName(chainName, "chain");
+		const branch = branchName ? validateName(branchName, "branch") : undefined;
 		const dir = await this.ensureChainDir(chain, false);
 		if (!dir) return [];
 		let entries: Dirent<string>[];
@@ -275,6 +271,10 @@ export class ChainService {
 		const filenames = entries.filter((entry) => entry.isFile() && entry.name.endsWith(".md")).map((entry) => entry.name).sort().reverse();
 		const links = await Promise.all(filenames.map((filename) => this.linkInfo(chain, filename)));
 		return branch ? links.filter((link) => link.branch === branch) : links;
+	}
+
+	private async chainNames(chain?: string): Promise<string[]> {
+		return chain ? [validateName(chain, "chain")] : (await this.list()).map((item) => item.chain);
 	}
 
 	private async latest(chain: string, branch?: string): Promise<ChainLinkInfo | null> {
@@ -291,16 +291,14 @@ export class ChainService {
 	}
 
 	private chainDir(chain: string): string {
-		const root = resolve(this.root());
+		const root = this.root();
 		const dir = resolve(root, chain);
 		if (!dir.startsWith(`${root}/`) && dir !== root) throw new Error("Invalid chain path.");
 		return dir;
 	}
 
-	private async ensureRootDir(create: true): Promise<string>;
-	private async ensureRootDir(create: false): Promise<string | null>;
 	private async ensureRootDir(create: boolean): Promise<string | null> {
-		const root = resolve(this.root());
+		const root = this.root();
 		if (create) await mkdir(root, { recursive: true });
 		try {
 			const stats = await lstat(root);
@@ -319,7 +317,7 @@ export class ChainService {
 	private async ensureChainDir(chain: string, create: true): Promise<string>;
 	private async ensureChainDir(chain: string, create: false): Promise<string | null>;
 	private async ensureChainDir(chain: string, create: boolean): Promise<string | null> {
-		const root = create ? await this.ensureRootDir(true) : await this.ensureRootDir(false);
+		const root = await this.ensureRootDir(create);
 		if (!root) return null;
 		const dir = this.chainDir(chain);
 		if (create) await mkdir(dir, { recursive: true });
@@ -343,46 +341,37 @@ export class ChainService {
 		const weightedContent = [
 			weightedText(link.title, 4),
 			weightedText(link.nextStep ?? "", 3),
-			weightedText(preferredSections(content), 2),
+			weightedText(edgeSections(content, 4, 2), 2),
 			content,
 		].join("\n");
-		const terms = tokenize(weightedContent);
+		const terms = unicodeTerms(weightedContent);
 		const termFrequency = new Map<string, number>();
 		for (const term of terms) termFrequency.set(term, (termFrequency.get(term) ?? 0) + 1);
 		return { link, content, lines: content.split(/\r?\n/), termFrequency, length: Math.max(1, terms.length) };
 	}
 
 	private async readLinkContent(chain: string, filename: string, maxBytes: number): Promise<string> {
-		const path = await this.safeLinkPath(chain, filename);
-		const handle = await open(path, "r");
-		try {
-			const buffer = Buffer.allocUnsafe(Math.max(1, maxBytes));
-			const { bytesRead } = await handle.read(buffer, 0, buffer.byteLength, 0);
-			return buffer.subarray(0, bytesRead).toString("utf8");
-		} finally {
-			await handle.close();
-		}
+		return readHead((await this.safeLinkPath(chain, filename)).path, maxBytes);
 	}
 
 	private async readFullLinkContent(chain: string, filename: string): Promise<string> {
 		return this.readLinkContent(chain, filename, MAX_FULL_LINK_BYTES);
 	}
 
-	private async safeLinkPath(chain: string, filename: string): Promise<string> {
+	private async safeLinkPath(chain: string, filename: string): Promise<{ path: string; size: number }> {
 		const dir = await this.ensureChainDir(chain, false);
 		if (!dir) throw Object.assign(new Error("Chain directory not found."), { code: "ENOENT" });
 		const path = join(dir, validateLinkName(filename));
 		const stats = await lstat(path);
 		if (stats.isSymbolicLink()) throw new Error("Refusing to read chain link because it is a symlink.");
 		if (!stats.isFile()) throw new Error("Chain link is not a file.");
-		return path;
+		return { path, size: stats.size };
 	}
 
 	private async linkInfo(chain: string, filename: string): Promise<ChainLinkInfo> {
 		const safeFilename = validateLinkName(filename);
-		const path = await this.safeLinkPath(chain, safeFilename);
-		const stats = await lstat(path);
-		const content = await this.readLinkContent(chain, safeFilename, MAX_BYTES);
+		const { path, size } = await this.safeLinkPath(chain, safeFilename);
+		const content = await readHead(path, MAX_BYTES);
 		const metadata = parseMetadata(content);
 		const created = parseCreatedAt(safeFilename, metadata);
 		return {
@@ -396,20 +385,14 @@ export class ChainService {
 			createdAt: created.iso,
 			ageDays: created.ageDays,
 			stale: created.stale,
-			bytes: stats.size,
+			bytes: size,
 		};
 	}
 }
 
-export function validateChainName(value: string): string {
+function validateName(value: string, kind: "chain" | "branch"): string {
 	const name = value.trim();
-	if (!isValidSimpleName(name)) throw new Error("Invalid chain name. Use letters, numbers, dots, underscores, or hyphens; no slashes.");
-	return name;
-}
-
-export function validateBranchName(value: string): string {
-	const name = value.trim();
-	if (!isValidSimpleName(name)) throw new Error("Invalid branch name. Use letters, numbers, dots, underscores, or hyphens; no slashes.");
+	if (!isValidSimpleName(name)) throw new Error(`Invalid ${kind} name. Use letters, numbers, dots, underscores, or hyphens; no slashes.`);
 	return name;
 }
 
@@ -417,7 +400,7 @@ function isValidSimpleName(name: string): boolean {
 	return /^[\p{L}\p{N}][\p{L}\p{N}._-]{0,79}$/u.test(name) && !name.includes("..") && !name.startsWith(".");
 }
 
-export function validateLinkName(value: string): string {
+function validateLinkName(value: string): string {
 	const name = value.trim();
 	if (!isValidLinkName(name)) throw new Error("Invalid chain link filename.");
 	return name;
@@ -433,54 +416,25 @@ function normalizeContent(content: string): string {
 	return `${text}\n`;
 }
 
-function timestamp(date = new Date()): string {
+async function readHead(path: string, maxBytes: number): Promise<string> {
+	const handle = await open(path, "r");
+	try {
+		const buffer = Buffer.allocUnsafe(Math.max(1, maxBytes));
+		const { bytesRead } = await handle.read(buffer, 0, buffer.byteLength, 0);
+		return buffer.subarray(0, bytesRead).toString("utf8");
+	} finally {
+		await handle.close();
+	}
+}
+
+function timestamp(): string {
+	const date = new Date();
 	const pad = (value: number, width = 2) => String(value).padStart(width, "0");
 	return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}${pad(date.getMilliseconds(), 3)}`;
 }
 
 function hasErrorCode(error: Error, code: string): boolean {
 	return "code" in error && error.code === code;
-}
-
-function clamp(value: number, min: number, max: number): number {
-	if (!Number.isFinite(value)) return min;
-	return Math.max(min, Math.min(Math.floor(value), max));
-}
-
-function validateQuery(value: string): string {
-	const query = value.trim();
-	if (!query) throw new Error("Missing query.");
-	if (query.length > MAX_QUERY_CHARS) throw new Error(`Query is too long; max ${MAX_QUERY_CHARS} characters.`);
-	return query;
-}
-
-function clampFloat(value: number, min: number, max: number): number {
-	if (!Number.isFinite(value)) return min;
-	return Math.max(min, Math.min(value, max));
-}
-
-interface RankedSearchInput {
-	query: string;
-	chain?: string;
-	branch?: string;
-	maxResults?: number;
-	recencyHalfLifeDays?: number;
-	recencyWeight?: number;
-}
-
-interface RankedSearchMatch {
-	link: ChainLinkInfo;
-	score: number;
-	lexicalScore: number;
-	recencyScore: number;
-	matchedTerms: string[];
-	snippet: string;
-}
-
-interface RankedSearchResult {
-	query: string;
-	matches: RankedSearchMatch[];
-	truncated: boolean;
 }
 
 interface LookupDocument {
@@ -491,17 +445,14 @@ interface LookupDocument {
 	length: number;
 }
 
-function tokenize(value: string): string[] {
-	return unicodeTerms(value);
-}
-
 function weightedText(text: string, weight: number): string {
-	return Array.from({ length: Math.max(1, Math.floor(weight)) }, () => text).join("\n");
+	return Array(weight).fill(text).join("\n");
 }
 
-function preferredSections(content: string): string {
+/** The first `head` and last `tail` `##` sections, where handoff links keep their request and next step. */
+function edgeSections(content: string, head: number, tail: number): string {
 	const sections = content.split(/(?=^##\s+)/m).map((part) => part.trim()).filter(Boolean);
-	return [...new Set([...sections.slice(0, 4), ...sections.slice(-2)])].join("\n\n");
+	return [...new Set([...sections.slice(0, head), ...sections.slice(-tail)])].join("\n\n");
 }
 
 function bm25Score(doc: LookupDocument, terms: string[], df: Map<string, number>, totalDocs: number, averageLength: number): number {
@@ -520,7 +471,7 @@ function bm25Score(doc: LookupDocument, terms: string[], df: Map<string, number>
 }
 
 function phraseBoost(doc: LookupDocument, query: string): number {
-	const needle = query.trim().toLowerCase();
+	const needle = query.toLowerCase();
 	if (needle.length < 3) return 0;
 	const title = doc.link.title.toLowerCase();
 	const next = (doc.link.nextStep ?? "").toLowerCase();
@@ -532,7 +483,7 @@ function bestLookupSnippet(doc: LookupDocument, terms: string[]): string {
 	let bestIndex = 0;
 	let bestScore = -1;
 	for (let index = 0; index < doc.lines.length; index++) {
-		const tokens = tokenize(doc.lines[index] ?? "");
+		const tokens = unicodeTerms(doc.lines[index] ?? "");
 		const score = terms.reduce((sum, term) => sum + tokens.filter((token) => token === term).length, 0);
 		if (score > bestScore) {
 			bestScore = score;
@@ -542,34 +493,13 @@ function bestLookupSnippet(doc: LookupDocument, terms: string[]): string {
 	return snippet(doc.lines, bestIndex, 1);
 }
 
-function createMatcher(query: string, regex: boolean, caseSensitive: boolean): (line: string) => boolean {
-	if (regex) {
-		const flags = caseSensitive ? "" : "i";
-		let pattern: RegExp;
-		try {
-			pattern = new RegExp(query, flags);
-		} catch (error) {
-			throw new Error(`Invalid regex: ${error instanceof Error ? error.message : String(error)}`);
-		}
-		return (line) => pattern.test(line);
-	}
-	const needle = caseSensitive ? query : query.toLowerCase();
-	return (line) => (caseSensitive ? line : line.toLowerCase()).includes(needle);
-}
-
-function formatContextPack(input: { link: ChainLinkInfo; content: string; truncated: boolean }): string {
-	return [`# Chain Context: ${input.link.chain}@${input.link.branch}/${input.link.filename}`, formatLinkBlock("Current link", input.link, input.content), input.truncated ? "[truncated]" : ""].filter(Boolean).join("\n\n");
-}
-
 function formatLinkBlock(label: string, link: ChainLinkInfo, content: string): string {
 	return [`\n## ${label}: ${link.filename}`, `Title: ${link.title}`, `Parent: ${link.parent ?? "(none)"}`, `Next step: ${link.nextStep ?? "(not found)"}`, "", content.trim(), ""].join("\n");
 }
 
 function compactMarkdown(content: string): string {
 	const body = stripFrontmatter(content).trim();
-	const sections = body.split(/(?=^##\s+)/m).map((part) => part.trim()).filter(Boolean);
-	const picked = [...new Set([...sections.slice(0, 3), ...sections.slice(-1)])];
-	return picked.join("\n\n").replace(/\n{3,}/g, "\n\n") || body;
+	return edgeSections(body, 3, 1).replace(/\n{3,}/g, "\n\n") || body;
 }
 
 function snippet(lines: string[], index: number, context: number): string {

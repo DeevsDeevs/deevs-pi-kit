@@ -1,9 +1,9 @@
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { lstat, mkdir, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Type, type Static, type TSchema } from "typebox";
 import { Value } from "typebox/value";
-import { saveProjectConfig } from "./project-config.ts";
 
 const FILE = "pi-kit.json";
 const Flag = Type.Optional(Type.Boolean());
@@ -29,9 +29,10 @@ export type KitKey = keyof typeof KEYS;
 export type KitValue<K extends KitKey> = Static<(typeof KEYS)[K]>;
 type Kit = Static<typeof KitFile>;
 
-/** Pi's agent dir without importing Pi, so the standalone guard hook can read pi-kit.json too. */
+/** Pi's `getAgentDir()` without importing Pi, so the standalone guard hook can read pi-kit.json too. */
 export function agentDir(): string {
-	return process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
+	const dir = process.env.PI_CODING_AGENT_DIR;
+	return dir ? dir.replace(/^~(?=$|\/)/, homedir()) : join(homedir(), ".pi", "agent");
 }
 
 /** The global, then the project pi-kit.json; every reader takes them fresh, so an edit applies to the next use. */
@@ -46,6 +47,12 @@ function kitPaths(cwd: string, dir = agentDir()): [global: string, project: stri
 export function kitValues<K extends KitKey>(key: K, cwd: string, dir = agentDir()): [global: KitValue<K> | undefined, project: KitValue<K> | undefined] {
 	const [global, project] = kitPaths(cwd, dir).map((path) => readKitKey(path, key));
 	return [global, project];
+}
+
+/** `key` from a trusted project's pi-kit.json, else from the global one. */
+export function trustedKitValue<K extends KitKey>(key: K, ctx: { cwd: string; isProjectTrusted(): boolean }): KitValue<K> | undefined {
+	const [global, project] = kitValues(key, ctx.cwd);
+	return (ctx.isProjectTrusted() ? project : undefined) ?? global;
 }
 
 function readKitKey<K extends KitKey>(path: string, key: K): KitValue<K> | undefined {
@@ -95,7 +102,7 @@ async function upgradeAutonomy(cwd: string): Promise<void> {
 		const legacy = file?.autonomy;
 		if (!file || !Value.Check(LegacyAutonomy, legacy)) continue;
 		const next = { ...file, autonomy: legacy === "auto" };
-		if (path === project) await saveProjectConfig(cwd, FILE, next);
+		if (path === project) await saveProjectKit(cwd, next);
 		else writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`);
 	}
 }
@@ -116,8 +123,21 @@ async function moveLegacy<T extends TSchema>(cwd: string, name: string, schema: 
 	const next: Kit = { ...moved, ...kit };
 	if (moved.models && kit.models) next.models = { ...moved.models, ...kit.models };
 	if (moved.notifier && kit.notifier) next.notifier = { ...moved.notifier, ...kit.notifier };
-	await saveProjectConfig(cwd, FILE, next);
+	await saveProjectKit(cwd, next);
 	rmSync(legacyPath, { force: true });
+}
+
+/** Writes `.pi/pi-kit.json` through a temp file; a symlinked `.pi` or `pi-kit.json` is refused, never followed. */
+async function saveProjectKit(cwd: string, kit: Kit): Promise<void> {
+	const dir = join(cwd, ".pi");
+	const path = join(dir, FILE);
+	for (const target of [dir, path]) {
+		if ((await lstat(target).catch(() => undefined))?.isSymbolicLink()) throw new Error(`Refusing to write project config through the symlink ${target}`);
+	}
+	await mkdir(dir, { recursive: true });
+	const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
+	await writeFile(tmp, `${JSON.stringify(kit, null, 2)}\n`);
+	await rename(tmp, path);
 }
 
 /** A JSON file checked against `schema`: undefined when it does not exist; throws `<path>: <pointer> <message>` otherwise. */

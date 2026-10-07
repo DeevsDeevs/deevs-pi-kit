@@ -334,4 +334,14 @@ describe("guard: configuration and hooks", () => {
 		expect([passed.status, passed.stdout]).toEqual([0, ""]);
 		expect(hook({ hook_event_name: "PreToolUse", tool_name: "Read", cwd, tool_input: { file_path: "/etc/passwd" } }).stdout).toBe("");
 	});
+
+	it("fails closed: a payload it cannot read blocks the call with exit 2", () => {
+		const { agentDir } = fixture();
+		const run = (input: string) => spawnSync(process.execPath, [HOOK], { input, encoding: "utf8", env: { ...process.env, PI_CODING_AGENT_DIR: agentDir } });
+		for (const input of ["", "not json", "[]", "null", JSON.stringify({ tool_name: "Bash", tool_input: { command: 42 } }), JSON.stringify({ cwd: 7, tool_input: { command: "ls" } })]) {
+			const result = run(input);
+			expect([input, result.status, result.stdout]).toEqual([input, 2, ""]);
+			expect(result.stderr).toMatch(/^pi-kit guard could not check this call, so it is blocked: /);
+		}
+	});
 });

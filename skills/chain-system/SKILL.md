@@ -11,7 +11,7 @@ Chains preserve durable work context across Pi sessions as markdown links:
 .chains/<chain-name>/<timestamp>-<slug>.md
 ```
 
-Frontmatter (links without it are treated as branch `main`; `nextStep` comes from the typed `chain_save` field, never parsed from prose):
+Frontmatter (links without it are treated as branch `main`; `nextStep` comes from the typed `nextStep` argument, never parsed from prose):
 
 ```yaml
 chain: my-feature
@@ -23,21 +23,21 @@ created: 2026-04-28T12:30:00.000Z
 
 ## Commands and tools
 
-The user browses and searches with `/chains [query]` and asks you for everything else. Model tools:
+The user browses, searches and sees the active checkpoint with `/chains [query]`, and asks you for everything else. The `chain` tool takes an `action`:
 
 ```text
-chain_save    save a markdown link; supports branch, parent, nextStep
-chain_load    load latest/specific link, optionally by branch
-chain_fork    resolve a parent for a new branch; follow with chain_save
-chain_context pack latest/parent/recent/search context for subagents or resume
-chain_list    list chains, optionally branch/link metadata
-chain_search  ranked lookup by default; mode text/regex for exact matching
+save     save a markdown link; branch, parent, nextStep
+load     latest or a named link, optionally by branch
+fork     resolve a parent for a new branch; follow with save
+context  pack latest/parent/recent/query hits for a delegate or resume (mode pack|latest)
+list     chains, optionally with branch/link metadata
+search   ranked lookup by default; searchMode text|regex for exact matching
 ```
 
 ## When to load and save
 
-- On "continue", "resume", "pick up", or references to prior work: `chain_load` the named chain if known, else `chain_list`/`chain_search`.
-- Before non-trivial work likely tied to an existing project: quick `chain_search` before rediscovering old decisions.
+- On "continue", "resume", "pick up", or references to prior work: `load` the named chain if known, else `list`/`search`.
+- Before non-trivial work likely tied to an existing project: quick `search` before rediscovering old decisions.
 - Save after meaningful milestones (implemented feature, validated fix, design decision, rejected approach worth remembering, completed review) and before context may be lost (long session, compaction risk, task switch, handoff, stopping with pending work).
 - For research, save selected sources/queries/IDs only when findings affect future decisions.
 - After subagents return, save a link only if their findings changed decisions, exposed risks, or created follow-up work.
@@ -51,11 +51,11 @@ Chains are handoff-quality memory, not chat logs.
 - Default branch is `main`. A fork is a new branch whose first link has `parent` set to the source link filename.
 - Branch when the work has a different hypothesis or merge policy: competing designs, risky experiments that may be abandoned, focused subagent/research tracks that should not pollute `main`, user-requested alternatives or spikes.
 - Stay on the current branch for continuations, follow-up fixes, validation results, and normal end-of-session handoffs. No branches for trivial one-off notes.
-- Creating a branch: `chain_fork` to resolve the parent, save the first link with `branch` and `parent` metadata, and state the branch scope and what would merge back. When the branch is accepted/rejected, save an outcome link on the parent branch.
+- Creating a branch: `fork` to resolve the parent, save the first link with `branch` and `parent`, and state the branch scope and what would merge back. When the branch is accepted/rejected, save an outcome link on the parent branch.
 
 ```text
-chain_fork { chain: "project-work", branch: "experiment", fromBranch: "main" }
-chain_save { chain: "project-work", branch: "experiment", parent: <the fork's parent>, content: ... }
+chain { action: "fork", chain: "project-work", branch: "experiment", fromBranch: "main" }
+chain { action: "save", chain: "project-work", branch: "experiment", parent: <the fork's parent>, content: ... }
 ```
 
 ## Link content rubric
@@ -72,31 +72,22 @@ Use the concise default rubric below. For important handoffs, load and follow `l
 8. Current Work
 9. Next Step
 
-Include exact file paths, command results, subagent run/group IDs, background process IDs, and unresolved errors when they matter. Skip routine tool chatter.
+Include exact file paths, command results, agent and task IDs, and unresolved errors when they matter. Skip routine tool chatter.
 
 ## Subagent context passing
 
-Chains are a context bus, not automatic subagent memory: save or load a focused branch link, call `chain_context` for a bounded pack, include the formatted excerpt directly in the `Agent` prompt, and after its report save a link referencing its agentId and decision impact.
+Chains are a context bus, not automatic subagent memory: save or load a focused branch link, run `context` for a bounded pack, and include the formatted excerpt directly in the `Agent` prompt. If the report meets the save bar above (changed decisions, exposed risks, follow-up work), save a link naming its agentId and the impact.
 
 ```text
 Agent({
   description: "Review index migration risks",
   subagent_type: "reviewer",
-  prompt: "Focus only on search/index design and return migration risks.\n\nChain context:\n<bounded chain_context output>"
+  prompt: "Focus only on search/index design and return migration risks.\n\nChain context:\n<bounded chain context output>"
 })
 ```
 
-## Extension checkpoint hooks
-
-`extensions/chains` tracks branch-local `saved` versus `checkpoint due` state:
-
-- 80% context usage marks a checkpoint due and adds one reminder to the system prompt, including for read-only/no-edit tasks; no tool is blocked;
-- descendant HEAD advances and new branches mark a checkpoint due; ordinary edits and bounded Jobs do not;
-- `chain_save` clears due state;
-- `/chains` browses active state and saved links; `/chains <query>` searches them;
-- it never auto-saves because durable links need handoff-quality summaries.
-
 ## Guardrails
 
-- Use `chain_save`; do not hand-roll writes into `.chains` unless the tool is unavailable.
+- A `<chain_checkpoint>` reminder means a save is due (80% context, a new commit, a new branch); a save clears it. Nothing auto-saves.
+- Save through the tool; do not hand-roll writes into `.chains` unless the tool is unavailable.
 - Chain and branch names must be simple names without slashes.

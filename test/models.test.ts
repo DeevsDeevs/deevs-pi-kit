@@ -31,7 +31,9 @@ const ANTHROPIC = [
 	"claude-sonnet-4-5", "claude-sonnet-4-5-20250929", "claude-sonnet-4-6", "claude-sonnet-5", "claude-sonnet-5-5",
 ].map((id) => model("anthropic", id, id.startsWith("claude-haiku") ? {} : id === "claude-opus-5-5" ? OPUS_LEVELS : ALL_LEVELS));
 const BEDROCK = [model("amazon-bedrock", "anthropic.claude-opus-5"), model("amazon-bedrock", "gpt-6.1-sol")];
-const CATALOG = [...CODEX, ...ANTHROPIC, ...BEDROCK];
+// Pi 1.0.4 signs in with ChatGPT under `openai`.
+const OPENAI = [model("openai", "gpt-6.1-sol"), model("openai", "gpt-6-astra"), model("openai", "gpt-4o")];
+const CATALOG = [...CODEX, ...ANTHROPIC, ...BEDROCK, ...OPENAI];
 
 function byId(id: string): Model<Api> {
 	const found = CATALOG.find((entry) => entry.id === id);
@@ -104,6 +106,16 @@ describe("resolveModel", () => {
 		expect(resolveModel("astra", context())).toMatchObject({ harness: "pi", model: { provider: "openai-codex", id: "gpt-6-astra" }, level: "high" });
 	});
 
+	it("prefers the openai ChatGPT login and falls back to legacy openai-codex per name", () => {
+		const both = context({ registry: registry(["openai", "openai-codex"]) });
+		expect(label("sol", both)).toBe("openai/gpt-6.1-sol:high");
+		expect(label("astra:max", both)).toBe("openai/gpt-6-astra:max");
+		expect(label("terra", both)).toBe("openai-codex/gpt-5.6-terra:high");
+		expect(label("sol", context({ registry: registry(["openai"]) }))).toBe("openai/gpt-6.1-sol:high");
+		expect(failure("terra", context({ registry: registry(["openai"]) }))).toContain("terra → openai/gpt-*-terra|openai-codex/gpt-*-terra: no logged-in openai model matches gpt-*-terra; openai-codex is not logged in.");
+		expect(label("codex:", context({ lead: { model: OPENAI[1]!, level: "high" } }))).toBe("codex:gpt-6-astra");
+	});
+
 	it("inherits the lead's model and level by default", () => {
 		const lead = { model: byId("gpt-5.6-sol"), level: "max" as const };
 		expect(label(undefined, context({ lead }))).toBe("openai-codex/gpt-5.6-sol:max");
@@ -144,7 +156,8 @@ describe("resolveModel", () => {
 		expect(failure("openai-codex/gpt-7-sol")).toContain("openai-codex/gpt-7-sol: openai-codex/gpt-7-sol is not in Pi's catalog.");
 		expect(failure("openai-codex/gpt-*-mars")).toContain("no logged-in openai-codex model matches gpt-*-mars.");
 		expect(failure("anthropic/claude-opus-5-5")).toContain("anthropic is not logged in.");
-		expect(failure("openai/gpt-5.4")).toContain("openai is not a Pi provider.");
+		expect(failure("openai/gpt-5.4")).toContain("openai is not logged in.");
+		expect(failure("mistral/large")).toContain("mistral is not a Pi provider.");
 		expect(label("anthropic/claude-opus-*", context({ registry: registry(["openai-codex", "anthropic"]) }))).toBe("anthropic/claude-opus-5-5:high");
 	});
 
@@ -175,7 +188,7 @@ describe("resolveModel", () => {
 		expect(label("codex:")).toBe("codex:gpt-6.1-sol");
 		expect(label("codex:high", context({ lead: { model: byId("gpt-6-astra"), level: "high" } }))).toBe("codex:gpt-6-astra:high");
 		expect(label("codex:", context({ lead: { model: byId("claude-opus-5-5"), level: "high" } }))).toBe("codex:gpt-6.1-sol");
-		expect(failure("codex:", context({ lead: undefined, codex: undefined }))).toContain("the lead is not on openai-codex and ~/.codex/config.toml names no model");
+		expect(failure("codex:", context({ lead: undefined, codex: undefined }))).toContain("the lead is not on openai or openai-codex and ~/.codex/config.toml names no model");
 		expect(failure("codex:astra")).toContain("codex:astra: Codex knows gpt-6.1-sol, gpt-6-astra,");
 	});
 
@@ -183,7 +196,7 @@ describe("resolveModel", () => {
 		const config: KitConfig = { ...KIT_DEFAULTS, models: { ...KIT_DEFAULTS.models, deep: "astra:max", astra: "openai-codex/gpt-*-astrra" } };
 		const message = failure("deep", context({ config }));
 		expect(message).toContain('Model "deep" did not resolve: deep → astra:max → openai-codex/gpt-*-astrra: no logged-in openai-codex model matches gpt-*-astrra.');
-		expect(message).toContain("Names: default → inherit, sol → openai-codex/gpt-*-sol,");
+		expect(message).toContain("Names: default → inherit, sol → openai/gpt-*-sol|openai-codex/gpt-*-sol,");
 		expect(message).toContain("deep → astra:max.");
 		expect(message).toContain("Logged-in models: openai-codex/gpt-6.1-sol, openai-codex/gpt-6-astra,");
 		expect(message).toContain("openai-codex/gpt-5.6-terra.");

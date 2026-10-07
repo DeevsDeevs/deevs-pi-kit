@@ -19,10 +19,6 @@ export interface ChainCheckpointState {
 	dueReasons: string[];
 	dueCodes: ChainDueCode[];
 	updatedAt: number;
-	lastSavedAt?: number;
-	satisfiedChain?: string;
-	satisfiedBranch?: string;
-	waiverReason?: string;
 	contextPressureHandled: boolean;
 }
 
@@ -46,25 +42,18 @@ export function reduceChainCheckpoint(state: ChainCheckpointState, operation: Ch
 		const code = operation.code ?? "other";
 		const dueReasons = [...new Set([...state.dueReasons, operation.reason])].slice(-6);
 		const dueCodes = [...new Set([...state.dueCodes, code])].slice(-6);
-		return { ...state, status: "due", dueReasons, dueCodes, waiverReason: undefined, updatedAt: operation.at, contextPressureHandled: state.contextPressureHandled || code === "context_pressure" };
+		return { ...state, status: "due", dueReasons, dueCodes, updatedAt: operation.at, contextPressureHandled: state.contextPressureHandled || code === "context_pressure" };
 	}
-	if (operation.type === "saved") {
-		return {
-			...state,
-			chain: operation.chain,
-			branch: operation.branch,
-			status: "saved",
-			dueReasons: [],
-			dueCodes: [],
-			waiverReason: undefined,
-			updatedAt: operation.at,
-			lastSavedAt: operation.at,
-			satisfiedChain: operation.chain,
-			satisfiedBranch: operation.branch,
-		};
-	}
-	if (operation.type === "waived") return { ...state, status: "saved", dueReasons: [], dueCodes: [], satisfiedChain: state.chain, satisfiedBranch: state.branch, waiverReason: operation.reason, updatedAt: operation.at };
+	if (operation.type === "saved") return { ...state, chain: operation.chain, branch: operation.branch, status: "saved", dueReasons: [], dueCodes: [], updatedAt: operation.at };
+	// Nothing records a waiver any more; sessions written before /chain-waive was removed still replay one.
+	if (operation.type === "waived") return { ...state, status: "saved", dueReasons: [], dueCodes: [], updatedAt: operation.at };
 	return { ...state, contextPressureHandled: false, updatedAt: operation.at };
+}
+
+/** `chain@branch · status · latest reason`; activate and saved always set chain and branch together. */
+export function checkpointLabel(state: ChainCheckpointState): string | undefined {
+	const reason = state.dueReasons.at(-1);
+	return state.chain ? `${state.chain}@${state.branch} · ${state.status}${reason ? ` · ${reason}` : ""}` : undefined;
 }
 
 export function replayChainCheckpoint(entries: readonly unknown[]): ChainCheckpointState {
@@ -92,10 +81,6 @@ export class ChainCheckpointService {
 		return this.state;
 	}
 
-	isSatisfied(chain: string, branch = "main"): boolean {
-		return this.state.status === "saved" && this.state.satisfiedChain === chain && this.state.satisfiedBranch === branch;
-	}
-
 	restore(ctx: ExtensionContext, remind = false): void {
 		this.ctx = ctx;
 		this.state = replayChainCheckpoint(ctx.sessionManager.getBranch());
@@ -103,7 +88,7 @@ export class ChainCheckpointService {
 		this.updateStatus();
 	}
 
-	record(operation: ChainCheckpointOperation): void {
+	private record(operation: ChainCheckpointOperation): void {
 		const next = reduceChainCheckpoint(this.state, operation);
 		if (JSON.stringify(next) === JSON.stringify(this.state)) return;
 		this.pi.appendEntry(CHAIN_CHECKPOINT_ENTRY, operation);
@@ -121,11 +106,6 @@ export class ChainCheckpointService {
 
 	saved(chain: string, branch = "main", link?: string): void {
 		this.record({ type: "saved", chain, branch, link, at: Date.now() });
-	}
-
-	waive(reason: string): void {
-		if (!reason.trim()) throw new Error("A Chain checkpoint waiver requires a reason.");
-		this.record({ type: "waived", reason: reason.trim(), at: Date.now() });
 	}
 
 	async captureGitBeforeTurn(cwd: string): Promise<void> {
@@ -157,12 +137,12 @@ export class ChainCheckpointService {
 	reminder(): string | undefined {
 		if (this.state.status !== "due" && !this.remindNextTurn) return undefined;
 		this.remindNextTurn = false;
-		const target = this.state.chain ? `${this.state.chain}@${this.state.branch ?? "main"}` : "the relevant Chain";
+		const target = this.state.chain ? `${this.state.chain}@${this.state.branch}` : "the relevant Chain";
 		const reasons = this.state.dueReasons.length ? ` Reasons: ${this.state.dueReasons.join("; ")}.` : "";
 		const instruction = this.state.status === "due"
 			? this.state.dueCodes.includes("context_pressure")
-				? " Context reached 80%: save a concise Chain checkpoint with chain_save before compaction drops detail. It is session metadata, not a code edit, so read-only/no-edit tasks need it too. If no Chain is active, choose a concise task-specific name."
-				: " The milestone already created this obligation: call chain_save before starting further substantive work."
+				? " Context reached 80%: save a concise Chain checkpoint (chain action save) before compaction drops detail. It is session metadata, not a code edit, so read-only/no-edit tasks need it too. If no Chain is active, choose a concise task-specific name."
+				: " The milestone already created this obligation: save a chain link before starting further substantive work."
 			: " Load this Chain before rediscovery and continue from its recorded next step.";
 		return `Chain checkpoint: ${this.state.status === "due" ? "a durable checkpoint is due" : "resume with the active Chain"} for ${target}.${reasons}${instruction} Do not claim completion while a checkpoint is due.`;
 	}
@@ -173,12 +153,7 @@ export class ChainCheckpointService {
 	}
 
 	private updateStatus(): void {
-		if (!this.ctx) return;
-		if (this.state.status === "idle") {
-			this.ctx.ui.setStatus("chains", undefined);
-			return;
-		}
-		this.ctx.ui.setStatus("chains", this.state.status === "due" ? this.ctx.ui.theme?.fg("warning", "chain!") ?? "chain!" : undefined);
+		this.ctx?.ui.setStatus("chains", this.state.status === "due" ? this.ctx.ui.theme?.fg("warning", "chain!") ?? "chain!" : undefined);
 	}
 }
 
@@ -225,23 +200,23 @@ export function registerChainCheckpoint(pi: ExtensionAPI, service: ChainCheckpoi
 		const args = asRecord(toolArgs.get(event.toolCallId));
 		toolArgs.delete(event.toolCallId);
 		if (event.isError) return;
-		const details = asRecord(asRecord(event.result)?.details);
 		const chain = stringValue(args?.chain);
+		if (event.toolName !== "chain" || chain === undefined) return;
+		const action = stringValue(args?.action);
 		const parsedBranch = stringValue(args?.branch);
 		const branch = parsedBranch ?? "main";
-		if (event.toolName === "chain_save" && chain !== undefined) {
-			const filename = stringValue(asRecord(details?.link)?.filename);
+		if (action === "save") {
+			const filename = stringValue(asRecord(asRecord(asRecord(event.result)?.details)?.link)?.filename);
 			service.saved(chain, branch, filename);
 			return;
 		}
-		if ((event.toolName === "chain_load" || event.toolName === "chain_context") && chain !== undefined) {
+		if (action === "load" || action === "context") {
 			service.activate(chain, branch);
 			return;
 		}
-		if (event.toolName === "chain_fork" && chain !== undefined && parsedBranch !== undefined) {
+		if (action === "fork" && parsedBranch !== undefined) {
 			service.activate(chain, parsedBranch);
 			service.due("new Chain branch has no checkpoint", "branch_created");
-			return;
 		}
 	});
 	pi.on("session_shutdown", () => {
@@ -269,20 +244,17 @@ async function gitFingerprint(pi: ExtensionAPI, cwd: string): Promise<string | u
 
 function parseOperation(value: CustomEntry["data"]): ChainCheckpointOperation | undefined {
 	const operation = asRecord(value);
-	const type = stringValue(operation?.type);
-	const at = numberValue(operation?.at);
+	if (!operation) return undefined;
+	const type = stringValue(operation.type);
+	const at = numberValue(operation.at);
 	if (type === undefined || at === undefined) return undefined;
-	const chain = stringValue(operation?.chain);
-	const branch = stringValue(operation?.branch);
+	const chain = stringValue(operation.chain);
+	const branch = stringValue(operation.branch);
 	if (type === "activate" && chain !== undefined && branch !== undefined) return { type, chain, branch, at };
-	const reason = stringValue(operation?.reason);
-	if (type === "due" && reason !== undefined) return { type, reason, code: chainDueCode(operation?.code) ?? "other", at };
-	const link = stringValue(operation?.link);
-	if (type === "saved" && chain !== undefined && branch !== undefined && (operation?.link === undefined || link !== undefined)) {
-		const saved: ChainCheckpointOperation = { type, chain, branch, at };
-		if (link !== undefined) saved.link = link;
-		return saved;
-	}
+	const reason = stringValue(operation.reason);
+	if (type === "due" && reason !== undefined) return { type, reason, code: chainDueCode(operation.code) ?? "other", at };
+	const link = stringValue(operation.link);
+	if (type === "saved" && chain !== undefined && branch !== undefined && (operation.link === undefined || link !== undefined)) return { type, chain, branch, link, at };
 	if (type === "waived" && reason !== undefined) return { type, reason, at };
 	if (type === "context_reset") return { type, at };
 	return undefined;
@@ -310,7 +282,3 @@ function stringValue(value: CheckpointValue | undefined): string | undefined {
 function numberValue(value: CheckpointValue | undefined): number | undefined {
 	try { return Number.prototype.valueOf.call(value) === value ? value : undefined; } catch { return undefined; }
 }
-
-// SAFETY: This package exclusively owns the named hot-reload registry and initializes its exact shape below.
-const globalRegistry = globalThis as typeof globalThis & { __deevsPiKitChainCheckpoints?: { current?: ChainCheckpointService } };
-export const chainCheckpoints = globalRegistry.__deevsPiKitChainCheckpoints ??= {};

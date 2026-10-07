@@ -35,47 +35,25 @@ wiki/
 
 Before changing an existing wiki: read `SCHEMA.md`, `index.md`, and recent `log.md` entries, then search existing pages for the topic before creating a new one. Skipping orientation creates duplicate pages, broken links, and stale contradictions.
 
+The `wiki` tool (active once this skill is loaded) takes an `action` and the wiki `path`:
+
 ```text
-wiki_status   inspect structure and top health warnings
-wiki_lint     find link/frontmatter/index/tag/source issues
-wiki_search   search pages by relevance/text/regex
-wiki_context  pack relevant bounded wiki context
-read          read schema/index/log/pages when editing precisely
-write/edit    create or update pages after path/scope is clear
+init      create the standard layout and starter files
+status    structure and top health warnings
+lint      link/frontmatter/index/tag/source issues
+graph     backlinks, orphans, broken and ambiguous links
+search    pages by relevance, or searchMode text/regex
+context   pack relevant pages into bounded context
 ```
 
-Use `bash` only for small repo-local scans the wiki tools do not cover.
+Use `read`, `write` and `edit` for the pages themselves.
+Use `bash` only for small repo-local scans the wiki tool does not cover.
 
 ## Initializing
 
-Confirm the wiki path and domain, create the standard layout, write small domain-specific starter files, and suggest first sources to ingest.
+Confirm the wiki path and domain, run `init` (`dryRun` first if the path is uncertain; it needs an empty or missing directory, so in an existing folder write the same files by hand), tailor its starter `SCHEMA.md` to the domain, and suggest first sources to ingest.
 
-`index.md` — one line per page, `[[page-name]] — short summary`, under these exact sections:
-
-```markdown
-# Wiki Index
-
-> Last updated: YYYY-MM-DD | Total pages: 0
-
-## Entities
-
-## Concepts
-
-## Comparisons
-
-## Queries
-```
-
-`log.md` — append-only:
-
-```markdown
-# Wiki Log
-
-> Append-only record of material wiki changes.
-> Format: `## [YYYY-MM-DD] action | subject`
-```
-
-Log material changes, ingests, filed queries, lints, archives, and broad refactors — not trivial lookups.
+`index.md` lists one line per page, `[[page-name]] — short summary`, under its Entities, Concepts, Comparisons and Queries sections. `log.md` is append-only, one `## [YYYY-MM-DD] action | subject` heading per entry. Log material changes, ingests, filed queries, lints, archives, and broad refactors — not trivial lookups.
 
 `SCHEMA.md` must define:
 
@@ -96,11 +74,11 @@ For large folders, inventory first and process bounded batches. Ask before touch
 
 ## Querying
 
-Find pages with `wiki_context`/`wiki_search`; read schema/index/pages when precision matters; answer with `[[page]]` citations. If a substantial synthesis would be painful to recreate, ask whether to file it under `queries/` or `comparisons/`. Log filed queries, not trivial lookups.
+Find pages with `context`/`search`; read schema/index/pages when precision matters; answer with `[[page]]` citations. If a substantial synthesis would be painful to recreate, ask whether to file it under `queries/` or `comparisons/`. Log filed queries, not trivial lookups.
 
 ## Linting
 
-Prefer `wiki_lint`/`wiki_status`/`wiki_graph`; report by severity: broken `[[wikilinks]]`, orphans, pages missing from `index.md`, missing required frontmatter, tags absent from `SCHEMA.md`, `confidence: low`/`contested`/contradictions, source drift, stale or overlong pages, log rotation needs. Ask before broad fixes.
+Prefer `lint`/`status`/`graph`; report by severity: broken `[[wikilinks]]`, orphans, pages missing from `index.md`, missing required frontmatter, tags absent from `SCHEMA.md`, `confidence: low`/`contested`/contradictions, source drift, stale or overlong pages, log rotation needs. Ask before broad fixes.
 
 ## Subagents for large wikis
 
@@ -108,7 +86,7 @@ For noisy corpora or major refactors: `explorer` maps sources/pages/taxonomy, `r
 
 ## Promotion from chains
 
-Use `chain_search`/`chain_context` to find stable decisions; convert only durable canonical facts into pages, citing chain links as sources. Do not dump chain summaries into pages.
+Use `chain` search and context to find stable decisions; convert only durable canonical facts into pages, citing chain links as sources. Do not dump chain summaries into pages.
 
 ## Pitfalls
 

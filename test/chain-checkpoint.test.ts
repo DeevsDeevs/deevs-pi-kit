@@ -28,6 +28,11 @@ describe("Chain checkpoint state", () => {
 			{ type: "custom", customType: CHAIN_CHECKPOINT_ENTRY, data: { type: "due", reason: "review adjudicated", at: 2 } },
 		]);
 		expect(replayed).toMatchObject({ chain: "kit", branch: "main", status: "due", dueReasons: ["review adjudicated"] });
+		// Sessions recorded before the waiver command was removed still replay their waivers.
+		expect(replayChainCheckpoint([
+			{ type: "custom", customType: CHAIN_CHECKPOINT_ENTRY, data: { type: "due", reason: "review adjudicated", at: 2 } },
+			{ type: "custom", customType: CHAIN_CHECKPOINT_ENTRY, data: { type: "waived", reason: "old", at: 3 } },
+		])).toMatchObject({ status: "saved", dueReasons: [] });
 	});
 
 	it("rejects malformed persisted operations instead of casting them into state", () => {
@@ -35,17 +40,6 @@ describe("Chain checkpoint state", () => {
 			{ type: "custom", customType: CHAIN_CHECKPOINT_ENTRY, data: { type: "saved", chain: "kit", branch: "main", link: { unsafe: true }, at: 1 } },
 		]);
 		expect(replayed).toEqual(emptyChainCheckpoint());
-	});
-
-	it("satisfies only the exact saved or waived Chain target", () => {
-		const service = new ChainCheckpointService({ appendEntry() {} } as unknown as ExtensionAPI);
-		service.saved("other", "main");
-		expect(service.isSatisfied("kit", "main")).toBe(false);
-		service.activate("kit", "main");
-		expect(service.isSatisfied("kit", "main")).toBe(false);
-		service.waive("approved");
-		expect(service.isSatisfied("kit", "main")).toBe(true);
-		expect(service.isSatisfied("kit", "release")).toBe(false);
 	});
 
 	it("marks a new repository commit without treating ordinary edits as milestones", async () => {
@@ -76,7 +70,7 @@ describe("Chain checkpoint state", () => {
 		expect(statuses.at(-1)).toBe("chain!");
 		expect(service.reminder()).toContain("checkpoint is due");
 		service.due("milestone recorded");
-		expect(service.reminder()).toContain("call chain_save before starting further substantive work");
+		expect(service.reminder()).toContain("save a chain link before starting further substantive work");
 	});
 
 	it("reminds once at 85 percent context through a prompt section and never blocks a tool", () => {
@@ -118,8 +112,8 @@ describe("Chain checkpoint state", () => {
 		expect(sent[0]).toContain("Context reached 80%");
 		expect(service.read().dueReasons).toEqual(["context usage reached 80%"]);
 
-		handlers.get("tool_execution_start")!({ toolCallId: "save", toolName: "chain_save", args: { chain: "kit", branch: "main" } });
-		handlers.get("tool_execution_end")!({ toolCallId: "save", toolName: "chain_save", isError: false, result: { details: { link: { filename: "checkpoint.md" } } } }, ctx);
+		handlers.get("tool_execution_start")!({ toolCallId: "save", toolName: "chain", args: { action: "save", chain: "kit", branch: "main" } });
+		handlers.get("tool_execution_end")!({ toolCallId: "save", toolName: "chain", isError: false, result: { details: { link: { filename: "checkpoint.md" } } } }, ctx);
 		expect(run()).toBeUndefined();
 		expect(sent).toHaveLength(1);
 
@@ -133,7 +127,7 @@ describe("Chain checkpoint state", () => {
 		let command: { handler: (args: string, ctx: ExtensionContext) => Promise<void> } | undefined;
 		const pi = { registerCommand(name: string, value: typeof command) { if (name === "chains") command = value; } } as unknown as ExtensionAPI;
 		const chains = ["abcdefghijklmno-one-zzzzzz", "abcdefghijklmno-two-zzzzzz"].map((chain) => ({ chain, count: 1, branches: [], latest: { chain, branch: "main", filename: "latest.md", title: chain, nextStep: null, parent: null, createdAt: null, ageDays: 0, stale: false, bytes: 1 } }));
-		registerChainCommands(pi, { list: async () => chains } as unknown as ChainService);
+		registerChainCommands(pi, { list: async () => chains } as unknown as ChainService, new ChainCheckpointService(pi));
 		let rendered = "";
 		const theme = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, bold: (text: string) => text };
 		const ctx = {

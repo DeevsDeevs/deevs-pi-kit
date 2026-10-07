@@ -28,11 +28,6 @@ export interface TodoListInput {
 	todos?: TodoItem[];
 }
 
-export interface TodoValidationResult {
-	valid: boolean;
-	errors: string[];
-}
-
 export interface TodoPersistedState {
 	todos: TodoItem[];
 }

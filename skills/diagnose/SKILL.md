@@ -27,7 +27,7 @@ Find the fastest deterministic loop that reaches the bug, e.g. `cargo test -p <c
 
 - Slow repro loops: `job_start`, then `read` its output file; `Monitor` to watch a log or folder. Persistent servers: Herdr — never `&`, `nohup`, `disown`, `setsid`.
 - Subagents only for independent investigation, tightly scoped with `cwd` and exact files; continue other runnable probes while it runs; its report arrives by itself.
-- For long diagnoses, `chain_save` the symptom, repro command, hypotheses tested, files touched, ids, and next step.
+- For long diagnoses, save a chain link with the symptom, repro command, hypotheses tested, files touched, ids, and next step.
 
 Do not proceed until the loop reproduces the bug or proves more evidence is needed.
 

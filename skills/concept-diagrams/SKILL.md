@@ -36,7 +36,7 @@ Source/architecture map (ownership, modules, trust boundaries) · runtime/data f
 
 ## Mermaid guardrails
 
-Stable ASCII IDs (`WikiContext`, not `wiki-context()`) with human labels in brackets (`WikiContext[wiki_context tool]`); short labels; no raw `<`, `>`, `|`, `{`, `}` in labels; short subgraph names; edge labels only when they add meaning; explain dashed vs solid if both appear.
+Stable ASCII IDs (`WikiContext`, not `wiki-context()`) with human labels in brackets (`WikiContext[wiki context action]`); short labels; no raw `<`, `>`, `|`, `{`, `}` in labels; short subgraph names; edge labels only when they add meaning; explain dashed vs solid if both appear.
 
 Readability budget (split by view if exceeded): 5–9 primary nodes, 1–3 subgraphs, 0–2 edge styles, 3–5 sequence participants, 5–8 states, 4–6 words per label.
 

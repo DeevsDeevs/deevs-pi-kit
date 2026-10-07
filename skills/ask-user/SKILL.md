@@ -5,7 +5,7 @@ description: "Ask the user through ask_user only before an irreversible or destr
 
 # Ask User
 
-Collect explicit user input through the interactive `ask_user` overlay before an irreversible or destructive step. A decision gate, not general conversation. The UI supports searchable option lists, descriptions, context display, freeform answers, and batched questions with progress tabs (`←`/`→` switch in option-list mode).
+Collect explicit user input through the interactive `ask_user` overlay before an irreversible or destructive step. A decision gate, not general conversation.
 
 ## When to use
 
@@ -25,14 +25,14 @@ For anything else — ambiguous requirements, a preference-dependent trade-off, 
 
 ```json
 {
-  "context": "The notifier can rely on terminal sequences only, or retain native fallbacks.",
+  "context": "The migration rewrites the users table; the newest backup is from 02:00.",
   "questions": [
     {
-      "id": "notification-path",
-      "question": "Which notification path should the plugin ship with?",
+      "id": "users-migration",
+      "question": "How should the users table migration run?",
       "options": [
-        { "title": "Terminal protocols only", "description": "Simpler; relies on terminal config" },
-        { "title": "Keep macOS fallback", "description": "More reliable on macOS, less terminal-native" }
+        { "title": "Rewrite in place", "description": "Fast; rollback needs the 02:00 backup" },
+        { "title": "Copy to a new table", "description": "Slower; the old table stays until you drop it" }
       ],
       "allowFreeform": true
     }
@@ -42,6 +42,6 @@ For anything else — ambiguous requirements, a preference-dependent trade-off, 
 
 ## Question quality
 
-"Which storage model should v1 use?" beats "Any thoughts?". One decision per question; never ask the user to repeat facts present in the repo; state your recommendation when evidence points clearly one way.
+"Drop the legacy `users` table now, or keep it until the migration is verified?" beats "Any thoughts?". One decision per question; never ask the user to repeat facts present in the repo; state your recommendation when evidence points clearly one way.
 
 Use `ask-user` to collect explicit choices during implementation; use `grill-me` for the broader one-question-at-a-time pressure test before a plan is ready.

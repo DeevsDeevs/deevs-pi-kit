@@ -12,6 +12,12 @@ const ENV_VALUE_OPTIONS = new Set(["-a", "--argv0", "-C", "--chdir", "-u", "--un
 const SUDO_VALUE_OPTIONS = new Set(["-C", "-D", "-g", "-h", "-p", "-R", "-r", "-T", "-t", "-u", "--chdir", "--close-from", "--group", "--host", "--prompt", "--role", "--type", "--user"]);
 const COMMAND_PREFIXES = new Set(["!", "builtin", "do", "elif", "else", "if", "then", "until", "while"]);
 const GIT_VALUE_OPTIONS = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--super-prefix"]);
+const WRAPPER_VALUE_OPTIONS = new Map([
+	["time", new Set(["-f", "--format", "-o", "--output"])],
+	["nice", new Set(["-n", "--adjustment"])],
+	["timeout", new Set(["-k", "--kill-after", "-s", "--signal"])],
+	["stdbuf", new Set(["-i", "--input", "-o", "--output", "-e", "--error"])],
+]);
 const PUSH_VALUE_OPTIONS = new Set(["-o", "--push-option", "--repo", "--receive-pack", "--exec"]);
 const DETACH_ERROR = "Detached process launch or dynamically-computed command detected (backgrounding, nohup/setsid/disown, or a command name that cannot be statically verified). Use a literal command, or Herdr for persistent or independently owned processes.";
 const FORCE_PUSH_ERROR = "Force push to a protected branch (main, master, release/*) or to an unnamed branch, or deleting a protected branch, is blocked. Name a non-protected target branch explicitly, e.g. `git push --force-with-lease origin feature/x`.";
@@ -88,7 +94,8 @@ export function guardBashCall(command: string, cwd: string, root = cwd, project 
 /** The shell command of a Claude Code or Codex PreToolUse payload, under the rules configured for its cwd. */
 export function guardHookPayload(payload: string): string | undefined {
 	const input: unknown = JSON.parse(payload);
-	if (!Value.Check(HookPayload, input) || input.tool_input?.command === undefined) return undefined;
+	if (!Value.Check(HookPayload, input)) throw new Error("the hook payload is not a PreToolUse object with a string or argv command");
+	if (input.tool_input?.command === undefined) return undefined;
 	const command = input.tool_input.command;
 	const cwd = input.cwd || process.cwd();
 	const options = { cwd, config: loadGuardConfig(cwd) };
@@ -222,10 +229,8 @@ function checkArgv(argv: string[], ctx: Guard, rejectDynamicExecutable: boolean)
 		return command ? checkShell(command, ctx) : undefined;
 	}
 	if (executable === "env") return checkEnvArgv(argv.slice(1), ctx, 0, rejectDynamicExecutable);
-	if (executable === "time") return checkTimeArgv(argv.slice(1), ctx, rejectDynamicExecutable);
-	if (executable === "nice") return checkNiceArgv(argv.slice(1), ctx, rejectDynamicExecutable);
-	if (executable === "timeout") return checkTimeoutArgv(argv.slice(1), ctx, rejectDynamicExecutable);
-	if (executable === "stdbuf") return checkStdbufArgv(argv.slice(1), ctx, rejectDynamicExecutable);
+	const wrapper = WRAPPER_VALUE_OPTIONS.get(executable);
+	if (wrapper) return checkWrapperArgv(executable, wrapper, argv.slice(1), ctx, rejectDynamicExecutable);
 	if (executable === "sudo") return checkSudoArgv(argv.slice(1), ctx, rejectDynamicExecutable);
 	if (executable === "command") return checkCommandArgv(argv.slice(1), ctx, rejectDynamicExecutable);
 	return undefined;
@@ -315,7 +320,7 @@ function execCommand(argv: string[]): string[] {
 	return argv.slice(index);
 }
 
-function checkEnvArgv(argv: string[], ctx: Guard, splitDepth = 0, rejectDynamicExecutable = false): string | undefined {
+function checkEnvArgv(argv: string[], ctx: Guard, splitDepth: number, rejectDynamicExecutable: boolean): string | undefined {
 	if (splitDepth > 8) return detach(ctx);
 	let index = 0;
 	while (index < argv.length) {
@@ -362,60 +367,20 @@ function splitEnvString(source: string): string[] | undefined {
 	return result;
 }
 
-function checkTimeArgv(argv: string[], ctx: Guard, rejectDynamicExecutable = false): string | undefined {
+/** `time`, `nice`, `timeout` and `stdbuf` run the argv after their options; these options take the next word as their value. */
+function checkWrapperArgv(executable: string, valued: Set<string>, argv: string[], ctx: Guard, rejectDynamicExecutable: boolean): string | undefined {
 	let index = 0;
 	while (index < argv.length) {
 		const value = argv[index]!;
 		if (value === "--") { index++; break; }
-		if (value === "-f" || value === "--format" || value === "-o" || value === "--output") { index += 2; continue; }
-		if (value.startsWith("--format=") || value.startsWith("--output=") || /^-[fo].+/.test(value)) { index++; continue; }
-		if (value.startsWith("-")) { index++; continue; }
-		break;
+		if (!value.startsWith("-")) break;
+		index += valued.has(value) ? 2 : 1;
 	}
+	if (executable === "timeout" && index < argv.length) index++; // duration follows options, including after --
 	return checkArgv(argv.slice(index), ctx, rejectDynamicExecutable);
 }
 
-function checkNiceArgv(argv: string[], ctx: Guard, rejectDynamicExecutable = false): string | undefined {
-	let index = 0;
-	while (index < argv.length) {
-		const value = argv[index]!;
-		if (value === "--") { index++; break; }
-		if (value === "-n" || value === "--adjustment") { index += 2; continue; }
-		if (value.startsWith("--adjustment=") || /^-\d+$/.test(value)) { index++; continue; }
-		if (value.startsWith("-")) { index++; continue; }
-		break;
-	}
-	return checkArgv(argv.slice(index), ctx, rejectDynamicExecutable);
-}
-
-function checkTimeoutArgv(argv: string[], ctx: Guard, rejectDynamicExecutable = false): string | undefined {
-	let index = 0;
-	while (index < argv.length) {
-		const value = argv[index]!;
-		if (value === "--") { index++; break; }
-		if (value === "-k" || value === "--kill-after" || value === "-s" || value === "--signal") { index += 2; continue; }
-		if (value.startsWith("--kill-after=") || value.startsWith("--signal=") || value.startsWith("-k") || value.startsWith("-s")) { index++; continue; }
-		if (value.startsWith("-")) { index++; continue; }
-		break;
-	}
-	if (index < argv.length) index++; // duration follows options, including after --
-	return checkArgv(argv.slice(index), ctx, rejectDynamicExecutable);
-}
-
-function checkStdbufArgv(argv: string[], ctx: Guard, rejectDynamicExecutable = false): string | undefined {
-	let index = 0;
-	while (index < argv.length) {
-		const value = argv[index]!;
-		if (value === "--") { index++; break; }
-		if (value === "-i" || value === "--input" || value === "-o" || value === "--output" || value === "-e" || value === "--error") { index += 2; continue; }
-		if (/^-[ioe].+/.test(value) || value.startsWith("--input=") || value.startsWith("--output=") || value.startsWith("--error=")) { index++; continue; }
-		if (value.startsWith("-")) { index++; continue; }
-		break;
-	}
-	return checkArgv(argv.slice(index), ctx, rejectDynamicExecutable);
-}
-
-function checkSudoArgv(argv: string[], ctx: Guard, rejectDynamicExecutable = false): string | undefined {
+function checkSudoArgv(argv: string[], ctx: Guard, rejectDynamicExecutable: boolean): string | undefined {
 	let index = 0;
 	while (index < argv.length) {
 		const value = argv[index]!;
@@ -431,7 +396,7 @@ function checkSudoArgv(argv: string[], ctx: Guard, rejectDynamicExecutable = fal
 	return checkArgv(argv.slice(index), ctx, rejectDynamicExecutable);
 }
 
-function checkCommandArgv(argv: string[], ctx: Guard, rejectDynamicExecutable = false): string | undefined {
+function checkCommandArgv(argv: string[], ctx: Guard, rejectDynamicExecutable: boolean): string | undefined {
 	let index = 0;
 	while (index < argv.length) {
 		const value = argv[index]!;

@@ -25,7 +25,7 @@ describe("language-neutral text surfaces", () => {
 		const service = new ChainService(cwd);
 		const saved = await service.save({ chain: "検証", title: "多言語の記録", nextStep: "次の確認を実行", content: "# 多言語の記録\n\n任意の見出し\n\nсистема готова" });
 		expect(saved.link.nextStep).toBe("次の確認を実行");
-		const result = await service.search({ query: "система", mode: "lookup" });
+		const result = await service.search({ query: "система", searchMode: "lookup" });
 		expect(result.matches[0]?.link.chain).toBe("検証");
 	});
 

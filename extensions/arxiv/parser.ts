@@ -1,6 +1,6 @@
 import type { ArxivPaper } from "./types.ts";
 
-export function parseArxivFeed(xml: string): { totalResults: number | null; papers: ArxivPaper[] } {
+export function parseArxivFeed(xml: string) {
 	const totalRaw = textOf(xml, "opensearch:totalResults") ?? textOf(xml, "totalResults");
 	const totalResults = totalRaw === null ? null : Number.parseInt(totalRaw, 10);
 	const papers = [...xml.matchAll(/<entry>([\s\S]*?)<\/entry>/g)].map((match) => parseEntry(match[1]!));
@@ -22,8 +22,7 @@ export function buildBibtex(paper: ArxivPaper): string {
 	];
 	if (paper.primaryCategory) lines.push(`  primaryClass  = {${paper.primaryCategory}},`);
 	if (paper.doi) lines.push(`  doi           = {${paper.doi}},`);
-	lines.push(`  url           = {${paper.absUrl}}`);
-	lines.push("}");
+	lines.push(`  url           = {${paper.absUrl}}`, "}");
 	return lines.join("\n");
 }
 
@@ -53,8 +52,7 @@ function parseEntry(entry: string): ArxivPaper {
 }
 
 function textOf(xml: string, tag: string): string | null {
-	const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-	const match = xml.match(new RegExp(`<${escaped}[^>]*>([\\s\\S]*?)<\\/${escaped}>`));
+	const match = xml.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`));
 	return match ? decodeXml(match[1]!) : null;
 }
 
@@ -79,11 +77,10 @@ function clean(value: string): string {
 }
 
 function cleanNullable(value: string | null): string | null {
-	const cleaned = value === null ? "" : clean(value);
-	return cleaned || null;
+	return value === null ? null : clean(value) || null;
 }
 
-function normalizeArxivId(id: string): string {
+export function normalizeArxivId(id: string): string {
 	return id.trim().replace(/^arXiv:/i, "");
 }
 

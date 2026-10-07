@@ -62,19 +62,17 @@ export interface ChainSearchInput {
 	branch?: string;
 	maxResults?: number;
 	contextLines?: number;
-	mode?: "lookup" | "text" | "regex";
+	searchMode?: "lookup" | "text" | "regex";
 	caseSensitive?: boolean;
-	recencyHalfLifeDays?: number;
-	recencyWeight?: number;
 }
 
 export interface ChainContextInput extends ChainLoadInput {
 	mode?: "latest" | "pack";
 	includeParents?: number;
 	recentLinks?: number;
-	searchQuery?: string;
+	query?: string;
 	searchMode?: "lookup" | "text" | "regex";
-	maxSearchMatches?: number;
+	maxResults?: number;
 	compact?: boolean;
 }
 
@@ -109,6 +107,21 @@ export interface ChainSearchResult {
 	regex: boolean;
 }
 
+export interface ChainRankedMatch {
+	link: ChainLinkInfo;
+	score: number;
+	lexicalScore: number;
+	recencyScore: number;
+	matchedTerms: string[];
+	snippet: string;
+}
+
+export interface ChainRankedSearchResult {
+	query: string;
+	matches: ChainRankedMatch[];
+	truncated: boolean;
+}
+
 export interface ChainContextResult {
 	link: ChainLinkInfo;
 	context: string;
@@ -116,4 +129,3 @@ export interface ChainContextResult {
 	includedLinks: ChainLinkInfo[];
 	searchMatches: ChainSearchMatch[];
 }
-

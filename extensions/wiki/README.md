@@ -4,7 +4,7 @@ Deterministic helpers for curated markdown wikis. The extension handles structur
 
 ## Layout
 
-`wiki_init` creates:
+`init` creates:
 
 ```text
 wiki/
@@ -21,18 +21,9 @@ wiki/
 
 For codebase wikis, cite repository paths directly instead of copying code into `sources/`. Use `sources/` for immutable external artifacts, notes, transcripts, command outputs, screenshots, diagrams, or chain excerpts.
 
-## Tools
+## Tool
 
-```text
-wiki_init     create the standard structure
-wiki_status   summarize files, graph health, and top issues
-wiki_lint     report link, index, frontmatter, tag, and source issues
-wiki_graph    build a graph from [[wikilinks]]
-wiki_search   ranked, text, or regex page search
-wiki_context  pack bounded wiki context for tasks or subagents
-```
-
-All tools require an explicit wiki root path. Paths must stay inside the project.
+One `wiki` tool with an `action`: `init`, `status`, `lint`, `graph` (from `[[wikilinks]]`), `search` (ranked, text or regex) and `context` (a bounded pack for a task or an Agent). Every call names the wiki root `path`, which must stay inside the project. The tool stays off the model's tool list until the `wiki` skill is loaded (the model reads it, or you run `/skill:wiki`).
 
 ## Scope
 

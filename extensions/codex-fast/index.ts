@@ -1,5 +1,7 @@
-import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { kitValues, migrateLegacyConfig } from "../shared/config.ts";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
+import { migrateLegacyConfig, trustedKitValue } from "../shared/config.ts";
 
 const EXTENSION_ID = "codex-fast";
 const PROVIDER_ID = "openai-codex";
@@ -8,8 +10,7 @@ const FAST_SERVICE_TIER = "priority";
 
 /** `"codexFast": true` in pi-kit.json, re-read on every request; a project's own value counts only once it is trusted. */
 function isFastEnabled(ctx: ExtensionContext): boolean {
-	const [global, project] = kitValues("codexFast", ctx.cwd, getAgentDir());
-	return (ctx.isProjectTrusted() ? project : undefined) ?? global ?? false;
+	return trustedKitValue("codexFast", ctx) ?? false;
 }
 
 function isEligible(ctx: ExtensionContext): boolean {
@@ -21,9 +22,7 @@ function updateStatus(ctx: ExtensionContext, active: boolean): void {
 	if (ctx.hasUI) ctx.ui.setStatus(EXTENSION_ID, active ? "fast" : undefined);
 }
 
-function isPayloadRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+const Payload = Type.Object({ model: Type.String() });
 
 export default function codexFastExtension(pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event, ctx) => {
@@ -37,7 +36,7 @@ export default function codexFastExtension(pi: ExtensionAPI): void {
 		const active = isFastEnabled(ctx) && isEligible(ctx);
 		updateStatus(ctx, active);
 		const payload = event.payload;
-		if (!active || !isPayloadRecord(payload) || payload.model !== ctx.model?.id || "service_tier" in payload) return undefined;
+		if (!active || !Value.Check(Payload, payload) || payload.model !== ctx.model?.id || "service_tier" in payload) return undefined;
 		return { ...payload, service_tier: FAST_SERVICE_TIER };
 	});
 }
