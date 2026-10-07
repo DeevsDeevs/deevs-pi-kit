@@ -39,7 +39,7 @@ The unprompted tasks run only when `--tasks` names them. Run them with autonomy 
 | `pi-opus` | Pi + kit over RPC, `anthropic/claude-opus-5-5`, the volume's Anthropic OAuth login | the kit's Agent |
 | `pi-opus-or` | Pi + kit, OpenRouter (`~/.config/pi-kit-bench/openrouter.key` mounted read-only, read into the container's env) | the kit's Agent |
 
-`--kit '<json>'` merges a JSON object into every Pi run's global `pi-kit.json` (for example `{"autonomy": false}` or `{"verify": true}`); `result.json` records it as `kit`, and the summary keys such a run's cell as `<config> <kit>`, so run sets with different settings summarize side by side.
+`--kit '<json>'` merges a JSON object into every Pi run's global `pi-kit.json` (for example `{"autonomy": false}`); `result.json` records it as `kit`, and the summary keys such a run's cell as `<config> <kit>`, so run sets with different settings summarize side by side.
 
 `claude -p` with a background Workflow or Agent does not exit at the end of the turn: it waits for the background tasks, answers their notifications in new turns, and exits after the last one.
 

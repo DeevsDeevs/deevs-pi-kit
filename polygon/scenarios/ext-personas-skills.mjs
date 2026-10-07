@@ -12,7 +12,6 @@ export default {
 		const skillDir = join(t.repo, ".pi", "skills", "polygon-skill");
 		mkdirSync(skillDir, { recursive: true });
 		writeFileSync(join(skillDir, "SKILL.md"), "---\nname: polygon-skill\ndescription: Polygon fixture skill.\n---\n# Polygon skill\n");
-		writeFileSync(join(t.repo, ".pi", "pi-kit.json"), JSON.stringify({ verify: true }));
 		const persona = readFileSync(join(t.kit, "extensions/subagents/agents/explorer.md"), "utf8").split("\n---\n")[1];
 		const personaLine = persona.split("\n").find((line) => line.trim() && !line.startsWith("#"));
 		const marks = { sandboxSkill: "<name>polygon-skill</name>", kitSkill: "<name>diagnose</name>", persona: JSON.stringify(personaLine).slice(1, -1), verify: "instead of pip-installing into a system or base Python.", lead: "how you verified it, and what remains." };

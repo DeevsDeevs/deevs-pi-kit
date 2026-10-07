@@ -111,7 +111,7 @@ export async function placeAgent(type: AgentType, resolved: ResolvedModel, reque
 
 /** The worker of a `claude:` or `codex:` model. */
 export function cliWorker(engine: Engine, type: AgentType, resolved: Extract<ResolvedModel, { harness: "claude" | "codex" }>, at: Placement, agentId: string, schema?: Durable.JsonObject): CliWorker {
-	return { harness: resolved.harness, model: resolved.model, level: resolved.level, cwd: at.cwd, instructions: workerPrompt(type, at.cwd, at.worktree, { cli: true }), tools: type.tools, writer: at.writer, schema, dir: join(engine.dir, "cli", agentId) };
+	return { harness: resolved.harness, model: resolved.model, level: resolved.level, cwd: at.cwd, instructions: workerPrompt(type, at.cwd, at.worktree, true), tools: type.tools, writer: at.writer, schema, dir: join(engine.dir, "cli", agentId) };
 }
 
 export function totalTokens(usage: { models?: Record<string, { totalTokens?: number }> } | undefined): number {

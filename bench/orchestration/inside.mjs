@@ -17,7 +17,7 @@ export const CONFIGS = {
 const HOME = "/tmp/home";
 const REPO = "/tmp/work/repo";
 const OUT = "/results";
-/** run.mjs --kit: merged into each Pi run's global pi-kit.json, so arms such as autonomy off or verify on share one image. */
+/** run.mjs --kit: merged into each Pi run's global pi-kit.json, so arms such as autonomy off share one image. */
 const KIT = process.env.BENCH_PI_KIT_JSON ? JSON.parse(process.env.BENCH_PI_KIT_JSON) : null;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const jsonl = (file) => { try { return readFileSync(file, "utf8").split("\n").filter(Boolean).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } }); } catch { return []; } };
