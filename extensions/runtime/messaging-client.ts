@@ -17,11 +17,13 @@ export const COLLABORATOR_MESSAGE = "collaborator-message";
 const COLLABORATOR_NOTICE = "collaborator-notice";
 const IMAGE_TYPES = new Map([[".png", "image/png"], [".jpg", "image/jpeg"], [".jpeg", "image/jpeg"], [".gif", "image/gif"], [".webp", "image/webp"]]);
 
-/** A send's fields; an inbox read takes none. */
+/** A send's fields, an inbox peek, or the mail a read acknowledges. */
 interface MailParams {
 	participantId?: string;
 	operationId?: string;
 	bodyBase64?: string;
+	peek?: true;
+	eventIds?: string[];
 }
 
 /** An idle session with nothing queued and, in the TUI, nothing half-typed: the only moment Runtime speaks up. */
@@ -33,7 +35,8 @@ function deliveryReady(ctx: ExtensionContext): boolean {
 /** Issues private MCP messaging descriptors and delivers mail into an idle session; it never acquires identity. */
 export class MessagingClient {
 	private readonly session: RuntimeSession;
-	private readonly hintedMail = new Set<string>();
+	/** Mail handed to Pi whose entry the session may not hold yet; it is not sent twice by this process. */
+	private readonly sent = new Set<string>();
 	private readonly managedIssued = new Set<string>();
 
 	constructor(session: RuntimeSession) {
@@ -95,23 +98,29 @@ export class MessagingClient {
 	}
 
 	/**
-	 * Delivery into an idle session: every unread message (marked read by this read) goes to the model as one
-	 * `collaborator-message` that starts a turn, images as ImageContent. Never replayed after loss.
+	 * Delivery into an idle session: every unread message goes to the model as one `collaborator-message` that starts a
+	 * turn, images as ImageContent. Mail is marked read only once the session file holds it, so a crash or /reload in
+	 * between delivers it again instead of losing it.
 	 */
 	async deliverMail(registration: LiveClientRegistration, ctx: ExtensionContext, mail: MailHint | undefined): Promise<void> {
-		if (!mail || this.hintedMail.has(mail.eventId)) return;
-		if (!this.hintReady(registration, ctx)) return;
-		// One delivery per hinted message per session; the set stays as small as this session's mail.
-		this.hintedMail.add(mail.eventId);
-		const inbox = await this.mail(ctx, "inbox", {});
+		if (!mail || !this.hintReady(registration, ctx)) return;
+		const held = deliveredMail(ctx);
+		if (this.sent.has(mail.eventId) && !held.has(mail.eventId)) return;
+		const inbox = await this.mail(ctx, "inbox", { peek: true });
 		const messages = isJsonObject(inbox) && Array.isArray(inbox.messages) ? inbox.messages.filter(isJsonObject) : [];
-		if (messages.length === 0) return;
-		const from = [...new Set(messages.map((message) => String(message.from)))];
-		this.session.pi.sendMessage({ customType: COLLABORATOR_MESSAGE, content: mailContent(messages), display: true, details: { from } }, { triggerTurn: true, deliverAs: "followUp" });
+		const eventIds = messages.map((message) => String(message.eventId));
+		const delivered = eventIds.filter((id) => held.has(id));
+		if (delivered.length > 0) await this.mail(ctx, "read", { eventIds: delivered });
+		const fresh = messages.filter((message) => !held.has(String(message.eventId)) && !this.sent.has(String(message.eventId)));
+		if (fresh.length === 0 || !this.hintReady(registration, ctx)) return;
+		const ids = fresh.map((message) => String(message.eventId));
+		for (const id of ids) this.sent.add(id);
+		const from = [...new Set(fresh.map((message) => String(message.from)))];
+		this.session.pi.sendMessage({ customType: COLLABORATOR_MESSAGE, content: mailContent(fresh), display: true, details: { from, eventIds: ids } }, { triggerTurn: true, deliverAs: "followUp" });
 	}
 
 	/** One daemon call in this session's own mail namespace, with the credentials of its private descriptor. */
-	private async mail(ctx: ExtensionContext, method: "send" | "inbox", params: MailParams): Promise<JsonValue | undefined> {
+	private async mail(ctx: ExtensionContext, method: "send" | "inbox" | "read", params: MailParams): Promise<JsonValue | undefined> {
 		const descriptor: JsonValue = JSON.parse(readFileSync(await this.descriptor(ctx), "utf8"));
 		if (!isJsonObject(descriptor)) throw new HostedRuntimeClientError("invalid_response", "Messaging descriptor is malformed.");
 		const client = new HostedRuntimeClient(text(descriptor.socketPath), 5_000, 128 * 1024);
@@ -143,6 +152,18 @@ export class MessagingClient {
 		if (!current || current.participantKey !== identity.participantKey || current.generation !== identity.generation) return false;
 		return isHeld(current.disposition);
 	}
+}
+
+/** The mail this session already holds: its own file is the acknowledgement, as for task notifications. */
+function deliveredMail(ctx: ExtensionContext): Set<string> {
+	const ids = new Set<string>();
+	for (const entry of ctx.sessionManager.getEntries()) {
+		if (entry.type !== "custom_message" || entry.customType !== COLLABORATOR_MESSAGE) continue;
+		// SAFETY: Session entries are untrusted; a non-string id only sits in the set and never equals a real one.
+		const eventIds = (entry.details as { eventIds?: unknown } | undefined)?.eventIds;
+		if (Array.isArray(eventIds)) for (const id of eventIds) ids.add(String(id));
+	}
+	return ids;
 }
 
 function managedParticipantConfigured(control: ManagedAgentControl, participant: ClientParticipantStatus): boolean {
