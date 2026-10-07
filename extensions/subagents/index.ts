@@ -68,7 +68,7 @@ const JobSchema = Type.Object({
 	command: Type.String({ description: "The shell command to run" }),
 	description: Type.String({ description: "A short description of what it does, shown in the notification" }),
 	cwd: Type.Optional(Type.String({ description: "Working directory; defaults to yours" })),
-	timeout: Type.Optional(Type.Integer({ minimum: 1_000, description: "Milliseconds before the command is killed. Set one for builds and tests; in print or json mode Pi waits only for jobs that have one" })),
+	timeout: Type.Optional(Type.Integer({ minimum: 1_000, description: "Milliseconds before the command is killed. Set one for work that ends by itself; in print or json mode Pi waits only for jobs that have one" })),
 });
 type JobParams = Static<typeof JobSchema>;
 
@@ -219,7 +219,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "job_start",
 		label: "job_start",
-		description: "Run a shell command in the background. The call returns at once with the job id and its output file; a <task-notification> arrives when the command exits, with its exit code. Read the output file with read; stop the job with TaskStop. A job lives in this Pi: it survives /reload, and if Pi closes first it is killed and reported as interrupted. Servers, watchers and REPLs that must outlive Pi belong in Herdr.",
+		description: "Run a shell command in the background, only for work that must keep running while you do something else; builds and tests run in the foreground. The call returns at once with the job id and its output file; a <task-notification> arrives when the command exits, with its exit code. Read the output file with read; stop the job with TaskStop. A job lives in this Pi: it survives /reload, and if Pi closes first it is killed and reported as interrupted. Servers, watchers and REPLs that must outlive Pi belong in Herdr.",
 		promptSnippet: "Run a command in the background; notified when it exits.",
 		parameters: JobSchema,
 		async execute(toolCallId, params: JobParams, _signal, _onUpdate, ctx) {

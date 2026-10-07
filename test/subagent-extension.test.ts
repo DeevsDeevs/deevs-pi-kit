@@ -32,11 +32,14 @@ describe("Subagent extension surface", () => {
 		for (const text of [agent, skill]) expect(text).toMatch(/For code (it|an agent) writes, paste the task's requirement text (into its prompt )?word for word; never paraphrase a spec\./);
 	});
 
-	it("asks for a job_start timeout on builds and tests, as print mode's job result does, while Agent limits stay on request only", () => {
+	it("keeps builds and tests in foreground bash, job_start only for work that runs on while the lead does something else, with a timeout as print mode's job result asks, while Agent limits stay on request only", () => {
 		const params: Record<string, TObject> = {};
-		subagentsExtension({ registerTool(tool: { name: string; parameters: TObject }) { params[tool.name] = tool.parameters; }, registerCommand() {}, on() {} } as unknown as ExtensionAPI);
+		let job = "";
+		subagentsExtension({ registerTool(tool: { name: string; parameters: TObject; description: string }) { params[tool.name] = tool.parameters; if (tool.name === "job_start") job = tool.description; }, registerCommand() {}, on() {} } as unknown as ExtensionAPI);
 		const timeout = (tool: string) => (params[tool]!.properties.timeout as TSchema & { description: string }).description;
-		expect(timeout("job_start")).toMatch(/Set one for builds and tests; in print or json mode Pi waits only for jobs that have one/);
+		expect(job).toMatch(/only for work that must keep running while you do something else; builds and tests run in the foreground\./);
+		expect(WORKING_RULES).toContain("Run builds and tests in the foreground with bash, with a timeout.");
+		expect(timeout("job_start")).toMatch(/Set one for work that ends by itself; in print or json mode Pi waits only for jobs that have one/);
 		expect(timeout("job_start")).not.toMatch(/ONLY/);
 		expect(jobLaunchedResult("b1", "/out", undefined, true)).toMatch(/waits only for .*jobs started with a timeout/);
 		expect(timeout("Agent")).toMatch(/ONLY when the user asks/);
@@ -132,6 +135,6 @@ describe("Subagent extension surface", () => {
 		for (const rule of [finish, output, report]) expect(worker).not.toContain(rule);
 		expect(workerPrompt(findAgentType(undefined), dir).split(tests!)).toHaveLength(2);
 		expect(workerPrompt(findAgentType(undefined), dir, undefined, true)).not.toContain(tests);
-		expect(getEncoding("o200k_base").encode(WORKING_RULES.map((rule) => `- ${rule}`).join("\n")).length).toBeLessThanOrEqual(315);
+		expect(getEncoding("o200k_base").encode(WORKING_RULES.map((rule) => `- ${rule}`).join("\n")).length).toBeLessThanOrEqual(320);
 	});
 });
