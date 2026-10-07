@@ -44,6 +44,7 @@ export const KIT_DEFAULTS = {
 
 export const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ModelThinkingLevel[];
 const DATED = /-\d{8}$/;
+const BUILT_IN: Record<string, string> = KIT_DEFAULTS.models;
 const CodexCache = Type.Object({ models: Type.Array(Type.Object({ slug: Type.String() })) });
 
 /** What a resolution takes, built fresh for each one so an edit to pi-kit.json or Codex's catalog applies to the next call. */
@@ -94,12 +95,13 @@ function compareVersions(a: { key: number[]; dated: boolean }, b: { key: number[
 	return Number(b.dated) - Number(a.dated);
 }
 
-/** Resolves an explicit model, a persona's model, or (when both are absent) `default`; `effort` beats any level in the spec, and `a|b` takes the first alternative that resolves. Throws before anything starts. */
+/** Resolves an explicit model, a persona's model, or (when both are absent) `default`; `effort` beats any level in the spec, and `a|b` takes the first alternative that resolves, for a built-in name the first on a Pi OAuth (ChatGPT) login, so `OPENAI_API_KEY` bills only without one. Throws before anything starts. */
 export function resolveModel(spec: string | undefined, ctx: ModelContext, effort?: ModelThinkingLevel): ResolvedModel {
 	const tried: string[] = [];
 	const names = new Set<string>();
 	let current = spec ?? "default";
 	let level = effort;
+	let builtIn = false;
 	for (;;) {
 		tried.push(current);
 		const [body, own] = splitLevel(current);
@@ -108,15 +110,14 @@ export function resolveModel(spec: string | undefined, ctx: ModelContext, effort
 			if (names.has(body)) throw resolutionError(tried, "these names refer to each other in a loop", ctx);
 			names.add(body);
 			current = ctx.config.models[body];
+			builtIn = current === BUILT_IN[body];
 			continue;
 		}
-		const misses: string[] = [];
-		for (const alternative of body.split("|")) {
-			const outcome = resolveSpec(alternative === body ? current : alternative, alternative, level, ctx);
-			if (!("reason" in outcome)) return outcome;
-			misses.push(outcome.reason);
-		}
-		throw resolutionError(tried, badLevel(current) ?? misses.join("; "), ctx);
+		const outcomes = body.split("|").map((alternative) => resolveSpec(alternative === body ? current : alternative, alternative, level, ctx));
+		const resolved = outcomes.filter((outcome): outcome is ResolvedModel => !("reason" in outcome));
+		const chosen = (builtIn && resolved.length > 1 && resolved.find((r) => r.harness === "pi" && ctx.registry.isUsingOAuth(r.model))) || resolved[0];
+		if (chosen) return chosen;
+		throw resolutionError(tried, badLevel(current) ?? outcomes.flatMap((outcome) => ("reason" in outcome ? [outcome.reason] : [])).join("; "), ctx);
 	}
 }
 
