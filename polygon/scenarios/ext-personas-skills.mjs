@@ -13,7 +13,7 @@ export default {
 		writeFileSync(join(skillDir, "SKILL.md"), "---\nname: polygon-skill\ndescription: Polygon fixture skill.\n---\n# Polygon skill\n");
 		const persona = readFileSync(join(t.kit, "extensions/subagents/agents/explorer.md"), "utf8").split("\n---\n")[1];
 		const personaLine = persona.split("\n").find((line) => line.trim() && !line.startsWith("#"));
-		const marks = { sandboxSkill: "<name>polygon-skill</name>", kitSkill: "<name>diagnose</name>", persona: JSON.stringify(personaLine).slice(1, -1) };
+		const marks = { sandboxSkill: "<name>polygon-skill</name>", kitSkill: "<name>diagnose</name>", persona: JSON.stringify(personaLine).slice(1, -1), verify: "Never pip-install into the system Python." };
 		t.marks.push(...Object.values(marks));
 
 		const lead = rpc(t);
@@ -33,5 +33,6 @@ export default {
 		assert.ok(leadMarks.has(marks.sandboxSkill), "the sandbox skill is missing from the lead's system prompt");
 		assert.ok(leadMarks.has(marks.kitSkill), "the kit's skills are missing from the lead's system prompt");
 		assert.ok(childMarks.has(marks.persona), "the explorer persona body is missing from the subagent's system prompt");
+		assert.ok(leadMarks.has(marks.verify) && childMarks.has(marks.verify), "the verification rule is missing from the lead's or the subagent's system prompt");
 	},
 };

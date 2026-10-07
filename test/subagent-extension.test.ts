@@ -6,7 +6,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { TObject, TSchema } from "typebox";
 import { Value } from "typebox/value";
 import subagentsExtension from "../extensions/subagents/index.ts";
-import { agentTypesList, findAgentType, workerPrompt } from "../extensions/subagents/definitions.ts";
+import { agentTypesList, findAgentType, VERIFY_RULE, workerPrompt } from "../extensions/subagents/definitions.ts";
 
 describe("Subagent extension surface", () => {
 	it("registers Agent, Workflow, TaskStop, job_start, Monitor, SendMessage, ListAgents and /agents", () => {
@@ -81,5 +81,18 @@ describe("Subagent extension surface", () => {
 		const names = [...workerPrompt(findAgentType(undefined), process.env.PI_CODING_AGENT_DIR).matchAll(/<name>(.*)<\/name>/g)].map((m) => m[1]);
 		expect(names).toContain("diagnose");
 		expect(names.filter((name) => ["workflow-authoring", "collaborators", "background-tasks", "todos", "ask-user", "chain-system"].includes(name!))).toEqual([]);
+	});
+
+	it("gives every Pi lead and Pi worker the verification rule once, and a Claude or Codex worker none", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-kit-verify-"));
+		process.env.PI_CODING_AGENT_DIR = dir;
+		const handlers: Array<(event: object, ctx: object) => unknown> = [];
+		subagentsExtension({ registerTool() {}, registerCommand() {}, getActiveTools: () => [], on(name: string, fn: (typeof handlers)[number]) { if (name === "before_agent_start") handlers.push(fn); } } as unknown as ExtensionAPI);
+		const sections: Record<string, string> = {};
+		for (const handler of handlers) await handler({ systemPromptOptions: { sections } }, {});
+		expect(sections.verification).toBe(VERIFY_RULE);
+		expect(workerPrompt(findAgentType(undefined), dir).split(VERIFY_RULE)).toHaveLength(2);
+		expect(workerPrompt(findAgentType("reviewer"), dir).split(VERIFY_RULE)).toHaveLength(2);
+		expect(workerPrompt(findAgentType(undefined), dir, undefined, true)).not.toContain(VERIFY_RULE);
 	});
 });

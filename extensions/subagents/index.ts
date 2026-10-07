@@ -13,7 +13,7 @@ import { finishAgentWorktree, sharesCwd } from "../shared/worktree.ts";
 import { currentMission, saveMission } from "../mission/store.ts";
 import { remindSilentTurns } from "./silent-turns.ts";
 import { promptWorkflow, WORKFLOW_DESCRIPTION, WORKFLOW_FIELDS, WORKFLOW_SNIPPET } from "./workflow-prompt.ts";
-import { agentTypes, agentTypesList, findAgentType, workerPrompt } from "./definitions.ts";
+import { agentTypes, agentTypesList, findAgentType, VERIFY_RULE, workerPrompt } from "./definitions.ts";
 import { cliWorker, closeAll, ensureEngine, launch, launchWorkflow, placeAgent, queuedAhead, reinstall, resumeSession, send, settle, startJob, startMonitor, stop, storedAgent, userRequests, workflowProgress, writerCwds, type Limits } from "./engine/index.ts";
 import { parseWorkflow } from "./workflow/meta.ts";
 import type { Progress } from "./workflow/run.ts";
@@ -101,6 +101,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	});
 	let widget: NodeJS.Timeout | undefined;
 	promptWorkflow(pi);
+	pi.on("before_agent_start", (event) => { event.systemPromptOptions.sections.verification = VERIFY_RULE; });
 
 	pi.registerTool({
 		name: "Agent",
