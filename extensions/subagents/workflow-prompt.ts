@@ -1,7 +1,6 @@
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { isAutonomous } from "../shared/config.ts";
 import { systemReminder } from "../shared/tasks.ts";
-import { DELIVERABLE_FIRST } from "./definitions.ts";
 
 export const WORKFLOW_SNIPPET = "Orchestrate many background agents with a script, once the user has opted in.";
 
@@ -26,8 +25,8 @@ export const WORKFLOW_FIELDS = {
 } as const;
 
 export const AUTONOMY_REMINDERS = {
-	full: systemReminder(`Autonomy is on: the user has opted into orchestration for this session; start agents and workflows without asking. Work directly on single-file or short fixes, and verify them yourself. Orchestrate when the work splits into independent parts taking minutes each (a review across several files, an audit per package), or when the user asks for, or a large multi-file change needs, an independent review: a Workflow for several agents, an Agent for one, never a one-agent workflow. Make the change the deliverable depends on yourself; never end the turn with it unwritten. ${DELIVERABLE_FIRST} Ask reviewers open questions; change passing work only for a finding backed by a stated requirement or a failing check; for a concrete defect, write the check that reproduces it first. Load the workflow-authoring skill before your first script.`),
-	sparse: systemReminder("Autonomy is still on: orchestrate work that splits into independent parts taking minutes each, or that needs an independent review; work directly on short fixes. See Autonomy in the workflow-authoring skill."),
+	full: systemReminder("Autonomy is on: start agents and workflows without asking. Work directly and verify it yourself by default; orchestrate only independent parts taking minutes each, a review a large multi-file change needs (an Agent for one), or what the user asks for. Make the change the deliverable depends on yourself; never end the turn with it unwritten. Ask reviewers open questions; change passing work only for a finding backed by a stated requirement or a failing check; for a concrete defect, write the check that reproduces it first."),
+	sparse: systemReminder("Autonomy is still on: work directly and verify it yourself by default; orchestrate only independent parts taking minutes each, a review a large multi-file change needs (an Agent for one), or what the user asks for. See Autonomy in the workflow-authoring skill."),
 	off: systemReminder("Autonomy is off: the Workflow tool's own opt-in rule applies again."),
 };
 type ReminderKind = keyof typeof AUTONOMY_REMINDERS;
