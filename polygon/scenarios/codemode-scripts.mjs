@@ -4,14 +4,14 @@ import { taskNotifications, toolCalls } from "../look.mjs";
 
 // A lead's codemode script starts a job and lists the roster. Both resolve to the text the model reads, so the script
 // gets the job's id and output file with its notes, and the roster's end-your-turn line while the job runs. A detached
-// bash is still refused, and Agent, ask_user, collaborator_start and Workflow are not callable: agents fan out from the
-// model's own calls or a Workflow, which runs its own script; ask_user waits on a person, collaborator_start opens
-// Herdr tabs.
+// bash is still refused, and Agent, ask_user, collaborator_start, todo_list and Workflow are not callable: agents fan out
+// from the model's own calls or a Workflow, which runs its own script; ask_user waits on a person, collaborator_start
+// opens Herdr tabs, and the todo list is rebuilt only from top-level todo_list results.
 const CODE = [
 	"const job = await tools.job_start({ command: 'sleep 3; echo job-ok', description: 'probe', timeout: 30000 });",
 	"const listed = await tools.ListAgents({});",
 	"const bg = await tools.bash({ command: 'sleep 30 & echo bg' }).then(() => 'ran', () => 'refused');",
-	"return JSON.stringify({ job, listed, bg, callable: ['Agent', 'ListAgents', 'job_start', 'bash', 'ask_user', 'collaborator_start', 'Workflow'].filter((name) => name in tools).join() });",
+	"return JSON.stringify({ job, listed, bg, callable: ['Agent', 'ListAgents', 'job_start', 'bash', 'ask_user', 'collaborator_start', 'todo_list', 'Workflow'].filter((name) => name in tools).join() });",
 ].join("\n");
 
 export default {

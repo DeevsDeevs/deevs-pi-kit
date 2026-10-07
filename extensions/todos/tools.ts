@@ -28,6 +28,7 @@ export function registerTodoTools(pi: ExtensionAPI, state: TodoState): void {
 		],
 		parameters: TodoListSchema,
 		defaultActive: false,
+		exposure: "model-only",
 		async execute(_toolCallId, params: TodoListInput, _signal, _onUpdate, ctx): Promise<AgentToolResult<TodoDetails>> {
 			if (params.operation === "read") return result("read", state, ctx);
 			if (params.operation === "clear") {
