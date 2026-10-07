@@ -65,6 +65,20 @@ describe("Subagent extension surface", () => {
 		expect(["mine", "a.b-c_1", "../x", "a/b"].map((value) => Value.Check(name, value))).toEqual([true, true, false, false]);
 	});
 
+	it("gives the lead's bash Claude Code's 120 s default timeout and 600 s cap, and points a timed-out call at job_start", () => {
+		process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "pi-kit-bash-"));
+		const handlers: Record<string, (event: object, ctx: object) => unknown> = {};
+		subagentsExtension({ registerTool() {}, registerCommand() {}, on(name: string, fn: (event: object, ctx: object) => unknown) { handlers[name] = fn; } } as unknown as ExtensionAPI);
+		const timeoutOf = (input: { command: string; timeout?: number }) => {
+			handlers.tool_call!({ toolName: "bash", input }, { cwd: process.env.PI_CODING_AGENT_DIR });
+			return input.timeout;
+		};
+		expect([timeoutOf({ command: "ls" }), timeoutOf({ command: "ls", timeout: 30 }), timeoutOf({ command: "ls", timeout: 3000 })]).toEqual([120, 30, 600]);
+		const result = (text: string, isError = true) => handlers.tool_result!({ toolName: "bash", input: { command: "make", timeout: 120 }, content: [{ type: "text", text }], isError }, {}) as { content: { text: string }[] } | undefined;
+		expect(result("built\n\nCommand timed out after 120 seconds")?.content.map((block) => block.text)).toEqual(["built\n\nCommand timed out after 120 seconds", expect.stringMatching(/job_start/)]);
+		expect([result("make: *** Error 2\n\nCommand exited with code 2"), result("Command timed out after 120 seconds", false)]).toEqual([undefined, undefined]);
+	});
+
 	it("matches agent types forgivingly and lists them on a miss", () => {
 		expect(findAgentType(undefined).name).toBe("general-purpose");
 		expect(findAgentType("General_Purpose").name).toBe("general-purpose");
