@@ -44,6 +44,8 @@ export default {
 	name: "jobs-basic", gate: "M0",        // gate may be an array; slow: true keeps it out of the default run;
 	                                        // timing: true runs it alone after the others
 	                                        // pending: "<step>" skips it (listed as PENDING) unless named in --only
+	                                        // deferred: true starts the lead without the skill-loaded kit tools
+	                                        // (sandbox.mjs DEFERRED_TOOLS), as a real install does
 	async run(t) {                          // t: home, repo, kit, env, git(), dir, requestLog, marks, live, piRuntime
 		const lead = rpc(t);                  // drive.mjs: send, prompt, script, until, kill9, restart
 		await lead.script({ agent: "lead", steps: [...] });

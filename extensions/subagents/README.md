@@ -1,6 +1,6 @@
 # Subagents
 
-`Agent`, `Workflow`, `SendMessage`, `TaskStop`, `ListAgents`, `job_start` and `Monitor`, with Claude Code's names and result labels, on a durable engine inside the lead's Pi.
+`Agent`, `Workflow`, `SendMessage`, `TaskStop`, `ListAgents`, `job_start` and `Monitor`, with Claude Code's names and result labels, on a durable engine inside the lead's Pi. `job_start` and `Monitor` join the lead's tools once the background-tasks, diagnose, validation-review or datadog-pup skill loads.
 
 ## Agent types
 
