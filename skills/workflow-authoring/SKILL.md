@@ -31,6 +31,8 @@ const found = await agent('List the feature flags defined in packages/billing an
 
 ## Script API
 
+This is not codemode: a Workflow script has no `tools` and its agents run the tools; a codemode script calls tools within your turn and cannot wait for agents.
+
 - `agent(prompt, opts?)` resolves to the agent's final text. With `opts.schema` (a JSON Schema whose root is `{type: 'object', properties}`, `required` naming only listed properties) the agent answers through a StructuredOutput tool and `agent()` resolves to the validated object. It resolves to `null` when the agent fails, so filter with `.filter(Boolean)`. It throws on an invalid schema, when the agent never produces valid structured output, and on an unknown `agentType`. Options:
   - `label`: the name shown in progress.
   - `phase`: the progress group. Inside `parallel()` and `pipeline()` set it here; `phase()` is shared state and races.
