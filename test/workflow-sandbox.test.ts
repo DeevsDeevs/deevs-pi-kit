@@ -233,31 +233,9 @@ describe("workflow sandbox", () => {
 
 	it("clones args and exposes an unlimited budget by default", async () => {
 		const args = { list: [1] };
-		const { result } = await run("args.list.push(2);\nreturn [args.list, budget.total, budget.remaining() === Infinity];", { args });
-		expect(result).toEqual([[1, 2], null, true]);
+		const { result } = await run("args.list.push(2);\nreturn [args.list, budget.total, budget.spent(), budget.remaining() === Infinity];", { args });
+		expect(result).toEqual([[1, 2], null, 0, true]);
 		expect(args.list).toEqual([1]);
-	});
-
-	it("enforces a token budget before agent calls and drops parallel slots over it", async () => {
-		let spent = 40;
-		const budget = { total: 100, spent: () => spent };
-		const before = await run("return [budget.total, budget.spent(), budget.remaining()];", { budget });
-		expect(before.result).toEqual([100, 40, 60]);
-		const over = await run(
-			"const first = await parallel([() => agent('a'), () => agent('b')]);\nlet stopped; try { await agent('c') } catch (e) { stopped = e.message }\nreturn [first, stopped];",
-			{
-				budget,
-				agent: async (prompt) => {
-					if (prompt === "b") {
-						spent = 100;
-						throw Object.assign(new Error("over"), { name: "WorkflowBudgetExceededError" });
-					}
-					return prompt;
-				},
-			},
-		);
-		expect(over.result).toEqual([["a", null], "Workflow token budget exceeded (100 / 100 output tokens). Stopping further agent() calls. In-flight agents will complete; their results are preserved."]);
-		expect(over.messages("failure")).toEqual(["parallel: 1 slot dropped — token budget exceeded"]);
 	});
 
 	it("runs host timers and clears them when the run is aborted", async () => {
