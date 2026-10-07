@@ -80,14 +80,11 @@ export async function lookAtUrl(url: string, before: UrlSeen | undefined, signal
 async function readBody(response: Response): Promise<string> {
 	const chunks: Uint8Array[] = [];
 	let size = 0;
-	const reader = response.body?.getReader();
-	while (reader && size < MAX_BODY) {
-		const { done, value } = await reader.read();
-		if (done) break;
-		chunks.push(value);
-		size += value.length;
+	// Leaving the loop cancels the rest of the body.
+	for await (const chunk of response.body ?? []) {
+		chunks.push(chunk);
+		if ((size += chunk.length) >= MAX_BODY) break;
 	}
-	await reader?.cancel().catch(() => {});
 	return Buffer.concat(chunks).subarray(0, MAX_BODY).toString("utf8");
 }
 

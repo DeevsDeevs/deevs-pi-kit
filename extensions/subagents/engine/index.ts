@@ -1,12 +1,11 @@
 // The only code that imports pi-durable. Agents run as durable conversations inside the lead's process: they survive
 // /reload, pause when Pi exits and continue when their session reopens; their reports reach the lead exactly once.
-import { spawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
-import { access, mkdir, readFile, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { access, mkdir, realpath, stat, utimes, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, relative, resolve } from "node:path";
-import { createInterface } from "node:readline";
 import type { Api, Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { createBashTool, createEditTool, createFindTool, createGrepTool, createLsTool, createReadTool, createWriteTool, getAgentDir, type ExtensionContext, type ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
@@ -22,8 +21,8 @@ import { LEVELS, PI_TOOLS, workerPrompt, workflowAgentType, type AgentType, type
 import { parseWorkflow } from "../workflow/meta.ts";
 import { driveWorkflow, framePrompt, newProgress, runRecord, usage, type AgentRunner, type CallOutcome, type Progress } from "../workflow/run.ts";
 import type { AgentOptions, JsonValue } from "../workflow/sandbox.ts";
-import { cliArgv, dropNulls, lastMessageFile, newProgress as newCliProgress, readEvent, schemaFile, strictify, type CliProgress, type CliWorker } from "./cli.ts";
-import { backgroundTasks, firstLook, json, outboxItems, post, pruneOutbox, unsent, type BackgroundDoc, type BackgroundHost, type BackgroundRecord, type JobInput, type MonitorInput, type OutboxDoc, type OutboxItem } from "./background.ts";
+import { cliAnswer, CONTINUE, newProgress as newCliProgress, spawnWorker, type CliExit, type CliWorker } from "./cli.ts";
+import { backgroundTasks, decoded, firstLook, json, outboxItems, post, pruneOutbox, unsent, type BackgroundDoc, type BackgroundHost, type BackgroundRecord, type JobInput, type MonitorInput, type OutboxDoc, type OutboxItem } from "./background.ts";
 import { bunSqlite, lock, prune, reap, unlock } from "./storage.ts";
 
 type D = typeof Durable;
@@ -45,7 +44,6 @@ const BACKGROUND = { ownership: { kind: "conversation" }, background: true } as 
 const STRUCTURED_OUTPUT = "StructuredOutput";
 const STRUCTURED_OUTPUT_CAP = 5;
 const NUDGE = "[structured-output-enforce] You MUST call the StructuredOutput tool to complete this request. Call this tool now.";
-const CONTINUE = "Your previous run was cut off when Pi closed. Continue the task from where you left off.";
 
 export interface Limits { maxTurns?: number; maxTokens?: number; timeout?: number }
 
@@ -856,7 +854,7 @@ async function runCli(docs: Pick<Kit, "Outbox" | "Agents" | "CliTask">, owner: s
 	const held = await acquire(input.agentId);
 	try {
 		if (held && !(await record())?.stopped) {
-			exit = await spawnWorker(input, owner, run, progress, runtime.signal, async (session) => {
+			exit = await spawnWorker(input, owner, run, progress, runtime.signal, host.workers, async (session) => {
 				await runtime.memo("session", session, context);
 				await runtime.commit(async (tx) => {
 					const current = agentRecords(await tx.doc(docs.Agents, runtime.conversationId))[input.agentId];
@@ -883,58 +881,6 @@ async function runCli(docs: Pick<Kit, "Outbox" | "Agents" | "CliTask">, owner: s
 		usage: { subagentTokens: progress.tokens, toolUses: progress.toolUses, durationMs: Date.now() - input.startedAt },
 	});
 	await deliver(input.agentId, n, claimed);
-}
-
-type CliExit = { code: number | null; stderr: string };
-
-/** A finished CLI run's answer: its last text or, with a schema, the structured object (Codex's strict-mode nulls dropped) as JSON. */
-async function cliAnswer(worker: CliWorker, exit: CliExit | undefined, progress: CliProgress): Promise<{ ok: boolean; text: string; structured?: JsonValue; error: string }> {
-	let text = worker.harness === "codex" ? await readFile(lastMessageFile(worker), "utf8").catch(() => progress.text) : progress.text;
-	let structured = progress.structured;
-	if (worker.schema && worker.harness === "codex") {
-		try { structured = dropNulls(JSON.parse(text), worker.schema); } catch {}
-	}
-	if (worker.schema && structured !== undefined) text = JSON.stringify(structured);
-	const ok = exit?.code === 0 && progress.error === undefined && (!worker.schema || structured !== undefined);
-	const error = progress.error || (worker.schema && exit?.code === 0 ? "no structured output" : exit?.stderr.trim().split("\n").at(-1)) || `exit code ${exit?.code}`;
-	// SAFETY: structured_output and Codex's last message come from JSON.parse.
-	return { ok, text, structured: structured as JsonValue | undefined, error };
-}
-
-/** One CLI run in its own process group, tagged with PI_KIT_OWNER for the reaper and PI_KIT_WORKER for its own end. */
-async function spawnWorker(input: Pick<CliInput, "agentId" | "worker">, owner: string, run: { resume?: string; prompt: string }, progress: CliProgress, signal: AbortSignal, onSession: (session: string) => Promise<void>): Promise<CliExit> {
-	const { worker } = input;
-	await mkdir(worker.dir, { recursive: true });
-	await rm(lastMessageFile(worker), { force: true });
-	if (worker.schema && worker.harness === "codex") await writeFile(schemaFile(worker), JSON.stringify(strictify(worker.schema)));
-	const child = spawn(worker.harness, cliArgv(worker, run.resume), { cwd: worker.cwd, env: { ...process.env, PI_KIT_OWNER: owner, PI_KIT_WORKER: input.agentId }, detached: true, stdio: ["pipe", "pipe", "pipe"] });
-	host.workers.set(input.agentId, child);
-	const kill = () => child.pid && trySignalGroup(child.pid, "SIGKILL");
-	signal.addEventListener("abort", kill, { once: true });
-	let stderr = "";
-	let session = Promise.resolve();
-	child.stderr.on("data", (chunk) => { stderr = (stderr + chunk).slice(-4_000); });
-	createInterface({ input: child.stdout }).on("line", (line) => {
-		const before = progress.sessionId;
-		readEvent(worker.harness, progress, line);
-		if (!before && progress.sessionId) session = onSession(progress.sessionId);
-	});
-	child.stdin.on("error", () => {});
-	child.stdin.end(run.prompt);
-	const closed = new Promise((resolve) => child.on("close", resolve));
-	const code = await new Promise<number | null>((resolve) => {
-		child.on("error", (error) => { stderr += error.message; resolve(null); });
-		child.on("exit", resolve);
-	});
-	signal.removeEventListener("abort", kill);
-	// What the CLI leaves behind ends with the run: helpers in its group (Codex syncs its plugins with git), and tool commands
-	// it put in groups of their own (Claude's Bash), which would otherwise hold the output pipe and outlive a TaskStop.
-	kill();
-	await reap(`PI_KIT_WORKER=${input.agentId}`);
-	await Promise.race([closed, new Promise((resolve) => setTimeout(resolve, 5_000).unref())]);
-	host.workers.delete(input.agentId);
-	await session;
-	return { code, stderr };
 }
 
 /**
@@ -1017,16 +963,10 @@ function failure(settled: Durable.SettledSubmissionRecord | undefined): string {
 	return Value.Check(FailureDetail, settled.detail) ? settled.detail.message : settled.reason;
 }
 
-// Documents hold JsonObject, which no interface with optional fields can be asserted from directly.
-// SAFETY: the kit writes Agents only through json() of an AgentRecord.
-// oxlint-disable-next-line anti-slop/no-chained-type-assertions
-const agentRecords = (doc: AgentsDoc | undefined) => (doc?.agents ?? {}) as unknown as Record<string, AgentRecord>;
-// SAFETY: the kit writes Workflows only through json() of a WorkflowRecord.
-// oxlint-disable-next-line anti-slop/no-chained-type-assertions
-const workflowRecords = (doc: WorkflowsDoc | undefined) => (doc?.workflows ?? {}) as unknown as Record<string, WorkflowRecord>;
-// SAFETY: the kit writes a Calls member only through json() of a CallRecord.
-// oxlint-disable-next-line anti-slop/no-chained-type-assertions
-const callRecord = (doc: Readonly<Durable.JsonObject> | undefined) => (doc?.conversationId === undefined && doc?.cli === undefined ? undefined : doc as unknown as CallRecord);
+const agentRecords = (doc: AgentsDoc | undefined) => decoded<Record<string, AgentRecord>>(doc?.agents) ?? {};
+const workflowRecords = (doc: WorkflowsDoc | undefined) => decoded<Record<string, WorkflowRecord>>(doc?.workflows) ?? {};
+const backgroundRecords = (doc: BackgroundDoc | undefined) => decoded<Record<string, BackgroundRecord>>(doc?.tasks) ?? {};
+const callRecord = (doc: Readonly<Durable.JsonObject> | undefined) => (doc?.conversationId === undefined && doc?.cli === undefined ? undefined : decoded<CallRecord>(doc));
 
 export async function launchWorkflow(engine: Engine, input: WorkflowInput, description: string): Promise<void> {
 	const { kit, root } = engine;
@@ -1196,7 +1136,7 @@ function callRunner(D: D, docs: WorkflowDocs, engine: Engine, input: WorkflowInp
 		const worker = call.cli!;
 		const progress = newCliProgress();
 		const run = call.sessionId ? { resume: call.sessionId, prompt: CONTINUE } : { prompt };
-		const exit = await spawnWorker({ agentId: call.agentId, worker }, engine.dir, run, progress, runtime.signal, (sessionId) => save(key, call.agentId, { agentId: call.agentId, sessionId }));
+		const exit = await spawnWorker({ agentId: call.agentId, worker }, engine.dir, run, progress, runtime.signal, host.workers, (sessionId) => save(key, call.agentId, { agentId: call.agentId, sessionId }));
 		const answer = await cliAnswer(worker, exit, progress);
 		const outcome: CallOutcome = { agentId: call.agentId, status: answer.ok ? "done" : "failed", result: answer.ok ? (worker.schema ? answer.structured ?? null : answer.text) : null, tokens: progress.tokens, toolUses: progress.toolUses };
 		if (!answer.ok) outcome.error = answer.error;
@@ -1246,6 +1186,3 @@ async function modelContext(input: WorkflowInput): Promise<ModelContext> {
 		codex: readCodexCatalog(process.env.CODEX_HOME || join(homedir(), ".codex")),
 	};
 }
-// SAFETY: the kit writes Background only through json() of a BackgroundRecord.
-// oxlint-disable-next-line anti-slop/no-chained-type-assertions
-const backgroundRecords = (doc: BackgroundDoc | undefined) => (doc?.tasks ?? {}) as unknown as Record<string, BackgroundRecord>;

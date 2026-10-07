@@ -275,9 +275,7 @@ function monitorEvent(input: MonitorInput, seq: string, event: string, caughtUp:
 }
 
 export const unsent = (answered: Set<string>) => (item: OutboxItem) => !item.silent || !answered.has(item.toolUseId ?? "");
-// SAFETY: the kit writes the Outbox only through post().
-// oxlint-disable-next-line anti-slop/no-chained-type-assertions
-const outboxItem = (item: Durable.JsonObject) => item as unknown as OutboxItem;
+const outboxItem = (item: Durable.JsonObject) => decoded<OutboxItem>(item)!;
 export const outboxItems = (doc: OutboxDoc | undefined): OutboxItem[] => (doc?.items ?? []).map(outboxItem);
 
 /** Drops what the session file already holds: delivered reports, and silent ones whose foreground call it answered. */
@@ -345,4 +343,11 @@ export function cappedLog(file: string) {
 /** Documents hold strict JSON: optional fields that are `undefined` are dropped. */
 export function json<T>(value: T): Durable.JsonObject {
 	return JSON.parse(JSON.stringify(value));
+}
+
+/** Documents hold JsonObject, which no interface with optional fields can be asserted from directly. */
+export function decoded<T>(value: Readonly<Durable.JsonObject> | undefined): T | undefined {
+	// SAFETY: the kit writes each document only through json() of that document's record type.
+	// oxlint-disable-next-line anti-slop/no-chained-type-assertions
+	return value as unknown as T | undefined;
 }
