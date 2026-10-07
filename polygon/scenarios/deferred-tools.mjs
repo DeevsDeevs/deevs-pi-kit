@@ -7,7 +7,8 @@ import { DEFERRED_TOOLS } from "../sandbox.mjs";
 // chain is on from the first request. Each other kit tool family joins the lead's tool list once a skill that documents
 // it is read, keeps it across /reload and resume, an open mission starts a session with its tools, and a --tools
 // allowlist (a Pi collaborator's launch) is never widened. A direct call to an unloaded tool loads its family, or under
-// the allowlist says the tool is not available. Print mode loads and uses a family the same way.
+// the allowlist says the tool is not available. Print mode loads and uses a family the same way, and so does a skill read
+// from a codemode script, which resume keeps although only the script result's nestedCalls record it.
 const KIT_TOOLS = ["chain", ...DEFERRED_TOOLS];
 
 export default {
@@ -85,6 +86,22 @@ export default {
 		assert.deepEqual(requests(t).find((r) => r.agent === "fresh" && r.step === "n2").marks, [loaded]);
 		assert.deepEqual(toolCalls(fresh.events).map((c) => [c.name, c.isError]), [["job_start", true], ["job_start", false]]);
 		await fresh.close();
+
+		const families = ["chain", "job_start", "Monitor", "mission_start", "mission_update", "mission_get"];
+		const scripted = rpc(t);
+		await scripted.script({ agent: "scripted", steps: [
+			{ id: "c1", tool: "codemode", args: { code: `await tools.read({ path: ${JSON.stringify(skill("background-tasks"))} }); return "read";` } },
+			{ id: "c2", then: true, text: "read" },
+			{ id: "c3", on: "go-resume", text: "resumed" },
+		] });
+		await scripted.until((e) => e.type === "agent_settled", 30_000, "the scripted read");
+		assert.deepEqual(offered("scripted", "c2"), families, "a script's skill read loads its family");
+		const quietBefore = settled(scripted.events);
+		await scripted.restart(["--continue"]);
+		await scripted.prompt("go-resume");
+		await scripted.until((_, events) => settled(events) > quietBefore, 30_000, "the resumed turn");
+		assert.deepEqual(offered("scripted", "c3"), families, "resume dropped a family a script loaded");
+		await scripted.close();
 
 		// Print mode: a skill read with bash loads job_start, and the run waits for the job's report.
 		const print = await pi(t, ["-p", "--no-session", "--model", "polygon/puppet", script({ agent: "print", steps: [

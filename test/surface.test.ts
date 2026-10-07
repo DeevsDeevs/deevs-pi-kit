@@ -35,6 +35,11 @@ it("brings a skill's tool back on a branch that already used it or read the skil
 	const path = `~/${relative(homedir(), skillFile("wiki"))}`;
 	read.handlers.get("session_start")!({}, branch([{ type: "message", message: { role: "assistant", content: [{ type: "toolCall", name: "read", arguments: { path } }] } }]));
 	expect(read.active()).toEqual(["read", "wiki"]);
+
+	const scripted = fakePi();
+	activateWithSkill(scripted.pi, ["wiki"], ["wiki"]);
+	scripted.handlers.get("session_start")!({}, branch([{ type: "message", message: { role: "toolResult", toolName: "codemode", nestedCalls: { calls: [{ id: "c1/1", name: "read", arguments: { path }, status: "ok" }], complete: true } } }]));
+	expect(scripted.active()).toEqual(["read", "wiki"]);
 });
 
 it("drops tools that need a person or Herdr's UI in print and json mode only", () => {

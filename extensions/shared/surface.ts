@@ -69,9 +69,10 @@ export function activateWithSkill(pi: ExtensionAPI, tools: readonly string[], sk
 			: `${message.toolName} is not available in this session.`;
 		return { message: { ...message, content: [{ type: "text", text }] } };
 	});
+	// A codemode script's calls are recorded only in its result's nestedCalls.
 	const restore = (ctx: ExtensionContext) => {
 		const used = ctx.sessionManager.getBranch().some((entry) => entry.type === "message" && (
-			entry.message.role === "toolResult" && tools.includes(entry.message.toolName)
+			entry.message.role === "toolResult" && (tools.includes(entry.message.toolName) || (entry.message.nestedCalls?.calls ?? []).some((call) => tools.includes(call.name) || readsSkill(call.name, call.arguments ?? {}, ctx.cwd)))
 			|| entry.message.role === "assistant" && entry.message.content.some((block) => block.type === "toolCall" && readsSkill(block.name, block.arguments, ctx.cwd))));
 		if (used) activate();
 	};
