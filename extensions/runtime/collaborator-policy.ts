@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { lstatSync, realpathSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { Value } from "typebox/value";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { CustomToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { resolveModel, type ModelContext } from "../shared/models.ts";
 import { findAgent, loadBuiltinAgents } from "../subagents/agents.ts";
@@ -9,22 +8,14 @@ import { HostedRuntimeClientError } from "./client.ts";
 import { isNodeError } from "./errors.ts";
 import { collaboratorProfileTools, DRIVERS } from "./drivers.ts";
 import { type HostedCollaboratorDriver, type HostedCollaboratorProfile, isWriter } from "./schemas/state.ts";
-import { HostedCollaboratorProfileSchema } from "./schemas/state.ts";
 import { isJsonString, type JsonValue } from "./schemas/json.ts";
 import { PARTICIPANT_NAME } from "./schemas/common.ts";
-import type { CollaboratorPersona } from "./session-record.ts";
+import type { CollaboratorPersona, StartedCollaborator } from "./schemas/session.ts";
 
-const PATH_SEPARATOR = process.platform === "win32" ? "\\" : "/";
 const COLLABORATOR_PERSONAS = loadBuiltinAgents();
 const WRITE_TOOLS = new Set(["edit", "write"]);
 
-export interface CollaboratorCandidate {
-	participantId: string;
-	model?: string;
-	persona?: string;
-	profile?: HostedCollaboratorProfile;
-	repo?: string;
-}
+export type CollaboratorCandidate = Omit<StartedCollaborator, "tabId">;
 
 export interface ResolvedCollaboratorCandidate {
 	participantId: string;
@@ -35,6 +26,8 @@ export interface ResolvedCollaboratorCandidate {
 	repo?: string;
 	/** Resolved by the start path once the project root is known; absent when the collaborator works at the root. */
 	repoRoot?: string;
+	/** The Claude or Codex session a stood-down native collaborator resumes. */
+	resume?: string;
 }
 
 export interface CollaboratorToolBlock {
@@ -54,11 +47,12 @@ export function resolveCollaboratorCandidate(candidate: CollaboratorCandidate, m
 	}
 	const driver: HostedCollaboratorDriver = resolved.harness === "claude" ? "claude-code" : resolved.harness;
 	const model = resolved.harness === "pi" ? `${resolved.model.provider}/${resolved.model.id}` : resolved.model;
-	const profile = collaboratorProfile(candidate.profile) ?? (persona ? "read-only" : DRIVERS[driver].defaultProfile);
+	const profile = candidate.profile ?? (persona ? "read-only" : DRIVERS[driver].defaultProfile);
 	const result: ResolvedCollaboratorCandidate = { participantId, driver, model };
 	if (profile) result.profile = profile;
 	if (persona) result.persona = persona.persona;
 	if (candidate.repo !== undefined) result.repo = candidate.repo;
+	if (candidate.nativeSession && driver !== "pi") result.resume = candidate.nativeSession;
 	return result;
 }
 
@@ -130,7 +124,7 @@ function collaboratorPathAllowed(cwd: string, value: CustomToolCallEvent["input"
 		if (relativePath === "") return true;
 		return !isAbsolute(relativePath)
 			&& relativePath !== ".."
-			&& !relativePath.startsWith(`..${PATH_SEPARATOR}`);
+			&& !relativePath.startsWith(`..${sep}`);
 	} catch {
 		return false;
 	}
@@ -151,13 +145,6 @@ function resolveExistingTarget(requested: string, allowMissing: boolean): string
 export function collaboratorName(value: string | undefined, name: string): string {
 	if (!value || !PARTICIPANT_NAME.test(value)) {
 		throw new HostedRuntimeClientError("invalid_request", `${name} must match ${PARTICIPANT_NAME}.`);
-	}
-	return value;
-}
-
-function collaboratorProfile(value: HostedCollaboratorProfile | undefined): HostedCollaboratorProfile | undefined {
-	if (value !== undefined && !Value.Check(HostedCollaboratorProfileSchema, value)) {
-		throw new HostedRuntimeClientError("invalid_request", "profile must be read-only or workspace-write.");
 	}
 	return value;
 }

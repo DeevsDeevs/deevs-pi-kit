@@ -2,7 +2,6 @@ import { existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { HostedRuntimeClient, HostedRuntimeClientError } from "./client.ts";
-import { isEnded } from "./schemas/state.ts";
 import {
 	auth,
 	parseAcquireResult,
@@ -16,9 +15,10 @@ import {
 	type LiveClientRegistration,
 } from "./responses.ts";
 import { startRuntimeService } from "./service-launch.ts";
-import { HostedSessionStore, type ParticipantIdentity } from "./session-record.ts";
+import { HostedSessionStore } from "./session-record.ts";
+import type { ParticipantIdentity } from "./schemas/session.ts";
 
-// ponytail: two-second host verification is fine for small teams; add Runtime subscriptions if concurrent Pi count makes it measurable.
+// ponytail: a 500 ms heartbeat poll is fine for small teams; add Runtime subscriptions if concurrent Pi count makes it measurable.
 const HEARTBEAT_MS = 500;
 
 /** Everything the session lifecycle hands back to the collaborator, delivery and messaging services. */
@@ -146,7 +146,7 @@ export class RuntimeSession {
 	requireParticipantIdentity(): ParticipantIdentity {
 		const identity = this.store.identity;
 		if (!identity) {
-			throw new HostedRuntimeClientError("not_found", "This Pi session has no collaborator identity yet; a collaborator_manage start with protocol and callerParticipantId creates it.");
+			throw new HostedRuntimeClientError("not_found", "This Pi session has no collaborator identity yet; its first collaborator_start creates it.");
 		}
 		return identity;
 	}
@@ -176,7 +176,7 @@ export class RuntimeSession {
 		if (!sessionFile) throw new HostedRuntimeClientError("invalid_request", "Runtime requires a persisted Pi session.");
 		// Pi writes a new session's file only after its first assistant reply; identity is verified against that file.
 		if (!existsSync(sessionFile)) {
-			throw new HostedRuntimeClientError("invalid_request", "This Pi session has no file yet; send one message, then run /runtime start again.");
+			throw new HostedRuntimeClientError("invalid_request", "This Pi session has no file yet; send one message, then try again.");
 		}
 		const params = this.registrationParams(ctx, sessionFile);
 		const registration = parseRegistration(await this.client.call("pi.register", params));
@@ -200,8 +200,8 @@ export class RuntimeSession {
 	/** Identity is a name: each registration (re)acquires it, so a reopened lead or a resumed collaborator holds its name again. */
 	private async acquireIdentity(registration: LiveClientRegistration): Promise<void> {
 		const identity = this.store.identity;
-		if (!identity || isEnded(identity.disposition)) return;
-		const params = { ...auth(registration), protocol: identity.protocol, participantId: identity.participantId, revive: false };
+		if (!identity) return;
+		const params = { ...auth(registration), protocol: identity.protocol, participantId: identity.participantId };
 		const { participant } = parseAcquireResult(await this.client.call("participant.acquire", params));
 		if (identity.participantKey !== participant.participantKey || identity.generation !== participant.generation || identity.disposition !== "held") {
 			this.store.persistHeld(identity.protocol, identity.participantId, participant);

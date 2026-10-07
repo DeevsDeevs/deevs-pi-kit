@@ -4,7 +4,7 @@ import type { HostedCollaboratorProfile, HostedNativeCollaboratorDriver } from "
 import { HostedCollaboratorProfileSchema, HostedNativeCollaboratorDriverSchema } from "./schemas/state.ts";
 import { parseRegistration, strictObject, text, type LiveClientRegistration, type RuntimeResponse } from "./responses.ts";
 import { decodeHerdr, herdrResult, HerdrStartedAgentSchema, type HerdrStartedAgent } from "./schemas/herdr.ts";
-import type { ManagedAgentSession } from "./session-record.ts";
+import type { ManagedAgentSession } from "./schemas/session.ts";
 
 /** The lease Runtime reports for one bound managed Herdr agent. */
 export interface BoundAgent {

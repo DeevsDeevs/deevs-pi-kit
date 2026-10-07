@@ -9,7 +9,7 @@ import { isJsonObject, type JsonValue } from "./schemas/json.ts";
 import { isHeld } from "./schemas/state.ts";
 import { auth, strictObject, text, type ClientParticipantStatus, type LiveClientRegistration, type MailHint } from "./responses.ts";
 import type { RuntimeSession } from "./runtime-session.ts";
-import type { ManagedAgentControl, ParticipantIdentity } from "./session-record.ts";
+import type { ManagedAgentControl, ParticipantIdentity } from "./schemas/session.ts";
 import { messagingDescriptorPath } from "./service/messaging.ts";
 
 export const COLLABORATOR_MESSAGE = "collaborator-message";

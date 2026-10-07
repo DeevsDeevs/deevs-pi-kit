@@ -4,7 +4,7 @@ import { HostedRuntimeClientError } from "../extensions/runtime/client.ts";
 import type { MessagingClient } from "../extensions/runtime/messaging-client.ts";
 import { NativeAgentService } from "../extensions/runtime/native-agents.ts";
 import type { RuntimeSession } from "../extensions/runtime/runtime-session.ts";
-import type { ManagedAgentControl } from "../extensions/runtime/session-record.ts";
+import type { ManagedAgentControl } from "../extensions/runtime/schemas/session.ts";
 
 function managedControl(): ManagedAgentControl {
 	return {

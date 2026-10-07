@@ -14,7 +14,7 @@ export default {
 		fixtureModels(t, "polygon", ["peer"]);
 		const lead = rpc(t);
 		await lead.script({ agent: "lead", steps: [
-			{ id: "s0", tool: "collaborator_manage", args: { action: "start", participants: [{ participantId: "peer", model: "polygon/peer" }] } },
+			{ id: "s0", tool: "collaborator_start", args: { participants: [{ name: "peer", model: "polygon/peer" }] } },
 			{ id: "s1", tool: "Agent", args: { description: "roster named", prompt: child("named"), name: "polygon-named" } },
 			{ id: "s2", tool: "Agent", args: { description: "roster unnamed", prompt: child("unnamed") } },
 			{ id: "s3", tool: "job_start", args: { command: "sleep 4", description: "roster job" } },
@@ -24,7 +24,7 @@ export default {
 		] });
 		await lead.until((_, events) => toolCalls(events).length >= 6, 90_000, "the ListAgents result");
 		const [collaborator, named, unnamed, job, monitor, list] = toolCalls(lead.events);
-		assert.deepEqual([collaborator, named, unnamed, job, monitor, list].map((c) => [c.name, c.isError]), [["collaborator_manage", false], ["Agent", false], ["Agent", false], ["job_start", false], ["Monitor", false], ["ListAgents", false]]);
+		assert.deepEqual([collaborator, named, unnamed, job, monitor, list].map((c) => [c.name, c.isError]), [["collaborator_start", false], ["Agent", false], ["Agent", false], ["job_start", false], ["Monitor", false], ["ListAgents", false]]);
 		const row = (id) => list.text.split("\n").find((line) => line.includes(id)) ?? "";
 		for (const call of [named, unnamed]) assert.match(row(agentIds(call.text)[0]), /^agent\b/, "an agent row is not labelled by kind");
 		assert.ok(row(agentIds(named.text)[0]).includes("polygon-named"), "the named agent's row lacks its name");

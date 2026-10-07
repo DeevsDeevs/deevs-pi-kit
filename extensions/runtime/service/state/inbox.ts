@@ -1,4 +1,4 @@
-import { type HostedMailboxMessageEvent, type HostedRuntimeState, isEnded } from "../../schemas/state.ts";
+import { type HostedMailboxMessageEvent, type HostedRuntimeState } from "../../schemas/state.ts";
 import { messagingGrantIsLive } from "./messaging.ts";
 import type { HostedStateOperation } from "./operations.ts";
 
@@ -40,5 +40,5 @@ function isRemovable(state: HostedRuntimeState, event: HostedMailboxMessageEvent
 	if (readBefore !== undefined && event.readAt !== undefined && event.readAt < readBefore) return true;
 	if (event.createdAt >= before) return false;
 	const recipient = state.participants[event.recipientParticipantKey];
-	return !retainedMail.has(event.eventId) || !recipient || isEnded(recipient.state);
+	return !retainedMail.has(event.eventId) || !recipient || recipient.state === "ended";
 }

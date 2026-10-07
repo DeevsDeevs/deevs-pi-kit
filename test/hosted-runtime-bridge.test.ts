@@ -127,7 +127,7 @@ describe("authoritative Herdr agent bind", () => {
 		const successor = await registerPi(test, "successor");
 		const held = test.participants.acquire(successor, "review", "fable").participant;
 		await expect(test.bridges.bind(main, bindInput(caller.participantKey, caller.generation))).rejects.toMatchObject({ code: "conflict" });
-		test.participants.standDown(successor, held.participantKey);
+		test.participants.standDownConfirmed(successor, held.participantKey, held.generation);
 		const bound = await test.bridges.bind(main, { ...bindInput(caller.participantKey, caller.generation), expectedParticipantGeneration: test.participants.get(main, held.participantKey).generation });
 		expect(bound.participantKey).toBe(held.participantKey);
 	});

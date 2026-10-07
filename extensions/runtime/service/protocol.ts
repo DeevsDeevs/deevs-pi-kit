@@ -9,14 +9,12 @@ import {
 	HostedRequestIdSchema,
 	HostedRequestSchema,
 	HostedRequestVersionSchema,
-	MailboxSendParams,
 	MessagingIssueParams,
 	MessagingNamespaceParams,
 	MessagingSendParams,
 	ParticipantAcquireParams,
 	ParticipantAuthParams,
 	ParticipantConfirmedParams,
-	ParticipantStandDownParams,
 	PiRegisterParams,
 	RegistrationAuthParams,
 	WorktreeEnsureParams,
@@ -148,18 +146,6 @@ async function bindAgent(call: HostedCall, params: Static<typeof BridgeBindParam
 	return success(call.id, boundAgentResult(await call.context.bridges.bind(caller, input)));
 }
 
-function sendMailbox(call: HostedCall, params: Static<typeof MailboxSendParams>): HostedResponse {
-	const event = call.context.participants.send(
-		authorize(call, params),
-		params.senderParticipantKey,
-		params.expectedSenderGeneration,
-		params.recipientParticipantKey,
-		params.sendId,
-		params.body,
-	);
-	return success(call.id, { eventId: event.eventId, sequence: event.source.sequence });
-}
-
 const HOSTED_METHODS = new Map<string, HostedMethodHandler>([
 	["messaging.issue", method(MessagingIssueParams, async (call, params) => success(
 		call.id,
@@ -186,7 +172,6 @@ const HOSTED_METHODS = new Map<string, HostedMethodHandler>([
 		if (agentStatus) heartbeat.agentStatus = agentStatus;
 		return success(call.id, heartbeat);
 	})],
-	["bridge.unregister", method(RegistrationAuthParams, (call, params) => unregister(call, params))],
 	["worktree.list", method(RegistrationAuthParams, async (call, params) => success(
 		call.id,
 		{ worktrees: await call.context.worktrees.list(authorize(call, params)) },
@@ -201,7 +186,7 @@ const HOSTED_METHODS = new Map<string, HostedMethodHandler>([
 	))],
 	["participant.acquire", method(ParticipantAcquireParams, (call, params) => success(
 		call.id,
-		call.context.participants.acquire(authorize(call, params), params.protocol, params.participantId, params.revive ?? false),
+		call.context.participants.acquire(authorize(call, params), params.protocol, params.participantId),
 	))],
 	["participant.get", method(ParticipantAuthParams, (call, params) => success(
 		call.id,
@@ -211,10 +196,6 @@ const HOSTED_METHODS = new Map<string, HostedMethodHandler>([
 		call.id,
 		{ participants: call.context.participants.list(authorize(call, params)) },
 	))],
-	["participant.stand_down", method(ParticipantStandDownParams, (call, params) => success(
-		call.id,
-		call.context.participants.standDown(authorize(call, params), params.participantKey, params.expectedGeneration),
-	))],
 	["participant.stand_down_confirmed", method(ParticipantConfirmedParams, (call, params) => success(
 		call.id,
 		call.context.participants.standDownConfirmed(authorize(call, params), params.participantKey, params.expectedGeneration),
@@ -223,15 +204,10 @@ const HOSTED_METHODS = new Map<string, HostedMethodHandler>([
 		call.id,
 		await call.context.participants.stopConfirmed(authorize(call, params), params.participantKey, params.expectedGeneration),
 	))],
-	["participant.release", method(ParticipantAuthParams, (call, params) => success(
-		call.id,
-		call.context.participants.release(authorize(call, params), params.participantKey),
-	))],
 	["participant.takeover", method(ParticipantConfirmedParams, (call, params) => success(
 		call.id,
 		call.context.participants.takeover(authorize(call, params), params.participantKey, params.expectedGeneration),
 	))],
-	["mailbox.send", method(MailboxSendParams, sendMailbox)],
 ]);
 
 /** Every dispatchable method except `hello`, which the dispatcher answers before the handler map. */

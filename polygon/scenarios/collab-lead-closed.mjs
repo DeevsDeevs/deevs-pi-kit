@@ -24,9 +24,9 @@ export default {
 		] };
 		const first = rpc(t);
 		await first.script({ agent: "lead", steps: [
-			{ id: "s1", tool: "collaborator_manage", args: { action: "start", participants: [
-				{ participantId: "talker", model: "polygon/talker", profile: "read-only" },
-				{ participantId: "scribe", model: "claude:opus", profile: "read-only" },
+			{ id: "s1", tool: "collaborator_start", args: { participants: [
+				{ name: "talker", model: "polygon/talker", profile: "read-only" },
+				{ name: "scribe", model: "claude:opus", profile: "read-only" },
 			] } },
 			{ id: "s2", tool: "SendMessage", args: { to: "talker", message: "go" } },
 			// The scribe's message carries the script that makes it send, 45 s later: past the 30 s lease the closed lead no longer renews.

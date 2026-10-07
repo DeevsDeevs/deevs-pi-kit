@@ -80,6 +80,7 @@ const HostedParticipantTransitionSchema = Type.Object({
 export const HostedParticipantStateSchema = Type.Union([
 	Type.Literal("held"),
 	Type.Literal("vacant"),
+	/** Written only by older builds' release; kept so their state still loads. */
 	Type.Literal("ended"),
 ]);
 
@@ -167,10 +168,6 @@ export function isHeld(state: HostedParticipantState | undefined): boolean {
 
 export function isVacant(state: HostedParticipantState | undefined): boolean {
 	return state === "vacant";
-}
-
-export function isEnded(state: HostedParticipantState | undefined): boolean {
-	return state === "ended";
 }
 
 export function isPiTarget(target: HostedTarget | undefined): target is HostedPiTarget {
