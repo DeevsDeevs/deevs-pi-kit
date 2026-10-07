@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { readProcessIdentity } from "../extensions/shared/process-group.ts";
 import { cappedLog } from "../extensions/subagents/engine/background.ts";
-import { lock, prune, unlock } from "../extensions/subagents/engine/storage.ts";
+import { lock, prune, SETTLED, unlock } from "../extensions/subagents/engine/storage.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -13,27 +13,33 @@ const DAY = 86_400_000;
 const age = (path: string, days: number) => utimesSync(path, new Date(Date.now() - days * DAY), new Date(Date.now() - days * DAY));
 
 describe("engine storage", () => {
-	it("prunes stores and workflow runs and scripts untouched for 14 days, unless a live Pi holds the store", async () => {
+	it("prunes settled stores, ended workflow runs and scripts untouched for 14 days; never a store held, running or paused, nor a run not ended", async () => {
 		const kit = scratch();
-		const store = (name: string, days: number, held = false) => {
+		const store = (name: string, days: number, held = false, settled = true) => {
 			const dir = join(kit, "agents", "p1", name);
 			mkdirSync(join(dir, "out"), { recursive: true });
 			if (held) writeFileSync(join(dir, "engine.lock"), JSON.stringify({ pid: process.pid, identity: identity! }));
+			if (settled) writeFileSync(join(dir, SETTLED), "");
 			age(dir, days);
 			return dir;
 		};
 		const identity = await readProcessIdentity(process.pid);
-		const [old, fresh, held] = [store("old", 15), store("fresh", 1), store("held", 15, true)];
+		const [old, fresh, held, paused] = [store("old", 15), store("fresh", 1), store("held", 15, true), store("paused", 15, false, false)];
 		const scripts = join(kit, "workflows", "p1", "scripts");
 		mkdirSync(scripts, { recursive: true });
 		writeFileSync(join(scripts, "old.js"), "");
 		writeFileSync(join(scripts, "new.js"), "");
 		age(join(scripts, "old.js"), 15);
-		const run = join(kit, "workflows", "p1", "wf_old");
-		mkdirSync(run);
-		age(run, 15);
+		const run = (id: string, ended: boolean) => {
+			const dir = join(kit, "workflows", "p1", id);
+			mkdirSync(dir);
+			if (ended) writeFileSync(join(dir, `${id}.json`), "{}");
+			age(dir, 15);
+			return dir;
+		};
+		const [ended, running] = [run("wf_ended", true), run("wf_running", false)];
 		await prune(kit);
-		expect([old, fresh, held, join(scripts, "old.js"), join(scripts, "new.js"), run].map(existsSync)).toEqual([false, true, true, false, true, false]);
+		expect([old, fresh, held, paused, join(scripts, "old.js"), join(scripts, "new.js"), ended, running].map(existsSync)).toEqual([false, true, true, true, false, true, false, true]);
 	});
 
 	it("takes a lock whole, refuses one a live Pi holds, and replaces a stale one", async () => {

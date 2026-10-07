@@ -1,11 +1,12 @@
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { createFauxCore, fauxAssistantMessage, type FauxResponseStep } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { newAgentId, tasks } from "../extensions/shared/tasks.ts";
-import { closeAll, ensureEngine, launch, send } from "../extensions/subagents/engine/index.ts";
+import { closeAll, ensureEngine, launch, send, startJob } from "../extensions/subagents/engine/index.ts";
+import { SETTLED } from "../extensions/subagents/engine/storage.ts";
 
 process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "pi-kit-send-"));
 const cwd = mkdtempSync(join(tmpdir(), "pi-kit-send-cwd-"));
@@ -73,5 +74,17 @@ describe("SendMessage to an agent", () => {
 		const report = await done!;
 		expect([report.status, report.summary.startsWith('Agent "d" failed: ')]).toEqual(["failed", true]);
 		expect(tasks.find(agentId)?.status).toBe("failed");
+	});
+
+	it("closes a store settled only when nothing runs and the Outbox is empty, and reopening unsettles it", async () => {
+		const idle = { ...ctx, sessionManager: { getSessionId: () => "idle", getEntries: () => [] } } as unknown as ExtensionContext;
+		const settled = async () => existsSync(join((await ensureEngine(idle)).dir, SETTLED));
+		const dir = (await ensureEngine(idle)).dir;
+		await closeAll();
+		expect(existsSync(join(dir, SETTLED))).toBe(true);
+		expect(await settled()).toBe(false);
+		await startJob(await ensureEngine(idle), { id: "j1", command: "sleep 30", description: "d", cwd, toolUseId: "t" });
+		await closeAll();
+		expect(existsSync(join(dir, SETTLED))).toBe(false);
 	});
 });

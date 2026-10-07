@@ -2,8 +2,8 @@
 // /reload, pause when Pi exits and continue when their session reopens; their reports reach the lead exactly once.
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { access, mkdir, realpath, stat, utimes, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { access, mkdir, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { createBashTool, createEditTool, createFindTool, createGrepTool, createLsTool, createReadTool, createWriteTool, getAgentDir, type ExtensionContext, type ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
@@ -15,7 +15,7 @@ import { PI_TOOLS, type PiToolName } from "../definitions.ts";
 import { cliAnswer, CONTINUE, newProgress as newCliProgress, spawnWorker, type CliExit, type CliWorker } from "./cli.ts";
 import { backgroundTasks, decoded, firstLook, json, outboxItems, post, pruneOutbox, unsent, type BackgroundDoc, type BackgroundRecord, type JobInput, type MonitorInput, type OutboxDoc, type OutboxItem } from "./background.ts";
 import { acquire, BACKGROUND, CTX, failure, host, release, scan, text, totalTokens, transcriptLog, type AgentsDoc, type ConversationId, type Ctx, type D, type Engine, type Kit, type Live, type Modules, type WorkflowsDoc } from "./host.ts";
-import { bunSqlite, lock, prune, reap, unlock } from "./storage.ts";
+import { bunSqlite, lock, prune, reap, SETTLED, unlock } from "./storage.ts";
 import { abortWorkflowTask, installSchemas, registerWorkflow, runWorkflowTask, workflowRecords, type WorkflowInput } from "./workflow.ts";
 
 export { cliWorker, placeAgent, queuedAhead, userRequests } from "./host.ts";
@@ -145,11 +145,20 @@ export async function closeAll(): Promise<void> {
 		const engine = await pending.catch(() => undefined);
 		if (!engine) continue;
 		clearInterval(engine.heartbeat);
+		const idle = await settled(engine).catch(() => false);
 		await engine.harness.close(CTX).catch(() => {});
 		await reap(`PI_KIT_OWNER=${engine.dir}`);
+		if (idle) await writeFile(join(engine.dir, SETTLED), "").catch(() => {});
 		await unlock(join(engine.dir, "engine.lock"));
 	}
 	host.closing = false;
+}
+
+/** Nothing running or paused, and every report in the session file: only such a store may be pruned. */
+async function settled({ harness, kit, root, session }: Engine): Promise<boolean> {
+	await root.commit(async (tx) => pruneOutbox(await tx.doc(kit.Outbox, root.id), session), CTX);
+	const records = [agentRecords(await harness.snapshot(kit.Agents, root.id, CTX)), workflowRecords(await harness.snapshot(kit.Workflows, root.id, CTX)), backgroundRecords(await harness.snapshot(kit.Background, root.id, CTX))].flatMap(Object.values);
+	return records.every((record) => record.status !== "running") && outboxItems(await harness.snapshot(kit.Outbox, root.id, CTX)).length === 0;
 }
 
 export async function launch(engine: Engine, spec: LaunchSpec): Promise<{ outputFile: string; done?: Promise<TaskNotification> }> {
@@ -366,6 +375,7 @@ async function open(session: string, cwd: string, acks: ReturnType<typeof sessio
 	const from = await stat(dir).then((info) => info.mtimeMs, () => undefined);
 	await mkdir(join(dir, "out"), { recursive: true });
 	await lock(join(dir, "engine.lock"));
+	await rm(join(dir, SETTLED), { force: true });
 	let harness: Durable.Harness | undefined;
 	let heartbeat: NodeJS.Timeout | undefined;
 	try {
@@ -397,11 +407,7 @@ async function resume(engine: Engine, D: D, from: number | undefined, acks: Retu
 	const records = agentRecords(await harness.snapshot(kit.Agents, root.id, CTX));
 	const workflows = workflowRecords(await harness.snapshot(kit.Workflows, root.id, CTX));
 	installSchemas(D, registry, session, workflows);
-	// A run paused past the prune age keeps its folder: touched before the prune.
-	const kitDir = join(getAgentDir(), "pi-kit");
-	const now = new Date();
-	await Promise.all(Object.values(workflows).filter((record) => record.status === "running").map((record) => utimes(join(kitDir, "workflows", basename(dirname(engine.dir)), record.runId), now, now).catch(() => {})));
-	void prune(kitDir).catch(() => {});
+	void prune(join(getAgentDir(), "pi-kit")).catch(() => {});
 	for (const [id, record] of Object.entries(records)) registerAgent(engine, id, record);
 	for (const [id, record] of Object.entries(workflows)) registerWorkflow(engine, id, record);
 	for (const [id, record] of Object.entries(backgroundRecords(await harness.snapshot(kit.Background, root.id, CTX)))) registerBackground(engine, id, record);

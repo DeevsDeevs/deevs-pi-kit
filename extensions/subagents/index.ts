@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, realpathSync, statSync } from "node:fs";
-import { appendFile, mkdir, readFile, utimes, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
@@ -168,8 +168,8 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			const runId = resumed ?? newWorkflowRunId();
 			const dir = join(home, runId);
 			if (resumed && !existsSync(join(dir, "journal.jsonl"))) throw new Error(`No journal found for workflow run ${resumed} in this project; call Workflow again without resumeFromRunId.`);
-			// Fresh before the engine opens, so its prune keeps a resumed run however old.
-			if (resumed) await utimes(dir, new Date(), new Date());
+			// Running again: prune keeps a run folder until the run writes its record anew.
+			if (resumed) await rm(join(dir, `${runId}.json`), { force: true });
 			const file = scriptPath ?? join(home, "scripts", `${meta.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${runId}.js`);
 			await mkdir(dir, { recursive: true });
 			if (!scriptPath) {
