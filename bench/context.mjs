@@ -26,7 +26,7 @@ function surface(name, items) {
 	return { surface: name, items, total: items.reduce((sum, entry) => sum + entry.tokens, 0) };
 }
 
-/** The lead's task surface: Agent, TaskStop, job_start, Monitor and their siblings, and Runtime's collaborator tools. */
+/** The lead's task surface on its first request: Agent, Workflow, SendMessage, TaskStop and ListAgents; job_start, Monitor and the collaborator tools wait for their skills. */
 const LEAD_EXTENSIONS = ["subagents", "runtime"];
 
 async function registeredTools() {
@@ -45,7 +45,7 @@ async function registeredTools() {
 			sendMessage: noop,
 		});
 	}
-	return tools.map(tool => ({
+	return tools.filter(tool => tool.defaultActive !== false).map(tool => ({
 		name: tool.name,
 		description: tool.description ?? "",
 		promptSnippet: tool.promptSnippet ?? "",
