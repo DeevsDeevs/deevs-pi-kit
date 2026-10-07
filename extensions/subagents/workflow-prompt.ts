@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { isAutonomous } from "../shared/autonomy.ts";
+import { systemReminder } from "../shared/tasks.ts";
 
 export const WORKFLOW_SNIPPET = "Orchestrate many background agents with a script, once the user has opted in.";
 
@@ -26,11 +27,10 @@ export const WORKFLOW_FIELDS = {
 
 const REFERENCE = readFileSync(new URL("../../skills/workflow-authoring/SKILL.md", import.meta.url), "utf8").replace(/^---\n[\s\S]*?\n---\n+/, "");
 
-const wrap = (text: string): string => `<system-reminder>\n${text}\n</system-reminder>`;
 export const AUTONOMY_REMINDERS = {
-	full: wrap("Autonomy is on: the user has opted into orchestration for this session. Run every substantive task through the Workflow tool and aim for the most complete, best-verified answer; speed and token cost come second. The Autonomy section and the quality patterns of the workflow authoring reference say how. Work alone only on conversational or trivial turns."),
-	sparse: wrap("Autonomy is still on: run substantive tasks through the Workflow tool; see Autonomy in the workflow authoring reference."),
-	off: wrap("Autonomy is off: the Workflow tool's own opt-in rule applies again."),
+	full: systemReminder("Autonomy is on: the user has opted into orchestration for this session. Run every substantive task through the Workflow tool and aim for the most complete, best-verified answer; speed and token cost come second. The Autonomy section and the quality patterns of the workflow authoring reference say how. Work alone only on conversational or trivial turns."),
+	sparse: systemReminder("Autonomy is still on: run substantive tasks through the Workflow tool; see Autonomy in the workflow authoring reference."),
+	off: systemReminder("Autonomy is off: the Workflow tool's own opt-in rule applies again."),
 };
 type ReminderKind = keyof typeof AUTONOMY_REMINDERS;
 const KINDS: ReminderKind[] = ["full", "sparse", "off"];

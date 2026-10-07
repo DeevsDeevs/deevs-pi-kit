@@ -1,9 +1,14 @@
-// Claude Code and Codex workers: their argv, and their JSON event streams read into progress. Imports nothing from Pi,
-// so the polygon runs the real CLIs with exactly this argv.
+// Claude Code and Codex workers: their argv, their runs, and their JSON event streams read into progress. Imports nothing
+// from Pi, so the polygon runs the real CLIs with exactly this argv.
+import { spawn, type ChildProcess } from "node:child_process";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import type { JsonObject } from "@earendil-works/pi-durable";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
+import { trySignalGroup } from "../../shared/process-group.ts";
+import { reap } from "./storage.ts";
 
 export type CliHarness = "claude" | "codex";
 type JsonValue = JsonObject[string];
@@ -65,6 +70,7 @@ const GUARD_HOOK = `node ${JSON.stringify(fileURLToPath(new URL("../../shared/gu
 const NO_WORKER_TOOLS = ["Agent", "Workflow", "AskUserQuestion", "ScheduleWakeup", "CronCreate", "SendUserMessage"];
 const CLAUDE_TOOLS = { read: ["Read"], grep: ["Grep"], find: ["Glob"], ls: [], bash: ["Bash"], edit: ["Edit", "NotebookEdit"], write: ["Write"] };
 const CODEX_TOOL_ITEMS = new Set(["command_execution", "file_change", "mcp_tool_call", "web_search"]);
+export const CONTINUE = "Your previous run was cut off when Pi closed. Continue the task from where you left off.";
 
 export const schemaFile = (worker: CliWorker): string => `${worker.dir}/schema.json`;
 export const lastMessageFile = (worker: CliWorker): string => `${worker.dir}/last.txt`;
@@ -187,4 +193,56 @@ function readCodex(progress: CliProgress, event: Static<typeof CodexEvent>): voi
 
 function textOf(content: Static<typeof Content> | undefined): string {
 	return Array.isArray(content) ? content.map((block) => block.text ?? "").join("") : content ?? "";
+}
+
+export type CliExit = { code: number | null; stderr: string };
+
+/** A finished CLI run's answer: its last text or, with a schema, the structured object (Codex's strict-mode nulls dropped) as JSON. */
+export async function cliAnswer(worker: CliWorker, exit: CliExit | undefined, progress: CliProgress): Promise<{ ok: boolean; text: string; structured?: JsonValue; error: string }> {
+	let text = worker.harness === "codex" ? await readFile(lastMessageFile(worker), "utf8").catch(() => progress.text) : progress.text;
+	let structured = progress.structured;
+	if (worker.schema && worker.harness === "codex") {
+		try { structured = dropNulls(JSON.parse(text), worker.schema); } catch {}
+	}
+	if (worker.schema && structured !== undefined) text = JSON.stringify(structured);
+	const ok = exit?.code === 0 && progress.error === undefined && (!worker.schema || structured !== undefined);
+	const error = progress.error || (worker.schema && exit?.code === 0 ? "no structured output" : exit?.stderr.trim().split("\n").at(-1)) || `exit code ${exit?.code}`;
+	// SAFETY: structured_output and Codex's last message come from JSON.parse.
+	return { ok, text, structured: structured as JsonValue | undefined, error };
+}
+
+/** One CLI run in its own process group, tagged with PI_KIT_OWNER for the reaper and PI_KIT_WORKER for its own end. */
+export async function spawnWorker(input: { agentId: string; worker: CliWorker }, owner: string, run: { resume?: string; prompt: string }, progress: CliProgress, signal: AbortSignal, workers: Map<string, ChildProcess>, onSession: (session: string) => Promise<void>): Promise<CliExit> {
+	const { worker } = input;
+	await mkdir(worker.dir, { recursive: true });
+	await rm(lastMessageFile(worker), { force: true });
+	if (worker.schema && worker.harness === "codex") await writeFile(schemaFile(worker), JSON.stringify(strictify(worker.schema)));
+	const child = spawn(worker.harness, cliArgv(worker, run.resume), { cwd: worker.cwd, env: { ...process.env, PI_KIT_OWNER: owner, PI_KIT_WORKER: input.agentId }, detached: true, stdio: ["pipe", "pipe", "pipe"] });
+	workers.set(input.agentId, child);
+	const kill = () => child.pid && trySignalGroup(child.pid, "SIGKILL");
+	signal.addEventListener("abort", kill, { once: true });
+	let stderr = "";
+	let session = Promise.resolve();
+	child.stderr.on("data", (chunk) => { stderr = (stderr + chunk).slice(-4_000); });
+	createInterface({ input: child.stdout }).on("line", (line) => {
+		const before = progress.sessionId;
+		readEvent(worker.harness, progress, line);
+		if (!before && progress.sessionId) session = onSession(progress.sessionId);
+	});
+	child.stdin.on("error", () => {});
+	child.stdin.end(run.prompt);
+	const closed = new Promise((resolve) => child.on("close", resolve));
+	const code = await new Promise<number | null>((resolve) => {
+		child.on("error", (error) => { stderr += error.message; resolve(null); });
+		child.on("exit", resolve);
+	});
+	signal.removeEventListener("abort", kill);
+	// What the CLI leaves behind ends with the run: helpers in its group (Codex syncs its plugins with git), and tool commands
+	// it put in groups of their own (Claude's Bash), which would otherwise hold the output pipe and outlive a TaskStop.
+	kill();
+	await reap(`PI_KIT_WORKER=${input.agentId}`);
+	await Promise.race([closed, new Promise((resolve) => setTimeout(resolve, 5_000).unref())]);
+	workers.delete(input.agentId);
+	await session;
+	return { code, stderr };
 }

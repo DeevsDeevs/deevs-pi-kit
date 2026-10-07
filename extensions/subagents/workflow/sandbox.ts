@@ -26,7 +26,6 @@ export interface WorkflowHost {
 	agent(prompt: string, options: AgentOptions): Promise<JsonValue>;
 	emit(event: WorkflowEvent): void;
 	args?: JsonValue;
-	budget?: { total: number | null; spent(): number };
 	signal?: AbortSignal;
 	syncTimeoutMs?: number;
 }
@@ -34,10 +33,8 @@ export interface WorkflowHost {
 interface Bridge {
 	agent(prompt: string, optionsJson: string): Promise<string>;
 	emit(type: "log" | "phase" | "failure", text: string): void;
-	spent(): number;
 	setTimeout(callback: () => void, delay: number): number;
 	clearTimeout(id: number): void;
-	total: number | null;
 	args: string | undefined;
 }
 
@@ -48,22 +45,11 @@ const PRELUDE = String.raw`(bridge) => {
 	"use strict";
 	const NOW_ERROR = "Date.now() / new Date() are unavailable in workflow scripts (breaks resume). Stamp results after the workflow returns, or pass timestamps via args.";
 	const RANDOM_ERROR = "Math.random() is unavailable in workflow scripts (breaks resume). For N independent samples, include the index in the agent label or prompt.";
-	const BUDGET_ERROR = "WorkflowBudgetExceededError";
-	const total = bridge.total;
-	const spent = () => bridge.spent();
 	const text = (value) => {
 		if (typeof value === "string") return value;
 		try { return String(JSON.stringify(value)); } catch { return String(value); }
 	};
 	const reason = (error) => error !== null && typeof error === "object" && typeof error.message === "string" ? error.message : String(error);
-	const checkBudget = () => {
-		if (total === null || total <= 0) return;
-		const used = spent();
-		if (used < total) return;
-		const error = new Error("Workflow token budget exceeded (" + used + " / " + total + " output tokens). Stopping further agent() calls. In-flight agents will complete; their results are preserved.");
-		error.name = BUDGET_ERROR;
-		throw error;
-	};
 	const unwrap = (envelope) => {
 		const outcome = JSON.parse(envelope);
 		if (outcome.ok) return outcome.value;
@@ -71,28 +57,18 @@ const PRELUDE = String.raw`(bridge) => {
 		error.name = outcome.name;
 		throw error;
 	};
-	const settle = (kind, outcomes) => {
-		let dropped = 0;
-		const values = outcomes.map((outcome, index) => {
-			if (outcome.status === "fulfilled") return outcome.value;
-			if (outcome.reason?.name === BUDGET_ERROR) dropped++;
-			else bridge.emit("failure", kind + "[" + index + "] failed: " + reason(outcome.reason));
-			return null;
-		});
-		if (dropped > 0) bridge.emit("failure", kind + ": " + dropped + (dropped === 1 ? " slot" : " slots") + " dropped — token budget exceeded");
-		return values;
-	};
-	const agent = async (prompt, options) => {
-		checkBudget();
-		return unwrap(await bridge.agent(String(prompt), text(options ?? {})));
-	};
+	const settle = (kind, outcomes) => outcomes.map((outcome, index) => {
+		if (outcome.status === "fulfilled") return outcome.value;
+		bridge.emit("failure", kind + "[" + index + "] failed: " + reason(outcome.reason));
+		return null;
+	});
+	const agent = async (prompt, options) => unwrap(await bridge.agent(String(prompt), text(options ?? {})));
 	const parallel = async (thunks) => {
 		if (!Array.isArray(thunks)) throw new TypeError("parallel() expects an array of functions");
 		if (thunks.length === 0) return [];
 		for (const thunk of thunks) {
 			if (typeof thunk !== "function") throw new TypeError("parallel() expects an array of functions, not promises. Wrap each call: () => agent(...)");
 		}
-		checkBudget();
 		return settle("parallel", await Promise.allSettled(thunks.map(async (thunk) => thunk())));
 	};
 	const pipeline = async (items, ...stages) => {
@@ -101,7 +77,6 @@ const PRELUDE = String.raw`(bridge) => {
 		for (const stage of stages) {
 			if (typeof stage !== "function") throw new TypeError("pipeline() stages must be functions: pipeline(items, item => ..., result => ...)");
 		}
-		checkBudget();
 		return settle("pipeline", await Promise.allSettled(items.map(async (item, index) => {
 			let value = await item;
 			for (const stage of stages) {
@@ -133,7 +108,8 @@ const PRELUDE = String.raw`(bridge) => {
 		phase: (title) => bridge.emit("phase", String(title)),
 		log: (message) => bridge.emit("log", text(message)),
 		console: Object.freeze({ log: say(""), info: say(""), debug: say(""), warn: say("[warn] "), error: say("[error] ") }),
-		budget: Object.freeze({ total, spent, remaining: () => total === null ? Infinity : Math.max(0, total - spent()) }),
+		// CC's budget API with no token target: the kit has none.
+		budget: Object.freeze({ total: null, spent: () => 0, remaining: () => Infinity }),
 		workflow: async () => { throw new Error("workflow() is not available in this runner — inline the inner script"); },
 		args: bridge.args === undefined ? undefined : JSON.parse(bridge.args),
 		setTimeout: (callback, delay, ...rest) => bridge.setTimeout(() => callback(...rest), Number(delay) || 0),
@@ -162,7 +138,6 @@ export async function runWorkflow(workflow: Pick<ParsedWorkflow, "body" | "bodyL
 				host.emit({ type, title: text });
 			} else host.emit({ type, message: text });
 		},
-		spent: () => host.budget?.spent() ?? 0,
 		setTimeout: (callback, delay) => {
 			if (host.signal?.aborted) return 0;
 			const id = nextTimer++;
@@ -180,7 +155,6 @@ export async function runWorkflow(workflow: Pick<ParsedWorkflow, "body" | "bodyL
 			clearTimeout(timers.get(id));
 			timers.delete(id);
 		},
-		total: host.budget?.total ?? null,
 		args: host.args === undefined ? undefined : JSON.stringify(host.args),
 	};
 	if (host.signal?.aborted) throw new Error("Workflow aborted");

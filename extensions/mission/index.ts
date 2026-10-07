@@ -4,7 +4,7 @@ import { StringEnum, Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isAutonomous } from "../shared/autonomy.ts";
 import { ownsProcessIdentity, readProcessIdentity } from "../shared/process-group.ts";
-import { tasks } from "../shared/tasks.ts";
+import { systemReminder, tasks } from "../shared/tasks.ts";
 import { git } from "../shared/worktree.ts";
 import { createMission, currentMission, missionBrief, reviewPath, saveMission, STATUSES, type Mission, type MissionStatus, type Owner } from "./store.ts";
 
@@ -38,7 +38,8 @@ export default function missionExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_start", (event, ctx) => {
 		interrupted = false;
-		if (event.reason === "startup" || event.reason === "resume") later(ctx);
+		// The agents the engine resumes are running work: check only once they are on the roster.
+		if (event.reason === "startup" || event.reason === "resume") void tasks.resumed(ctx.sessionManager.getSessionId()).then(() => later(ctx));
 	});
 	pi.on("agent_end", (event) => {
 		const last = event.messages.filter((message) => message.role === "assistant").pop();
@@ -156,7 +157,7 @@ async function maybeContinue(pi: ExtensionAPI, ctx: ExtensionContext): Promise<v
 	saveMission(mission);
 	pi.sendMessage({
 		customType: MISSION_CONTINUE,
-		content: `<system-reminder>\nMission continue: nothing else is running, so carry on with the mission below.\n\n${missionBrief(mission)}\n\n${GUIDANCE}\n</system-reminder>`,
+		content: systemReminder(`Mission continue: nothing else is running, so carry on with the mission below.\n\n${missionBrief(mission)}\n\n${GUIDANCE}`),
 		display: false,
 		details: { slug: mission.slug, quietContinues: state.quietContinues },
 	}, { triggerTurn: true });

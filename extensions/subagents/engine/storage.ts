@@ -1,4 +1,5 @@
-import { readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { link, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { basename, join } from "node:path";
 import type { SqliteDatabase, SqliteExecutor, SqliteValue } from "@earendil-works/pi-durable/storage/sqlite";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
@@ -12,6 +13,7 @@ interface BunDatabase {
 }
 
 const LockFile = Type.Object({ pid: Type.Number(), identity: Type.Optional(Type.String()) });
+const KEEP_MS = 14 * 86_400_000;
 
 /** durable's portable SqliteStorage over Bun's synchronous `bun:sqlite`; every operation is queued behind the last. */
 export function bunSqlite(Database: new (path: string, options: { create: boolean }) => BunDatabase, path: string): SqliteDatabase {
@@ -51,29 +53,60 @@ export function bunSqlite(Database: new (path: string, options: { create: boolea
 	};
 }
 
-/** `engine.lock` with `{pid, identity}`; a lock whose process identity no longer matches is stale. */
+/**
+ * `engine.lock` with `{pid, identity}`; a lock whose process identity no longer matches is stale. The lock is linked in
+ * whole, so another Pi never reads it empty.
+ */
 export async function lock(file: string): Promise<void> {
-	const mine = JSON.stringify({ pid: process.pid, identity: await readProcessIdentity(process.pid) });
-	for (let attempt = 0; attempt < 2; attempt++) {
-		try {
-			await writeFile(file, mine, { flag: "wx" });
-			return;
-		} catch (error) {
-			// SAFETY: fs/promises rejects with a Node system error.
-			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+	const mine = `${file}.${process.pid}`;
+	await writeFile(mine, JSON.stringify({ pid: process.pid, identity: await readProcessIdentity(process.pid) }));
+	try {
+		for (let attempt = 0; attempt < 2; attempt++) {
+			try {
+				await link(mine, file);
+				return;
+			} catch (error) {
+				// SAFETY: fs/promises rejects with a Node system error.
+				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+			}
+			const holder = await heldBy(file);
+			if (holder !== undefined && holder !== process.pid) throw new Error(`This session's agents are held by Pi process ${holder}; close it or open another session.`);
+			// ponytail: two Pis that find the same stale lock at once can both take it; a rename-then-check would close that.
+			await rm(file, { force: true });
 		}
-		const held = parseLock(await readFile(file, "utf8").catch(() => ""));
-		if (held && held.pid !== process.pid && await ownsProcessIdentity(held.pid, held.identity)) {
-			throw new Error(`This session's agents are held by Pi process ${held.pid}; close it or open another session.`);
-		}
-		await rm(file, { force: true });
+		throw new Error(`Could not take ${file}.`);
+	} finally {
+		await rm(mine, { force: true });
 	}
-	throw new Error(`Could not take ${file}.`);
 }
 
 export async function unlock(file: string): Promise<void> {
 	const held = parseLock(await readFile(file, "utf8").catch(() => ""));
 	if (held?.pid === process.pid) await rm(file, { force: true });
+}
+
+/** The live process that holds the lock, if any. */
+async function heldBy(file: string): Promise<number | undefined> {
+	const held = parseLock(await readFile(file, "utf8").catch(() => ""));
+	return held && await ownsProcessIdentity(held.pid, held.identity) ? held.pid : undefined;
+}
+
+/**
+ * At engine open: removes the engine stores (their transcripts, `out/` logs and `cli/` folders) untouched for 14 days
+ * and held by no Pi, and the workflow runs and saved scripts as old. `kitDir` is `<agentDir>/pi-kit`.
+ */
+export async function prune(kitDir: string, now = Date.now()): Promise<void> {
+	const under = async (dir: string) => (await readdir(dir).catch(() => [])).map((name) => join(dir, name));
+	const below = async (dir: string) => (await Promise.all((await under(dir)).map(under))).flat();
+	const old = async (path: string) => ((await stat(path).catch(() => undefined))?.mtimeMs ?? now) < now - KEEP_MS;
+	for (const store of await below(join(kitDir, "agents"))) {
+		if (await old(store) && await heldBy(join(store, "engine.lock")) === undefined) await rm(store, { recursive: true, force: true });
+	}
+	const workflows = await below(join(kitDir, "workflows"));
+	const scripts = (await Promise.all(workflows.filter((path) => basename(path) === "scripts").map(under))).flat();
+	for (const path of [...workflows.filter((path) => basename(path) !== "scripts"), ...scripts]) {
+		if (await old(path)) await rm(path, { recursive: true, force: true });
+	}
 }
 
 function parseLock(text: string): { pid: number; identity?: string } | undefined {

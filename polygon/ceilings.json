@@ -1,10 +1,10 @@
 {
-  "kit": { "paths": ["extensions"], "max": 15806 },
-  "subagents": { "paths": ["extensions/subagents", "extensions/shared/tasks.ts", "extensions/shared/models.ts"], "max": 4247, "why": "Measured after wave F: the plan's 4,000 predates workflow agent() running claude: and codex: models as CLI workers, the persisted SendMessage queue and the slots reserved for runs resumed after a restart; wave F still cut 4,301 to 4,247" },
+  "kit": { "paths": ["extensions"], "max": 15968 },
+  "subagents": { "paths": ["extensions/subagents", "extensions/shared/tasks.ts", "extensions/shared/models.ts"], "max": 4408, "why": "Measured after Q3: the plan's 4,000 predates workflow agent() running claude: and codex: models as CLI workers, the persisted SendMessage queue and the slots reserved for runs resumed after a restart; Q3 added the review fixes (print mode waits for reports, a run that throws reports failed, Outbox and 14-day store pruning, monitor and URL caps, the resume gate Mission waits on) and about 40 lines of imports splitting engine/index.ts into host.ts and workflow.ts" },
   "runtime": { "paths": ["extensions/runtime"], "max": 6558 },
-  "missions": { "paths": ["extensions/mission"], "max": 307 },
+  "missions": { "paths": ["extensions/mission"], "max": 308 },
   "polygon": { "paths": ["polygon"], "max": 3457, "why": "76 scenarios at about 34 lines against the plan's 69 at 25: collaborators, monitors, workflows, CLI workers and the context-wire bench each gained end-to-end scenarios after the plan, and the shared readers and step builders already live in drive.mjs and look.mjs" },
-  "shared": { "paths": ["extensions/shared"], "max": 1850 },
+  "shared": { "paths": ["extensions/shared"], "max": 1907 },
   "chains": { "paths": ["extensions/chains", "plugins/chains/server"], "max": 1598 },
   "small-extensions": { "paths": ["extensions/wiki", "extensions/arxiv", "extensions/todos", "extensions/ask-user", "extensions/notifier", "extensions/codex-fast", "extensions/herdr-compat"], "max": 2042 }
 }

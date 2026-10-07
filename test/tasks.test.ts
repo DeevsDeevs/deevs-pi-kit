@@ -13,7 +13,7 @@ beforeEach(async () => {
 });
 
 /** A fake Pi whose session file records what was delivered, unless the run's steer queue is cleared. */
-function lead() {
+function lead(mode = "tui") {
 	const handlers = new Map<string, Handler>();
 	const sessions = new Map<string, Array<{ type: string; customType: string; details: { notificationId: string } }>>();
 	const sent: Array<{ session: string; id: string; options: unknown }> = [];
@@ -30,6 +30,7 @@ function lead() {
 	} as unknown as ExtensionAPI;
 	const entries = (id: string) => sessions.get(id) ?? sessions.set(id, []).get(id)!;
 	const ctx = () => ({
+		mode,
 		isIdle: () => idle,
 		ui: { setStatus: (_key: string, text?: string) => statuses.push(text) },
 		sessionManager: { getSessionId: () => session, getEntries: () => entries(session) },
@@ -97,6 +98,7 @@ describe("task notification contract", () => {
 			shared.agentSummary("d", "failed", { error: "boom" }),
 			shared.agentSummary("d", "killed"),
 			shared.agentSummary("d", "killed", { byUser: true }),
+			shared.agentSummary("d", "failed", { limited: "3-turn" }),
 			shared.workflowSummary("d", "completed"),
 			shared.workflowSummary("d", "failed", "boom"),
 			shared.jobSummary("d", { exitCode: 0 }),
@@ -107,6 +109,7 @@ describe("task notification contract", () => {
 			'Agent "d" failed: boom',
 			'Agent "d" was stopped',
 			'Agent "d" was stopped by user',
+			'Agent "d" stopped at its 3-turn limit (partial result)',
 			'Dynamic workflow "d" completed',
 			'Dynamic workflow "d" failed: boom',
 			'Background command "d" completed (exit code 0)',
@@ -161,6 +164,34 @@ describe("task notification contract", () => {
 });
 
 describe("task delivery", () => {
+	it("in print mode holds a settled run until a running task reports, so its turn runs before Pi exits", async () => {
+		const pi = lead("print");
+		shared.tasks.install(pi.pi);
+		await pi.start("s1");
+		shared.tasks.register({ id: "b1", kind: "job", description: "d", status: "running", ownerSession: "s1", startedAt: 0 });
+		let settled = false;
+		const settling = Promise.resolve(pi.settle()).then(() => { settled = true; });
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(settled).toBe(false);
+		shared.tasks.update("b1", { status: "completed" });
+		await shared.tasks.notify(job("b1"));
+		await settling;
+		expect(pi.sent.map((sent) => sent.id)).toEqual(["b1:g"]);
+		await pi.settle();
+	});
+
+	it("tells a waiter when the engine has resumed a session's tasks, and does not hold it without an engine", async () => {
+		await shared.tasks.resumed("s1");
+		shared.tasks.install(lead().pi);
+		let resumed = false;
+		const waiting = shared.tasks.resumed("s1").then(() => { resumed = true; });
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(resumed).toBe(false);
+		shared.tasks.markResumed("s1");
+		await waiting;
+		expect(resumed).toBe(true);
+	});
+
 	it("wakes an idle lead with a steered task-notification", async () => {
 		const pi = lead();
 		shared.tasks.install(pi.pi);

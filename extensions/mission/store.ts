@@ -10,7 +10,7 @@ const Owner = Type.Object({ pid: Type.Integer(), identity: Type.Optional(Type.St
 export type Owner = Static<typeof Owner>;
 
 const State = Type.Object({
-	status: Type.Union([Type.Literal("active"), Type.Literal("paused"), Type.Literal("waiting_user"), Type.Literal("done"), Type.Literal("abandoned")]),
+	status: Type.Enum(STATUSES),
 	next: Type.String(),
 	owner: Type.Optional(Owner),
 	quietContinues: Type.Integer({ minimum: 0 }),

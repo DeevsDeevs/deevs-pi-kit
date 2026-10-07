@@ -2,7 +2,7 @@ import { randomBytes, randomInt, randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export type TaskKind = "agent" | "workflow" | "job" | "monitor" | "collaborator";
-export type TaskStatus = "running" | "completed" | "failed" | "killed" | "paused";
+export type TaskStatus = "running" | "completed" | "failed" | "killed";
 
 export interface RosterEntry {
 	id: string;
@@ -64,6 +64,8 @@ interface TasksState {
 	outstanding: Map<string, TaskNotification>;
 	/** Sent in this session runtime; true when it went in as a steer that Esc can clear. */
 	sent: Map<string, boolean>;
+	/** By session: settles once the engine has put the session's resumed tasks on the roster. */
+	resumed?: Map<string, { done: Promise<void>; resolve(): void }>;
 }
 
 const TASKS = Symbol.for("pi-kit.tasks");
@@ -86,7 +88,10 @@ export const tasks = {
 			if (state.pi !== pi) return;
 			state.ctx = ctx;
 			for (const [id, steered] of state.sent) if (steered) state.sent.delete(id);
+			const before = new Set(state.sent.keys());
 			await redeliver(ctx);
+			// Print mode exits once its run settles: as CC's -p does, it first waits for the next report of a task still running, whose turn then runs.
+			if (ctx.mode === "print" || ctx.mode === "json") await nextReport(ctx.sessionManager.getSessionId(), before);
 		});
 		pi.on("session_shutdown", () => {
 			if (state.pi === pi) state.ctx = undefined;
@@ -124,9 +129,16 @@ export const tasks = {
 		}
 		showHeld();
 	},
-	/** The notification ids the owner session's file already holds, when that session is on screen. */
-	delivered(ownerSession: string): Set<string> | undefined {
-		return state.ctx && activeSession() === ownerSession ? sessionAcks(state.ctx).delivered : undefined;
+	/** What the owner session's file already acknowledges, when that session is on screen. */
+	acks(ownerSession: string): ReturnType<typeof sessionAcks> | undefined {
+		return state.ctx && activeSession() === ownerSession ? sessionAcks(state.ctx) : undefined;
+	},
+	/** Settles once the engine has resumed the session's tasks; at once when no engine delivers tasks. */
+	resumed(session: string): Promise<void> {
+		return state.pi ? resumeGate(session).done : Promise.resolve();
+	},
+	markResumed(session: string): void {
+		resumeGate(session).resolve();
 	},
 	/** Whether the owner session's lead could take a new turn now; a session not on screen counts as idle (its reports are held). */
 	idle(ownerSession: string): boolean {
@@ -137,6 +149,19 @@ export const tasks = {
 		}
 	},
 };
+
+function resumeGate(session: string): { done: Promise<void>; resolve(): void } {
+	const gates = state.resumed ??= new Map();
+	let resolve = () => {};
+	if (!gates.has(session)) gates.set(session, { done: new Promise<void>((settle) => { resolve = settle; }), resolve: () => resolve() });
+	return gates.get(session)!;
+}
+
+/** Waits until a notification beyond `before` is sent, or no agent, workflow or job of the session runs. */
+async function nextReport(session: string, before: Set<string>): Promise<void> {
+	const running = () => tasks.list(session).some((task) => task.status === "running" && task.kind !== "monitor" && task.kind !== "collaborator");
+	while (running() && [...state.sent.keys()].every((id) => before.has(id))) await new Promise((resolve) => setTimeout(resolve, 200));
+}
 
 function inFlight(taskId: string, delivered: Set<string>): boolean {
 	return [...state.outstanding.values()].some((n) => n.taskId === taskId && state.sent.has(n.notificationId) && !delivered.has(n.notificationId));
@@ -234,6 +259,8 @@ function showHeld(): void {
 	}
 }
 
+export const systemReminder = (text: string): string => `<system-reminder>\n${text}\n</system-reminder>`;
+
 /** Neutralizes envelope markup inside interpolated text (A.5); syntax only. */
 function escapeMarkup(text: string): string {
 	return text
@@ -279,7 +306,9 @@ function capResult(text: string, cap: number, outputFile: string | undefined): s
 	return `${text.slice(0, cap)}\n... (truncated ${text.length - cap} chars${outputFile ? `, full result in ${outputFile}` : ""})`;
 }
 
-export function agentSummary(description: string, status: TaskNotification["status"], detail: { error?: string; byUser?: boolean } = {}): string {
+/** `limited` names the limit that stopped the run, whatever its status. */
+export function agentSummary(description: string, status: TaskNotification["status"], detail: { error?: string; byUser?: boolean; limited?: string } = {}): string {
+	if (detail.limited) return `Agent "${description}" stopped at its ${detail.limited} limit (partial result)`;
 	if (status === "completed") return `Agent "${description}" finished`;
 	if (status === "failed") return `Agent "${description}" failed: ${detail.error ?? "unknown error"}`;
 	return `Agent "${description}" was stopped${detail.byUser ? " by user" : ""}`;
@@ -350,6 +379,34 @@ export function taskStoppedResult(id: string, description: string, keptWorktrees
 
 export function taskNotRunningResult(id: string, status: TaskStatus): string {
 	return `Task ${id} is not running (status: ${status})`;
+}
+
+export const taskNotFound = (id: string): string => `No task found with ID: ${id}`;
+
+export function jobLaunchedResult(id: string, outputFile: string, timeout?: number): string {
+	return [
+		`Command running in background with ID: ${id}. Output is being written to: ${outputFile}`,
+		"You will be notified when it exits. Do not poll, sleep or wait for it; keep working, and read the output file once the notification arrives.",
+		...(timeout ? [`Timeout: ${timeout} ms`] : []),
+	].join("\n");
+}
+
+export function monitorStartedResult(id: string, baseline: string | undefined, until: string): string {
+	return `Monitor started (task ${id}${baseline ? `; ${baseline}` : ""}). It runs until ${until}. You will be notified on each event. Keep working; do not poll or sleep. An event is not the user's reply.`;
+}
+
+export const monitorSummary = (description: string): string => `Monitor event: "${description}"`;
+export const MONITOR_FLOODED = "[Monitor stopped — too much output. Arm it again with a tighter filter.]";
+export const monitorExpired = (seconds: number, events: number): string => `[Monitor expired after ${seconds}s with ${events} events delivered. Re-arm it if you still need the watch.]`;
+export const monitorSuppressed = (dropped: number, event: string): string => (dropped ? `[${dropped} events suppressed — output rate too high]\n${event}` : event);
+
+export const unknownAgentResult = (to: string, known: string[]): string => `No agent named '${to}'. Known agents: ${known.join(", ") || "none"}`;
+
+/** SendMessage's result; `refused` is its error. */
+export function sendMessageResult(to: string, outcome: "steered" | "queued" | "resumed" | "refused"): string {
+	if (outcome === "refused") return `Agent "${to}" was stopped by the user and was not resumed. Start a new agent for this work only if the user explicitly asks for it.`;
+	if (outcome === "steered") return `Message queued for delivery to ${to} at its next tool round.`;
+	return outcome === "queued" ? `Message queued for delivery to ${to} when its current run ends.` : `Resuming agent ${to}`;
 }
 
 export interface WorkflowLaunch {
