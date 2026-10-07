@@ -9,7 +9,7 @@ A workflow puts structure around many agents: coverage (split the work and do th
 
 Keep each workflow one well-scoped fan-out: **understand** (readers per subsystem, merged into one map), **design** (independent proposals, scored by judges), **review** (a finder per dimension, then adversarial checks of each finding), **research** (searches from different angles, deep reads, a synthesis), **migrate** (find every site, change each in a worktree, verify each). For bigger jobs run several in turn and read each result before choosing the next.
 
-**Autonomy.** While a system-reminder says autonomy is on, the user has opted in for the session: start agents and workflows without asking. Work directly on single-file or short fixes, and verify them yourself. Orchestrate when the work splits into independent parts taking minutes each, or when the user asks for, or a large multi-file change needs, an independent review. Never write a one-agent workflow: one part is an Agent call. When the task names an output file or binary at a path, write a working version there before you orchestrate work on it: later phases improve that file instead of creating it at the end. Multi-phase work (map, design, build, review) often takes one workflow per phase so you can steer between them. When a reminder says autonomy is off, the Workflow tool's own opt-in rule applies again.
+**Autonomy.** While a system-reminder says autonomy is on, the user has opted in for the session: start agents and workflows without asking, and work directly by default. Orchestrate when the work splits into independent parts taking minutes each (a review across several files, an audit per package), or when the user asks for, or a large multi-file change needs, an independent review: a Workflow for several agents, an Agent for one, never a one-agent workflow. Keep the change the deliverable depends on yourself and make it work first, committed when it is a commit: later phases improve it instead of creating it at the end. Multi-phase work (map, design, build, review) often takes one workflow per phase so you can steer between them. When a reminder says autonomy is off, the Workflow tool's own opt-in rule applies again.
 
 ## Calling the tool
 
@@ -50,6 +50,7 @@ const found = await agent('List the feature flags defined in packages/billing an
 
 - The final text is `agent()`'s return value, data for the script, so agents answer with raw data. Use `schema` when you need fields.
 - Agents load the project's AGENTS.md and CLAUDE.md and the skills; do not copy their rules into prompts.
+- For code an agent writes, paste the task's requirement text into its prompt word for word; never paraphrase a spec.
 - Agents have `read`, `grep`, `find`, `ls`, `bash`, `edit` and `write`, no MCP tools, and cannot start agents or ask the user. Write READ-ONLY into a stage that must only look.
 
 ## Determinism

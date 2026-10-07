@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -24,11 +24,21 @@ describe("Subagent extension surface", () => {
 		expect(commands).toEqual(["agents"]);
 	});
 
-	it("asks for a job_start timeout on builds and tests, as print mode's job result does, while Agent limits stay on request only", () => {
+	it("briefs agents and workflow agents that write code with the task's requirement text word for word", () => {
+		let agent = "";
+		subagentsExtension({ registerTool(tool: { name: string; description: string }) { if (tool.name === "Agent") agent = tool.description; }, registerCommand() {}, on() {} } as unknown as ExtensionAPI);
+		const skill = readFileSync(join(import.meta.dirname, "../skills/workflow-authoring/SKILL.md"), "utf8");
+		for (const text of [agent, skill]) expect(text).toMatch(/For code (it|an agent) writes, paste the task's requirement text (into its prompt )?word for word; never paraphrase a spec\./);
+	});
+
+	it("keeps builds and tests in foreground bash, job_start only for work that runs on while the lead does something else, with a timeout as print mode's job result asks, while Agent limits stay on request only", () => {
 		const params: Record<string, TObject> = {};
-		subagentsExtension({ registerTool(tool: { name: string; parameters: TObject }) { params[tool.name] = tool.parameters; }, registerCommand() {}, on() {} } as unknown as ExtensionAPI);
+		let job = "";
+		subagentsExtension({ registerTool(tool: { name: string; parameters: TObject; description: string }) { params[tool.name] = tool.parameters; if (tool.name === "job_start") job = tool.description; }, registerCommand() {}, on() {} } as unknown as ExtensionAPI);
 		const timeout = (tool: string) => (params[tool]!.properties.timeout as TSchema & { description: string }).description;
-		expect(timeout("job_start")).toMatch(/Set one for builds and tests; in print or json mode Pi waits only for jobs that have one/);
+		expect(job).toMatch(/only for work that must keep running while you do something else; builds and tests run in the foreground\./);
+		expect(WORKING_RULES).toContain("Run builds and tests in the foreground with bash, with a timeout.");
+		expect(timeout("job_start")).toMatch(/Set one for work that ends by itself; in print or json mode Pi waits only for jobs that have one/);
 		expect(timeout("job_start")).not.toMatch(/ONLY/);
 		expect(jobLaunchedResult("b1", "/out", undefined, true)).toMatch(/waits only for .*jobs started with a timeout/);
 		expect(timeout("Agent")).toMatch(/ONLY when the user asks/);
@@ -114,7 +124,7 @@ describe("Subagent extension surface", () => {
 		const [precedence, finish, output, scope, tests, timeout, report] = WORKING_RULES;
 		expect(precedence).toMatch(/user's and the project's own instructions take precedence/);
 		expect(finish).toMatch(/within your turn[\s\S]*to wait for agents, workflows and timed jobs[\s\S]*When the user asked for action, a plan/);
-		expect(output).toMatch(/output file or binary at a path, write a working version at that path first/);
+		expect(output).toMatch(/deliverable the task names \(a file or binary at a path, a commit, a branch\) work first, committed when it is a commit, before any review, delegated side work or long run/);
 		expect(scope).toMatch(/Add no new modules, vendored code or dependencies unless the task asks for them/);
 		expect(tests).toMatch(/If the project has none, create one outside the project tree, for example under \/tmp \(uv venv or python -m venv\)/);
 		expect(report).toMatch(/what changed, how you verified it, and what remains/);
@@ -123,6 +133,6 @@ describe("Subagent extension surface", () => {
 		for (const rule of [finish, output, report]) expect(worker).not.toContain(rule);
 		expect(workerPrompt(findAgentType(undefined), dir).split(tests!)).toHaveLength(2);
 		expect(workerPrompt(findAgentType(undefined), dir, undefined, true)).not.toContain(tests);
-		expect(getEncoding("o200k_base").encode(WORKING_RULES.map((rule) => `- ${rule}`).join("\n")).length).toBeLessThanOrEqual(300);
+		expect(getEncoding("o200k_base").encode(WORKING_RULES.map((rule) => `- ${rule}`).join("\n")).length).toBeLessThanOrEqual(320);
 	});
 });

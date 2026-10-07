@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, expect, it } from "vitest";
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
+import { getEncoding } from "js-tiktoken";
+import { DELIVERABLE_FIRST } from "../extensions/subagents/definitions.ts";
 import { AUTONOMY_REMINDERS, promptWorkflow, reminderDue } from "../extensions/subagents/workflow-prompt.ts";
 
 type Handler = (event: object, ctx: object) => Promise<{ message?: { content: string; details: string; display: boolean } } | undefined>;
@@ -55,13 +57,19 @@ it("says once that autonomy is off", async () => {
 	expect((await prompt("openai-codex", [reminder("full"), user()])).message?.details).toBe("off");
 });
 
-it("scales autonomy to the task with one trigger: short fixes done and verified directly, independent parts or a needed review orchestrated, no one-agent workflows, a named output file first", () => {
+it("keeps the always-on reminder to permission, working directly by default, when to orchestrate and the deliverable, and how to orchestrate once, in the workflow-authoring skill", () => {
 	const skill = /\*\*Autonomy\.\*\*.*/.exec(readFileSync(join(import.meta.dirname, "../skills/workflow-authoring/SKILL.md"), "utf8"))![0];
-	for (const text of [AUTONOMY_REMINDERS.full, skill]) {
-		expect(text).not.toMatch(/token cost|substantive task|an answer|verification/);
-		expect(text).toMatch(/Work directly on single-file or short fixes, and verify them yourself\. Orchestrate when the work splits into independent parts taking minutes each.*, or when the user asks for, or a large multi-file change needs, an independent review/);
-		expect(text).toMatch(/one-agent workflow/);
-		expect(text).toMatch(/output file or binary at a path, write a working version there before you orchestrate/);
-	}
-	expect(AUTONOMY_REMINDERS.sparse).toMatch(/orchestrate work that splits into independent parts taking minutes each, or that needs an independent review; work directly on short fixes/);
+	const { full, sparse } = AUTONOMY_REMINDERS;
+	const when = /[Ww]ork directly and verify it yourself by default; orchestrate only independent parts taking minutes each, a review a large multi-file change needs \(an Agent for one\), or what the user asks for\./;
+	expect(full).toMatch(/start agents and workflows without asking\./);
+	for (const text of [full, sparse]) expect(text).toMatch(when);
+	for (const text of [full, sparse]) expect(text).not.toMatch(/one-agent workflow|single-file|Load the workflow-authoring|side parts/);
+	expect(full).not.toContain(DELIVERABLE_FIRST);
+	expect(getEncoding("o200k_base").encode(full).length).toBeLessThanOrEqual(150);
+	expect(skill).not.toMatch(/token cost|substantive task|an answer|verification/);
+	expect(skill).toMatch(/work directly by default\. Orchestrate when the work splits into independent parts taking minutes each.*, or when the user asks for, or a large multi-file change needs, an independent review: a Workflow for several agents, an Agent for one, never a one-agent workflow\./);
+	expect(skill).toMatch(/Keep the change the deliverable depends on yourself and make it work first, committed when it is a commit/);
+	expect(full).toMatch(/Make the change the deliverable depends on yourself; never end the turn with it unwritten\./);
+	const review = readFileSync(join(import.meta.dirname, "../skills/validation-review/SKILL.md"), "utf8");
+	for (const text of [full, review]) expect(text).toMatch(/[Aa]sk (each reviewer an open question|reviewers open questions)[\s\S]*hange (work that already passes|passing work) only for a finding backed by a stated requirement or a failing check; for a concrete defect[\s\S]*write the check that reproduces it first/);
 });

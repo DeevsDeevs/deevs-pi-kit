@@ -32,13 +32,14 @@ const PRECEDENCE = "The user's and the project's own instructions take precedenc
 const SHARED_RULES = [
 	"Make the smallest change that resolves the task, in the files that already hold the behaviour. Add no new modules, vendored code or dependencies unless the task asks for them.",
 	"Run the relevant tests before calling a code change done, in the project's own environment (.venv or venv, conda envs, tox, uv, poetry, package.json or Makefile scripts), not the first python on PATH. A missing module or test runner usually means the wrong environment: look for the project's own once. If the project has none, create one outside the project tree, for example under /tmp (uv venv or python -m venv), instead of pip-installing into a system or base Python. Say which tests ran, or that none did.",
-	"Run long builds and tests with a timeout.",
+	"Run builds and tests in the foreground with bash, with a timeout.",
 ];
+export const DELIVERABLE_FIRST = "Make any deliverable the task names (a file or binary at a path, a commit, a branch) work first, committed when it is a commit, before any review, delegated side work or long run; then improve it.";
 /** The lead reads these as Agent tool guidelines and each Pi worker the shared ones; Claude and Codex workers bring their own. */
 export const WORKING_RULES = [
 	PRECEDENCE,
 	"Finish the task and verify it within your turn. End the turn only when it is done, when you need the user, or to wait for agents, workflows and timed jobs you started: each reports back and starts your next turn. When the user asked for action, a plan or an offer to continue is not an ending.",
-	"When the task names an output file or binary at a path, write a working version at that path first, then improve it.",
+	DELIVERABLE_FIRST,
 	...SHARED_RULES,
 	"Your final message says what changed, how you verified it, and what remains.",
 ];

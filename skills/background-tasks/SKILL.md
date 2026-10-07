@@ -9,7 +9,7 @@ Never launch background work through `cmd &`, `nohup`, `disown`, or `setsid`.
 
 ## Use a Job when
 
-The command ends by itself and you need its result later: a build, test run, migration check, benchmark or bounded script.
+The command ends by itself and must keep running while you do something else: a long benchmark, migration check or bounded script whose result you need later. Builds and tests you are waiting on run in the foreground with `bash` and a timeout.
 
 1. `job_start` with the command and a short description.
 2. Keep working; the finished Job reports by itself as a `<task-notification>` with its exit code. Do not poll it.
@@ -25,4 +25,4 @@ The process must keep running while Pi is closed or needs a terminal: dev server
 
 ## Use plain shell when
 
-The command is short and its result is needed now. Do not create a Job for `git status` or one focused test.
+You need the result before your next step: builds, test runs, `git status`. Give long ones a timeout.

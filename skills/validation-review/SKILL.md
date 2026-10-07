@@ -32,6 +32,8 @@ For servers/browsers/e2e: Herdr for persistent processes; `job_start` for bounde
 
 Subagents only within budget, each scoped with `cwd`, exact files/diff, command limits, and output shape. Launch independent perspectives as several `Agent` calls in one message and continue other runnable checks; each reports back by itself. Useful: `tester` (missing tests, e2e plan), `reviewer` (requirements, correctness), `anti-slop` (overbuild, fake tests), `rust-dev`, `devops`. Never delegate what one local command or file read proves.
 
+Ask each reviewer an open question (what breaks, what is missing, which requirement is unmet), never to confirm that the change works. Change work that already passes only for a finding backed by a stated requirement or a failing check; for a concrete defect, such as a security hole, a race, data loss or a missed edge case, write the check that reproduces it first, then fix it; record the rest as follow-ups.
+
 ## 5. Judge test quality
 
 Good evidence exercises observable behavior through the right public seam, would catch the regression, is deterministic, and asserts meaning — not just "does not crash". Bad evidence: implementation-detail tests, unexplained snapshot updates, mocks bypassing the risky path, e2e actions without assertions, green checks unrelated to the change, expected values computed with the production formula, coverage numbers offered instead of proven behaviors, bug fixes without a reproducer that failed pre-fix, tests that pass only in one order.
