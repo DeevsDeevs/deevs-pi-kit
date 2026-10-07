@@ -27,9 +27,11 @@ if (opts.smoke) opts.live = true;
 // The polygon's own logins; the login and freshen containers see the volume with these paths, scenarios a sanitized copy.
 const LOGIN_ENV = ["HOME=/login", "PI_CODING_AGENT_DIR=/login/.pi/agent", "CLAUDE_CONFIG_DIR=/login/.claude", "CODEX_HOME=/login/.codex",
 	"PI_SKIP_VERSION_CHECK=1", "PI_TELEMETRY=0", "DISABLE_AUTOUPDATER=1", "DISABLE_TELEMETRY=1"];
-// Pi refreshes without a model call (and early, so no token expires mid-run); Claude and Codex refresh on one tiny request.
+// Pi refreshes each OAuth login without a model call, early so no token expires mid-run; a refresh must clear the minimum,
+// and Sign in with ChatGPT (`openai`) tokens live only 60 minutes. Claude and Codex refresh on one tiny request.
+const PI_AUTH = ".pi/agent/auth.json";
+const PI_LOGINS = { "openai-codex": "2h", openai: "45m", anthropic: "2h" };
 const LOGINS = [
-	{ name: "Pi (openai-codex)", required: true, requests: 0, files: [".pi/agent/auth.json"], argv: ["pi", "auth", "print-bearer-token", "--provider", "openai-codex", "--min-expiry", "2h"] },
 	{ name: "Claude Code", requests: 1, files: [".claude/.credentials.json", ".claude/.claude.json"], argv: ["claude", "-p", "Reply with the single word ok."] },
 	{ name: "Codex", requests: 1, files: [".codex/auth.json"], argv: ["codex", "exec", "--skip-git-repo-check", "Reply with the single word ok."] },
 ];
@@ -79,7 +81,7 @@ function kitSource(results) {
 
 async function host() {
 	if (opts.list) {
-		for (const s of await scenarios()) console.log(`${s.name.padEnd(24)} ${[s.gate].flat().join(",").padEnd(8)} ${[s.slow && "slow", s.live && "live", s.pending && `pending: ${s.pending}`].filter(Boolean).join(" ")}`);
+		for (const s of await scenarios()) console.log(`${s.name.padEnd(24)} ${[s.gate].flat().join(",").padEnd(8)} ${[s.slow && "slow", s.timing && "timing", s.live && "live", s.pending && `pending: ${s.pending}`].filter(Boolean).join(" ")}`);
 		return;
 	}
 	if (!opts.login && !select(await scenarios()).length) {
@@ -90,7 +92,7 @@ async function host() {
 	if (opts.login) {
 		console.error(`polygon: three logins follow; everything lands in the ${LOGIN_VOLUME} Podman volume, never in your own homes.`);
 		const steps = [
-			"echo; echo 'polygon login 1/3, Pi: type /login, choose ChatGPT (openai-codex), finish in your browser, then /quit.'", "pi",
+			"echo; echo 'polygon login 1/3, Pi: type /login, choose Sign in with ChatGPT (OpenAI) or Anthropic, finish in your browser, then /quit.'", "pi",
 			"echo; echo 'polygon login 2/3, Claude Code:'", "claude auth login",
 			"echo; echo 'polygon login 3/3, Codex (device code):'", "codex login --device-auth",
 		];
@@ -116,7 +118,13 @@ async function host() {
 			...LOGIN_ENV.flatMap((e) => ["-e", e]), "-e", "POLYGON_FRESHEN=1", "-w", "/tmp", image, "node", "/polygon/run.mjs"], { stdio: "inherit" });
 		if (fresh.status !== 0) process.exit(fresh.status ?? 1);
 	}
-	const child = spawn("podman", ["run", "--rm", "--userns=keep-id", "--name", `polygon-${run}`,
+	if (opts.kit === "clone") {
+		const install = spawnSync("podman", ["run", "--rm", "--userns=keep-id", "-v", `${kit}:/kit`, "-w", "/kit", "-e", "npm_config_update_notifier=false", image,
+			"npm", "install", "--omit=dev", "--legacy-peer-deps", "--no-audit", "--no-fund", "--loglevel=error"], { stdio: ["ignore", 2, 2] });
+		if (install.status !== 0) process.exit(install.status ?? 1);
+	}
+	// Only the live tier reaches the internet; a puppet run has loopback alone, so nothing in it can call a real API.
+	const child = spawn("podman", ["run", "--rm", "--userns=keep-id", "--name", `polygon-${run}`, ...(opts.live ? [] : ["--network=none"]),
 		...mounts.flatMap((m) => ["-v", m]),
 		"-e", "POLYGON_IN_CONTAINER=1", "-e", `POLYGON_RUN_ID=${run}`, "-e", `POLYGON_KIT_MODE=${opts.kit}`, ...(opts.live ? ["-e", "POLYGON_LIVE=1"] : []),
 		image, "node", "/polygon/run.mjs", ...process.argv.slice(2)], { stdio: "inherit" });
@@ -134,13 +142,17 @@ const deadRefresh = (value) => Array.isArray(value) ? value.map(deadRefresh)
 
 /** In the freshen container: refresh each login in the volume, then stage copies whose refresh tokens cannot rotate it. */
 function freshen() {
-	const present = LOGINS.filter((login) => existsSync(join("/login", login.files[0])));
-	if (!present.some((login) => login.required)) {
-		console.error(`polygon: the ${LOGIN_VOLUME} volume holds no Pi login${present.length ? "" : " (it is empty)"}. Run \`npm run polygon -- --login\` once and log in there; live runs never read your own ~/.pi, ~/.claude or ~/.codex.`);
+	const auth = existsSync(join("/login", PI_AUTH)) ? JSON.parse(readFileSync(join("/login", PI_AUTH), "utf8")) : {};
+	const pi = Object.keys(PI_LOGINS).filter((provider) => auth[provider]?.type === "oauth").map((provider) => ({
+		name: `Pi (${provider})`, required: true, requests: 0, files: [PI_AUTH], argv: ["pi", "auth", "print-bearer-token", "--provider", provider, "--min-expiry", PI_LOGINS[provider]],
+	}));
+	if (!pi.length) {
+		console.error(`polygon: the ${LOGIN_VOLUME} volume holds no Pi OAuth login (${Object.keys(PI_LOGINS).join(", ")}). Run \`npm run polygon -- --login\` once and log in there; live runs never read your own ~/.pi, ~/.claude or ~/.codex.`);
 		process.exit(3);
 	}
+	const present = [...pi, ...LOGINS.filter((login) => existsSync(join("/login", login.files[0])))];
 	let spent = 0;
-	for (const login of LOGINS) {
+	for (const login of [...pi, ...LOGINS]) {
 		if (!present.includes(login)) {
 			console.error(`polygon: no ${login.name} login in ${LOGIN_VOLUME}; live scenarios that need it will fail.`);
 			continue;
@@ -151,7 +163,7 @@ function freshen() {
 		console.error(`polygon: freshening the ${login.name} login failed (${done.status ?? done.signal}): ${(done.stderr ?? "").trim().slice(-500)}`);
 		if (login.required) process.exit(3);
 	}
-	for (const file of present.flatMap((login) => login.files).filter((f) => existsSync(join("/login", f)))) {
+	for (const file of new Set(present.flatMap((login) => login.files).filter((f) => existsSync(join("/login", f))))) {
 		mkdirSync(dirname(join("/results/.login", file)), { recursive: true });
 		writeFileSync(join("/results/.login", file), JSON.stringify(deadRefresh(JSON.parse(readFileSync(join("/login", file), "utf8"))), null, 2), { mode: 0o600 });
 	}
@@ -203,19 +215,23 @@ async function inside() {
 	const run = process.env.POLYGON_RUN_ID;
 	const chosen = select(await scenarios());
 	const selected = chosen.filter((s) => !isSkipped(s));
-	if (process.env.POLYGON_KIT_MODE === "clone") {
-		const install = spawnSync("npm", ["install", "--omit=dev", "--legacy-peer-deps", "--no-audit", "--no-fund", "--loglevel=error"], { cwd: "/kit", stdio: ["ignore", 2, 2], env: { ...process.env, npm_config_update_notifier: "false" } });
-		if (install.status !== 0) process.exit(1);
-	}
 	const started = Date.now();
 	const out = chosen.filter(isSkipped).map((s) => ({ name: s.name, gate: s.gate, status: "pending", ms: 0, error: s.pending }));
-	let next = 0, stop;
+	const versions = Object.fromEntries(["pi", "claude", "codex", "herdr"].map((cli) => [cli, /\d+\.\d+\.\d+/.exec(spawnSync(cli, ["--version"], { encoding: "utf8" }).stdout)?.[0]]));
+	// The unit tests parse CLI output recorded on these versions; a newer image needs a re-recording, not a silent pass.
+	const fixtures = "/kit/test/fixtures/cli/versions.json";
+	const drift = existsSync(fixtures) ? Object.entries(JSON.parse(readFileSync(fixtures, "utf8"))).filter(([cli, version]) => versions[cli] !== version) : [];
+	if (drift.length) {
+		const error = `test/fixtures/cli was recorded on ${drift.map(([cli, v]) => `${cli} ${v}`).join(", ")}, the image runs ${drift.map(([cli]) => `${cli} ${versions[cli]}`).join(", ")}: re-record it from the claude-worker and codex-worker results`;
+		console.error(`polygon: ${error}`);
+		out.push({ name: "cli-fixtures", gate: "M4", status: "fail", ms: 0, error });
+	}
+	let stop;
 	let spent = opts.live ? JSON.parse(readFileSync("/results/freshen.json", "utf8")).requests : 0;
 	const maxRequests = Number(opts["max-requests"]);
-	const workers = Math.min(selected.length, opts.live ? 4 : availableParallelism());
-	await Promise.all(Array.from({ length: workers }, async () => {
-		while (next < selected.length && !stop) {
-			const result = await runOne(selected[next++], run);
+	const pool = (queue, width) => Promise.all(Array.from({ length: Math.min(width, queue.length) }, async () => {
+		for (let s; !stop && (s = queue.shift());) {
+			const result = await runOne(s, run);
 			out.push(result);
 			appendFileSync("/results/progress.log", `${result.status} ${result.name} ${result.ms}ms\n`);
 			spent += result.requests ?? 0;
@@ -223,9 +239,13 @@ async function inside() {
 			else if (opts.live && spent >= maxRequests) stop ??= `request guard: ${spent} live requests reached --max-requests ${maxRequests}`;
 		}
 	}));
-	out.push(...selected.slice(next).map((s) => ({ name: s.name, gate: s.gate, status: "skipped", ms: 0, error: stop })));
+	// Scenarios that bound latency (`timing: true`) run alone after the pool, so their bounds measure the kit, not the load.
+	const [parallel, serial] = [selected.filter((s) => !s.timing), selected.filter((s) => s.timing)];
+	await pool(parallel, opts.live ? 4 : Math.min(12, Math.ceil(availableParallelism() / 4)));
+	await pool(serial, 1);
+	out.push(...[...parallel, ...serial].map((s) => ({ name: s.name, gate: s.gate, status: "skipped", ms: 0, error: stop })));
 	out.sort((a, b) => a.name.localeCompare(b.name));
-	writeFileSync("/results/summary.json", JSON.stringify({ run, kit: process.env.POLYGON_KIT_MODE, live: Boolean(opts.live), ...(opts.live ? { requests: spent } : {}), ms: Date.now() - started, results: out }, null, 2));
+	writeFileSync("/results/summary.json", JSON.stringify({ run, kit: process.env.POLYGON_KIT_MODE, live: Boolean(opts.live), versions, ...(opts.live ? { requests: spent } : {}), ms: Date.now() - started, results: out }, null, 2));
 	console.log(`\n${"scenario".padEnd(24)} ${"gate".padEnd(8)} ${"status".padEnd(7)} ${"ms".padStart(7)}  detail`);
 	for (const r of out) console.log(`${r.name.padEnd(24)} ${[r.gate].flat().join(",").padEnd(8)} ${(r.status === "pending" ? "PENDING" : r.status).padEnd(7)} ${String(r.ms).padStart(7)}  ${(r.error ?? "").split("\n")[0].slice(0, 140)}`);
 	const count = (status) => out.filter((r) => r.status === status).length;

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { rpc } from "../drive.mjs";
-import { requests, toolCalls } from "../look.mjs";
+import { requests, settled, toolCalls } from "../look.mjs";
 
 const REMINDER = "<chain_checkpoint>";
 
@@ -26,7 +26,7 @@ export default {
 		] });
 		await lead.until((e) => e.type === "agent_settled", 30_000, "the first turn to settle");
 		await lead.prompt("continue");
-		await lead.until((_, events) => events.filter((e) => e.type === "agent_settled").length >= 2, 30_000, "the second turn to settle");
+		await lead.until((_, events) => settled(events) >= 2, 30_000, "the second turn to settle");
 
 		const calls = toolCalls(lead.events);
 		assert.deepEqual(calls.map((c) => [c.name, c.isError]), [false, false, false, false, false, false, true].map((isError) => ["chain", isError]));

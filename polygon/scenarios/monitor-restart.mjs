@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { rpc, sleep } from "../drive.mjs";
-import { poll, sessionNotes, toolCalls } from "../look.mjs";
+import { eventually, rpc, sleep } from "../drive.mjs";
+import { sessionNotes, toolCalls } from "../look.mjs";
 
 // A folder watch, an `until` script and a one-shot timer, all due while Pi is closed: each catches up exactly once on
 // reopen; a /reload afterwards loses and repeats nothing.
@@ -34,7 +34,7 @@ export default {
 		await lead.restart();
 
 		const of = (id) => sessionNotes(t).filter((n) => n.taskId === id);
-		await poll(() => of(folder).length && of(until).length && of(timer).length, 30_000, "all three catch-up events");
+		await eventually(() => of(folder).length && of(until).length && of(timer).length, 30_000, "all three catch-up events");
 		await sleep(2_000);
 		assert.equal(of(folder).length, 1);
 		assert.deepEqual(of(folder)[0].event.split("\n").sort(), ["added one.txt", "added two.txt"]);
@@ -45,7 +45,7 @@ export default {
 
 		await lead.prompt("/polygon-reload");
 		writeFileSync(join(dir, "three.txt"), "3\n");
-		await poll(() => of(folder).length >= 2, 15_000, "the folder's event after the reload");
+		await eventually(() => of(folder).length >= 2, 15_000, "the folder's event after the reload");
 		await sleep(2_500);
 		assert.deepEqual(of(folder).slice(1).map((n) => [n.event, n.caughtUp]), [["added three.txt", undefined]], "the reload repeated or lost a folder event");
 		assert.equal(new Set(sessionNotes(t).map((n) => n.notificationId)).size, sessionNotes(t).length, "a notification reached the session twice");

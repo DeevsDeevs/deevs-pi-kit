@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { herdr } from "../drive.mjs";
 
-// Interactive Pi in a Herdr pane: herdr-compat only acts in the TUI with HERDR_ENV=1. A cold TUI start under a full
-// parallel run can take over 10 s, so the wait allows 20.
+// Interactive Pi in a Herdr pane: herdr-compat only acts in the TUI with HERDR_ENV=1. A cold TUI start can take over
+// 10 s, so the wait allows 20.
 // ponytail: asserts the load only. Shift+Enter gives a newline with or without the extension here, so its mapping has no
 // request-log check; send-text then send-keys enter does submit (collab-user-types proves it through the request log).
 export default {
 	name: "ext-herdr-compat",
 	gate: "M0",
+	timing: true,
 	async run(t) {
 		const { cli } = await herdr(t);
 		const pane = "w1:p1";

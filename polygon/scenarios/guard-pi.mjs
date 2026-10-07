@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { rpc } from "../drive.mjs";
+import { rpc, script } from "../drive.mjs";
 import { taskNotifications, toolCalls } from "../look.mjs";
+import { ALLOWED, BLOCKED } from "./guard-claude.mjs";
 
-const BLOCKED = ["nohup sleep 1 &", "git push --force origin main", "rm -rf ~/x"];
-const ALLOWED = "rm -rf /tmp/polygon-guard-x";
 const bash = (prefix) => [...BLOCKED, ALLOWED].map((command, i) => ({ id: `${prefix}${i}`, tool: "bash", args: { command } }));
 
 // The guard refuses detached processes, force pushes to main and rm -rf outside the cwd, in the lead and in an agent.
@@ -16,7 +15,7 @@ export default {
 		const lead = rpc(t);
 		await lead.script({ agent: "lead", steps: [
 			...bash("b"),
-			{ id: "s1", tool: "Agent", args: { description: "guarded", prompt: `POLYGON ${JSON.stringify(child)}` } },
+			{ id: "s1", tool: "Agent", args: { description: "guarded", prompt: script(child) } },
 			{ id: "s2", text: "launched" },
 		] });
 		await lead.until((_, events) => taskNotifications(events).length >= 1, 30_000, "the agent's report");

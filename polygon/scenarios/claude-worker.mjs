@@ -3,7 +3,7 @@ import { writeFileSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { join } from "node:path";
 import { exec, rpc, script } from "../drive.mjs";
-import { dialogs, requests, taskNotes } from "../look.mjs";
+import { dialogs, requests, taskNotifications } from "../look.mjs";
 
 export const AGENT_ID = "$/\\ba[0-9a-f]{16}\\b/";
 export const SCHEMA = { type: "object", properties: { verdict: { type: "string", enum: ["ok", "bad"] }, note: { type: "string" } }, required: ["verdict"] };
@@ -47,8 +47,8 @@ export default {
 
 		const lead = rpc(t);
 		await lead.script({ agent: "lead", steps: workerThenResume("opus", { agent: "cw", steps: [{ id: "c1", text: "first" }, { id: "c2", on: "polygon-resume", text: "resumed" }] }, "polygon-resume") });
-		await lead.until((_, events) => taskNotes(events).length >= 2, 90_000, "the run's and the resumed run's notifications");
-		const notes = taskNotes(lead.events);
+		await lead.until((_, events) => taskNotifications(events).length >= 2, 90_000, "the run's and the resumed run's notifications");
+		const notes = taskNotifications(lead.events);
 		assert.deepEqual(notes.map((n) => n.status), ["completed", "completed"]);
 		assert.equal(notes[0].taskId, notes[1].taskId, "the resume did not notify under the same id");
 		for (const agent of ["direct", "cw"]) {

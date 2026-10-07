@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { rpc, script, sleep } from "../drive.mjs";
-import { poll, requests, sessionNotes, toolCalls } from "../look.mjs";
+import { eventually, rpc, script, sleep } from "../drive.mjs";
+import { requests, sessionNotes, toolCalls } from "../look.mjs";
 
 const MARK = "polygon-queued-mark";
 const SLOTS = 16;
@@ -28,7 +28,7 @@ export default {
 		assert.equal(requests(t).filter((r) => r.agent === "queued").length, 0, "the queued agent ran before a slot freed");
 		const queuedId = toolCalls(lead.events).filter((c) => c.name === "Agent").at(-1).details.agentId;
 		await lead.restart();
-		await poll(() => new Set(sessionNotes(t).map((n) => n.taskId)).size >= SLOTS + 1, 90_000, "every agent's notification");
+		await eventually(() => new Set(sessionNotes(t).map((n) => n.taskId)).size >= SLOTS + 1, 90_000, "every agent's notification");
 		await sleep(2_000);
 		assert.equal(sessionNotes(t).filter((n) => n.taskId === queuedId).length, 1, "the queued agent notified more than once");
 		const log = requests(t);

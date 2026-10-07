@@ -16,6 +16,7 @@ const launchMs = (events) => {
 export default {
 	name: "durable-load",
 	gate: "M1",
+	timing: true,
 	async run(t) {
 		const lead = rpc(t);
 		for (const round of [1, 2]) {

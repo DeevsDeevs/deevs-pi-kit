@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { rpc, sleep } from "../drive.mjs";
+import { rpc } from "../drive.mjs";
 import { taskNotifications } from "../look.mjs";
 import { launches, progressEvents, usageOf } from "./wf-shapes.mjs";
 
@@ -14,17 +14,16 @@ const SOURCE = [
 export default {
 	name: "wf-scale",
 	gate: "M3",
+	timing: true,
 	slow: true,
 	timeoutMs: 600_000,
 	async run(t) {
 		const lead = rpc(t);
 		await lead.send({ type: "get_state" }, 30_000);
-		let worst = 0, pinging = true;
-		const pinger = (async () => { while (pinging) { const at = Date.now(); await lead.send({ type: "get_state" }); worst = Math.max(worst, Date.now() - at); await sleep(50); } })();
+		const stalls = lead.stallMeter();
 		await lead.script({ agent: "lead", steps: [{ id: "s1", tool: "Workflow", args: { script: SOURCE } }, { id: "s2", text: "launched" }] });
 		await lead.until((_, events) => taskNotifications(events).length >= 1, 540_000, "the workflow notification");
-		pinging = false;
-		await pinger;
+		const worst = await stalls();
 		const [note] = taskNotifications(lead.events);
 		assert.equal(note.status, "completed");
 		assert.equal(JSON.parse(note.result), N);

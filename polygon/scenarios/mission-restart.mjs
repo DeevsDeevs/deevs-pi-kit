@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { rpc, sleep } from "../drive.mjs";
-import { dialogs, missionStates, notifications, poll, runs, toolCalls } from "../look.mjs";
+import { eventually, rpc, sleep } from "../drive.mjs";
+import { dialogs, missionStates, notifications, runs, toolCalls } from "../look.mjs";
 
 // kill -9 mid-turn, so no settle ran; reopening the session takes the dead owner's lock and continues unprompted.
 export default {
@@ -19,7 +19,7 @@ export default {
 			{ id: "s3", on: "Mission continue", tool: "mission_update", args: { log: "Continued after the restart.", next: "none", status: "done" } },
 			{ id: "s4", text: "closed" },
 		] });
-		await poll(() => existsSync(started), 30_000, "the lead's bash to start");
+		await eventually(() => existsSync(started), 30_000, "the lead's bash to start");
 		const [before] = missionStates(t);
 		await lead.restart();
 		writeFileSync(release, "");

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { rpc, script } from "../drive.mjs";
-import { poll, procs, taskNotes, toolCalls } from "../look.mjs";
+import { eventually, rpc, script } from "../drive.mjs";
+import { procs, taskNotifications, toolCalls } from "../look.mjs";
 
 const sleeper = (agent, marker) => script({ agent, steps: [{ id: "b1", tool: "Bash", args: { command: `touch ${marker}; sleep 300` } }, { id: "c1", text: "never" }] });
 const writer = script({ agent: "fg", steps: [{ id: "w1", tool: "Bash", args: { command: "printf fg > fg.txt && git add fg.txt && git commit -qm fg" } }, { id: "w2", text: "committed" }] });
@@ -26,7 +26,7 @@ export default {
 			{ id: "s7", on: "polygon-send", tool: "SendMessage", args: { to: "user-stop", message: "go on" } },
 			{ id: "s8", text: "sent" },
 		] });
-		await poll(() => markers.every(existsSync), 90_000, "both workers' commands to start");
+		await eventually(() => markers.every(existsSync), 90_000, "both workers' commands to start");
 		const [fg] = toolCalls(lead.events);
 		assert.equal(fg.isError, false, fg.text);
 		const branch = /worktreeBranch: (\S+)/.exec(fg.text)?.[1];
@@ -35,11 +35,11 @@ export default {
 		assert.equal(t.git("status", "--porcelain"), "", "the foreground worker wrote outside its worktree");
 		await lead.prompt("polygon-stop");
 		await lead.prompt("/agents stop user-stop");
-		await lead.until((_, events) => taskNotes(events).length >= 2, 30_000, "both stopped workers' reports");
-		assert.deepEqual(taskNotes(lead.events).map((n) => n.status), ["killed", "killed"]);
+		await lead.until((_, events) => taskNotifications(events).length >= 2, 30_000, "both stopped workers' reports");
+		assert.deepEqual(taskNotifications(lead.events).map((n) => n.status), ["killed", "killed"]);
 		await lead.prompt("polygon-send");
 		await lead.until((_, events) => toolCalls(events).some((c) => c.name === "SendMessage"), 30_000, "the SendMessage result");
 		assert.deepEqual(toolCalls(lead.events).filter((c) => c.name !== "Agent").map((c) => [c.name, c.isError]), [["TaskStop", false], ["SendMessage", true]]);
-		await poll(() => !procs(t).some((p) => p.argv.includes("sleep")), 10_000, "the stopped workers' commands to exit");
+		await eventually(() => !procs(t).some((p) => p.argv.includes("sleep")), 10_000, "the stopped workers' commands to exit");
 	},
 };

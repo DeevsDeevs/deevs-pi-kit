@@ -2,13 +2,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { rpc, script } from "../drive.mjs";
-import { requests, taskNotifications, toolCalls } from "../look.mjs";
+import { jsonl, requests, taskNotifications, toolCalls } from "../look.mjs";
 
 /** A JS string literal holding an agent's puppet script; its default answer is `[polygon:c] <agent> out`. */
 export const say = (agent, steps = [{ id: "c", text: `${agent} out` }]) => JSON.stringify(script({ agent, steps }));
 export const out = (agent) => `[polygon:c] ${agent} out`;
 export const launches = (events) => toolCalls(events).filter((c) => c.name === "Workflow" && !c.isError).map((c) => c.details);
-const jsonl = (file) => readFileSync(file, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
 export const journal = (run) => jsonl(join(run.transcriptDir, "journal.jsonl"));
 export const progressEvents = (run) => jsonl(join(run.transcriptDir, "progress.jsonl"));
 export const usageOf = (note) => Object.fromEntries([...(note.usage ?? "").matchAll(/<(\w+)>(\d+)<\/\1>/g)].map((m) => [m[1], Number(m[2])]));

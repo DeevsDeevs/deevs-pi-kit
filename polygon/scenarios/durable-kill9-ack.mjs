@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { eventually, rpc, script, sleep } from "../drive.mjs";
-import { sessionNotes, taskNotes } from "../look.mjs";
+import { agentStep, eventually, rpc, sleep } from "../drive.mjs";
+import { sessionNotes, taskNotifications } from "../look.mjs";
 
-const agent = (id, name, on) => ({ id, on, tool: "Agent", args: { description: `ack probe ${name}`, prompt: script({ agent: name, steps: [{ id: "c1", text: "done" }] }), run_in_background: true } });
+const agent = (id, name, on) => agentStep(id, { agent: name, steps: [{ id: "c1", text: "done" }] }, { run_in_background: true }, on);
 
 // kill -9 as Pi emits the notification (before its entry is written), then once the entry is on disk.
 export default {
@@ -16,7 +16,7 @@ export default {
 			await sleep(2_000);
 		};
 		await lead.script({ agent: "lead", steps: [agent("s1", "before"), agent("s2", "after", "polygon-round-2")] });
-		await lead.until((_, events) => taskNotes(events).length >= 1, 30_000, "the first notification event");
+		await lead.until((_, events) => taskNotifications(events).length >= 1, 30_000, "the first notification event");
 		await reopen(1);
 		await lead.prompt("polygon-round-2");
 		await eventually(() => sessionNotes(t).length >= 2, 30_000, "the second notification's session entry");
