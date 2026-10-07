@@ -78,18 +78,11 @@ export function participantStatus(
 }
 
 /**
- * Mail is read by `messaging.read`, never claimed, so unread depth is the absence of a read time.
- * A reply is owed while mail is unread or the latest read is newer than the participant's latest send.
+ * Mail is read by `messaging.read`, never claimed, so unread depth is the absence of a read time. A reply is owed only
+ * while mail is unread: a Pi marks mail read at its own send or once its turn ends, a native once it sends or took the
+ * turn, and Herdr reports a native mid-turn as working; mail read and answered in text owes nothing.
  */
 function mailQueue(store: HostedStateStore, participantKey: string): Pick<HostedParticipantStatus, "unreadMail" | "awaitingReply"> {
-	let unreadMail = 0;
-	let lastRead = -1;
-	let lastSent = -1;
-	for (const event of Object.values(store.read().events)) {
-		if (event.source.id === participantKey) lastSent = Math.max(lastSent, event.createdAt);
-		if (event.recipientParticipantKey !== participantKey) continue;
-		if (event.readAt === undefined) unreadMail++;
-		else lastRead = Math.max(lastRead, event.readAt);
-	}
-	return { unreadMail, awaitingReply: unreadMail > 0 || lastRead > lastSent };
+	const unreadMail = Object.values(store.read().events).filter((event) => event.recipientParticipantKey === participantKey && event.readAt === undefined).length;
+	return { unreadMail, awaitingReply: unreadMail > 0 };
 }

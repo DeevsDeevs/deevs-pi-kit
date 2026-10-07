@@ -178,7 +178,7 @@ describe("hosted participant coordinator", () => {
 		await expect(test.participants.stopConfirmed(main, fableParticipant.participantKey, vacant.generation)).rejects.toMatchObject({ code: "conflict" });
 	});
 
-	it("counts a reply as owed while mail is unread or was read after the participant's last send", async () => {
+	it("counts a reply as owed only while mail is unread, so mail read and answered in text never holds a stand-down", async () => {
 		const test = setup();
 		const { main, fable, mainParticipant, fableParticipant } = await acquirePair(test);
 		const owed = () => test.participants.get(main, fableParticipant.participantKey).awaitingReply;
@@ -191,7 +191,7 @@ describe("hosted participant coordinator", () => {
 		test.store.apply({ type: "messaging.issue", grant });
 		test.setNow(2_000);
 		test.store.apply({ type: "messaging.read", namespaceId, eventIds: [request.eventId], at: 2_000 });
-		expect(test.participants.get(main, fableParticipant.participantKey)).toMatchObject({ unreadMail: 0, awaitingReply: true });
+		expect(test.participants.get(main, fableParticipant.participantKey)).toMatchObject({ unreadMail: 0, awaitingReply: false });
 		test.setNow(3_000);
 		send(test, fable, fableParticipant.participantKey, fableParticipant.generation, mainParticipant.participantKey, "reply_1", "Done.");
 		expect(owed()).toBe(false);
