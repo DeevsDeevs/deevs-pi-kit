@@ -307,6 +307,7 @@ export default function askUserExtension(pi: ExtensionAPI): void {
 			"Anything short of irreversible or destructive: state the default you assume and continue. An answer typed in chat counts; after a cancelled dialog, do not take the step.",
 		],
 		parameters: AskUserSchema,
+		exposure: "model-only",
 		executionMode: "sequential",
 		async execute(_toolCallId, params: AskUserInput, signal, onUpdate, ctx): Promise<AgentToolResult<AskUserDetails>> {
 			const { questions } = params;

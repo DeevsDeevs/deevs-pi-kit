@@ -159,6 +159,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		description: WORKFLOW_DESCRIPTION,
 		promptSnippet: WORKFLOW_SNIPPET,
 		parameters: WorkflowSchema,
+		exposure: "model-only",
 		async execute(toolCallId, params: WorkflowParams, _signal, _onUpdate, ctx) {
 			const { source, scriptPath } = await workflowSource(params, ctx);
 			let meta;
