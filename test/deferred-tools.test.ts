@@ -3,6 +3,7 @@ import { expect, it } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import askUserExtension from "../extensions/ask-user/index.ts";
 import chainsExtension from "../extensions/chains/index.ts";
+import runtimeExtension from "../extensions/runtime/index.ts";
 import subagentsExtension from "../extensions/subagents/index.ts";
 import todosExtension from "../extensions/todos/index.ts";
 
@@ -36,6 +37,7 @@ const FAMILIES = [
 	{ extension: chainsExtension, tools: ["chain"], skills: ["chain-system", "wiki", "grill-me"] },
 	{ extension: askUserExtension, tools: ["ask_user"], skills: ["ask-user"] },
 	{ extension: todosExtension, tools: ["todo_list"], skills: ["todos"] },
+	{ extension: runtimeExtension, tools: ["collaborator_start", "collaborator_workspace"], skills: ["collaborators"] },
 ];
 
 it.each(FAMILIES)("registers $tools inactive and loads them when any of $skills is read", ({ extension, tools, skills }) => {

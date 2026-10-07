@@ -1,6 +1,6 @@
 ---
 name: collaborators
-description: "Start, message and stop persistent Pi, Claude Code or Codex collaborators in their own Herdr tabs. Use for teammate agents or multi-turn coordination between agents."
+description: "Loads collaborator_start and collaborator_workspace. Start, message and stop persistent Pi, Claude Code or Codex peers in Herdr tabs: teammates, multi-turn coordination."
 ---
 
 # Collaborators
