@@ -38,6 +38,7 @@ const SHARED_RULES = [
 export const WORKING_RULES = [
 	PRECEDENCE,
 	"Finish the task and verify it within your turn. End the turn only when it is done, when you need the user, or to wait for agents, workflows and timed jobs you started: each reports back and starts your next turn. When the user asked for action, a plan or an offer to continue is not an ending.",
+	"Codemode is for batches and filtering, not a wrapper for one call or for output you must read whole. A script cannot wait: agents and jobs it starts report later by notification.",
 	"When the task names an output file or binary at a path, write a working version at that path first, then improve it.",
 	...SHARED_RULES,
 	"Your final message says what changed, how you verified it, and what remains.",
