@@ -2,6 +2,7 @@ import type { AgentToolResult, ExtensionAPI, ExtensionContext, Theme, ToolRender
 import { Type } from "@earendil-works/pi-ai";
 import { Container, Editor, Key, matchesKey, SelectList, Spacer, Text, truncateToWidth, type Component, type Focusable, type SelectItem, type TUI } from "@earendil-works/pi-tui";
 import { framePanelLines } from "../shared/panel.ts";
+import { interactiveOnly } from "../shared/surface.ts";
 
 type AskOptionInput = string | { title: string; description?: string };
 
@@ -346,4 +347,5 @@ export default function askUserExtension(pi: ExtensionAPI): void {
 			return new Text(lines.join("\n"), 0, 0);
 		},
 	});
+	interactiveOnly(pi, ["ask_user"]);
 }
