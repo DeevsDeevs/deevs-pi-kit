@@ -10,7 +10,7 @@ import { procs } from "./look.mjs";
 export const PI_LOGINS = ["openai", "openai-codex", "anthropic"];
 
 /** Kit tools a lead gets once it reads their skill; a scenario starts with them unless it sets `deferred: true`. */
-export const DEFERRED_TOOLS = ["job_start", "Monitor", "chain"];
+export const DEFERRED_TOOLS = ["job_start", "Monitor", "chain", "ask_user"];
 
 /** `logins` (live runs only) is a staged copy of the polygon's logins, laid out like a HOME, refresh tokens already invalid. */
 export async function sandbox({ run, name, kit, results, logins, bodies, deferred }) {

@@ -110,6 +110,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		label: "Agent",
 		description: AGENT_DESCRIPTION + agentTypesList(),
 		promptSnippet: "Delegate a self-contained task to a background agent.",
+		promptGuidelines: ["Anything short of irreversible or destructive: state the default you assume and continue."],
 		parameters: AgentSchema,
 		async execute(toolCallId, params: AgentParams, signal, _onUpdate, ctx) {
 			const type = findAgentType(params.subagent_type);

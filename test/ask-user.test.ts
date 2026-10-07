@@ -4,7 +4,7 @@ import askUserExtension from "../extensions/ask-user/index.ts";
 
 function askUserTool(): { execute: (...args: unknown[]) => Promise<{ details: unknown }> } {
 	let tool: ReturnType<typeof askUserTool> | undefined;
-	askUserExtension({ registerTool(value: typeof tool) { tool = value; } } as unknown as ExtensionAPI);
+	askUserExtension({ on() {}, registerTool(value: typeof tool) { tool = value; } } as unknown as ExtensionAPI);
 	return tool!;
 }
 

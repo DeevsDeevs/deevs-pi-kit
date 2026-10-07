@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import askUserExtension from "../extensions/ask-user/index.ts";
 import chainsExtension from "../extensions/chains/index.ts";
 import subagentsExtension from "../extensions/subagents/index.ts";
 
@@ -32,6 +33,7 @@ const skillFile = (skill: string) => fileURLToPath(new URL(`../skills/${skill}/S
 const FAMILIES = [
 	{ extension: subagentsExtension, tools: ["job_start", "Monitor"], skills: ["background-tasks", "diagnose", "validation-review", "datadog-pup"] },
 	{ extension: chainsExtension, tools: ["chain"], skills: ["chain-system", "wiki", "grill-me"] },
+	{ extension: askUserExtension, tools: ["ask_user"], skills: ["ask-user"] },
 ];
 
 it.each(FAMILIES)("registers $tools inactive and loads them when any of $skills is read", ({ extension, tools, skills }) => {
@@ -41,4 +43,12 @@ it.each(FAMILIES)("registers $tools inactive and loads them when any of $skills 
 		pi.fire("tool_call", { toolName: "read", input: { path: skillFile(skill) } });
 		expect(pi.active()).toEqual(["read", "bash", ...tools]);
 	}
+});
+
+it("keeps the autonomy rule on every lead request once ask_user is deferred", () => {
+	const guidelines: string[] = [];
+	const noop = () => {};
+	// SAFETY: registration reads only these members.
+	subagentsExtension({ on: noop, registerCommand: noop, registerTool: (tool: { name: string; promptGuidelines?: string[] }) => { if (tool.name === "Agent") guidelines.push(...tool.promptGuidelines ?? []); } } as unknown as ExtensionAPI);
+	expect(guidelines).toEqual(["Anything short of irreversible or destructive: state the default you assume and continue."]);
 });

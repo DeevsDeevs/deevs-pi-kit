@@ -2,6 +2,7 @@ import type { AgentToolResult, ExtensionAPI, ExtensionContext, Theme, ToolRender
 import { Type } from "@earendil-works/pi-ai";
 import { Container, Editor, Key, matchesKey, SelectList, Spacer, Text, truncateToWidth, type Component, type Focusable, type SelectItem, type TUI } from "@earendil-works/pi-tui";
 import { framePanelLines } from "../shared/panel.ts";
+import { activateWithSkill } from "../shared/surface.ts";
 
 type AskOptionInput = string | { title: string; description?: string };
 
@@ -296,16 +297,16 @@ function renderAnswer(answer: AskAnswer, theme: Theme): string {
 }
 
 export default function askUserExtension(pi: ExtensionAPI): void {
+	activateWithSkill(pi, ["ask_user"], ["ask-user"]);
 	pi.registerTool({
 		name: "ask_user",
 		label: "Ask User",
 		description:
 			"Ask the user 1-5 focused questions about an irreversible or destructive choice in an interactive UI. Gather repo/docs/tool evidence first; do not ask questions you can answer yourself.",
 		promptSnippet: "Ask the user before an irreversible or destructive step.",
-		promptGuidelines: [
-			"Anything short of irreversible or destructive: state the default you assume and continue. An answer typed in chat counts; after a cancelled dialog, do not take the step.",
-		],
+		promptGuidelines: ["An answer typed in chat counts; after a cancelled dialog, do not take the step."],
 		parameters: AskUserSchema,
+		defaultActive: false,
 		executionMode: "sequential",
 		async execute(_toolCallId, params: AskUserInput, signal, onUpdate, ctx): Promise<AgentToolResult<AskUserDetails>> {
 			const { questions } = params;
