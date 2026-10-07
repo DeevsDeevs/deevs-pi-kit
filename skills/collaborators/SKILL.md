@@ -17,7 +17,7 @@ Collaborators are persistent peers in real Herdr tabs (Pi, Claude Code or Codex)
 
 ## State
 
-- `ListAgents` shows each collaborator as running or stood down. A tab blocked on a human prompt is reported to you once per blockage; answer it or stand the collaborator down.
+- `ListAgents` shows each collaborator as `running` while it holds its tab, busy or idle, and `completed` once stood down; a SendMessage resumes a stood-down one. A tab blocked on a human prompt is reported to you once per blockage; answer it or stand the collaborator down.
 - Stand-down lets a pending reply land, then closes the tab and keeps the transcript.
 
 ## Safety
