@@ -11,6 +11,10 @@ export const RESULT = ".bench/result.json";
 const SUFFIX = `
 
 Rules for this run: no human is available, so never ask questions; decide yourself and finish. Do the work through subagents as the task says (your Agent or Workflow tools; I opt in to Workflow), and wait for every subagent you started before writing the result. Write the final result as one JSON document matching the schema to ${RESULT} (create the directory) with your file-writing tool, then reply DONE.`;
+// The unprompted arm (t1u, t2u, t4u): the same work with every sentence that asks for subagents removed, so whether the lead fans out is its own call.
+const UNPROMPTED_SUFFIX = `
+
+Rules for this run: no human is available, so never ask questions; decide yourself and finish. Wait for any background work you started before writing the result. Write the final result as one JSON document matching the schema to ${RESULT} (create the directory) with your file-writing tool, then reply DONE.`;
 
 const tsFiles = (dir) => readdirSync(dir, { recursive: true }).filter((f) => f.endsWith(".ts"));
 const isInt = (n) => Number.isInteger(n) && n >= 0;
@@ -28,9 +32,11 @@ function summarize(repo, out) {
 	return { success: ok, expected: MODULES.length, present: present.length, valid: valid.length, rows: rows.length, ts_files_exact: exact.length };
 }
 
-const t2Prompt = `Summarize each of the ${MODULES.length} extension modules of this repository, one directory each under extensions/ (${MODULES.join(", ")}). Use one subagent per module, all launched in parallel; each reads only its own module.
+const T2_SCHEMA = `Result schema: {"modules": [{"module": "<directory name>", "purpose": "<one sentence>", "ts_files": <integer: number of .ts files under extensions/<module>, recursively>, "tools": ["<name of every LLM tool the module registers with registerTool>"]}]} with exactly one entry per module.`;
+const t2Task = `Summarize each of the ${MODULES.length} extension modules of this repository, one directory each under extensions/ (${MODULES.join(", ")}).`;
+const t2Prompt = `${t2Task} Use one subagent per module, all launched in parallel; each reads only its own module.\n\n${T2_SCHEMA}`;
 
-Result schema: {"modules": [{"module": "<directory name>", "purpose": "<one sentence>", "ts_files": <integer: number of .ts files under extensions/<module>, recursively>, "tools": ["<name of every LLM tool the module registers with registerTool>"]}]} with exactly one entry per module.`;
+const T1_SCHEMA = `Result schema: {"findings": [{"file": "<repo-relative path>", "line": <integer>, "severity": "high" | "medium" | "low", "title": "<one line>"}]} with at most 10 findings, most severe first; an empty list if nothing survives verification.`;
 
 const COLLABORATOR_FIXED = "/^[A-Za-z0-9][A-Za-z0-9._/*:[\\]-]{0,199}$/";
 const COLLABORATOR_BUG = "/^[A-Za-z0-9][A-Za-z0-9._/*:-]{0,199}$/";
@@ -59,9 +65,7 @@ export const TASKS = {
 		// e020683 fixed it: messaging.inbox marked a 50-message page read before the response cap could drop it.
 		commit: "e020683^",
 		timeoutMin: 30,
-		prompt: `Run a multi-agent code review of extensions/runtime/service/ (the service layer of the Runtime daemon, TypeScript). Split the directory into at least 3 slices, each reviewed by its own reviewer subagent in parallel, then have a separate subagent verify each candidate finding before you keep it. Report only correctness bugs (lost or corrupted data, wrong results, crashes, broken invariants), not style.
-
-Result schema: {"findings": [{"file": "<repo-relative path>", "line": <integer>, "severity": "high" | "medium" | "low", "title": "<one line>"}]} with at most 10 findings, most severe first; an empty list if nothing survives verification.`,
+		prompt: `Run a multi-agent code review of extensions/runtime/service/ (the service layer of the Runtime daemon, TypeScript). Split the directory into at least 3 slices, each reviewed by its own reviewer subagent in parallel, then have a separate subagent verify each candidate finding before you keep it. Report only correctness bugs (lost or corrupted data, wrong results, crashes, broken invariants), not style.\n\n${T1_SCHEMA}`,
 		// The bug spans two sites: inbox() marks the page read (the fix's hunk), callMessaging() then swaps the oversized response for an error.
 		sites: [
 			{ file: "extensions/runtime/service/messaging.ts", from: 185, to: 225 },
@@ -124,16 +128,21 @@ Result schema: {"review_rounds": <integer: reviews performed>, "approved": <bool
 	},
 	t5: { title: "fan-out summary survives a lead restart", commit: PIN, timeoutMin: 30, prompt: t2Prompt, check: summarize, offlineCheck: "pristine", restart: { afterFirstAgentMs: 12_000 } },
 };
+TASKS.t1u = { ...TASKS.t1, title: "t1 review, subagents not requested", unprompted: true, prompt: `Review extensions/runtime/service/ (the service layer of the Runtime daemon, TypeScript) for correctness bugs (lost or corrupted data, wrong results, crashes, broken invariants), not style. Verify each candidate finding before you keep it.\n\n${T1_SCHEMA}` };
+TASKS.t2u = { ...TASKS.t2, title: "t2 module summary, subagents not requested", unprompted: true, prompt: `${t2Task}\n\n${T2_SCHEMA}` };
+TASKS.t4u = { ...TASKS.t4, title: "t4 per-test-file count, subagents not requested", unprompted: true };
 
 export function promptFor(id, repo) {
 	const task = TASKS[id];
-	if (id !== "t4") return task.prompt + SUFFIX;
+	const suffix = task.unprompted ? UNPROMPTED_SUFFIX : SUFFIX;
+	if (!task.files) return task.prompt + suffix;
 	const files = task.files(repo);
-	return `For each of the ${files.length} test files below, launch one subagent (exactly ${files.length} subagents, as many in parallel as your tools allow) that reads only that file and reports how many test cases it declares (calls to it() or test(), including .skip/.only/.todo variants) and which repo-relative source module it mainly tests.
+	const each = task.unprompted ? "report" : `launch one subagent (exactly ${files.length} subagents, as many in parallel as your tools allow) that reads only that file and reports`;
+	return `For each of the ${files.length} test files below, ${each} how many test cases it declares (calls to it() or test(), including .skip/.only/.todo variants) and which repo-relative source module it mainly tests.
 
 ${files.join("\n")}
 
-Result schema: {"files": [{"file": "<path as listed>", "tests": <integer>, "subject": "<repo-relative path of the main module under test>"}]} with exactly one entry per listed file.${SUFFIX}`;
+Result schema: {"files": [{"file": "<path as listed>", "tests": <integer>, "subject": "<repo-relative path of the main module under test>"}]} with exactly one entry per listed file.${suffix}`;
 }
 
 export const RESUME_PROMPT = "The harness running you was killed and restarted in the middle of this task. Resume the same task from where it stopped, reusing finished work where your tools allow, and complete it exactly as originally specified.";
