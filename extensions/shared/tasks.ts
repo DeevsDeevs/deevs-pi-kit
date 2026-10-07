@@ -370,7 +370,7 @@ export function agentLaunchedResult(launch: { agentId: string; outputFile: strin
 	return [
 		"Async agent launched successfully.",
 		`agentId: ${launch.agentId} (internal ID; use SendMessage with to: '${launch.agentId}' to continue this agent)`,
-		"It works in the background and you will be notified when it finishes. Until then you know nothing about its result: do not guess it, wait for it, or redo its work. Carry on with other work or answer the user.",
+		"It works in the background and you will be notified when it finishes. Until then you know nothing about its result: do not guess it, poll or sleep for it, or redo its work. Keep working, or end your turn: Pi stays open and the <task-notification> starts your next turn.",
 		`output_file: ${launch.outputFile}`,
 		"Do not read this file while the agent runs; it is written when the agent finishes, and the notification carries the result.",
 		...(launch.model ? [`Model: ${launch.model}`] : []),
@@ -407,16 +407,20 @@ export function taskNotRunningResult(id: string, status: TaskStatus): string {
 
 export const taskNotFound = (id: string): string => `No task found with ID: ${id}`;
 
-export function jobLaunchedResult(id: string, outputFile: string, timeout?: number): string {
+/** `headless`: print or json mode, where Pi exits when the turn ends and waits only for timed jobs. */
+export function jobLaunchedResult(id: string, outputFile: string, timeout?: number, headless = false): string {
 	return [
 		`Command running in background with ID: ${id}. Output is being written to: ${outputFile}`,
-		"You will be notified when it exits. Do not poll, sleep or wait for it; keep working, and read the output file once the notification arrives.",
+		headless && !timeout
+			? "Non-interactive run: Pi exits when your turn ends and waits only for agents, workflows and jobs started with a timeout. This job has none: start long work with a timeout, or keep working until it exits."
+			: "You will be notified when it exits. Do not poll, sleep or wait for it; keep working, and read the output file once the notification arrives.",
 		...(timeout ? [`Timeout: ${timeout} ms`] : []),
 	].join("\n");
 }
 
-export function monitorStartedResult(id: string, baseline: string | undefined, until: string): string {
-	return `Monitor started (task ${id}${baseline ? `; ${baseline}` : ""}). It runs until ${until}. You will be notified on each event. Keep working; do not poll or sleep. An event is not the user's reply.`;
+export function monitorStartedResult(id: string, baseline: string | undefined, until: string, headless = false): string {
+	const text = `Monitor started (task ${id}${baseline ? `; ${baseline}` : ""}). It runs until ${until}. You will be notified on each event. Keep working; do not poll or sleep. An event is not the user's reply.`;
+	return headless ? `${text}\nNon-interactive run: Pi exits when your turn ends and does not wait for monitor events.` : text;
 }
 
 export const monitorSummary = (description: string): string => `Monitor event: "${description}"`;
@@ -424,7 +428,10 @@ export const MONITOR_FLOODED = "[Monitor stopped — too much output. Arm it aga
 export const monitorExpired = (seconds: number, events: number): string => `[Monitor expired after ${seconds}s with ${events} events delivered. Re-arm it if you still need the watch.]`;
 export const monitorSuppressed = (dropped: number, event: string): string => (dropped ? `[${dropped} events suppressed — output rate too high]\n${event}` : event);
 
-export const unknownAgentResult = (to: string, known: string[]): string => `No agent named '${to}'. Known agents: ${known.join(", ") || "none"}`;
+export function unknownAgentResult(to: string, known: string[], workflows: string[] = []): string {
+	const text = `No agent named '${to}'. Known agents: ${known.join(", ") || "none"}`;
+	return workflows.length ? `${text}\nWorkflows (${workflows.join(", ")}) and the agents inside them take no messages: wait for the workflow's <task-notification>, or TaskStop it, edit its script and call Workflow({scriptPath, resumeFromRunId}) to change course.` : text;
+}
 
 /** SendMessage's result; `refused` is its error. */
 export function sendMessageResult(to: string, outcome: "steered" | "queued" | "resumed" | "refused"): string {
@@ -441,7 +448,7 @@ export function workflowLaunchedResult(launch: { taskId: string; summary: string
 		`Script file: ${launch.scriptPath} (edit it, then call Workflow with this scriptPath to iterate without resending the script)`,
 		`Run ID: ${launch.runId}`,
 		`To resume after editing the script: Workflow({scriptPath: "${launch.scriptPath}", resumeFromRunId: "${launch.runId}"}) — the longest unchanged prefix of agent() calls replays from cache; read journal.jsonl before trusting a cached result.`,
-		"You will be notified when it completes. Use /agents to watch live progress.",
+		"You will be notified when it completes. Until then you know nothing about its result: do not poll, sleep, watch its files or guess it. Keep working, or end your turn: Pi stays open and the <task-notification> starts your next turn. Use /agents to watch live progress.",
 	].join("\n");
 }
 

@@ -44,7 +44,7 @@ type AgentParams = Static<typeof AgentSchema>;
 const AGENT_DESCRIPTION = [
 	"Launch an agent that does one task by itself, with its own context and tools, and reports back once. For a file or symbol you already know, use read, grep or find yourself; agents are for open questions across the code and for work that matches a type.",
 	"",
-	"- It runs in the background: a <task-notification> brings its report. Until then you know nothing of the result: do not poll, sleep, read its output file, guess the result or redo the work; keep working or answer the user.",
+	"- It runs in the background: a <task-notification> brings its report. Until then you know nothing of the result: do not poll, sleep, read its output file, guess the result or redo the work; keep working, or end your turn: Pi stays open and the notification starts your next turn.",
 	"- Launch independent agents in one message so they run at the same time.",
 	"- The user never sees the report: relay what matters. When the agent changed code, look at the change before calling the work done.",
 	"- SendMessage to its agentId or name continues it with its context; a new Agent call starts from nothing.",
@@ -88,6 +88,7 @@ const MONITOR_DESCRIPTION = [
 	"Watch something in the background and get a <task-notification> per event while you keep working. An event is not the user's reply.",
 	"Sources, exactly one: command (each stdout line is an event, lines within 200 ms arrive together; exit ends the watch with its code; stderr only reaches the output file, so add 2>&1 when failures matter), path (a folder's added, changed and removed files, or a file's new lines), url (a status or body change), cron with prompt (a local-time timer that delivers the prompt when you are idle).",
 	"For \"tell me when X\", use a command that exits once X holds (`until test -e out/done; do sleep 1; done`) or once: true. Scripts must flush each line (grep --line-buffered), survive a failed probe (`curl ... || true`), and match failures as well as success: silence is not success. Floods are rate limited, then stopped.",
+	"An Agent or Workflow already notifies you when it ends: never Monitor its files to wait for it.",
 	"Watches survive /reload and pause while Pi is closed. On reopen a path or url watch reports what changed meanwhile as one caught_up event, an overdue cron fires once, and a command runs again from the top.",
 ].join("\n");
 
@@ -224,7 +225,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			if (blocked) throw new Error(blocked);
 			const id = newBackgroundTaskId();
 			const outputFile = await startJob(await ensureEngine(ctx), { id, command: params.command, description: params.description, cwd, toolUseId: toolCallId, timeout: params.timeout });
-			return { content: [{ type: "text" as const, text: jobLaunchedResult(id, outputFile, params.timeout) }], details: { taskId: id, outputFile } };
+			return { content: [{ type: "text" as const, text: jobLaunchedResult(id, outputFile, params.timeout, headless(ctx)) }], details: { taskId: id, outputFile } };
 		},
 	});
 
@@ -252,7 +253,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				: params.once ? "its first event or TaskStop"
 				: source === "command" ? "the script exits or you stop it with TaskStop"
 				: "you stop it with TaskStop";
-			return { content: [{ type: "text" as const, text: monitorStartedResult(id, baseline, until) }], details: { taskId: id, outputFile, baseline } };
+			return { content: [{ type: "text" as const, text: monitorStartedResult(id, baseline, until, headless(ctx)) }], details: { taskId: id, outputFile, baseline } };
 		},
 	});
 
@@ -279,7 +280,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			}
 			if (!entry) {
 				const known = tasks.list(session).filter((task) => task.kind === "agent" || task.send).map((task) => task.name ?? task.id);
-				throw new Error(unknownAgentResult(params.to, known));
+				throw new Error(unknownAgentResult(params.to, known, tasks.list(session).filter((task) => task.kind === "workflow").map((task) => task.id)));
 			}
 			const outcome = await send(await ensureEngine(ctx), entry.id, params.message, toolCallId);
 			if (outcome === "refused") throw new Error(sendMessageResult(params.to, outcome));
@@ -294,7 +295,9 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		parameters: Type.Object({}),
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 			const entries = recent(tasks.list(ctx.sessionManager.getSessionId()));
-			return { content: [{ type: "text" as const, text: rosterLines(entries).join("\n") }], details: { count: entries.length } };
+			const lines = rosterLines(entries);
+			if (entries.some((entry) => entry.status === "running")) lines.push("Running tasks notify you when they end: to wait, end your turn instead of polling.");
+			return { content: [{ type: "text" as const, text: lines.join("\n") }], details: { count: entries.length } };
 		},
 	});
 
@@ -436,6 +439,8 @@ function limitsText(limits: Limits): string | undefined {
 	const set = [limits.maxTurns && `maxTurns ${limits.maxTurns}`, limits.maxTokens && `maxTokens ${limits.maxTokens}`, limits.timeout && `timeout ${limits.timeout} ms`].filter(Boolean);
 	return set.length ? set.join(", ") : undefined;
 }
+
+const headless = (ctx: ExtensionContext): boolean => ctx.mode === "print" || ctx.mode === "json";
 
 function rosterLines(entries: RosterEntry[]): string[] {
 	return [
