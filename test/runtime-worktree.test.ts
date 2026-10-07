@@ -76,16 +76,43 @@ describe("Runtime collaborator worktrees", () => {
 		expect(test.store.read().targets[writer.targetKey]).toMatchObject({ kind: "pi", projectRoot: test.project, worktreePath: worktree.path });
 		const held = test.participants.acquire(writer, "review", "writer").participant;
 		expect(test.store.read().participants[held.participantKey]?.worktreePath).toBe(worktree.path);
-		expect(await test.worktrees.list(main)).toEqual([{ ...worktree, participantState: "held", recorded: true }]);
+		expect(await test.worktrees.list(main)).toEqual([{ ...worktree, participantState: "held", recorded: true, uncommitted: 0, ahead: 0 }]);
 
-		await expect(test.worktrees.remove(main, { ...authority, discardConfirmed: true })).rejects.toThrow("Stop the collaborator");
+		await expect(test.worktrees.remove(main, { ...authority, discard: false })).rejects.toThrow("Stop the collaborator");
 		test.participants.standDownConfirmed(writer, held.participantKey, held.generation);
-		expect(Value.Check(WorktreeRemoveParams, { targetKey: main.targetKey, ...authority, discardConfirmed: true })).toBe(true);
-		expect(Value.Check(WorktreeRemoveParams, { targetKey: main.targetKey, ...authority, discardConfirmed: false })).toBe(false);
-		expect(await test.worktrees.remove(main, { ...authority, discardConfirmed: true })).toEqual({ removed: true });
+		expect(Value.Check(WorktreeRemoveParams, { targetKey: main.targetKey, ...authority, discard: false })).toBe(true);
+		expect(Value.Check(WorktreeRemoveParams, { targetKey: main.targetKey, ...authority })).toBe(false);
+		expect(await test.worktrees.remove(main, { ...authority, discard: false })).toEqual({ removed: true });
 		expect(existsSync(worktree.path)).toBe(false);
 		expect(git(test.project, ["branch", "--list", "runtime/collab/review/writer"])).toBe("");
 		expect(test.store.read().participants[held.participantKey]?.worktreePath).toBeUndefined();
+		expect(await test.worktrees.list(main)).toEqual([]);
+	});
+
+	it("refuses to clean up uncommitted or unmerged work unless told to discard it, and lists both", async () => {
+		const test = setup();
+		const main = await test.registrations.register(test.input);
+		const caller = test.participants.acquire(main, "review", "main").participant;
+		const authority = { callerParticipantKey: caller.participantKey, expectedCallerGeneration: caller.generation, protocol: "review" };
+		const state = async () => (await test.worktrees.list(main)).map(({ participantId, uncommitted, ahead }) => ({ participantId, uncommitted, ahead }));
+		const writer = await test.worktrees.ensure(main, { ...authority, participantId: "writer" });
+		const scrap = await test.worktrees.ensure(main, { ...authority, participantId: "scrap" });
+		writeFileSync(join(writer.path, "app.txt"), "changed\n");
+		writeFileSync(join(writer.path, "new.txt"), "untracked\n");
+		writeFileSync(join(scrap.path, "scrap.txt"), "scrap\n");
+
+		expect(await state()).toEqual([{ participantId: "scrap", uncommitted: 1, ahead: 0 }, { participantId: "writer", uncommitted: 2, ahead: 0 }]);
+		await expect(test.worktrees.remove(main, { ...authority, participantId: "writer", discard: false })).rejects.toMatchObject({ code: "conflict", message: expect.stringMatching(/2 uncommitted path\(s\): app\.txt, new\.txt\b.*discard: true/) });
+		git(writer.path, ["add", "-A"]);
+		git(writer.path, ["commit", "-m", "writer"]);
+		expect(await state()).toEqual([{ participantId: "scrap", uncommitted: 1, ahead: 0 }, { participantId: "writer", uncommitted: 0, ahead: 1 }]);
+		await expect(test.worktrees.remove(main, { ...authority, participantId: "writer", discard: false })).rejects.toThrow("1 commit(s) on runtime/collab/review/writer that HEAD of");
+		expect(existsSync(join(writer.path, "new.txt"))).toBe(true);
+
+		git(test.project, ["merge", "--ff-only", "runtime/collab/review/writer"]);
+		expect(await test.worktrees.remove(main, { ...authority, participantId: "writer", discard: false })).toEqual({ removed: true });
+		expect(await test.worktrees.remove(main, { ...authority, participantId: "scrap", discard: true })).toEqual({ removed: true });
+		expect(existsSync(scrap.path)).toBe(false);
 		expect(await test.worktrees.list(main)).toEqual([]);
 	});
 
@@ -108,7 +135,7 @@ describe("Runtime collaborator worktrees", () => {
 
 		expect(build.path).not.toBe(review.path);
 		expect(build.branchRef).toBe("refs/heads/runtime/collab/build/writer");
-		const removal = { ...authority, protocol: "build", participantId: "writer", discardConfirmed: true as const };
+		const removal = { ...authority, protocol: "build", participantId: "writer", discard: false };
 		expect(await test.worktrees.remove(main, removal)).toEqual({ removed: true });
 		expect(existsSync(build.path)).toBe(false);
 		expect(existsSync(review.path)).toBe(true);
@@ -183,9 +210,9 @@ describe("Runtime collaborator worktrees", () => {
 		test.participants.standDownConfirmed(writer, held.participantKey, held.generation);
 		expect(await test.worktrees.ensure(main, { ...authority, participantId: "writer" })).toEqual(worktree);
 		await expect(test.worktrees.ensure(main, { ...authority, participantId: "writer", repo: "web" })).rejects.toThrow("clean it up before choosing another repo");
-		expect(await test.worktrees.remove(main, { ...authority, participantId: "writer", discardConfirmed: true })).toEqual({ removed: true });
+		expect(await test.worktrees.remove(main, { ...authority, participantId: "writer", discard: false })).toEqual({ removed: true });
 		expect(test.store.read().participants[held.participantKey]?.repoRoot).toBeUndefined();
-		expect(await test.worktrees.remove(main, { ...authority, participantId: "designer", repo: "web", discardConfirmed: true })).toEqual({ removed: true });
+		expect(await test.worktrees.remove(main, { ...authority, participantId: "designer", repo: "web", discard: false })).toEqual({ removed: true });
 		expect(await test.worktrees.list(main)).toEqual([]);
 	});
 

@@ -40,11 +40,12 @@ export default function runtimeExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "collaborator_workspace",
 		label: "Collaborator worktrees",
-		description: "List collaborator worktrees, or cleanup one: force-remove its worktree and branch, uncommitted work included.",
+		description: "List collaborator worktrees with uncommitted and ahead counts, or cleanup one: delete its worktree and branch; any nonzero count needs discard.",
 		parameters: Type.Object({
 			action: Type.Union([Type.Literal("list"), Type.Literal("cleanup")]),
 			name: Type.Optional(Name),
 			repo: Type.Optional(Type.String()),
+			discard: Type.Optional(Type.Boolean()),
 		}),
 		async execute(_toolCallId, params: CollaboratorWorktreeInput, signal, _onUpdate, ctx) {
 			const result = await hosted.collaborators.manageWorktrees(params, ctx, signal);

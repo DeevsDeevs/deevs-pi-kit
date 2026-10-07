@@ -59,13 +59,14 @@ interface WorktreeRemoveParams extends RegistrationAuth {
 	protocol: string;
 	participantId: string;
 	repo?: string;
-	discardConfirmed: true;
+	discard: boolean;
 }
 
 export interface CollaboratorWorktreeInput {
 	action: "list" | "cleanup";
 	name?: string;
 	repo?: string;
+	discard?: boolean;
 }
 
 export type CollaboratorWorktreeResult = ClientWorktreeList | ClientWorktreeRemoval | { declined: true };
@@ -346,9 +347,10 @@ export class CollaboratorService {
 		}
 		const auto = await assertLifecycleAllowed(ctx, "Worktree cleanup");
 		const participantId = collaboratorName(input.name, "name");
-		const detail = `Force-remove the worktree of ${identity.protocol}/${participantId}`
+		const discard = input.discard === true;
+		const detail = `Remove the worktree of ${identity.protocol}/${participantId}`
 			+ ` and delete branch runtime/collab/${identity.protocol}/${participantId}?`
-			+ " Uncommitted or unmerged work in it is lost.";
+			+ (discard ? " Uncommitted or unmerged work in it is lost." : " Runtime refuses if it holds uncommitted or unmerged work.");
 		if (!auto && !await ctx.ui.confirm("Remove collaborator worktree?", detail, { signal })) return { declined: true };
 		const params: WorktreeRemoveParams = {
 			...auth(registration),
@@ -356,7 +358,7 @@ export class CollaboratorService {
 			expectedCallerGeneration: identity.generation,
 			protocol: identity.protocol,
 			participantId,
-			discardConfirmed: true,
+			discard,
 		};
 		if (input.repo !== undefined) params.repo = input.repo;
 		return parseWorktreeRemoval(await this.client.call("worktree.remove", params));

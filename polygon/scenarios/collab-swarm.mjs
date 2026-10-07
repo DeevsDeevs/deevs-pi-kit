@@ -121,7 +121,7 @@ export default {
 			resume: [{ id: "l-resume", tool: "SendMessage", args: { to: "cc-fix", message: resume } }],
 			relay: [{ id: "l-relay", tool: "SendMessage", args: { to: "pi-cli", message: relay } }],
 			down: SWARM.map((c) => ({ id: `l-down-${c.name}`, tool: "TaskStop", args: { task_id: c.name } })),
-			clean: [...writers.map((name) => ({ id: `l-clean-${name}`, tool: "collaborator_workspace", args: { action: "cleanup", name } })), { id: "l-list-3", tool: "ListAgents", args: {} }],
+			clean: [{ id: "l-worktrees", tool: "collaborator_workspace", args: { action: "list" } }, ...writers.map((name) => ({ id: `l-clean-${name}`, tool: "collaborator_workspace", args: { action: "cleanup", name, discard: true } })), { id: "l-list-3", tool: "ListAgents", args: {} }],
 		};
 		for (const [name, list] of Object.entries(steps)) list.push({ id: `l-${name}-end`, text: name });
 		// On the puppet every phase sits in the first script, its first step gated on the phase prompt and the rest chained.
@@ -248,6 +248,9 @@ export default {
 			writeFileSync(join(t.dir, "mail.json"), JSON.stringify(final, null, 2));
 			const clean = await phase("clean", 180_000);
 			check(clean.every((c) => !c.isError), `a cleanup failed: ${clean.filter((c) => c.isError).map((c) => c.text).join(" | ")}`);
+			// Every writer committed or, on Codex, could not: none of their worktrees is clean or merged.
+			report.worktrees = Object.fromEntries((clean.find((c) => c.details?.worktrees)?.details.worktrees ?? []).map((w) => [w.participantId, { uncommitted: w.uncommitted, ahead: w.ahead }]));
+			check(writers.every((name) => report.worktrees[name]?.uncommitted + report.worktrees[name]?.ahead > 0), `the list hides a writer's work: ${JSON.stringify(report.worktrees)}`);
 			rosterCheck("roster after wind-down", clean.find((c) => c.name === "ListAgents"), () => "completed");
 			await stats("end");
 			const swarmProcs = () => [...procs(t).filter((p) => p.argv.some((a) => /claude|codex|runtime\/mcp\/main\.mjs/.test(a))), ...procs(t, "PI_RUNTIME_COLLABORATE=")];

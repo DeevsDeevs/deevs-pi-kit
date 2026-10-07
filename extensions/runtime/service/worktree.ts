@@ -1,4 +1,4 @@
-import { mkdirSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { addWorktree, git, gitTopLevel, repositoriesUnder } from "../../shared/worktree.ts";
 import { RuntimeError } from "../errors.ts";
@@ -28,7 +28,7 @@ interface EnsureWorktreeInput extends WorktreeAuthority {
 }
 
 interface RemoveWorktreeInput extends EnsureWorktreeInput {
-	discardConfirmed: true;
+	discard: boolean;
 }
 
 interface RemovedWorktree {
@@ -38,6 +38,14 @@ interface RemovedWorktree {
 interface WorktreeListing extends RuntimeWorktree {
 	participantState?: HostedParticipant["state"];
 	recorded: boolean;
+	uncommitted?: number;
+	ahead?: number;
+}
+
+/** What removing a worktree and its branch would lose: its changed and untracked paths, and its commits the repository's HEAD lacks. */
+interface UnsavedWork {
+	uncommitted: string[];
+	ahead: number;
 }
 
 export class RuntimeWorktrees {
@@ -84,8 +92,10 @@ export class RuntimeWorktrees {
 		for (const repo of repos) {
 			for (const worktree of await listWorktrees(repo)) {
 				const participant = participants.find((candidate) => candidate.worktreePath === worktree.path);
-				if (!participant) listings.push({ ...worktree, recorded: false });
-				else listings.push({ ...worktree, participantState: participant.state, recorded: true });
+				const { uncommitted, ahead } = await unsavedWork(worktree);
+				const listing = { ...worktree, uncommitted: uncommitted.length, ahead };
+				if (!participant) listings.push({ ...listing, recorded: false });
+				else listings.push({ ...listing, participantState: participant.state, recorded: true });
 			}
 		}
 		for (const participant of participants) {
@@ -114,6 +124,10 @@ export class RuntimeWorktrees {
 		const worktree = (await listWorktrees(repoRoot)).find((candidate) => isWorktreeOf(candidate, input));
 		if (!worktree) throw new RuntimeError("not_found", "Participant has no Runtime worktree in this project.");
 		this.assertWorktreeIsOwn(worktree.path, participantKey);
+		if (!input.discard) {
+			const work = await unsavedWork(worktree);
+			if (work.uncommitted.length || work.ahead) throw new RuntimeError("conflict", refusal(worktree, work));
+		}
 		if (participant) this.store.apply({ type: "participant.worktree.clear", participantKey });
 		await git(repoRoot, ["worktree", "remove", "--force", worktree.path]);
 		await git(repoRoot, ["branch", "-D", collaboratorBranch(input)]);
@@ -174,6 +188,21 @@ function collaboratorBranch(identity: ParticipantIdentity): string {
 
 function branchRef(identity: ParticipantIdentity): string {
 	return `${BRANCH_PREFIX}${identity.protocol}/${identity.participantId}`;
+}
+
+async function unsavedWork(worktree: RuntimeWorktree): Promise<UnsavedWork> {
+	const status = existsSync(worktree.path) ? await git(worktree.path, ["status", "--porcelain"]) : "";
+	const ahead = Number((await git(worktree.repoRoot, ["rev-list", "--count", `HEAD..${worktree.branchRef}`])).trim());
+	return { uncommitted: status.split("\n").filter(Boolean).map((line) => line.slice(3)), ahead };
+}
+
+function refusal(worktree: RuntimeWorktree, { uncommitted, ahead }: UnsavedWork): string {
+	const lost: string[] = [];
+	const more = uncommitted.length > 20 ? `, and ${uncommitted.length - 20} more` : "";
+	if (uncommitted.length) lost.push(`${uncommitted.length} uncommitted path(s): ${uncommitted.slice(0, 20).join(", ")}${more}`);
+	if (ahead) lost.push(`${ahead} commit(s) on ${worktree.branchRef.slice("refs/heads/".length)} that HEAD of ${worktree.repoRoot} lacks`);
+	return `Cleanup refused: the worktree of ${worktree.protocol}/${worktree.participantId} at ${worktree.path} holds ${lost.join(" and ")}.`
+		+ " Commit and merge that work first, or clean up again with discard: true to delete it.";
 }
 
 async function listWorktrees(repoRoot: string): Promise<RuntimeWorktree[]> {
