@@ -5,7 +5,7 @@ A [Pi](https://github.com/earendil-works/pi) package: background agents, workflo
 ## Requirements
 
 - Pi 1.0.4 or newer and Node 22.19 or newer.
-- Linux for the cleanup after a crash: the processes a killed Pi's tasks left behind are found through `/proc`. macOS has none, so there they keep running, and a resumed Claude or Codex worker runs beside its old one.
+- Linux for process cleanup after a stop, a quit or a crash: what tasks leave behind is found through `/proc`. macOS has none, so there the tool commands a Claude or Codex worker started can outlive a TaskStop or a quit, and a resumed worker runs beside its old one.
 - Herdr, for collaborators only.
 - Claude Code 2.1.292 or Codex 0.160.1 or newer, only for `claude:` or `codex:` models and collaborators: the releases the worker fixtures were recorded on.
 
@@ -79,7 +79,7 @@ The only settings file: `~/.pi/agent/pi-kit.json` for every project, `.pi/pi-kit
 ```
 
 - `models`: names for models or patterns (`*` stands for a version, the newest wins), each with an optional `:level`; `a|b` takes the first that resolves, and a trailing `:level` applies to every alternative. Built in: `sol`, `astra`, `luna` and `terra` (the newest OpenAI GPT of that name, on your ChatGPT login under `openai`, else the legacy `openai-codex`) and `opus`, `sonnet`, `haiku` and `fable` (Claude Code workers). An `openai` login through `OPENAI_API_KEY` also matches, and bills the API. A trusted project's names add to the global ones.
-- `lead`: the model a new session switches to when started without `--model` or `--provider` (`"sol:xhigh"` sets the level too); `null` turns this off. Unset, it is `sol` and is skipped silently without an OpenAI login; a `lead` you set warns once when it does not resolve. Restored sessions keep their model. An untrusted project's `models` and `lead` are ignored.
+- `lead`: the model a new session switches to when started without `--model` or `--provider` (`"sol:xhigh"` sets the level too); `null` turns this off. Unset, it is `sol` and is skipped silently without an OpenAI login; a `lead` you set warns once per load (a start or a `/reload`) when it does not resolve. Restored sessions keep their model. An untrusted project's `models` and `lead` are ignored.
 - `autonomy` (default `true`): orchestration never waits on a dialog, and the lead takes it as standing permission to run workflows. `false` asks before each collaborator change and stops Mission continues. A project's value counts only once the project is trusted.
 - `guard`: in the global file, `"detached"`, `"forcePush"` or `"rmRf": false` turns a rule off; a project file can only add `block` patterns, and the patterns from both files add up (`"terraform destroy"` matches `terraform` with `destroy` among its arguments).
 - `codexFast`: sends `service_tier: "priority"` on requests made with your ChatGPT login, under `openai` or the legacy `openai-codex`; never with an API key. A project's value counts only once the project is trusted.

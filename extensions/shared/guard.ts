@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,8 +23,6 @@ const WRAPPER_VALUE_OPTIONS = new Map([
 const PUSH_VALUE_OPTIONS = new Set(["-o", "--push-option", "--repo", "--receive-pack", "--exec"]);
 const DETACH_ERROR = "Detached process launch or dynamically-computed command detected (backgrounding, nohup/setsid/disown, or a command name that cannot be statically verified). Use a literal command, or Herdr for persistent or independently owned processes.";
 const FORCE_PUSH_ERROR = "Force push to a protected branch (main, master, release/*) or to an unnamed branch, or deleting a protected branch, is blocked. Name a non-protected target branch explicitly, e.g. `git push --force-with-lease origin feature/x`.";
-// Pi's own Node by absolute path; a Bun-compiled Pi's execPath is Pi itself, so it falls back to `node` on PATH.
-const GUARD_HOOK = [process.versions.bun ? "node" : process.execPath, fileURLToPath(new URL("./guard-hook.mjs", import.meta.url))].map((word) => `'${word.replaceAll("'", `'"'"'`)}'`).join(" ");
 const RM_ERROR = "Recursive rm outside the project and the temp directories ($TMPDIR, /tmp) is blocked. Use literal paths inside the project or a temp directory.";
 
 const HookPayload = Type.Object({
@@ -105,8 +104,16 @@ export function guardHookPayload(payload: string): string | undefined {
 	return Array.isArray(command) ? guardArgv(command, options) : guardShell(command, options);
 }
 
-/** The kit guard as a PreToolUse hook on Bash in Claude Code or Codex argv. A hook whose `node` is missing exits 127, which both CLIs take as a non-blocking error, so it runs Node by absolute path. */
+export function shellQuote(value: string): string {
+	return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+let bunNode: string | undefined;
+
+/** The kit guard as a PreToolUse hook on Bash in Claude Code or Codex argv. A hook whose `node` is missing exits 127, which both CLIs take as a non-blocking error, so it runs Node by absolute path: Pi's own, or under a Bun-compiled Pi, whose execPath is Pi itself, the real path the `node` on PATH reports once. */
 export function guardHookArgs(harness: "claude" | "codex"): string[] {
+	const node = process.versions.bun ? bunNode ??= spawnSync("node", ["--print", "process.execPath"], { encoding: "utf8" }).stdout?.trim() || "node" : process.execPath;
+	const GUARD_HOOK = [node, fileURLToPath(new URL("./guard-hook.mjs", import.meta.url))].map(shellQuote).join(" ");
 	if (harness === "claude") return ["--settings", JSON.stringify({ skipDangerousModePermissionPrompt: true, hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: GUARD_HOOK }] }] } })];
 	return ["--dangerously-bypass-hook-trust", "-c", `hooks.PreToolUse=[{matcher="^Bash$",hooks=[{type="command",command=${JSON.stringify(GUARD_HOOK)}}]}]`];
 }

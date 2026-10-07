@@ -1,6 +1,6 @@
 import { HostedRuntimeClientError } from "./client.ts";
-import { guardHookArgs } from "../shared/guard.ts";
-import { collapsePrompt, shellQuote } from "./herdr.ts";
+import { guardHookArgs, shellQuote } from "../shared/guard.ts";
+import { collapsePrompt } from "./herdr.ts";
 import { type HostedCollaboratorDriver, type HostedCollaboratorProfile, type HostedNativeCollaboratorDriver, isWriter } from "./schemas/state.ts";
 import type { NativeMessagingConfiguration } from "./mcp/native.ts";
 import { toolDefinitions } from "./mcp/tools.ts";

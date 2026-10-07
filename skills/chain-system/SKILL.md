@@ -88,6 +88,6 @@ Agent({
 
 ## Guardrails
 
-- A `<chain_checkpoint>` reminder comes once, at 80% context: save a link then. Nothing auto-saves.
+- A `<chain_checkpoint>` reminder comes once, at 80% context: save a link then. After a restart, a resume or a compaction with a chain active, that section instead says to load the active chain. Nothing auto-saves.
 - Save through the tool; do not hand-roll writes into `.chains` unless the tool is unavailable.
 - Chain and branch names must be simple names without slashes.

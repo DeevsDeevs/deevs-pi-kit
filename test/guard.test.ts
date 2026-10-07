@@ -335,12 +335,20 @@ describe("guard: configuration and hooks", () => {
 		expect(hook({ hook_event_name: "PreToolUse", tool_name: "Read", cwd, tool_input: { file_path: "/etc/passwd" } }).stdout).toBe("");
 	});
 
-	it("gives Claude Code and Codex one hook that runs Pi's Node by absolute path, so a PATH without node still denies", { timeout: 30_000 }, () => {
+	it("gives Claude Code and Codex one hook that runs Node by absolute path, under Pi's Node or a Bun-compiled Pi, so a PATH without node still denies", { timeout: 30_000 }, () => {
 		const { agentDir, cwd } = fixture();
-		const claude = JSON.parse(guardHookArgs("claude")[1]!).hooks.PreToolUse[0].hooks[0].command;
-		expect(guardHookArgs("codex")).toEqual(["--dangerously-bypass-hook-trust", "-c", `hooks.PreToolUse=[{matcher="^Bash$",hooks=[{type="command",command=${JSON.stringify(claude)}}]}]`]);
-		const run = spawnSync("/bin/sh", ["-c", claude], { input: JSON.stringify({ cwd, tool_input: { command: "nohup x &" } }), encoding: "utf8", env: { PATH: "", PI_CODING_AGENT_DIR: agentDir } });
-		expect(JSON.parse(run.stdout).hookSpecificOutput.permissionDecision).toBe("deny");
+		try {
+			for (const bun of [undefined, "1.3.0"]) {
+				Object.defineProperty(process.versions, "bun", { value: bun, configurable: true });
+				const claude = JSON.parse(guardHookArgs("claude")[1]!).hooks.PreToolUse[0].hooks[0].command;
+				expect(claude).toMatch(/^'\//);
+				expect(guardHookArgs("codex")).toEqual(["--dangerously-bypass-hook-trust", "-c", `hooks.PreToolUse=[{matcher="^Bash$",hooks=[{type="command",command=${JSON.stringify(claude)}}]}]`]);
+				const run = spawnSync("/bin/sh", ["-c", claude], { input: JSON.stringify({ cwd, tool_input: { command: "nohup x &" } }), encoding: "utf8", env: { PATH: "", PI_CODING_AGENT_DIR: agentDir } });
+				expect(JSON.parse(run.stdout).hookSpecificOutput.permissionDecision).toBe("deny");
+			}
+		} finally {
+			delete process.versions.bun;
+		}
 	});
 
 	// Six hook processes in a row: past 5 s on a loaded host.
