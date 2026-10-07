@@ -4,7 +4,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { HostedRuntimeClientError, type HostedRuntimeClient } from "./client.ts";
 import { delay, shellQuote } from "./herdr.ts";
 import { isJsonObject } from "./schemas/json.ts";
-import { RUNTIME_BUILD } from "./service/build.ts";
+import { runtimeBuild } from "./service/build.ts";
 import { decodeHerdr, herdrResult, HerdrWorkspaceCreatedSchema } from "./schemas/herdr.ts";
 
 interface RuntimeServicesWorkspace {
@@ -24,7 +24,7 @@ export async function startRuntimeService(
 	replaceOnly = false,
 ): Promise<void> {
 	const running = await client.hello().catch(() => undefined);
-	if (running !== undefined && isJsonObject(running) && running.build === RUNTIME_BUILD) return;
+	if (running !== undefined && isJsonObject(running) && running.build === runtimeBuild()) return;
 	if (running === undefined && replaceOnly) return;
 	const launchable = process.env.HERDR_ENV === "1" && ctx.isProjectTrusted();
 	if (running !== undefined && !launchable) return;

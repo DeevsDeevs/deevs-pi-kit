@@ -23,7 +23,7 @@ Newline-delimited JSON, capped at 64 KiB per request line and 128 KiB per messag
 {"v":1,"id":"req_1","ok":false,"error":{"code":"not_found","message":"diagnostic"}}
 ```
 
-`hello` returns `{version, runtimeId, build, capabilities}` with `targets`, `mailbox`, `interactiveAgent` and `worktree`; `runtimeId` persists across service starts, and `build` hashes the daemon's source. A Pi session that finds a daemon of another build at session start or collaborator start, inside Herdr in a trusted project, calls `service.exit` and starts its own, so an updated kit never keeps talking to the daemon of an older one. Error codes: `invalid_request`, `unsupported_version`, `not_found`, `conflict`, `busy`, `registration_stale`, `identity_mismatch`, `host_unavailable`, `storage_error`, `internal`.
+`hello` returns `{version, runtimeId, build, capabilities}` with `targets`, `mailbox`, `interactiveAgent` and `worktree`; `runtimeId` persists across service starts, and `build` hashes the daemon's source. A Pi session that finds a daemon whose build differs from the source on disk, at session start or at the collaborator start of a session not yet registered, inside Herdr in a trusted project, calls `service.exit` and starts its own, so an updated kit never keeps talking to the daemon of an older one. Error codes: `invalid_request`, `unsupported_version`, `not_found`, `conflict`, `busy`, `registration_stale`, `identity_mismatch`, `host_unavailable`, `storage_error`, `internal`.
 
 ## Methods
 
