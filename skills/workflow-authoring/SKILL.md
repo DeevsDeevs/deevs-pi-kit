@@ -50,6 +50,7 @@ const found = await agent('List the feature flags defined in packages/billing an
 
 - The final text is `agent()`'s return value, data for the script, so agents answer with raw data. Use `schema` when you need fields.
 - Agents load the project's AGENTS.md and CLAUDE.md and the skills; do not copy their rules into prompts.
+- For code an agent writes, paste the task's requirement text into its prompt word for word; never paraphrase a spec.
 - Agents have `read`, `grep`, `find`, `ls`, `bash`, `edit` and `write`, no MCP tools, and cannot start agents or ask the user. Write READ-ONLY into a stage that must only look.
 
 ## Determinism

@@ -51,7 +51,7 @@ const AGENT_DESCRIPTION = [
 	"- SendMessage to its agentId or name continues it with its context; a new Agent call starts from nothing.",
 	"- isolation: \"worktree\" gives it its own worktree and branch, kept and reported only if changed. Give each parallel writer one.",
 	"",
-	"It has seen none of this conversation: brief it like a colleague who just walked in. Give the goal and why, what you know or ruled out, the files and constraints, whether to change code or only research, and the answer you want back. Name the paths, lines and change instead of \"fix it based on your findings\", and synthesize its report before you act on it.",
+	"It has seen none of this conversation: brief it like a colleague who just walked in. Give the goal and why, what you know or ruled out, the files and constraints, whether to change code or only research, and the answer you want back. Name the paths, lines and change instead of \"fix it based on your findings\", and synthesize its report before you act on it. For code it writes, paste the task's requirement text word for word; never paraphrase a spec.",
 	"",
 ].join("\n");
 

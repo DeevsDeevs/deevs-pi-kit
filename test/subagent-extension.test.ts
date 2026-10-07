@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -23,6 +23,13 @@ describe("Subagent extension surface", () => {
 		subagentsExtension(pi);
 		expect(tools).toEqual(["Agent", "Workflow", "TaskStop", "job_start", "Monitor", "SendMessage", "ListAgents"]);
 		expect(commands).toEqual(["agents"]);
+	});
+
+	it("briefs agents and workflow agents that write code with the task's requirement text word for word", () => {
+		let agent = "";
+		subagentsExtension({ registerTool(tool: { name: string; description: string }) { if (tool.name === "Agent") agent = tool.description; }, registerCommand() {}, on() {} } as unknown as ExtensionAPI);
+		const skill = readFileSync(join(import.meta.dirname, "../skills/workflow-authoring/SKILL.md"), "utf8");
+		for (const text of [agent, skill]) expect(text).toMatch(/For code (it|an agent) writes, paste the task's requirement text (into its prompt )?word for word; never paraphrase a spec\./);
 	});
 
 	it("asks for a job_start timeout on builds and tests, as print mode's job result does, while Agent limits stay on request only", () => {
