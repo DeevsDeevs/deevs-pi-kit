@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { guardArgv, guardBashCall, guardShell, loadGuardConfig, type GuardConfig } from "../extensions/shared/guard.ts";
+import { guardArgv, guardBashCall, guardHookArgs, guardShell, loadGuardConfig, type GuardConfig } from "../extensions/shared/guard.ts";
 
 const HOOK = join(import.meta.dirname, "../extensions/shared/guard-hook.mjs");
 const options = (config: GuardConfig = {}) => ({ cwd: "/work/proj", home: "/home/u", tmpDir: "/var/tmp-x", config });
@@ -333,6 +333,14 @@ describe("guard: configuration and hooks", () => {
 		const passed = hook({ hook_event_name: "PreToolUse", tool_name: "Bash", cwd, tool_input: { command: `rm -rf ${join(root, "project", "build")}` } });
 		expect([passed.status, passed.stdout]).toEqual([0, ""]);
 		expect(hook({ hook_event_name: "PreToolUse", tool_name: "Read", cwd, tool_input: { file_path: "/etc/passwd" } }).stdout).toBe("");
+	});
+
+	it("gives Claude Code and Codex one hook that runs Pi's Node by absolute path, so a PATH without node still denies", { timeout: 30_000 }, () => {
+		const { agentDir, cwd } = fixture();
+		const claude = JSON.parse(guardHookArgs("claude")[1]!).hooks.PreToolUse[0].hooks[0].command;
+		expect(guardHookArgs("codex")).toEqual(["--dangerously-bypass-hook-trust", "-c", `hooks.PreToolUse=[{matcher="^Bash$",hooks=[{type="command",command=${JSON.stringify(claude)}}]}]`]);
+		const run = spawnSync("/bin/sh", ["-c", claude], { input: JSON.stringify({ cwd, tool_input: { command: "nohup x &" } }), encoding: "utf8", env: { PATH: "", PI_CODING_AGENT_DIR: agentDir } });
+		expect(JSON.parse(run.stdout).hookSpecificOutput.permissionDecision).toBe("deny");
 	});
 
 	// Six hook processes in a row: past 5 s on a loaded host.

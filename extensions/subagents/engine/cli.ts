@@ -3,10 +3,10 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
-import { fileURLToPath } from "node:url";
 import type { JsonObject } from "@earendil-works/pi-durable";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
+import { guardHookArgs } from "../../shared/guard.ts";
 import { trySignalGroup } from "../../shared/process-group.ts";
 import { reap } from "./storage.ts";
 
@@ -66,7 +66,6 @@ const CodexEvent = Type.Object({
 const SchemaObject = Type.Object({ properties: Type.Optional(Type.Record(Type.String(), Type.Unknown())), required: Type.Optional(Type.Array(Type.String())) });
 const AnyObject = Type.Object({});
 
-const GUARD_HOOK = `node ${JSON.stringify(fileURLToPath(new URL("../../shared/guard-hook.mjs", import.meta.url)))}`;
 const NO_WORKER_TOOLS = ["Agent", "Workflow", "AskUserQuestion", "ScheduleWakeup", "CronCreate", "SendUserMessage"];
 const CLAUDE_TOOLS = { read: ["Read"], grep: ["Grep"], find: ["Glob"], ls: [], bash: ["Bash"], edit: ["Edit", "NotebookEdit"], write: ["Write"] };
 const CODEX_TOOL_ITEMS = new Set(["command_execution", "file_change", "mcp_tool_call", "web_search"]);
@@ -83,7 +82,7 @@ export function cliArgv(worker: CliWorker, resume?: string): string[] {
 			"-p", "--verbose", "--output-format", "stream-json",
 			...(resume ? ["--resume", resume] : []),
 			"--permission-mode", "bypassPermissions", "--permission-prompts", "none",
-			"--settings", JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: GUARD_HOOK }] }] } }),
+			...guardHookArgs("claude"),
 			"--append-system-prompt", worker.instructions,
 			"--disallowedTools", [...disallowed, ...NO_WORKER_TOOLS].join(","),
 			...(worker.schema ? ["--json-schema", JSON.stringify(worker.schema)] : []),
@@ -97,7 +96,7 @@ export function cliArgv(worker: CliWorker, resume?: string): string[] {
 		"--json", "-m", worker.model,
 		"-c", "approval_policy=never", "-c", `sandbox_mode=${worker.writer ? "workspace-write" : "read-only"}`,
 		...(effort ? ["-c", `model_reasoning_effort=${effort}`] : []),
-		"-c", `hooks.PreToolUse=[{matcher="^Bash$",hooks=[{type="command",command=${JSON.stringify(GUARD_HOOK)}}]}]`, "--dangerously-bypass-hook-trust",
+		...guardHookArgs("codex"),
 		"--skip-git-repo-check",
 		...(worker.schema ? ["--output-schema", schemaFile(worker)] : []),
 		"-o", lastMessageFile(worker),
