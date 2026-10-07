@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { cleanupSessionResources, type Api, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { createBashTool, createEditTool, createFindTool, createGrepTool, createLsTool, createReadTool, createWriteTool, getAgentDir, type ExtensionContext, type ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
-import { BASH_TIMEOUT_LIMITS, bashTimedOut, bashTimeout, guardBashCall } from "../../shared/guard.ts";
+import { guardBashCall } from "../../shared/guard.ts";
 import { trySignalGroup } from "../../shared/process-group.ts";
 import { agentSummary, recent, sessionAcks, tasks, type RosterEntry, type TaskNotification, type TaskStatus } from "../../shared/tasks.ts";
 import { addWorktree, agentWorktreeAt, finishAgentWorktree, git, type AgentWorktree } from "../../shared/worktree.ts";
@@ -539,15 +539,9 @@ function piTool(D: D, name: PiToolName, owner: string): Durable.ToolRegistration
 		prepareArguments: piDefinition.prepareArguments,
 		execute: async (args, api, context) => {
 			const cwd = (await api.agent(context)).cwd ?? process.cwd();
-			const input = "command" in args ? { ...args, timeout: bashTimeout(args.timeout) } : args;
-			try {
-				// SAFETY: durable validated `args` against this very tool's parameters before execute().
-				const result = await make(cwd).execute(api.callId, input as never, context.abortSignal);
-				return { content: result.content };
-			} catch (error) {
-				if (error instanceof Error && bashTimedOut(error.message)) error.message += `\n\n${BASH_TIMEOUT_LIMITS}`;
-				throw error;
-			}
+			// SAFETY: durable validated `args` against this very tool's parameters before execute().
+			const result = await make(cwd).execute(api.callId, args as never, context.abortSignal);
+			return { content: result.content };
 		},
 	});
 }

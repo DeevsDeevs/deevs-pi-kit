@@ -4,8 +4,8 @@ import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
-import { getAgentDir, isBashToolResult, isToolCallEventType, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { BASH_TIMEOUT_LIMITS, bashTimedOut, bashTimeout, guardBashCall, guardShell, loadGuardConfig } from "../shared/guard.ts";
+import { getAgentDir, isToolCallEventType, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { guardBashCall, guardShell, loadGuardConfig } from "../shared/guard.ts";
 import { loadKitConfig, modelContext, modelLabel, modelsTable, resolveLead, resolveModel, type ModelContext } from "../shared/models.ts";
 import { agentForegroundResult, agentLaunchedResult, jobLaunchedResult, monitorStartedResult, newAgentId, newBackgroundTaskId, newWorkflowRunId, newWorkflowTaskId, recent, sendMessageResult, taskNotFound, taskNotRunningResult, taskStoppedResult, tasks, unknownAgentResult, workflowLaunchedResult, type RosterEntry } from "../shared/tasks.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
@@ -319,16 +319,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.on("tool_call", (event, ctx) => {
-		if (!isToolCallEventType("bash", event)) return undefined;
-		event.input.timeout = bashTimeout(event.input.timeout);
-		return guardBashCall(event.input.command, ctx.cwd);
-	});
-	pi.on("tool_result", (event) => {
-		const status = event.content.at(-1);
-		if (!isBashToolResult(event) || !event.isError || status?.type !== "text" || !bashTimedOut(status.text)) return undefined;
-		return { content: [...event.content, { type: "text" as const, text: `${BASH_TIMEOUT_LIMITS} Run longer work with job_start: it runs in the background and notifies you when it exits.` }] };
-	});
+	pi.on("tool_call", (event, ctx) => isToolCallEventType("bash", event) ? guardBashCall(event.input.command, ctx.cwd) : undefined);
 	pi.on("session_start", async (event, ctx) => {
 		clearInterval(widget);
 		let shown = "";

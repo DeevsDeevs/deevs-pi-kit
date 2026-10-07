@@ -111,18 +111,6 @@ function leadingSleep(command: string): number {
 	}, 0);
 }
 
-export const BASH_TIMEOUT_LIMITS = "bash stops a command after 120 s unless you pass a timeout of up to 600 s.";
-
-/** Claude Code's Bash limits, in seconds: a call without a timeout gets 120, and none gets more than 600. */
-export function bashTimeout(timeout: number | undefined): number {
-	return timeout === undefined ? 120 : Math.min(timeout, 600);
-}
-
-/** Pi's bash tool ends the error of a command it killed at its timeout with this status line. */
-export function bashTimedOut(text: string): boolean {
-	return /(?:^|\n)Command timed out after [\d.]+ seconds$/.test(text);
-}
-
 /** The shell command of a Claude Code or Codex PreToolUse payload, under the rules configured for its cwd. */
 export function guardHookPayload(payload: string): string | undefined {
 	const input: unknown = JSON.parse(payload);
