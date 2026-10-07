@@ -77,9 +77,9 @@ export default {
 		const sh = (name, id, c, extra) => ({ id, ...SH[kind[name]](c), ...extra });
 		const say = (name, id, to, message, extra, images) => ({ id, tool: SM[kind[name]], args: { to, message, ...(images && { images }) }, ...extra });
 		for (const c of SWARM) for (const k of ["task", "follow", "resume", "relay"]) m[`${c.name}/${k}`] = nonce();
-		const gate = (name, k) => `${k}-mark ${m[`${name}/${k}`]}`;
+		// A gate must not match the script that holds it: its quotes are escaped there, so it opens only on the message itself.
+		const gate = (name, k) => `${k}-mark "${m[`${name}/${k}`]}"`;
 		const noted = (name) => [sh(name, "f1", "sleep 2", { on: gate(name, "follow") }), { id: "f2", then: true, text: "noted" }];
-		// cx-money's first step is gated, and a gate must not match its own script: the quotes are escaped there.
 		const FINDING = 'review "finding"';
 		const PUPPET = {
 			"cc-fix": [sh("cc-fix", "a1", COMMIT("cc-fix")), say("cc-fix", "a2", "main", "cc-fix-1"), { id: "a3", text: "done" },

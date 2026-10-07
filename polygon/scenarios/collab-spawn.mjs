@@ -23,8 +23,8 @@ export default {
 		await lead.script({ agent: "lead", steps: [
 			{ id: "s1", tool: "collaborator_start", args: { participants: [
 				{ name: "writer", model: "claude:opus", profile: "workspace-write" },
-				{ name: "reviewer", model: "codex:puppet", profile: "read-only" },
-				{ name: "coder", model: "codex:puppet", profile: "workspace-write" },
+				{ name: "reviewer", model: t.live ? "codex:" : "codex:puppet", profile: "read-only" },
+				{ name: "coder", model: t.live ? "codex:" : "codex:puppet", profile: "workspace-write" },
 			] } },
 			{ id: "s2", tool: "SendMessage", args: { to: "coder", message: script({ agent: "coder", steps: [
 				{ id: "c1", tool: "exec_command", args: { cmd: "nohup sleep 97 > /dev/null 2>&1 &" } },
@@ -34,7 +34,8 @@ export default {
 			{ id: "s3", text: "started" },
 		] });
 		await lead.until((e) => e.type === "agent_settled", 180_000, "both starts");
-		const [start] = toolCalls(lead.events);
+		// A live lead may read the collaborators skill first.
+		const start = toolCalls(lead.events).find((c) => c.name === "collaborator_start");
 		writeFileSync(join(t.dir, "start.json"), JSON.stringify(start, null, 2));
 		assert.equal(start.isError, false, start.text);
 		assert.deepEqual(start.details.results.map((r) => r.status), ["started", "started", "started"], start.text);
