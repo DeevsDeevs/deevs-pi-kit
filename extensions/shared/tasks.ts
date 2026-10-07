@@ -235,7 +235,7 @@ function showHeld(): void {
 }
 
 /** Neutralizes envelope markup inside interpolated text (A.5); syntax only. */
-function escapeMarkup(text: string): string {
+export function escapeMarkup(text: string): string {
 	return text
 		.replace(/<(\/?)(task-notification|system-reminder)/gi, "<\\$1$2")
 		.replace(/\[(Workflow harness)/gi, "[\\$1");
