@@ -7,7 +7,7 @@ import { join } from "node:path";
 export type PathSeen = { files: Record<string, string | undefined> } | { offset: number };
 export interface UrlSeen { status: number; hash: string; etag?: string }
 
-export const EVENT_CHARS = 3_000;
+const EVENT_CHARS = 3_000;
 export const LINE_CHARS = 500;
 
 export async function lookAtPath(path: string, before: PathSeen | undefined): Promise<{ seen: PathSeen; event?: string; baseline: string }> {
@@ -15,7 +15,8 @@ export async function lookAtPath(path: string, before: PathSeen | undefined): Pr
 	if (info?.isDirectory() || (info === undefined && before !== undefined && "files" in before)) {
 		const files: Record<string, string | undefined> = {};
 		if (info) await listInto(path, "", files);
-		const lines = before && "files" in before ? changes(before.files, files) : [];
+		// A path that was missing or a file before: everything in the folder is new.
+		const lines = before ? changes("files" in before ? before.files : {}, files) : [];
 		return { seen: { files }, event: lines.length ? cut(lines.join("\n")) : undefined, baseline: `${Object.keys(files).length} files` };
 	}
 	const size = info?.size ?? 0;
@@ -56,7 +57,7 @@ function changes(before: Record<string, string | undefined>, after: Record<strin
 
 /** One GET; a status change or a changed body is an event. Status 0 means the request itself failed. */
 export async function lookAtUrl(url: string, before: UrlSeen | undefined, signal: AbortSignal): Promise<{ seen: UrlSeen; event?: string; baseline: string }> {
-	const response = await fetch(url, { headers: before?.etag ? { "if-none-match": before.etag } : undefined, signal }).catch(() => undefined);
+	const response = await fetch(url, { headers: before?.etag ? { "if-none-match": before.etag } : undefined, signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]) }).catch(() => undefined);
 	if (response?.status === 304 && before) return { seen: before, baseline: `${before.status}` };
 	const body = response ? await response.text().catch(() => "") : "";
 	const seen: UrlSeen = { status: response?.status ?? 0, hash: createHash("sha256").update(body).digest("hex"), etag: response?.headers.get("etag") ?? undefined };

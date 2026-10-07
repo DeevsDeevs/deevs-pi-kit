@@ -3,7 +3,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
-import { access, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -23,14 +23,13 @@ import { parseWorkflow } from "../workflow/meta.ts";
 import { driveWorkflow, framePrompt, newProgress, runRecord, usage, type AgentRunner, type CallOutcome, type Progress } from "../workflow/run.ts";
 import type { AgentOptions, JsonValue } from "../workflow/sandbox.ts";
 import { cliArgv, dropNulls, lastMessageFile, newProgress as newCliProgress, readEvent, schemaFile, strictify, type CliProgress, type CliWorker } from "./cli.ts";
-import { backgroundTasks, type BackgroundDoc, type BackgroundHost, type BackgroundRecord, type JobInput, type MonitorInput } from "./background.ts";
+import { backgroundTasks, pruneOutbox, type BackgroundDoc, type BackgroundHost, type BackgroundRecord, type JobInput, type MonitorInput, type OutboxDoc } from "./background.ts";
 import { bunSqlite, lock, reap, unlock } from "./storage.ts";
 
 type D = typeof Durable;
 type Ctx = Parameters<Durable.Harness["close"]>[0];
 type ConversationId = Durable.ConversationId;
 // Documents hold strict JSON; these shapes are read and written through `json()`.
-type OutboxDoc = { items: Durable.JsonObject[] };
 type AgentsDoc = { agents: Record<string, Durable.JsonObject> };
 type WorkflowsDoc = { workflows: Record<string, Durable.JsonObject> };
 
@@ -168,6 +167,8 @@ export interface Engine {
 	root: Durable.Conversation;
 	registry: Durable.Registry;
 	kit: Kit;
+	/** Touches the storage folder while this Pi holds the engine. */
+	heartbeat: NodeJS.Timeout;
 }
 
 interface Modules { D: D; openStorage(file: string): Promise<Durable.Storage> }
@@ -196,15 +197,15 @@ interface Host extends BackgroundHost {
 const KEY = Symbol.for("pi-kit.agents");
 // SAFETY: this package exclusively owns the symbol-keyed slot and only ever stores the host in it.
 const slot = globalThis as typeof globalThis & { [KEY]?: Host };
-const host: Host = slot[KEY] ??= { engines: new Map(), running: 0, reserved: new Set(), queue: [], waiters: new Map(), closing: false, opened: new Map(), live: new Map(), workflows: new Map(), workers: new Map(), requests: new Map() };
+const host: Host = slot[KEY] ??= { engines: new Map(), running: 0, reserved: new Set(), queue: [], waiters: new Map(), closing: false, closed: new Map(), live: new Map(), workflows: new Map(), workers: new Map(), requests: new Map() };
 host.live ??= new Map();
 host.workflows ??= new Map();
 host.workers ??= new Map();
 host.reserved ??= new Set();
 host.requests ??= new Map();
 export const userRequests = host.requests;
-// A host kept from a kit version before Jobs and Monitors joined the engine.
-host.opened ??= new Map();
+// A host kept from an older kit version.
+host.closed ??= new Map();
 
 tasks.addSource({
 	name: "agents",
@@ -262,6 +263,7 @@ export async function closeAll(): Promise<void> {
 	for (const pending of engines) {
 		const engine = await pending.catch(() => undefined);
 		if (!engine) continue;
+		clearInterval(engine.heartbeat);
 		await engine.harness.close(CTX).catch(() => {});
 		await reap(`PI_KIT_OWNER=${engine.dir}`);
 		await unlock(join(engine.dir, "engine.lock"));
@@ -484,6 +486,8 @@ async function stopBackground(engine: Engine, id: string): Promise<void> {
 
 async function open(session: string, cwd: string, acks: ReturnType<typeof sessionAcks>): Promise<Engine> {
 	const dir = await storageDir(cwd, session);
+	// The folder's mtime is its last heartbeat or unlock: about when Pi last held this engine.
+	const from = await stat(dir).then((info) => info.mtimeMs, () => undefined);
 	await mkdir(join(dir, "out"), { recursive: true });
 	await lock(join(dir, "engine.lock"));
 	await reap(`PI_KIT_OWNER=${dir}`);
@@ -498,7 +502,9 @@ async function open(session: string, cwd: string, acks: ReturnType<typeof sessio
 		onReport: () => {},
 	}, CTX);
 	const root = await harness.root(CTX);
-	const engine: Engine = { session, dir, project: cwd, harness, root, registry, kit };
+	const heartbeat = setInterval(() => void utimes(dir, new Date(), new Date()).catch(() => {}), 30_000);
+	heartbeat.unref();
+	const engine: Engine = { session, dir, project: cwd, harness, root, registry, kit, heartbeat };
 	const records = agentRecords(await harness.snapshot(kit.Agents, root.id, CTX));
 	const workflows = workflowRecords(await harness.snapshot(kit.Workflows, root.id, CTX));
 	installSchemas(D, registry, session, workflows);
@@ -514,7 +520,8 @@ async function open(session: string, cwd: string, acks: ReturnType<typeof sessio
 		host.running++;
 		host.reserved.add(id);
 	}
-	host.opened.set(session, Date.now());
+	host.closed.set(session, { from, to: Date.now() });
+	await root.commit(async (tx) => pruneOutbox(await tx.doc(kit.Outbox, root.id), session), CTX);
 	harness.resume();
 	const undelivered = outboxItems(await harness.snapshot(kit.Outbox, root.id, CTX)).filter((item) => !acks.delivered.has(item.notificationId));
 	for (const item of undelivered.filter(unsent(acks.answered))) await tasks.notify(item);

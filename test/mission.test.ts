@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
@@ -23,6 +23,7 @@ function lead() {
 	missionExtension({
 		on: (name: string, handler: Handler) => handlers.set(name, handler),
 		registerTool: (tool: Tool & { name: string }) => tools.set(tool.name, tool),
+		getActiveTools: () => [...tools.keys()],
 	} as unknown as ExtensionAPI);
 	const call = (name: string, params: Record<string, unknown> = {}) => tools.get(name)!.execute("call", params, undefined, undefined, { cwd });
 	const section = () => {
@@ -43,9 +44,10 @@ it("continues only when active, autonomous, idle, owned and nothing runs; three 
 		on: (name: string, handler: (event: object, ctx: object) => void) => handlers.set(name, handler),
 		registerTool: (tool: Tool & { name: string }) => tools.set(tool.name, tool),
 		sendMessage: (message: { customType: string }) => sent.push(message.customType),
+		getActiveTools: () => [...tools.keys()],
 	} as unknown as ExtensionAPI);
 	let idle = true;
-	const ctx = { cwd, isProjectTrusted: () => true, isIdle: () => idle, hasPendingMessages: () => false };
+	const ctx = { cwd, isProjectTrusted: () => true, isIdle: () => idle, hasPendingMessages: () => false, sessionManager: { getSessionId: () => "s" } };
 	const settle = async () => {
 		handlers.get("agent_settled")!({}, ctx);
 		await new Promise((resolve) => setTimeout(resolve, 300));
@@ -64,8 +66,10 @@ it("continues only when active, autonomous, idle, owned and nothing runs; three 
 		tasks.register({ id: "a1", kind: "agent", description: "busy", status: "running", ownerSession: "s", startedAt: 0 });
 		expect(await settle()).toEqual([]);
 		tasks.register({ id: "a1", kind: "monitor", description: "watch", status: "running", ownerSession: "s", startedAt: 0 });
+		tasks.register({ id: "c1", kind: "collaborator", description: "idle tab", status: "running", ownerSession: "s", startedAt: 0 });
+		tasks.register({ id: "o1", kind: "agent", description: "another session's", status: "running", ownerSession: "other", startedAt: 0 });
 		expect(await settle()).toEqual(["mission-continue"]);
-		tasks.remove("a1");
+		for (const id of ["a1", "c1", "o1"]) tasks.remove(id);
 		expect([await settle(), await settle(), await settle(), await settle()]).toEqual([["mission-continue"], ["mission-continue"], ["mission-notice"], []]);
 		expect(currentMission(cwd)?.state).toMatchObject({ status: "paused", quietContinues: 3 });
 	} finally {
@@ -80,6 +84,7 @@ it("leaves a mission whose owner is another live Pi to that Pi", async () => {
 	missionExtension({
 		on: (name: string, handler: (event: object, ctx: object) => void) => handlers.set(name, handler),
 		registerTool: () => {},
+		getActiveTools: () => ["mission_update"],
 		sendMessage: (message: { customType: string }) => sent.push(message.customType),
 	} as unknown as ExtensionAPI);
 	mkdirSync(join(cwd, ".missions", "m"), { recursive: true });
@@ -116,4 +121,17 @@ it("carries goal, done criteria, the last three log entries and the next step wh
 	await call("mission_update", { log: "user said stop", next: "none", status: "paused" });
 	expect(section()).toBeUndefined();
 	expect(currentMission(cwd)?.state).toMatchObject({ status: "paused", quietContinues: 0, owner: { pid: process.pid } });
+});
+
+it("runs at most two closing-review rounds before a review mission closes", async () => {
+	const { call } = lead();
+	await call("mission_start", { title: "Reviewed", goal: "g", done: "d", review: true });
+	await expect(call("mission_update", { log: "x", next: "y", verdict: "clear" })).rejects.toThrow("No closing review waits");
+	expect((await call("mission_update", { log: "built", next: "review", status: "done" })).details.status).toBe("active");
+	expect(readFileSync(join(cwd, ".missions", currentMission(cwd)!.slug, "review.js"), "utf8")).toContain('"enum":["changes_requested","clear"]');
+	await expect(call("mission_update", { log: "x", next: "y", status: "done" })).rejects.toThrow("waits for its verdict");
+	expect((await call("mission_update", { log: "missing tests", next: "add tests", verdict: "changes_requested" })).details.status).toBe("active");
+	expect((await call("mission_update", { log: "tests added", next: "review", status: "done" })).details.status).toBe("active");
+	expect((await call("mission_update", { log: "still missing", next: "none", verdict: "changes_requested" })).details.status).toBe("done");
+	expect(currentMission(cwd)?.state).toMatchObject({ status: "done", reviews: 2, reviewing: false });
 });

@@ -16,7 +16,7 @@ import { remindSilentTurns } from "./silent-turns.ts";
 import { promptWorkflow, WORKFLOW_DESCRIPTION, WORKFLOW_FIELDS, WORKFLOW_SNIPPET } from "./workflow-prompt.ts";
 import { agentTypes, agentTypesList, findAgentType, workerPrompt } from "./definitions.ts";
 import { nextFire } from "./engine/background.ts";
-import { formatLocalTime, parseCron } from "./engine/cron.ts";
+import { formatLocalTime } from "./engine/cron.ts";
 import { closeAll, ensureEngine, launch, launchWorkflow, queuedAhead, reinstall, resumeSession, send, settle, startJob, startMonitor, stop, userRequests, workflowProgress, writerCwds, type Limits } from "./engine/index.ts";
 import { lookAtPath, lookAtUrl } from "./engine/watch.ts";
 import { parseWorkflow } from "./workflow/meta.ts";
@@ -266,7 +266,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				const blocked = guardShell(target, { cwd, config: loadGuardConfig(cwd) });
 				if (blocked) throw new Error(blocked);
 			} else if (source === "cron") {
-				const next = nextFire(parseCron(target).raw, Date.now());
+				const next = nextFire(target, Date.now());
 				if (next === Infinity) throw new Error(`Cron expression ${JSON.stringify(target)} has no fire within five years.`);
 				baseline = `next fire ${formatLocalTime(next)}`;
 			} else if (source === "path") {

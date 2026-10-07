@@ -1,17 +1,18 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isAutonomous } from "../shared/autonomy.ts";
 import { ownsProcessIdentity, readProcessIdentity } from "../shared/process-group.ts";
 import { tasks } from "../shared/tasks.ts";
-import { createMission, currentMission, missionBrief, saveMission, STATUSES, type Mission, type MissionStatus, type Owner } from "./store.ts";
+import { git } from "../shared/worktree.ts";
+import { createMission, currentMission, missionBrief, reviewPath, saveMission, STATUSES, type Mission, type MissionStatus, type Owner } from "./store.ts";
 
 const STALL_CONTINUES = 3;
+const REVIEW_ROUNDS = 2;
 const MISSION_CONTINUE = "mission-continue";
 const MISSION_NOTICE = "mission-notice";
 
-const execFileAsync = promisify(execFile);
 const OPEN: readonly MissionStatus[] = ["active", "waiting_user"];
 
 const GUIDANCE = [
@@ -22,13 +23,7 @@ const GUIDANCE = [
 let self: Promise<Owner> | undefined;
 const thisProcess = (): Promise<Owner> => self ??= readProcessIdentity(process.pid).then((identity) => ({ pid: process.pid, identity }));
 
-async function gitHead(cwd: string): Promise<string | undefined> {
-	try {
-		return (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd, timeout: 5_000 })).stdout.trim() || undefined;
-	} catch {
-		return undefined;
-	}
-}
+const gitHead = (cwd: string): Promise<string | undefined> => git(cwd, ["rev-parse", "HEAD"]).then((out) => out.trim() || undefined, () => undefined);
 
 const text = (value: string, details: Record<string, string | boolean>) => ({ content: [{ type: "text" as const, text: value }], details });
 
@@ -53,6 +48,8 @@ export default function missionExtension(pi: ExtensionAPI): void {
 		if (!interrupted) later(ctx);
 	});
 	pi.on("before_agent_start", (event, ctx) => {
+		// A Pi collaborator in the lead's directory has no mission tools.
+		if (!pi.getActiveTools().includes("mission_update")) return;
 		const mission = currentMission(ctx.cwd);
 		if (mission && OPEN.includes(mission.state.status)) event.systemPromptOptions.sections.mission = `${missionBrief(mission)}\n\n${GUIDANCE}`;
 	});
@@ -69,7 +66,7 @@ export default function missionExtension(pi: ExtensionAPI): void {
 			title: Type.String({ description: "A short title" }),
 			goal: Type.String({ description: "What the mission must achieve, with its constraints" }),
 			done: Type.String({ description: "The done criteria, concrete enough for you to check" }),
-			review: Type.Optional(Type.Boolean({ description: "Ask for a closing review before the mission closes" })),
+			review: Type.Optional(Type.Boolean({ description: `Run a closing-review Workflow, at most ${REVIEW_ROUNDS} rounds, before the mission closes` })),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const open = currentMission(ctx.cwd);
@@ -84,21 +81,37 @@ export default function missionExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "mission_update",
 		label: "Mission update",
-		description: "Log progress on the project's Mission and set its next step. Set status to change its state: active resumes it, paused or abandoned when the user asks, waiting_user when only the user can unblock you, done when its done criteria hold.",
+		description: "Log progress on the project's Mission and set its next step. Set status to change its state: active resumes it, paused or abandoned when the user asks, waiting_user when only the user can unblock you, done when its done criteria hold (a review mission first runs its closing review).",
 		promptSnippet: "Log Mission progress and its next step, or change its status.",
 		parameters: Type.Object({
 			log: Type.String({ description: "What happened since the last update: progress, evidence, decisions" }),
 			next: Type.String({ description: "The next concrete step" }),
 			status: Type.Optional(StringEnum(STATUSES, { description: "Omit to keep the current status" })),
+			verdict: Type.Optional(StringEnum(["clear", "changes_requested"], { description: "The closing review's verdict once its Workflow reports; put its findings in log" })),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const mission = currentMission(ctx.cwd);
 			if (!mission) throw new Error("No mission in this project. Start one with mission_start.");
-			const status = params.status ?? mission.state.status;
-			mission.state = { ...mission.state, status, next: params.next, quietContinues: 0, owner: await thisProcess(), head: await gitHead(ctx.cwd) };
+			const { state } = mission;
+			const rounds = state.reviews ?? 0;
+			let status = params.status ?? state.status;
+			let review = "";
+			if (params.verdict) {
+				if (!state.reviewing) throw new Error("No closing review waits for a verdict.");
+				state.reviewing = false;
+				status = params.verdict === "clear" || rounds >= REVIEW_ROUNDS ? "done" : "active";
+			} else if (status === "done" && state.review) {
+				if (state.reviewing) throw new Error(`Closing review round ${rounds} waits for its verdict: pass it as verdict.`);
+				if (rounds < REVIEW_ROUNDS) {
+					status = "active";
+					state.reviews = rounds + 1;
+					state.reviewing = true;
+					writeReviewScript(mission);
+					review = ` Closing review round ${rounds + 1} of ${REVIEW_ROUNDS}: run Workflow({scriptPath: "${reviewPath(mission)}"}); when it reports, call mission_update with its verdict and its findings as log.`;
+				}
+			}
+			mission.state = { ...state, status, next: params.next, quietContinues: 0, owner: await thisProcess(), head: await gitHead(ctx.cwd) };
 			saveMission(mission, params.log);
-			// Step 5.4 runs the closing-review Workflow here once the Workflow tool lands.
-			const review = status === "done" && mission.state.review ? " No closing review ran: this build has no Workflow tool." : "";
 			return text(`Mission ${mission.slug} is ${status}.${review}`, { slug: mission.slug, status });
 		},
 	});
@@ -119,6 +132,7 @@ export default function missionExtension(pi: ExtensionAPI): void {
 
 /** The autonomous continue: enum, counter and pid checks only. */
 async function maybeContinue(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+	if (!pi.getActiveTools().includes("mission_update")) return;
 	const mission = currentMission(ctx.cwd);
 	if (mission?.state.status !== "active") return;
 	const { state } = mission;
@@ -128,7 +142,8 @@ async function maybeContinue(pi: ExtensionAPI, ctx: ExtensionContext): Promise<v
 		state.owner = me;
 	}
 	if (!await isAutonomous(ctx)) return;
-	if (tasks.list().some((task) => task.status === "running" && task.kind !== "monitor")) return;
+	// Monitors and collaborators wake the lead themselves, by notification or by mail.
+	if (tasks.list(ctx.sessionManager.getSessionId()).some((task) => task.status === "running" && task.kind !== "monitor" && task.kind !== "collaborator")) return;
 	const head = await gitHead(ctx.cwd);
 	if (head !== state.head) {
 		state.head = head;
@@ -155,4 +170,25 @@ function pause(pi: ExtensionAPI, mission: Mission): void {
 		display: true,
 		details: { slug: mission.slug, status: "paused" },
 	});
+}
+
+const VERDICT_SCHEMA = {
+	type: "object",
+	properties: { verdict: { type: "string", enum: ["changes_requested", "clear"] }, findings: { type: "string" } },
+	required: ["verdict", "findings"],
+};
+
+/** One read-only reviewer that checks the done criteria in mission.md and answers through the verdict schema. */
+function writeReviewScript(mission: Mission): void {
+	const prompt = [
+		"READ-ONLY. Closing review of a Mission: check, in the repository as it is now, that every done criterion below holds.",
+		"Answer verdict \"clear\" only when all of them hold; otherwise \"changes_requested\", with findings naming what is missing or wrong, with file paths.",
+		"",
+		readFileSync(join(mission.dir, "mission.md"), "utf8"),
+	].join("\n");
+	writeFileSync(join(mission.dir, "review.js"), [
+		`export const meta = { name: "mission-review", description: ${JSON.stringify(`Closing review of mission ${mission.slug}`)} };`,
+		`return await agent(${JSON.stringify(prompt)}, { label: "closing review", schema: ${JSON.stringify(VERDICT_SCHEMA)} });`,
+		"",
+	].join("\n"));
 }

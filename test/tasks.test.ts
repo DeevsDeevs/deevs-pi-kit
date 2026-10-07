@@ -180,6 +180,21 @@ describe("task delivery", () => {
 		expect(pi.sent).toEqual([]);
 	});
 
+	it("prunes from the Outbox only what the on-screen session already holds", async () => {
+		const pi = lead();
+		shared.tasks.install(pi.pi);
+		pi.entries("s1").push({ type: "custom_message", customType: "task-notification", details: { notificationId: "b1:g" } });
+		const { pruneOutbox } = await import("../extensions/subagents/engine/background.ts");
+		const outbox = { items: [{ notificationId: "b1:g" }, { notificationId: "b2:g" }] };
+		pruneOutbox(outbox, "s1");
+		expect(outbox.items).toHaveLength(2);
+		await pi.start("s1");
+		pruneOutbox(outbox, "s2");
+		expect(outbox.items).toHaveLength(2);
+		pruneOutbox(outbox, "s1");
+		expect(outbox.items).toEqual([{ notificationId: "b2:g" }]);
+	});
+
 	it("sends unacked reports once after a restart, and acked ones never", async () => {
 		const pi = lead();
 		pi.entries("s1").push({ type: "custom_message", customType: "task-notification", details: { notificationId: "b1:g" } });

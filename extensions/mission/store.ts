@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
@@ -17,8 +17,11 @@ const State = Type.Object({
 	/** HEAD at the last mission_update or continue; a different HEAD is a new commit. */
 	head: Type.Optional(Type.String()),
 	review: Type.Optional(Type.Boolean()),
+	/** Closing-review rounds started, and whether the last one still waits for its verdict. */
+	reviews: Type.Optional(Type.Integer({ minimum: 0 })),
+	reviewing: Type.Optional(Type.Boolean()),
 });
-export type MissionState = Static<typeof State>;
+type MissionState = Static<typeof State>;
 export type MissionStatus = MissionState["status"];
 
 export interface Mission {
@@ -50,7 +53,7 @@ function readText(file: string): string {
 	}
 }
 
-export function loadMission(cwd: string, slug: string): Mission {
+function loadMission(cwd: string, slug: string): Mission {
 	const dir = join(missionsDir(cwd), slug);
 	const state = readState(join(dir, "state.json"));
 	return state ? { slug, dir, state, legacy: false } : { slug, dir, state: { status: "paused", next: "", quietContinues: 0 }, legacy: true };
@@ -86,9 +89,14 @@ export function createMission(cwd: string, title: string, goal: string, done: st
 /** Writes state.json, after appending `log` to log.md under the time and the status. */
 export function saveMission(mission: Mission, log?: string): void {
 	if (log !== undefined) appendFileSync(join(mission.dir, "log.md"), `\n## ${new Date().toISOString()} ${mission.state.status}\n\n${log.trim()}\n`);
-	writeFileSync(join(mission.dir, "state.json"), `${JSON.stringify(mission.state, null, 2)}\n`);
+	// A torn state.json would load the mission as legacy and pause it.
+	const tmp = join(mission.dir, `state.json.${process.pid}`);
+	writeFileSync(tmp, `${JSON.stringify(mission.state, null, 2)}\n`);
+	renameSync(tmp, join(mission.dir, "state.json"));
 	mission.legacy = false;
 }
+
+export const reviewPath = (mission: Mission): string => `.missions/${mission.slug}/review.js`;
 
 /** Goal, done criteria, the last log entries and the next step, as the lead sees them. */
 export function missionBrief(mission: Mission): string {
@@ -99,5 +107,6 @@ export function missionBrief(mission: Mission): string {
 		cap(readText(join(mission.dir, "mission.md")).trim(), 4_000),
 		`Latest log entries:\n\n${entries.map((entry) => cap(entry.trim(), 1_500)).join("\n\n") || "(none)"}`,
 		`Next step: ${mission.state.next || "(not recorded yet)"}`,
+		...(mission.state.reviewing ? [`Closing review round ${mission.state.reviews} waits for its verdict: run Workflow({scriptPath: "${reviewPath(mission)}"}) if it has not reported, then pass its verdict to mission_update.`] : []),
 	].join("\n\n");
 }

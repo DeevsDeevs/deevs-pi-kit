@@ -124,6 +124,10 @@ export const tasks = {
 		}
 		showHeld();
 	},
+	/** The notification ids the owner session's file already holds, when that session is on screen. */
+	delivered(ownerSession: string): Set<string> | undefined {
+		return state.ctx && activeSession() === ownerSession ? sessionAcks(state.ctx).delivered : undefined;
+	},
 	/** Whether the owner session's lead could take a new turn now; a session not on screen counts as idle (its reports are held). */
 	idle(ownerSession: string): boolean {
 		try {
