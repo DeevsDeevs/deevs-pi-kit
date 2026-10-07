@@ -1,8 +1,10 @@
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { TObject, TSchema } from "typebox";
+import { Value } from "typebox/value";
 import subagentsExtension from "../extensions/subagents/index.ts";
 import { agentTypesList, findAgentType, workerPrompt } from "../extensions/subagents/definitions.ts";
 
@@ -44,6 +46,20 @@ describe("Subagent extension surface", () => {
 		expect(await start(true, false)).toEqual(["set gpt-6.1-sol"]);
 		expect(await start(false, false)).toEqual(["warning"]);
 		expect(await start(true, true)).toEqual([]);
+	});
+
+	it("runs a project's saved workflow only when the project is trusted, and takes only a plain name", async () => {
+		process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "pi-kit-saved-"));
+		const cwd = mkdtempSync(join(tmpdir(), "pi-kit-saved-cwd-"));
+		mkdirSync(join(cwd, ".pi", "workflows"), { recursive: true });
+		writeFileSync(join(cwd, ".pi", "workflows", "mine.js"), "not a workflow");
+		let workflow: { parameters: TSchema; execute: (id: string, params: object, signal: undefined, update: undefined, ctx: object) => Promise<unknown> } | undefined;
+		subagentsExtension({ registerTool(tool: NonNullable<typeof workflow> & { name: string }) { if (tool.name === "Workflow") workflow = tool; }, registerCommand() {}, on() {} } as unknown as ExtensionAPI);
+		const run = (trusted: boolean) => workflow!.execute("t", { name: "mine" }, undefined, undefined, { cwd, isProjectTrusted: () => trusted });
+		await expect(run(false)).rejects.toThrow("No workflow named 'mine'");
+		await expect(run(true)).rejects.toThrow(/meta/);
+		const name = (workflow!.parameters as TObject).properties.name!;
+		expect(["mine", "a.b-c_1", "../x", "a/b"].map((value) => Value.Check(name, value))).toEqual([true, true, false, false]);
 	});
 
 	it("matches agent types forgivingly and lists them on a miss", () => {

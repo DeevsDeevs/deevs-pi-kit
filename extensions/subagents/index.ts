@@ -56,7 +56,7 @@ const AGENT_DESCRIPTION = [
 const WorkflowSchema = Type.Object({
 	script: Type.Optional(Type.String({ description: WORKFLOW_FIELDS.script })),
 	scriptPath: Type.Optional(Type.String({ description: WORKFLOW_FIELDS.scriptPath })),
-	name: Type.Optional(Type.String({ description: WORKFLOW_FIELDS.name })),
+	name: Type.Optional(Type.String({ pattern: "^[\\w.-]+$", description: WORKFLOW_FIELDS.name })),
 	args: Type.Optional(Type.Any({ description: WORKFLOW_FIELDS.args })),
 	resumeFromRunId: Type.Optional(Type.String({ pattern: "^wf_[a-z0-9-]{6,}$", description: WORKFLOW_FIELDS.resumeFromRunId })),
 });
@@ -154,7 +154,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		promptSnippet: WORKFLOW_SNIPPET,
 		parameters: WorkflowSchema,
 		async execute(toolCallId, params: WorkflowParams, _signal, _onUpdate, ctx) {
-			const { source, scriptPath } = await workflowSource(params, ctx.cwd);
+			const { source, scriptPath } = await workflowSource(params, ctx);
 			let meta;
 			try {
 				({ meta } = parseWorkflow(source));
@@ -351,20 +351,20 @@ async function stopTask(ctx: ExtensionContext, id: string, by?: "user") {
 	return { entry, stopped };
 }
 
-/** `scriptPath`, then `name`, then `script`; only a scriptPath is run from its own file, the others get a persisted copy. */
-async function workflowSource(params: WorkflowParams, cwd: string): Promise<{ source: string; scriptPath?: string }> {
+/** `scriptPath`, then `name` (a trusted project's first), then `script`; only a scriptPath is run from its own file, the others get a persisted copy. */
+async function workflowSource(params: WorkflowParams, ctx: ExtensionContext): Promise<{ source: string; scriptPath?: string }> {
 	if (params.scriptPath) {
-		const scriptPath = resolve(cwd, params.scriptPath);
+		const scriptPath = resolve(ctx.cwd, params.scriptPath);
 		const source = await readFile(scriptPath, "utf8").catch(() => undefined);
 		if (source === undefined) throw new Error(`Cannot read the workflow script ${scriptPath}.`);
 		return { source, scriptPath };
 	}
 	if (params.name) {
-		for (const dir of [join(cwd, ".pi", "workflows"), join(getAgentDir(), "workflows")]) {
+		for (const dir of [...(ctx.isProjectTrusted() ? [join(ctx.cwd, ".pi", "workflows")] : []), join(getAgentDir(), "workflows")]) {
 			const source = await readFile(join(dir, `${params.name}.js`), "utf8").catch(() => undefined);
 			if (source !== undefined) return { source };
 		}
-		throw new Error(`No workflow named '${params.name}' in .pi/workflows or ~/.pi/agent/workflows.`);
+		throw new Error(`No workflow named '${params.name}' in ${ctx.isProjectTrusted() ? ".pi/workflows or ~/.pi/agent/workflows" : "~/.pi/agent/workflows; an untrusted project's .pi/workflows is not read"}.`);
 	}
 	if (params.script) return { source: params.script };
 	throw new Error("Workflow needs a script, a scriptPath or a name.");
