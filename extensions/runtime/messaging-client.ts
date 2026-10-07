@@ -92,6 +92,8 @@ export class MessagingClient {
 
 	/** Mails `to` (a participant name; main is the lead) from this session's own namespace; returns the delivery line. */
 	async send(ctx: ExtensionContext, to: string, message: string, images: readonly string[]): Promise<string> {
+		// Read before the reply is sent: a read after it would leave Runtime counting a reply as still owed.
+		await this.acknowledge(ctx);
 		const body = Buffer.from(encodeMail(message, images)).toString("base64");
 		await this.mail(ctx, "send", { participantId: to, operationId: randomUUID(), bodyBase64: body });
 		return `Message sent to ${to}; it arrives at its next idle, merged with anything else sent meanwhile.`;
@@ -104,19 +106,22 @@ export class MessagingClient {
 	 */
 	async deliverMail(registration: LiveClientRegistration, ctx: ExtensionContext, mail: MailHint | undefined): Promise<void> {
 		if (!mail || !this.hintReady(registration, ctx)) return;
-		const held = deliveredMail(ctx);
-		if (this.sent.has(mail.eventId) && !held.has(mail.eventId)) return;
-		const inbox = await this.mail(ctx, "inbox", { peek: true });
-		const messages = isJsonObject(inbox) && Array.isArray(inbox.messages) ? inbox.messages.filter(isJsonObject) : [];
-		const eventIds = messages.map((message) => String(message.eventId));
-		const delivered = eventIds.filter((id) => held.has(id));
-		if (delivered.length > 0) await this.mail(ctx, "read", { eventIds: delivered });
-		const fresh = messages.filter((message) => !held.has(String(message.eventId)) && !this.sent.has(String(message.eventId)));
+		const fresh = (await this.acknowledge(ctx)).filter((message) => !this.sent.has(String(message.eventId)));
 		if (fresh.length === 0 || !this.hintReady(registration, ctx)) return;
 		const ids = fresh.map((message) => String(message.eventId));
 		for (const id of ids) this.sent.add(id);
 		const from = [...new Set(fresh.map((message) => String(message.from)))];
 		this.session.pi.sendMessage({ customType: COLLABORATOR_MESSAGE, content: mailContent(fresh), display: true, details: { from, eventIds: ids } }, { triggerTurn: true, deliverAs: "followUp" });
+	}
+
+	/** Marks read the unread mail this session's file holds; returns the unread mail it does not hold. */
+	private async acknowledge(ctx: ExtensionContext): Promise<JsonObject[]> {
+		const held = deliveredMail(ctx);
+		const inbox = await this.mail(ctx, "inbox", { peek: true });
+		const messages = isJsonObject(inbox) && Array.isArray(inbox.messages) ? inbox.messages.filter(isJsonObject) : [];
+		const delivered = messages.map((message) => String(message.eventId)).filter((id) => held.has(id));
+		if (delivered.length > 0) await this.mail(ctx, "read", { eventIds: delivered });
+		return messages.filter((message) => !held.has(String(message.eventId)));
 	}
 
 	/** One daemon call in this session's own mail namespace, with the credentials of its private descriptor. */

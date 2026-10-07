@@ -26,7 +26,7 @@ export default {
 			{ id: "s5", tool: "SendMessage", args: { to: "worker", message: "standdown-again" } },
 			{ id: "s6", text: "done" },
 		] });
-		await lead.until((_, events) => toolCalls(events).length >= 3, 150_000, "the stand-down");
+		await lead.until((_, events) => toolCalls(events).length >= 3, 90_000, "a stand-down short of the 120 s grace");
 		const [start, , stop] = toolCalls(lead.events);
 		assert.equal(stop.isError, false, stop.text);
 		const pane = start.details.results[0].paneId;

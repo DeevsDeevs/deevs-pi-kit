@@ -22,7 +22,7 @@ export default {
 			{ id: "s3", tool: "TaskStop", args: { task_id: "reader" } },
 			{ id: "s4", text: "stood down" },
 		] });
-		await lead.until((_, events) => toolCalls(events).length >= 3, 170_000, "start, send and stand-down");
+		await lead.until((_, events) => toolCalls(events).length >= 3, 90_000, "start, send and a stand-down short of the 120 s grace");
 		assert.deepEqual(toolCalls(lead.events).map((c) => [c.name, c.isError]), [["collaborator_start", false], ["SendMessage", false], ["TaskStop", false]]);
 		const reader = requests(t).filter((r) => r.agent === "reader");
 		assert.ok(reader[0]?.tools.includes("bash") && !reader[0].tools.some((n) => n === "edit" || n === "write"), "a reader was not offered bash, or was offered edit/write");

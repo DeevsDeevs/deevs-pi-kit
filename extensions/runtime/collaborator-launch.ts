@@ -190,8 +190,9 @@ export function prepareCollaboratorSession(sessionFile: string, launchCwd: strin
 	const cwd = realpathSync(launchCwd);
 	const timestamp = new Date().toISOString();
 	const fresh: SessionHeader = { type: "session", version: CURRENT_SESSION_VERSION, id: randomUUID(), timestamp, cwd };
-	const parsed: FileEntry[] = existsSync(sessionFile) ? parseSessionEntries(readFileSync(sessionFile, "utf8")) : [];
-	const created = parsed[0]?.type !== "session";
+	const created = !existsSync(sessionFile);
+	const parsed: FileEntry[] = created ? [] : parseSessionEntries(readFileSync(sessionFile, "utf8"));
+	if (!created && parsed[0]?.type !== "session") throw new HostedRuntimeClientError("conflict", `Collaborator session ${sessionFile} has no readable header; move it aside to start this collaborator fresh.`);
 	const [header, ...entries] = created ? [fresh] : parsed;
 	let previous: JsonObject | undefined;
 	for (const entry of entries) if (entry.type === "custom" && entry.customType === HOSTED_SESSION_ENTRY) previous = asRecord(entry.data);

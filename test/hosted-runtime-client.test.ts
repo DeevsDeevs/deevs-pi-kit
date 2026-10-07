@@ -132,7 +132,7 @@ describe("hosted runtime client vertical", () => {
 		expect(await client.hello()).toMatchObject({ build: RUNTIME_BUILD });
 	});
 
-	it("marks collaborator mail read only once the session holds it, so a reload in between delivers it again", async () => {
+	it("marks collaborator mail read only once the session holds it, so a reload in between delivers it again, and before a reply, so none stays owed", async () => {
 		const root = mkdtempSync(join(tmpdir(), "pi-kit-runtime-mail-"));
 		roots.push(root);
 		const projectRoot = join(root, "project");
@@ -146,10 +146,11 @@ describe("hosted runtime client vertical", () => {
 		servers.push(server);
 		const sent: Array<{ customType: string; details: unknown }> = [];
 		const entries: unknown[] = [];
+		let busy = false;
 		const pi = { exec: vi.fn(), appendEntry: () => {}, sendMessage: (message: { customType: string; details: unknown }) => sent.push(message) };
 		const identity = { type: "custom", customType: HOSTED_SESSION_ENTRY, data: { version: 3, participant: { protocol: "review", participantId: "main", disposition: "held" } } };
 		const ctx = {
-			cwd: projectRoot, hasUI: true, mode: "rpc", isIdle: () => true, hasPendingMessages: () => false, isProjectTrusted: () => true, ui: { notify: () => {} },
+			cwd: projectRoot, hasUI: true, mode: "rpc", isIdle: () => !busy, hasPendingMessages: () => false, isProjectTrusted: () => true, ui: { notify: () => {} },
 			sessionManager: { getSessionFile: () => leadFile, getSessionId: () => "lead", getBranch: () => [identity], getEntries: () => entries },
 		};
 		const lead = new HostedRuntimeIntegration(pi as never, runtimeRoot);
@@ -166,7 +167,13 @@ describe("hosted runtime client vertical", () => {
 		await reloaded.session.sessionStart(ctx as never);
 		await vi.waitFor(() => expect(sent).toHaveLength(2), { timeout: 5_000 });
 		expect(sent[1]).toMatchObject({ customType: "collaborator-message", details: { from: ["peer"], eventIds: [expect.any(String)] } });
+		busy = true;
 		entries.push({ type: "custom_message", ...sent[1] });
+		await (reloaded as unknown as { messaging: MessagingClient }).messaging.send(ctx as never, "peer", "reply", []);
+		const { participants } = await client.call("participant.list", peer) as { participants: Array<{ participantId: string; participantKey: string }> };
+		const main = participants.find((item) => item.participantId === "main")!;
+		expect(await client.call("participant.get", { ...peer, participantKey: main.participantKey })).toMatchObject({ unreadMail: 0, awaitingReply: false });
+		busy = false;
 		const leadAuth = { targetKey: String(reloaded.session.liveRegistration?.targetKey) };
 		await vi.waitFor(async () => expect(await client.call("pi.heartbeat", leadAuth)).not.toHaveProperty("mail"), { timeout: 5_000 });
 		expect(sent).toHaveLength(2);
