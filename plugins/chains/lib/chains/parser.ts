@@ -1,6 +1,5 @@
 import { basename } from "node:path";
-import { utf8Head } from "../shared/bytes.ts";
-import { truncateGraphemes } from "../shared/terms.ts";
+import { stripFrontmatter, truncateGraphemes } from "../shared/terms.ts";
 
 const STALE_AFTER_DAYS = 7;
 
@@ -44,10 +43,6 @@ export function withMetadata(content: string, metadata: Required<Pick<ChainLinkM
 	return lines.join("\n");
 }
 
-export function stripFrontmatter(content: string): string {
-	return content.replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, "");
-}
-
 export function parseCreatedAt(filename: string, metadata?: ChainLinkMetadata) {
 	const fromMetadata = metadata?.created ? new Date(metadata.created) : null;
 	const date = fromMetadata && !Number.isNaN(fromMetadata.getTime()) ? fromMetadata : dateFromFilename(filename);
@@ -64,15 +59,6 @@ export function slugify(value: string): string {
 		.replace(/-{2,}/g, "-");
 	// 255-byte filename minus timestamp, separator, largest collision suffix, and .md.
 	return truncateGraphemes(slug, 80, 228) || "chain-link";
-}
-
-export function truncateText(value: string, maxBytes: number) {
-	const bytes = Buffer.byteLength(value, "utf8");
-	if (bytes <= maxBytes) return { text: value, truncated: false };
-	const suffix = `\n\n[chain content truncated to ${maxBytes} bytes]`;
-	const suffixBytes = Buffer.byteLength(suffix, "utf8");
-	const text = suffixBytes >= maxBytes ? utf8Head(suffix, maxBytes) : `${utf8Head(value, maxBytes - suffixBytes)}${suffix}`;
-	return { text, truncated: true };
 }
 
 function dateFromFilename(filename: string): Date | null {

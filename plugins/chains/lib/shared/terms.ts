@@ -45,3 +45,19 @@ export function lineMatcher(query: string, regex: boolean, caseSensitive: boolea
 export function clampInt(value: number, min: number, max: number): number {
 	return Number.isFinite(value) ? Math.max(min, Math.min(max, Math.floor(value))) : min;
 }
+
+export function stripFrontmatter(content: string): string {
+	return content.replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, "");
+}
+
+/** Lines `index - context` to `index + context`, each prefixed with its 1-based number. */
+export function snippet(lines: string[], index: number, context: number): string {
+	const start = Math.max(0, index - context);
+	return lines.slice(start, index + context + 1).map((line, offset) => `${start + offset + 1}: ${line}`).join("\n");
+}
+
+/** One term's BM25 weight, with b = 0.75. */
+export function bm25(termFrequency: number, documentFrequency: number, totalDocs: number, length: number, averageLength: number, k1: number): number {
+	const idf = Math.log(1 + (totalDocs - documentFrequency + 0.5) / (documentFrequency + 0.5));
+	return idf * ((termFrequency * (k1 + 1)) / (termFrequency + k1 * (1 - 0.75 + 0.75 * (length / averageLength))));
+}

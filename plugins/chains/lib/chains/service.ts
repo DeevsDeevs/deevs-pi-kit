@@ -1,8 +1,9 @@
 import type { Dirent } from "node:fs";
 import { lstat, mkdir, open, readdir, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { extractTitle, parseCreatedAt, parseMetadata, slugify, stripFrontmatter, truncateText, withMetadata } from "./parser.ts";
-import { clampInt as clamp, lineMatcher, unicodeTerms, validateQuery } from "../shared/terms.ts";
+import { extractTitle, parseCreatedAt, parseMetadata, slugify, withMetadata } from "./parser.ts";
+import { truncateText } from "../shared/bytes.ts";
+import { bm25, clampInt as clamp, lineMatcher, snippet, stripFrontmatter, unicodeTerms, validateQuery } from "../shared/terms.ts";
 import type {
 	ChainBranchInfo,
 	ChainContextInput,
@@ -91,7 +92,7 @@ export class ChainService {
 		if (!link || (branch && link.branch !== branch)) throw new Error(`Chain link not found: ${chain}/${filename}${branch ? ` on branch ${branch}` : ""}`);
 		const maxBytes = clamp(input.maxBytes ?? DEFAULT_MAX_BYTES, 1, MAX_BYTES);
 		const raw = await this.readLinkContent(link.chain, link.filename, maxBytes + 1);
-		const { text, truncated } = truncateText(raw, maxBytes);
+		const { text, truncated } = truncateText(raw, maxBytes, "chain content");
 		return { link, content: text, truncated, recent: links.slice(0, 5) };
 	}
 
@@ -213,7 +214,7 @@ export class ChainService {
 				truncated = true;
 				return;
 			}
-			const clipped = truncateText(text, remaining);
+			const clipped = truncateText(text, remaining, "chain content");
 			parts.push(clipped.text);
 			remaining -= Buffer.byteLength(clipped.text, "utf8");
 			if (clipped.truncated) truncated = true;
@@ -456,16 +457,10 @@ function edgeSections(content: string, head: number, tail: number): string {
 }
 
 function bm25Score(doc: LookupDocument, terms: string[], df: Map<string, number>, totalDocs: number, averageLength: number): number {
-	const k1 = 1.4;
-	const b = 0.75;
 	let score = 0;
 	for (const term of terms) {
 		const termFrequency = doc.termFrequency.get(term) ?? 0;
-		if (termFrequency <= 0) continue;
-		const documentFrequency = df.get(term) ?? 0;
-		const idf = Math.log(1 + (totalDocs - documentFrequency + 0.5) / (documentFrequency + 0.5));
-		const denominator = termFrequency + k1 * (1 - b + b * (doc.length / averageLength));
-		score += idf * ((termFrequency * (k1 + 1)) / denominator);
+		if (termFrequency > 0) score += bm25(termFrequency, df.get(term) ?? 0, totalDocs, doc.length, averageLength, 1.4);
 	}
 	return score;
 }
@@ -500,12 +495,6 @@ function formatLinkBlock(label: string, link: ChainLinkInfo, content: string): s
 function compactMarkdown(content: string): string {
 	const body = stripFrontmatter(content).trim();
 	return edgeSections(body, 3, 1).replace(/\n{3,}/g, "\n\n") || body;
-}
-
-function snippet(lines: string[], index: number, context: number): string {
-	const start = Math.max(0, index - context);
-	const end = Math.min(lines.length, index + context + 1);
-	return lines.slice(start, end).map((line, offset) => `${start + offset + 1}: ${line}`).join("\n");
 }
 
 function branchInfos(chain: string, links: ChainLinkInfo[]): ChainBranchInfo[] {
