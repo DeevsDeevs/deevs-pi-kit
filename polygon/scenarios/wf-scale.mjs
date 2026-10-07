@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { rpc } from "../drive.mjs";
+import { LOOP_PROBE, rpc } from "../drive.mjs";
 import { taskNotifications } from "../look.mjs";
 import { launches, progressEvents, usageOf } from "./wf-shapes.mjs";
 
@@ -18,7 +18,7 @@ export default {
 	slow: true,
 	timeoutMs: 600_000,
 	async run(t) {
-		const lead = rpc(t);
+		const lead = rpc(t, { args: ["-e", LOOP_PROBE] });
 		await lead.send({ type: "get_state" }, 30_000);
 		const stalls = lead.stallMeter();
 		await lead.script({ agent: "lead", steps: [{ id: "s1", tool: "Workflow", args: { script: SOURCE } }, { id: "s2", text: "launched" }] });
