@@ -7,7 +7,7 @@ node bench/orchestration/run.mjs --configs cc-opus --reps 2 --parallel 5 --run c
 node bench/orchestration/run.mjs --tasks t2 --configs pi-opus,pi-sol --run pi-final
 node bench/orchestration/run.mjs --summarize cc-baseline --out <file>                        # chart-ready summary.json
 node bench/orchestration/run.mjs --models     # token expiries and Pi's model list, from the volume
-node bench/orchestration/run.mjs --freshen    # the polygon's freshen step: refresh the volume's tokens (needs polygon/run.mjs to name Pi's 'openai' provider)
+node bench/orchestration/run.mjs --freshen    # the polygon's freshen step: refresh the volume's tokens
 ```
 
 `node bench/orchestration/inside.mjs --remeasure <run dirs>` recomputes a finished run's metrics on the host from its saved transcripts, and re-judges t1 (no repo needed) and, with `BENCH_PRISTINE=<export of 4080d62>`, t2, t4 and t5; `repo.patch` holds every run's changes for replaying t3's check.
