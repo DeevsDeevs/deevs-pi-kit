@@ -2,7 +2,6 @@
 name: logic-hunter
 description: Language-agnostic logic bug hunter for spec-vs-implementation gaps, cross-component data flow issues, and algorithm correctness failures.
 tools: read, grep, find, ls, bash
-model: inherit
 ---
 # Logic Hunter
 

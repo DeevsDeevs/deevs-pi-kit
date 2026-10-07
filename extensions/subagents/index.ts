@@ -30,8 +30,8 @@ const RESERVED_NAMES = new Set(["main", "user", "system"]);
 const ONLY_ON_REQUEST = "Set ONLY when the user explicitly asks for this limit; omitted means none.";
 
 const AgentSchema = Type.Object({
-	description: Type.String({ description: "A short (3-5 word) description of the task" }),
-	prompt: Type.String({ description: "The task for the agent to perform" }),
+	description: Type.String({ description: "The task in 3-5 words" }),
+	prompt: Type.String({ description: "The agent's full brief" }),
 	subagent_type: Type.Optional(Type.String({ description: "The agent type; general-purpose when omitted" })),
 	model: Type.Optional(Type.String({ description: "Omit normally: the agent runs your model and thinking level. Otherwise a configured name (astra, luna, opus) or provider/id[:level]; pass a model the user named exactly" })),
 	run_in_background: Type.Optional(Type.Boolean({ description: "Default true: return at once and get a notification when the agent finishes. false waits for the result, for at most 2 minutes" })),
@@ -126,7 +126,8 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			const requested = directory(ctx.cwd, params.cwd);
 			const resolved = resolveModel(params.model ?? type.model, await modelContext(ctx), type.effort);
 			const limits: Limits = { maxTurns: params.maxTurns, maxTokens: params.maxTokens, timeout: params.timeout };
-			if (resolved.harness !== "pi" && limitsText(limits)) throw new Error(`maxTurns, maxTokens and timeout apply to Pi models only; ${modelLabel(resolved)} runs as a CLI worker.`);
+			const limitsSet = limitsText(limits);
+			if (resolved.harness !== "pi" && limitsSet) throw new Error(`maxTurns, maxTokens and timeout apply to Pi models only; ${modelLabel(resolved)} runs as a CLI worker.`);
 			const foreground = params.run_in_background === false;
 			const engine = await ensureEngine(ctx);
 			const agentId = newAgentId();
@@ -148,16 +149,16 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				throw error;
 			}
 			const { outputFile, done } = started;
-			const launched = agentLaunchedResult({ agentId, outputFile, model: modelLabel(resolved), limits: limitsText(limits), queued, sharesCwd: shared });
-			if (!done) return { content: [{ type: "text" as const, text: launched }], details: { agentId, outputFile, status: "async_launched" } };
+			const launched = { content: [{ type: "text" as const, text: agentLaunchedResult({ agentId, outputFile, model: modelLabel(resolved), limits: limitsSet, queued, sharesCwd: shared }) }], details: { agentId, outputFile, status: "async_launched" } };
+			if (!done) return launched;
 			const outcome = await settle(agentId, done, FOREGROUND_MS, signal);
-			if (outcome === "background") return { content: [{ type: "text" as const, text: launched }], details: { agentId, outputFile, status: "async_launched" } };
+			if (outcome === "background") return launched;
 			if (outcome === "aborted") {
 				await tasks.find(agentId)?.stop?.();
 				throw new Error(`Agent "${params.description}" was stopped`);
 			}
 			if (outcome.status !== "completed") throw new Error([outcome.summary, outcome.result].filter(Boolean).join("\n"));
-			const text = agentForegroundResult({ text: outcome.result ?? "", agentId, limited: outcome.limited && outcome.summary, limits: limitsText(limits), worktree: outcome.worktree, usage: { subagentTokens: outcome.usage?.subagentTokens ?? 0, toolUses: outcome.usage?.toolUses ?? 0, durationMs: outcome.usage?.durationMs ?? 0 } });
+			const text = agentForegroundResult({ text: outcome.result ?? "", agentId, limited: outcome.limited && outcome.summary, limits: limitsSet, worktree: outcome.worktree, usage: { subagentTokens: outcome.usage?.subagentTokens ?? 0, toolUses: outcome.usage?.toolUses ?? 0, durationMs: outcome.usage?.durationMs ?? 0 } });
 			return { content: [{ type: "text" as const, text }], details: { agentId, outputFile, status: outcome.status } };
 		},
 	});
@@ -338,20 +339,19 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("agents", {
-		description: "Background tasks, the Mission, agent types and models; /agents stop <id> stops a task or pauses the Mission, /agents attach <id> shows how to open a task",
+		description: "Background tasks, the Mission, agent types and models; /agents stop <id> stops a task or pauses the Mission",
 		handler: async (args, ctx) => {
 			const [verb = "", id = ""] = args.trim().split(/\s+/);
 			if (!verb) return showTextViewer(ctx, "Agents", overview(ctx, await modelContext(ctx)));
-			if (verb !== "stop" && verb !== "attach") return ctx.ui.notify("Usage: /agents [stop <id> | attach <id>]", "warning");
+			if (verb !== "stop") return ctx.ui.notify("Usage: /agents [stop <id>]", "warning");
 			const entry = tasks.find(id, ctx.sessionManager.getSessionId());
 			const mission = currentMission(ctx.cwd);
-			if (!entry && verb === "stop" && mission?.slug === id) {
+			if (!entry && mission?.slug === id) {
 				mission.state.status = "paused";
 				saveMission(mission, "Paused by the user from /agents.");
 				return ctx.ui.notify(`Paused mission ${id}`, "info");
 			}
 			if (!entry) return ctx.ui.notify(`No task found with ID: ${id}`, "warning");
-			if (verb === "attach") return ctx.ui.notify(entry.attach ?? `${entry.id} runs inside this Pi and has no session of its own to attach to.`, "info");
 			if (entry.status !== "running") return ctx.ui.notify(`Task ${entry.id} is not running (status: ${entry.status})`, "warning");
 			if (entry.kind === "agent") await stop(await ensureEngine(ctx), entry.id, "user");
 			else await entry.stop?.();

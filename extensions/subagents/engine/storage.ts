@@ -85,9 +85,8 @@ function parseLock(text: string): { pid: number; identity?: string } | undefined
 	}
 }
 
-/** Kills every process group whose members carry `PI_KIT_OWNER=<owner>`: tool children orphaned by a crash or a quit. */
-export async function reap(owner: string): Promise<number> {
-	const marker = `PI_KIT_OWNER=${owner}`;
+/** Kills every process, and its group, whose environment holds `marker` (`PI_KIT_OWNER=<dir>`, `PI_KIT_WORKER=<agentId>`). */
+export async function reap(marker: string): Promise<number> {
 	const ownGroup = await processGroup(process.pid);
 	const groups = new Set<number>();
 	const pids: number[] = [];

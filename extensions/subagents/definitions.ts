@@ -51,7 +51,7 @@ export function workflowAgentType(requested: string | undefined): AgentType {
 }
 
 export function agentTypes(): AgentType[] {
-	const personas = loadBuiltinAgents().filter((persona) => !persona.disabled).map((persona): AgentType => ({
+	const personas = loadBuiltinAgents().map((persona): AgentType => ({
 		name: persona.name,
 		whenToUse: persona.description,
 		tools: persona.tools.flatMap((tool) => PI_TOOLS.find((name) => name === tool) ?? []),

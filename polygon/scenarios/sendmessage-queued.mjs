@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { rpc, script, sleep } from "../drive.mjs";
-import { requests, taskNotes, toolCalls } from "../look.mjs";
+import { poll, requests, sessionNotes, toolCalls } from "../look.mjs";
 
 const MARK = "polygon-queued-mark";
 const SLOTS = 16;
 
 // A message to an agent still waiting for one of the 16 slots steers it right after its prompt: no run before its slot,
-// no second reporter, one notification.
+// no second reporter, one notification. A kill -9 before a slot frees loses neither the message nor the order: the 16
+// resumed runs keep their slots and the queued agent still waits for one.
 export default {
 	name: "sendmessage-queued",
 	gate: "M2",
@@ -25,10 +26,13 @@ export default {
 		const send = toolCalls(lead.events).find((c) => c.name === "SendMessage");
 		assert.deepEqual([send.isError, send.details?.outcome], [false, "steered"]);
 		assert.equal(requests(t).filter((r) => r.agent === "queued").length, 0, "the queued agent ran before a slot freed");
-		await lead.until((_, events) => taskNotes(events).length >= SLOTS + 1, 90_000, "every agent's notification");
-		await sleep(2_000);
 		const queuedId = toolCalls(lead.events).filter((c) => c.name === "Agent").at(-1).details.agentId;
-		assert.equal(taskNotes(lead.events).filter((n) => n.taskId === queuedId).length, 1, "the queued agent notified more than once");
-		assert.ok(requests(t).some((r) => r.agent === "queued" && r.step === "q2"), "the message never reached the queued agent");
+		await lead.restart();
+		await poll(() => new Set(sessionNotes(t).map((n) => n.taskId)).size >= SLOTS + 1, 90_000, "every agent's notification");
+		await sleep(2_000);
+		assert.equal(sessionNotes(t).filter((n) => n.taskId === queuedId).length, 1, "the queued agent notified more than once");
+		const log = requests(t);
+		assert.ok(log.findIndex((r) => r.agent === "queued") > log.findIndex((r) => r.step === "d"), "the queued agent ran before a resumed run freed a slot");
+		assert.ok(log.some((r) => r.agent === "queued" && r.step === "q2"), "the message never reached the queued agent");
 	},
 };

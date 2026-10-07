@@ -17,8 +17,6 @@ export interface RosterEntry {
 	stop?: () => Promise<{ worktree?: { path: string; branch: string } } | undefined | void>;
 	/** Set by kinds that take messages through their own channel (collaborators); returns the result line. */
 	send?: (message: string, images: string[]) => Promise<string>;
-	/** The shell command that opens this task in its own CLI, for `/agents attach`. */
-	attach?: string;
 }
 
 export interface TaskNotification {
@@ -48,7 +46,8 @@ export interface TaskNotification {
 
 export interface NotificationSource {
 	name: string;
-	pending(ownerSession: string): Promise<TaskNotification[]>;
+	/** `answered` holds the tool calls whose results the owner session saved. */
+	pending(ownerSession: string, answered: Set<string>): Promise<TaskNotification[]>;
 }
 
 export const TASK_NOTIFICATION = "task-notification";
@@ -118,7 +117,7 @@ export const tasks = {
 		state.outstanding.set(notification.notificationId, notification);
 		const ctx = state.ctx;
 		if (ctx && activeSession() === notification.ownerSession) {
-			const delivered = deliveredIds(ctx);
+			const { delivered } = sessionAcks(ctx);
 			if (delivered.has(notification.notificationId)) state.outstanding.delete(notification.notificationId);
 			// A monitor's next event waits while its last one is still on the way; the next redelivery merges what waited.
 			else if (notification.kind !== "monitor" || !inFlight(notification.taskId, delivered)) send(notification, [notification.notificationId]);
@@ -161,15 +160,16 @@ function mergeEvents(pending: TaskNotification[]): [TaskNotification, string[]][
 async function redeliver(ctx: ExtensionContext): Promise<void> {
 	const session = ctx.sessionManager.getSessionId();
 	const pending = [...state.outstanding.values()].filter((notification) => notification.ownerSession === session);
+	const { answered } = sessionAcks(ctx);
 	for (const source of state.sources.values()) {
 		try {
-			pending.push(...await source.pending(session));
+			pending.push(...await source.pending(session, answered));
 		} catch {
 			// One broken source must not block the others' reports.
 		}
 	}
 	if (state.ctx !== ctx) return;
-	const delivered = deliveredIds(ctx);
+	const { delivered } = sessionAcks(ctx);
 	const fresh = new Map<string, TaskNotification>();
 	for (const notification of pending) {
 		if (delivered.has(notification.notificationId)) state.outstanding.delete(notification.notificationId);
@@ -196,16 +196,19 @@ function send(notification: TaskNotification, ids: string[]): void {
 	}
 }
 
-function deliveredIds(ctx: ExtensionContext): Set<string> {
-	const ids = new Set<string>();
+/** What the session file acknowledges: the notifications it holds, and the tool calls whose results it saved. */
+export function sessionAcks(ctx: ExtensionContext) {
+	const delivered = new Set<string>();
+	const answered = new Set<string>();
 	for (const entry of ctx.sessionManager.getEntries()) {
+		if (entry.type === "message" && entry.message.role === "toolResult") answered.add(entry.message.toolCallId);
 		if (entry.type !== "custom_message" || entry.customType !== TASK_NOTIFICATION) continue;
 		// SAFETY: Session entries are untrusted; a non-string id only sits in the set and never equals a real one.
 		const details = entry.details as { notificationId?: string; notificationIds?: string[] } | undefined;
-		if (details?.notificationId !== undefined) ids.add(details.notificationId);
-		if (Array.isArray(details?.notificationIds)) for (const id of details.notificationIds) ids.add(id);
+		if (details?.notificationId !== undefined) delivered.add(details.notificationId);
+		if (Array.isArray(details?.notificationIds)) for (const id of details.notificationIds) delivered.add(id);
 	}
-	return ids;
+	return { delivered, answered };
 }
 
 function activeSession(): string | undefined {
@@ -306,16 +309,7 @@ export function jobSummary(description: string, end: JobEnd): string {
 	return end.exitCode === 0 ? `${subject} completed (exit code 0)` : `${subject} failed with exit code ${end.exitCode}`;
 }
 
-export interface AgentLaunch {
-	agentId: string;
-	outputFile: string;
-	model?: string;
-	limits?: string;
-	queued?: boolean;
-	sharesCwd?: boolean;
-}
-
-export function agentLaunchedResult(launch: AgentLaunch): string {
+export function agentLaunchedResult(launch: { agentId: string; outputFile: string; model?: string; limits?: string; queued?: boolean; sharesCwd?: boolean }): string {
 	return [
 		"Async agent launched successfully.",
 		`agentId: ${launch.agentId} (internal ID; use SendMessage with to: '${launch.agentId}' to continue this agent)`,
@@ -329,17 +323,8 @@ export function agentLaunchedResult(launch: AgentLaunch): string {
 	].join("\n");
 }
 
-export interface AgentForeground {
-	text: string;
-	agentId: string;
-	/** The summary of a run its limit stopped. */
-	limited?: string;
-	limits?: string;
-	worktree?: { path: string; branch: string };
-	usage: { subagentTokens: number; toolUses: number; durationMs: number };
-}
-
-export function agentForegroundResult(result: AgentForeground): string {
+/** `limited` is the summary of a run its limit stopped. */
+export function agentForegroundResult(result: { text: string; agentId: string; limited?: string; limits?: string; worktree?: { path: string; branch: string }; usage: { subagentTokens: number; toolUses: number; durationMs: number } }): string {
 	return [
 		result.text || "(The agent finished without output.)",
 		`agentId: ${result.agentId} (use SendMessage with to: '${result.agentId}' to continue this agent)`,
