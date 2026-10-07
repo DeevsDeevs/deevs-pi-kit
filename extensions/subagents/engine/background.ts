@@ -312,9 +312,10 @@ function kill(pid: number | undefined): void {
 	if (pid) trySignalGroup(pid, "SIGKILL");
 }
 
-/** The exit code (128 + signal for a signal); an abort kills the whole group first. */
-function exited(child: ReturnType<typeof start>, signal: AbortSignal): Promise<number> {
+/** The exit code (128 + signal for a signal); an abort kills the whole group first, also one that came before the spawn. */
+export function exited(child: ReturnType<typeof start>, signal: AbortSignal): Promise<number> {
 	const onAbort = () => kill(child.pid);
+	if (signal.aborted) onAbort();
 	signal.addEventListener("abort", onAbort, { once: true });
 	return new Promise<number>((resolve) => {
 		child.once("error", () => resolve(127));

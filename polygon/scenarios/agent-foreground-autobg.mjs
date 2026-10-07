@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { rpc, script } from "../drive.mjs";
 import { taskNotifications, toolCalls } from "../look.mjs";
 
-// A foreground agent still running at 120 s returns the launch text, keeps running, and notifies when done.
+// A foreground agent still running at 120 s returns the launch text, keeps running, and notifies when done; its bash has no default timeout.
 export default {
 	name: "agent-foreground-autobg",
 	gate: "M1",
@@ -10,7 +11,7 @@ export default {
 	timeoutMs: 200_000,
 	async run(t) {
 		const quick = { agent: "quick", steps: [{ id: "q1", text: "quick answer" }] };
-		const slow = { agent: "slow", steps: [{ id: "w1", tool: "bash", args: { command: "sleep 130" } }, { id: "c1", text: "slow done" }] };
+		const slow = { agent: "slow", steps: [{ id: "w1", tool: "bash", args: { command: "echo slow; sleep 130" } }, { id: "c1", text: "slow done" }] };
 		const lead = rpc(t);
 		await lead.script({ agent: "lead", steps: [
 			{ id: "s1", tool: "Agent", args: { description: "quick", prompt: script(quick), run_in_background: false } },
@@ -22,5 +23,6 @@ export default {
 		assert.deepEqual([quickCall.details.status, slowCall.details.status], ["completed", "async_launched"]);
 		const notes = taskNotifications(lead.events);
 		assert.deepEqual(notes.map((n) => [n.toolUseId, n.status]), [["s2", "completed"]], "the foreground result was also notified, or the slow one never was");
+		assert.doesNotMatch(readFileSync(slowCall.details.outputFile, "utf8"), /^← error/m, "the slow agent's 130 s bash was stopped");
 	},
 };

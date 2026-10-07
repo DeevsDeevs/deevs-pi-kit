@@ -65,6 +65,16 @@ describe("Subagent extension surface", () => {
 		expect(["mine", "a.b-c_1", "../x", "a/b"].map((value) => Value.Check(name, value))).toEqual([true, true, false, false]);
 	});
 
+	it("leaves the lead's bash timeout to the call, since Pi kills a command at its timeout", () => {
+		process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "pi-kit-bash-"));
+		const handlers: Record<string, (event: object, ctx: object) => unknown> = {};
+		subagentsExtension({ registerTool() {}, registerCommand() {}, on(name: string, fn: (event: object, ctx: object) => unknown) { handlers[name] = fn; } } as unknown as ExtensionAPI);
+		const inputs = [{ command: "make" }, { command: "make", timeout: 3000 }];
+		for (const input of inputs) handlers.tool_call!({ toolName: "bash", input }, { cwd: process.env.PI_CODING_AGENT_DIR });
+		expect(inputs).toEqual([{ command: "make" }, { command: "make", timeout: 3000 }]);
+		expect(handlers.tool_result).toBeUndefined();
+	});
+
 	it("matches agent types forgivingly and lists them on a miss", () => {
 		expect(findAgentType(undefined).name).toBe("general-purpose");
 		expect(findAgentType("General_Purpose").name).toBe("general-purpose");
