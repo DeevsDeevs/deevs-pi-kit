@@ -117,12 +117,18 @@ export function strictify(schema: JsonValue): JsonValue {
 	return out;
 }
 
-/** Undoes `strictify` on an answer: the nulls that stand for omitted optional keys are dropped. */
-export function dropNulls(value: JsonValue): JsonValue {
-	if (Array.isArray(value)) return value.map(dropNulls);
-	if (value === null || !Value.Check(AnyObject, value)) return value;
+/** Undoes `strictify` on an answer against the caller's schema: a null is dropped only where it stands for an omitted optional key. */
+export function dropNulls(value: JsonValue, schema: JsonValue): JsonValue {
 	// SAFETY: AnyObject admits only non-array objects, and a JsonValue object is a JsonObject.
-	return Object.fromEntries(Object.entries(value as JsonObject).flatMap(([key, item]) => (item === null ? [] : [[key, dropNulls(item)]])));
+	const node: JsonObject = !Array.isArray(schema) && Value.Check(AnyObject, schema) ? schema as JsonObject : {};
+	if (Array.isArray(value)) return value.map((item) => dropNulls(item, node.items ?? {}));
+	if (value === null || !Value.Check(AnyObject, value)) return value;
+	const objectSchema: Static<typeof SchemaObject> = Value.Check(SchemaObject, node) ? node : {};
+	const required = new Set(objectSchema.required ?? []);
+	// SAFETY: the properties of a JsonObject are JsonValues.
+	const properties = (objectSchema.properties ?? {}) as JsonObject;
+	// SAFETY: AnyObject admits only non-array objects, and a JsonValue object is a JsonObject.
+	return Object.fromEntries(Object.entries(value as JsonObject).flatMap(([key, item]) => (item === null && !required.has(key) ? [] : [[key, dropNulls(item, properties[key] ?? {})]])));
 }
 
 export function newProgress(): CliProgress {

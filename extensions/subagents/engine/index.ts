@@ -855,7 +855,7 @@ async function cliAnswer(worker: CliWorker, exit: CliExit | undefined, progress:
 	let text = worker.harness === "codex" ? await readFile(lastMessageFile(worker), "utf8").catch(() => progress.text) : progress.text;
 	let structured = progress.structured;
 	if (worker.schema && worker.harness === "codex") {
-		try { structured = dropNulls(JSON.parse(text)); } catch {}
+		try { structured = dropNulls(JSON.parse(text), worker.schema); } catch {}
 	}
 	if (worker.schema && structured !== undefined) text = JSON.stringify(structured);
 	const ok = exit?.code === 0 && progress.error === undefined && (!worker.schema || structured !== undefined);

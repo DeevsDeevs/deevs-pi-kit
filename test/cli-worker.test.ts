@@ -51,7 +51,9 @@ describe("strictify", () => {
 			type: "object", required: ["items"], additionalProperties: false,
 			properties: { items: { anyOf: [{ type: "array", items: { ...SCHEMA, required: ["verdict", "note"], additionalProperties: false, properties: { verdict: SCHEMA.properties.verdict, note: { anyOf: [{ type: "string" }, { type: "null" }] } } } }, { type: "null" }] } },
 		});
-		expect(dropNulls({ verdict: "ok", note: null, list: [{ a: null, b: 1 }] })).toEqual({ verdict: "ok", list: [{ b: 1 }] });
+		expect(dropNulls({ items: [{ verdict: "ok", note: null }] }, nested)).toEqual({ items: [{ verdict: "ok" }] });
+		const nullable = { type: "object", properties: { owner: { type: ["string", "null"] }, n: { type: "number" } }, required: ["owner", "n"] };
+		expect(dropNulls({ owner: null, n: 1 }, nullable)).toEqual({ owner: null, n: 1 });
 	});
 });
 
@@ -73,7 +75,7 @@ describe("CLI streams", () => {
 		expect(progress.sessionId).toMatch(/^[0-9a-f-]{36}$/);
 		expect(progress.toolUses).toBe(1);
 		expect(progress.tokens).toBeGreaterThan(0);
-		expect(dropNulls(JSON.parse(progress.text))).toEqual({ verdict: "ok" });
+		expect(dropNulls(JSON.parse(progress.text), SCHEMA)).toEqual({ verdict: "ok" });
 		expect(progress.error).toBeUndefined();
 	});
 
