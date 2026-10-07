@@ -8,6 +8,7 @@ import { getAgentDir, isToolCallEventType, type ExtensionAPI, type ExtensionCont
 import { guardBashCall, guardShell, loadGuardConfig } from "../shared/guard.ts";
 import { loadKitConfig, modelContext, modelLabel, modelsTable, resolveLead, resolveModel, type ModelContext } from "../shared/models.ts";
 import { agentForegroundResult, agentLaunchedResult, jobLaunchedResult, monitorStartedResult, newAgentId, newBackgroundTaskId, newWorkflowRunId, newWorkflowTaskId, recent, sendMessageResult, taskNotFound, taskNotRunningResult, taskStoppedResult, tasks, unknownAgentResult, workflowLaunchedResult, type RosterEntry } from "../shared/tasks.ts";
+import { activateWithSkill } from "../shared/surface.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
 import { finishAgentWorktree, sharesCwd } from "../shared/worktree.ts";
 import { currentMission, saveMission } from "../mission/store.ts";
@@ -102,6 +103,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	});
 	let widget: NodeJS.Timeout | undefined;
 	promptWorkflow(pi);
+	activateWithSkill(pi, ["job_start", "Monitor"], ["background-tasks", "diagnose", "validation-review", "datadog-pup"]);
 
 	pi.registerTool({
 		name: "Agent",
@@ -219,6 +221,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		description: "Run a shell command in the background. The call returns at once with the job id and its output file; a <task-notification> arrives when the command exits, with its exit code. Read the output file with read; stop the job with TaskStop. A job lives in this Pi: it survives /reload, and if Pi closes first it is killed and reported as interrupted. Servers, watchers and REPLs that must outlive Pi belong in Herdr.",
 		promptSnippet: "Run a command in the background; notified when it exits.",
 		parameters: JobSchema,
+		defaultActive: false,
 		async execute(toolCallId, params: JobParams, _signal, _onUpdate, ctx) {
 			const cwd = directory(ctx.cwd, params.cwd);
 			const blocked = guardShell(params.command, { cwd, root: ctx.cwd, config: loadGuardConfig(ctx.cwd) });
@@ -235,6 +238,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		description: MONITOR_DESCRIPTION,
 		promptSnippet: "Get notified on each event from a command, folder, URL or cron timer.",
 		parameters: MonitorSchema,
+		defaultActive: false,
 		async execute(_toolCallId, params: MonitorParams, signal, _onUpdate, ctx) {
 			const sources = (["command", "path", "url", "cron"] as const).filter((key) => params[key] !== undefined);
 			if (sources.length !== 1) throw new Error("Give exactly one of command, path, url or cron.");

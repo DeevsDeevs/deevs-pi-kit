@@ -16,6 +16,7 @@ export default {
 	slow: true,
 	live: true,
 	bodies: true,
+	deferred: true,
 	timeoutMs: 240_000,
 	async run(t) {
 		const phases = {};
