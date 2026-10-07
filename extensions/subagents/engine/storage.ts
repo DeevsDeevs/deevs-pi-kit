@@ -18,7 +18,7 @@ const KEEP_MS = 14 * 86_400_000;
 /** Written at close when nothing in the store is running or paused and its Outbox is empty; removed at open. */
 export const SETTLED = "settled";
 
-/** durable's portable SqliteStorage over Bun's synchronous `bun:sqlite`; every operation is queued behind the last. */
+/** durable's SqliteStorage over Bun's synchronous `bun:sqlite`; each operation waits for the last, then a macrotask, so a burst of commits never starves timers. */
 export function bunSqlite(Database: new (path: string, options: { create: boolean }) => BunDatabase, path: string): SqliteDatabase {
 	const db = new Database(path, { create: true });
 	db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000");
@@ -32,7 +32,7 @@ export function bunSqlite(Database: new (path: string, options: { create: boolea
 	};
 	let tail: Promise<unknown> = Promise.resolve();
 	const serial = <T>(op: () => Promise<T>): Promise<T> => {
-		const next = tail.then(op);
+		const next = tail.then(() => new Promise((resolve) => setImmediate(resolve))).then(op);
 		tail = next.catch(() => {});
 		return next;
 	};
