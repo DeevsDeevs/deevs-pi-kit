@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
@@ -12,7 +12,7 @@ const faux = createFauxCore({ provider: "faux", models: [{ id: "m" }] });
 // SAFETY: the engine reads only these members of the context.
 const ctx = {
 	cwd,
-	modelRegistry: { find: (_provider: string, id: string) => faux.getModel(id), streamSimple: faux.streamSimple },
+	modelRegistry: { find: (_provider: string, id: string) => faux.getModel(id), getAvailable: () => [faux.getModel("m")], streamSimple: faux.streamSimple },
 	sessionManager: { getSessionId: () => "s", getEntries: () => [] },
 } as unknown as ExtensionContext;
 const schema = { type: "object", properties: { n: { type: "integer" } }, required: ["n"] };
@@ -79,5 +79,23 @@ describe("StructuredOutput in a workflow agent()", () => {
 		const n = await run([...[1, 2, 3, 4, 5].map((i) => call({ n: "x" }, `bad${i}`)), call({ n: 1 }, "late")]);
 		expect(n.status).toBe("failed");
 		expect(n.error).toMatch(/^Error: agent\(\{schema\}\): StructuredOutput retry cap \(5\) exceeded — 5 failed calls with no valid output — last StructuredOutput error: /);
+	});
+});
+
+describe("a workflow agent()'s model names", () => {
+	it("come from the project's pi-kit.json only when Pi trusted the project at launch", async () => {
+		mkdirSync(join(cwd, ".pi"), { recursive: true });
+		writeFileSync(join(cwd, ".pi", "pi-kit.json"), JSON.stringify({ models: { fx: "faux/m" } }));
+		const launch = async (trusted: boolean) => {
+			faux.setResponses([fauxAssistantMessage("hi")]);
+			const dir = mkdtempSync(join(tmpdir(), "pi-kit-so-run-"));
+			const runId = `wf_trust${++runs}xyz`;
+			const source = `export const meta = { name: "t", description: "d" };\nreturn await agent("p", { model: "fx" });`;
+			await launchWorkflow(await ensureEngine(ctx), { taskId: `w${runs}`, runId, session: "s", toolUseId: "t", source, scriptPath: join(dir, "t.js"), cwd, trusted, dir, startedAt: Date.now() }, "d");
+			const record = join(dir, `${runId}.json`);
+			await vi.waitFor(() => expect(existsSync(record)).toBe(true), { timeout: 10_000 });
+			return JSON.parse(readFileSync(record, "utf8")).status;
+		};
+		expect([await launch(true), await launch(false)]).toEqual(["completed", "failed"]);
 	});
 });

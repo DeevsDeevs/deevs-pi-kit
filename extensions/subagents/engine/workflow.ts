@@ -245,11 +245,11 @@ function callRunner(D: D, docs: WorkflowDocs, engine: Engine, input: WorkflowInp
 		return undefined;
 	}, context);
 	let creating = Promise.resolve();
-	// The run's pi-kit.json and Codex catalog are read once, at its first agent() call; a failed read is tried again.
+	// The run's pi-kit.json and Codex catalog are read once, at its first agent() call.
 	let models: Promise<ModelContext> | undefined;
 	const create = async (key: string, options: AgentOptions): Promise<CallRecord> => {
 		const type = workflowAgentType(options.agentType);
-		const resolved = resolveModel(options.model ?? type.model, await (models ??= workflowModels(input).catch((error: Error) => { models = undefined; throw error; })), LEVELS.find((level) => level === options.effort) ?? type.effort);
+		const resolved = resolveModel(options.model ?? type.model, await (models ??= workflowModels(input)), LEVELS.find((level) => level === options.effort) ?? type.effort);
 		const agentId = newAgentId();
 		const at = await placeAgent(type, resolved, resolve(input.cwd, options.cwd ?? "."), agentId, options.isolation);
 		const { worktree, cwd } = at;
