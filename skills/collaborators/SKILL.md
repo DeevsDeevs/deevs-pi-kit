@@ -1,6 +1,6 @@
 ---
 name: collaborators
-description: "Loads collaborator_start and collaborator_workspace. Persistent Pi, Claude Code or Codex teammates in Herdr tabs."
+description: "Read to load collaborator_start and collaborator_workspace. Persistent Pi, Claude Code or Codex teammates in Herdr tabs."
 ---
 
 # Collaborators

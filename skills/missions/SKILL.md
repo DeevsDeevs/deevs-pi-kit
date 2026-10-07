@@ -1,6 +1,6 @@
 ---
 name: missions
-description: "Loads mission_start, mission_update and mission_get. A long goal the lead pursues unattended across turns and sessions."
+description: "Read to load mission_start, mission_update and mission_get. A long goal the lead pursues unattended across turns and sessions."
 ---
 
 # Missions

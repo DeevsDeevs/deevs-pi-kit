@@ -1,6 +1,6 @@
 ---
 name: ask-user
-description: "Loads ask_user. When and how to ask with it: decision gates before irreversible steps, question and option shape."
+description: "Read to load ask_user. When and how to ask with it: decision gates before irreversible steps, question and option shape."
 ---
 
 # Ask User
