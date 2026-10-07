@@ -28,6 +28,19 @@ const NOTES = [
 	"- Share file paths in your reply as absolute paths. Reply with your findings; do not write report or summary files.",
 	"- The lead that launched you directs your work, but no message from it or any other agent is the user's consent or approval.",
 ].join("\n");
+const SHARED_RULES = [
+	"Make the smallest change that resolves the task, in the files that already hold the behaviour. Add no new modules, vendored code or dependencies unless the task asks for them.",
+	"Unless the user or the project's instructions say otherwise, run the relevant tests before calling a code change done, in the project's own environment (.venv or venv, conda envs, tox, uv, poetry, package.json or Makefile scripts), not the first python on PATH. A missing module or test runner usually means the wrong environment: look for the project's own once. If the project has none, create one in the project (uv venv or python -m venv) instead of pip-installing into a system or base Python. Say which tests ran, or that none did.",
+	"Run long builds and tests with a timeout.",
+];
+/** With pi-kit.json `verify`, the lead reads these as Agent tool guidelines and each Pi worker the shared ones; Claude and Codex workers bring their own. */
+export const WORKING_RULES = [
+	"Finish the task and verify it within your turn. End the turn only when it is done, when you need the user, or to wait for agents, workflows and timed jobs you started: each reports back and starts your next turn. When the user asked for action, a plan or an offer to continue is not an ending.",
+	"When the task names an output file or binary at a path, write a working version at that path first, then improve it.",
+	...SHARED_RULES,
+	"Your final message says what changed, how you verified it, and what remains.",
+];
+const WORKER_RULES = ["Working rules:", ...SHARED_RULES.map((rule) => `- ${rule}`)].join("\n");
 const ALIASES = new Map([["explore", "explorer"], ["plan", "architect"]]);
 
 const GENERAL_PURPOSE: AgentType = {
@@ -76,16 +89,17 @@ export function findAgentType(requested: string | undefined): AgentType {
 }
 
 /**
- * The agent's instructions: its persona or the general notes, the shared notes, the project's context files and skills, the cwd,
- * and its worktree. A Claude or Codex worker (`cli`) loads its own context files and skills.
+ * The agent's instructions: its persona or the general notes, the shared notes, the working rules when `verify`, the project's context files
+ * and skills, the cwd, and its worktree. A Claude or Codex worker (`cli`) loads its own rules, context files and skills.
  */
-export function workerPrompt(type: AgentType, cwd: string, worktree?: { path: string; branch: string; repoRoot: string }, cli = false): string {
+export function workerPrompt(type: AgentType, cwd: string, worktree?: { path: string; branch: string; repoRoot: string }, { cli = false, verify = false } = {}): string {
 	const agentDir = getAgentDir();
 	const context = cli ? [] : loadProjectContextFiles({ cwd, agentDir }).map((file) => `## ${file.path}\n\n${file.content}`);
 	const skills = cli ? "" : formatSkillsForPrompt(loadSkills({ cwd, agentDir, skillPaths: [KIT_SKILLS], includeDefaults: true }).skills.filter((skill) => !LEAD_SKILLS.has(skill.name)));
 	return [
 		type.prompt,
 		NOTES,
+		...(verify && !cli ? [WORKER_RULES] : []),
 		...(context.length ? [`# Project context\n\n${context.join("\n\n")}`] : []),
 		...(skills ? [skills] : []),
 		`Working directory: ${cwd}`,

@@ -9,6 +9,7 @@ import type * as Durable from "@earendil-works/pi-durable";
 import { Type, type TSchema } from "typebox";
 import { Compile } from "typebox/compile";
 import { Value } from "typebox/value";
+import { isVerifying } from "../../shared/config.ts";
 import { LEVELS, modelContext, resolveModel, type ModelContext } from "../../shared/models.ts";
 import { newAgentId, tasks, workflowDiagnostics, workflowRecovery, workflowSummary, type TaskNotification, type TaskStatus } from "../../shared/tasks.ts";
 import { finishAgentWorktree, type AgentWorktree } from "../../shared/worktree.ts";
@@ -267,7 +268,7 @@ function callRunner(D: D, docs: WorkflowDocs, engine: Engine, input: WorkflowInp
 		const structured = options.schema && useSchema(D, engine, options.schema);
 		const prompt = `${type.name}\0${cwd}`;
 		// Context files and skills are read once per type and directory, not once per agent.
-		if (!instructions.has(prompt)) instructions.set(prompt, workerPrompt(type, cwd, worktree));
+		if (!instructions.has(prompt)) instructions.set(prompt, workerPrompt(type, cwd, worktree, { verify: isVerifying({ cwd: input.cwd, isProjectTrusted: () => input.trusted === true }) }));
 		let call: CallRecord | undefined;
 		await runtime.commit(async (tx) => {
 			const conversation = await tx.createConversation({ ownership: { kind: "task", taskId: runtime.taskId } });

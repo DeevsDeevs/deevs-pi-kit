@@ -14,6 +14,7 @@ const KEYS = {
 	autonomy: Type.Boolean(),
 	guard: Type.Object({ detached: Flag, forcePush: Flag, rmRf: Flag, block: Type.Optional(Type.Array(Type.String())) }),
 	codexFast: Type.Boolean(),
+	verify: Type.Boolean(),
 	notifier: Type.Object({
 		enabled: Flag, title: Text, body: Text, terminal: Flag, bell: Flag, terminalRequiresTty: Flag,
 		command: Type.Optional(Type.Array(Type.String())), jsonl: Text, minIntervalMs: Type.Optional(Type.Number()),
@@ -60,6 +61,12 @@ export function trustedKitValues<K extends KitKey>(key: K, ctx: Trust, dir = age
 export function isAutonomous(ctx: Trust): boolean {
 	const [global, project] = trustedKitValues("autonomy", ctx);
 	return project ?? global ?? true;
+}
+
+/** `"verify"` in pi-kit.json: a trusted project's value overrides the global one; absent means false. */
+export function isVerifying(ctx: Trust): boolean {
+	const [global, project] = trustedKitValues("verify", ctx);
+	return project ?? global ?? false;
 }
 
 function readKitKey<K extends KitKey>(path: string, key: K): KitValue<K> | undefined {

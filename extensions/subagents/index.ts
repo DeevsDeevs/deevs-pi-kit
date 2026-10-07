@@ -4,7 +4,8 @@ import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
-import { getAgentDir, isToolCallEventType, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { defineTool, getAgentDir, isToolCallEventType, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { isVerifying } from "../shared/config.ts";
 import { guardBashCall, guardShell, loadGuardConfig } from "../shared/guard.ts";
 import { loadKitConfig, modelContext, modelLabel, modelsTable, resolveLead, resolveModel, type ModelContext } from "../shared/models.ts";
 import { agentForegroundResult, agentLaunchedResult, jobLaunchedResult, monitorStartedResult, newAgentId, newBackgroundTaskId, newWorkflowRunId, newWorkflowTaskId, recent, sendMessageResult, taskNotFound, taskNotRunningResult, taskStoppedResult, tasks, unknownAgentResult, workflowLaunchedResult, type RosterEntry } from "../shared/tasks.ts";
@@ -14,7 +15,7 @@ import { finishAgentWorktree, sharesCwd } from "../shared/worktree.ts";
 import { currentMission, saveMission } from "../mission/store.ts";
 import { remindSilentTurns } from "./silent-turns.ts";
 import { promptWorkflow, WORKFLOW_DESCRIPTION, WORKFLOW_FIELDS, WORKFLOW_SNIPPET } from "./workflow-prompt.ts";
-import { agentTypes, agentTypesList, findAgentType, workerPrompt } from "./definitions.ts";
+import { agentTypes, agentTypesList, findAgentType, WORKING_RULES, workerPrompt } from "./definitions.ts";
 import { cliWorker, closeAll, ensureEngine, launch, launchWorkflow, placeAgent, queuedAhead, reinstall, resumeSession, send, settle, startJob, startMonitor, stop, storedAgent, userRequests, workflowProgress, writerCwds, type Limits } from "./engine/index.ts";
 import { parseWorkflow } from "./workflow/meta.ts";
 import type { Progress } from "./workflow/run.ts";
@@ -68,7 +69,7 @@ const JobSchema = Type.Object({
 	command: Type.String({ description: "The shell command to run" }),
 	description: Type.String({ description: "A short description of what it does, shown in the notification" }),
 	cwd: Type.Optional(Type.String({ description: "Working directory; defaults to yours" })),
-	timeout: Type.Optional(Type.Integer({ minimum: 1_000, description: `Milliseconds before the command is killed. ${ONLY_ON_REQUEST}` })),
+	timeout: Type.Optional(Type.Integer({ minimum: 1_000, description: "Milliseconds before the command is killed. Set one for builds and tests; in print or json mode Pi waits only for jobs that have one" })),
 });
 type JobParams = Static<typeof JobSchema>;
 
@@ -94,6 +95,8 @@ const MONITOR_DESCRIPTION = [
 ].join("\n");
 
 export default function subagentsExtension(pi: ExtensionAPI): void {
+	// A tool guideline lives in the base prompt, which runs a task notification starts keep; this runs before tasks' redelivery can start one.
+	pi.on("session_start", (_event, ctx) => { if (isVerifying(ctx)) pi.registerTool({ ...agentTool, promptGuidelines: WORKING_RULES }); });
 	tasks.install(pi);
 	const models = (ctx: ExtensionContext) => modelContext(ctx, ctx.model && { model: ctx.model, level: pi.getThinkingLevel() });
 	remindSilentTurns(pi);
@@ -104,7 +107,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	let widget: NodeJS.Timeout | undefined;
 	promptWorkflow(pi);
 
-	pi.registerTool({
+	const agentTool = defineTool({
 		name: "Agent",
 		label: "Agent",
 		description: AGENT_DESCRIPTION + agentTypesList(),
@@ -129,7 +132,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			let started: Awaited<ReturnType<typeof launch>>;
 			try {
 				started = await launch(engine, resolved.harness === "pi"
-					? { ...base, model: resolved.model, level: resolved.level, tools: type.tools, instructions: workerPrompt(type, cwd, worktree), limits }
+					? { ...base, model: resolved.model, level: resolved.level, tools: type.tools, instructions: workerPrompt(type, cwd, worktree, { verify: isVerifying(ctx) }), limits }
 					: { ...base, cli: cliWorker(engine, type, resolved, at, agentId) });
 			} catch (error) {
 				if (worktree) await finishAgentWorktree(worktree).catch(() => undefined);
@@ -149,6 +152,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			return { content: [{ type: "text" as const, text }], details: { agentId, outputFile, status: outcome.status } };
 		},
 	});
+	pi.registerTool(agentTool);
 
 	pi.registerTool({
 		name: "Workflow",
