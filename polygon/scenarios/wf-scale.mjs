@@ -10,7 +10,7 @@ const SOURCE = [
 	"return results.filter((r) => r !== null).length;",
 ].join("\n");
 
-// 2,000 agent() calls: no cap, never more than 16 running, and the lead answers within 150 ms throughout.
+// 2,000 agent() calls: no cap, never more than 16 running, and the lead's event loop never stalls 150 ms.
 export default {
 	name: "wf-scale",
 	gate: "M3",

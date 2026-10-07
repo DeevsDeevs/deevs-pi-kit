@@ -5,10 +5,10 @@ import { agentStep, eventually, rpc, sleep } from "../drive.mjs";
 import { missionStates, owned, requests, sessionNotes, toolCalls } from "../look.mjs";
 import { say } from "./wf-shapes.mjs";
 
-// Background agents, an 8-agent workflow, a job, a monitor and a SendMessage in flight under an active Mission when Pi is killed:
-// on reopen everything settles, each task reports exactly once, the Mission continues only after the last task reported, and no
-// process outlives its task. Narrower than PLAN M7's row on purpose: a kill -9 stands in for /polygon-reload (reload-mid-run covers
-// that), the collaborator image needs a live login (collab-image), and the 150 ms stall bound needs a lone run (durable-16, wf-scale).
+// Background agents, an 8-agent workflow, a job, a monitor and a SendMessage in flight under an active Mission when Pi is killed: on reopen everything settles,
+// each task reports exactly once, the Mission continues only after the last task reported, and no process outlives its task. Narrower than PLAN M7's row on
+// purpose: a kill -9 stands in for /polygon-reload (reload-mid-run covers that), so the job is interrupted and reports failed rather than finishing; the
+// collaborator image needs a live login (collab-image), and the 150 ms stall bound needs a lone run (durable-16, wf-scale).
 export default {
 	name: "everything-at-once",
 	gate: "M7",
