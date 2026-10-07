@@ -143,8 +143,9 @@ const deadRefresh = (value) => Array.isArray(value) ? value.map(deadRefresh)
 /** In the freshen container: refresh each login in the volume, then stage copies whose refresh tokens cannot rotate it. */
 function freshen() {
 	const auth = existsSync(join("/login", PI_AUTH)) ? JSON.parse(readFileSync(join("/login", PI_AUTH), "utf8")) : {};
-	const pi = Object.keys(PI_LOGINS).filter((provider) => auth[provider]?.type === "oauth").map((provider) => ({
-		name: `Pi (${provider})`, required: true, requests: 0, files: [PI_AUTH], argv: ["pi", "auth", "print-bearer-token", "--provider", provider, "--min-expiry", PI_LOGINS[provider]],
+	// Only the login the sandbox's lead defaults to (the first present) must refresh; a stale other one is warned about.
+	const pi = Object.keys(PI_LOGINS).filter((provider) => auth[provider]?.type === "oauth").map((provider, index) => ({
+		name: `Pi (${provider})`, required: index === 0, requests: 0, files: [PI_AUTH], argv: ["pi", "auth", "print-bearer-token", "--provider", provider, "--min-expiry", PI_LOGINS[provider]],
 	}));
 	if (!pi.length) {
 		console.error(`polygon: the ${LOGIN_VOLUME} volume holds no Pi OAuth login (${Object.keys(PI_LOGINS).join(", ")}). Run \`npm run polygon -- --login\` once and log in there; live runs never read your own ~/.pi, ~/.claude or ~/.codex.`);
