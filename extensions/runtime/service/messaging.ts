@@ -63,7 +63,7 @@ export class RuntimeMessaging {
 	private readonly participants: HostedParticipantCoordinator;
 	private readonly socketPath: string;
 	private readonly now: () => number;
-	private readonly onPublished: () => void;
+	private readonly onPublished: (namespaceId: string) => void;
 
 	constructor(
 		store: HostedStateStore,
@@ -71,7 +71,7 @@ export class RuntimeMessaging {
 		participants: HostedParticipantCoordinator,
 		socketPath: string,
 		now: () => number = Date.now,
-		onPublished: () => void = () => {},
+		onPublished: (namespaceId: string) => void = () => {},
 	) {
 		this.store = store;
 		this.live = live;
@@ -205,7 +205,7 @@ export class RuntimeMessaging {
 		const current = this.requireGrant(grant.namespaceId);
 		const eventId = Object.hasOwn(current.operations, operationId) ? current.operations[operationId] : undefined;
 		if (eventId === undefined) throw new RuntimeError("not_found", "Operation has no publication in this namespace.");
-		this.onPublished();
+		this.onPublished(grant.namespaceId);
 		return { eventId };
 	}
 

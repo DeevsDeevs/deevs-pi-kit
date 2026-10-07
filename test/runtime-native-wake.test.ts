@@ -118,7 +118,7 @@ function acquire(store: HostedStateStore, participantKey: string, participantId:
 	});
 }
 
-function mail(store: HostedStateStore, recipientParticipantKey: string, eventId: string): void {
+function mail(store: HostedStateStore, recipientParticipantKey: string, eventId: string, body = "native wake proof"): void {
 	store.apply({
 		type: "mailbox.send",
 		senderParticipantKey: CALLER,
@@ -127,7 +127,7 @@ function mail(store: HostedStateStore, recipientParticipantKey: string, eventId:
 		recipientParticipantKey,
 		sendId: `send_${eventId}`,
 		eventId,
-		body: "native wake proof",
+		body,
 		at: 500,
 	});
 }
@@ -191,7 +191,7 @@ describe("native wake", () => {
 		expect(test.store.read().events[NATIVE_EVENT]?.readAt).toBe(1000);
 	});
 
-	it("with Herdr's status count, marks mail read only once the tab took a turn, and retries a dropped prompt", async () => {
+	it("with Herdr's status count, marks mail read at the prompt's time once the tab took a turn, and retries a dropped prompt", async () => {
 		const test = setup();
 		test.host.stateSeq = 4;
 		await test.sweeper.sweep();
@@ -199,15 +199,55 @@ describe("native wake", () => {
 		await test.sweeper.sweep();
 		expect(test.host.prompts).toHaveLength(2);
 		expect(test.store.read().events[NATIVE_EVENT]?.readAt).toBeUndefined();
-		test.advance(30_000);
-		await test.sweeper.sweep();
-		test.advance(30_000);
-		await test.sweeper.sweep();
-		expect(test.host.prompts).toHaveLength(3);
+		const typed = test.at();
+		test.advance(5_000);
 		test.host.stateSeq = 6;
 		await test.sweeper.sweep();
-		expect(test.store.read().events[NATIVE_EVENT]?.readAt).toBe(test.at());
+		expect(test.store.read().events[NATIVE_EVENT]?.readAt).toBe(typed);
+		expect(test.host.prompts).toHaveLength(2);
+	});
+
+	it("counts mail typed three times as read 30 s after the third prompt, so it never holds a stand-down", async () => {
+		const test = setup();
+		test.host.stateSeq = 4;
+		for (let prompt = 0; prompt < 3; prompt++) {
+			await test.sweeper.sweep();
+			test.advance(30_000);
+		}
 		expect(test.host.prompts).toHaveLength(3);
+		await test.sweeper.sweep();
+		expect(test.host.prompts).toHaveLength(3);
+		expect(test.store.read().events[NATIVE_EVENT]?.readAt).toBe(test.at() - 30_000);
+	});
+
+	it("types only the newer mail while an earlier prompt is unconfirmed, and confirms both on the tab's own send", async () => {
+		const test = setup();
+		test.host.stateSeq = 4;
+		await test.sweeper.sweep();
+		const first = test.at();
+		test.advance(1_000);
+		mail(test.store, NATIVE, "evt_native_2", "second");
+		await test.sweeper.sweep();
+		expect(test.host.prompts.map((prompt) => prompt.text)).toEqual([EXPECTED_PROMPT, "Message from caller: second"]);
+		test.advance(1_000);
+		test.sweeper.published(test.namespaceId!);
+		expect(test.store.read().events[NATIVE_EVENT]?.readAt).toBe(first + 1_000);
+		expect(test.store.read().events.evt_native_2?.readAt).toBe(first + 1_000);
+	});
+
+	it("runs one more pass for mail sent while a sweep was typing, without waiting for the next interval", async () => {
+		const test = setup();
+		const prompt = test.host.promptAgent.bind(test.host);
+		let once = true;
+		test.host.promptAgent = async (agentName, text) => {
+			await prompt(agentName, text);
+			if (!once) return;
+			once = false;
+			mail(test.store, NATIVE, "evt_native_2", "second");
+			test.sweeper.trigger();
+		};
+		await test.sweeper.sweep();
+		expect(test.host.prompts.map((recorded) => recorded.text)).toEqual([EXPECTED_PROMPT, "Message from caller: second"]);
 	});
 
 	it("wakes again at once for newer mail", async () => {

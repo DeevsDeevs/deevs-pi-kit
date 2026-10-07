@@ -88,7 +88,7 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 	const context: HostedProtocolContext = {
 		runtimeId: instance.runtimeId,
 		live,
-		messaging: new RuntimeMessaging(store, live, participants, socketPath, options.participant?.now, () => wake.trigger()),
+		messaging: new RuntimeMessaging(store, live, participants, socketPath, options.participant?.now, (namespaceId) => wake.published(namespaceId)),
 		participants,
 		bridges,
 		worktrees,

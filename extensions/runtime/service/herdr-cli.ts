@@ -55,6 +55,8 @@ export class HerdrCliHostVerifier implements HostedHostVerifier {
 	/** The one native wake: Herdr's own prompt API, with no --wait and no proof that the agent acted on it. */
 	async promptAgent(agentName: string, text: string): Promise<void> {
 		await execHerdr(["agent", "prompt", agentName, text]);
+		// The cached answer predates the prompt: the next sweep would read the now-busy tab as idle and unprompted.
+		this.agents.delete(agentName);
 	}
 
 	async closeTarget(target: HostedTarget, runtimeRoot: string): Promise<"closed" | "already_absent" | "unmanaged"> {
