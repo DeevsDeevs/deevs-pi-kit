@@ -1,41 +1,43 @@
 # deevs-pi-kit
 
-I wanted Claude Code's background agents and workflows in [Pi](https://github.com/earendil-works/pi), on any model Pi runs, surviving a Pi restart. I also wanted real Claude Code and Codex sessions as peers, each in its own [Herdr](https://herdr.dev) tab, mailing my Pi back. This package does that, plus background jobs, monitors, missions and markdown handoffs. I drive it with gpt-6.1-sol daily and bench it on Opus too, so it's tuned for both.
-
-![Benchmark scoreboard: Pi + kit vs plain Pi, Claude Code and Codex](bench/scoreboard.svg)
-
-On Opus the kit solves 7 more than Claude Code (5 before the audit voided 2 of CC's web-lookup passes; p=0.14 at k=1) for 28% less money. Vs plain Pi it's +3, which is noise.
-
-On Sol the kit I benched lost by 2 and spent 2.8x what plain Pi did; it kept starting workflows and background jobs. I stopped that, and on a 40-task A/B Sol spend dropped 36%. No full Sol re-run yet, so no Sol win claimed. Setup: [bench/README.md](bench/README.md); the plain-Pi agent and DeepSWE runner aren't in this repo yet.
+I wanted Claude Code's background agents and workflows in [Pi](https://github.com/earendil-works/pi), on any model it runs, surviving a restart. I also wanted real Claude Code and Codex sessions as peers in [Herdr](https://herdr.dev) tabs, mailing my Pi back. This package does that, plus background jobs, monitors, missions and handoffs. I drive it with gpt-6.1-sol daily and bench it on Opus too, so it's tuned for both.
 
 ## What you get
 
 | Tool | What it does |
 |---|---|
-| `Agent` | Claude Code's agent tool: types (`Explore`, `Plan`, reviewer, tester, ...), worktrees, 16 at once |
-| `Workflow` | a JS script of `agent()`, `parallel()` and `pipeline()`; edit it and resume the run |
-| `job_start` | a bounded background command that reports its exit code |
-| `Monitor` | reports output lines, folder or URL changes, cron fires |
-| `mission_start` | one long goal the lead keeps at whenever it goes idle |
-| `collaborator_start` | Pi, Claude Code or Codex peers in Herdr tabs, writers in their own worktree |
-| `chain` | markdown handoffs in `.chains/`, with a save reminder at 80% context |
+| [`Agent`](docs/reference.md#agent) | Claude Code's agent tool, with agent types (`Explore`, `Plan`, reviewer, tester, ...), worktrees and 16 at once |
+| [`Workflow`](docs/reference.md#workflow) | a JS script of `agent()`, `parallel()` and `pipeline()` you can edit and resume |
+| [`job_start`](docs/reference.md#jobs-and-monitors) | a bounded background command that reports its exit code |
+| [`Monitor`](docs/reference.md#jobs-and-monitors) | reports output lines, folder or URL changes, cron fires |
+| [`mission_start`](docs/reference.md#missions) | one long goal the lead keeps at whenever it goes idle |
+| [`collaborator_start`](docs/reference.md#collaborators) | Pi, Claude Code or Codex peers in Herdr tabs, writers in their own worktree |
+| [`chain`](docs/reference.md#chains) | markdown handoffs in `.chains/`, with a save reminder at 80% context |
 
-Tasks report back on their own and collaborator mail starts a turn. Agents, workflows and monitors survive `/reload` and a Pi restart; a running job doesn't. `claude:` and `codex:` models run agents as real Claude Code or Codex workers. Heads-up: a Claude Code collaborator edits your `~/.claude.json`.
+Tasks report back on their own and collaborator mail starts a turn. Monitors survive a restart too, a running job doesn't. `claude:` and `codex:` models run agents as real Claude Code or Codex workers.
 
-A guard on every `bash`, job and monitor blocks detached processes, force pushes to `main` and recursive `rm` outside the project.
+A guard on every `bash`, job and monitor blocks detached processes, force pushes to `main` and recursive `rm` outside the project and temp dirs. Claude Code and Codex workers and collaborators get it as a hook.
 
-Also: `wiki`, `arxiv`, `todo_list`, `ask_user`, fourteen skills, `/agents` and `/chains`, and one optional settings file, `pi-kit.json`. Outside Pi, chains ships as a Claude Code and Codex plugin and the guard as a hook for both.
+Two commands: `/agents` lists tasks, collaborators, the mission and model names; `/chains` browses handoffs. Everything else you ask for in chat.
 
-Each tool in detail, `pi-kit.json`, upgrade notes and plugin installs: [docs/reference.md](docs/reference.md).
+Also `wiki`, `arxiv`, `todo_list`, `ask_user`, fourteen skills, an optional `pi-kit.json` and a chains plugin for Claude Code and Codex, all in [docs/reference.md](docs/reference.md).
+
+## Does it help?
+
+![Pi + kit vs plain Pi vs Claude Code and Codex on Terminal-Bench 4.0 and held-out DeepSWE](bench/scoreboard.svg)
+
+On Opus the kit solves 7 more than Claude Code (5 before the audit voided 2 of CC's web-lookup passes; p=0.14 at k=1) for 28% less money. Vs plain Pi it's +3, which is noise.
+
+On Sol the old kit lost by 2 and spent 2.8x what plain Pi did; it kept starting workflows and background jobs. I stopped that, and on a 40-task A/B Sol spend dropped 36%. No full Sol re-run yet, so no win claimed. The Terminal-Bench lane is in [bench/README.md](bench/README.md); the plain-Pi agent and DeepSWE runner aren't in this repo yet.
 
 ## Install
 
 ```bash
 pi install git:github.com/DeevsDeevs/deevs-pi-kit    # add -l for this project only
-pi update git:github.com/DeevsDeevs/deevs-pi-kit     # upgrade; read the upgrade notes first
+pi update git:github.com/DeevsDeevs/deevs-pi-kit     # upgrade
 ```
 
-Then `/reload`. Needs Pi 1.0.4+, Node 22.19+ and Linux for full cleanup; Herdr only for collaborators; Claude Code 2.1.292+ or Codex 0.160.1+ only for `claude:` / `codex:` models. The one real dependency, `@earendil-works/pi-durable` (about 90 packages, 125 MB), keeps agents alive across restarts.
+Then `/reload`; before `pi update` read the [upgrade notes](docs/reference.md#upgrade-notes). Needs Pi 1.0.4+ and Node 22.19+ ([requirements](docs/reference.md#requirements)). The one real dependency, `@earendil-works/pi-durable` (about 90 packages, 125 MB), keeps agents alive across restarts.
 
 ## Quickstart
 
@@ -48,7 +50,7 @@ Then `/reload`. Needs Pi 1.0.4+, Node 22.19+ and Linux for full cleanup; Herdr o
 > Start a mission: move the CLI to the new config format; done when npm test passes.
 ```
 
-Just ask in chat. Collaborators need Pi inside Herdr in a trusted project.
+Collaborators need Pi inside Herdr in a trusted project. Heads-up: a Claude Code one edits your `~/.claude.json` (accepts bypass permissions, copies folder trust to its worktree).
 
 ## Development
 
@@ -56,5 +58,3 @@ Just ask in chat. Collaborators need Pi inside Herdr in a trusted project.
 npm install
 npm run check    # lint, typecheck, tests, polygon (needs Podman), audit, pack
 ```
-
-The [polygon](polygon/README.md) runs the real Pi, Claude Code, Codex and Herdr against a scripted model.
