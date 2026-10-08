@@ -1,21 +1,20 @@
 # deevs-pi-kit
 
-My [Pi](https://github.com/earendil-works/pi) package: Claude Code's background agents and workflows, plus jobs, monitors, missions, markdown handoffs and Pi, Claude Code or Codex collaborators in [Herdr](https://herdr.dev) tabs. I run gpt-6.1-sol daily, so it's tuned for Sol and Opus alike.
+My [Pi](https://github.com/earendil-works/pi) package: Claude Code's background agents and workflows, plus jobs, monitors, missions, markdown handoffs and Pi, Claude Code or Codex collaborators in [Herdr](https://herdr.dev) tabs. I drive it with gpt-6.1-sol daily and bench it on Opus too, so it's tuned for both.
 
 ![Pi + kit vs plain Pi vs Claude Code and Codex on Terminal-Bench 4.0 and held-out DeepSWE](bench/scoreboard.svg)
 
-Same tasks for every harness, k=1, 20 min cap, everything billed through OpenRouter, 956 trials audited and nobody cheated. On Opus the kit gets 7 more solves than Claude Code for 28% less money; vs plain Pi it's +3, which is honestly noise.
-On Sol the old kit lost by 2 and burned ~3x plain Pi's money, so the positioning fix cut Sol spend by 36% (no more workflows or background jobs). I haven't re-run the full Sol head-to-head yet, so no Sol win claimed.
+On Opus the kit solves 7 more than Claude Code (5 before the audit voided 2 of CC's web-lookup passes; p=0.14 at k=1) for 28% less money. Vs plain Pi it's +3, which is noise.
 
-- Terminal-Bench 4.0 plus held-out DeepSWE v1.1 on Pi 1.0.4: 82 paired tasks on Opus 5.5, 64 on GPT-6.1 Sol (medium effort).
-- The head-to-head ran kit 7708a77, the fix 45544d5. Later commits weren't re-benchmarked.
-- The Terminal-Bench lane is in [bench/README.md](bench/README.md). The plain-Pi agent and DeepSWE runner aren't in this repo yet.
+On Sol the old kit lost by 2 and spent 2.8x what plain Pi did; it kept starting workflows and background jobs. I stopped that, and on a 40-task A/B Sol spend dropped 36%. I haven't re-run the full Sol head-to-head, so no Sol win claimed.
+
+The Terminal-Bench lane is in [bench/README.md](bench/README.md). The plain-Pi agent and DeepSWE runner aren't in this repo yet.
 
 ## Requirements
 
 - Pi 1.0.4+ and Node 22.19+.
 - Linux for cleanup: leftover processes are reaped through `/proc`, so on macOS a worker's commands can outlive a stop.
-- Herdr for collaborators (the polygon tests 0.9.0).
+- Herdr for collaborators (the polygon tests 0.9.0); inside it Shift+Enter is a newline.
 - Claude Code 2.1.292+ or Codex 0.160.1+, only for `claude:` / `codex:` models and collaborators.
 
 ## Install
@@ -32,6 +31,7 @@ Upgrade gotchas:
 
 - An update that bumps pi-durable needs a full Pi restart; `/reload` keeps the old engine.
 - `engine.sqlite` migrates forward only: after a pi-durable downgrade that session's agents don't resume. Either way, let running work end before such an update.
+- Nothing reads `~/.pi/agent/subagents` any more; delete it.
 - Coming from a kit before `service.exit`, collaborator starts fail with a conflict until you close the `pi-kit-services` Herdr workspace once.
 
 Chains also ships as a Claude Code and Codex plugin over the same `.chains/`, with the same 80% reminder (needs Node 22.19+ on `PATH`):
@@ -41,7 +41,7 @@ claude plugin marketplace add DeevsDeevs/deevs-pi-kit && claude plugin install c
 codex plugin marketplace add DeevsDeevs/deevs-pi-kit && codex plugin add chains@deevs-pi-kit
 ```
 
-Upgrade with `claude plugin marketplace update deevs-pi-kit && claude plugin update chains@deevs-pi-kit` plus a Claude Code restart, or `codex plugin marketplace upgrade deevs-pi-kit`. Its tool is now one `chain` with an `action`.
+Upgrade with `claude plugin marketplace update deevs-pi-kit && claude plugin update chains@deevs-pi-kit` plus a Claude Code restart, or `codex plugin marketplace upgrade deevs-pi-kit`. Coming from an older plugin: its tools merged into one `chain` tool with an `action`.
 
 ## Quickstart
 
@@ -61,17 +61,14 @@ Just ask in chat. Collaborators need Pi inside Herdr in a trusted project.
 - `Agent`, `SendMessage`, `TaskStop`, `ListAgents`: Claude Code's agent surface, with agent types (`Explore`, `Plan`, reviewer, tester, ...), worktree isolation and 16 at once. A `claude:` or `codex:` model runs the agent as a Claude Code or Codex worker. [More](extensions/subagents/README.md).
 - `Workflow`: a JavaScript script of `agent()`, `parallel()` and `pipeline()`, inline or saved in `.pi/workflows/` or `~/.pi/agent/workflows/`. `resumeFromRunId` replays an edited script's unchanged prefix. [Authoring](skills/workflow-authoring/SKILL.md).
 - `job_start` runs a bounded command in the background and reports its exit code. `Monitor` reports output lines, folder or URL changes, or cron fires. Servers and REPLs go in Herdr.
-- `mission_start`, `mission_update`, `mission_get`: one long goal under `.missions/<slug>/`. The lead keeps going whenever it idles with nothing running, three continues without progress pause it, and `review: true` adds a closing review.
+- `mission_start`, `mission_update`, `mission_get`: one long goal under `.missions/<slug>/`. The lead keeps going whenever it idles with no agent, workflow or job running, three continues without progress pause it, and `review: true` adds a closing review.
 - `collaborator_start`, `collaborator_workspace`: persistent peers in Herdr tabs, writers in their own worktree, mail through `SendMessage`. Heads-up: a Claude Code collaborator edits your `~/.claude.json` (accepts bypass permissions, copies the repo's folder trust to its worktree). [Protocol](extensions/runtime/PROTOCOL.md), [skill](skills/collaborators/SKILL.md).
 - `chain`: markdown handoffs under `.chains/`, with a save reminder at 80% context. [More](extensions/chains/README.md).
 - `wiki` ([more](extensions/wiki/README.md)) and `arxiv` ([more](extensions/arxiv/README.md)) appear once their skill loads. `todo_list` ([more](extensions/todos/README.md)) is a session todo widget, `ask_user` asks before irreversible choices.
-- Inside Herdr, Shift+Enter is a newline.
 
-Agents, workflows and jobs report once as a `<task-notification>`, monitors per event, and collaborator mail starts a turn. Agents, workflows and monitors survive `/reload`, pause while Pi is closed and carry on when the session reopens. A running job dies with Pi and is reported as interrupted.
+Tasks report back on their own and collaborator mail starts a turn. Agents, workflows and monitors survive `/reload` and a Pi restart, a running job doesn't; `pi -p` has no `ask_user` or collaborator tools and, like `claude -p`, waits for running agents, workflows and timed jobs to report, then exits. [Details](extensions/subagents/README.md).
 
-`pi -p` (or `--mode json`) has no `ask_user` or collaborator tools: the lead takes its default and names an irreversible step instead of doing it. Like `claude -p`, it exits only after running agents, workflows and jobs with a `timeout` report.
-
-The lead and every Pi agent get ~310 tokens of working rules (finish and verify in the turn, smallest change, test in the project's own env). Your instructions win.
+The lead gets ~310 tokens of working rules (finish and verify in the turn, smallest change, test in the project's own env); Pi agents get the smallest-change and test rules. Your instructions win.
 
 The guard, in every `bash`, `job_start` and `Monitor`, blocks detached processes, force pushes to `main`, `master`, `release/*` or an unnamed branch, recursive `rm` outside the project and temp dirs, your `guard.block` patterns, and a `bash` that starts with a `sleep` of 60 s or more. `extensions/shared/guard-hook.mjs` is the same guard as a Claude Code or Codex hook.
 
@@ -102,7 +99,7 @@ Global `~/.pi/agent/pi-kit.json`, per-project `.pi/pi-kit.json` (wins key by key
 - `codexFast`: `service_tier: "priority"` on the lead's own ChatGPT-login requests, not agents', never with an API key.
 - `notifier`: ready-for-input alerts. `enabled`, `title`, `body`, `terminal`, `bell`, `terminalRequiresTty`, `minIntervalMs`, `command` (argv with `{title}`, `{body}`, `{cwd}`, `{project}`, killed after 10 s), `jsonl`. An untrusted project gets no `command` or `jsonl`, not even the global ones.
 
-An untrusted project's `models`, `lead`, `autonomy` and `codexFast` are ignored. A trusted project's old `.pi/codex-fast.json`, `notifier.json`, `runtime.json` and `subagents.json` move into `.pi/pi-kit.json` once (`defaultModel` becomes `models.default`).
+An untrusted project's `models`, `lead`, `autonomy` and `codexFast` are ignored. A trusted project's old `.pi/codex-fast.json`, `notifier.json`, `runtime.json` and `subagents.json` move into `.pi/pi-kit.json` once (`defaultModel` becomes `models.default`), and an old `"autonomy": "auto"` or `"ask"` becomes `true` or `false`.
 
 ## Skills
 
