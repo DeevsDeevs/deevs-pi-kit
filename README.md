@@ -64,7 +64,7 @@ Ask in chat. Collaborators need Pi running inside Herdr in a trusted project; no
 - **Chains** (`chain`, `/chains`): markdown handoffs under `.chains/`, with one save reminder at 80% context. [More](extensions/chains/README.md).
 - **Smaller tools**: `wiki` for curated markdown wikis ([more](extensions/wiki/README.md)) and `arxiv` for arXiv search and BibTeX ([more](extensions/arxiv/README.md)), each offered once its skill loads; `todo_list` ([more](extensions/todos/README.md)), `ask_user` before irreversible choices, a ready-for-input notifier, the Codex Fast tier (`codexFast`), and Shift+Enter as a newline inside Herdr.
 
-Two commands: `/agents` shows tasks, collaborators, the Mission, agent types and models (`/agents stop <id>` stops a task or pauses the Mission); `/chains [query]` browses and searches handoffs.
+Two commands: `/agents` shows tasks, collaborators, the Mission, agent types and models (`/agents <id>` tails a running Pi agent's transcript in a widget until it ends or you repeat the command; `/agents stop <id>` stops a task or pauses the Mission); `/chains [query]` browses and searches handoffs.
 
 ## pi-kit.json
 
