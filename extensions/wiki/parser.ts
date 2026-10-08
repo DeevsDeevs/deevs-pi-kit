@@ -1,6 +1,7 @@
 import { basename, dirname, extname, posix } from "node:path";
+import { stripFrontmatter } from "../shared/terms.ts";
 
-export interface WikiMetadata {
+interface WikiMetadata {
 	title?: string;
 	type?: string;
 	tags: string[];
@@ -10,26 +11,16 @@ export interface WikiMetadata {
 	sha256?: string;
 }
 
-export interface WikiLinkRef {
+interface WikiLinkRef {
 	raw: string;
 	target: string;
 	line: number;
-	embed: boolean;
 	local: boolean;
 	asset: boolean;
 }
 
-export function stripFrontmatter(content: string): string {
-	return content.replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, "");
-}
-
-export function frontmatterBody(content: string): string {
-	const match = /^---\s*\n([\s\S]*?)\n---\s*\n?/.exec(content);
-	return match?.[1] ?? "";
-}
-
 export function parseMetadata(content: string): WikiMetadata {
-	const body = frontmatterBody(content);
+	const body = /^---\s*\n([\s\S]*?)\n---\s*\n?/.exec(content)?.[1] ?? "";
 	const metadata: WikiMetadata = { tags: [], sources: [], contested: false };
 	for (const rawLine of body.split(/\r?\n/)) {
 		const line = rawLine.trim();
@@ -55,23 +46,23 @@ export function extractTitle(content: string, relativePath: string): string {
 	return heading || basename(relativePath, extname(relativePath));
 }
 
-export function stripCodeFences(content: string): string {
+function stripCodeFences(content: string): string {
 	return content.replace(/```[\s\S]*?```/g, (block) => "\n".repeat(block.split(/\r?\n/).length - 1));
 }
 
 export function parseWikiLinks(content: string): WikiLinkRef[] {
 	const body = stripCodeFences(stripFrontmatter(content));
 	const links: WikiLinkRef[] = [];
-	const regex = /(!?)\[\[([^\]\n]+)\]\]/g;
-	let match: RegExpExecArray | null;
-	while ((match = regex.exec(body))) {
-		const raw = match[0]!;
-		const embed = match[1] === "!";
-		const inner = match[2]!.split("|")[0]!.trim();
+	for (const match of body.matchAll(/!?\[\[([^\]\n]+)\]\]/g)) {
+		const inner = match[1]!.split("|")[0]!.trim();
 		const withoutHeading = inner.split("#")[0]!.trim();
-		const local = inner.startsWith("#") || withoutHeading.length === 0;
-		const asset = isAssetTarget(withoutHeading);
-		links.push({ raw, target: normalizeTarget(withoutHeading), line: lineNumberAt(body, match.index), embed, local, asset });
+		links.push({
+			raw: match[0],
+			target: normalizeTarget(withoutHeading),
+			line: lineNumberAt(body, match.index),
+			local: inner.startsWith("#") || withoutHeading.length === 0,
+			asset: isAssetTarget(withoutHeading),
+		});
 	}
 	return links;
 }
@@ -88,7 +79,7 @@ export function sameDirCandidate(fromId: string, target: string): string {
 	return normalizeTarget(posix.join(dirname(fromId), target));
 }
 
-export function normalizeTarget(value: string): string {
+function normalizeTarget(value: string): string {
 	return value
 		.replace(/\\/g, "/")
 		.replace(/^\/+|\/+$/g, "")
@@ -117,7 +108,7 @@ function parseList(value: string): string[] {
 }
 
 function unquote(value: string): string {
-	return value.replace(/^['\"]|['\"]$/g, "");
+	return value.replace(/^['"]|['"]$/g, "");
 }
 
 function lineNumberAt(content: string, index: number): number {

@@ -7,9 +7,10 @@ import { HostedParticipantCoordinator } from "../extensions/runtime/service/part
 import { RuntimeError } from "../extensions/runtime/errors.ts";
 import { dispatchHostedLine } from "../extensions/runtime/service/protocol.ts";
 import { protocolContext } from "./fixtures/runtime-protocol.ts";
-import type { HostedHostVerifier, HostedLiveAgent } from "../extensions/runtime/service/identity.ts";
-import { RuntimeRegistrationManager, type HostedLiveRegistration, type RegisterPiInput } from "../extensions/runtime/service/registration.ts";
-import { deriveAgentTargetKey, HostedStateStore } from "../extensions/runtime/service/state.ts";
+import type { HostedHostVerifier, HostedLiveAgent } from "../extensions/runtime/service/herdr-cli.ts";
+import { LiveTargets, type HostedCaller, type RegisterPiInput } from "../extensions/runtime/service/live.ts";
+import { deriveAgentTargetKey, HostedStateStore, messagingConfigurationHash } from "../extensions/runtime/service/state.ts";
+import { replyInFlight } from "../extensions/runtime/collaborators.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -42,8 +43,7 @@ function setup() {
 	}
 	const store = new HostedStateStore(join(root, "runtime"));
 	let now = 1_000;
-	let registrationNumber = 0;
-	const registrations = new RuntimeRegistrationManager(store, host, { now: () => now, createId: () => `reg_${++registrationNumber}`, createKey: () => `key_${registrationNumber}` });
+	const registrations = new LiveTargets(store, host, { now: () => now });
 	let generationNumber = 0;
 	let eventNumber = 0;
 	let stopOutcome: "closed" | "already_absent" | "unmanaged" = "closed";
@@ -56,10 +56,26 @@ function setup() {
 		createEventId: () => `event_${++eventNumber}`,
 		stopTarget: (target) => stopTarget(target),
 	});
-	return { root, projectRoot, host, inputs, store, registrations, participants, stoppedTargets, setStopOutcome(value: typeof stopOutcome) { stopOutcome = value; }, setStopTarget(value: typeof stopTarget) { stopTarget = value; }, setNow(value: number) { now = value; } };
+	return { root, projectRoot, host, inputs, store, registrations, participants, stoppedTargets, setStopOutcome(value: typeof stopOutcome) { stopOutcome = value; }, setStopTarget(value: typeof stopTarget) { stopTarget = value; }, setNow(value: number) { now = value; }, now: () => now };
 }
 
-async function register(test: ReturnType<typeof setup>, name: string): Promise<HostedLiveRegistration> {
+type Setup = ReturnType<typeof setup>;
+let helperIds = 0;
+
+/** Mail as messaging.send records it, without a namespace: the internal step every send goes through. */
+function send(test: Setup, registration: HostedCaller, senderParticipantKey: string, expectedSenderGeneration: string, recipientParticipantKey: string, sendId: string, body: string) {
+	if (!test.store.read().participants[senderParticipantKey]) throw new RuntimeError("not_found", "Sender is absent.");
+	test.store.apply({ type: "mailbox.send", senderParticipantKey, expectedSenderGeneration, senderTargetKey: registration.targetKey, recipientParticipantKey, sendId, eventId: `event_helper_${++helperIds}`, body, at: test.now() });
+	return Object.values(test.store.read().events).find((event) => event.source.id === senderParticipantKey && event.sendId === sendId)!;
+}
+
+/** The holder vacating its own participant, as the confirmed stand-down records it. */
+function standDown(test: Setup, registration: HostedCaller, participantKey: string) {
+	test.store.apply({ type: "participant.stand_down", participantKey, targetKey: registration.targetKey, generation: `lease_helper_${++helperIds}`, at: test.now() });
+	return test.store.read().participants[participantKey]!;
+}
+
+async function register(test: ReturnType<typeof setup>, name: string): Promise<HostedCaller> {
 	const registration = await test.registrations.register(test.inputs.get(name)!);
 	test.participants.registrationReady(registration.targetKey);
 	return registration;
@@ -78,7 +94,7 @@ describe("hosted participant coordinator", () => {
 		const test = setup();
 		const { main, mainParticipant } = await acquirePair(test);
 		const retry = test.participants.acquire(main, "review", "main");
-		expect(retry).toMatchObject({ revived: false, participant: { generation: mainParticipant.generation } });
+		expect(retry).toMatchObject({ participant: { generation: mainParticipant.generation } });
 		expect(test.participants.get(main, mainParticipant.participantKey)).toMatchObject({ holderLive: true, unreadMail: 0 });
 		expect(test.participants.list(main).map((participant) => participant.participantId)).toEqual(["fable", "main"]);
 		expect(test.participants.list(main)[0]).not.toHaveProperty("unreadMail");
@@ -87,18 +103,18 @@ describe("hosted participant coordinator", () => {
 	it("sends idempotently, wakes a held recipient, and queues while vacant", async () => {
 		const test = setup();
 		const { main, fable, mainParticipant, fableParticipant } = await acquirePair(test);
-		const first = test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "send_1", "Please review.");
-		expect(test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "send_1", "Please review.").eventId).toBe(first.eventId);
-		test.participants.standDown(fable, fableParticipant.participantKey);
-		const queued = test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "send_2", "Queued review.");
+		const first = send(test, main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "send_1", "Please review.");
+		expect(send(test, main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "send_1", "Please review.").eventId).toBe(first.eventId);
+		standDown(test, fable, fableParticipant.participantKey);
+		const queued = send(test, main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "send_2", "Queued review.");
 		expect(test.store.read().events[queued.eventId]).toMatchObject({ recipientParticipantKey: fableParticipant.participantKey });
-		expect(() => test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "send_1", "Changed.")).toThrow(expect.objectContaining({ code: "conflict" }));
+		expect(() => send(test, main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "send_1", "Changed.")).toThrow(expect.objectContaining({ code: "conflict" }));
 	});
 
 	it("records ordinary mail addressed to a bound agent participant", async () => {
 		const test = setup();
 		const { main, fable, mainParticipant, fableParticipant } = await acquirePair(test);
-		const vacant = test.participants.standDown(fable, fableParticipant.participantKey);
+		const vacant = standDown(test, fable, fableParticipant.participantKey);
 		const agentName = "collab-managed";
 		const managedTarget: HostedAgentTarget = {
 			kind: "agent",
@@ -116,17 +132,21 @@ describe("hosted participant coordinator", () => {
 		const managed = test.participants.get(main, fableParticipant.participantKey);
 		expect(managed).toMatchObject({ state: "held", holderTargetKey: managedTarget.targetKey, generation: "lease_managed" });
 		expect(test.participants.list(main).find((participant) => participant.participantId === "fable")).toMatchObject({ driver: "codex", profile: "read-only" });
-		const ordinary = test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, managed.participantKey, "send_managed", "Please inspect.");
+		const ordinary = send(test, main, mainParticipant.participantKey, mainParticipant.generation, managed.participantKey, "send_managed", "Please inspect.");
 		expect(test.store.read().events[ordinary.eventId]).toMatchObject({ type: "mailbox.message", recipientParticipantKey: managed.participantKey });
 		expect(test.participants.get(main, managed.participantKey).unreadMail).toBe(1);
+		// K1: once stood down, the roster still says codex, so a resume never starts it as Pi.
+		test.setNow(2_000);
+		test.participants.standDownConfirmed(main, managed.participantKey, "lease_managed");
+		expect(test.participants.list(main).find((participant) => participant.participantId === "fable")).toMatchObject({ state: "vacant", driver: "codex", profile: "read-only" });
 	});
 
 	it("rejects cross-protocol send after a target changes identity", async () => {
 		const test = setup();
 		const { main, mainParticipant, fableParticipant } = await acquirePair(test);
-		test.participants.standDown(main, mainParticipant.participantKey);
+		standDown(test, main, mainParticipant.participantKey);
 		test.participants.acquire(main, "other", "main");
-		expect(() => test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "send_cross_protocol", "Wrong protocol.")).toThrow(expect.objectContaining({ code: "conflict" }));
+		expect(() => send(test, main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "send_cross_protocol", "Wrong protocol.")).toThrow(expect.objectContaining({ code: "conflict" }));
 	});
 
 	it("allows a confirmed same-project target to generation-fence a live collaborator stand-down", async () => {
@@ -141,7 +161,7 @@ describe("hosted participant coordinator", () => {
 	it("stops an exact other target and preserves its queued mail", async () => {
 		const test = setup();
 		const { main, fable, mainParticipant, fableParticipant } = await acquirePair(test);
-		test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "queued", "Keep me.");
+		send(test, main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "queued", "Keep me.");
 		await expect(test.participants.stopConfirmed(fable, fableParticipant.participantKey, fableParticipant.generation)).rejects.toMatchObject({ code: "conflict" });
 		await expect(test.participants.stopConfirmed(main, fableParticipant.participantKey, "stale")).rejects.toMatchObject({ code: "conflict" });
 		expect(test.stoppedTargets).toEqual([]);
@@ -162,10 +182,38 @@ describe("hosted participant coordinator", () => {
 		await expect(test.participants.stopConfirmed(main, fableParticipant.participantKey, vacant.generation)).rejects.toMatchObject({ code: "conflict" });
 	});
 
+	it("counts a reply as owed only while mail is unread, so mail read and answered in text never holds a stand-down", async () => {
+		const test = setup();
+		const { main, fable, mainParticipant, fableParticipant } = await acquirePair(test);
+		const owed = () => test.participants.get(main, fableParticipant.participantKey).awaitingReply;
+		expect(owed()).toBe(false);
+		const request = send(test, main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "send_1", "Review it.");
+		expect(owed()).toBe(true);
+		const namespaceId = "msg_00000000-0000-0000-0000-000000000001";
+		const configurationHash = messagingConfigurationHash(test.store.read().targets[fable.targetKey]!);
+		const grant = { namespaceId, secretDigest: "a".repeat(64), participantKey: fableParticipant.participantKey, holderGeneration: fableParticipant.generation, targetKey: fable.targetKey, configurationHash, createdAt: 1_000, status: "active" as const, operations: {} };
+		test.store.apply({ type: "messaging.issue", grant });
+		test.setNow(2_000);
+		test.store.apply({ type: "messaging.read", namespaceId, eventIds: [request.eventId], at: 2_000 });
+		expect(test.participants.get(main, fableParticipant.participantKey)).toMatchObject({ unreadMail: 0, awaitingReply: false });
+		test.setNow(3_000);
+		send(test, fable, fableParticipant.participantKey, fableParticipant.generation, mainParticipant.participantKey, "reply_1", "Done.");
+		expect(owed()).toBe(false);
+	});
+
+	it("holds a stand-down only for a live holder that is mid-turn or owes a reply", () => {
+		const status = { participantKey: "p", protocol: "review", participantId: "fable", state: "held" as const, generation: "lease_1", holderLive: true, lastTransition: { cause: "acquire" } };
+		expect(replyInFlight(status)).toBe(false);
+		expect(replyInFlight({ ...status, awaitingReply: true })).toBe(true);
+		expect(replyInFlight({ ...status, agentStatus: "working" })).toBe(true);
+		expect(replyInFlight({ ...status, agentStatus: "blocked", awaitingReply: true })).toBe(false);
+		expect(replyInFlight({ ...status, holderLive: false, agentStatus: "working" })).toBe(false);
+	});
+
 	it("refuses to stop a target that now holds another participant", async () => {
 		const test = setup();
 		const { main, fable, fableParticipant } = await acquirePair(test);
-		const vacant = test.participants.standDown(fable, fableParticipant.participantKey);
+		const vacant = standDown(test, fable, fableParticipant.participantKey);
 		const other = test.participants.acquire(fable, "review", "other").participant;
 		await expect(test.participants.stopConfirmed(main, fableParticipant.participantKey, vacant.generation)).rejects.toMatchObject({ code: "conflict" });
 		expect(test.stoppedTargets).toEqual([]);
@@ -174,7 +222,7 @@ describe("hosted participant coordinator", () => {
 
 	it("fences identity changes while an exact collaborator tab is stopping", async () => {
 		const test = setup();
-		const { main, fable, mainParticipant, fableParticipant } = await acquirePair(test);
+		const { main, fable, fableParticipant } = await acquirePair(test);
 		let releaseStop!: () => void;
 		let stopStarted!: () => void;
 		const barrier = new Promise<void>((resolve) => { releaseStop = resolve; });
@@ -190,7 +238,6 @@ describe("hosted participant coordinator", () => {
 		expect(() => test.participants.acquire(fable, "review", "fable")).toThrow(expect.objectContaining({ code: "busy" }));
 		expect(() => test.participants.acquire(fable, "review", "other")).toThrow(expect.objectContaining({ code: "busy" }));
 		expect(() => test.participants.standDownConfirmed(main, fableParticipant.participantKey, fableParticipant.generation)).toThrow(expect.objectContaining({ code: "busy" }));
-		expect(() => test.participants.send(fable, fableParticipant.participantKey, fableParticipant.generation, mainParticipant.participantKey, "during_stop", "No send.")).toThrow(expect.objectContaining({ code: "busy" }));
 		releaseStop();
 		expect(await stopping).toMatchObject({ outcome: "stopped", participant: { state: "vacant" } });
 	});
@@ -208,7 +255,7 @@ describe("hosted participant coordinator", () => {
 		const { fable, fableParticipant } = await acquirePair(test);
 		const successor = await register(test, "successor");
 		expect(() => test.participants.takeover(successor, fableParticipant.participantKey, fableParticipant.generation)).toThrow(RuntimeError);
-		test.registrations.unregister(fable.registrationId, fable.registrationKey);
+		test.registrations.forget(fable.targetKey);
 		expect(() => test.participants.takeover(successor, fableParticipant.participantKey, "stale_generation")).toThrow(expect.objectContaining({ code: "conflict" }));
 		const taken = test.participants.takeover(successor, fableParticipant.participantKey, fableParticipant.generation);
 		expect(taken).toMatchObject({ state: "held", holderTargetKey: successor.targetKey, lastTransition: { cause: "takeover" } });
@@ -218,10 +265,8 @@ describe("hosted participant coordinator", () => {
 	it("blocks takeover after a Runtime restart until reconnect grace elapses", async () => {
 		const test = setup();
 		const { fableParticipant } = await acquirePair(test);
-		test.registrations.close();
 		let now = 2_000;
-		let id = 0;
-		const registrations = new RuntimeRegistrationManager(test.store, test.host, { now: () => now, createId: () => `restart_reg_${++id}`, createKey: () => `restart_key_${id}` });
+		const registrations = new LiveTargets(test.store, test.host, { now: () => now });
 		const successor = await registrations.register(test.inputs.get("successor")!);
 		const participants = new HostedParticipantCoordinator(test.store, registrations, { now: () => now, startedAt: 2_000, reconnectGraceMs: 60_000, createGeneration: () => "lease_after_restart" });
 		participants.registrationReady(successor.targetKey);
@@ -234,30 +279,16 @@ describe("hosted participant coordinator", () => {
 		const test = setup();
 		const { fable, fableParticipant } = await acquirePair(test);
 		const successor = await register(test, "successor");
-		test.registrations.unregister(fable.registrationId, fable.registrationKey);
+		test.registrations.forget(fable.targetKey);
 		expect(test.participants.takeover(successor, fableParticipant.participantKey, fableParticipant.generation)).toMatchObject({ holderTargetKey: successor.targetKey });
 	});
 
-	it("reports revival and rejects sends to ended participants", async () => {
+	it("refuses a stand-down from a target that never held the participant", async () => {
 		const test = setup();
-		const { main, fable, mainParticipant, fableParticipant } = await acquirePair(test);
-		test.participants.release(fable, fableParticipant.participantKey);
-		expect(() => test.participants.send(main, mainParticipant.participantKey, mainParticipant.generation, fableParticipant.participantKey, "send_ended", "No receiver.")).toThrow(expect.objectContaining({ code: "not_found" }));
-		expect(() => test.participants.acquire(fable, "review", "fable")).toThrow(expect.objectContaining({ code: "conflict" }));
-		const revived = test.participants.acquire(fable, "review", "fable", true);
-		expect(revived).toMatchObject({ revived: true, participant: { state: "held" } });
-		expect(test.participants.acquire(fable, "review", "fable")).toMatchObject({ revived: true, participant: { generation: revived.participant.generation } });
-	});
-
-	it("refuses a stand-down or release from a target that never held the participant", async () => {
-		const test = setup();
-		const { main, fable, mainParticipant, fableParticipant } = await acquirePair(test);
-		test.participants.standDown(fable, fableParticipant.participantKey);
-		expect(() => test.participants.standDown(main, fableParticipant.participantKey)).toThrow(expect.objectContaining({ code: "conflict" }));
-		expect(test.participants.standDown(fable, fableParticipant.participantKey)).toMatchObject({ state: "vacant" });
-		test.participants.release(main, mainParticipant.participantKey);
-		expect(() => test.participants.release(fable, mainParticipant.participantKey)).toThrow(expect.objectContaining({ code: "conflict" }));
-		expect(test.participants.release(main, mainParticipant.participantKey)).toMatchObject({ state: "ended" });
+		const { main, fable, fableParticipant } = await acquirePair(test);
+		standDown(test, fable, fableParticipant.participantKey);
+		expect(() => standDown(test, main, fableParticipant.participantKey)).toThrow(expect.objectContaining({ code: "conflict" }));
+		expect(standDown(test, fable, fableParticipant.participantKey)).toMatchObject({ state: "vacant" });
 	});
 
 	it("rejects send when the caller holds no participant identity", async () => {
@@ -265,7 +296,7 @@ describe("hosted participant coordinator", () => {
 		const main = await register(test, "main");
 		const fable = await register(test, "fable");
 		const recipient = test.participants.acquire(fable, "review", "fable").participant;
-		expect(() => test.participants.send(main, "participant_missing", "lease_missing", recipient.participantKey, "send_without_identity", "No sender.")).toThrow(expect.objectContaining({ code: "not_found" }));
+		expect(() => send(test, main, "participant_missing", "lease_missing", recipient.participantKey, "send_without_identity", "No sender.")).toThrow(expect.objectContaining({ code: "not_found" }));
 	});
 });
 
@@ -277,25 +308,23 @@ describe("participant and mailbox RPC", () => {
 		const context = protocolContext(test.root, test.store, test.host, test.registrations, test.participants);
 		const call = (method: string, params: unknown) => dispatchHostedLine(JSON.stringify({ v: 1, id: method, method, params }), context);
 		expect(await call("hello", { minVersion: 1, maxVersion: 1 })).toMatchObject({ ok: true, result: { capabilities: { mailbox: { maxBodyBytes: 16_384 } } } });
-		let mainAuth = { registrationId: main.registrationId, registrationKey: main.registrationKey };
-		const fableAuth = { registrationId: fable.registrationId, registrationKey: fable.registrationKey };
+		let mainAuth = { targetKey: main.targetKey };
+		const fableAuth = { targetKey: fable.targetKey };
 		const acquiredMain = await call("participant.acquire", { ...mainAuth, protocol: "review", participantId: "main" });
 		const acquiredFable = await call("participant.acquire", { ...fableAuth, protocol: "review", participantId: "fable" });
 		const sender = (acquiredMain as { result: { participant: { participantKey: string; generation: string } } }).result.participant;
 		const recipient = (acquiredFable as { result: { participant: { participantKey: string; generation: string } } }).result.participant;
-		expect(acquiredMain).toMatchObject({ ok: true, result: { participant: { participantId: "main" }, revived: false } });
+		expect(acquiredMain).toMatchObject({ ok: true, result: { participant: { participantId: "main" } } });
 		test.setNow(1_001);
-		test.registrations.unregister(mainAuth.registrationId, mainAuth.registrationKey);
+		test.registrations.forget(mainAuth.targetKey);
 		const reconnectedMain = await register(test, "main");
-		mainAuth = { registrationId: reconnectedMain.registrationId, registrationKey: reconnectedMain.registrationKey };
-		expect(await call("mailbox.send", { ...mainAuth, senderParticipantKey: sender.participantKey, expectedSenderGeneration: sender.generation, recipientParticipantKey: recipient.participantKey, sendId: "send_rpc", body: "Review RPC." })).toMatchObject({ ok: true, result: { sequence: 1 } });
-		expect(await call("mailbox.send", { ...mainAuth, senderParticipantKey: sender.participantKey, expectedSenderGeneration: "stale", recipientParticipantKey: recipient.participantKey, sendId: "send_stale", body: "Wrong sender." })).toMatchObject({ ok: false, error: { code: "conflict" } });
+		mainAuth = { targetKey: reconnectedMain.targetKey };
+		send(test, reconnectedMain, sender.participantKey, sender.generation, recipient.participantKey, "send_rpc", "Review RPC.");
 		expect(await call("participant.get", { ...mainAuth, participantKey: recipient.participantKey })).toMatchObject({ ok: true, result: { unreadMail: 1 } });
 		expect(await call("participant.list", mainAuth)).toMatchObject({ ok: true, result: { participants: [{ participantId: "fable" }, { participantId: "main" }] } });
 		expect(await call("participant.acquire", { ...mainAuth, protocol: "review", participantId: "bad", extra: true })).toMatchObject({ ok: false, error: { code: "invalid_request" } });
 		expect(await call("participant.acquire", { ...mainAuth, protocol: "Review", participantId: "bad" })).toMatchObject({ ok: false, error: { code: "invalid_request" } });
-		expect(await call("participant.list", { ...mainAuth, registrationKey: "wrong" })).toMatchObject({ ok: false, error: { code: "registration_stale" } });
-		expect(await call("mailbox.send", { ...mainAuth, senderParticipantKey: sender.participantKey, expectedSenderGeneration: sender.generation, recipientParticipantKey: recipient.participantKey, sendId: "bad_extra", body: "x", extra: true })).toMatchObject({ ok: false, error: { code: "invalid_request" } });
+		expect(await call("participant.list", { targetKey: "pi_unknown" })).toMatchObject({ ok: false, error: { code: "registration_stale" } });
 		expect(await call("participant.takeover", { ...mainAuth, participantKey: recipient.participantKey, expectedGeneration: recipient.generation, confirmed: false })).toMatchObject({ ok: false, error: { code: "invalid_request" } });
 		expect(await call("participant.stand_down_confirmed", { ...mainAuth, participantKey: recipient.participantKey, expectedGeneration: recipient.generation, confirmed: false })).toMatchObject({ ok: false, error: { code: "invalid_request" } });
 		expect(await call("participant.stop_confirmed", { ...mainAuth, participantKey: recipient.participantKey, expectedGeneration: recipient.generation, confirmed: false })).toMatchObject({ ok: false, error: { code: "invalid_request" } });

@@ -1,36 +1,25 @@
-import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent";
-import type { CollaboratorToolBlock } from "./collaborator-policy.ts";
-import {
-	CollaboratorService,
-	type CollaboratorManageInput,
-	type CollaboratorManageResult,
-	type CollaboratorWorktreeInput,
-	type CollaboratorWorktreeResult,
-} from "./collaborators.ts";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { CollaboratorCandidate } from "./collaborator-policy.ts";
+import { CollaboratorService, LEAD, type CollaboratorManageResult } from "./collaborators.ts";
+import { agentDir } from "../shared/config.ts";
+import { tasks } from "../shared/tasks.ts";
 import { isHeld } from "./schemas/state.ts";
-import type { InboxReader } from "./mcp/pi.ts";
 import { MessagingClient } from "./messaging-client.ts";
 import { NativeAgentService } from "./native-agents.ts";
-import type { ClientParticipantStatus, HostedHeartbeat, LiveClientRegistration } from "./responses.ts";
-import { runRuntimeCommand, type RuntimeCommandServices } from "./runtime-command.ts";
+import type { HostedHeartbeat, LiveClientRegistration } from "./responses.ts";
 import { RuntimeSession, type RuntimeSessionHooks } from "./runtime-session.ts";
 import { HostedSessionStore } from "./session-record.ts";
 
-interface BeforeAgentStartResult {
-	systemPrompt?: string;
-}
-
-/** Wires the Runtime session, delivery, messaging and collaborator services to Pi's extension events. */
+/** Wires the Runtime session, messaging and collaborator services to Pi, and collaborators to the shared roster. */
 export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 	private readonly store: HostedSessionStore;
-	private readonly session: RuntimeSession;
-	private readonly messaging: MessagingClient;
+	readonly session: RuntimeSession;
+	readonly messaging: MessagingClient;
 	private readonly native: NativeAgentService;
-	private readonly collaborators: CollaboratorService;
+	readonly collaborators: CollaboratorService;
 
-	constructor(pi: ExtensionAPI, root = defaultRuntimeRoot()) {
+	constructor(pi: ExtensionAPI, root = join(agentDir(), "runtime")) {
 		this.store = new HostedSessionStore(pi);
 		this.session = new RuntimeSession(pi, root, this.store, this);
 		this.messaging = new MessagingClient(this.session);
@@ -38,53 +27,60 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 		this.collaborators = new CollaboratorService(this.session, this.native);
 	}
 
-	sessionStart(ctx: ExtensionContext): Promise<void> {
-		return this.session.sessionStart(ctx);
+	async start(participants: CollaboratorCandidate[], ctx: ExtensionContext, signal?: AbortSignal): Promise<CollaboratorManageResult[]> {
+		const results = await this.collaborators.start(participants, ctx, signal);
+		// The lead may SendMessage in its very next call: each started row is on the roster before this returns.
+		for (const result of results) if (result.status === "started") this.row(ctx, result.participant, `${result.driver} ${result.profile ?? "read-only"}`, true);
+		// A first start acquires main; its namespace must exist before a collaborator can mail it.
+		if (isHeld(this.store.identity?.disposition)) await this.messaging.descriptor(ctx).then(() => this.syncRoster(ctx)).catch(() => {});
+		return results;
 	}
 
-	sessionTree(ctx: ExtensionContext): void {
-		this.session.sessionTree(ctx);
+	private async standDown(name: string, ctx: ExtensionContext): Promise<void> {
+		const result = await this.collaborators.standDown(name, ctx);
+		await this.syncRoster(ctx).catch(() => {});
+		if (result.status !== "stood_down" && result.status !== "already_vacant") throw new Error(`${name} was not stood down: ${result.error ?? result.status}`);
 	}
 
-	sessionCompact(ctx: ExtensionContext): void {
-		this.session.sessionCompact(ctx);
+	/** A stood-down collaborator resumes in a new tab: a Pi one from its session file, a Claude or Codex one from its native session. */
+	private async relaunch(name: string, driver: string | undefined, ctx: ExtensionContext): Promise<void> {
+		const spec = this.store.started.get(name);
+		if (!spec && driver !== "pi") throw new Error(`${name} ran ${driver ?? "an unknown driver"} and its start spec is gone; start it again with collaborator_start and its model.`);
+		const [result] = await this.start([spec ?? { participantId: name }], ctx);
+		if (result?.status !== "started") throw new Error(`${name} did not resume: ${result?.error ?? result?.status}`);
 	}
 
-	sessionShutdown(): Promise<void> {
-		return this.session.sessionShutdown();
+	/** A collaborator's rows only send: it neither stands down nor resumes its peers. */
+	private row(ctx: ExtensionContext, name: string, description: string, held: boolean, driver?: string): void {
+		const current = () => this.session.context ?? ctx;
+		const lead = !this.store.launch;
+		tasks.register({
+			id: name,
+			kind: "collaborator",
+			name,
+			description,
+			status: held ? "running" : "completed",
+			ownerSession: ctx.sessionManager.getSessionId(),
+			startedAt: Date.now(),
+			stop: name === LEAD || !lead ? undefined : () => this.standDown(name, current()),
+			send: async (message, images) => {
+				if (!held && lead) await this.relaunch(name, driver, current());
+				return this.messaging.send(current(), name, message, images);
+			},
+		});
 	}
 
-	messagingDescriptor(ctx: ExtensionContext): Promise<string> {
-		return this.messaging.descriptor(ctx);
-	}
-
-	command(args: string, ctx: ExtensionCommandContext): Promise<void> {
-		const services: RuntimeCommandServices = { session: this.session, messaging: this.messaging };
-		return runRuntimeCommand(services, args, ctx);
-	}
-
-	guardCollaboratorTool(toolName: string, input: ToolCallEvent["input"] | undefined, cwd: string): CollaboratorToolBlock | undefined {
-		return this.collaborators.guardTool(toolName, input, cwd);
-	}
-
-	listCollaborators(ctx: ExtensionContext): Promise<ClientParticipantStatus[]> {
-		return this.collaborators.list(ctx);
-	}
-
-	manageCollaborators(input: CollaboratorManageInput, ctx: ExtensionContext, signal?: AbortSignal): Promise<CollaboratorManageResult[]> {
-		return this.collaborators.manage(input, ctx, signal);
-	}
-
-	manageWorktrees(input: CollaboratorWorktreeInput, ctx: ExtensionContext, signal?: AbortSignal): Promise<CollaboratorWorktreeResult> {
-		return this.collaborators.manageWorktrees(input, ctx, signal);
-	}
-
-	/** Adds any collaborator persona prompt; durable events arrive through the heartbeat alone. */
-	beforeAgentStart(systemPrompt: string, ctx: ExtensionContext): BeforeAgentStartResult | undefined {
-		this.session.setContext(ctx);
-		const persona = this.store.launch?.persona;
-		if (!this.session.isActive || !persona) return undefined;
-		return { systemPrompt: `${systemPrompt}\n\n# Collaborator persona: ${persona.name}\n\n${persona.prompt}` };
+	/** Collaborators join the shared roster: the lead sees each one by name, a collaborator sees main and its peers. */
+	private async syncRoster(ctx: ExtensionContext): Promise<void> {
+		const identity = this.store.identity;
+		if (!identity || !isHeld(identity.disposition)) return;
+		if (this.store.launch) this.row(ctx, LEAD, "the lead", true);
+		for (const participant of await this.collaborators.list(ctx)) {
+			if (participant.protocol !== identity.protocol || participant.participantId === identity.participantId || participant.participantId === LEAD) continue;
+			const profile = participant.profile ?? this.store.started.get(participant.participantId)?.profile ?? "read-only";
+			const description = `${participant.driver ?? "pi"} ${profile}${participant.repo ? ` in ${participant.repo}` : ""}`;
+			this.row(ctx, participant.participantId, description, isHeld(participant.state), participant.driver);
+		}
 	}
 
 	restoreSessionState(ctx: ExtensionContext): void {
@@ -94,22 +90,18 @@ export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 	}
 
 	async afterRegister(registration: LiveClientRegistration, ctx: ExtensionContext): Promise<void> {
-		if (isHeld(this.store.identity?.disposition)) await this.messaging.provision(registration, ctx);
+		if (!isHeld(this.store.identity?.disposition)) return;
+		await this.messaging.provision(registration, ctx);
+		await this.syncRoster(ctx);
 	}
 
-	deliverMailWith(reader: InboxReader): void {
-		this.messaging.deliverWith(reader);
-	}
-
-	afterHeartbeat(registration: LiveClientRegistration, ctx: ExtensionContext, heartbeat: HostedHeartbeat): Promise<void> {
+	async afterHeartbeat(registration: LiveClientRegistration, ctx: ExtensionContext, heartbeat: HostedHeartbeat): Promise<void> {
+		// A collaborator's turns start from mail: its roster lists its peers again just before the delivery that starts one.
+		if (heartbeat.mail && this.store.launch && ctx.isIdle()) await this.syncRoster(ctx).catch(() => {});
 		return this.messaging.deliverMail(registration, ctx, heartbeat.mail);
 	}
 
 	afterHeartbeatSettled(): Promise<void> {
 		return this.native.heartbeatManagedAgents();
 	}
-}
-
-function defaultRuntimeRoot(): string {
-	return join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "runtime");
 }

@@ -19,7 +19,7 @@ import {
 	HostedParticipantStateSchema,
 } from "./state.ts";
 
-const AUTH = { registrationId: IdText, registrationKey: IdText };
+const AUTH = { targetKey: IdText };
 const NAMESPACE = { namespaceId: IdText, secret: IdText };
 const WORKTREE = {
 	callerParticipantKey: IdText,
@@ -42,6 +42,7 @@ export const HostedRequestSchema = Type.Object({
 }, STRICT_OBJECT);
 
 export const HelloParams = Type.Object({ minVersion: Count, maxVersion: Count }, STRICT_OBJECT);
+export const NoParams = Type.Object({}, STRICT_OBJECT);
 
 export const RegistrationAuthParams = Type.Object({ ...AUTH }, STRICT_OBJECT);
 export const ParticipantAuthParams = Type.Object({ ...AUTH, participantKey: IdText }, STRICT_OBJECT);
@@ -68,18 +69,12 @@ export const BridgeBindParams = Type.Object({
 }, STRICT_OBJECT);
 
 export const WorktreeEnsureParams = Type.Object({ ...AUTH, ...WORKTREE }, STRICT_OBJECT);
-export const WorktreeRemoveParams = Type.Object({ ...AUTH, ...WORKTREE, discardConfirmed: Type.Boolean() }, STRICT_OBJECT);
+export const WorktreeRemoveParams = Type.Object({ ...AUTH, ...WORKTREE, discard: Type.Boolean() }, STRICT_OBJECT);
 
 export const ParticipantAcquireParams = Type.Object({
 	...AUTH,
 	protocol: ParticipantNameText,
 	participantId: ParticipantNameText,
-	revive: Type.Optional(Type.Boolean()),
-}, STRICT_OBJECT);
-export const ParticipantStandDownParams = Type.Object({
-	...AUTH,
-	participantKey: IdText,
-	expectedGeneration: Type.Optional(IdText),
 }, STRICT_OBJECT);
 export const ParticipantConfirmedParams = Type.Object({
 	...AUTH,
@@ -88,42 +83,18 @@ export const ParticipantConfirmedParams = Type.Object({
 	confirmed: Type.Literal(true),
 }, STRICT_OBJECT);
 
-export const MailboxSendParams = Type.Object({
-	...AUTH,
-	senderParticipantKey: IdText,
-	expectedSenderGeneration: IdText,
-	recipientParticipantKey: IdText,
-	sendId: IdText,
-	body: boundedText(HOSTED_MAILBOX_MAX_BODY_BYTES),
-}, STRICT_OBJECT);
-
-export const MessagingIssueParams = Type.Object({
-	...AUTH,
-	participantKey: IdText,
-	expectedGeneration: IdText,
-	confirmed: Type.Literal(true),
-}, STRICT_OBJECT);
-export const MessagingNamespaceParams = Type.Object({ ...NAMESPACE }, STRICT_OBJECT);
+export const MessagingIssueParams = ParticipantConfirmedParams;
+export const MessagingInboxParams = Type.Object({ ...NAMESPACE, peek: Type.Optional(Type.Literal(true)) }, STRICT_OBJECT);
+export const MessagingReadParams = Type.Object({ ...NAMESPACE, eventIds: Type.Array(IdText, { minItems: 1, maxItems: 50 }) }, STRICT_OBJECT);
 export const MessagingSendParams = Type.Object({
 	...NAMESPACE,
 	operationId: IdText,
 	participantId: ParticipantNameText,
 	bodyBase64: BodyBase64,
 }, STRICT_OBJECT);
-export const MessagingReplyParams = Type.Object({
-	...NAMESPACE,
-	operationId: IdText,
-	eventId: IdText,
-	bodyBase64: BodyBase64,
-}, STRICT_OBJECT);
 
 /** Results stay open objects: a client decodes the fields it needs and ignores the rest. */
-export const LiveRegistrationResult = Type.Object({
-	targetKey: IdText,
-	registrationId: IdText,
-	registrationKey: IdText,
-	leaseUntil: Count,
-});
+export const LiveRegistrationResult = Type.Object({ targetKey: IdText });
 
 const MailHintResult = Type.Object({ namespaceId: IdText, eventId: IdText });
 
@@ -139,9 +110,6 @@ const MessagingInboxResult = Type.Object({ messages: Type.Array(InboxMessageResu
 
 export const HeartbeatResult = Type.Object({
 	targetKey: IdText,
-	registrationId: IdText,
-	registrationKey: IdText,
-	leaseUntil: Count,
 	mail: Type.Optional(MailHintResult),
 	agentStatus: Type.Optional(HerdrAgentStatusSchema),
 });
@@ -160,6 +128,7 @@ export const ParticipantStatusResult = Type.Object({
 	repo: Type.Optional(PathText),
 	repoRoot: Type.Optional(PathText),
 	unreadMail: Type.Optional(Count),
+	awaitingReply: Type.Optional(Type.Boolean()),
 	lastTransition: Type.Object({ cause: IdText }),
 });
 
@@ -172,16 +141,14 @@ export const WorktreeListResult = Type.Object({
 		repoRoot: PathText,
 		participantState: Type.Optional(HostedParticipantStateSchema),
 		recorded: Type.Boolean(),
+		uncommitted: Type.Optional(Count),
+		ahead: Type.Optional(Count),
 	})),
 });
 
 export const WorktreeRemoveResult = Type.Object({ removed: Type.Literal(true) });
 
-export const ParticipantAcquireResult = Type.Object({
-	participant: ParticipantStatusResult,
-	revived: Type.Boolean(),
-	transitioned: Type.Boolean(),
-});
+export const ParticipantAcquireResult = Type.Object({ participant: ParticipantStatusResult });
 
 /** Every messaging method carries the same namespace credentials, whatever else it takes. */
 export interface MessagingNamespaceAuth {

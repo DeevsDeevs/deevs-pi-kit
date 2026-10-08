@@ -15,8 +15,7 @@
 
 | Local path | Upstream path | Notes |
 | --- | --- | --- |
-| `extensions/subagents/protocol.ts` | `pi-subagents/src/runs/shared/child-protocol.ts` at `e658b40fe72d599df231b5d59ffec40d66f576fa` | Reduced bounded JSONL line reader and UTF-8 byte tail; MIT attribution retained in source |
-| `extensions/cron/cron.ts` | `kimi-code/packages/agent-core-v2/src/app/cron/{cron-expr.ts,jitter.ts,format.ts}` at `f06eb5c60e0a4e51162d1854dda1db41892b457c` | Adapted five-field parser, local-time next-run, deterministic jitter, and fire-envelope behavior; MIT attribution retained in source |
+| `extensions/subagents/engine/cron.ts` | `kimi-code/packages/agent-core-v2/src/app/cron/{cron-expr.ts,format.ts}` at `f06eb5c60e0a4e51162d1854dda1db41892b457c` | Adapted five-field parser and local-time next-run; MIT attribution retained in source |
 | `tools/oxlint/anti-slop/**` | `dmmulroy/anti-slop/src/**` at `6d538555cb151d4121ed51a27db81890eacf8ae9` | Vendored by the upstream installer; provenance and license retained in the vendored directory |
 
 The retained MIT notice for adapted source is in `THIRD_PARTY_NOTICES.md`.

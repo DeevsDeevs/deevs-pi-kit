@@ -7,6 +7,7 @@ import { HOSTED_METHOD_NAMES } from "../extensions/runtime/service/protocol.ts";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DOCS = [
 	"README.md",
+	"docs/reference.md",
 	"extensions/runtime/PROTOCOL.md",
 	"skills/collaborators/SKILL.md",
 ];
@@ -42,7 +43,7 @@ describe("runtime documentation", () => {
 
 	it("keeps the reduced docs within their line budgets", () => {
 		expect(lineCount(read("extensions/runtime/PROTOCOL.md"))).toBeLessThanOrEqual(120);
-		expect(lineCount(section(read("README.md"), "## Quickstart: a collaborator"))).toBeLessThanOrEqual(12);
+		expect(lineCount(section(read("README.md"), "## Quickstart"))).toBeLessThanOrEqual(12);
 		expect(lineCount(read("skills/collaborators/SKILL.md"))).toBeLessThan(40);
 	});
 

@@ -1,43 +1,61 @@
-import { describe, expect, it } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import codexFastExtension from "../extensions/codex-fast/index.ts";
 
-async function inject(model: { provider: string; api: string; id: string }, payload: unknown, oauth = true): Promise<unknown> {
+let cwd: string;
+beforeEach(() => {
+	cwd = mkdtempSync(join(tmpdir(), "codex-fast-"));
+	mkdirSync(join(cwd, ".pi"));
+	writeFileSync(join(cwd, ".pi", "pi-kit.json"), JSON.stringify({ codexFast: true }));
+});
+afterEach(() => rmSync(cwd, { recursive: true, force: true }));
+
+function inject(model: { provider: string; api: string; id: string }, payload: unknown, oauth = true, trusted = true): unknown {
 	let beforeRequest: ((event: { payload: unknown }, ctx: ExtensionContext) => unknown) | undefined;
-	let command: { handler: (args: string, ctx: ExtensionContext) => Promise<void> } | undefined;
 	const pi = {
 		on(name: string, handler: unknown) { if (name === "before_provider_request") beforeRequest = handler as typeof beforeRequest; },
-		registerCommand(_name: string, value: unknown) { command = value as typeof command; },
 	} as unknown as ExtensionAPI;
 	codexFastExtension(pi);
 	const ctx = {
-		cwd: "/tmp",
+		cwd,
 		hasUI: false,
-		sessionManager: {},
+		isProjectTrusted: () => trusted,
 		model,
 		modelRegistry: { isUsingOAuth: () => oauth },
-		ui: { setStatus() {}, notify() {} },
 	} as unknown as ExtensionContext;
-	await command!.handler("on", ctx);
 	return beforeRequest!({ payload }, ctx);
 }
 
+const codex = { provider: "openai-codex", api: "openai-codex-responses", id: "gpt-6.0-codex" };
+const openai = { provider: "openai", api: "openai-responses", id: "gpt-6.1-sol" };
+
 describe("codex fast", () => {
-	it("applies priority tier to future OpenAI Codex OAuth models without a version allowlist", async () => {
-		expect(await inject(
-			{ provider: "openai-codex", api: "openai-codex-responses", id: "gpt-6.0-codex" },
-			{ model: "gpt-6.0-codex", input: [] },
-		)).toEqual({ model: "gpt-6.0-codex", input: [], service_tier: "priority" });
+	it("applies priority tier to future OpenAI Codex OAuth models without a version allowlist", () => {
+		expect(inject(codex, { model: "gpt-6.0-codex", input: [] })).toEqual({ model: "gpt-6.0-codex", input: [], service_tier: "priority" });
+	});
+
+	it("follows pi-kit.json on every request and ignores an untrusted project's value", () => {
+		expect(inject(codex, { model: "gpt-6.0-codex" }, true, false)).toBeUndefined();
+		writeFileSync(join(cwd, ".pi", "pi-kit.json"), JSON.stringify({ codexFast: false }));
+		expect(inject(codex, { model: "gpt-6.0-codex" })).toBeUndefined();
+	});
+
+	it("applies it to Pi 1.0.4's openai provider signed in with ChatGPT", () => {
+		expect(inject(openai, { model: "gpt-6.1-sol" })).toEqual({ model: "gpt-6.1-sol", service_tier: "priority" });
 	});
 
 	it.each([
-		["other provider", { provider: "openai", api: "openai-responses", id: "gpt-6.0" }, { model: "gpt-6.0" }, true],
+		["other provider", { provider: "anthropic", api: "anthropic-messages", id: "claude" }, { model: "claude" }, true],
 		["wrong API", { provider: "openai-codex", api: "openai-responses", id: "gpt-6.0-codex" }, { model: "gpt-6.0-codex" }, true],
-		["API-key auth", { provider: "openai-codex", api: "openai-codex-responses", id: "gpt-6.0-codex" }, { model: "gpt-6.0-codex" }, false],
-		["payload model mismatch", { provider: "openai-codex", api: "openai-codex-responses", id: "gpt-6.0-codex" }, { model: "other" }, true],
-		["existing tier", { provider: "openai-codex", api: "openai-codex-responses", id: "gpt-6.0-codex" }, { model: "gpt-6.0-codex", service_tier: "flex" }, true],
-		["non-object payload", { provider: "openai-codex", api: "openai-codex-responses", id: "gpt-6.0-codex" }, [], true],
-	] as const)("does not override %s", async (_label, model, payload, oauth) => {
-		expect(await inject(model, payload, oauth)).toBeUndefined();
+		["API-key auth", codex, { model: "gpt-6.0-codex" }, false],
+		["openai with an API key", openai, { model: "gpt-6.1-sol" }, false],
+		["payload model mismatch", codex, { model: "other" }, true],
+		["existing tier", codex, { model: "gpt-6.0-codex", service_tier: "flex" }, true],
+		["non-object payload", codex, [], true],
+	] as const)("does not override %s", (_label, model, payload, oauth) => {
+		expect(inject(model, payload, oauth)).toBeUndefined();
 	});
 });

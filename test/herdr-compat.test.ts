@@ -9,6 +9,12 @@ afterEach(() => {
 	else process.env.HERDR_ENV = originalHerdrEnv;
 });
 
+function onSessionStart(): (event: unknown, ctx: ExtensionContext) => void {
+	let handler: ReturnType<typeof onSessionStart> | undefined;
+	herdrCompatExtension({ on(name: string, value: typeof handler) { if (name === "session_start") handler = value; } } as unknown as ExtensionAPI);
+	return handler!;
+}
+
 describe("Herdr compatibility", () => {
 	it.each([
 		["legacy ESC CR", "\x1b\r", "\n"],
@@ -25,17 +31,9 @@ describe("Herdr compatibility", () => {
 
 	it("wraps an existing editor only in a Herdr TUI session", () => {
 		process.env.HERDR_ENV = "1";
-		let onSessionStart: ((event: unknown, ctx: ExtensionContext) => void) | undefined;
 		let editorFactory: ((...args: unknown[]) => { handleInput(data: string): void }) | undefined;
 		const handleInput = vi.fn();
 		const editor = { handleInput };
-		const pi = {
-			on(name: string, handler: unknown) {
-				if (name === "session_start") onSessionStart = handler as typeof onSessionStart;
-			},
-		} as unknown as ExtensionAPI;
-		herdrCompatExtension(pi);
-
 		const ctx = {
 			mode: "tui",
 			ui: {
@@ -43,7 +41,7 @@ describe("Herdr compatibility", () => {
 				setEditorComponent: (factory: typeof editorFactory) => { editorFactory = factory; },
 			},
 		} as unknown as ExtensionContext;
-		onSessionStart!({}, ctx);
+		onSessionStart()({}, ctx);
 		const wrapped = editorFactory!({}, {}, {});
 		wrapped.handleInput("\x1b[13;3:1u");
 		wrapped.handleInput("\x1b[13;3:3u");
@@ -54,16 +52,8 @@ describe("Herdr compatibility", () => {
 
 	it("leaves non-Herdr sessions unchanged", () => {
 		delete process.env.HERDR_ENV;
-		let onSessionStart: ((event: unknown, ctx: ExtensionContext) => void) | undefined;
 		const setEditorComponent = vi.fn();
-		const pi = {
-			on(name: string, handler: unknown) {
-				if (name === "session_start") onSessionStart = handler as typeof onSessionStart;
-			},
-		} as unknown as ExtensionAPI;
-		herdrCompatExtension(pi);
-
-		onSessionStart!({}, {
+		onSessionStart()({}, {
 			mode: "tui",
 			ui: { setEditorComponent },
 		} as unknown as ExtensionContext);

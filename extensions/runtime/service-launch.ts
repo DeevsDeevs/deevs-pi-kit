@@ -2,7 +2,10 @@ import { mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { HostedRuntimeClientError, type HostedRuntimeClient } from "./client.ts";
-import { delay, shellQuote } from "./herdr.ts";
+import { shellQuote } from "../shared/guard.ts";
+import { delay } from "./herdr.ts";
+import { isJsonObject } from "./schemas/json.ts";
+import { runtimeBuild } from "./service/build.ts";
 import { decodeHerdr, herdrResult, HerdrWorkspaceCreatedSchema } from "./schemas/herdr.ts";
 
 interface RuntimeServicesWorkspace {
@@ -10,21 +13,27 @@ interface RuntimeServicesWorkspace {
 	paneId: string;
 }
 
-/** Brings the Runtime service up in its own Herdr workspace and returns once its socket answers. */
+/**
+ * Brings the Runtime service up in its own Herdr workspace and returns once its socket answers. A service running other
+ * kit code is asked to exit and replaced, but only where a new one can start; `replaceOnly` starts none where none runs.
+ */
 export async function startRuntimeService(
 	pi: ExtensionAPI,
 	client: HostedRuntimeClient,
 	root: string,
 	ctx: Pick<ExtensionContext, "isProjectTrusted">,
+	replaceOnly = false,
 ): Promise<void> {
-	try {
-		await client.hello();
-		return;
-	} catch {}
+	const running = await client.hello().catch(() => undefined);
+	if (running !== undefined && isJsonObject(running) && running.build === runtimeBuild()) return;
+	if (running === undefined && replaceOnly) return;
+	const launchable = process.env.HERDR_ENV === "1" && ctx.isProjectTrusted();
+	if (running !== undefined && !launchable) return;
 	if (process.env.HERDR_ENV !== "1") {
 		throw new HostedRuntimeClientError("host_unavailable", "Runtime start requires this Pi session to run inside Herdr.");
 	}
 	if (!ctx.isProjectTrusted()) throw new HostedRuntimeClientError("untrusted", "Runtime start requires a trusted project.");
+	if (running !== undefined) await retire(client);
 	mkdirSync(root, { recursive: true, mode: 0o700 });
 	const workspace = await createServicesWorkspace(pi, root);
 	const serviceMain = fileURLToPath(new URL("./service/main.ts", import.meta.url));
@@ -39,6 +48,16 @@ export async function startRuntimeService(
 	}
 	await closeServicesWorkspace(pi, workspace.workspaceId);
 	throw new HostedRuntimeClientError("unavailable", "Runtime service did not become ready.");
+}
+
+/** Asks a service running other kit code to exit and waits until its socket stops answering. */
+async function retire(client: HostedRuntimeClient): Promise<void> {
+	await client.call("service.exit", {}).catch(() => {});
+	for (let attempt = 0; attempt < 30; attempt++) {
+		if (await client.hello().then(() => false, () => true)) return;
+		await delay(100);
+	}
+	throw new HostedRuntimeClientError("conflict", `A Runtime service from older kit code still answers at ${client.socketPath}; close its pi-kit-services Herdr workspace.`);
 }
 
 async function createServicesWorkspace(pi: ExtensionAPI, root: string): Promise<RuntimeServicesWorkspace> {

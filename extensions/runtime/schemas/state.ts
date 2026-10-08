@@ -80,6 +80,7 @@ const HostedParticipantTransitionSchema = Type.Object({
 export const HostedParticipantStateSchema = Type.Union([
 	Type.Literal("held"),
 	Type.Literal("vacant"),
+	/** Written only by older builds' release; kept so their state still loads. */
 	Type.Literal("ended"),
 ]);
 
@@ -128,7 +129,8 @@ export const HostedMessagingGrantSchema = Type.Object({
 	targetKey: IdText,
 	configurationHash: HashText,
 	createdAt: Timestamp,
-	expiresAt: Timestamp,
+	/** Written by older builds; a grant never expires by time, only when superseded or its holder leaves. */
+	expiresAt: Type.Optional(Timestamp),
 	status: Type.Union([Type.Literal("active"), Type.Literal("expired")]),
 	/** Operation ID to published event ID; a repeated operation ID returns its original event. */
 	operations: keyedRecord(IdText),
@@ -149,7 +151,6 @@ export type HostedRuntimeInstance = Static<typeof HostedRuntimeInstanceSchema>;
 export type HostedCollaboratorProfile = Static<typeof HostedCollaboratorProfileSchema>;
 export type HostedNativeCollaboratorDriver = Static<typeof HostedNativeCollaboratorDriverSchema>;
 export type HostedCollaboratorDriver = Static<typeof HostedCollaboratorDriverSchema>;
-export type HostedHerdrLocator = Static<typeof HostedHerdrLocatorSchema>;
 type HostedPiTarget = Static<typeof HostedPiTargetSchema>;
 export type HostedAgentTarget = Static<typeof HostedAgentTargetSchema>;
 export type HostedTarget = Static<typeof HostedTargetSchema>;
@@ -164,12 +165,13 @@ export function isHeld(state: HostedParticipantState | undefined): boolean {
 	return state === "held";
 }
 
-export function isVacant(state: HostedParticipantState | undefined): boolean {
-	return state === "vacant";
+/** Held by this target, at this generation when one is given: the one test of a holder's authority. */
+export function holds(participant: HostedParticipant | undefined, targetKey: string, generation?: string): boolean {
+	return isHeld(participant?.state) && participant?.holderTargetKey === targetKey && (generation === undefined || participant.generation === generation);
 }
 
-export function isEnded(state: HostedParticipantState | undefined): boolean {
-	return state === "ended";
+export function isVacant(state: HostedParticipantState | undefined): boolean {
+	return state === "vacant";
 }
 
 export function isPiTarget(target: HostedTarget | undefined): target is HostedPiTarget {

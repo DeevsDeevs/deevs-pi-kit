@@ -1,6 +1,6 @@
 ---
 name: background-tasks
-description: "Pick between Pi Kit Jobs, session Cron and Herdr-owned persistent processes for background work; never detach shells."
+description: "Pick between Pi Kit Jobs, Monitors and Herdr-owned persistent processes for background work; never detach shells."
 ---
 
 # Background Tasks
@@ -9,42 +9,20 @@ Never launch background work through `cmd &`, `nohup`, `disown`, or `setsid`.
 
 ## Use a Job when
 
-The command is bounded, non-interactive, and should finish within 15 minutes:
+The command ends by itself and must keep running while you do something else: a long benchmark, migration check or bounded script whose result you need later. Builds and tests you are waiting on run in the foreground with `bash` and a timeout.
 
-- a build, test, migration check, benchmark, or bounded script;
-- a command with a useful readiness marker;
-- output that should be cursor-readable and capped;
-- work that needs hard timeout and process-tree cancellation.
+1. `job_start` with the command and a short description.
+2. Keep working; the finished Job reports by itself as a `<task-notification>` with its exit code. Do not poll it.
+3. `read` its output file when the output matters; `TaskStop` stops it.
 
-Workflow:
+## Use a Monitor when
 
-1. `job_start` with `argv` when shell syntax is unnecessary.
-2. Add `readyPattern` only when readiness matters.
-3. Continue runnable independent parent work after `job_start`; terminal delivery wakes idle Pi automatically.
-4. Use `job_read` with `afterSeq` for bounded output when the output becomes relevant.
-5. Use one `job_wait` only at a result dependency, cancellation, or final-settlement gate rather than polling.
-6. Stop with `job_stop`.
-
-Jobs use pipe stdio, close stdin after optional initial input, cap memory/log output, emit durable terminal events, and are killed or reconciled as lost when Pi ownership ends.
-
-## Use Cron when
-
-Timing itself is the dependency in this exact Pi session: a user-requested reminder or recurring timed check/report, or a short autonomous one-shot return after an external delay with no completion event. Use the `cron` tool with a five-field local-time expression and `recurring: false` for one-shot work. Do not poll Jobs, Subagents, or Workflows; their terminal delivery already wakes idle Pi.
-
-Cron fires only while the session process is open and idle, or coalesces missed occurrences when the same session is resumed manually. It cannot wake Pi or the machine. After creating a task, report its id and `/cron delete <id>` cancellation path.
+You want to hear about each change while you work: new lines from a script (`command`), files appearing in a folder (`path`), a page or endpoint changing (`url`), or a timed return (`cron` with `prompt`, `once: true` for one fire). For "tell me when X", give a command that exits once X holds. Monitors survive `/reload` and catch up after Pi was closed; `TaskStop` stops one.
 
 ## Use Herdr when
 
-The process is persistent or terminal-oriented:
+The process must keep running while Pi is closed or needs a terminal: dev servers, workers, queues, local services, REPLs, anything needing ongoing stdin or a PTY, and unattended schedules. Pi Kit does not own panes, persistent shells or daemon scheduling.
 
-- dev servers, watchers, workers, queues, and local services;
-- REPLs or commands needing ongoing stdin/PTY interaction;
-- work that must survive Pi reloads or machine/session changes;
-- unattended scheduling or reliable future wakeups;
-- anything requiring a pane or worktree lifecycle.
+## Use plain shell when
 
-Pi Kit intentionally does not own tmux, PTYs, persistent shells, panes, or daemon scheduling. Session Cron is not a reliable unattended wake mechanism.
-
-## Use normal shell execution when
-
-The command is a short foreground operation whose result is needed immediately. Do not create a Job for every `git status` or focused test command.
+You need the result before your next step: builds, test runs, `git status`. Give long ones a timeout.

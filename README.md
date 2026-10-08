@@ -1,75 +1,60 @@
 # deevs-pi-kit
 
-A [Pi](https://github.com/earendil-works/pi) package for work you can walk away from: bounded background jobs, isolated subagents, autonomous missions, handoffs that survive a session, and persistent collaborators (Pi, Claude Code or Codex) that mail each other from their own [Herdr](https://herdr.dev) tabs. Pi does the thinking; Herdr owns every process that outlives a turn.
+I wanted Claude Code's background agents and workflows in [Pi](https://github.com/earendil-works/pi), on any model it runs, surviving a restart. I also wanted real Claude Code and Codex sessions as peers in [Herdr](https://herdr.dev) tabs, mailing my Pi back. This package does that, plus background jobs, monitors, missions and handoffs. I drive it with gpt-6.1-sol daily and bench it on Opus too, so it's tuned for both.
 
-## Requirements
+## What you get
 
-- Pi 0.82 or newer and Node 22.19 or newer.
-- Herdr, for Runtime collaborators. Everything else works in plain Pi.
-- The Claude Code or Codex CLI, only for collaborators on that driver.
+| Tool | What it does |
+|---|---|
+| [`Agent`](docs/reference.md#agent) | Claude Code's agent tool, with agent types (`Explore`, `Plan`, reviewer, tester, ...), worktrees and 16 at once |
+| [`Workflow`](docs/reference.md#workflow) | a JS script of `agent()`, `parallel()` and `pipeline()` you can edit and resume |
+| [`job_start`](docs/reference.md#jobs-and-monitors) | a bounded background command that reports its exit code |
+| [`Monitor`](docs/reference.md#jobs-and-monitors) | reports output lines, folder or URL changes, cron fires |
+| [`mission_start`](docs/reference.md#missions) | one long goal the lead keeps at whenever it goes idle |
+| [`collaborator_start`](docs/reference.md#collaborators) | Pi, Claude Code or Codex peers in Herdr tabs, writers in their own worktree |
+| [`chain`](docs/reference.md#chains) | markdown handoffs in `.chains/`, with a save reminder at 80% context |
+
+Tasks report back on their own and collaborator mail starts a turn. Agents, workflows and monitors survive `/reload` and a Pi restart; a running job doesn't. `claude:` and `codex:` models run agents as real Claude Code or Codex workers.
+
+A guard on every `bash`, job and monitor blocks detached processes, force pushes to `main` and recursive `rm` outside the project and temp dirs. Claude Code and Codex workers and collaborators get it as a hook.
+
+Two commands: `/agents` lists tasks, collaborators, the mission and model names; `/chains` browses handoffs. Everything else you ask for in chat.
+
+Also `wiki`, `arxiv`, `todo_list`, `ask_user`, fourteen skills, an optional `pi-kit.json` and a chains plugin for Claude Code and Codex, all in [docs/reference.md](docs/reference.md).
+
+## Does it help?
+
+![Pi + kit vs plain Pi vs Claude Code and Codex on Terminal-Bench 4.0 and held-out DeepSWE](bench/scoreboard.svg)
+
+On Opus the kit solves 7 more than Claude Code (5 before the audit voided 2 of CC's web-lookup passes; p=0.14 at k=1) for 28% less money. Vs plain Pi it's +3, which is noise.
+
+On Sol the old kit lost by 2 and spent 2.8x what plain Pi did; it kept starting workflows and background jobs. I stopped that, and on a 40-task A/B Sol spend dropped 36%. No full Sol re-run yet, so no win claimed. The Terminal-Bench lane is in [bench/README.md](bench/README.md); the plain-Pi agent and DeepSWE runner aren't in this repo yet.
 
 ## Install
 
 ```bash
-pi install git:github.com/DeevsDeevs/deevs-pi-kit        # every project
-pi install git:github.com/DeevsDeevs/deevs-pi-kit -l     # this project only
-pi update                                                # later upgrades
+pi install git:github.com/DeevsDeevs/deevs-pi-kit    # add -l for this project only
+pi update git:github.com/DeevsDeevs/deevs-pi-kit     # upgrade
 ```
 
-Run `/reload` in Pi after installing or updating. `pi config` toggles individual extensions and skills.
+Then `/reload`; before `pi update` read the [upgrade notes](docs/reference.md#upgrade-notes). Needs Pi 1.0.4+ and Node 22.19+ ([requirements](docs/reference.md#requirements)). The one real dependency, `@earendil-works/pi-durable` (about 90 packages, 125 MB), keeps agents alive across restarts.
 
-The six stand-alone skills listed below also work in Claude Code and Codex: symlink `skills/<name>` from the installed checkout into `~/.agents/skills` for Codex and `~/.claude/skills` for Claude Code.
-
-Chains also ships as a plugin for Claude Code and Codex, reading and writing the same `.chains/` as Pi, with the same 80% checkpoint and post-compaction resume enforced by hooks:
-
-```bash
-claude plugin marketplace add DeevsDeevs/deevs-pi-kit && claude plugin install chains@deevs-pi-kit
-codex plugin marketplace add DeevsDeevs/deevs-pi-kit && codex plugin add chains@deevs-pi-kit
-```
-
-Upgrade with `claude plugin marketplace update deevs-pi-kit` or `codex plugin marketplace upgrade deevs-pi-kit`. The plugin needs Node 22.19 or newer on `PATH`.
-
-## Quickstart: a collaborator
-
-Open Pi inside Herdr in a trusted project and ask:
+## Quickstart
 
 ```text
-> Start a read-only Codex collaborator called reviewer on gpt-5.6-terra and ask it to review HEAD.
+> Have a reviewer agent check HEAD while you fix the failing test.
+> Run a workflow: audit every route in src/api, then try to disprove each finding.
+> Run the full test suite in the background and tell me when it finishes.
+> Watch ./out and tell me when report.json appears.
+> Start a Claude Code collaborator called reviewer on opus and ask it to review HEAD.
+> Start a mission: move the CLI to the new config format; done when npm test passes.
 ```
 
-Nothing to set up first. Pi starts the daemon in its own Herdr workspace on the first call, names this project's collaboration and itself, opens the tab with `collaborator_manage` and mails it with `collaborator_send`; the reply lands in your session on its own. Each start, stop and cleanup shows one confirmation dialog until you run `/runtime auto on`, which is remembered for the project in `.pi/runtime.json`. A `workspace-write` collaborator works in its own worktree on `runtime/collab/<protocol>/<name>`; review and merge that branch with Git, then `collaborator_workspace cleanup`. The daemon's guarantees and limits are in [PROTOCOL.md](extensions/runtime/PROTOCOL.md); what the model is told to do is in [skills/collaborators](skills/collaborators/SKILL.md).
-
-## Extensions
-
-- **runtime** owns collaborator identity, mail and Herdr tab lifecycle. `/runtime`, `collaborator_list`, `collaborator_manage`, `collaborator_workspace` and four MCP mail tools. [Protocol](extensions/runtime/PROTOCOL.md).
-- **jobs** runs bounded commands with capped output, a hard timeout and process-tree cancellation. `/jobs`, `job_start`, `job_wait`, `job_read`, `job_stop`.
-- **subagents** runs curated read-only personas in isolated Pi processes: explorer, architect, reviewer, tester, logic-hunter, devops, python-dev, cpp-dev, rust-dev, anti-slop. Writing needs `allowWrite` and your confirmation. `/agents`, `subagent`, `subagent_wait`. [More](extensions/subagents/README.md).
-- **workflow** runs foreground JavaScript that fans work out to read-only child agents, in trusted projects only. `workflow`.
-- **mission** drives a single-controller autonomous objective with limits, reviewed candidates and confirmed takeover, state under `.missions/`. `/mission`, `mission_*`. [More](extensions/mission/README.md).
-- **cron** schedules prompts for this Pi session, fired while it is idle. `/cron`, `cron`. [More](extensions/cron/README.md).
-- **chains** saves markdown handoffs under `.chains/` and forces a checkpoint at 80% context. `/chains`, `/chain-*`, `chain_*`. [More](extensions/chains/README.md).
-- **wiki** lints, graphs, searches and packs a curated markdown knowledge base. `/wiki:*`, `wiki_*`. [More](extensions/wiki/README.md).
-- **arxiv** searches arXiv and returns exact metadata and BibTeX. `/arxiv:*`, `arxiv_*`. [More](extensions/arxiv/README.md).
-- **todos** keeps a session todo list. `/todos`, `todo_list`. [More](extensions/todos/README.md).
-- **ask-user** asks a clarification through an overlay, after files and docs have been checked. `ask_user`.
-- **codex-fast** turns on the OpenAI Codex Fast service tier for ChatGPT-auth requests. `/codex-fast`, `.pi/codex-fast.json`.
-- **notifier** sends a ready-for-input terminal notification. `/notifier:test`, `/notifier:settings`, `.pi/notifier.json`.
-- **herdr-compat** treats Shift+Enter as a newline inside Herdr. Experimental.
-
-## Skills
-
-Nine skills pair with the extensions above and tell the model when and how to use them: collaborators, background-tasks, subagents, missions, chain-system, todos, wiki, arxiv, ask-user. Six stand alone and also work in Claude Code and Codex: codebase-orientation, concept-diagrams, diagnose, grill-me, validation-review, datadog-pup.
+Collaborators need Pi inside Herdr in a trusted project. Heads-up: a Claude Code one edits your `~/.claude.json` (accepts bypass permissions, copies folder trust to its worktree).
 
 ## Development
 
 ```bash
 npm install
-npm run check                        # lint, typecheck, tests, mode smokes, audit, pack
-npm run smoke:runtime-release        # daemon, participant, mail and MCP against real Herdr
-npm run smoke:collaborator-release   # collaborator launch, mail, stop and worktree
-npm run smoke:native-release         # interactive targets and Git worktrees, no Herdr
-npm run bench:context                # tokens each surface costs, see bench/README.md
-npm run sync:chains-plugin           # copy the chain core into plugins/chains after editing it
+npm run check    # lint, typecheck, tests, polygon (needs Podman), audit, pack
 ```
-
-The release smokes start real Herdr and Pi processes, so `check` leaves them out.

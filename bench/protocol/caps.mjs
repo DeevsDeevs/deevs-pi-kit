@@ -73,7 +73,7 @@ await run("caps", async ({ metrics, check }) => {
 	// 4. Growth to the 8 MiB state cap, with near-max bodies so it is reached in seconds.
 	metrics.stateCap = await grow(bench, send, filler, RECORD_BUDGET_SEC);
 	metrics.stateCap.helloAfter = (await bench.control.call("hello", { minVersion: 1, maxVersion: 1 })).version;
-	metrics.stateCap.participantsAfter = (await bench.control.call("participant.list", { registrationId: sender.reg.registrationId, registrationKey: sender.reg.registrationKey })).participants.length;
+	metrics.stateCap.participantsAfter = (await bench.control.call("participant.list", { targetKey: sender.reg.targetKey })).participants.length;
 	metrics.stateCap.sendAfter = await expectError(() => send("after the state cap"));
 	metrics.stateCap.inboxAfter = await expectError(() => bench.control.call("messaging.inbox", recipient.namespace));
 	metrics.stateCap.note = `at the state cap the daemon still answers hello and participant.list; the cap rejects only the write that would cross it, so a further small send ${metrics.stateCap.sendAfter.code === "ok" ? "still fits" : `fails with ${metrics.stateCap.sendAfter.code}`}, and this mailbox's inbox answers ${metrics.stateCap.inboxAfter.code} because its page of near-max bodies is itself over the 128 KiB response cap`;

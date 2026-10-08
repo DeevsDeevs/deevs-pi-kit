@@ -10,7 +10,7 @@ A decision pressure test before implementation. The goal is not many questions â
 ## Operating loop
 
 1. Frame the decision in one sentence.
-2. Inspect before asking: answer factual questions from the repo, chains, or docs (`read`, `bash`, `chain_search`, `chain_context`; `explorer` subagent with narrow `cwd` for non-trivial recon).
+2. Inspect before asking: answer factual questions from the repo, chains, or docs (`read`, `bash`, `chain` search or context; `explorer` subagent with narrow `cwd` for non-trivial recon).
 3. Find the highest-leverage uncertainty â€” the assumption most likely to cause rework, unsafe behavior, or wrong scope.
 4. Ask exactly one question, with a recommended default, and wait.
 5. Update the ledger (decided / rejected / still open) and repeat until the plan is actionable.

@@ -4,13 +4,13 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { HostedRuntimeClient } from "../extensions/runtime/client.ts";
 import type { HostedTarget } from "../extensions/runtime/schemas/state.ts";
-import type { BindAgentInput } from "../extensions/runtime/service/bind-request.ts";
+import type { BindAgentInput } from "../extensions/runtime/service/bridge.ts";
 import { RuntimeAgentBinder } from "../extensions/runtime/service/bridge.ts";
 import { HostedParticipantCoordinator } from "../extensions/runtime/service/participant.ts";
 import { dispatchHostedLine } from "../extensions/runtime/service/protocol.ts";
 import { protocolContext } from "./fixtures/runtime-protocol.ts";
-import type { HostedHostVerifier, HostedLiveAgent } from "../extensions/runtime/service/identity.ts";
-import { RuntimeRegistrationManager, type RegisterPiInput } from "../extensions/runtime/service/registration.ts";
+import type { HostedHostVerifier, HostedLiveAgent } from "../extensions/runtime/service/herdr-cli.ts";
+import { LiveTargets, type RegisterPiInput } from "../extensions/runtime/service/live.ts";
 import { startRuntimeServer } from "../extensions/runtime/service/server.ts";
 import { deriveAgentTargetKey, HostedStateStore } from "../extensions/runtime/service/state.ts";
 
@@ -48,9 +48,8 @@ function setup() {
 	}
 	const store = new HostedStateStore(join(root, "runtime"));
 	let now = 1_000;
-	let registrationNumber = 0;
-	const registrationOptions = { now: () => now, createId: () => `reg_${++registrationNumber}`, createKey: () => `key_${registrationNumber}` };
-	const registrations = new RuntimeRegistrationManager(store, host, registrationOptions);
+	const registrationOptions = { now: () => now };
+	const registrations = new LiveTargets(store, host, registrationOptions);
 	let generation = 0;
 	const participants = new HostedParticipantCoordinator(store, registrations, { now: () => now, createGeneration: () => `lease_${++generation}` });
 	const bridges = new RuntimeAgentBinder(store, registrations, host, { now: () => now, createGeneration: () => "lease_agent" });
@@ -94,8 +93,6 @@ describe("authoritative Herdr agent bind", () => {
 		const rebound = await test.bridges.bind(main, bindInput(caller.participantKey, caller.generation));
 		expect(rebound.targetKey).toBe(bound.targetKey);
 		expect(rebound.holderGeneration).toBe("lease_agent");
-		expect(rebound.registration.registrationId).not.toBe(bound.registration.registrationId);
-		expect(() => test.registrations.authorize(bound.registration.registrationId, bound.registration.registrationKey)).toThrow();
 
 		const stoppedTargets: HostedTarget[] = [];
 		const stopping = new HostedParticipantCoordinator(test.store, test.registrations, { now: () => 1_002, createGeneration: () => "lease_stopped", stopTarget: async (target) => { stoppedTargets.push(target); return "closed"; } });
@@ -130,7 +127,7 @@ describe("authoritative Herdr agent bind", () => {
 		const successor = await registerPi(test, "successor");
 		const held = test.participants.acquire(successor, "review", "fable").participant;
 		await expect(test.bridges.bind(main, bindInput(caller.participantKey, caller.generation))).rejects.toMatchObject({ code: "conflict" });
-		test.participants.standDown(successor, held.participantKey);
+		test.participants.standDownConfirmed(successor, held.participantKey, held.generation);
 		const bound = await test.bridges.bind(main, { ...bindInput(caller.participantKey, caller.generation), expectedParticipantGeneration: test.participants.get(main, held.participantKey).generation });
 		expect(bound.participantKey).toBe(held.participantKey);
 	});
@@ -141,12 +138,12 @@ describe("authoritative Herdr agent bind", () => {
 		const caller = test.participants.acquire(main, "review", "main").participant;
 		test.host.agents.set(AGENT_NAME, codexAgent(test.projectRoot));
 		const bound = await test.bridges.bind(main, bindInput(caller.participantKey, caller.generation));
-		const live = await test.registrations.heartbeat(bound.registration.registrationId, bound.registration.registrationKey);
+		const live = await test.registrations.heartbeat(bound.registration.targetKey);
 		expect(live.targetKey).toBe(bound.targetKey);
 		test.host.agents.set(AGENT_NAME, codexAgent(test.root));
-		await expect(test.registrations.heartbeat(bound.registration.registrationId, bound.registration.registrationKey)).rejects.toMatchObject({ code: "identity_mismatch" });
+		await expect(test.registrations.heartbeat(bound.registration.targetKey)).rejects.toMatchObject({ code: "identity_mismatch" });
 		test.host.agents.delete(AGENT_NAME);
-		await expect(test.registrations.heartbeat(bound.registration.registrationId, bound.registration.registrationKey)).rejects.toMatchObject({ code: "identity_mismatch" });
+		await expect(test.registrations.heartbeat(bound.registration.targetKey)).rejects.toMatchObject({ code: "identity_mismatch" });
 	});
 
 	it("exposes strict additive bind RPC without weakening Pi registration", async () => {
@@ -157,7 +154,7 @@ describe("authoritative Herdr agent bind", () => {
 		const context = protocolContext(test.root, test.store, test.host, test.registrations, test.participants, test.bridges);
 		const call = (method: string, params: unknown) => dispatchHostedLine(JSON.stringify({ v: 1, id: method, method, params }), context);
 		expect(await call("hello", { minVersion: 1, maxVersion: 1 })).toMatchObject({ ok: true, result: { capabilities: { interactiveAgent: { bind: "herdr_agent_name" } } } });
-		const auth = { registrationId: main.registrationId, registrationKey: main.registrationKey };
+		const auth = { targetKey: main.targetKey };
 		const params = { ...auth, ...bindInput(caller.participantKey, caller.generation) };
 		expect(await call("bridge.register", params)).toMatchObject({ ok: false, error: { code: "not_found" } });
 		expect(await call("bridge.bind", { ...params, extra: true })).toMatchObject({ ok: false, error: { code: "invalid_request" } });
@@ -177,17 +174,16 @@ describe("authoritative Herdr agent bind", () => {
 		writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: "session_main", timestamp: "2026-01-01T00:00:00.000Z", cwd: projectRoot })}\n`);
 		const host = new FakeHost();
 		host.agents.set(AGENT_NAME, codexAgent(projectRoot));
-		let registrationNumber = 0;
-		const server = await startRuntimeServer({ root: runtimeRoot, host, registration: { createId: () => `reg_${++registrationNumber}`, createKey: () => `key_${registrationNumber}` }, participant: { createGeneration: () => "lease_main" }, bridge: { createGeneration: () => "lease_agent_socket" } });
+		const server = await startRuntimeServer({ root: runtimeRoot, host, participant: { createGeneration: () => "lease_main" }, bridge: { createGeneration: () => "lease_agent_socket" } });
 		const client = new HostedRuntimeClient(server.socketPath);
 		try {
 			const registered = await client.call("pi.register", { projectRoot, piSessionId: "session_main", piSessionFile: sessionFile }) as Record<string, unknown>;
-			const auth = { registrationId: String(registered.registrationId), registrationKey: String(registered.registrationKey) };
+			const auth = { targetKey: String(registered.targetKey) };
 			const acquired = await client.call("participant.acquire", { ...auth, protocol: "review", participantId: "main" }) as { participant: { participantKey: string; generation: string } };
 			const bound = await client.call("bridge.bind", { ...auth, ...bindInput(acquired.participant.participantKey, acquired.participant.generation) }) as Record<string, unknown>;
 			expect(bound).toMatchObject({ targetKey: deriveAgentTargetKey(projectRoot, AGENT_NAME), holderGeneration: "lease_agent_socket", profile: "read-only", cwd: projectRoot });
 			host.agents.set(AGENT_NAME, { ...codexAgent(projectRoot), agentStatus: "blocked" });
-			const heartbeat = await client.call("bridge.heartbeat", { registrationId: bound.registrationId, registrationKey: bound.registrationKey });
+			const heartbeat = await client.call("bridge.heartbeat", { targetKey: bound.targetKey });
 			expect(heartbeat).toMatchObject({ targetKey: bound.targetKey, agentStatus: "blocked" });
 		} finally {
 			await server.close();

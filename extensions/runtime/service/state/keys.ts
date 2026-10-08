@@ -20,17 +20,6 @@ export function deriveAgentTargetKey(projectRoot: string, agentName: string): st
 	return `agent_${projectScope(projectRoot)}_${agentName}`;
 }
 
-export function targetIdentityKey(target: HostedTarget): string {
-	switch (target.kind) {
-		case "pi": return piTargetKey(target.piSessionId);
-		case "agent": return deriveAgentTargetKey(target.projectRoot, target.agentName);
-		default: {
-			const unreachable: never = target;
-			throw new Error(`Unsupported runtime target ${JSON.stringify(unreachable)}.`);
-		}
-	}
-}
-
 export function mailboxDedupeKey(senderParticipantKey: string, sendId: string): string {
 	return `mailbox:${senderParticipantKey}:${sendId}`;
 }
@@ -47,9 +36,5 @@ function targetIdentity(target: HostedTarget): Array<string | null> {
 	switch (target.kind) {
 		case "pi": return [target.projectRoot, target.piSessionId, target.piSessionFile, target.repo ?? null, target.repoRoot ?? null, target.worktreePath ?? null];
 		case "agent": return [target.projectRoot, target.agentName, target.driver, target.repo ?? null, target.repoRoot ?? null, target.worktreePath ?? null];
-		default: {
-			const unreachable: never = target;
-			throw new Error(`Unsupported runtime target ${JSON.stringify(unreachable)}.`);
-		}
 	}
 }

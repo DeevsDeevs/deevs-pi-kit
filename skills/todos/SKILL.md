@@ -1,6 +1,6 @@
 ---
 name: todos
-description: "Track non-trivial current-session work with todo_list: multi-step implementation, debugging, validation, research, subagent coordination. Not for one-shot answers."
+description: "Track multi-step session work with todo_list: implementation, debugging, validation, research, agent coordination."
 ---
 
 # Managed Todos
@@ -23,7 +23,7 @@ Statuses: `pending` · `in_progress` · `done` (completed and verified enough) �
 
 Proactively for multi-step implementation/refactors, debugging with several hypotheses, validation passes with multiple checks, research that branches into decisions, multi-task requests, and subagent coordination needing visible progress.
 
-Not for one-shot answers, tiny edits, pure conversation, durable memory (`chain_save`), or replacing an issue tracker.
+Not for one-shot answers, tiny edits, pure conversation, durable memory (`chain`), or replacing an issue tracker.
 
 ## Workflow
 
@@ -34,9 +34,7 @@ Not for one-shot answers, tiny edits, pure conversation, durable memory (`chain_
 
 ## Relationship to other Pi systems
 
-Chains hold durable milestones, not every todo update. The parent owns the list for subagent-backed work: mark all grouped parallel runs `in_progress`, then each `done`/`blocked` after reading the settled results. Track background process or group ids in `notes` only when useful. Todos can mirror a review matrix, but verdicts still need explicit evidence.
-
-Human display: `/todos` (read-only overlay), `/todos clear`. Use `todo_list` for state changes.
+Chains hold durable milestones, not every todo update. You own the list for delegated work: mark the items of agents running in parallel `in_progress`, then each `done`/`blocked` after reading its report. Track agent or job ids in `notes` only when useful. Todos can mirror a review matrix, but verdicts still need explicit evidence.
 
 ## Anti-slop
 

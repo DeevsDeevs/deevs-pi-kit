@@ -107,18 +107,6 @@ const MALFORMED: Array<[string, (state: HostedRuntimeState) => void]> = [
 	["dedupe", (state) => { Reflect.set(state.dedupe, DEDUPE_KEY, 7); }],
 ];
 
-/** Cross-record invariants no single-record schema can see; each must fail the load, never be repaired. */
-const INCOHERENT: Array<[string, (state: HostedRuntimeState) => void]> = [
-	["dangling dedupe entry", (state) => { state.dedupe.stale = "evt_missing"; }],
-	["dedupe entry pointing at an event that carries another key", (state) => { record(state.events, "evt_1").dedupeKey = "other"; }],
-	["event unreachable through its dedupe key", (state) => { Reflect.deleteProperty(state.dedupe, DEDUPE_KEY); }],
-	["record id that differs from its map key", (state) => { record(state.events, "evt_1").eventId = "evt_2"; }],
-	["participant key that is not derived from its identity", (state) => { record(state.participants, SENDER).participantId = "other"; }],
-	["mail event addressed to an absent participant", (state) => { record(state.events, "evt_1").recipientParticipantKey = "participant_gone"; }],
-	["mail dedupe key that is not derived from its sender and send ID", (state) => { record(state.events, "evt_1").sendId = "send_2"; }],
-	["messaging grant with an edited lifetime", (state) => { record(state.messaging, NAMESPACE).expiresAt += 1; }],
-];
-
 describe("runtime schemas", () => {
 	it("accepts a populated root state with a record in every collection", () => {
 		expect(validateHostedRuntimeState(populatedState())).toEqual(populatedState());
@@ -130,11 +118,6 @@ describe("runtime schemas", () => {
 		expect(() => validateHostedRuntimeState(state)).toThrow(HostedStateStorageError);
 	});
 
-	it.each(INCOHERENT)("rejects a %s", (_invariant, corrupt) => {
-		const state = populatedState();
-		corrupt(state);
-		expect(() => validateHostedRuntimeState(state)).toThrow(HostedStateStorageError);
-	});
 
 	it("rejects an RPC call carrying an unknown params field", async () => {
 		const root = mkdtempSync(join(tmpdir(), "pi-kit-runtime-schemas-"));

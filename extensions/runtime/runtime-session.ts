@@ -2,9 +2,9 @@ import { existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { HostedRuntimeClient, HostedRuntimeClientError } from "./client.ts";
-import { restoreHeldParticipant } from "./held-identity.ts";
 import {
 	auth,
+	parseAcquireResult,
 	parseHeartbeat,
 	parseParticipant,
 	parseRegistration,
@@ -15,9 +15,10 @@ import {
 	type LiveClientRegistration,
 } from "./responses.ts";
 import { startRuntimeService } from "./service-launch.ts";
-import { HostedSessionStore, type ParticipantIdentity } from "./session-record.ts";
+import { HostedSessionStore } from "./session-record.ts";
+import type { ParticipantIdentity } from "./schemas/session.ts";
 
-// ponytail: two-second host verification is fine for small teams; add Runtime subscriptions if concurrent Pi count makes it measurable.
+// ponytail: a 500 ms heartbeat poll is fine for small teams; add Runtime subscriptions if concurrent Pi count makes it measurable.
 const HEARTBEAT_MS = 500;
 
 /** Everything the session lifecycle hands back to the collaborator, delivery and messaging services. */
@@ -72,6 +73,12 @@ export class RuntimeSession {
 		this.startHeartbeat();
 		if (!existsSync(this.client.socketPath)) return;
 		try { await this.register(ctx); } catch {}
+		// After registering, so a collaborator holds its name as soon as before; a replaced daemon is re-registered by the heartbeat.
+		try {
+			await startRuntimeService(this.pi, this.client, this.root, ctx, true);
+		} catch (error) {
+			ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
+		}
 	}
 
 	sessionTree(ctx: ExtensionContext): void {
@@ -94,7 +101,7 @@ export class RuntimeSession {
 		this.registration = undefined;
 		if (!registration) return;
 		try {
-			await this.client.call("pi.unregister", { registrationId: registration.registrationId, registrationKey: registration.registrationKey });
+			await this.client.call("pi.unregister", auth(registration));
 		} catch {}
 	}
 
@@ -145,7 +152,7 @@ export class RuntimeSession {
 	requireParticipantIdentity(): ParticipantIdentity {
 		const identity = this.store.identity;
 		if (!identity) {
-			throw new HostedRuntimeClientError("not_found", "This Pi session has no collaborator identity yet; a collaborator_manage start with protocol and callerParticipantId creates it.");
+			throw new HostedRuntimeClientError("not_found", "This Pi session has no collaborator identity yet; its first collaborator_start creates it.");
 		}
 		return identity;
 	}
@@ -175,7 +182,7 @@ export class RuntimeSession {
 		if (!sessionFile) throw new HostedRuntimeClientError("invalid_request", "Runtime requires a persisted Pi session.");
 		// Pi writes a new session's file only after its first assistant reply; identity is verified against that file.
 		if (!existsSync(sessionFile)) {
-			throw new HostedRuntimeClientError("invalid_request", "This Pi session has no file yet; send one message, then run /runtime start again.");
+			throw new HostedRuntimeClientError("invalid_request", "This Pi session has no file yet; send one message, then try again.");
 		}
 		const params = this.registrationParams(ctx, sessionFile);
 		const registration = parseRegistration(await this.client.call("pi.register", params));
@@ -186,7 +193,7 @@ export class RuntimeSession {
 		this.registration = registration;
 		this.startHeartbeat();
 		try {
-			await restoreHeldParticipant(this, registration, ctx);
+			await this.acquireIdentity(registration);
 			await this.hooks.afterRegister(registration, ctx);
 		} catch (error) {
 			const cause = error instanceof Error ? error.message : String(error);
@@ -194,6 +201,17 @@ export class RuntimeSession {
 		}
 		this.requireCurrentScope(current);
 		return registration;
+	}
+
+	/** Identity is a name: each registration (re)acquires it, so a reopened lead or a resumed collaborator holds its name again. */
+	private async acquireIdentity(registration: LiveClientRegistration): Promise<void> {
+		const identity = this.store.identity;
+		if (!identity) return;
+		const params = { ...auth(registration), protocol: identity.protocol, participantId: identity.participantId };
+		const { participant } = parseAcquireResult(await this.client.call("participant.acquire", params));
+		if (identity.participantKey !== participant.participantKey || identity.generation !== participant.generation || identity.disposition !== "held") {
+			this.store.persistHeld(identity.protocol, identity.participantId, participant);
+		}
 	}
 
 	private registrationParams(ctx: ExtensionContext, sessionFile: string): RegisterPiParams {
@@ -245,7 +263,6 @@ export class RuntimeSession {
 			throw new HostedRuntimeClientError("registration_stale", "Heartbeat replaced its registration identity.");
 		}
 		this.registration = heartbeat.registration;
-		if (this.store.identity?.participantKey) await restoreHeldParticipant(this, this.registration, ctx);
 		this.requireCurrentScope(current);
 		await this.hooks.afterHeartbeat(this.registration, ctx, heartbeat);
 	}
@@ -260,7 +277,5 @@ interface RegisterPiParams {
 }
 
 function sameRegistrationIdentity(left: LiveClientRegistration, right: LiveClientRegistration): boolean {
-	return left.registrationId === right.registrationId
-		&& left.registrationKey === right.registrationKey
-		&& left.targetKey === right.targetKey;
+	return left.targetKey === right.targetKey;
 }

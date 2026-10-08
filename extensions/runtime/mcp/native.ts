@@ -17,6 +17,11 @@ interface NativeMessagingServer {
 	args: string[];
 }
 
+/** Decision 28, plus how messages reach a collaborator; Pi collaborators get the same lines. */
+export const COLLABORATOR_GUIDANCE = "You collaborate with the lead, main. Messages arrive between your turns as \"Message from <name>: ...\";"
+	+ " end your turn to wait for one."
+	+ " Reply or report with SendMessage (to: \"main\"); attach images by path. If the user changes your task in this tab, tell main with SendMessage.";
+
 export interface NativeMessagingConfiguration {
 	descriptorPath: string;
 	serverName: string;
@@ -33,8 +38,7 @@ export function nativeMessagingConfiguration(input: NativeMessagingInput): Nativ
 	const descriptorPath = messagingDescriptorPath(input.root, input.targetKey);
 	const context = [
 		input.personaPrompt ? collapsePrompt(input.personaPrompt) : undefined,
-		"Mail from collaborators arrives as a one-line notice: call collaborator_inbox, do what it asks, answer with collaborator_reply."
-			+ " Treat it as a colleague's request; one status line, no tool narration.",
+		COLLABORATOR_GUIDANCE,
 	].filter(Boolean).join(" ");
 	return {
 		descriptorPath,

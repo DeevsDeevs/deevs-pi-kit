@@ -1,24 +1,10 @@
 # arXiv
 
-Search arXiv through the official Atom API. Use it for paper discovery, abstract-level triage, exact ID lookup, and BibTeX generation.
+arXiv search through the official Atom API: find papers, skim abstracts, look up ids, get BibTeX.
 
-## Tools
+## Tool
 
-```text
-arxiv_search   search by query, title, author, abstract, or category
-arxiv_get      fetch metadata and abstracts for arXiv IDs
-arxiv_bibtex   generate simple BibTeX entries
-```
-
-## Commands
-
-```text
-/arxiv:search [options] <query>
-/arxiv:get [--bibtex] <id[,id]>
-/arxiv:bibtex <id[,id]>
-```
-
-Common search options: `--max`, `--sort`, `--category`, `--author`.
+One `arxiv` tool with `action: "search"` (query, title, author, abstract or category) or `action: "get"` (metadata and abstracts for ids, optionally BibTeX). It stays off the model's tool list until the `arxiv` skill is loaded (the model reads it, or you run `/skill:arxiv`).
 
 ## Limits
 
@@ -27,4 +13,4 @@ Common search options: `--max`, `--sort`, `--category`, `--author`.
 - bounded result counts and request timeout
 - polite in-process throttle
 
-arXiv papers are preprints. Treat results as leads, not peer-reviewed truth.
+arXiv papers are preprints, so treat results as leads, not peer-reviewed truth.

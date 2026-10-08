@@ -1,15 +1,12 @@
-import { execFile } from "node:child_process";
-import { mkdirSync, readdirSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
+import { addWorktree, git, gitTopLevel, repositoriesUnder } from "../../shared/worktree.ts";
 import { RuntimeError } from "../errors.ts";
-import { PARTICIPANT_NAME } from "../schemas/common.ts";
-import { type HostedParticipant, isHeld, isPiTarget } from "../schemas/state.ts";
-import type { HostedLiveRegistration } from "./registration.ts";
+import { type HostedParticipant, holds, isHeld, isPiTarget } from "../schemas/state.ts";
+import type { HostedCaller } from "./live.ts";
 import { deriveParticipantKey, HostedStateStore, projectScope } from "./state.ts";
 
 const BRANCH_PREFIX = "refs/heads/runtime/collab/";
-const MAX_GIT_BUFFER = 1024 * 1024;
-const GIT_TIMEOUT_MS = 30_000;
 
 interface RuntimeWorktree {
 	protocol: string;
@@ -31,7 +28,7 @@ interface EnsureWorktreeInput extends WorktreeAuthority {
 }
 
 interface RemoveWorktreeInput extends EnsureWorktreeInput {
-	discardConfirmed: boolean;
+	discard: boolean;
 }
 
 interface RemovedWorktree {
@@ -41,6 +38,14 @@ interface RemovedWorktree {
 interface WorktreeListing extends RuntimeWorktree {
 	participantState?: HostedParticipant["state"];
 	recorded: boolean;
+	uncommitted?: number;
+	ahead?: number;
+}
+
+/** What removing a worktree and its branch would lose: its changed and untracked paths, and its commits the repository's HEAD lacks. */
+interface UnsavedWork {
+	uncommitted: string[];
+	ahead: number;
 }
 
 export class RuntimeWorktrees {
@@ -52,7 +57,7 @@ export class RuntimeWorktrees {
 		this.store = store;
 	}
 
-	async ensure(caller: HostedLiveRegistration, input: EnsureWorktreeInput): Promise<RuntimeWorktree> {
+	async ensure(caller: HostedCaller, input: EnsureWorktreeInput): Promise<RuntimeWorktree> {
 		const projectRoot = this.authorize(caller, input);
 		const participantKey = this.participantKey(projectRoot, input);
 		const participant = this.store.read().participants[participantKey];
@@ -77,7 +82,7 @@ export class RuntimeWorktrees {
 		return { protocol: input.protocol, participantId: input.participantId, path: realpathSync(path), branchRef: branchRef(input), repoRoot };
 	}
 
-	async list(caller: HostedLiveRegistration): Promise<WorktreeListing[]> {
+	async list(caller: HostedCaller): Promise<WorktreeListing[]> {
 		const projectRoot = this.projectRoot(caller);
 		const participants = Object.values(this.store.read().participants).filter((participant) => participant.projectRoot === projectRoot);
 		const repos = new Set(participants.flatMap((participant) => participant.repoRoot ? [participant.repoRoot] : []));
@@ -87,8 +92,10 @@ export class RuntimeWorktrees {
 		for (const repo of repos) {
 			for (const worktree of await listWorktrees(repo)) {
 				const participant = participants.find((candidate) => candidate.worktreePath === worktree.path);
-				if (!participant) listings.push({ ...worktree, recorded: false });
-				else listings.push({ ...worktree, participantState: participant.state, recorded: true });
+				const { uncommitted, ahead } = await unsavedWork(worktree);
+				const listing = { ...worktree, uncommitted: uncommitted.length, ahead };
+				if (!participant) listings.push({ ...listing, recorded: false });
+				else listings.push({ ...listing, participantState: participant.state, recorded: true });
 			}
 		}
 		for (const participant of participants) {
@@ -106,10 +113,7 @@ export class RuntimeWorktrees {
 		return listings;
 	}
 
-	async remove(caller: HostedLiveRegistration, input: RemoveWorktreeInput): Promise<RemovedWorktree> {
-		if (input.discardConfirmed !== true) {
-			throw new RuntimeError("invalid_request", "Worktree removal requires an explicit confirmed discard.");
-		}
+	async remove(caller: HostedCaller, input: RemoveWorktreeInput): Promise<RemovedWorktree> {
 		const projectRoot = this.authorize(caller, input);
 		const participantKey = this.participantKey(projectRoot, input);
 		const participant = this.store.read().participants[participantKey];
@@ -120,6 +124,10 @@ export class RuntimeWorktrees {
 		const worktree = (await listWorktrees(repoRoot)).find((candidate) => isWorktreeOf(candidate, input));
 		if (!worktree) throw new RuntimeError("not_found", "Participant has no Runtime worktree in this project.");
 		this.assertWorktreeIsOwn(worktree.path, participantKey);
+		if (!input.discard) {
+			const work = await unsavedWork(worktree);
+			if (work.uncommitted.length || work.ahead) throw new RuntimeError("conflict", refusal(worktree, work));
+		}
 		if (participant) this.store.apply({ type: "participant.worktree.clear", participantKey });
 		await git(repoRoot, ["worktree", "remove", "--force", worktree.path]);
 		await git(repoRoot, ["branch", "-D", collaboratorBranch(input)]);
@@ -129,7 +137,7 @@ export class RuntimeWorktrees {
 	/** An explicit repo wins; otherwise the participant's recorded repo, so a restart needs none; otherwise the project root itself. */
 	private repoRoot(projectRoot: string, input: EnsureWorktreeInput, participant: HostedParticipant | undefined): Promise<string> {
 		if (input.repo === undefined && participant?.repoRoot) return Promise.resolve(participant.repoRoot);
-		return resolveRepoRoot(projectRoot, input.repo, input.participantId);
+		return resolveCollaboratorRepo(projectRoot, input.repo, input.participantId);
 	}
 
 	/** A Git worktree recorded on another participant belongs to that identity, whatever its branch says. */
@@ -139,13 +147,10 @@ export class RuntimeWorktrees {
 		if (owner) throw new RuntimeError("conflict", `Worktree ${path} belongs to ${owner.protocol}/${owner.participantId}.`);
 	}
 
-	private authorize(caller: HostedLiveRegistration, input: EnsureWorktreeInput): string {
+	private authorize(caller: HostedCaller, input: EnsureWorktreeInput): string {
 		const projectRoot = this.projectRoot(caller);
-		if (!PARTICIPANT_NAME.test(input.protocol) || !PARTICIPANT_NAME.test(input.participantId)) {
-			throw new RuntimeError("invalid_request", "Protocol and participant ID have invalid syntax.");
-		}
 		const participant = this.store.read().participants[input.callerParticipantKey];
-		if (!callerHoldsAuthority(participant, input, caller, projectRoot)) {
+		if (!holds(participant, caller.targetKey, input.expectedCallerGeneration) || participant?.projectRoot !== projectRoot) {
 			throw new RuntimeError("conflict", "Worktree caller authority is absent or no longer held.");
 		}
 		if (this.participantKey(projectRoot, input) === input.callerParticipantKey) {
@@ -154,7 +159,7 @@ export class RuntimeWorktrees {
 		return projectRoot;
 	}
 
-	private projectRoot(caller: HostedLiveRegistration): string {
+	private projectRoot(caller: HostedCaller): string {
 		const target = this.store.read().targets[caller.targetKey];
 		if (!isPiTarget(target)) {
 			throw new RuntimeError("conflict", "Only an authenticated Pi target may manage collaborator worktrees.");
@@ -165,18 +170,6 @@ export class RuntimeWorktrees {
 	private participantKey(projectRoot: string, input: EnsureWorktreeInput): string {
 		return deriveParticipantKey(projectRoot, input.protocol, input.participantId);
 	}
-}
-
-function callerHoldsAuthority(
-	participant: HostedParticipant | undefined,
-	input: EnsureWorktreeInput,
-	caller: HostedLiveRegistration,
-	projectRoot: string,
-): boolean {
-	if (!participant || !isHeld(participant.state)) return false;
-	return participant.generation === input.expectedCallerGeneration
-		&& participant.holderTargetKey === caller.targetKey
-		&& participant.projectRoot === projectRoot;
 }
 
 interface ParticipantIdentity {
@@ -197,20 +190,19 @@ function branchRef(identity: ParticipantIdentity): string {
 	return `${BRANCH_PREFIX}${identity.protocol}/${identity.participantId}`;
 }
 
-/** A leftover branch outrules `-b`, so an interrupted removal or a manually pruned directory still reattaches. */
-async function addWorktree(projectRoot: string, branch: string, path: string): Promise<void> {
-	const reattach = await branchExists(projectRoot, branch);
-	if (reattach) await git(projectRoot, ["worktree", "add", path, branch]);
-	else await git(projectRoot, ["worktree", "add", "-b", branch, path, "HEAD"]);
+async function unsavedWork(worktree: RuntimeWorktree): Promise<UnsavedWork> {
+	const status = existsSync(worktree.path) ? await git(worktree.path, ["status", "--porcelain"]) : "";
+	const ahead = Number((await git(worktree.repoRoot, ["rev-list", "--count", `HEAD..${worktree.branchRef}`])).trim());
+	return { uncommitted: status.split("\n").filter(Boolean).map((line) => line.slice(3)), ahead };
 }
 
-async function branchExists(projectRoot: string, branch: string): Promise<boolean> {
-	try {
-		await git(projectRoot, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
-		return true;
-	} catch {
-		return false;
-	}
+function refusal(worktree: RuntimeWorktree, { uncommitted, ahead }: UnsavedWork): string {
+	const lost: string[] = [];
+	const more = uncommitted.length > 20 ? `, and ${uncommitted.length - 20} more` : "";
+	if (uncommitted.length) lost.push(`${uncommitted.length} uncommitted path(s): ${uncommitted.slice(0, 20).join(", ")}${more}`);
+	if (ahead) lost.push(`${ahead} commit(s) on ${worktree.branchRef.slice("refs/heads/".length)} that HEAD of ${worktree.repoRoot} lacks`);
+	return `Cleanup refused: the worktree of ${worktree.protocol}/${worktree.participantId} at ${worktree.path} holds ${lost.join(" and ")}.`
+		+ " Commit and merge that work first, or clean up again with discard: true to delete it.";
 }
 
 async function listWorktrees(repoRoot: string): Promise<RuntimeWorktree[]> {
@@ -237,7 +229,7 @@ function parseWorktreeBranch(branch: string, path: string, repoRoot: string): Ru
  * The repository a collaborator works in: `<projectRoot>/<repo>` when given, else the project root, either
  * way the top level of a Git repository. The link may live under the root while its target lies elsewhere.
  */
-export async function resolveRepoRoot(projectRoot: string, repo: string | undefined, participantId: string): Promise<string> {
+export async function resolveCollaboratorRepo(projectRoot: string, repo: string | undefined, participantId: string): Promise<string> {
 	if (repo === undefined) {
 		if (await gitTopLevel(projectRoot) === projectRoot) return projectRoot;
 		const candidates = await repositoriesUnder(projectRoot);
@@ -252,43 +244,4 @@ export async function resolveRepoRoot(projectRoot: string, repo: string | undefi
 	try { repoRoot = realpathSync(join(projectRoot, repo)); } catch { throw new RuntimeError("invalid_request", `repo ${repo} for ${participantId} does not exist.`); }
 	if (await gitTopLevel(repoRoot) !== repoRoot) throw new RuntimeError("invalid_request", `repo ${repo} for ${participantId} is not the top level of a Git repository.`);
 	return repoRoot;
-}
-
-// ponytail: one level deep; nested repositories are reachable by an explicit repo path.
-export async function repositoriesUnder(projectRoot: string): Promise<string[]> {
-	const names: string[] = [];
-	for (const entry of readdirSync(projectRoot, { withFileTypes: true })) {
-		if (entry.name.startsWith(".") || !(entry.isDirectory() || entry.isSymbolicLink())) continue;
-		let path: string;
-		try { path = realpathSync(join(projectRoot, entry.name)); } catch { continue; }
-		if (await gitTopLevel(path) === path) names.push(entry.name);
-	}
-	return names.sort();
-}
-
-async function gitTopLevel(cwd: string): Promise<string | undefined> {
-	try { return realpathSync((await git(cwd, ["rev-parse", "--show-toplevel"])).trim()); } catch { return undefined; }
-}
-
-export async function isProjectWorktree(path: string, projectRoot: string): Promise<boolean> {
-	try {
-		return await commonDir(path) === await commonDir(projectRoot);
-	} catch {
-		return false;
-	}
-}
-
-async function commonDir(cwd: string): Promise<string> {
-	return realpathSync((await git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim());
-}
-
-function git(cwd: string, args: string[]): Promise<string> {
-	return new Promise((resolve, reject) => {
-		const env = { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" };
-		const options = { cwd, encoding: "utf8" as const, maxBuffer: MAX_GIT_BUFFER, timeout: GIT_TIMEOUT_MS, env };
-		execFile("git", args, options, (error, stdout, stderr) => {
-			if (error) reject(new RuntimeError("host_unavailable", `git ${args[0]} failed: ${stderr.trim() || error.message}`));
-			else resolve(stdout);
-		});
-	});
 }

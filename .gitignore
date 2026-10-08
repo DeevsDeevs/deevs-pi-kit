@@ -1,4 +1,4 @@
-node_modules/
+node_modules
 .DS_Store
 .env
 .env.*
@@ -8,4 +8,6 @@ node_modules/
 .missions/
 *.log
 bench/results/*
-!bench/results/baseline/
+polygon/results/
+polygon/private/
+__pycache__/

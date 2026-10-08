@@ -1,8 +1,8 @@
 import { RuntimeError } from "../../errors.ts";
 import { Value } from "typebox/value";
-import { type HostedMailboxMessageEvent, type HostedMessagingGrant, type HostedRuntimeState, isHeld } from "../../schemas/state.ts";
+import { type HostedMailboxMessageEvent, type HostedMessagingGrant, type HostedRuntimeState, holds } from "../../schemas/state.ts";
 import type { HostedMessagingSend, HostedStateOperation } from "./operations.ts";
-import { HOSTED_ACK_RETENTION_MS, HOSTED_MAX_STATE_RECORDS } from "../../schemas/common.ts";
+import { HOSTED_MAX_STATE_RECORDS } from "../../schemas/common.ts";
 import { HostedMessagingGrantSchema } from "../../schemas/state.ts";
 import { messagingConfigurationHash, messagingSendId } from "./keys.ts";
 import { sendMailboxMessage } from "./mailbox.ts";
@@ -13,14 +13,12 @@ type ReadOperation = Extract<HostedStateOperation, { type: "messaging.read" }>;
 
 export function issueMessagingGrant(state: HostedRuntimeState, operation: IssueOperation): HostedRuntimeState {
 	const grant = operation.grant;
-	if (!Value.Check(HostedMessagingGrantSchema, grant) || grant.expiresAt !== grant.createdAt + HOSTED_ACK_RETENTION_MS) {
-		throw new RuntimeError("conflict", "Messaging namespace shape or lifetime is invalid.");
-	}
+	if (!Value.Check(HostedMessagingGrantSchema, grant)) throw new RuntimeError("conflict", "Messaging namespace shape is invalid.");
 	if (!newlyIssuedGrant(state, grant)) throw new RuntimeError("conflict", "Messaging namespace must be newly issued.");
-	assertMessagingCapacity(state);
-	assertMessagingHolder(state, grant, grant.createdAt);
-	// One descriptor file exists per target, so a fresh grant supersedes that target's previous namespace.
+	assertMessagingHolder(state, grant);
+	// One descriptor file exists per target, so a fresh grant supersedes that target's previous namespace, whose freed records count first.
 	const superseded = supersedeTargetGrants(state, grant.targetKey);
+	assertMessagingCapacity(superseded);
 	return { ...superseded, messaging: { ...superseded.messaging, [grant.namespaceId]: grant } };
 }
 
@@ -32,7 +30,6 @@ function supersedeTargetGrants(state: HostedRuntimeState, targetKey: string): Ho
 export function expireMessagingGrant(state: HostedRuntimeState, operation: ExpireOperation): HostedRuntimeState {
 	const grant = state.messaging[operation.namespaceId];
 	if (!grant || grant.status === "expired") return state;
-	// ponytail: expired namespace IDs remain under the 10,000-record cap; prune tombstones if launch volume requires it.
 	const expired: HostedMessagingGrant = { ...grant, status: "expired", operations: {} };
 	return { ...state, messaging: { ...state.messaging, [grant.namespaceId]: expired } };
 }
@@ -40,7 +37,7 @@ export function expireMessagingGrant(state: HostedRuntimeState, operation: Expir
 export function markMessagingEventRead(state: HostedRuntimeState, operation: ReadOperation): HostedRuntimeState {
 	const grant = state.messaging[operation.namespaceId];
 	if (!grant) throw new RuntimeError("conflict", "Messaging namespace is absent.");
-	assertMessagingHolder(state, grant, operation.at);
+	assertMessagingHolder(state, grant);
 	const events = { ...state.events };
 	for (const eventId of operation.eventIds) {
 		const event = messagingInboxEvent(state, grant, eventId);
@@ -52,7 +49,7 @@ export function markMessagingEventRead(state: HostedRuntimeState, operation: Rea
 export function publishMessagingEvent(state: HostedRuntimeState, operation: HostedMessagingSend): HostedRuntimeState {
 	const grant = state.messaging[operation.namespaceId];
 	if (!grant) throw new RuntimeError("conflict", "Messaging namespace is absent.");
-	assertMessagingHolder(state, grant, operation.at);
+	assertMessagingHolder(state, grant);
 	const publishedId = Object.hasOwn(grant.operations, operation.operationId) ? grant.operations[operation.operationId] : undefined;
 	if (publishedId !== undefined) return republishedMessagingState(state, publishedId, operation);
 	assertMessagingCapacity(state);
@@ -120,7 +117,7 @@ function messagingSendMatches(published: HostedMailboxMessageEvent, operation: H
 		&& published.inReplyToEventId === operation.inReplyToEventId;
 }
 
-/** Namespaces and their operation records share one cap; only these two reducers ever add either. */
+/** Namespaces and their operation records share one cap; only these two reducers ever add either, and retention pruning frees both. */
 function assertMessagingCapacity(state: HostedRuntimeState): void {
 	let records = Object.keys(state.messaging).length;
 	for (const grant of Object.values(state.messaging)) records += Object.keys(grant.operations).length;
@@ -134,25 +131,17 @@ function newlyIssuedGrant(state: HostedRuntimeState, grant: HostedMessagingGrant
 	return grant.status === "active" && Object.keys(grant.operations).length === 0;
 }
 
-function assertMessagingHolder(state: HostedRuntimeState, grant: HostedMessagingGrant, at: number): void {
-	if (!messagingGrantIsLive(state, grant, at)) {
-		throw new RuntimeError("conflict", "Messaging authority is expired or no longer bound to this holder.");
+function assertMessagingHolder(state: HostedRuntimeState, grant: HostedMessagingGrant): void {
+	if (!messagingGrantIsLive(state, grant)) {
+		throw new RuntimeError("conflict", "Messaging authority is superseded or no longer bound to this holder.");
 	}
 }
 
-/** The one liveness rule: an active grant, inside its window, still held by its participant on its target. */
-export function messagingGrantIsLive(state: HostedRuntimeState, grant: HostedMessagingGrant, at: number): boolean {
+/** The one liveness rule: an active grant still held by its participant on its target. Time never ends it. */
+export function messagingGrantIsLive(state: HostedRuntimeState, grant: HostedMessagingGrant): boolean {
 	const holder = state.participants[grant.participantKey];
 	const target = state.targets[grant.targetKey];
 	if (grant.status !== "active") return false;
-	if (!withinWindow(at, grant.createdAt, grant.expiresAt)) return false;
-	if (!isHeld(holder?.state) || holder.generation !== grant.holderGeneration || holder.holderTargetKey !== grant.targetKey) return false;
+	if (!holds(holder, grant.targetKey, grant.holderGeneration)) return false;
 	return target !== undefined && messagingConfigurationHash(target) === grant.configurationHash;
-}
-
-/** Half-open [start, end): a grant is live from its creation until, but not at, its expiry. */
-function withinWindow(at: number, start: number, end: number): boolean {
-	return Number.isFinite(at)
-		&& at >= start
-		&& at < end;
 }

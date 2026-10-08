@@ -16,3 +16,48 @@ export function truncateGraphemes(value: string, maximum: number, maximumUtf8Byt
 	}
 	return result;
 }
+
+const MAX_QUERY_CHARS = 1000;
+
+export function validateQuery(query: string): string {
+	const value = query.trim();
+	if (!value) throw new Error("Search query is required.");
+	if (value.length > MAX_QUERY_CHARS) throw new Error(`Search query is too long; max ${MAX_QUERY_CHARS} characters.`);
+	return value;
+}
+
+/** A line test for text (substring) or regex search. */
+export function lineMatcher(query: string, regex: boolean, caseSensitive: boolean): (line: string) => boolean {
+	if (regex) {
+		let pattern: RegExp;
+		try {
+			pattern = new RegExp(query, caseSensitive ? "" : "i");
+		} catch (error) {
+			throw new Error(`Invalid regex: ${error instanceof Error ? error.message : String(error)}`);
+		}
+		return (line) => pattern.test(line);
+	}
+	const needle = caseSensitive ? query : query.toLowerCase();
+	return (line) => (caseSensitive ? line : line.toLowerCase()).includes(needle);
+}
+
+/** A whole number within [min, max]; anything not finite becomes min. */
+export function clampInt(value: number, min: number, max: number): number {
+	return Number.isFinite(value) ? Math.max(min, Math.min(max, Math.floor(value))) : min;
+}
+
+export function stripFrontmatter(content: string): string {
+	return content.replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, "");
+}
+
+/** Lines `index - context` to `index + context`, each prefixed with its 1-based number. */
+export function snippet(lines: string[], index: number, context: number): string {
+	const start = Math.max(0, index - context);
+	return lines.slice(start, index + context + 1).map((line, offset) => `${start + offset + 1}: ${line}`).join("\n");
+}
+
+/** One term's BM25 weight, with b = 0.75. */
+export function bm25(termFrequency: number, documentFrequency: number, totalDocs: number, length: number, averageLength: number, k1: number): number {
+	const idf = Math.log(1 + (totalDocs - documentFrequency + 0.5) / (documentFrequency + 0.5));
+	return idf * ((termFrequency * (k1 + 1)) / (termFrequency + k1 * (1 - 0.75 + 0.75 * (length / averageLength))));
+}

@@ -2,14 +2,13 @@ import { Type, type Static } from "typebox";
 import { HashText, IdText, ModelText, ParticipantNameText, PathText, STRICT_OBJECT, boundedText } from "./common.ts";
 import { HostedCollaboratorProfileSchema, HostedNativeCollaboratorDriverSchema, HostedParticipantStateSchema } from "./state.ts";
 
-/** Restored identity never carries revive authorization: that comes from the environment, once. */
+/** The name a session holds: its protocol and participant ID, and the key and generation Runtime last gave it. */
 export const ParticipantIdentitySchema = Type.Object({
 	protocol: ParticipantNameText,
 	participantId: ParticipantNameText,
 	participantKey: Type.Optional(IdText),
 	generation: Type.Optional(IdText),
 	disposition: HostedParticipantStateSchema,
-	reviveAuthorized: Type.Optional(Type.Literal(true)),
 }, STRICT_OBJECT);
 
 const CollaboratorPersonaSchema = Type.Object({
@@ -23,6 +22,17 @@ export const CollaboratorLaunchSchema = Type.Object({
 	model: Type.Optional(ModelText),
 	profile: Type.Optional(HostedCollaboratorProfileSchema),
 	persona: Type.Optional(CollaboratorPersonaSchema),
+}, STRICT_OBJECT);
+
+/** A collaborator this lead started: its start spec, its tab, and the native session a Claude or Codex one resumes. */
+export const StartedCollaboratorSchema = Type.Object({
+	participantId: ParticipantNameText,
+	model: Type.Optional(boundedText(200)),
+	persona: Type.Optional(boundedText(64)),
+	profile: Type.Optional(HostedCollaboratorProfileSchema),
+	repo: Type.Optional(PathText),
+	tabId: Type.Optional(IdText),
+	nativeSession: Type.Optional(IdText),
 }, STRICT_OBJECT);
 
 export const CollaboratorWorktreeSchema = Type.Object({
@@ -65,7 +75,7 @@ export const ManagedAgentControlSchema = Type.Object({
 export type ParticipantIdentity = Static<typeof ParticipantIdentitySchema>;
 export type CollaboratorPersona = Static<typeof CollaboratorPersonaSchema>;
 export type CollaboratorLaunch = Static<typeof CollaboratorLaunchSchema>;
+export type StartedCollaborator = Static<typeof StartedCollaboratorSchema>;
 export type CollaboratorWorktree = Static<typeof CollaboratorWorktreeSchema>;
 export type ManagedAgentSession = Static<typeof ManagedAgentSessionSchema>;
-export type ManagedAgentOwner = Static<typeof ManagedAgentOwnerSchema>;
 export type ManagedAgentControl = Static<typeof ManagedAgentControlSchema>;

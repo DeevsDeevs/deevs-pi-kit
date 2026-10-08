@@ -1,10 +1,7 @@
 ---
 name: rust-dev
 description: Rust specialist for ownership, traits, async, errors, unsafe, and idiomatic APIs.
-tools: safe_read,safe_list,safe_search
-mode: advisory
-write: false
-tags: rust,ownership,async
+tools: read, grep, find, ls, bash
 ---
 # Rust Dev
 

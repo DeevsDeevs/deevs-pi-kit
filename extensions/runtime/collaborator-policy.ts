@@ -1,43 +1,34 @@
-import { createHash } from "node:crypto";
-import { lstatSync, readFileSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { Value } from "typebox/value";
-import { Type } from "@earendil-works/pi-ai";
+import { createHash, randomUUID } from "node:crypto";
+import { lstatSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { CustomToolCallEvent } from "@earendil-works/pi-coding-agent";
-import { findAgent, loadBuiltinAgents } from "../subagents/agents.ts";
+import { resolveModel, type ModelContext } from "../shared/models.ts";
+import { findAgentType } from "../subagents/definitions.ts";
 import { HostedRuntimeClientError } from "./client.ts";
 import { isNodeError } from "./errors.ts";
 import { collaboratorProfileTools, DRIVERS } from "./drivers.ts";
 import { type HostedCollaboratorDriver, type HostedCollaboratorProfile, isWriter } from "./schemas/state.ts";
-import { HostedCollaboratorProfileSchema } from "./schemas/state.ts";
 import { isJsonString, type JsonValue } from "./schemas/json.ts";
-import { COLLABORATOR_MODEL, PARTICIPANT_NAME } from "./schemas/common.ts";
-import type { CollaboratorPersona } from "./session-record.ts";
+import { PARTICIPANT_NAME } from "./schemas/common.ts";
+import type { CollaboratorPersona, StartedCollaborator } from "./schemas/session.ts";
 
-const PATH_SEPARATOR = process.platform === "win32" ? "\\" : "/";
-const COLLABORATOR_PERSONAS = loadBuiltinAgents();
-const PI_COLLABORATOR_MODEL = /^[a-z0-9][a-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._/:-]*$/;
-const FILE_TOOLS = new Set(["read", "grep", "find", "ls", "edit", "write"]);
+const WRITE_TOOLS = new Set(["edit", "write"]);
 
-export interface CollaboratorCandidate {
-	participantId: string;
-	driver?: HostedCollaboratorDriver;
-	model?: string;
-	persona?: string;
-	profile?: HostedCollaboratorProfile;
-	repo?: string;
-}
+export type CollaboratorCandidate = Omit<StartedCollaborator, "tabId">;
 
 export interface ResolvedCollaboratorCandidate {
 	participantId: string;
 	driver: HostedCollaboratorDriver;
 	model?: string;
-	profile?: HostedCollaboratorProfile;
+	profile: HostedCollaboratorProfile;
 	persona?: CollaboratorPersona;
 	repo?: string;
 	/** Resolved by the start path once the project root is known; absent when the collaborator works at the root. */
 	repoRoot?: string;
+	/** The Claude or Codex session a stood-down native collaborator resumes. */
+	resume?: string;
+	/** The id a new Claude session starts under; recorded as the session it resumes. */
+	sessionId?: string;
 }
 
 export interface CollaboratorToolBlock {
@@ -45,23 +36,25 @@ export interface CollaboratorToolBlock {
 	reason: string;
 }
 
-export function resolveCollaboratorCandidate(candidate: CollaboratorCandidate): ResolvedCollaboratorCandidate {
+/** The harness comes from the model spec (§3.2): `claude:` runs Claude Code, `codex:` runs Codex, anything else Pi. */
+export function resolveCollaboratorCandidate(candidate: CollaboratorCandidate, models: ModelContext): ResolvedCollaboratorCandidate {
 	const participantId = collaboratorName(candidate.participantId, "participant ID");
-	const driver = collaboratorDriver(candidate.driver);
-	const spec = DRIVERS[driver];
-	const requestedModel = collaboratorModel(candidate.model);
-	const requestedProfile = collaboratorProfile(candidate.profile);
 	const persona = candidate.persona ? resolvePersona(candidate.persona) : undefined;
-	const profile = requestedProfile ?? (persona ? "read-only" : spec.defaultProfile);
-	const model = requestedModel ?? (spec.personaModel ? collaboratorModel(persona?.model) : undefined);
-	assertUnambiguousCollaboratorModel(spec.qualifiedModel, model);
-	if (driver === "codex" && model) assertKnownCodexModel(model);
-	const resolved: ResolvedCollaboratorCandidate = { participantId, driver };
-	if (model) resolved.model = model;
-	if (profile) resolved.profile = profile;
-	if (persona) resolved.persona = persona.persona;
-	if (candidate.repo !== undefined) resolved.repo = candidate.repo;
-	return resolved;
+	let resolved;
+	try {
+		resolved = resolveModel(candidate.model ?? persona?.model, models);
+	} catch (error) {
+		throw new HostedRuntimeClientError("invalid_request", error instanceof Error ? error.message : String(error));
+	}
+	const driver: HostedCollaboratorDriver = resolved.harness === "claude" ? "claude-code" : resolved.harness;
+	const model = resolved.harness === "pi" ? `${resolved.model.provider}/${resolved.model.id}` : resolved.model;
+	const result: ResolvedCollaboratorCandidate = { participantId, driver, model, profile: candidate.profile ?? "read-only" };
+	if (persona) result.persona = persona.persona;
+	if (candidate.repo !== undefined) result.repo = candidate.repo;
+	if (candidate.nativeSession && driver !== "pi") result.resume = candidate.nativeSession;
+	// Herdr need not report a Claude session id, so a new one is chosen here and resumed by it later.
+	else if (driver === "claude-code") result.sessionId = randomUUID();
+	return result;
 }
 
 interface ResolvedPersona {
@@ -69,23 +62,24 @@ interface ResolvedPersona {
 	model?: string;
 }
 
-/** A persona is one trusted built-in prompt; its tool allowlist is the launched profile's, not the persona's. */
+/** A persona is one trusted built-in prompt, named as for Agent; its tool allowlist is the launched profile's, not the persona's. */
 function resolvePersona(requested: string): ResolvedPersona {
-	const personaName = collaboratorName(requested, "persona");
-	const definition = findAgent(COLLABORATOR_PERSONAS, personaName);
-	if (!definition || definition.disabled) {
-		throw new HostedRuntimeClientError("not_found", `Unknown or disabled collaborator persona ${personaName}.`);
+	let type;
+	try {
+		type = findAgentType(requested);
+	} catch (error) {
+		throw new HostedRuntimeClientError("not_found", error instanceof Error ? error.message : String(error));
 	}
-	const prompt = definition.body.trim();
+	const prompt = type.prompt.trim();
 	if (!prompt || Buffer.byteLength(prompt) > 32 * 1024) {
-		throw new HostedRuntimeClientError("invalid_request", `Collaborator persona ${personaName} has an invalid prompt.`);
+		throw new HostedRuntimeClientError("invalid_request", `Collaborator persona ${type.name} has an invalid prompt.`);
 	}
 	const persona: CollaboratorPersona = {
-		name: definition.name,
+		name: type.name,
 		prompt,
 		promptHash: createHash("sha256").update(prompt).digest("hex"),
 	};
-	return definition.model ? { persona, model: definition.model } : { persona };
+	return type.model ? { persona, model: type.model } : { persona };
 }
 
 function usesNativeUserConfiguration(candidate: ResolvedCollaboratorCandidate): boolean {
@@ -98,7 +92,7 @@ export function collaboratorConfiguration(candidate: ResolvedCollaboratorCandida
 		`driver ${candidate.driver}`,
 		candidate.model ? `model ${candidate.model}` : `model ${candidate.driver} default`,
 		candidate.persona ? `persona ${candidate.persona.name}` : "persona none",
-		candidate.profile ? `profile ${candidate.profile}` : "profile none",
+		`profile ${candidate.profile}`,
 		...(candidate.repo ? [`repo ${candidate.repo}`] : []),
 	].join(", ");
 	if (!usesNativeUserConfiguration(candidate)) return configuration;
@@ -114,7 +108,7 @@ export function collaboratorToolBlock(
 ): CollaboratorToolBlock | undefined {
 	const allowed = collaboratorProfileTools(profile);
 	if (!allowed.includes(toolName)) return { block: true, reason: `Collaborator profile ${profile} does not permit ${toolName}.` };
-	if (!FILE_TOOLS.has(toolName)) return undefined;
+	if (!WRITE_TOOLS.has(toolName)) return undefined;
 	if (collaboratorPathAllowed(cwd, path, toolName === "write")) return undefined;
 	return { block: true, reason: `Collaborator profile ${profile} confines ${toolName} to the project workspace.` };
 }
@@ -132,7 +126,7 @@ function collaboratorPathAllowed(cwd: string, value: CustomToolCallEvent["input"
 		if (relativePath === "") return true;
 		return !isAbsolute(relativePath)
 			&& relativePath !== ".."
-			&& !relativePath.startsWith(`..${PATH_SEPARATOR}`);
+			&& !relativePath.startsWith(`..${sep}`);
 	} catch {
 		return false;
 	}
@@ -153,45 +147,6 @@ function resolveExistingTarget(requested: string, allowMissing: boolean): string
 export function collaboratorName(value: string | undefined, name: string): string {
 	if (!value || !PARTICIPANT_NAME.test(value)) {
 		throw new HostedRuntimeClientError("invalid_request", `${name} must match ${PARTICIPANT_NAME}.`);
-	}
-	return value;
-}
-
-function collaboratorDriver(value: HostedCollaboratorDriver | undefined): HostedCollaboratorDriver {
-	if (value === undefined) return "pi";
-	if (Object.hasOwn(DRIVERS, value)) return value;
-	throw new HostedRuntimeClientError("invalid_request", "driver must be pi, claude-code, or codex.");
-}
-
-function collaboratorModel(value: string | undefined): string | undefined {
-	if (value !== undefined && !COLLABORATOR_MODEL.test(value)) {
-		throw new HostedRuntimeClientError("invalid_request", `model must match ${COLLABORATOR_MODEL}.`);
-	}
-	return value;
-}
-
-const CODEX_MODELS_CACHE = join(homedir(), ".codex", "models_cache.json");
-const CodexModelCache = Type.Object({ models: Type.Array(Type.Object({ slug: Type.String() })) });
-
-/** Codex accepts any --model and fails only at its first request; its own catalog cache catches a wrong name before a tab opens. */
-export function assertKnownCodexModel(model: string, cachePath = CODEX_MODELS_CACHE): void {
-	let cache: unknown;
-	try { cache = JSON.parse(readFileSync(cachePath, "utf8")); } catch { return; }
-	if (!Value.Check(CodexModelCache, cache)) return;
-	const slugs = cache.models.map((entry) => entry.slug);
-	if (slugs.includes(model)) return;
-	throw new HostedRuntimeClientError("invalid_request", `Unknown Codex model ${model}; Codex knows ${slugs.join(", ")}.`);
-}
-
-function assertUnambiguousCollaboratorModel(qualified: boolean, model: string | undefined): void {
-	if (!qualified || model === undefined || PI_COLLABORATOR_MODEL.test(model)) return;
-	const detail = "Explicit Pi collaborator models must be provider-qualified, for example openai-codex/gpt-5.6-sol.";
-	throw new HostedRuntimeClientError("invalid_request", detail);
-}
-
-function collaboratorProfile(value: HostedCollaboratorProfile | undefined): HostedCollaboratorProfile | undefined {
-	if (value !== undefined && !Value.Check(HostedCollaboratorProfileSchema, value)) {
-		throw new HostedRuntimeClientError("invalid_request", "profile must be read-only or workspace-write.");
 	}
 	return value;
 }

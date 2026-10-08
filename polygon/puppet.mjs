@@ -1,0 +1,271 @@
+// Scripted model over HTTP. The first user message `POLYGON {json}` is the script; the next step is derived
+// from the transcript, never from server state, so kill -9, resume, CLI children and in-process agents all work.
+// A string arg "$/re/" is replaced by the last match of re in the transcript (ids the script cannot know upfront).
+import { createHash } from "node:crypto";
+import { createServer } from "node:http";
+import { appendFileSync } from "node:fs";
+import { zstdDecompressSync } from "node:zlib";
+
+const text = (c) => typeof c === "string" ? c
+	: (c ?? []).map((b) => b.type === "tool_use" ? `toolCall:${b.id}` : b.type === "tool_result" ? text(b.content) : b.text ?? "").join("\n");
+const images = (messages) => messages.reduce((n, m) => n + (Array.isArray(m.content) ? m.content.filter((b) => b.type === "image" || b.type === "image_url" || b.type === "input_image").length : 0), 0);
+
+/** `fallback` scripts a conversation that carries none, such as a collaborator woken by mail. */
+export function nextStep(messages, fallback) {
+	const host = messages.find((m) => m.role === "user" && text(m.content).includes("POLYGON {"));
+	if (!host && !fallback) return { text: "polygon:no-script" };
+	const raw = host ? text(host.content) : "";
+	// The last script that starts a line: a workflow agent's own task follows the lead's request it relays, and scripts
+	// nested in a lead's tool arguments sit inside its JSON line. A message that only quotes one (a collaborator's) uses it.
+	const line = [...raw.matchAll(/^\s*POLYGON (.*)$/gm)].at(-1)?.[1];
+	const script = host ? quoted(line ?? raw.slice(raw.indexOf("POLYGON ") + 8).split("\n")[0]) : fallback;
+	const spoke = (m) => `${text(m.content)}\n${(m.tool_calls ?? []).map((t) => `toolCall:${t.id}`).join("\n")}`;
+	const said = messages.filter((m) => m.role === "assistant").map(spoke).join("\n");
+	const last = messages.findLastIndex((m) => m.role === "assistant");
+	const lastSaid = last < 0 ? "" : spoke(messages[last]);
+	const fresh = messages.slice(last + 1).map((m) => text(m.content)).join("\n");
+	const isSaid = (s, hay) => hay.includes(`toolCall:${s.id}`) || hay.includes(`[polygon:${s.id}]`);
+	// `then` chains a step to the one before it, so one gate (`on`) can open a run of steps.
+	const step = script.steps.find((s, i) => !isSaid(s, said) && (s.then ? i > 0 && isSaid(script.steps[i - 1], lastSaid) : !s.on || fresh.includes(s.on)));
+	// `idleMs` makes an idle answer take as long as a real model's, so a terminal agent is seen working.
+	if (!step) return { text: "[polygon:idle]", agent: script.agent, delayMs: script.idleMs };
+	const transcript = messages.map((m) => text(m.content)).join("\n");
+	const args = Object.fromEntries(Object.entries(step.args ?? {}).map(([k, v]) => [k, resolveRef(v, transcript)]));
+	return { ...step, args, agent: script.agent };
+}
+
+/**
+ * The script's JSON with whatever follows it on its line, such as the rest of a native's wake line
+ * `Message from main: POLYGON {...} Message from x: ...`: the longest prefix that parses. ponytail: O(n²) on a long line; a streaming JSON scanner if lines grow.
+ */
+function quoted(raw) {
+	for (let end = raw.lastIndexOf("}"); end > 0; end = raw.lastIndexOf("}", end - 1)) {
+		try { return JSON.parse(raw.slice(0, end + 1)); } catch {}
+	}
+	return { steps: [] };
+}
+
+/** A tool "~suffix" is the offered tool ending in suffix (MCP tools carry a server name the script cannot know), or one inside a Responses namespace. */
+function offered(step, request) {
+	if (!step.tool?.startsWith("~")) return step;
+	const suffix = step.tool.slice(1);
+	for (const tool of request.tools ?? []) {
+		const name = tool.function?.name ?? tool.name;
+		if (name?.endsWith(suffix)) return { ...step, tool: name };
+		const inner = (tool.tools ?? []).map((t) => t.function?.name ?? t.name).find((n) => n?.endsWith(suffix));
+		if (inner) return { ...step, tool: inner, namespace: name };
+	}
+	return step;
+}
+
+function resolveRef(value, transcript) {
+	if (Array.isArray(value)) return value.map((v) => resolveRef(v, transcript));
+	if (typeof value !== "string" || !/^\$\/.+\/$/.test(value)) return value;
+	return transcript.match(new RegExp(value.slice(2, -1), "g"))?.at(-1) ?? value;
+}
+
+const reply = (step) => step.id ? `[polygon:${step.id}] ${step.text ?? ""}` : step.text;
+
+/** A `schema: "auto"` step answers through the StructuredOutput tool when the request offers one, else as text. */
+function autoSchema(step, request) {
+	if (step.schema !== "auto") return step;
+	const tool = (request.tools ?? []).map((t) => t.function ?? t).find((t) => t.name === "StructuredOutput");
+	return tool ? { ...step, tool: tool.name, args: stub(tool.parameters ?? tool.input_schema) } : step;
+}
+
+/** The smallest value a JSON Schema accepts that still exercises the caller: one item per array, the first enum. */
+function stub(schema = {}) {
+	if ("const" in schema) return schema.const;
+	if (schema.enum) return schema.enum[0];
+	if (schema.anyOf ?? schema.oneOf) return stub((schema.anyOf ?? schema.oneOf)[0]);
+	const type = [schema.type].flat().find((t) => t !== "null");
+	if (type === "object" || schema.properties) return Object.fromEntries(Object.entries(schema.properties ?? {}).map(([k, v]) => [k, stub(v)]));
+	if (type === "array") return Array.from({ length: Math.max(1, schema.minItems ?? 1) }, () => stub(schema.items));
+	if (type === "integer" || type === "number") return schema.minimum ?? 1;
+	if (type === "boolean") return true;
+	return "x".repeat(Math.max(1, schema.minLength ?? 1));
+}
+
+/**
+ * `marks` is the scenario's live list of strings to look for; each request logs the ones its raw body contains.
+ * `scripts` maps a model id to its fallback script; scenarios fill it through `t.scripts`.
+ * `bodies` (a file) receives every logged request's full body, for scenarios that measure what is sent on the wire.
+ * `live` passes the openai-codex and Anthropic wires through to the real APIs, still logging each model request
+ * (agent from its script, model, tools, marks and the upstream HTTP status), so the live tier keeps the request log.
+ */
+export function startPuppet(logFile, marks = [], scripts = {}, { live = false, bodies } = {}) {
+	const log = (wire, url, request, step, messages, status) => {
+		const raw = JSON.stringify(request);
+		if (bodies) appendFileSync(bodies, JSON.stringify({ at: Date.now(), wire, url, agent: step.agent ?? null, step: step.id ?? null, body: request }) + "\n");
+		appendFileSync(logFile, JSON.stringify({
+			at: Date.now(), wire, url, agent: step.agent ?? null, step: step.id ?? null, tool: step.tool ?? null, model: request.model,
+			messages: messages.length, images: images(messages), tools: (request.tools ?? []).map((t) => t.function?.name ?? t.name ?? t.type),
+			serviceTier: request.service_tier ?? null, marks: marks.filter((m) => raw.includes(m)), ...(status ? { status } : {}),
+		}) + "\n");
+	};
+	const server = createServer((req, res) => {
+		const chunks = [];
+		req.on("data", (d) => { chunks.push(d); });
+		req.on("end", () => {
+			// Pi's openai-codex SSE transport sends its body zstd-compressed, as the Codex backend accepts.
+			const body = req.headers["content-encoding"] === "zstd" ? zstdDecompressSync(Buffer.concat(chunks)) : Buffer.concat(chunks);
+			if (live && !req.url.includes("/chat/completions")) {
+				const upstream = req.url.startsWith("/codex/") ? `https://chatgpt.com/backend-api${req.url}` : `https://api.anthropic.com${req.url}`;
+				const logged = req.url.includes("/responses") || (req.url.includes("/messages") && !req.url.includes("count_tokens"));
+				return forward(req, res, Buffer.concat(chunks), upstream, (status) => {
+					if (!logged) return;
+					const request = JSON.parse(body.toString());
+					const messages = req.url.includes("/responses") ? responseMessages(request) : request.messages ?? [];
+					// The step is the script's next one as the puppet would read it; a real model's own tool call ids never mark a step said.
+					const { agent, id } = nextStep(messages);
+					log("live", req.url, request, { agent, id }, messages, status);
+				});
+			}
+			const request = JSON.parse(body.toString() || "{}");
+			if (req.url.includes("/responses")) return responses(res, request, log, req.url);
+			const wire = req.url.includes("/chat/completions") ? "chat" : req.url.includes("/messages") ? "anthropic" : null;
+			// Token counts and health probes such as Claude's /api/hello are answered outside the request log.
+			if (req.url.includes("count_tokens")) { res.writeHead(200, { "content-type": "application/json" }); return res.end('{"input_tokens":1}'); }
+			if (!wire) { res.writeHead(200, { "content-type": "application/json" }); return res.end("{}"); }
+			const messages = request.messages ?? [];
+			const step = offered(autoSchema(nextStep(messages, scripts[request.model]), request), request);
+			log(wire, req.url, request, step, messages);
+			if (wire === "anthropic") return anthropic(res, request, step);
+			chat(res, request, step);
+		});
+	});
+	if (!live) server.on("upgrade", (req, socket) => codexWebSocket(req, socket, log));
+	return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve({ server, port: server.address().port })));
+}
+
+function chat(res, request, step) {
+	// `error` fails every request of its step, so retries hit it again until they give up.
+	if (step.error) {
+		res.writeHead(step.error.status, { "content-type": "application/json", ...(step.error.retryAfter === undefined ? {} : { "retry-after": String(step.error.retryAfter) }) });
+		return res.end(JSON.stringify({ error: { message: `polygon error ${step.error.status}`, type: "polygon" } }));
+	}
+	res.writeHead(200, { "content-type": "text/event-stream" });
+	const chunk = (delta, finish, usage) => res.write(`data: ${JSON.stringify({ id: "polygon", object: "chat.completion.chunk", created: 0, model: request.model, choices: [{ index: 0, delta, finish_reason: finish }], ...(usage ? { usage } : {}) })}\n\n`);
+	if (step.tool) chunk({ role: "assistant", tool_calls: [{ index: 0, id: step.id, type: "function", function: { name: step.tool, arguments: JSON.stringify(step.args) } }] }, null);
+	else chunk({ role: "assistant", content: reply(step) }, null);
+	const prompt = step.usage ?? 1;
+	// `delayMs` holds the stream open after the first chunk, so a scenario can kill a lead mid-stream.
+	setTimeout(() => {
+		if (res.destroyed) return;
+		chunk({}, step.tool ? "tool_calls" : "stop", { prompt_tokens: prompt, completion_tokens: 1, total_tokens: prompt + 1 });
+		res.end("data: [DONE]\n\n");
+	}, step.delayMs ?? 0);
+}
+
+function anthropic(res, request, step) {
+	res.writeHead(200, { "content-type": "text/event-stream" });
+	const ev = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
+	ev("message_start", { message: { id: "msg_polygon", type: "message", role: "assistant", model: request.model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } } });
+	if (step.tool) {
+		ev("content_block_start", { index: 0, content_block: { type: "tool_use", id: step.id, name: step.tool, input: {} } });
+		ev("content_block_delta", { index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify(step.args) } });
+	} else {
+		ev("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
+		ev("content_block_delta", { index: 0, delta: { type: "text_delta", text: reply(step) } });
+	}
+	setTimeout(() => {
+		if (res.destroyed) return;
+		ev("content_block_stop", { index: 0 });
+		ev("message_delta", { delta: { stop_reason: step.tool ? "tool_use" : "end_turn", stop_sequence: null }, usage: { output_tokens: 1 } });
+		ev("message_stop", {});
+		res.end();
+	}, step.delayMs ?? 0);
+}
+
+// OpenAI Responses (Codex): input items are mapped onto the message shape nextStep reads.
+function responseMessages(request) {
+	const items = typeof request.input === "string" ? [{ type: "message", role: "user", content: request.input }] : request.input ?? [];
+	return items.map((i) => i.type === "function_call" ? { role: "assistant", content: `toolCall:${i.call_id}` }
+		: i.type === "function_call_output" ? { role: "tool", content: typeof i.output === "string" ? i.output : JSON.stringify(i.output) }
+		: i.type === "message" || i.role ? { role: i.role, content: typeof i.content === "string" ? i.content : i.content ?? [] }
+		: { role: "other", content: "" });
+}
+
+function responses(res, request, log, url) {
+	res.writeHead(200, { "content-type": "text/event-stream" });
+	setTimeout(() => {
+		respond(request, log, url, (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`));
+		res.end();
+	}, nextStep(responseMessages(request)).delayMs ?? 0);
+}
+
+/**
+ * Pi's openai-codex WebSocket transport, which a kit agent uses since settings.json's `transport` reaches only the lead: one
+ * `response.create` per text frame, its events back as text frames; a `previous_response_id` continues the connection's transcript.
+ */
+function codexWebSocket(req, socket, log) {
+	const accept = createHash("sha1").update(`${req.headers["sec-websocket-key"]}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
+	socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+	const frame = (op, payload) => {
+		const n = payload.length;
+		const head = n < 126 ? [0x80 | op, n] : n < 65536 ? [0x80 | op, 126, n >> 8, n & 255] : [0x80 | op, 127, 0, 0, 0, 0, ...[24, 16, 8, 0].map((s) => (n >>> s) & 255)];
+		socket.write(Buffer.concat([Buffer.from(head), payload]));
+	};
+	let buf = Buffer.alloc(0);
+	let history = [];
+	socket.on("error", () => {});
+	// The teardown's server.close() waits for this socket, which closeAllConnections() does not reach.
+	socket.on("end", () => socket.end());
+	socket.on("data", (d) => {
+		for (buf = Buffer.concat([buf, d]); buf.length >= 2;) {
+			const op = buf[0] & 15;
+			let len = buf[1] & 127, at = 2;
+			if (len === 126) [len, at] = buf.length < 4 ? [Infinity, 0] : [buf.readUInt16BE(2), 4];
+			else if (len === 127) [len, at] = buf.length < 10 ? [Infinity, 0] : [Number(buf.readBigUInt64BE(2)), 10];
+			const mask = buf[1] & 128 ? buf.subarray(at, at + 4) : undefined;
+			if (mask) at += 4;
+			if (buf.length < at + len) return;
+			const payload = Buffer.from(buf.subarray(at, at + len)).map((byte, i) => (mask ? byte ^ mask[i & 3] : byte));
+			buf = buf.subarray(at + len);
+			if (op === 8) return socket.end(Buffer.from([0x88, 0]));
+			if (op === 9) frame(10, payload);
+			if (op !== 1) continue;
+			const { type: _, previous_response_id: continued, ...request } = JSON.parse(payload.toString());
+			if (continued) request.input = [...history, ...request.input];
+			history = [...request.input, respond(request, log, `ws:${req.url}`, (type, data) => frame(1, Buffer.from(JSON.stringify({ type, ...data }))))];
+		}
+	});
+}
+
+/** One Responses answer as events; returns its output item. */
+function respond(request, log, url, ev) {
+	const messages = responseMessages(request);
+	const step = offered(autoSchema(nextStep(messages), request), request);
+	log("responses", url, request, step, messages);
+	const item = step.tool
+		? { type: "function_call", id: `fc_${step.id}`, call_id: step.id, name: step.tool, ...(step.namespace && { namespace: step.namespace }), arguments: JSON.stringify(step.args), status: "completed" }
+		: { type: "message", id: "msg_polygon", role: "assistant", status: "completed", content: [{ type: "output_text", text: reply(step), annotations: [] }] };
+	ev("response.created", { response: { id: "resp_polygon", object: "response", status: "in_progress", model: request.model, output: [] } });
+	ev("response.output_item.added", { output_index: 0, item: { ...item, status: "in_progress", ...(item.content ? { content: [] } : {}) } });
+	if (!step.tool) ev("response.output_text.delta", { item_id: item.id, output_index: 0, content_index: 0, delta: item.content[0].text });
+	ev("response.output_item.done", { output_index: 0, item });
+	ev("response.completed", { response: { id: "resp_polygon", object: "response", status: "completed", model: request.model, output: [item], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2, input_tokens_details: { cached_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } } } });
+	return item;
+}
+
+const HOP = new Set(["host", "connection", "keep-alive", "content-length", "transfer-encoding", "accept-encoding"]);
+
+/** Streams one request to the real API and its answer back; the caller logs the upstream status. */
+async function forward(req, res, body, url, onStatus) {
+	const abort = new AbortController();
+	res.on("close", () => abort.abort());
+	try {
+		const up = await fetch(url, {
+			method: req.method, signal: abort.signal, redirect: "manual",
+			headers: Object.entries(req.headers).filter(([k]) => !HOP.has(k)),
+			body: ["GET", "HEAD"].includes(req.method) ? undefined : body,
+		});
+		onStatus(up.status);
+		res.writeHead(up.status, [...up.headers].filter(([k]) => !HOP.has(k) && k !== "content-encoding").flat());
+		if (up.body) for await (const chunk of up.body) res.write(chunk);
+		res.end();
+	} catch (error) {
+		if (!res.headersSent) res.writeHead(502, { "content-type": "text/plain" });
+		res.end(String(error));
+	}
+}

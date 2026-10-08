@@ -1,10 +1,7 @@
 ---
 name: tester
 description: Test strategist that finds coverage gaps, high-value cases, and validation commands.
-tools: safe_read,safe_list,safe_search
-mode: advisory
-write: false
-tags: tests,validation,coverage
+tools: read, grep, find, ls, bash
 ---
 # Tester
 

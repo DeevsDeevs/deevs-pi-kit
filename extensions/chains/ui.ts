@@ -1,10 +1,13 @@
-import { Key, matchesKey, type Component } from "@earendil-works/pi-tui";
+import { Key, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type OverlayOptions } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { dashboardFrame, detailLines, pageWindow, selectedRow, statusIcon } from "../shared/dashboard.ts";
-import type { ChainCheckpointState } from "./checkpoint.ts";
+import { framePanelLines } from "../shared/panel.ts";
+import { checkpointLabel, type ChainCheckpointState } from "./checkpoint.ts";
 import type { ChainBranchInfo, ChainListItem } from "./types.ts";
 
 type ChainRow = { kind: "chain"; chain: ChainListItem } | { kind: "branch"; chain: ChainListItem; branch: ChainBranchInfo };
+
+export const FULL_SCREEN_OVERLAY: OverlayOptions = { width: "100%", maxHeight: "100%", anchor: "center", margin: 1 };
+const STATUS_ICONS = { idle: "●", saved: "✓", due: "○" } satisfies Record<ChainCheckpointState["status"], string>;
 
 export class ChainsDashboard implements Component {
 	private selected = 0;
@@ -15,7 +18,7 @@ export class ChainsDashboard implements Component {
 
 	constructor(
 		private readonly chains: ChainListItem[],
-		private readonly checkpoint: ChainCheckpointState | undefined,
+		private readonly checkpoint: ChainCheckpointState,
 		private readonly theme: Theme,
 		private readonly done: () => void,
 		private readonly requestRender: () => void,
@@ -48,8 +51,8 @@ export class ChainsDashboard implements Component {
 		this.selected = Math.min(this.selected, Math.max(0, rows.length - 1));
 		if (this.getHeight() < 12) {
 			const row = rows[this.selected];
-			return dashboardFrame("Chains", [
-				` ${this.checkpoint?.chain ? `${statusIcon(this.checkpoint.status)} ${this.checkpoint.chain}@${this.checkpoint.branch ?? "main"}` : "○ no checkpoint"}`,
+			return frame([
+				` ${this.checkpoint.chain ? `${STATUS_ICONS[this.checkpoint.status]} ${this.checkpoint.chain}@${this.checkpoint.branch}` : "○ no checkpoint"}`,
 				` ${row ? selectedRow(this.rowText(row), true, this.theme, Math.max(1, width - 6)) : "No Chains"}`,
 				` ${this.theme.fg("dim", "j/k move · enter expand · q close")}`,
 			], this.theme, width, this.getHeight());
@@ -59,11 +62,10 @@ export class ChainsDashboard implements Component {
 		const window = pageWindow(rows, this.selected, listSize);
 		const bodyWidth = Math.max(10, width - 6);
 		const row = rows[this.selected];
-		const checkpoint = this.checkpoint?.chain
-			? `${statusIcon(this.checkpoint.status)} ${this.checkpoint.chain}@${this.checkpoint.branch ?? "main"} · ${this.checkpoint.status}${this.checkpoint.dueReasons.at(-1) ? ` · ${this.checkpoint.dueReasons.at(-1)}` : ""}`
-			: "○ no active checkpoint";
+		const label = checkpointLabel(this.checkpoint);
+		const checkpoint = label ? `${STATUS_ICONS[this.checkpoint.status]} ${label}` : "○ no active checkpoint";
 		const body = [
-			` ${this.theme.fg(this.checkpoint?.status === "due" ? "warning" : "muted", checkpoint)}`,
+			` ${this.theme.fg(this.checkpoint.status === "due" ? "warning" : "muted", checkpoint)}`,
 			` ${this.theme.fg("muted", `${this.chains.length} chains · ${this.chains.reduce((sum, item) => sum + item.count, 0)} links`)}`,
 			"",
 			...window.values.map((item, index) => ` ${selectedRow(this.rowText(item), window.start + index === this.selected, this.theme, bodyWidth)}`),
@@ -74,7 +76,7 @@ export class ChainsDashboard implements Component {
 			"",
 			` ${this.theme.fg("dim", "j/k move · enter expand · v preview · L load next turn · q close")}`,
 		];
-		return dashboardFrame("Chains", body, this.theme, width, this.getHeight());
+		return frame(body, this.theme, width, this.getHeight());
 	}
 
 	invalidate(): void {}
@@ -108,4 +110,29 @@ export class ChainsDashboard implements Component {
 			.catch((error) => { if (request === this.previewRequest) this.preview = error instanceof Error ? error.message : String(error); })
 			.finally(() => { if (request === this.previewRequest) { this.loading = false; this.requestRender(); } });
 	}
+}
+
+function selectedRow(text: string, selected: boolean, theme: Theme, width: number): string {
+	const prefix = selected ? "› " : "  ";
+	const clipped = truncateToWidth(`${prefix}${text}`, Math.max(1, width), "…", true);
+	return selected ? theme.bg("selectedBg", theme.fg("text", clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped))))) : clipped;
+}
+
+function detailLines(text: string, width: number, maxLines: number): string[] {
+	return text.split(/\r?\n/).flatMap((line) => wrapTextWithAnsi(line || " ", Math.max(1, width))).slice(0, Math.max(0, maxLines));
+}
+
+/** The body padded or cut to fill `height` inside the frame. */
+function frame(body: string[], theme: Theme, width: number, height: number): string[] {
+	const bodyHeight = Math.max(1, Math.floor(height) - 2);
+	const fixed = body.slice(0, bodyHeight);
+	while (fixed.length < bodyHeight) fixed.push("");
+	return framePanelLines("Chains", fixed, theme, Math.max(1, width));
+}
+
+function pageWindow<T>(values: T[], selected: number, size: number) {
+	if (!values.length) return { values: [], start: 0, selected: 0 };
+	const safeSelected = Math.max(0, Math.min(selected, values.length - 1));
+	const start = Math.max(0, Math.min(safeSelected - Math.floor(size / 2), values.length - size));
+	return { values: values.slice(start, start + size), start, selected: safeSelected };
 }

@@ -8,7 +8,7 @@ import {
 } from "../schemas/state.ts";
 import { RuntimeError } from "../errors.ts";
 import type { HerdrAgentStatus } from "../schemas/herdr.ts";
-import type { RuntimeRegistrationManager } from "./registration.ts";
+import type { LiveTargets } from "./live.ts";
 import type { HostedStateStore } from "./state.ts";
 
 export interface HostedParticipantStatus {
@@ -27,6 +27,7 @@ export interface HostedParticipantStatus {
 	repo?: string;
 	repoRoot?: string;
 	unreadMail?: number;
+	awaitingReply?: boolean;
 	lastTransition: HostedParticipant["transition"];
 }
 
@@ -46,7 +47,7 @@ export function requireParticipant(store: HostedStateStore, participantKey: stri
 
 export function participantStatus(
 	store: HostedStateStore,
-	registrations: RuntimeRegistrationManager,
+	live: LiveTargets,
 	participant: HostedParticipant,
 	includeQueue = true,
 ): HostedParticipantStatus {
@@ -59,26 +60,34 @@ export function participantStatus(
 		participantId: participant.participantId,
 		state: participant.state,
 		generation: participant.generation,
-		holderLive: isHeld(participant.state) && holderTargetKey !== undefined && registrations.hasLiveTarget(holderTargetKey),
+		holderLive: isHeld(participant.state) && holderTargetKey !== undefined && live.hasLiveTarget(holderTargetKey),
 		lastTransition: participant.transition,
 	};
 	if (holderTargetKey) status.holderTargetKey = holderTargetKey;
 	if (participant.repo) status.repo = participant.repo;
 	if (participant.repoRoot) status.repoRoot = participant.repoRoot;
-	if (isPiTarget(holder)) status.driver = "pi";
-	if (isAgentTarget(holder)) {
-		status.driver = holder.driver;
-		status.profile = holder.profile;
-		const agentStatus = holderTargetKey ? registrations.agentStatus(holderTargetKey) : undefined;
+	// A vacant participant keeps the driver and profile of the target it last ran in: a resume must not start it as Pi.
+	const previous = participant.transition.previousHolderTargetKey;
+	const last = holder ?? (previous ? store.read().targets[previous] : undefined);
+	if (isPiTarget(last)) status.driver = "pi";
+	if (isAgentTarget(last)) {
+		status.driver = last.driver;
+		status.profile = last.profile;
+	}
+	if (isAgentTarget(holder) && holderTargetKey) {
+		const agentStatus = live.agentStatus(holderTargetKey);
 		if (agentStatus) status.agentStatus = agentStatus;
 	}
-	if (includeQueue) status.unreadMail = unreadMail(store, participant.participantKey);
+	if (includeQueue) Object.assign(status, mailQueue(store, participant.participantKey));
 	return status;
 }
 
-/** Mail is read by `messaging.read`, never claimed, so unread depth is the absence of a read time. */
-function unreadMail(store: HostedStateStore, participantKey: string): number {
-	return Object.values(store.read().events)
-		.filter((event) => event.recipientParticipantKey === participantKey && event.readAt === undefined)
-		.length;
+/**
+ * Mail is read by `messaging.read`, never claimed, so unread depth is the absence of a read time. A reply is owed only
+ * while mail is unread: a Pi marks mail read at its own send or once its turn ends, a native once it sends or took the
+ * turn, and Herdr reports a native mid-turn as working; mail read and answered in text owes nothing.
+ */
+function mailQueue(store: HostedStateStore, participantKey: string): Pick<HostedParticipantStatus, "unreadMail" | "awaitingReply"> {
+	const unreadMail = Object.values(store.read().events).filter((event) => event.recipientParticipantKey === participantKey && event.readAt === undefined).length;
+	return { unreadMail, awaitingReply: unreadMail > 0 };
 }

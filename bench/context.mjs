@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { getEncoding } from "js-tiktoken";
+import { agentDir } from "../extensions/shared/config.ts";
 
 const repo = dirname(dirname(fileURLToPath(import.meta.url)));
 const results = join(repo, "bench", "results");
@@ -25,20 +26,25 @@ function surface(name, items) {
 	return { surface: name, items, total: items.reduce((sum, entry) => sum + entry.tokens, 0) };
 }
 
+/** The lead's task surface: Agent, TaskStop, job_start, Monitor and their siblings, and Runtime's collaborator tools. */
+const LEAD_EXTENSIONS = ["subagents", "runtime"];
+
 async function registeredTools() {
-	const extension = await import(pathToFileURL(join(repo, "extensions/runtime/index.ts")));
 	const tools = [];
 	const noop = () => {};
-	extension.default({
-		registerTool: tool => tools.push(tool),
-		registerCommand: noop,
-		registerEntryRenderer: noop,
-		registerFlag: noop,
-		on: noop,
-		getAllTools: () => [],
-		appendEntry: noop,
-		sendMessage: noop,
-	});
+	for (const name of LEAD_EXTENSIONS) {
+		const extension = await import(pathToFileURL(join(repo, "extensions", name, "index.ts")));
+		extension.default({
+			registerTool: tool => tools.push(tool),
+			registerCommand: noop,
+			registerEntryRenderer: noop,
+			registerFlag: noop,
+			on: noop,
+			getAllTools: () => [],
+			appendEntry: noop,
+			sendMessage: noop,
+		});
+	}
 	return tools.map(tool => ({
 		name: tool.name,
 		description: tool.description ?? "",
@@ -60,7 +66,7 @@ function toolSurface(tools) {
 	return surface("piTools", items);
 }
 
-const INSTALLED_SKILLS = "/home/deevs/.pi/agent/git/github.com/DeevsDeevs/deevs-pi-kit/skills";
+const INSTALLED_SKILLS = join(agentDir(), "git/github.com/DeevsDeevs/deevs-pi-kit/skills");
 
 /** The exact `<skill>` block Pi's formatSkillsForPrompt emits, location included. */
 function skillIndexEntry(skill) {

@@ -15,8 +15,8 @@ import {
 import { HostedParticipantCoordinator, type HostedParticipantCoordinatorOptions } from "./participant.ts";
 import { HerdrCliHostVerifier } from "./herdr-cli.ts";
 import { NativeWakeSweeper } from "./native-wake.ts";
-import type { HostedHostVerifier } from "./identity.ts";
-import { RuntimeRegistrationManager, type RegistrationManagerOptions } from "./registration.ts";
+import type { HostedHostVerifier } from "./herdr-cli.ts";
+import { LiveTargets, type LiveTargetOptions } from "./live.ts";
 import { isNodeError, RuntimeError } from "../errors.ts";
 import { HOSTED_ACK_RETENTION_MS, HOSTED_READ_RETENTION_MS } from "../schemas/common.ts";
 import { HostedStateStore, loadOrCreateRuntimeInstance } from "./state.ts";
@@ -38,9 +38,11 @@ interface RuntimeServerOptions {
 	retentionSweepMs?: number;
 	nativeWakeSweepMs?: number;
 	host?: HostedHostVerifier;
-	registration?: RegistrationManagerOptions;
+	registration?: LiveTargetOptions;
 	participant?: HostedParticipantCoordinatorOptions;
 	bridge?: AgentBinderOptions;
+	/** Runs once a `service.exit` closed the server; the daemon's process exits here. */
+	onExit?: () => void;
 }
 
 export interface RuntimeServerHandle {
@@ -54,7 +56,7 @@ export interface RuntimeServerHandle {
 interface RuntimeLifecycle {
 	sweep: NodeJS.Timeout;
 	wake: NodeJS.Timeout;
-	registrations: RuntimeRegistrationManager;
+	live: LiveTargets;
 }
 
 interface SocketIdentity {
@@ -67,7 +69,7 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 	const store = new HostedStateStore(options.root, { now: options.participant?.now });
 	const host = options.host ?? new HerdrCliHostVerifier();
 	let participants: HostedParticipantCoordinator | undefined;
-	const registrations = new RuntimeRegistrationManager(store, host, {
+	const live = new LiveTargets(store, host, {
 		...options.registration,
 		onReady: (targetKey) => {
 			options.registration?.onReady?.(targetKey);
@@ -75,9 +77,9 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 		},
 	});
 	const worktrees = new RuntimeWorktrees(options.root, store);
-	const bridges = new RuntimeAgentBinder(store, registrations, host, options.bridge);
+	const bridges = new RuntimeAgentBinder(store, live, host, options.bridge);
 	const closeTarget = host.closeTarget?.bind(host);
-	participants = new HostedParticipantCoordinator(store, registrations, {
+	participants = new HostedParticipantCoordinator(store, live, {
 		...options.participant,
 		stopTarget: options.participant?.stopTarget ?? (closeTarget ? (target) => closeTarget(target, options.root) : undefined),
 	});
@@ -85,14 +87,18 @@ export async function startRuntimeServer(options: RuntimeServerOptions): Promise
 	const wake = new NativeWakeSweeper(store, host, options.participant?.now);
 	const context: HostedProtocolContext = {
 		runtimeId: instance.runtimeId,
-		registrations,
-		messaging: new RuntimeMessaging(store, registrations, participants, socketPath, options.participant?.now, () => wake.trigger()),
+		live,
+		messaging: new RuntimeMessaging(store, live, participants, socketPath, options.participant?.now, (namespaceId) => wake.published(namespaceId)),
 		participants,
 		bridges,
 		worktrees,
+		exit: () => {},
 	};
-	const lifecycle = { sweep: startRetentionSweep(store, options), wake: startNativeWakeSweep(wake, options), registrations };
-	return await serve(options, context, socketPath, lifecycle);
+	const lifecycle = { sweep: startRetentionSweep(store, options), wake: startNativeWakeSweep(wake, options), live };
+	const handle = await serve(options, context, socketPath, lifecycle);
+	// The exit response is written before the sockets close; a client that loses it sees the socket go away all the same.
+	context.exit = () => setImmediate(() => void handle.close().then(options.onExit));
+	return handle;
 }
 
 async function serve(
@@ -149,7 +155,6 @@ function startNativeWakeSweep(wake: NativeWakeSweeper, options: RuntimeServerOpt
 function closeLifecycle(lifecycle: RuntimeLifecycle): void {
 	clearInterval(lifecycle.sweep);
 	clearInterval(lifecycle.wake);
-	lifecycle.registrations.close();
 }
 
 async function listenWithStaleRecovery(server: Server, socketPath: string, probeTimeoutMs: number): Promise<void> {

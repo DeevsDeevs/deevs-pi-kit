@@ -26,13 +26,13 @@ Use project-native facts (changed files, callers, tests, CI conventions, specs/c
 
 Build a small dependency graph before running checks. Launch independent read-only checks and perspectives together; do not wait for typecheck before starting an unrelated docs/security review. Keep fix → targeted recheck and final-diff → review gates sequential. Do not parallelize commands that write the same outputs, contend heavily for the same resource, or would review a changing diff. Once the diff is frozen, full validation and independent final review should usually run concurrently, then be reconciled into one verdict.
 
-For servers/browsers/e2e: Herdr for persistent processes; `job_start` with readiness watches for bounded commands; run the smoke action with real assertions; capture concise evidence; `job_stop` when done. No large log dumps.
+For servers/browsers/e2e: Herdr for persistent processes; `job_start` for bounded commands and `Monitor` to wait for readiness; run the smoke action with real assertions; capture concise evidence; `TaskStop` when done. No large log dumps.
 
 ## 4. Perspectives
 
-Subagents only within budget, each scoped with `cwd`, exact files/diff, command limits, and output shape. Batch independent perspectives in one `tasks` group, continue other runnable checks, then collect it once with `subagent_wait` when the verdict becomes the next dependency; terminal delivery wakes idle Pi automatically. Useful: `tester` (missing tests, e2e plan), `reviewer` (requirements, correctness), `anti-slop` (overbuild, fake tests), `rust-dev`, `devops`. Never delegate what one local command or file read proves.
+Subagents only within budget, each scoped with `cwd`, exact files/diff, command limits, and output shape. Launch independent perspectives as several `Agent` calls in one message and continue other runnable checks; each reports back by itself. Useful: `tester` (missing tests, e2e plan), `reviewer` (requirements, correctness), `anti-slop` (overbuild, fake tests), `rust-dev`, `devops`. Never delegate what one local command or file read proves.
 
-A cross-session Mission takeover invalidates old running or awaiting-adjudication review state. Re-fingerprint the workspace; preserve review convergence only for the exact unchanged candidate with a durable adjudication or user-authorized completion latch and its converged disposition, otherwise obtain a fresh independent review before completion.
+Ask each reviewer an open question (what breaks, what is missing, which requirement is unmet), never to confirm that the change works. Change work that already passes only for a finding backed by a stated requirement or a failing check; for a concrete defect, such as a security hole, a race, data loss or a missed edge case, write the check that reproduces it first, then fix it; record the rest as follow-ups.
 
 ## 5. Judge test quality
 

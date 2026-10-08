@@ -13,7 +13,6 @@ import { deriveParticipantKey } from "./keys.ts";
 type AcquireOperation = Extract<HostedStateOperation, { type: "participant.acquire" }>;
 type StandDownOperation = Extract<HostedStateOperation, { type: "participant.stand_down" }>;
 type DormantStopOperation = Extract<HostedStateOperation, { type: "participant.dormant_stopped" }>;
-type ReleaseOperation = Extract<HostedStateOperation, { type: "participant.release" }>;
 type TakeoverOperation = Extract<HostedStateOperation, { type: "participant.takeover" }>;
 type ClearWorktreeOperation = Extract<HostedStateOperation, { type: "participant.worktree.clear" }>;
 
@@ -73,12 +72,6 @@ export function isDormant(participant: HostedParticipant, generation: string, ta
 		&& (participant.transition.cause === "stand_down" || participant.transition.cause === "stop")
 		&& participant.generation === generation
 		&& participant.transition.previousHolderTargetKey === targetKey;
-}
-
-export function releaseParticipant(state: HostedRuntimeState, operation: ReleaseOperation): HostedRuntimeState {
-	const current = state.participants[operation.participantKey];
-	if (!current) throw new RuntimeError("conflict", "Participant is absent.");
-	return applyParticipantTransition(state, current, operation, "release", "ended");
 }
 
 export function takeoverParticipant(state: HostedRuntimeState, operation: TakeoverOperation): HostedRuntimeState {

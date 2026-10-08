@@ -2,6 +2,7 @@ import type { AgentToolResult, ExtensionAPI, ExtensionContext, Theme, ToolRender
 import { Type } from "@earendil-works/pi-ai";
 import { Container, Editor, Key, matchesKey, SelectList, Spacer, Text, truncateToWidth, type Component, type Focusable, type SelectItem, type TUI } from "@earendil-works/pi-tui";
 import { framePanelLines } from "../shared/panel.ts";
+import { HEADLESS_GUIDELINE, interactiveOnly, isHeadless } from "../shared/surface.ts";
 
 type AskOptionInput = string | { title: string; description?: string };
 
@@ -15,7 +16,6 @@ type AskQuestionInput = {
 type AskUserInput = {
 	context?: string;
 	questions: AskQuestionInput[];
-	timeoutMs?: number;
 };
 
 type AnswerKind = "selection" | "freeform" | "cancelled";
@@ -35,10 +35,9 @@ type AskUserDetails = {
 	error?: string;
 };
 
-type AskMode = "select" | "freeform";
 type DraftAnswer = { kind: "selection" | "freeform"; answer: string };
 type MultiQuestionState = {
-	mode: AskMode;
+	mode: "select" | "freeform";
 	answer?: DraftAnswer;
 	freeformDraft: string;
 	list?: SelectList;
@@ -46,7 +45,6 @@ type MultiQuestionState = {
 };
 
 const FREEFORM_VALUE = "__ask_user_freeform__";
-const MAX_QUESTIONS = 5;
 const MAX_VISIBLE_OPTIONS = 9;
 
 const AskOptionSchema = Type.Union([
@@ -69,36 +67,21 @@ const AskUserSchema = Type.Object({
 	questions: Type.Array(AskQuestionSchema, {
 		description: "One to five focused clarification questions. Ask related questions together; do not ask what tools can answer.",
 		minItems: 1,
-		maxItems: MAX_QUESTIONS,
+		maxItems: 5,
 	}),
-	timeoutMs: Type.Optional(Type.Number({ minimum: 1_000, maximum: 30 * 60_000, description: "Optional dialog timeout" })),
 });
 
 function normalizeOption(option: AskOptionInput): SelectItem {
+	// oxlint-disable-next-line anti-slop/no-runtime-typeof -- the schema admits a plain title or a {title, description} object.
 	if (typeof option === "string") return { value: option, label: option };
 	return { value: option.title, label: option.title, description: option.description };
 }
 
 function itemsForQuestion(question: AskQuestionInput): SelectItem[] {
-	const allowFreeform = question.allowFreeform !== false;
 	const options = (question.options ?? []).map(normalizeOption);
-	return allowFreeform && options.length > 0
+	return question.allowFreeform !== false && options.length > 0
 		? [...options, { value: FREEFORM_VALUE, label: "✎ Type custom response...", description: "Answer in your own words without leaving the overlay" }]
 		: options;
-}
-
-function initialModeForQuestion(question: AskQuestionInput): AskMode {
-	return (question.options?.length ?? 0) === 0 ? "freeform" : "select";
-}
-
-export function askQuestionNavigationTarget(currentIndex: number, questionCount: number, data: string): number | undefined {
-	if (matchesKey(data, Key.left)) return Math.max(0, currentIndex - 1);
-	if (matchesKey(data, Key.right)) return Math.min(Math.max(0, questionCount - 1), currentIndex + 1);
-	return undefined;
-}
-
-export function askFreeformEscapeAction(hasOptions: boolean): "select" | "cancel" {
-	return hasOptions ? "select" : "cancel";
 }
 
 function createSelectTheme(theme: Theme) {
@@ -111,30 +94,13 @@ function createSelectTheme(theme: Theme) {
 	};
 }
 
-function createEditorTheme(theme: Theme) {
-	return {
-		borderColor: (text: string) => theme.fg("accent", text),
-		selectList: createSelectTheme(theme),
-	};
-}
-
 class MultiAskOverlay implements Component, Focusable {
 	focused = false;
-	private questions: AskQuestionInput[];
-	private context: string | undefined;
 	private states: MultiQuestionState[];
 	private currentIndex = 0;
-	private theme: Theme;
-	private tui: TUI;
-	private done: (answers: AskAnswer[] | null) => void;
 
-	constructor(questions: AskQuestionInput[], context: string | undefined, tui: TUI, theme: Theme, done: (answers: AskAnswer[] | null) => void) {
-		this.questions = questions;
-		this.context = context;
-		this.tui = tui;
-		this.theme = theme;
-		this.done = done;
-		this.states = questions.map((question) => ({ mode: initialModeForQuestion(question), freeformDraft: "" }));
+	constructor(private questions: AskQuestionInput[], private context: string | undefined, private tui: TUI, private theme: Theme, private done: (answers: AskAnswer[] | null) => void) {
+		this.states = questions.map((question) => ({ mode: question.options?.length ? "select" : "freeform", freeformDraft: "" }));
 	}
 
 	invalidate(): void {
@@ -160,16 +126,10 @@ class MultiAskOverlay implements Component, Focusable {
 		return this.states.filter((state) => state.answer).length;
 	}
 
-	private toAnswers(cancelled = false): AskAnswer[] {
+	private toAnswers(): AskAnswer[] {
 		return this.questions.map((question, index) => {
-			const answer = this.states[index]?.answer;
-			return {
-				id: question.id,
-				question: question.question,
-				answer: answer?.answer ?? null,
-				kind: answer?.kind ?? "cancelled",
-				cancelled: cancelled || !answer,
-			};
+			const answer = this.states[index]!.answer;
+			return { id: question.id, question: question.question, answer: answer?.answer ?? null, kind: answer?.kind ?? "cancelled", cancelled: !answer };
 		});
 	}
 
@@ -185,18 +145,11 @@ class MultiAskOverlay implements Component, Focusable {
 		if (state.editor) state.freeformDraft = state.editor.getText();
 	}
 
-	private firstUnansweredIndex(): number {
-		return this.states.findIndex((state) => !state.answer);
-	}
-
 	private recordAnswer(kind: "selection" | "freeform", answer: string): void {
 		this.currentState().answer = { kind, answer };
-		if (this.answeredCount() === this.questions.length) {
-			this.done(this.toAnswers(false));
-			return;
-		}
-		const next = this.firstUnansweredIndex();
-		this.goTo(next === -1 ? this.currentIndex : next);
+		const next = this.states.findIndex((state) => !state.answer);
+		if (next === -1) this.done(this.toAnswers());
+		else this.goTo(next);
 	}
 
 	private ensureList(state: MultiQuestionState): SelectList {
@@ -213,7 +166,7 @@ class MultiAskOverlay implements Component, Focusable {
 
 	private ensureEditor(state: MultiQuestionState): Editor {
 		if (state.editor) return state.editor;
-		const editor = new Editor(this.tui, createEditorTheme(this.theme));
+		const editor = new Editor(this.tui, { borderColor: (text: string) => this.theme.fg("accent", text), selectList: createSelectTheme(this.theme) });
 		editor.disableSubmit = false;
 		editor.onSubmit = (text: string) => {
 			const trimmed = text.trim();
@@ -226,16 +179,14 @@ class MultiAskOverlay implements Component, Focusable {
 	private showFreeform(): void {
 		const state = this.currentState();
 		state.mode = "freeform";
-		const editor = this.ensureEditor(state);
-		editor.setText(state.freeformDraft || state.answer?.answer || "");
+		this.ensureEditor(state).setText(state.freeformDraft || state.answer?.answer || "");
 		this.invalidate();
 		this.tui.requestRender();
 	}
 
 	private showSelect(): void {
-		const state = this.currentState();
-		if (state.editor) state.freeformDraft = state.editor.getText();
-		state.mode = "select";
+		this.saveCurrentDraft();
+		this.currentState().mode = "select";
 		this.invalidate();
 		this.tui.requestRender();
 	}
@@ -243,18 +194,15 @@ class MultiAskOverlay implements Component, Focusable {
 	handleInput(data: string): void {
 		const state = this.currentState();
 		if (state.mode === "select") {
-			const nextIndex = askQuestionNavigationTarget(this.currentIndex, this.questions.length, data);
-			if (nextIndex !== undefined) {
-				this.goTo(nextIndex);
-				return;
-			}
+			if (matchesKey(data, Key.left)) return this.goTo(this.currentIndex - 1);
+			if (matchesKey(data, Key.right)) return this.goTo(this.currentIndex + 1);
 			this.ensureList(state).handleInput(data);
 			this.tui.requestRender();
 			return;
 		}
 
 		if (matchesKey(data, Key.escape)) {
-			if (askFreeformEscapeAction(this.currentItems().length > 0) === "select") this.showSelect();
+			if (this.currentItems().length > 0) this.showSelect();
 			else this.done(null);
 			return;
 		}
@@ -273,7 +221,7 @@ class MultiAskOverlay implements Component, Focusable {
 
 		if (this.context) {
 			container.addChild(new Spacer(1));
-			container.addChild(new Text(formatContext(this.context, this.theme), 1, 0));
+			container.addChild(new Text(`${this.theme.fg("accent", this.theme.bold("Context"))}\n${this.theme.fg("muted", this.context)}`, 1, 0));
 		}
 
 		container.addChild(new Spacer(1));
@@ -288,40 +236,30 @@ class MultiAskOverlay implements Component, Focusable {
 		const innerWidth = Math.max(1, width - 2);
 		return framePanelLines("Ask User", container.render(innerWidth).map((line) => truncateToWidth(line, innerWidth)), this.theme, width);
 	}
-
 }
 
-async function askMultiOverlay(ctx: ExtensionContext, questions: AskQuestionInput[], context: string | undefined, signal?: AbortSignal, timeoutMs?: number): Promise<AskAnswer[] | null> {
+async function askMultiOverlay(ctx: ExtensionContext, questions: AskQuestionInput[], context: string | undefined, signal?: AbortSignal): Promise<AskAnswer[] | null> {
 	let close: (() => void) | undefined;
 	let cancelled = signal?.aborted ?? false;
 	const abort = (): void => { cancelled = true; close?.(); };
-	const timer = timeoutMs ? setTimeout(abort, timeoutMs) : undefined;
 	signal?.addEventListener("abort", abort, { once: true });
 	try {
 		return await ctx.ui.custom<AskAnswer[] | null>(
-		(tui, theme, _keybindings, done) => {
-			close = () => done(null);
-			if (cancelled) queueMicrotask(close);
-			return new MultiAskOverlay(questions, context, tui, theme, done);
-		},
-		{
-			overlay: true,
-			overlayOptions: {
-				anchor: "center",
-				width: "100%",
-				minWidth: 48,
-				maxHeight: "85%",
-				margin: 0,
+			(tui, theme, _keybindings, done) => {
+				close = () => done(null);
+				if (cancelled) queueMicrotask(close);
+				return new MultiAskOverlay(questions, context, tui, theme, done);
 			},
-		},
+			{ overlay: true, overlayOptions: { anchor: "center", width: "100%", minWidth: 48, maxHeight: "85%", margin: 0 } },
 		);
 	} finally {
-		if (timer) clearTimeout(timer);
 		signal?.removeEventListener("abort", abort);
 	}
 }
 
-async function askNativeDialogs(ctx: ExtensionContext, questions: AskQuestionInput[], signal?: AbortSignal, timeoutMs?: number): Promise<AskAnswer[]> {
+const CUSTOM_RESPONSE = "Type custom response…";
+
+async function askNativeDialogs(ctx: ExtensionContext, questions: AskQuestionInput[], signal?: AbortSignal): Promise<AskAnswer[]> {
 	const answers: AskAnswer[] = [];
 	for (const question of questions) {
 		if (signal?.aborted) break;
@@ -330,26 +268,22 @@ async function askNativeDialogs(ctx: ExtensionContext, questions: AskQuestionInp
 		let kind: AnswerKind = "selection";
 		if (options.length) {
 			const labels = options.map((option) => option.description ? `${option.label} — ${option.description}` : option.label);
-			if (question.allowFreeform !== false) labels.push("Type custom response…");
-			const selected = await ctx.ui.select(question.question, labels, { timeout: timeoutMs, signal });
-			if (selected === "Type custom response…") {
+			if (question.allowFreeform !== false) labels.push(CUSTOM_RESPONSE);
+			const selected = await ctx.ui.select(question.question, labels, { signal });
+			if (selected === CUSTOM_RESPONSE) {
 				kind = "freeform";
-				answer = await ctx.ui.input(question.question, "Type your answer", { timeout: timeoutMs, signal });
+				answer = await ctx.ui.input(question.question, "Type your answer", { signal });
 			} else if (selected) {
 				answer = options[labels.indexOf(selected)]?.value ?? selected;
 			}
 		} else if (question.allowFreeform !== false) {
 			kind = "freeform";
-			answer = await ctx.ui.input(question.question, "Type your answer", { timeout: timeoutMs, signal });
+			answer = await ctx.ui.input(question.question, "Type your answer", { signal });
 		}
 		answers.push({ id: question.id, question: question.question, answer: answer ?? null, kind: answer === undefined ? "cancelled" : kind, cancelled: answer === undefined });
 		if (answer === undefined) break;
 	}
 	return answers;
-}
-
-function formatContext(context: string, theme: Theme): string {
-	return `${theme.fg("accent", theme.bold("Context"))}\n${theme.fg("muted", context)}`;
 }
 
 function summarizeAnswers(answers: AskAnswer[]): string {
@@ -367,29 +301,19 @@ export default function askUserExtension(pi: ExtensionAPI): void {
 		name: "ask_user",
 		label: "Ask User",
 		description:
-			"Ask the user 1-5 focused clarification or decision questions in an interactive UI. Gather repo/docs/tool evidence first; do not ask questions you can answer yourself.",
-		promptSnippet: "Ask the user focused clarification questions through an interactive UI.",
+			"Ask the user 1-5 focused questions about an irreversible or destructive choice in an interactive UI. Gather repo/docs/tool evidence first; do not ask questions you can answer yourself.",
+		promptSnippet: "Ask the user before an irreversible or destructive step.",
 		promptGuidelines: [
-			"When 1-5 concrete clarifications materially affect implementation, scope, safety, or acceptance criteria, call ask_user instead of asking inline.",
-			"Gather available evidence first; do not ask questions tools can answer.",
-			"Batch related questions in one call, each decision-shaped; prefer 2-5 short options with trade-off descriptions, allowing freeform when useful.",
-			"If the user cancels or leaves a high-impact choice unanswered, stop and report what is blocked instead of assuming silently.",
+			"Anything short of irreversible or destructive: state the default you assume and continue. An answer typed in chat counts; after a cancelled dialog, do not take the step.",
 		],
 		parameters: AskUserSchema,
 		executionMode: "sequential",
 		async execute(_toolCallId, params: AskUserInput, signal, onUpdate, ctx): Promise<AgentToolResult<AskUserDetails>> {
-			const questions = Array.isArray(params.questions) ? params.questions.slice(0, MAX_QUESTIONS) : [];
+			const { questions } = params;
 			const context = params.context?.trim() || undefined;
-			if (questions.length === 0) {
-				return {
-					content: [{ type: "text" as const, text: "ask_user requires at least one question." }],
-					details: { context, answers: [], cancelled: true, error: "No questions supplied" },
-				};
-			}
-
 			if (signal?.aborted) return { content: [{ type: "text" as const, text: "ask_user cancelled." }], details: { context, answers: [], cancelled: true } };
 
-			if (!ctx.hasUI || !ctx.ui) {
+			if (!ctx.hasUI) {
 				const text = `Interactive UI is unavailable. Please answer:\n\n${questions.map((question, index) => `${index + 1}. ${question.question}`).join("\n")}`;
 				return {
 					content: [{ type: "text" as const, text }],
@@ -399,15 +323,9 @@ export default function askUserExtension(pi: ExtensionAPI): void {
 
 			onUpdate?.({ content: [{ type: "text" as const, text: "Waiting for user clarification..." }], details: { context, answers: [], cancelled: false } });
 
-			const answers: AskAnswer[] = [];
-			if (ctx.mode !== "tui") {
-				answers.push(...await askNativeDialogs(ctx, questions, signal, params.timeoutMs));
-			} else {
-				const batchAnswers = await askMultiOverlay(ctx, questions, context, signal, params.timeoutMs);
-				if (batchAnswers) answers.push(...batchAnswers);
-			}
-
-			const cancelled = answers.length === 0 || answers.some((answer) => answer.cancelled) || answers.length < questions.length;
+			const answers = ctx.mode === "tui" ? (await askMultiOverlay(ctx, questions, context, signal)) ?? [] : await askNativeDialogs(ctx, questions, signal);
+			// An empty answer list never counts as answered: this tool gates destructive steps.
+			const cancelled = answers.length === 0 || answers.length < questions.length || answers.some((answer) => answer.cancelled);
 			return {
 				content: [{ type: "text" as const, text: cancelled ? `User clarification cancelled or incomplete:\n${summarizeAnswers(answers)}` : `User answered:\n${summarizeAnswers(answers)}` }],
 				details: { context, answers, cancelled },
@@ -428,5 +346,9 @@ export default function askUserExtension(pi: ExtensionAPI): void {
 			const lines = [prefix, ...answers.map((answer) => `  ${renderAnswer(answer, theme)}`)];
 			return new Text(lines.join("\n"), 0, 0);
 		},
+	});
+	interactiveOnly(pi, ["ask_user"]);
+	pi.on("before_agent_start", (event, ctx) => {
+		if (isHeadless(ctx)) event.systemPromptOptions.promptGuidelines.push(HEADLESS_GUIDELINE);
 	});
 }

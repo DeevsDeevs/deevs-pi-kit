@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, statSync, wri
 import { createConnection, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { RUNTIME_BUILD } from "../extensions/runtime/service/build.ts";
 import { dispatchHostedLine, HOSTED_MAX_REQUEST_BYTES } from "../extensions/runtime/service/protocol.ts";
 import { HostedStateStore } from "../extensions/runtime/service/state.ts";
 import type { HostedTarget } from "../extensions/runtime/schemas/state.ts";
@@ -44,6 +45,7 @@ describe("hosted runtime protocol", () => {
 			result: {
 				version: 1,
 				runtimeId: "rt_test",
+				build: RUNTIME_BUILD,
 				capabilities: {
 					targets: ["pi", "claude-code", "codex"],
 					mailbox: { maxBodyBytes: 16_384 },
@@ -157,8 +159,8 @@ describe("hosted runtime Unix socket service", () => {
 	});
 });
 
-function auth(registration: { registrationId: string; registrationKey: string }) {
-	return { registrationId: registration.registrationId, registrationKey: registration.registrationKey };
+function auth(registration: { targetKey: string }) {
+	return { targetKey: registration.targetKey };
 }
 
 async function call(socketPath: string, method: string, params: Record<string, unknown>) {
@@ -174,8 +176,8 @@ async function register(socketPath: string, project: string, name: string) {
 	const piSessionFile = join(projectRoot, `${name}.jsonl`);
 	writeFileSync(piSessionFile, `${JSON.stringify({ type: "session", version: 3, id: piSessionId, cwd: projectRoot })}\n`);
 	const registered = await call(socketPath, "pi.register", { projectRoot, piSessionId, piSessionFile });
-	const { targetKey, registrationId, registrationKey } = registered.result as Record<"targetKey" | "registrationId" | "registrationKey", string>;
-	return { targetKey, registrationId, registrationKey };
+	const { targetKey } = registered.result as Record<"targetKey", string>;
+	return { targetKey };
 }
 
 function exchange(socketPath: string, lines: string[]): Promise<Array<Record<string, unknown>>> {
