@@ -15,7 +15,7 @@ import { HostedSessionStore } from "./session-record.ts";
 export class HostedRuntimeIntegration implements RuntimeSessionHooks {
 	private readonly store: HostedSessionStore;
 	readonly session: RuntimeSession;
-	private readonly messaging: MessagingClient;
+	readonly messaging: MessagingClient;
 	private readonly native: NativeAgentService;
 	readonly collaborators: CollaboratorService;
 

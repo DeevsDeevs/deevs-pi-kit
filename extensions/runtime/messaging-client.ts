@@ -4,6 +4,7 @@ import { extname } from "node:path";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { HostedRuntimeClient, HostedRuntimeClientError } from "./client.ts";
+import { LEAD } from "./collaborators.ts";
 import { escapeMarkup } from "../shared/tasks.ts";
 import { decodeMail, encodeMail } from "./mail-body.ts";
 import { isJsonObject, type JsonObject, type JsonValue } from "./schemas/json.ts";
@@ -38,6 +39,9 @@ export class MessagingClient {
 	/** Mail handed to Pi whose entry the session may not hold yet; it is not sent twice by this process. */
 	private readonly sent = new Set<string>();
 	private readonly managedIssued = new Set<string>();
+	/** Mail from main handed to Pi, for the run it starts; that run answers main in text unless it mails main itself. */
+	private mainMailQueued = false;
+	private run?: { deliveredFromMain: boolean; sentToMain: boolean };
 
 	constructor(session: RuntimeSession) {
 		this.session = session;
@@ -96,6 +100,7 @@ export class MessagingClient {
 		await this.acknowledge(ctx);
 		const body = Buffer.from(encodeMail(message, images)).toString("base64");
 		await this.mail(ctx, "send", { participantId: to, operationId: randomUUID(), bodyBase64: body });
+		if (to === LEAD && this.run) this.run.sentToMain = true;
 		return `Message sent to ${to}; it arrives at its next idle, merged with anything else sent meanwhile.`;
 	}
 
@@ -111,7 +116,24 @@ export class MessagingClient {
 		const ids = fresh.map((message) => String(message.eventId));
 		for (const id of ids) this.sent.add(id);
 		const from = [...new Set(fresh.map((message) => String(message.from)))];
+		this.mainMailQueued ||= from.includes(LEAD);
 		this.session.pi.sendMessage({ customType: COLLABORATOR_MESSAGE, content: mailContent(fresh), display: true, details: { from, eventIds: ids } }, { triggerTurn: true, deliverAs: "followUp" });
+	}
+
+	runStarted(): void {
+		this.run ??= { deliveredFromMain: this.mainMailQueued, sentToMain: false };
+		this.mainMailQueued = false;
+	}
+
+	/** A run that took main's mail and ended on a plain-text answer without mailing main sends main that answer. */
+	async runSettled(ctx: ExtensionContext): Promise<void> {
+		const run = this.run;
+		this.run = undefined;
+		if (!run?.deliveredFromMain || run.sentToMain) return;
+		const last = ctx.sessionManager.getBranch().at(-1);
+		if (last?.type !== "message" || last.message.role !== "assistant" || last.message.stopReason !== "stop") return;
+		const answer = last.message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n").trim();
+		if (answer) await this.send(ctx, LEAD, answer, []);
 	}
 
 	/** Marks read the unread mail this session's file holds; returns the unread mail it does not hold. */
