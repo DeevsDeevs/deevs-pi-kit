@@ -33,7 +33,7 @@ Links carry frontmatter for chain, branch, parent, next step and creation time; 
 
 ## Claude Code and Codex plugin
 
-`plugins/chains/` serves the same `chain` tool over MCP and adds two hooks (install commands are in the [README](../../README.md)).
+`plugins/chains/` serves the same `chain` tool over MCP and adds two hooks (install commands are in the [reference](../../docs/reference.md#chains-plugin-for-claude-code-and-codex)).
 
 - Stop: at 80% context the first stop is refused once with a reminder to save, unless a link was written since use was last below the line. It re-arms when use drops below 80%.
 - SessionStart: names the newest link in `.chains/`; after a compaction it hands that link back. It's the newest across all chains, not necessarily the one you were on.

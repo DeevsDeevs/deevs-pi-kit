@@ -7,6 +7,7 @@ import { HOSTED_METHOD_NAMES } from "../extensions/runtime/service/protocol.ts";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DOCS = [
 	"README.md",
+	"docs/reference.md",
 	"extensions/runtime/PROTOCOL.md",
 	"skills/collaborators/SKILL.md",
 ];

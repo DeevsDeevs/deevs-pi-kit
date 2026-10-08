@@ -10,7 +10,7 @@ A portable Pi package. Keep it minimal and intentional.
 - The one other production dependency is `@earendil-works/pi-durable`, pinned exactly and imported only under `extensions/subagents/engine/`. The user chose it so subagents survive Pi exits and reloads, and accepted its footprint for that: its own `pi-ai` with the provider SDKs and esbuild, about 90 packages and 125 MB, stated in the README. Everything else is peer or dev only; justify any addition.
 - State that extensions share lives on `globalThis[Symbol.for("pi-kit.<name>")]`, as in `shared/tasks.ts`: Pi's loader gives each extension its own module graph, so a module-level singleton exists once per extension.
 - Settings live in one file, `pi-kit.json` (global `~/.pi/agent/`, project `.pi/`), read only through `extensions/shared/config.ts`. The kit registers exactly two commands, `/agents` and `/chains`; anything else is a tool the lead calls or a `pi-kit.json` key.
-- Every user-facing resource (each tool, both commands, every `pi-kit.json` key, every skill, the chains plugin) is documented in `README.md`, added in the same change that adds it.
+- Every user-facing resource (each tool, both commands, every `pi-kit.json` key, every skill, the chains plugin) is documented in `docs/reference.md`, added in the same change that adds it. `README.md` stays a short pitch that links there.
 - `plugins/chains/`, listed by `.claude-plugin/marketplace.json`, ships the chain core to Claude Code and Codex. After editing `extensions/chains/{service,parser,types,format,tool}.ts` or `extensions/shared/{terms,bytes}.ts`, run `npm run sync:chains-plugin`; a test fails while the copies differ.
 - Never add AI attribution to commits or PRs: no `Co-Authored-By: Claude`, no session links, no "Generated with" footers. The author is the user alone.
 
@@ -19,7 +19,7 @@ A portable Pi package. Keep it minimal and intentional.
 - `npm run check` runs lint, typecheck, tests, the polygon scenarios, the supply-chain audit and pack. The polygon runs every scenario in a rootless Podman container, so `check` needs Podman.
 - Dev loop: `npm run polygon -- --only <names>` while you work. A feature is done when its polygon scenario is green; on red, read `polygon/results/latest/<name>/` before changing code.
 - `polygon/ceilings.json` caps production lines per area (`size-ceilings`). A change that adds code raises its area in the same commit, one that deletes code lowers it.
-- `test/runtime-docs.test.ts` holds the docs to shape: README's `## Quickstart` section is at most 12 lines, `extensions/runtime/PROTOCOL.md` at most 120 with a `## Methods` table listing exactly the dispatchable methods, `skills/collaborators/SKILL.md` under 40, and every relative link in those three resolves.
+- `test/runtime-docs.test.ts` holds the docs to shape: README's `## Quickstart` section is at most 12 lines, `extensions/runtime/PROTOCOL.md` at most 120 with a `## Methods` table listing exactly the dispatchable methods, `skills/collaborators/SKILL.md` under 40, and every relative link in those three and `docs/reference.md` resolves.
 
 ## Control-plane invariant
 
