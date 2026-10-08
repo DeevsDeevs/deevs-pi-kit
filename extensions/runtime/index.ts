@@ -58,6 +58,8 @@ export default function runtimeExtension(pi: ExtensionAPI): void {
 	pi.on("session_tree", (_event, ctx) => hosted.session.sessionTree(ctx));
 	pi.on("session_compact", (_event, ctx) => hosted.session.sessionCompact(ctx));
 	pi.on("before_agent_start", (_event, ctx) => hosted.session.setContext(ctx));
+	pi.on("agent_start", () => hosted.messaging.runStarted());
+	pi.on("agent_settled", (_event, ctx) => hosted.messaging.runSettled(ctx));
 	pi.on("tool_call", (event, ctx) => hosted.collaborators.guardTool(event.toolName, event.input, ctx.cwd));
 	pi.on("session_shutdown", () => hosted.session.sessionShutdown());
 }

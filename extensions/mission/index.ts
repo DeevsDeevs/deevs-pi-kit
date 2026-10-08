@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { StringEnum, Type } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ContextWithSystemEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isAutonomous } from "../shared/config.ts";
 import { ownsProcessIdentity, readProcessIdentity } from "../shared/process-group.ts";
 import { systemReminder, tasks } from "../shared/tasks.ts";
@@ -48,11 +48,21 @@ export default function missionExtension(pi: ExtensionAPI): void {
 	pi.on("agent_settled", (_event, ctx) => {
 		if (!interrupted) later(ctx);
 	});
-	pi.on("before_agent_start", (event, ctx) => {
+	const section = (ctx: ExtensionContext): string | undefined => {
 		// A Pi collaborator in the lead's directory has no mission tools.
-		if (!pi.getActiveTools().includes("mission_update")) return;
+		if (!pi.getActiveTools().includes("mission_update")) return undefined;
 		const mission = currentMission(ctx.cwd);
-		if (mission && OPEN.includes(mission.state.status)) event.systemPromptOptions.sections.mission = `${missionBrief(mission)}\n\n${GUIDANCE}`;
+		return mission && OPEN.includes(mission.state.status) ? `${missionBrief(mission)}\n\n${GUIDANCE}` : undefined;
+	};
+	pi.on("before_agent_start", (event, ctx) => {
+		const mission = section(ctx);
+		if (mission) event.systemPromptOptions.sections.mission = mission;
+	});
+	// Pi 1.0.4 starts a report's, mail's or continue's run without before_agent_start, so from its second request Pi removes
+	// the mission from the prompt, and one started mid-run is not in it at all: while it is open, every request keeps it.
+	pi.on("context_with_system", (event, ctx) => {
+		const mission = section(ctx);
+		return mission === undefined ? undefined : { messages: keepSection(event.messages, "mission", mission) };
 	});
 
 	pi.registerTool({
@@ -130,6 +140,20 @@ export default function missionExtension(pi: ExtensionAPI): void {
 			return text(missionBrief(mission), { slug: mission.slug, status: mission.state.status, legacy: mission.legacy });
 		},
 	});
+}
+
+/** `messages` with prompt section `name` kept: removals and same-text re-adds of it dropped, `text` added when the prompt lacks it. */
+function keepSection(messages: ContextWithSystemEvent["messages"], name: string, text: string): ContextWithSystemEvent["messages"] {
+	let current: string | undefined;
+	const kept = messages.map((message) => {
+		const sections = message.role === "system" ? message.sections : undefined;
+		if (sections?.[name] === undefined) return message;
+		const { [name]: value, ...rest } = sections;
+		if (value === null || value === current) return { ...message, sections: rest };
+		current = value;
+		return message;
+	});
+	return current === undefined ? [...kept, { role: "system", content: "", sections: { [name]: text }, timestamp: Date.now() }] : kept;
 }
 
 /** The autonomous continue: enum, counter and pid checks only. */

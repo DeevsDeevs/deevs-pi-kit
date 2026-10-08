@@ -20,6 +20,13 @@ describe("guard: detached processes", () => {
 		for (const command of ["nohup sleep 300", "setsid node worker.js", "sleep 1; disown", "coproc sleep 300", "sudo -s nohup sleep 300", "sudo -i setsid x", "csh -c 'sleep 1 &'", "tcsh -c 'x &'"]) blocked(command);
 	});
 
+	it("blocks a detached tmux or screen session, whose server outlives Pi", () => {
+		for (const command of ["tmux new-session -d -s x -- pi", "tmux new -d pi", "tmux -L sock new -ds x pi", "tmux new-session -s x -d", "sudo tmux new -Ad", "screen -dmS x pi", "screen -d -m pi", "screen -S x -dm pi"]) blocked(command);
+		expect(reason("tmux new -d pi")).toMatch(/Herdr/);
+		expect(guardArgv(["tmux", "new-session", "-d"])).toBeDefined();
+		for (const command of ["tmux ls", "tmux new-window -n w", "tmux new -s dev ls -d", "tmux kill-session -t x", "screen -ls", "screen -r x", "screen -D -m pi", "screen -S dm pi"]) allowed(command);
+	});
+
 	it("closes the comment/heredoc quote-swallow bypass (FN-1)", () => {
 		blocked("echo hi # don't care\nnohup sleep 300 &");
 		blocked("npm run build # doesn't matter\nsetsid node worker.js");

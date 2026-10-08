@@ -2,6 +2,7 @@ import { Text } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext, ToolExecutionStartEvent } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
+import { tasks } from "../shared/tasks.ts";
 
 export const CHAIN_CHECKPOINT_ENTRY = "deevs.chain-checkpoint.v1";
 
@@ -169,10 +170,14 @@ export function registerChainCheckpoint(pi: ExtensionAPI, service: ChainCheckpoi
 		service.restore(ctx);
 		service.checkContextPressure(ctx);
 	});
-	pi.on("before_agent_start", (event, ctx) => {
+	const section = (ctx: ExtensionContext): string | undefined => {
 		service.restore(ctx);
 		service.checkContextPressure(ctx);
-		const reminder = service.reminder();
+		return service.reminder();
+	};
+	tasks.addSection("chain_checkpoint", section);
+	pi.on("before_agent_start", (event, ctx) => {
+		const reminder = section(ctx);
 		if (reminder) event.systemPromptOptions.sections.chain_checkpoint = reminder;
 	});
 	pi.on("tool_execution_start", (event) => {

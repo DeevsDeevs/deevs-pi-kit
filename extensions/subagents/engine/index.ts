@@ -320,6 +320,13 @@ export async function settle(agentId: string, done: Promise<TaskNotification>, m
 	return "background";
 }
 
+/** The end of a Pi agent's transcript, its newest 20 entries, for /agents <id>; undefined for a Claude Code or Codex worker, which keeps its own. */
+export async function transcriptTail(engine: Engine, agentId: string): Promise<string | undefined> {
+	const { conversationId } = await agentRecord(engine, agentId);
+	const conversation = conversationId === undefined ? undefined : await engine.harness.conversation(conversationId, CTX);
+	return conversation ? transcriptLog([...(await conversation.entries({}, 20, undefined, CTX)).items].reverse()) : undefined;
+}
+
 /** Aborts the agent and resolves with its report once its reporter in this process has committed it. */
 export async function stop(engine: Engine, agentId: string, by?: "user"): Promise<TaskNotification | undefined> {
 	let conversationId: ConversationId | undefined;

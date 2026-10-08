@@ -40,7 +40,7 @@ Personas are `agents/*.md` with Claude Code's frontmatter (`name`, `description`
 - Files live under `<agent dir>/pi-kit/workflows/<project hash>/`: `scripts/<name>-<runId>.js`, and per run `journal.jsonl`, `progress.jsonl`, `<runId>.json` and `agent-<agentId>.md`.
 - A run interrupted by a Pi exit re-runs its script when the session reopens; every agent that already finished answers from the run's record, so none asks the model twice.
 - `resumeFromRunId` with an edited `scriptPath` replays the longest unchanged prefix of `agent()` calls from `journal.jsonl` and runs the rest.
-- A widget shows each running workflow; `/agents` lists every agent of a run with its phase, state, tokens and age.
+- A widget shows each running workflow; `/agents` lists every agent of a run with its phase, state, tokens and age. `/agents <id>` toggles a widget with a running Pi agent's last 8 transcript lines, refreshed every second from its newest 20 entries and cleared when it ends.
 - `budget` has Claude Code's shape with no token target: `total` is `null` and `remaining()` is `Infinity`.
 
 ## Engine

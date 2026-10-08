@@ -15,7 +15,7 @@ import { currentMission, saveMission } from "../mission/store.ts";
 import { remindSilentTurns } from "./silent-turns.ts";
 import { promptWorkflow, WORKFLOW_DESCRIPTION, WORKFLOW_FIELDS, WORKFLOW_SNIPPET } from "./workflow-prompt.ts";
 import { agentTypes, agentTypesList, findAgentType, WORKING_RULES, workerPrompt } from "./definitions.ts";
-import { cliWorker, closeAll, ensureEngine, launch, launchWorkflow, placeAgent, queuedAhead, reinstall, resumeSession, send, settle, startJob, startMonitor, stop, storedAgent, userRequests, workflowProgress, writerCwds, type Limits } from "./engine/index.ts";
+import { cliWorker, closeAll, ensureEngine, launch, launchWorkflow, placeAgent, queuedAhead, reinstall, resumeSession, send, settle, startJob, startMonitor, stop, storedAgent, transcriptTail, userRequests, workflowProgress, writerCwds, type Limits } from "./engine/index.ts";
 import { parseWorkflow } from "./workflow/meta.ts";
 import type { Progress } from "./workflow/run.ts";
 
@@ -26,6 +26,7 @@ const AUTHORING_HINT = "Load the `workflow-authoring` skill for the script forma
 const RESERVED_NAMES = new Set(["main", "user", "system"]);
 const ONLY_ON_REQUEST = "ONLY when the user asks for this limit.";
 let leadWarned = false;
+const TAIL = "agent-tail";
 
 const AgentSchema = Type.Object({
 	description: Type.String({ description: "3-5 words naming the task, shown in its notification" }),
@@ -102,6 +103,23 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		if (event.streamingBehavior === undefined && event.source !== "extension") userRequests.set(ctx.sessionManager.getSessionId(), event.text);
 	});
 	let widget: NodeJS.Timeout | undefined;
+	/** The agent /agents <id> tails, and the lines last shown. */
+	let watched: string | undefined;
+	let shownTail = "";
+	const showTail = (ctx: ExtensionContext, lines: string[] | undefined): void => {
+		if ((lines?.join("\n") ?? "") === shownTail) return;
+		shownTail = lines?.join("\n") ?? "";
+		ctx.ui.setWidget(TAIL, lines);
+	};
+	const tail = async (ctx: ExtensionContext): Promise<void> => {
+		const id = watched;
+		if (id === undefined) return;
+		const entry = tasks.find(id, ctx.sessionManager.getSessionId(), "agent");
+		const lines = entry?.status === "running" ? tailLines(entry, await transcriptTail(await ensureEngine(ctx), entry.id)) : undefined;
+		if (watched !== id) return;
+		if (!lines) watched = undefined;
+		showTail(ctx, lines);
+	};
 	promptWorkflow(pi);
 
 	pi.registerTool({
@@ -305,11 +323,17 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("agents", {
-		description: "Background tasks, the Mission, agent types and models; /agents stop <id> stops a task or pauses the Mission",
+		description: "Background tasks, the Mission, agent types and models; /agents <id> tails a running agent, /agents stop <id> stops a task or pauses the Mission",
 		handler: async (args, ctx) => {
 			const [verb = "", id = ""] = args.trim().split(/\s+/);
 			if (!verb) return showTextViewer(ctx, "Agents", overview(ctx, await models(ctx)));
-			if (verb !== "stop") return ctx.ui.notify("Usage: /agents [stop <id>]", "warning");
+			if (verb !== "stop") {
+				const entry = tasks.find(verb, ctx.sessionManager.getSessionId(), "agent");
+				if (entry?.status !== "running" || id) return ctx.ui.notify("Usage: /agents [<running agent id> | stop <id>]", "warning");
+				watched = watched === entry.id ? undefined : entry.id;
+				if (!watched) return showTail(ctx, undefined);
+				return tail(ctx);
+			}
 			const mission = currentMission(ctx.cwd);
 			if (!tasks.find(id, ctx.sessionManager.getSessionId()) && mission?.slug === id) {
 				mission.state.status = "paused";
@@ -330,6 +354,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		clearInterval(widget);
 		let shown = "";
 		widget = setInterval(() => {
+			void tail(ctx).catch(() => {});
 			const lines = runningWorkflows(ctx).map(widgetLine);
 			if (lines.join("\n") === shown) return;
 			shown = lines.join("\n");
@@ -398,6 +423,12 @@ function runningWorkflows(ctx: ExtensionContext): Progress[] {
 	} catch {
 		return [];
 	}
+}
+
+/** The /agents <id> widget: the agent and the last 8 lines of its transcript. */
+function tailLines(entry: RosterEntry, log: string | undefined): string[] {
+	const lines = log === undefined ? ["(a Claude Code or Codex worker keeps its own transcript)"] : log.split("\n").filter(Boolean).slice(-8);
+	return [`${entry.id} · ${entry.description}`, ...lines.map((line) => line.slice(0, 200))];
 }
 
 function widgetLine(progress: Progress): string {
