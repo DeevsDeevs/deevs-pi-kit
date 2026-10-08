@@ -39,13 +39,38 @@ Upgrade with `claude plugin marketplace update deevs-pi-kit && claude plugin upd
 
 ## Tools
 
-- `Agent`, `SendMessage`, `TaskStop`, `ListAgents`: Claude Code's agent surface, with agent types (`Explore`, `Plan`, reviewer, tester, ...), worktree isolation and 16 at once. A `claude:` or `codex:` model runs the agent as a Claude Code or Codex worker. [More](../extensions/subagents/README.md).
-- `Workflow`: a JavaScript script of `agent()`, `parallel()` and `pipeline()`, inline or saved in `.pi/workflows/` or `~/.pi/agent/workflows/`. `resumeFromRunId` replays an edited script's unchanged prefix. [Authoring](../skills/workflow-authoring/SKILL.md).
-- `job_start` runs a bounded command in the background and reports its exit code. `Monitor` reports output lines, folder or URL changes, or cron fires. Servers and REPLs go in Herdr.
-- `mission_start`, `mission_update`, `mission_get`: one long goal under `.missions/<slug>/`. The lead keeps going whenever it idles with no agent, workflow or job running, three continues without progress pause it, and `review: true` adds a closing review.
-- `collaborator_start`, `collaborator_workspace`: persistent peers in Herdr tabs, writers in their own worktree, mail through `SendMessage`. Heads-up: a Claude Code collaborator edits your `~/.claude.json` (accepts bypass permissions, copies the repo's folder trust to its worktree). [Protocol](../extensions/runtime/PROTOCOL.md), [skill](../skills/collaborators/SKILL.md).
-- `chain`: markdown handoffs under `.chains/`, with a save reminder at 80% context. [More](../extensions/chains/README.md).
-- `wiki` ([more](../extensions/wiki/README.md)) and `arxiv` ([more](../extensions/arxiv/README.md)) appear once their skill loads. `todo_list` ([more](../extensions/todos/README.md)) is a session todo widget, `ask_user` asks before irreversible choices.
+### Agent
+
+`Agent`, `SendMessage`, `TaskStop`, `ListAgents`: Claude Code's agent surface, with agent types (`Explore`, `Plan`, reviewer, tester, ...), worktree isolation and 16 at once. A `claude:` or `codex:` model runs the agent as a Claude Code or Codex worker. [More](../extensions/subagents/README.md).
+
+### Workflow
+
+`Workflow`: a JavaScript script of `agent()`, `parallel()` and `pipeline()`, inline or saved in `.pi/workflows/` or `~/.pi/agent/workflows/`. `resumeFromRunId` replays an edited script's unchanged prefix. [Authoring](../skills/workflow-authoring/SKILL.md).
+
+### Jobs and monitors
+
+- `job_start`: a bounded command in the background that reports its exit code.
+- `Monitor`: reports output lines, folder or URL changes, or cron fires.
+
+Servers and REPLs go in Herdr.
+
+### Missions
+
+`mission_start`, `mission_update`, `mission_get`: one long goal under `.missions/<slug>/`. The lead keeps going whenever it idles with no agent, workflow or job running, three continues without progress pause it, and `review: true` adds a closing review.
+
+### Collaborators
+
+`collaborator_start`, `collaborator_workspace`: persistent peers in Herdr tabs, writers in their own worktree, mail through `SendMessage`. Heads-up: a Claude Code collaborator edits your `~/.claude.json` (accepts bypass permissions, copies the repo's folder trust to its worktree). [Protocol](../extensions/runtime/PROTOCOL.md), [skill](../skills/collaborators/SKILL.md).
+
+### Chains
+
+`chain`: markdown handoffs under `.chains/`, with a save reminder at 80% context. [More](../extensions/chains/README.md).
+
+### Extras
+
+- `wiki`, `arxiv`: appear once their skill loads ([wiki](../extensions/wiki/README.md), [arxiv](../extensions/arxiv/README.md)).
+- `todo_list`: a session todo widget. [More](../extensions/todos/README.md).
+- `ask_user`: asks before irreversible choices.
 
 ### Reporting and restarts
 
@@ -61,7 +86,7 @@ The lead gets ~310 tokens of working rules (finish and verify in the turn, small
 
 ### Guard
 
-The guard, in every `bash`, `job_start` and `Monitor`, blocks detached processes, force pushes to `main`, `master`, `release/*` or an unnamed branch, recursive `rm` outside the project and temp dirs, your `guard.block` patterns, and a `bash` that starts with a `sleep` of 60 s or more. [`extensions/shared/guard-hook.mjs`](../extensions/shared/guard-hook.mjs) is the same guard as a Claude Code or Codex hook.
+The guard, in every `bash`, `job_start` and `Monitor`, blocks detached processes, force pushes to `main`, `master`, `release/*` or an unnamed branch, recursive `rm` outside the project and temp dirs, your `guard.block` patterns, and a `bash` that starts with a `sleep` of 60 s or more. [`extensions/shared/guard-hook.mjs`](../extensions/shared/guard-hook.mjs) is the same guard as a hook; the kit wires it into the Claude Code and Codex workers and collaborators it starts.
 
 ## Commands
 
