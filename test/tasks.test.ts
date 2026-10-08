@@ -362,11 +362,11 @@ describe("kit start-up", () => {
 		rmSync(cwd, { recursive: true, force: true });
 	});
 
-	it("warns about a Pi older than 1.0.4 once, on the console and at the first session start", async () => {
-		const warning = "pi-kit: needs Pi 1.0.4 or newer, and this is Pi 1.0.1; update Pi.";
-		expect(["1.0.1", "1.0.4", "1.0.10", "1.1.0"].map(shared.oldPiWarning)).toEqual([warning, undefined, undefined, undefined]);
+	it("warns about a Pi older than 1.1.0 once, on the console and at the first session start", async () => {
+		const warning = "pi-kit: needs Pi 1.1.0 or newer, and this is Pi 1.0.4; update Pi.";
+		expect(["1.0.4", "1.1.0", "1.1.10", "1.10.0"].map(shared.oldPiWarning)).toEqual([warning, undefined, undefined, undefined]);
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-		vi.doMock("@earendil-works/pi-coding-agent", async (original) => ({ ...await original<object>(), VERSION: "1.0.1" }));
+		vi.doMock("@earendil-works/pi-coding-agent", async (original) => ({ ...await original<object>(), VERSION: "1.0.4" }));
 		vi.resetModules();
 		const old = await import("../extensions/shared/tasks.ts");
 		const fake = lead();

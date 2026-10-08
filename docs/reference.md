@@ -4,7 +4,7 @@ Everything the [README](../README.md) skips: what each tool does, the two comman
 
 ## Requirements
 
-- Pi 1.0.4+ and Node 22.19+.
+- Pi 1.1.0+ and Node 22.19+.
 - Linux for cleanup: leftover processes are reaped through `/proc`, so on macOS a worker's commands can outlive a stop.
 - Herdr for collaborators (the polygon tests 0.9.0); inside it Shift+Enter is a newline. Collaborators need Pi inside Herdr in a trusted project.
 - Claude Code 2.1.292+ or Codex 0.160.1+, only for `claude:` / `codex:` models and collaborators.
