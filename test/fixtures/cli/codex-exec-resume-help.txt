@@ -55,6 +55,12 @@ Options:
       --thread-source <SOURCE>
           Source classification for newly created or forked threads
 
+      --cyber-access-program <PROGRAM>
+          Request an experimental Cyber access program for this turn (OpenAI provider only). Omit to
+          use server defaults. Not supported with review; fork requires a prompt
+          
+          [possible values: standard, daybreak_blue, daybreak_red]
+
       --skip-git-repo-check
           Allow running Codex outside a Git repository
 

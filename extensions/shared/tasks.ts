@@ -56,7 +56,7 @@ export interface NotificationSource {
 
 export const TASK_NOTIFICATION = "task-notification";
 
-/** The kit is proven on Pi 1.0.4, the release the polygon runs. */
+/** The oldest Pi the kit supports; the polygon runs the devDependencies pin. */
 export function oldPiWarning(version: string): string | undefined {
 	return version.localeCompare("1.0.4", undefined, { numeric: true }) < 0 ? `pi-kit: needs Pi 1.0.4 or newer, and this is Pi ${version}; update Pi.` : undefined;
 }

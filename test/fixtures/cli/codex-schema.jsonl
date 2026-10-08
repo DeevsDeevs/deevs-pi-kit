@@ -1,4 +1,4 @@
-{"type":"thread.started","thread_id":"01a1137b-ce1c-7162-8807-a02c0f7071ea"}
+{"type":"thread.started","thread_id":"01a11cc8-850e-7111-954a-7203abe529fb"}
 {"type":"item.completed","item":{"id":"item_0","type":"error","message":"`--dangerously-bypass-hook-trust` is enabled. Enabled hooks may run without review for this invocation."}}
 {"type":"item.completed","item":{"id":"item_1","type":"error","message":"`--dangerously-bypass-hook-trust` is enabled. Enabled hooks may run without review for this invocation."}}
 {"type":"item.completed","item":{"id":"item_2","type":"error","message":"Model metadata for `puppet` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."}}
