@@ -58,7 +58,7 @@ export default function missionExtension(pi: ExtensionAPI): void {
 		const mission = section(ctx);
 		if (mission) event.systemPromptOptions.sections.mission = mission;
 	});
-	// Pi 1.0.4 starts a report's, mail's or continue's run without before_agent_start, so from its second request Pi removes
+	// Pi 1.1.0 starts a report's, mail's or continue's run without before_agent_start, so from its second request Pi removes
 	// the mission from the prompt, and one started mid-run is not in it at all: while it is open, every request keeps it.
 	pi.on("context_with_system", (event, ctx) => {
 		const mission = section(ctx);

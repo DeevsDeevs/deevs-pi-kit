@@ -37,7 +37,7 @@ pi install git:github.com/DeevsDeevs/deevs-pi-kit    # add -l for this project o
 pi update git:github.com/DeevsDeevs/deevs-pi-kit     # upgrade
 ```
 
-Then `/reload`; before `pi update` read the [upgrade notes](docs/reference.md#upgrade-notes). Needs Pi 1.0.4+ and Node 22.19+ ([requirements](docs/reference.md#requirements)). The one real dependency, `@earendil-works/pi-durable` (about 90 packages, 125 MB), keeps agents alive across restarts.
+Then `/reload`; before `pi update` read the [upgrade notes](docs/reference.md#upgrade-notes). Needs Pi 1.1.0+ and Node 22.19+ ([requirements](docs/reference.md#requirements)). The one real dependency, `@earendil-works/pi-durable` (about 90 packages, 125 MB), keeps agents alive across restarts.
 
 ## Quickstart
 

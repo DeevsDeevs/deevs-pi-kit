@@ -58,7 +58,7 @@ export const TASK_NOTIFICATION = "task-notification";
 
 /** The oldest Pi the kit supports; the polygon runs the devDependencies pin. */
 export function oldPiWarning(version: string): string | undefined {
-	return version.localeCompare("1.0.4", undefined, { numeric: true }) < 0 ? `pi-kit: needs Pi 1.0.4 or newer, and this is Pi ${version}; update Pi.` : undefined;
+	return version.localeCompare("1.1.0", undefined, { numeric: true }) < 0 ? `pi-kit: needs Pi 1.1.0 or newer, and this is Pi ${version}; update Pi.` : undefined;
 }
 
 /** The rows worth showing and resuming: every running task and the 20 finished most recently started. */
@@ -243,7 +243,7 @@ function send(notification: TaskNotification, ids: string[]): void {
 	if (!pi || !ctx || state.sent.has(notification.notificationId)) return;
 	try {
 		const steered = !ctx.isIdle();
-		// Pi 1.0.4 starts a report's run without before_agent_start, so that run's prompt lacks the sections its hooks add.
+		// Pi 1.1.0 starts a report's run without before_agent_start, so that run's prompt lacks the sections its hooks add.
 		const sections = steered ? [] : [isHeadless(ctx) ? HEADLESS_GUIDELINE : undefined, ...[...state.sections?.values() ?? []].map((section) => {
 			try {
 				return section(ctx);
