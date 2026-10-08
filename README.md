@@ -14,7 +14,7 @@ I wanted Claude Code's background agents and workflows in [Pi](https://github.co
 | [`collaborator_start`](docs/reference.md#collaborators) | Pi, Claude Code or Codex peers in Herdr tabs, writers in their own worktree |
 | [`chain`](docs/reference.md#chains) | markdown handoffs in `.chains/`, with a save reminder at 80% context |
 
-Tasks report back on their own and collaborator mail starts a turn. Monitors survive a restart too, a running job doesn't. `claude:` and `codex:` models run agents as real Claude Code or Codex workers.
+Tasks report back on their own and collaborator mail starts a turn. Agents, workflows and monitors survive `/reload` and a Pi restart; a running job doesn't. `claude:` and `codex:` models run agents as real Claude Code or Codex workers.
 
 A guard on every `bash`, job and monitor blocks detached processes, force pushes to `main` and recursive `rm` outside the project and temp dirs. Claude Code and Codex workers and collaborators get it as a hook.
 
