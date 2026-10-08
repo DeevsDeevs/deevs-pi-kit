@@ -83,6 +83,8 @@ interface TasksState {
 	resumed?: Map<string, { done: Promise<void>; resolve(): void }>;
 	/** Shown by the first session start; print mode, whose notify does nothing, has the console copy. */
 	oldPi?: string;
+	/** By extension: the system-prompt section its before_agent_start would add, which a report-woken run carries instead. */
+	sections?: Map<string, (ctx: ExtensionContext) => string | undefined>;
 }
 
 const TASKS = Symbol.for("pi-kit.tasks");
@@ -142,6 +144,9 @@ export const tasks = {
 	},
 	addSource(source: NotificationSource): void {
 		state.sources.set(source.name, source);
+	},
+	addSection(name: string, section: (ctx: ExtensionContext) => string | undefined): void {
+		(state.sections ??= new Map()).set(name, section);
 	},
 	async notify(notification: TaskNotification): Promise<void> {
 		state.outstanding.set(notification.notificationId, notification);
@@ -238,10 +243,17 @@ function send(notification: TaskNotification, ids: string[]): void {
 	if (!pi || !ctx || state.sent.has(notification.notificationId)) return;
 	try {
 		const steered = !ctx.isIdle();
-		// Pi 1.0.4 starts a report's run without before_agent_start, so from that run's second turn its prompt drops the headless rule.
+		// Pi 1.0.4 starts a report's run without before_agent_start, so that run's prompt lacks the sections its hooks add.
+		const sections = steered ? [] : [isHeadless(ctx) ? HEADLESS_GUIDELINE : undefined, ...[...state.sections?.values() ?? []].map((section) => {
+			try {
+				return section(ctx);
+			} catch {
+				return undefined; // A stale extension after /reload must not hold back the report.
+			}
+		})].filter((text) => text !== undefined);
 		pi.sendMessage({
 			customType: TASK_NOTIFICATION,
-			content: formatTaskNotification(notification) + (isHeadless(ctx) && !steered ? `\n${systemReminder(HEADLESS_GUIDELINE)}` : ""),
+			content: [formatTaskNotification(notification), ...sections.map(systemReminder)].join("\n"),
 			display: true,
 			details: { notificationId: notification.notificationId, notificationIds: ids.length > 1 ? ids : undefined },
 		}, { triggerTurn: true, deliverAs: "steer" });

@@ -48,11 +48,16 @@ export default function missionExtension(pi: ExtensionAPI): void {
 	pi.on("agent_settled", (_event, ctx) => {
 		if (!interrupted) later(ctx);
 	});
-	pi.on("before_agent_start", (event, ctx) => {
+	const section = (ctx: ExtensionContext): string | undefined => {
 		// A Pi collaborator in the lead's directory has no mission tools.
-		if (!pi.getActiveTools().includes("mission_update")) return;
+		if (!pi.getActiveTools().includes("mission_update")) return undefined;
 		const mission = currentMission(ctx.cwd);
-		if (mission && OPEN.includes(mission.state.status)) event.systemPromptOptions.sections.mission = `${missionBrief(mission)}\n\n${GUIDANCE}`;
+		return mission && OPEN.includes(mission.state.status) ? `${missionBrief(mission)}\n\n${GUIDANCE}` : undefined;
+	};
+	tasks.addSection("mission", section);
+	pi.on("before_agent_start", (event, ctx) => {
+		const mission = section(ctx);
+		if (mission) event.systemPromptOptions.sections.mission = mission;
 	});
 
 	pi.registerTool({
