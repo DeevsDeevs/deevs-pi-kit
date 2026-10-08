@@ -1,6 +1,6 @@
 # arXiv
 
-Search arXiv through the official Atom API. Use it for paper discovery, abstract-level triage, exact ID lookup, and BibTeX generation.
+arXiv search through the official Atom API: find papers, skim abstracts, look up ids, get BibTeX.
 
 ## Tool
 
@@ -13,4 +13,4 @@ One `arxiv` tool with `action: "search"` (query, title, author, abstract or cate
 - bounded result counts and request timeout
 - polite in-process throttle
 
-arXiv papers are preprints. Treat results as leads, not peer-reviewed truth.
+arXiv papers are preprints, so treat results as leads, not peer-reviewed truth.

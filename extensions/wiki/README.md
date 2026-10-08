@@ -1,6 +1,6 @@
 # Wiki
 
-Deterministic helpers for curated markdown wikis. The extension handles structure, graph checks, search, and context packing; the model still writes and edits pages deliberately.
+Helpers for curated markdown wikis: layout, graph checks, search and context packs. The model still writes every page itself.
 
 ## Layout
 
@@ -33,4 +33,4 @@ One `wiki` tool with an `action`: `init`, `status`, `lint`, `graph` (from `[[wik
 - no automatic link fixing or mass rewrites
 - bounded reads and outputs
 
-Use chains for chronological work history. Use wikis for curated, canonical knowledge.
+Chains are for work history, wikis for knowledge you curate.

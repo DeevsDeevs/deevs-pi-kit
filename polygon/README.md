@@ -19,7 +19,7 @@ Scenarios run up to twelve at a time (a quarter of the CPUs; four on `--live`); 
 
 `Containerfile` holds Node 24, git, python3, tini, ripgrep, fd, the latest Claude Code and Codex, Herdr's official static release binary checked against its published SHA-256, and Pi at the kit's devDependencies version as its Bun-compiled release binary (`pi-linux-x64.tar.gz`, checked against the release's `SHA256SUMS`), the build users run. `--pi-runtime node` installs Pi from npm and runs it on Node instead, for comparison; `durable-load` asserts which runtime, and so which SQLite driver, the engine got. The image tag is a hash of the Containerfile and build args, built only when missing; `podman image rm` it to pick up newer Claude or Codex releases. `test/fixtures/cli/` holds Claude and Codex output recorded on the versions in its `versions.json`; when the image runs others, a run that includes `claude-worker` or `codex-worker` fails with a `cli-fixtures` row until you copy their new outputs there and update `versions.json`.
 
-One container runs per polygon run, with `--network=none` (loopback only) unless `--live`; `--kit clone` installs its dependencies in a separate container first. The kit is mounted read-only at `/kit` (a symlinked `node_modules` is mounted at its real path), `polygon/` at `/polygon`, and the run's results at `/results`. Each scenario gets its own `HOME` under `/results/<name>/home`, with Pi, Claude and Codex config dirs inside it, an env built from scratch, a git identity, and a `POLYGON_RUN` tag. Teardown closes the drivers, then SIGKILLs every process still carrying the tag; any such process fails the scenario.
+One container runs per polygon run, with `--network=none` (loopback only) unless `--live`; `--kit clone` installs its dependencies in a separate container first. The kit is mounted at `/kit` (read-only, except `--kit clone`'s own clone; a symlinked `node_modules` is mounted at its real path), `polygon/` at `/polygon`, and the run's results at `/results`. Each scenario gets its own `HOME` under `/results/<name>/home`, with Pi, Claude and Codex config dirs inside it, an env built from scratch, a git identity, and a `POLYGON_RUN` tag. Teardown closes the drivers, then SIGKILLs every process still carrying the tag; any such process fails the scenario.
 
 ## The puppet
 
@@ -44,6 +44,8 @@ export default {
 	name: "jobs-basic", gate: "M0",        // gate may be an array; slow: true keeps it out of the default run;
 	                                        // timing: true runs it alone after the others
 	                                        // pending: "<step>" skips it (listed as PENDING) unless named in --only
+	                                        // timeoutMs (default 90 s, x4 on --live); live: true joins the live tier;
+	                                        // bodies: true makes the puppet write full request bodies to bodies.jsonl
 	async run(t) {                          // t: home, repo, kit, env, git(), dir, requestLog, marks, live, piRuntime
 		const lead = rpc(t);                  // drive.mjs: send, prompt, script, until, kill9, restart
 		await lead.script({ agent: "lead", steps: [...] });
@@ -66,7 +68,7 @@ export default {
 The polygon has its own logins, in the `pi-kit-polygon-login` Podman volume. Your real `~/.pi`, `~/.claude` and `~/.codex` are never mounted; `--kit installed` mounts only the kit checkout under `~/.pi/agent/git`, read-only.
 
 ```bash
-npm run polygon -- --login               # once: Pi /login (Sign in with ChatGPT, Anthropic), claude auth login, codex login --device-auth
+npm run polygon -- --login               # once: Pi /login (OpenAI ChatGPT Plus/Pro, or Sign in with ChatGPT, or Anthropic), claude auth login, codex login --device-auth
 npm run polygon -- --live --smoke        # agent-background and model-inherit on real models, about 15 requests
 npm run polygon -- --live [--gate M1]    # every scenario marked live: true, four at a time
 npm run polygon -- --live --max-requests 100

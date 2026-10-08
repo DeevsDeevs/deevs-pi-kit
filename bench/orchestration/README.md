@@ -34,12 +34,12 @@ The unprompted tasks run only when `--tasks` names them. Run them with autonomy 
 
 | Config | Lead | Subagents |
 |---|---|---|
-| `cc-opus` | `claude -p --model claude-opus-5-5 --output-format stream-json`, the volume's Claude login | Claude Code's Agent and Workflow tools (inherit Opus) |
+| `cc-opus` | `claude -p --model claude-opus-5-5 --output-format stream-json --verbose --dangerously-skip-permissions`, the volume's Claude login | Claude Code's Agent and Workflow tools (inherit Opus) |
 | `pi-sol` | Pi + kit over RPC, `openai/gpt-6.1-sol`, the volume's ChatGPT login | the kit's Agent (inherits the lead) |
 | `pi-opus` | Pi + kit over RPC, `anthropic/claude-opus-5-5`, the volume's Anthropic OAuth login | the kit's Agent |
 | `pi-opus-or` | Pi + kit, OpenRouter (`~/.config/pi-kit-bench/openrouter.key` mounted read-only, read into the container's env) | the kit's Agent |
 
-`--kit '<json>'` merges a JSON object into every Pi run's global `pi-kit.json` (for example `{"autonomy": false}`); `result.json` records it as `kit`, and the summary keys such a run's cell as `<config> <kit>`, so run sets with different settings summarize side by side.
+Every Pi run's global `pi-kit.json` is `{"lead": null}`, so the kit never switches the configured model, and `--kit '<json>'` merges into it (for example `{"autonomy": false}`); `result.json` records it as `kit`, and the summary keys such a run's cell as `<config> <kit>`, so run sets with different settings summarize side by side.
 
 `claude -p` with a background Workflow or Agent does not exit at the end of the turn: it waits for the background tasks, answers their notifications in new turns, and exits after the last one.
 
