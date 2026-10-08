@@ -244,7 +244,7 @@ describe("hosted runtime client vertical", () => {
 		expect(sendMessage.mock.calls).toEqual([[{ customType: "collaborator-notice", content: "blocked", display: false }, { triggerTurn: true, deliverAs: "followUp" }]]);
 	});
 
-	it("mails main a run's plain-text answer to main's mail once, and nothing when that run sent any mail", async () => {
+	it("mails main a run's plain-text answer to main's mail once, cut to the body limit, and nothing when that run sent any mail", async () => {
 		const messaging = new MessagingClient({ scope: () => () => true, store: { identity: { disposition: "held" } }, pi: { sendMessage: vi.fn() } } as never);
 		const internals = messaging as unknown as { mail(): Promise<unknown>; acknowledge(): Promise<unknown[]> };
 		vi.spyOn(internals, "mail").mockResolvedValue(undefined);
@@ -254,14 +254,14 @@ describe("hosted runtime client vertical", () => {
 		const answer = (stopReason: string, text: string) => ({ type: "message", message: { role: "assistant", stopReason, content: [{ type: "text", text }] } });
 		const mail = { type: "custom_message", customType: "collaborator-message" };
 		let events = 0;
-		const run = async (from: string | undefined, stopReason: string, { mailTo, answered = true }: { mailTo?: string; answered?: boolean } = {}) => {
+		const run = async (from: string | undefined, stopReason: string, { mailTo, text = `answer ${stopReason}`, answered = true }: { mailTo?: string; text?: string; answered?: boolean } = {}) => {
 			vi.spyOn(internals, "acknowledge").mockResolvedValue(from ? [{ eventId: `${from}-${events++}`, from, body: encodeMail("ask", []) }] : []);
 			if (from) await messaging.deliverMail({} as never, ctx, {} as never);
 			messaging.runStarted();
 			messaging.runStarted();
 			if (mailTo) await messaging.send(ctx, mailTo, "direct", []);
 			// The 80% chain checkpoint appends its entry at the same settle, before this hook runs.
-			branch = [answer("stop", "older answer"), mail, ...answered ? [answer(stopReason, `answer ${stopReason}`), { type: "custom", customType: "deevs.chain-checkpoint.v1" }] : []];
+			branch = [answer("stop", "older answer"), mail, ...answered ? [answer(stopReason, text), { type: "custom", customType: "deevs.chain-checkpoint.v1" }] : []];
 			await messaging.runSettled(ctx);
 		};
 		await run("main", "stop");
@@ -271,7 +271,11 @@ describe("hosted runtime client vertical", () => {
 		await run("main", "aborted");
 		await run("main", "stop", { answered: false });
 		await run(undefined, "stop");
-		expect(send.mock.calls.map(([, to, message]) => [to, message])).toEqual([["main", "answer stop"], ["main", "direct"], ["bob", "direct"]]);
+		await run("main", "stop", { text: "é".repeat(9_000) });
+		const sent = send.mock.calls.map(([, to, message]) => [to, message]);
+		expect(sent.slice(0, -1)).toEqual([["main", "answer stop"], ["main", "direct"], ["bob", "direct"]]);
+		const [to, long] = sent.at(-1)!;
+		expect([to, Buffer.byteLength(long) <= 16_000, long.startsWith("é".repeat(7_000)), long.endsWith("[answer truncated to 16000 bytes]")]).toEqual(["main", true, true, true]);
 	});
 
 	it("neutralizes envelope markup a collaborator puts in its mail", () => {

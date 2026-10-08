@@ -5,6 +5,7 @@ import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { HostedRuntimeClient, HostedRuntimeClientError } from "./client.ts";
 import { LEAD } from "./collaborators.ts";
+import { truncateText } from "../shared/bytes.ts";
 import { escapeMarkup } from "../shared/tasks.ts";
 import { decodeMail, encodeMail } from "./mail-body.ts";
 import { isJsonObject, type JsonObject, type JsonValue } from "./schemas/json.ts";
@@ -135,7 +136,8 @@ export class MessagingClient {
 		const last = ctx.sessionManager.getBranch().filter((entry) => entry.type === "message" || (entry.type === "custom_message" && entry.customType === COLLABORATOR_MESSAGE)).at(-1);
 		if (last?.type !== "message" || last.message.role !== "assistant" || last.message.stopReason !== "stop") return;
 		const answer = last.message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n").trim();
-		if (answer) await this.send(ctx, LEAD, answer, []);
+		// The margin under the 16 KiB limit covers encodeMail's escapes.
+		if (answer) await this.send(ctx, LEAD, truncateText(answer, 16_000, "answer").text, []);
 	}
 
 	/** Marks read the unread mail this session's file holds; returns the unread mail it does not hold. */
