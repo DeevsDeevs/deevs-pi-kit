@@ -244,7 +244,7 @@ describe("hosted runtime client vertical", () => {
 		expect(sendMessage.mock.calls).toEqual([[{ customType: "collaborator-notice", content: "blocked", display: false }, { triggerTurn: true, deliverAs: "followUp" }]]);
 	});
 
-	it("mails main a run's plain-text answer to main's mail once, and nothing when that run mailed main itself", async () => {
+	it("mails main a run's plain-text answer to main's mail once, and nothing when that run sent any mail", async () => {
 		const messaging = new MessagingClient({ scope: () => () => true, store: { identity: { disposition: "held" } }, pi: { sendMessage: vi.fn() } } as never);
 		const internals = messaging as unknown as { mail(): Promise<unknown>; acknowledge(): Promise<unknown[]> };
 		vi.spyOn(internals, "mail").mockResolvedValue(undefined);
@@ -266,11 +266,12 @@ describe("hosted runtime client vertical", () => {
 		};
 		await run("main", "stop");
 		await run("main", "stop", { mailTo: "main" });
+		await run("main", "stop", { mailTo: "bob" });
 		await run("peer", "stop");
 		await run("main", "aborted");
 		await run("main", "stop", { answered: false });
 		await run(undefined, "stop");
-		expect(send.mock.calls.map(([, to, message]) => [to, message])).toEqual([["main", "answer stop"], ["main", "direct"]]);
+		expect(send.mock.calls.map(([, to, message]) => [to, message])).toEqual([["main", "answer stop"], ["main", "direct"], ["bob", "direct"]]);
 	});
 
 	it("neutralizes envelope markup a collaborator puts in its mail", () => {

@@ -39,9 +39,9 @@ export class MessagingClient {
 	/** Mail handed to Pi whose entry the session may not hold yet; it is not sent twice by this process. */
 	private readonly sent = new Set<string>();
 	private readonly managedIssued = new Set<string>();
-	/** Mail from main handed to Pi, for the run it starts; that run answers main in text unless it mails main itself. */
+	/** Mail from main handed to Pi, for the run it starts; that run answers main in text unless it sends any mail itself. */
 	private mainMailQueued = false;
-	private run?: { deliveredFromMain: boolean; sentToMain: boolean };
+	private run?: { deliveredFromMain: boolean; mailed: boolean };
 
 	constructor(session: RuntimeSession) {
 		this.session = session;
@@ -100,7 +100,7 @@ export class MessagingClient {
 		await this.acknowledge(ctx);
 		const body = Buffer.from(encodeMail(message, images)).toString("base64");
 		await this.mail(ctx, "send", { participantId: to, operationId: randomUUID(), bodyBase64: body });
-		if (to === LEAD && this.run) this.run.sentToMain = true;
+		if (this.run) this.run.mailed = true;
 		return `Message sent to ${to}; it arrives at its next idle, merged with anything else sent meanwhile.`;
 	}
 
@@ -121,15 +121,15 @@ export class MessagingClient {
 	}
 
 	runStarted(): void {
-		this.run ??= { deliveredFromMain: this.mainMailQueued, sentToMain: false };
+		this.run ??= { deliveredFromMain: this.mainMailQueued, mailed: false };
 		this.mainMailQueued = false;
 	}
 
-	/** A run that took main's mail and ended on a plain-text answer without mailing main sends main that answer. */
+	/** A run that took main's mail and ended on a plain-text answer without sending any mail sends main that answer. */
 	async runSettled(ctx: ExtensionContext): Promise<void> {
 		const run = this.run;
 		this.run = undefined;
-		if (!run?.deliveredFromMain || run.sentToMain) return;
+		if (!run?.deliveredFromMain || run.mailed) return;
 		// Its last message, not its last entry, which another settle hook (the 80% chain checkpoint) may have appended; the
 		// mail that started the run bounds the search, so a run with no message of its own never resends an older answer.
 		const last = ctx.sessionManager.getBranch().filter((entry) => entry.type === "message" || (entry.type === "custom_message" && entry.customType === COLLABORATOR_MESSAGE)).at(-1);
