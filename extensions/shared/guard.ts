@@ -21,7 +21,7 @@ const WRAPPER_VALUE_OPTIONS = new Map([
 	["stdbuf", new Set(["-i", "--input", "-o", "--output", "-e", "--error"])],
 ]);
 const PUSH_VALUE_OPTIONS = new Set(["-o", "--push-option", "--repo", "--receive-pack", "--exec"]);
-const DETACH_ERROR = "Detached process launch or dynamically-computed command detected (backgrounding, nohup/setsid/disown, or a command name that cannot be statically verified). Use a literal command, or Herdr for persistent or independently owned processes.";
+const DETACH_ERROR = "Detached process launch or dynamically-computed command detected (backgrounding, nohup/setsid/disown, a detached tmux or screen session, or a command name that cannot be statically verified). Use a literal command, or Herdr for persistent or independently owned processes.";
 const FORCE_PUSH_ERROR = "Force push to a protected branch (main, master, release/*) or to an unnamed branch, or deleting a protected branch, is blocked. Name a non-protected target branch explicitly, e.g. `git push --force-with-lease origin feature/x`.";
 const RM_ERROR = "Recursive rm outside the project and the temp directories ($TMPDIR, /tmp) is blocked. Use literal paths inside the project or a temp directory.";
 const SLEEP_ERROR = "A foreground sleep of 60 s or more is blocked. Agents, workflows and jobs send a task notification that starts your next turn: end your turn instead of sleeping for one. Wait for a condition with Monitor or an until-loop of short sleeps, run long work with job_start, or sleep less than 60 s.";
@@ -256,6 +256,7 @@ function checkArgv(argv: string[], ctx: Guard, rejectDynamicExecutable: boolean)
 	const pattern = ctx.block.find((words) => matchesPattern(executable, argv, words));
 	if (pattern) return `Blocked by the guard.block pattern "${pattern.join(" ")}".`;
 	if (DETACH_EXECUTABLES.has(executable)) return detach(ctx) ?? checkArgv(argv.slice(1), ctx, rejectDynamicExecutable);
+	if ((executable === "tmux" && tmuxDetaches(argv.slice(1))) || (executable === "screen" && /d.*m|m.*d/.test(shortFlags(argv.slice(1), "cehpsStT").flags))) return detach(ctx);
 	if (executable === "git" && ctx.forcePush && forcePushesProtected(argv.slice(1))) return FORCE_PUSH_ERROR;
 	if (executable === "rm" && ctx.rmRf && removesOutside(argv.slice(1), ctx)) return RM_ERROR;
 	if (SHELL_EXECUTABLES.has(executable)) {
@@ -268,6 +269,25 @@ function checkArgv(argv: string[], ctx: Guard, rejectDynamicExecutable: boolean)
 	if (executable === "sudo") return checkSudoArgv(argv.slice(1), ctx, rejectDynamicExecutable);
 	if (executable === "command") return checkCommandArgv(argv.slice(1), ctx, rejectDynamicExecutable);
 	return undefined;
+}
+
+/** `tmux new[-session] -d` starts a tmux server that outlives Pi; without -d it needs a terminal the bash tool lacks. */
+function tmuxDetaches(args: string[]): boolean {
+	const [command = "", ...rest] = shortFlags(args, "cfLST").operands;
+	return command.startsWith("new") && "new-session".startsWith(command) && shortFlags(rest, "cefFnstxy").flags.includes("d");
+}
+
+/** The single-letter flags before the first operand, as getopt reads them; a letter in `values` takes the rest of its word or the next one. */
+function shortFlags(args: string[], values: string) {
+	let flags = "";
+	let index = 0;
+	for (; args[index]?.startsWith("-") && args[index] !== "--"; index++) {
+		const word = args[index]!.slice(1);
+		const value = [...word].findIndex((letter) => values.includes(letter));
+		flags += value < 0 ? word : word.slice(0, value + 1);
+		if (value === word.length - 1) index++;
+	}
+	return { flags, operands: args.slice(index) };
 }
 
 /** A pattern's first word names the executable; the rest must appear in order among its arguments. */
