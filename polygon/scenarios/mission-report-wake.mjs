@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { rpc, script } from "../drive.mjs";
 import { requests, runs, settled } from "../look.mjs";
 
-// A run woken by a report starts without before_agent_start, so only its own message can carry the open mission and a due chain checkpoint.
+// A run woken by a report starts without before_agent_start. The open mission, here started mid-run, is in every request's
+// prompt from mission_start until it closes; the report's own message carries a due chain checkpoint.
 const GUIDANCE = "Work toward the done criteria without waiting for the user.";
 const CHECKPOINT = "Chain checkpoint: context reached 80%.";
 const child = script({ agent: "child", steps: [{ id: "w1", tool: "bash", args: { command: "sleep 1" } }, { id: "c1", text: "child done" }] });
@@ -25,6 +26,8 @@ export default {
 		await lead.until((_, events) => runs(events) >= 2 && settled(events) >= 2, 60_000, "the report-woken run to settle");
 		const lead_ = requests(t).filter((r) => r.agent === "lead");
 		assert.deepEqual(lead_.map((r) => r.step), ["s1", "s2", "s3", "s4", "s5", "s6"]);
-		for (const mark of [GUIDANCE, CHECKPOINT]) assert.deepEqual(lead_.filter((r) => r.marks.includes(mark)).map((r) => r.step), ["s4", "s5", "s6"], `the woken run's requests carry ${mark}`);
+		const carry = (mark) => lead_.filter((r) => r.marks.includes(mark)).map((r) => r.step);
+		assert.deepEqual(carry(GUIDANCE), ["s2", "s3", "s4", "s5"], "the requests while the mission is open carry it");
+		assert.deepEqual(carry(CHECKPOINT), ["s4", "s5", "s6"], "the woken run's requests carry the checkpoint");
 	},
 };

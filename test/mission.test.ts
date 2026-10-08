@@ -31,7 +31,8 @@ function lead() {
 		handlers.get("before_agent_start")!(event, { cwd });
 		return event.systemPromptOptions.sections.mission;
 	};
-	return { call, section };
+	const request = (messages: object[]) => (handlers.get("context_with_system") as unknown as (event: object, ctx: object) => { messages: object[] } | undefined)({ messages }, { cwd })?.messages;
+	return { call, section, request };
 }
 
 it("continues only when active, autonomous, idle, owned and nothing runs; three quiet continues pause it", async () => {
@@ -154,6 +155,24 @@ it("carries goal, done criteria, the last three log entries and the next step wh
 	await call("mission_update", { log: "user said stop", next: "none", status: "paused" });
 	expect(section()).toBeUndefined();
 	expect(currentMission(cwd)?.state).toMatchObject({ status: "paused", quietContinues: 0, owner: { pid: process.pid } });
+});
+
+it("keeps the open mission in every request's prompt: drops its removal and same-text re-add, adds it when missing", async () => {
+	const { call, section, request } = lead();
+	const system = (sections: Record<string, string | null>) => ({ role: "system", content: "", sections, timestamp: 0 });
+	const user = { role: "user", content: "go", timestamp: 0 };
+	expect(request([system({ preamble: "p" }), user])).toBeUndefined();
+	await call("mission_start", { title: "Kept", goal: "Keep it.", done: "d" });
+	const brief = section();
+	// A report-started run removes it with the rules beside it; the next prompt re-adds the same text, then a changed one.
+	expect(request([system({ preamble: "p", mission: brief }), user, system({ rules: "r", mission: null }), user, system({ mission: brief }), system({ mission: "newer" })])).toEqual([
+		system({ preamble: "p", mission: brief }), user, system({ rules: "r" }), user, system({}), system({ mission: "newer" }),
+	]);
+	const started = request([system({ preamble: "p" }), user]);
+	expect(started?.slice(0, 2)).toEqual([system({ preamble: "p" }), user]);
+	expect(started?.slice(2)).toMatchObject([{ role: "system", content: "", sections: { mission: brief } }]);
+	await call("mission_update", { log: "closed", next: "none", status: "done" });
+	expect(request([system({ preamble: "p", mission: brief }), user, system({ mission: null })])).toBeUndefined();
 });
 
 it("runs at most two closing-review rounds before a review mission closes", async () => {
