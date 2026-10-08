@@ -10,7 +10,7 @@ const Name = Type.String({ pattern: PARTICIPANT_NAME.source });
 const StartSchema = Type.Object({
 	participants: Type.Array(Type.Object({
 		name: Name,
-		model: Type.Optional(Type.String({ description: "Picks the harness: claude:<alias> runs Claude Code, codex:<slug> Codex, anything else (sol, opus, provider/id) Pi; omit for your own model" })),
+		model: Type.Optional(Type.String({ description: "Picks the harness: claude:<alias> or a Claude name (opus) runs Claude Code, codex:<slug> Codex, else (sol, provider/id) Pi; omit for your own model" })),
 		persona: Type.Optional(Type.String({ description: "Built-in persona name" })),
 		profile: Type.Optional(Type.Union([Type.Literal("read-only"), Type.Literal("workspace-write")], { description: "read-only (default) or workspace-write: a writer gets its own worktree" })),
 		repo: Type.Optional(Type.String({ description: "Cwd-relative Git repository, in a folder of repositories; writers need one" })),
