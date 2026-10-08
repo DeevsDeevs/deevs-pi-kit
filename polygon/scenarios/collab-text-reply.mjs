@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { eventually, fixtureModels, herdr, rpc, sleep } from "../drive.mjs";
 import { toolCalls } from "../look.mjs";
 
-// A Pi collaborator that answers main's mail in plain text reaches main once; one that answered with SendMessage is not repeated.
+// A Pi collaborator that answers main's mail in plain text reaches main once, also when its context crosses 80% as it
+// settles; one that answered with SendMessage is not repeated.
 const mail = (events) => events.filter((e) => e.type === "message_end" && e.message?.customType === "collaborator-message")
 	.flatMap((e) => e.message.content.map((part) => part.text ?? "")).join("\n");
 const count = (text, mark) => text.split(mark).length - 1;
@@ -14,7 +15,7 @@ export default {
 	async run(t) {
 		await herdr(t);
 		fixtureModels(t, "polygon", ["texter", "sender"]);
-		t.scripts.texter = { agent: "texter", steps: [{ id: "t1", text: "texter-answer" }] };
+		t.scripts.texter = { agent: "texter", steps: [{ id: "t1", usage: 170_000, text: "texter-answer" }] };
 		t.scripts.sender = { agent: "sender", steps: [
 			{ id: "p1", tool: "SendMessage", args: { to: "main", message: "sender-answer" } },
 			{ id: "p2", text: "sender-closing-text" },

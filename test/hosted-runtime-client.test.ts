@@ -249,21 +249,26 @@ describe("hosted runtime client vertical", () => {
 		const internals = messaging as unknown as { mail(): Promise<unknown>; acknowledge(): Promise<unknown[]> };
 		vi.spyOn(internals, "mail").mockResolvedValue(undefined);
 		const send = vi.spyOn(messaging, "send");
-		let last: unknown;
-		const ctx = { hasUI: true, mode: "rpc", isIdle: () => true, hasPendingMessages: () => false, sessionManager: { getBranch: () => [last] } } as never;
-		const run = async (from: string | undefined, stopReason: string, mailMain = false) => {
-			vi.spyOn(internals, "acknowledge").mockResolvedValue(from ? [{ eventId: `${from}-${send.mock.calls.length}-${stopReason}`, from, body: encodeMail("ask", []) }] : []);
+		let branch: unknown[] = [];
+		const ctx = { hasUI: true, mode: "rpc", isIdle: () => true, hasPendingMessages: () => false, sessionManager: { getBranch: () => branch } } as never;
+		const answer = (stopReason: string, text: string) => ({ type: "message", message: { role: "assistant", stopReason, content: [{ type: "text", text }] } });
+		const mail = { type: "custom_message", customType: "collaborator-message" };
+		let events = 0;
+		const run = async (from: string | undefined, stopReason: string, { mailTo, answered = true }: { mailTo?: string; answered?: boolean } = {}) => {
+			vi.spyOn(internals, "acknowledge").mockResolvedValue(from ? [{ eventId: `${from}-${events++}`, from, body: encodeMail("ask", []) }] : []);
 			if (from) await messaging.deliverMail({} as never, ctx, {} as never);
 			messaging.runStarted();
 			messaging.runStarted();
-			if (mailMain) await messaging.send(ctx, "main", "direct", []);
-			last = { type: "message", message: { role: "assistant", stopReason, content: [{ type: "text", text: `answer ${stopReason}` }] } };
+			if (mailTo) await messaging.send(ctx, mailTo, "direct", []);
+			// The 80% chain checkpoint appends its entry at the same settle, before this hook runs.
+			branch = [answer("stop", "older answer"), mail, ...answered ? [answer(stopReason, `answer ${stopReason}`), { type: "custom", customType: "deevs.chain-checkpoint.v1" }] : []];
 			await messaging.runSettled(ctx);
 		};
 		await run("main", "stop");
-		await run("main", "stop", true);
+		await run("main", "stop", { mailTo: "main" });
 		await run("peer", "stop");
 		await run("main", "aborted");
+		await run("main", "stop", { answered: false });
 		await run(undefined, "stop");
 		expect(send.mock.calls.map(([, to, message]) => [to, message])).toEqual([["main", "answer stop"], ["main", "direct"]]);
 	});

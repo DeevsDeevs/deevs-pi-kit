@@ -130,7 +130,9 @@ export class MessagingClient {
 		const run = this.run;
 		this.run = undefined;
 		if (!run?.deliveredFromMain || run.sentToMain) return;
-		const last = ctx.sessionManager.getBranch().at(-1);
+		// Its last message, not its last entry, which another settle hook (the 80% chain checkpoint) may have appended; the
+		// mail that started the run bounds the search, so a run with no message of its own never resends an older answer.
+		const last = ctx.sessionManager.getBranch().filter((entry) => entry.type === "message" || (entry.type === "custom_message" && entry.customType === COLLABORATOR_MESSAGE)).at(-1);
 		if (last?.type !== "message" || last.message.role !== "assistant" || last.message.stopReason !== "stop") return;
 		const answer = last.message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n").trim();
 		if (answer) await this.send(ctx, LEAD, answer, []);
