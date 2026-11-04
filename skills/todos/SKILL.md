@@ -5,7 +5,7 @@ description: "Track multi-step session work with todo_list: implementation, debu
 
 # Managed Todos
 
-`todo_list` is a lightweight progress tracker for the current session — not durable memory; use chains for handoffs.
+`todo_list` is a lightweight progress tracker for the current session — not durable memory.
 
 ## Tool contract
 
@@ -13,7 +13,7 @@ description: "Track multi-step session work with todo_list: implementation, debu
 todo_list({ operation: "read" | "write" | "clear", todos: [...] })
 ```
 
-Item: `{ "id": "1", "title": "Implement parser guard", "status": "pending", "notes": "Acceptance: rejects invalid IDs" }`
+Item: `{ "id": "1", "title": "Implement parser validation", "status": "pending", "notes": "Acceptance: rejects invalid IDs" }`
 
 Statuses: `pending` · `in_progress` · `done` (completed and verified enough) · `blocked` (explain why in `notes`).
 
@@ -23,7 +23,7 @@ Statuses: `pending` · `in_progress` · `done` (completed and verified enough) �
 
 Proactively for multi-step implementation/refactors, debugging with several hypotheses, validation passes with multiple checks, research that branches into decisions, multi-task requests, and subagent coordination needing visible progress.
 
-Not for one-shot answers, tiny edits, pure conversation, durable memory (`chain`), or replacing an issue tracker.
+Not for one-shot answers, tiny edits, pure conversation, durable memory, or replacing an issue tracker.
 
 ## Workflow
 
@@ -34,7 +34,7 @@ Not for one-shot answers, tiny edits, pure conversation, durable memory (`chain`
 
 ## Relationship to other Pi systems
 
-Chains hold durable milestones, not every todo update. You own the list for delegated work: mark the items of agents running in parallel `in_progress`, then each `done`/`blocked` after reading its report. Track agent or job ids in `notes` only when useful. Todos can mirror a review matrix, but verdicts still need explicit evidence.
+You own the list for delegated work: mark the items of agents running in parallel `in_progress`, then each `done`/`blocked` after reading its report. Track agent ids in `notes` only when useful. Todos can mirror a review matrix, but verdicts still need explicit evidence.
 
 ## Anti-slop
 

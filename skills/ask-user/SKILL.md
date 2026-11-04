@@ -11,7 +11,7 @@ Collect explicit user input through the interactive `ask_user` overlay before an
 
 Call `ask_user` with 1–5 focused questions only when the next step is irreversible or destructive: deleting or overwriting data, rewriting shared history, publishing, deploying, spending money.
 
-For anything else — ambiguous requirements, a preference-dependent trade-off, scope — state the default you assume in one line and continue; the user can redirect. Never when a file, command, test, chain, or existing context can answer, or the user already decided.
+For anything else — ambiguous requirements, a preference-dependent trade-off, scope — state the default you assume in one line and continue; the user can redirect. Never when a file, command, test, or existing context can answer, or the user already decided.
 
 ## Protocol
 

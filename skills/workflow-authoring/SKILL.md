@@ -34,7 +34,7 @@ const found = await agent('List the feature flags defined in packages/billing an
 - `agent(prompt, opts?)` resolves to the agent's final text. With `opts.schema` (a JSON Schema whose root is `{type: 'object', properties}`, `required` naming only listed properties) the agent answers through a StructuredOutput tool and `agent()` resolves to the validated object. It resolves to `null` when the agent fails, so filter with `.filter(Boolean)`. It throws on an invalid schema, when the agent never produces valid structured output, and on an unknown `agentType`. Options:
   - `label`: the name shown in progress.
   - `phase`: the progress group. Inside `parallel()` and `pipeline()` set it here; `phase()` is shared state and races.
-  - `model`: leave it out to run the lead's model and level, which is almost always right. Otherwise a configured name (`astra`, `luna`, `opus`, `haiku`) or `provider/id`. A `claude:` or `codex:` name runs Claude Code or Codex.
+  - `model`: leave it out to run the lead's model and level, which is almost always right. Otherwise a configured name (`astra`, `luna`) or `provider/id`.
   - `effort`: `'low' | 'medium' | 'high' | 'xhigh' | 'max'`; `low` for mechanical stages, the top levels only for the hardest judging.
   - `isolation: 'worktree'`: its own git worktree on branch `agent/<id>`, for agents that edit in parallel. An unchanged one is removed; a changed one is kept and logged.
   - `agentType`: an Agent tool type (`general-purpose`, `Explore`, `Plan`, `reviewer`, ...) instead of the default workflow agent.
