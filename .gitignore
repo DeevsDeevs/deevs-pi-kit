@@ -4,10 +4,4 @@ node_modules
 .env.*
 !.env.example
 .pi/
-.chains/
-.missions/
 *.log
-bench/results/*
-polygon/results/
-polygon/private/
-__pycache__/

@@ -1,4 +1,3 @@
-/* oxlint-disable anti-slop/no-runtime-typeof -- meta is a literal parsed from an untrusted workflow script: this is its decoding boundary. */
 export const MAX_SCRIPT_CHARS = 524_288;
 
 const FIRST_STATEMENT = "`export const meta = { name, description, phases }` must be the FIRST statement in the script";

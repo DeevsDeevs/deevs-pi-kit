@@ -21,7 +21,7 @@ export interface AgentType {
 
 const KIT_SKILLS = fileURLToPath(new URL("../../skills", import.meta.url));
 /** Skills for tools only the lead has; a worker's skill index leaves them out. */
-const LEAD_SKILLS = new Set(["workflow-authoring", "collaborators", "background-tasks", "todos", "ask-user", "chain-system"]);
+const LEAD_SKILLS = new Set(["workflow-authoring", "todos", "ask-user"]);
 const NOTES = [
 	"Notes:",
 	"- Each bash call starts in the working directory again; use absolute paths.",
@@ -35,10 +35,10 @@ const SHARED_RULES = [
 	"Run builds and tests in the foreground with bash, with a timeout.",
 ];
 export const DELIVERABLE_FIRST = "Make any deliverable the task names (a file or binary at a path, a commit, a branch) work first, committed when it is a commit, before any review, delegated side work or long run; then improve it.";
-/** The lead reads these as Agent tool guidelines and each Pi worker the shared ones; Claude and Codex workers bring their own. */
+/** The lead reads these as Agent tool guidelines and each worker the shared ones. */
 export const WORKING_RULES = [
 	PRECEDENCE,
-	"Finish the task and verify it within your turn. End the turn only when it is done, when you need the user, or to wait for agents, workflows and timed jobs you started: each reports back and starts your next turn. When the user asked for action, a plan or an offer to continue is not an ending.",
+	"Finish the task and verify it within your turn. End the turn only when it is done, when you need the user, or to wait for agents and workflows you started: each reports back and starts your next turn. When the user asked for action, a plan or an offer to continue is not an ending.",
 	DELIVERABLE_FIRST,
 	...SHARED_RULES,
 	"Your final message says what changed, how you verified it, and what remains.",
@@ -93,16 +93,16 @@ export function findAgentType(requested: string | undefined): AgentType {
 
 /**
  * The agent's instructions: its persona or the general notes, the shared notes, the working rules, the project's context files
- * and skills, the cwd, and its worktree. A Claude or Codex worker (`cli`) loads its own rules, context files and skills.
+ * and skills, the cwd, and its worktree.
  */
-export function workerPrompt(type: AgentType, cwd: string, worktree?: { path: string; branch: string; repoRoot: string }, cli = false): string {
+export function workerPrompt(type: AgentType, cwd: string, worktree?: { path: string; branch: string; repoRoot: string }): string {
 	const agentDir = getAgentDir();
-	const context = cli ? [] : loadProjectContextFiles({ cwd, agentDir }).map((file) => `## ${file.path}\n\n${file.content}`);
-	const skills = cli ? "" : formatSkillsForPrompt(loadSkills({ cwd, agentDir, skillPaths: [KIT_SKILLS], includeDefaults: true }).skills.filter((skill) => !LEAD_SKILLS.has(skill.name)));
+	const context = loadProjectContextFiles({ cwd, agentDir }).map((file) => `## ${file.path}\n\n${file.content}`);
+	const skills = formatSkillsForPrompt(loadSkills({ cwd, agentDir, skillPaths: [KIT_SKILLS], includeDefaults: true }).skills.filter((skill) => !LEAD_SKILLS.has(skill.name)));
 	return [
 		type.prompt,
 		NOTES,
-		...(cli ? [] : [WORKER_RULES]),
+		WORKER_RULES,
 		...(context.length ? [`# Project context\n\n${context.join("\n\n")}`] : []),
 		...(skills ? [skills] : []),
 		`Working directory: ${cwd}`,

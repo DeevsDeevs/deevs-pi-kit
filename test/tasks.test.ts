@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { HEADLESS_GUIDELINE } from "../extensions/shared/surface.ts";
 import type { TaskNotification } from "../extensions/shared/tasks.ts";
 
 type Tasks = typeof import("../extensions/shared/tasks.ts");
@@ -53,8 +52,8 @@ function lead(mode = "tui", project = { cwd: "/", trusted: false }) {
 	};
 }
 
-const job = (id: string, ownerSession = "s1"): TaskNotification => ({
-	notificationId: `${id}:g`, taskId: id, kind: "job", ownerSession, status: "completed", summary: `Background command "${id}" completed (exit code 0)`,
+const report = (id: string, ownerSession = "s1"): TaskNotification => ({
+	notificationId: `${id}:g`, taskId: id, kind: "workflow", ownerSession, status: "completed", summary: `Dynamic workflow "${id}" completed`,
 });
 
 describe("task notification contract", () => {
@@ -79,27 +78,19 @@ describe("task notification contract", () => {
 		].join("\n"));
 	});
 
-	it("renders a job with its log and an explicit limit, and caps a workflow result at 8,000 chars", () => {
-		expect(shared.formatTaskNotification({ ...job("bk3"), outputFile: "/out/bk3.log", status: "failed", summary: shared.jobSummary("make test", { exitCode: 143 }), limited: "timeout 1000ms" })).toBe([
-			"<task-notification>",
-			"<task-id>bk3</task-id>",
-			"<output-file>/out/bk3.log</output-file>",
-			"<status>failed</status>",
-			'<summary>Background command "make test" failed with exit code 143</summary>',
-			"<limited>timeout 1000ms</limited>",
-			"</task-notification>",
-		].join("\n"));
-		const workflow = shared.formatTaskNotification({ ...job("w1"), kind: "workflow", outputFile: "/out/w1.json", result: "x".repeat(8_010) });
+	it("renders an explicit limit, and caps a workflow result at 8,000 chars", () => {
+		expect(shared.formatTaskNotification({ ...report("w0"), limited: "timeout 1000ms" })).toContain("</summary>\n<limited>timeout 1000ms</limited>\n</task-notification>");
+		const workflow = shared.formatTaskNotification({ ...report("w1"), kind: "workflow", outputFile: "/out/w1.json", result: "x".repeat(8_010) });
 		expect(workflow).toContain(`<result>${"x".repeat(8_000)}\n... (truncated 10 chars, full result in /out/w1.json)</result>`);
 		expect(workflow).not.toContain("<note>");
 		const done = shared.formatTaskNotification({
-			...job("w2"), kind: "workflow", result: "[]", diagnostics: shared.workflowDiagnostics("/wf/r", "/wf/s.js", "wf_1"), failures: "[x] failed: boom",
+			...report("w2"), kind: "workflow", result: "[]", diagnostics: shared.workflowDiagnostics("/wf/r", "/wf/s.js", "wf_1"), failures: "[x] failed: boom",
 			usage: { agentCount: 2, agentsDone: 1, agentsError: 1, agentsSkipped: 0, agentsEmptyResult: 1, subagentTokens: 9, toolUses: 3, durationMs: 7 },
 		});
 		expect(done.split("\n").map((line) => line.match(/^<([a-z-]+)>/)?.[1]).filter(Boolean)).toEqual(["task-notification", "task-id", "status", "summary", "result", "diagnostics", "failures", "usage"]);
 		expect(done).toContain("the longest unchanged prefix of agent() calls replays from cache.");
 		expect(done).toContain("<usage><agent_count>2</agent_count><agents_done>1</agents_done><agents_error>1</agents_error><agents_skipped>0</agents_skipped><agents_empty_result>1</agents_empty_result><subagent_tokens>9</subagent_tokens><tool_uses>3</tool_uses><duration_ms>7</duration_ms></usage>");
-		expect(shared.formatTaskNotification({ ...job("w3"), kind: "workflow", recovery: shared.workflowRecovery("/wf/r", "/wf/s.js", "wf_1") })).toContain("<recovery>To resume after editing the script, call: Workflow({scriptPath: '/wf/s.js', resumeFromRunId: 'wf_1'})\nAgent transcripts: /wf/r</recovery>");
+		expect(shared.formatTaskNotification({ ...report("w3"), kind: "workflow", recovery: shared.workflowRecovery("/wf/r", "/wf/s.js", "wf_1") })).toContain("<recovery>To resume after editing the script, call: Workflow({scriptPath: '/wf/s.js', resumeFromRunId: 'wf_1'})\nAgent transcripts: /wf/r</recovery>");
 	});
 
 	it("keeps CC's summary sentences", () => {
@@ -110,10 +101,6 @@ describe("task notification contract", () => {
 			shared.agentSummary("d", "failed", { limited: "3-turn" }),
 			shared.workflowSummary("d", "completed"),
 			shared.workflowSummary("d", "failed", "boom"),
-			shared.jobSummary("d", { exitCode: 0 }),
-			shared.jobSummary("d", "stopped"),
-			shared.jobSummary("d", "interrupted"),
-			shared.jobSummary("d", { error: "spawn ENOENT" }),
 		]).toEqual([
 			'Agent "d" failed: boom',
 			'Agent "d" was stopped',
@@ -121,10 +108,6 @@ describe("task notification contract", () => {
 			'Agent "d" stopped at its 3-turn limit (partial result)',
 			'Dynamic workflow "d" completed',
 			'Dynamic workflow "d" failed: boom',
-			'Background command "d" completed (exit code 0)',
-			'Background command "d" was stopped',
-			'Background command "d" was interrupted when Pi closed',
-			'Background command "d" failed: spawn ENOENT',
 		]);
 	});
 
@@ -153,11 +136,6 @@ describe("task notification contract", () => {
 		expect(shared.taskStoppedResult("a1", "Review", [{ path: "/wt/a1", branch: "agent/a1" }])).toBe("Successfully stopped task: a1 (Review)\nKept worktrees with changes: /wt/a1 (agent/a1)");
 		expect(shared.taskStoppedResult("bx", "make")).toBe("Successfully stopped task: bx (make)");
 		expect(shared.taskNotRunningResult("a1", "completed")).toBe("Task a1 is not running (status: completed)");
-		expect(shared.jobLaunchedResult("b1", "/o", undefined, true).split("\n")[1]).toBe("Non-interactive run: Pi exits when your turn ends and waits only for agents, workflows and jobs started with a timeout. This job has none: start long work with a timeout, or keep working until it exits.");
-		expect(shared.jobLaunchedResult("b1", "/o", 5_000, true).split("\n").slice(1)).toEqual(["You will be notified when it exits. Do not poll, sleep or wait for it; keep working, and read the output file once the notification arrives.", "Timeout: 5000 ms"]);
-		expect(shared.jobLaunchedResult("b1", "/o").split("\n")[1]).toMatch(/^You will be notified when it exits\./);
-		expect(shared.monitorStartedResult("b2", undefined, "x").includes("Non-interactive")).toBe(false);
-		expect(shared.monitorStartedResult("b2", undefined, "x", true).split("\n")[1]).toBe("Non-interactive run: Pi exits when your turn ends and does not wait for monitor events.");
 		expect(shared.unknownAgentResult("wf_1", [])).toBe("No agent named 'wf_1'. Known agents: none");
 		expect(shared.unknownAgentResult("wf_1", ["a1"], ["w1", "w2"])).toBe("No agent named 'wf_1'. Known agents: a1\nWorkflows (w1, w2) and the agents inside them take no messages: wait for the workflow's <task-notification>, or TaskStop it, edit its script and call Workflow({scriptPath, resumeFromRunId}) to change course.");
 		expect(shared.workflowLaunchedResult({ taskId: "w12345678", summary: "Audit", transcriptDir: "/wf/r", scriptPath: "/wf/s.js", runId: "wf_12345678-abc" }).split("\n")).toEqual([
@@ -174,71 +152,42 @@ describe("task notification contract", () => {
 	it("mints ids in A.8's shapes", () => {
 		expect(shared.newAgentId()).toMatch(/^a[0-9a-f]{16}$/);
 		expect(shared.newWorkflowTaskId()).toMatch(/^w[0-9a-z]{8}$/);
-		expect(shared.newBackgroundTaskId()).toMatch(/^b[0-9a-z]{8}$/);
 		expect(shared.newWorkflowRunId()).toMatch(/^wf_[0-9a-f]{8}-[0-9a-f]{3}$/);
 	});
 });
 
 describe("task delivery", () => {
-	it("in print mode holds a settled run until a running task reports, so its turn runs before Pi exits; past a timed job's deadline too, since its timer reports it; never for a job without a timeout", async () => {
+	it("in print mode holds a settled run until a running task reports, so its turn runs before Pi exits", async () => {
 		const pi = lead("print");
 		shared.tasks.install(pi.pi);
 		await pi.start("s1");
-		shared.tasks.register({ id: "b0", kind: "job", description: "no timeout", status: "running", ownerSession: "s1", startedAt: 0 });
 		await pi.settle();
-		shared.tasks.register({ id: "b1", kind: "job", description: "d", status: "running", ownerSession: "s1", startedAt: 0, deadline: 1 });
+		shared.tasks.register({ id: "b1", kind: "workflow", description: "d", status: "running", ownerSession: "s1", startedAt: 0 });
 		let settled = false;
 		const settling = Promise.resolve(pi.settle()).then(() => { settled = true; });
 		await new Promise((resolve) => setTimeout(resolve, 300));
 		expect(settled).toBe(false);
 		shared.tasks.update("b1", { status: "completed" });
-		await shared.tasks.notify(job("b1"));
+		await shared.tasks.notify(report("b1"));
 		await settling;
 		expect(pi.sent.map((sent) => sent.id)).toEqual(["b1:g"]);
-		shared.tasks.remove("b0");
-		await pi.settle();
-	});
-
-	it("tells a waiter when the engine has resumed a session's tasks, and does not hold it without an engine", async () => {
-		await shared.tasks.resumed("s1");
-		shared.tasks.install(lead().pi);
-		let resumed = false;
-		const waiting = shared.tasks.resumed("s1").then(() => { resumed = true; });
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		expect(resumed).toBe(false);
-		shared.tasks.markResumed("s1");
-		await waiting;
-		expect(resumed).toBe(true);
 	});
 
 	it("wakes an idle lead with a steered task-notification", async () => {
 		const pi = lead();
 		shared.tasks.install(pi.pi);
 		await pi.start("s1");
-		await shared.tasks.notify(job("b1"));
+		await shared.tasks.notify(report("b1"));
 		expect(pi.sent).toEqual([{ session: "s1", id: "b1:g", options: { triggerTurn: true, deliverAs: "steer" } }]);
-	});
-
-	it("repeats the headless rule in a report that wakes a print or json mode lead, whose run skips before_agent_start", async () => {
-		const reminder = `\n${shared.systemReminder(HEADLESS_GUIDELINE)}`;
-		const woken = async (mode: string, busy: boolean) => {
-			const pi = lead(mode);
-			shared.tasks.install(pi.pi);
-			await pi.start("s1");
-			if (busy) pi.busy(false);
-			await shared.tasks.notify(job("b1"));
-			return pi.contents[0]!.endsWith(reminder);
-		};
-		expect([await woken("print", false), await woken("json", false), await woken("json", true), await woken("tui", false), await woken("rpc", false)]).toEqual([true, true, false, false, false]);
 	});
 
 	it("never sends a notification that is already in the session", async () => {
 		const pi = lead();
 		shared.tasks.install(pi.pi);
 		pi.entries("s1").push({ type: "custom_message", customType: "task-notification", details: { notificationId: "b1:g" } });
-		shared.tasks.addSource({ name: "fixture", pending: async () => [job("b1")] });
+		shared.tasks.addSource({ name: "fixture", pending: async () => [report("b1")] });
 		await pi.start("s1");
-		await shared.tasks.notify(job("b1"));
+		await shared.tasks.notify(report("b1"));
 		await pi.settle();
 		expect(pi.sent).toEqual([]);
 	});
@@ -247,7 +196,7 @@ describe("task delivery", () => {
 		const pi = lead();
 		shared.tasks.install(pi.pi);
 		pi.entries("s1").push({ type: "custom_message", customType: "task-notification", details: { notificationId: "b1:g" } });
-		const { pruneOutbox } = await import("../extensions/subagents/engine/background.ts");
+		const { pruneOutbox } = await import("../extensions/subagents/engine/host.ts");
 		const outbox = { items: [{ notificationId: "b1:g" }, { notificationId: "b2:g" }] };
 		pruneOutbox(outbox, "s1");
 		expect(outbox.items).toHaveLength(2);
@@ -261,7 +210,7 @@ describe("task delivery", () => {
 	it("sends unacked reports once after a restart, and acked ones never", async () => {
 		const pi = lead();
 		pi.entries("s1").push({ type: "custom_message", customType: "task-notification", details: { notificationId: "b1:g" } });
-		shared.tasks.addSource({ name: "fixture", pending: async () => [job("b1"), job("b2")] });
+		shared.tasks.addSource({ name: "fixture", pending: async () => [report("b1"), report("b2")] });
 		shared.tasks.install(pi.pi);
 		await pi.start("s1");
 		await pi.settle();
@@ -274,7 +223,7 @@ describe("task delivery", () => {
 		shared.tasks.install(pi.pi);
 		await pi.start("s1");
 		pi.busy(true);
-		await shared.tasks.notify(job("b1"));
+		await shared.tasks.notify(report("b1"));
 		expect(pi.entries("s1")).toEqual([]);
 		await pi.settle();
 		await pi.settle();
@@ -287,30 +236,16 @@ describe("task delivery", () => {
 		shared.tasks.install(pi.pi);
 		await pi.start("s1");
 		pi.busy(false);
-		await shared.tasks.notify(job("b1"));
+		await shared.tasks.notify(report("b1"));
 		await pi.settle();
 		expect(pi.sent).toHaveLength(1);
-	});
-
-	it("merges a monitor's undelivered events into one notification that acks them all", async () => {
-		const pi = lead();
-		shared.tasks.install(pi.pi);
-		await pi.start("s1");
-		pi.busy(true);
-		const event = (seq: number): TaskNotification => ({ notificationId: `m:${seq}`, taskId: "m", kind: "monitor", ownerSession: "s1", summary: 'Monitor event: "m"', event: `line ${seq}` });
-		for (const seq of [1, 2, 3]) await shared.tasks.notify(event(seq));
-		expect(pi.sent.map((send) => send.id)).toEqual(["m:1"]);
-		await pi.settle();
-		await pi.settle();
-		expect(pi.sent.map((send) => send.id)).toEqual(["m:1", "m:1"]);
-		expect(pi.entries("s1").map((entry) => entry.details)).toEqual([{ notificationId: "m:1", notificationIds: ["m:1", "m:2", "m:3"] }]);
 	});
 
 	it("holds reports for an inactive session and delivers them when it returns", async () => {
 		const pi = lead();
 		shared.tasks.install(pi.pi);
 		await pi.start("s2");
-		await shared.tasks.notify(job("b1", "s1"));
+		await shared.tasks.notify(report("b1", "s1"));
 		expect(pi.sent).toEqual([]);
 		expect(pi.statuses.at(-1)).toBe("1 held");
 		await pi.start("s1", "resume");
@@ -329,7 +264,7 @@ describe("task delivery", () => {
 		reloaded.tasks.install(second.pi);
 		await first.start("s1");
 		await second.start("s1");
-		await reloaded.tasks.notify(job("b1"));
+		await reloaded.tasks.notify(report("b1"));
 		expect([first.sent.length, second.sent.length]).toEqual([0, 1]);
 
 		reloaded.tasks.register({ id: "a1", kind: "agent", name: "rev", description: "Review", status: "running", ownerSession: "s1", startedAt: 1 });
@@ -362,9 +297,9 @@ describe("kit start-up", () => {
 		rmSync(cwd, { recursive: true, force: true });
 	});
 
-	it("warns about a Pi older than 1.0.4 once, on the console and at the first session start", async () => {
-		const warning = "pi-kit: needs Pi 1.0.4 or newer, and this is Pi 1.0.1; update Pi.";
-		expect(["1.0.1", "1.0.4", "1.0.10", "1.1.0"].map(shared.oldPiWarning)).toEqual([warning, undefined, undefined, undefined]);
+	it("warns about a Pi older than 1.4.0 once, on the console and at the first session start", async () => {
+		const warning = "pi-kit: needs Pi 1.4.0 or newer, and this is Pi 1.0.1; update Pi.";
+		expect(["1.0.1", "1.4.0", "1.4.10", "1.5.0"].map(shared.oldPiWarning)).toEqual([warning, undefined, undefined, undefined]);
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		vi.doMock("@earendil-works/pi-coding-agent", async (original) => ({ ...await original<object>(), VERSION: "1.0.1" }));
 		vi.resetModules();

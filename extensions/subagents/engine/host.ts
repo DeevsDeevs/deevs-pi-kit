@@ -1,21 +1,18 @@
 // What the engine's agents and workflow runs share in this process: the host kept across /reload, the throttle of 16,
 // where an agent works, and readers of a durable transcript.
-import type { ChildProcess } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { join, relative } from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
 import { getAgentDir, type ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type * as Durable from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import type { ResolvedModel } from "../../shared/models.ts";
-import type { TaskNotification } from "../../shared/tasks.ts";
-import { createAgentWorktree, gitTopLevel, type AgentWorktree } from "../../shared/worktree.ts";
-import { workerPrompt, type AgentType, type PiToolName } from "../definitions.ts";
+import { tasks, type TaskNotification } from "../../shared/tasks.ts";
+import { createAgentWorktree, type AgentWorktree } from "../../shared/worktree.ts";
+import type { AgentType, PiToolName } from "../definitions.ts";
 import type { Progress } from "../workflow/run.ts";
-import type { BackgroundHost, backgroundTasks, BackgroundDoc, OutboxDoc } from "./background.ts";
-import type { CliWorker } from "./cli.ts";
-import type { CliInput, ReporterInput } from "./index.ts";
+import type { ReporterInput } from "./index.ts";
 import type { WorkflowInput } from "./workflow.ts";
 
 export type D = typeof Durable;
@@ -24,11 +21,13 @@ export type ConversationId = Durable.ConversationId;
 // Documents hold strict JSON; these shapes are written through `json()`.
 export type AgentsDoc = { agents: Record<string, Durable.JsonObject> };
 export type WorkflowsDoc = { workflows: Record<string, Durable.JsonObject> };
+export type OutboxDoc = { items: Durable.JsonObject[] };
+/** `silent`: a foreground Agent call returned the report as its result, so it is sent only if Pi closed before that result was saved. */
+export type OutboxItem = TaskNotification & { silent?: boolean };
 
 /** One global throttle across every engine and Workflow: at most 16 agents run, the rest queue FIFO. */
 export const AGENT_SLOTS = 16;
-// ponytail: a structural chord Context that never cancels; import chord's BACKGROUND_CONTEXT if durable starts checking identity.
-export const CTX: Ctx = { abortSignal: undefined, value: () => undefined, toString: () => "pi-kit" };
+export const CTX: Ctx = BACKGROUND_CONTEXT;
 export const FailureDetail = Type.Object({ message: Type.String() });
 export const BACKGROUND = { ownership: { kind: "conversation" }, background: true } as const;
 export interface Kit {
@@ -40,17 +39,12 @@ export interface Kit {
 	Calls: Durable.ConversationDocFamilyToken<Durable.JsonObject, string>;
 	Anchor: Durable.Task<null, { phase: "done" }, null, object>;
 	Reporter: Durable.Task<ReporterInput, { phase: "run" }, null, object>;
-	CliTask: Durable.Task<CliInput, { phase: "run" }, null, object>;
 	Workflow: Durable.Task<WorkflowInput, { phase: "run" }, null, object>;
-	Background: Durable.ConversationDocToken<BackgroundDoc>;
-	Job: ReturnType<typeof backgroundTasks>["Job"];
-	Monitor: ReturnType<typeof backgroundTasks>["Monitor"];
 }
 
 export interface Engine {
 	session: string;
 	dir: string;
-	project: string;
 	harness: Durable.Harness;
 	root: Durable.Conversation;
 	registry: Durable.Registry;
@@ -63,7 +57,9 @@ export interface Modules { D: D; openStorage(file: string): Promise<Durable.Stor
 export interface Waiter { claimed: boolean; timedOut: boolean; resolve(n: TaskNotification): void }
 /** A reporter in this process. Messages steer its run only between the prompt's placement and `closing`; after that, SendMessage waits for the report and resumes. */
 export interface Live { placed: boolean; closing: boolean; inflight: Promise<unknown>[]; done: Promise<TaskNotification | undefined> }
-export interface Host extends BackgroundHost {
+export interface Host {
+	/** Set on quit: a run that ends because Pi is closing is not reported. */
+	closing: boolean;
 	/** The durable module stays loaded across /reload: a fresh copy would fail its own `instanceof` checks. */
 	modules?: Promise<Modules>;
 	engines: Map<string, Promise<Engine>>;
@@ -76,8 +72,6 @@ export interface Host extends BackgroundHost {
 	live: Map<string, Live>;
 	/** Live progress of each workflow run, by its task id: the widget and /agents read it across /reload. */
 	workflows: Map<string, Progress>;
-	/** Running CLI workers by agentId, for TaskStop. */
-	workers: Map<string, ChildProcess>;
 	/** By session, the user's request that started the current turn, snapshotted by Workflow at launch. */
 	requests: Map<string, string>;
 }
@@ -85,14 +79,12 @@ export interface Host extends BackgroundHost {
 const KEY = Symbol.for("pi-kit.agents");
 // SAFETY: this package exclusively owns the symbol-keyed slot and only ever stores the host in it.
 const slot = globalThis as typeof globalThis & { [KEY]?: Host };
-export const host: Host = slot[KEY] ??= { engines: new Map(), running: 0, reserved: new Set(), queue: [], waiters: new Map(), closing: false, closed: new Map(), live: new Map(), workflows: new Map(), workers: new Map(), requests: new Map() };
+export const host: Host = slot[KEY] ??= { engines: new Map(), running: 0, reserved: new Set(), queue: [], waiters: new Map(), closing: false, live: new Map(), workflows: new Map(), requests: new Map() };
 // A host kept by /reload from an older kit version.
 host.live ??= new Map();
 host.workflows ??= new Map();
-host.workers ??= new Map();
 host.reserved ??= new Set();
 host.requests ??= new Map();
-host.closed ??= new Map();
 export const userRequests = host.requests;
 
 export function queuedAhead(): boolean {
@@ -101,17 +93,11 @@ export function queuedAhead(): boolean {
 
 export interface Placement { writer: boolean; worktree?: AgentWorktree; cwd: string }
 
-/** Where an agent works. Claude workers bypass permissions, so a Claude writer in a repository always gets its own worktree. */
-export async function placeAgent(type: AgentType, resolved: ResolvedModel, requested: string, agentId: string, isolation: "worktree" | undefined): Promise<Placement> {
+/** Where an agent works: its own worktree when isolated. */
+export async function placeAgent(type: AgentType, requested: string, agentId: string, isolation: "worktree" | undefined): Promise<Placement> {
 	const writer = type.tools.includes("edit") || type.tools.includes("write");
-	const isolate = (isolation ?? type.isolation) === "worktree" || resolved.harness === "claude" && writer && await gitTopLevel(requested) !== undefined;
-	const worktree = isolate ? await createAgentWorktree({ cwd: requested, agentId, agentDir: getAgentDir() }) : undefined;
+	const worktree = (isolation ?? type.isolation) === "worktree" ? await createAgentWorktree({ cwd: requested, agentId, agentDir: getAgentDir() }) : undefined;
 	return { writer, worktree, cwd: worktree ? join(worktree.path, relative(worktree.repoRoot, realpathSync(requested))) : requested };
-}
-
-/** The worker of a `claude:` or `codex:` model. */
-export function cliWorker(engine: Engine, type: AgentType, resolved: Extract<ResolvedModel, { harness: "claude" | "codex" }>, at: Placement, agentId: string, schema?: Durable.JsonObject): CliWorker {
-	return { harness: resolved.harness, model: resolved.model, level: resolved.level, cwd: at.cwd, instructions: workerPrompt(type, at.cwd, at.worktree, true), tools: type.tools, writer: at.writer, schema, dir: join(engine.dir, "cli", agentId) };
 }
 
 export function totalTokens(usage: { models?: Record<string, { totalTokens?: number }> } | undefined): number {
@@ -163,4 +149,30 @@ export function transcriptLog(entries: readonly Durable.EntryRecord[]): string {
 export function failure(settled: Durable.SettledSubmissionRecord | undefined): string {
 	if (settled?.status !== "unanswered") return "no answer";
 	return Value.Check(FailureDetail, settled.detail) ? settled.detail.message : settled.reason;
+}
+
+export const unsent = (answered: Set<string>) => (item: OutboxItem) => !item.silent || !answered.has(item.toolUseId ?? "");
+const outboxItem = (item: Durable.JsonObject) => decoded<OutboxItem>(item)!;
+export const outboxItems = (doc: OutboxDoc | undefined): OutboxItem[] => (doc?.items ?? []).map(outboxItem);
+
+/** Drops what the session file already holds: delivered reports, and silent ones whose foreground call it answered. */
+export function pruneOutbox(outbox: OutboxDoc, session: string, acks = tasks.acks(session)): void {
+	if (acks) outbox.items = outbox.items.filter((item) => !acks.delivered.has(outboxItem(item).notificationId) && unsent(acks.answered)(outboxItem(item)));
+}
+
+/** Appends a report after pruning, so the Outbox does not grow with a long session. */
+export function post(outbox: OutboxDoc, item: OutboxItem): void {
+	pruneOutbox(outbox, item.ownerSession);
+	outbox.items.push(json(item));
+}
+
+/** Documents hold strict JSON: optional fields that are `undefined` are dropped. */
+export function json<T>(value: T): Durable.JsonObject {
+	return JSON.parse(JSON.stringify(value));
+}
+
+/** Documents hold JsonObject, which no interface with optional fields can be asserted from directly. */
+export function decoded<T>(value: Readonly<Durable.JsonObject> | undefined): T | undefined {
+	// SAFETY: the kit writes each document only through json() of that document's record type.
+	return value as unknown as T | undefined;
 }

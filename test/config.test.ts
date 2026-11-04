@@ -23,37 +23,31 @@ afterEach(() => rmSync(root, { recursive: true, force: true }));
 describe("pi-kit.json", () => {
 	it("keeps what is valid, drops what is not, and warns once per problem naming the file and pointer", () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-		write("pi-kit.json", { codexFast: true, notifier: { title: 5, body: "ok" }, guard: { rmRf: "no", block: ["npm publish"] }, models: { sol: "x", luna: 7 }, lead: 3 });
+		write("pi-kit.json", { codexFast: true, models: { sol: "x", luna: 7 }, lead: 3 });
 		const path = join(project, ".pi", "pi-kit.json");
 		writeFileSync(join(agentDir, "pi-kit.json"), "{ nope");
 		expect(kitValues("codexFast", project, agentDir)).toEqual([undefined, true]);
-		expect(kitValues("notifier", project, agentDir)).toEqual([undefined, { body: "ok" }]);
-		expect(kitValues("guard", project, agentDir)).toEqual([undefined, { block: ["npm publish"] }]);
 		expect(kitValues("models", project, agentDir)).toEqual([undefined, { sol: "x" }]);
 		expect(kitValues("lead", project, agentDir)).toEqual([undefined, undefined]);
-		kitValues("notifier", project, agentDir);
+		kitValues("models", project, agentDir);
 		const warnings = warn.mock.calls.map(([message]) => String(message));
 		expect(warnings.filter((message) => message.includes(join(agentDir, "pi-kit.json")))).toHaveLength(1);
-		expect(warnings.filter((message) => message.includes(`${path}: /notifier/title`))).toHaveLength(1);
-		expect(warnings.some((message) => message.includes(`${path}: /guard/rmRf`))).toBe(true);
+		expect(warnings.filter((message) => message.includes(`${path}: /models/luna`))).toHaveLength(1);
+		expect(warnings.some((message) => message.includes(`${path}: /lead`))).toBe(true);
 		warn.mockRestore();
 	});
 
 	it("moves the legacy project files in once, keeping keys already set", async () => {
 		write("pi-kit.json", { codexFast: false, models: { sol: "x" } });
 		write("codex-fast.json", { enabled: true, showStatus: false });
-		write("notifier.json", { title: "Done", command: ["notify-send", "{title}"] });
 		write("subagents.json", { allowedModels: ["openai-codex/gpt-5.6-sol"], defaultModel: "luna", parallelMaxConcurrency: 1 });
 		write("runtime.json", { auto: true });
 		await migrateLegacyConfig(project);
-		expect(kit()).toEqual({ codexFast: false, models: { default: "luna", sol: "x" }, notifier: { title: "Done", command: ["notify-send", "{title}"] }, autonomy: true });
-		for (const name of ["codex-fast.json", "notifier.json", "subagents.json", "runtime.json"]) expect(existsSync(join(project, ".pi", name))).toBe(false);
+		expect(kit()).toEqual({ codexFast: false, models: { default: "luna", sol: "x" }, autonomy: true });
+		for (const name of ["codex-fast.json", "subagents.json", "runtime.json"]) expect(existsSync(join(project, ".pi", name))).toBe(false);
 	});
 
-	it("leaves everything when pi-kit.json does not parse, and a notifier.json off the schema", async () => {
-		write("notifier.json", { title: 5 });
-		await migrateLegacyConfig(project);
-		expect(existsSync(join(project, ".pi", "notifier.json"))).toBe(true);
+	it("leaves everything when pi-kit.json does not parse", async () => {
 		write("pi-kit.json", "{ nope");
 		write("codex-fast.json", { enabled: true });
 		await migrateLegacyConfig(project);

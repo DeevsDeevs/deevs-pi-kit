@@ -4,18 +4,15 @@ import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
-import { getAgentDir, isToolCallEventType, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { guardBashCall, guardShell, loadGuardConfig } from "../shared/guard.ts";
+import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadKitConfig, modelContext, modelLabel, modelsTable, resolveLead, resolveModel, type ModelContext } from "../shared/models.ts";
-import { agentForegroundResult, agentLaunchedResult, jobLaunchedResult, monitorStartedResult, newAgentId, newBackgroundTaskId, newWorkflowRunId, newWorkflowTaskId, recent, sendMessageResult, taskNotFound, taskNotRunningResult, taskStoppedResult, tasks, unknownAgentResult, workflowLaunchedResult, type RosterEntry } from "../shared/tasks.ts";
-import { isHeadless } from "../shared/surface.ts";
+import { agentForegroundResult, agentLaunchedResult, newAgentId, newWorkflowRunId, newWorkflowTaskId, recent, sendMessageResult, taskNotFound, taskNotRunningResult, taskStoppedResult, tasks, unknownAgentResult, workflowLaunchedResult, type RosterEntry } from "../shared/tasks.ts";
 import { showTextViewer } from "../shared/text-viewer.ts";
 import { finishAgentWorktree, sharesCwd } from "../shared/worktree.ts";
-import { currentMission, saveMission } from "../mission/store.ts";
 import { remindSilentTurns } from "./silent-turns.ts";
 import { promptWorkflow, WORKFLOW_DESCRIPTION, WORKFLOW_FIELDS, WORKFLOW_SNIPPET } from "./workflow-prompt.ts";
 import { agentTypes, agentTypesList, findAgentType, WORKING_RULES, workerPrompt } from "./definitions.ts";
-import { cliWorker, closeAll, ensureEngine, launch, launchWorkflow, placeAgent, queuedAhead, reinstall, resumeSession, send, settle, startJob, startMonitor, stop, storedAgent, transcriptTail, userRequests, workflowProgress, writerCwds, type Limits } from "./engine/index.ts";
+import { closeAll, ensureEngine, launch, launchWorkflow, placeAgent, queuedAhead, reinstall, resumeSession, send, settle, stop, storedAgent, transcriptTail, userRequests, workflowProgress, writerCwds, type Limits } from "./engine/index.ts";
 import { parseWorkflow } from "./workflow/meta.ts";
 import type { Progress } from "./workflow/run.ts";
 
@@ -32,7 +29,7 @@ const AgentSchema = Type.Object({
 	description: Type.String({ description: "3-5 words naming the task, shown in its notification" }),
 	prompt: Type.String({ description: "The whole brief: the agent sees nothing else" }),
 	subagent_type: Type.Optional(Type.String({ description: "The agent type; general-purpose when omitted" })),
-	model: Type.Optional(Type.String({ description: "Omit to run your model and level. Else a configured name (astra, luna, opus) or provider/id[:level]; a model the user named, exactly" })),
+	model: Type.Optional(Type.String({ description: "Omit to run your model and level. Else a configured name (astra, luna) or provider/id[:level]; a model the user named, exactly" })),
 	run_in_background: Type.Optional(Type.Boolean({ description: "Default true. false waits up to 2 minutes for the result: only when nothing useful can happen without it" })),
 	name: Type.Optional(Type.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$", description: "A name to address the agent by; a later agent with the same name takes it over" })),
 	isolation: Type.Optional(Type.Literal("worktree", { description: "Run in a fresh git worktree of the repo" })),
@@ -64,35 +61,6 @@ const WorkflowSchema = Type.Object({
 	resumeFromRunId: Type.Optional(Type.String({ pattern: "^wf_[a-z0-9-]{6,}$", description: WORKFLOW_FIELDS.resumeFromRunId })),
 });
 type WorkflowParams = Static<typeof WorkflowSchema>;
-
-const JobSchema = Type.Object({
-	command: Type.String({ description: "The shell command to run" }),
-	description: Type.String({ description: "A short description of what it does, shown in the notification" }),
-	cwd: Type.Optional(Type.String({ description: "Working directory; defaults to yours" })),
-	timeout: Type.Optional(Type.Integer({ minimum: 1_000, description: "Milliseconds before the command is killed. Set one for work that ends by itself; in print or json mode Pi waits only for jobs that have one" })),
-});
-type JobParams = Static<typeof JobSchema>;
-
-const MonitorSchema = Type.Object({
-	description: Type.String({ description: "What is watched; shown in every event" }),
-	command: Type.Optional(Type.String({ description: "Script; each stdout line is an event, exit ends the watch" })),
-	path: Type.Optional(Type.String({ description: "Folder or file" })),
-	url: Type.Optional(Type.String({ description: "http(s) URL, polled with GET" })),
-	cron: Type.Optional(Type.String({ description: "5-field cron, local time" })),
-	prompt: Type.Optional(Type.String({ description: "With cron: what each fire delivers" })),
-	every: Type.Optional(Type.Number({ description: "Seconds between probes: path 2 (min 1), url 60 (min 30)" })),
-	once: Type.Optional(Type.Boolean({ description: "End after the first event" })),
-	timeout_ms: Type.Optional(Type.Integer({ minimum: 1_000, description: `Expiry. ${ONLY_ON_REQUEST}` })),
-});
-type MonitorParams = Static<typeof MonitorSchema>;
-
-const MONITOR_DESCRIPTION = [
-	"Watch something in the background and get a <task-notification> per event while you keep working. An event is not the user's reply.",
-	"Sources, exactly one: command (each stdout line is an event, lines within 200 ms arrive together; exit ends the watch with its code; stderr only reaches the output file, so add 2>&1 when failures matter), path (a folder's added, changed and removed files, or a file's new lines), url (a status or body change), cron with prompt (a local-time timer that delivers the prompt when you are idle).",
-	"For \"tell me when X\", use a command that exits once X holds (`until test -e out/done; do sleep 1; done`) or once: true. Scripts must flush each line (grep --line-buffered), survive a failed probe (`curl ... || true`), and match failures as well as success: silence is not success. Floods are rate limited, then stopped.",
-	"An Agent or Workflow already notifies you when it ends: never Monitor its files to wait for it.",
-	"Watches survive /reload and pause while Pi is closed. On reopen a path or url watch reports what changed meanwhile as one caught_up event, an overdue cron fires once, and a command runs again from the top.",
-].join("\n");
 
 export default function subagentsExtension(pi: ExtensionAPI): void {
 	tasks.install(pi);
@@ -137,20 +105,15 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			const resolved = resolveModel(params.model ?? type.model, await models(ctx), type.effort);
 			const limits: Limits = { maxTurns: params.maxTurns, maxTokens: params.maxTokens, timeout: params.timeout };
 			const limitsSet = limitsText(limits);
-			if (resolved.harness !== "pi" && limitsSet) throw new Error(`maxTurns, maxTokens and timeout apply to Pi models only; ${modelLabel(resolved)} runs as a CLI worker.`);
 			const foreground = params.run_in_background === false;
 			const engine = await ensureEngine(ctx);
 			const agentId = newAgentId();
-			const at = await placeAgent(type, resolved, requested, agentId, params.isolation);
-			const { writer, worktree, cwd } = at;
+			const { writer, worktree, cwd } = await placeAgent(type, requested, agentId, params.isolation);
 			const shared = writer && sharesCwd(await writerCwds(engine), cwd);
 			const queued = queuedAhead();
-			const base = { agentId, description: params.description, prompt: params.prompt, name: params.name, cwd, writer, toolUseId: toolCallId, foreground, worktree };
 			let started: Awaited<ReturnType<typeof launch>>;
 			try {
-				started = await launch(engine, resolved.harness === "pi"
-					? { ...base, model: resolved.model, level: resolved.level, tools: type.tools, instructions: workerPrompt(type, cwd, worktree), limits }
-					: { ...base, cli: cliWorker(engine, type, resolved, at, agentId) });
+				started = await launch(engine, { agentId, description: params.description, prompt: params.prompt, name: params.name, cwd, writer, toolUseId: toolCallId, foreground, worktree, model: resolved.model, level: resolved.level, tools: type.tools, instructions: workerPrompt(type, cwd, worktree), limits });
 			} catch (error) {
 				if (worktree) await finishAgentWorktree(worktree).catch(() => undefined);
 				throw error;
@@ -225,7 +188,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "TaskStop",
 		label: "TaskStop",
-		description: "Stop a running background task: an agent, by its agentId or name; a workflow, by its task id (w…) or run id (wf_…), with no notification after; a job or monitor, by its id; or a collaborator, by its name (a graceful stand-down).",
+		description: "Stop a running background task: an agent, by its agentId or name; a workflow, by its task id (w…) or run id (wf_…), with no notification after.",
 		parameters: Type.Object({ task_id: Type.String({ description: "The id or name of the task to stop" }) }),
 		async execute(_toolCallId, params: { task_id: string }, _signal, _onUpdate, ctx) {
 			const { entry, stopped } = await stopTask(ctx, params.task_id);
@@ -235,72 +198,23 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerTool({
-		name: "job_start",
-		label: "job_start",
-		description: "Run a shell command in the background, only for work that must keep running while you do something else; builds and tests run in the foreground. The call returns at once with the job id and its output file; a <task-notification> arrives when the command exits, with its exit code. Read the output file with read; stop the job with TaskStop. A job lives in this Pi: it survives /reload, and if Pi closes first it is killed and reported as interrupted. Servers, watchers and REPLs that must outlive Pi belong in Herdr.",
-		promptSnippet: "Run a command in the background; notified when it exits.",
-		parameters: JobSchema,
-		async execute(toolCallId, params: JobParams, _signal, _onUpdate, ctx) {
-			const cwd = directory(ctx.cwd, params.cwd);
-			const blocked = guardShell(params.command, { cwd, root: ctx.cwd, config: loadGuardConfig(ctx.cwd) });
-			if (blocked) throw new Error(blocked);
-			const id = newBackgroundTaskId();
-			const outputFile = await startJob(await ensureEngine(ctx), { id, command: params.command, description: params.description, cwd, toolUseId: toolCallId, timeout: params.timeout });
-			return { content: [{ type: "text" as const, text: jobLaunchedResult(id, outputFile, params.timeout, isHeadless(ctx)) }], details: { taskId: id, outputFile } };
-		},
-	});
-
-	pi.registerTool({
-		name: "Monitor",
-		label: "Monitor",
-		description: MONITOR_DESCRIPTION,
-		promptSnippet: "Get notified on each event from a command, folder, URL or cron timer.",
-		parameters: MonitorSchema,
-		async execute(_toolCallId, params: MonitorParams, signal, _onUpdate, ctx) {
-			const sources = (["command", "path", "url", "cron"] as const).filter((key) => params[key] !== undefined);
-			if (sources.length !== 1) throw new Error("Give exactly one of command, path, url or cron.");
-			const source = sources[0]!;
-			if ((source === "cron") !== (params.prompt !== undefined)) throw new Error("prompt goes with cron, and cron needs a prompt.");
-			const every = (params.every ?? (source === "url" ? 60 : 2)) * 1000;
-			if (every < (source === "url" ? 30_000 : 1_000)) throw new Error(`every must be at least ${source === "url" ? 30 : 1} seconds for ${source}.`);
-			const cwd = ctx.cwd;
-			const target = source === "path" ? resolve(cwd, params.path!) : params[source]!;
-			const blocked = source === "command" && guardShell(target, { cwd, config: loadGuardConfig(cwd) });
-			if (blocked) throw new Error(blocked);
-			if (source === "url" && !/^https?:\/\//.test(target)) throw new Error("url must start with http:// or https://.");
-			const id = newBackgroundTaskId();
-			const { outputFile, baseline } = await startMonitor(() => ensureEngine(ctx), { id, description: params.description, cwd, source, target, prompt: params.prompt, every, once: params.once ?? false, timeoutMs: params.timeout_ms }, signal);
-			const until = params.timeout_ms ? `it expires after ${Math.round(params.timeout_ms / 1000)}s`
-				: params.once ? "its first event or TaskStop"
-				: source === "command" ? "the script exits or you stop it with TaskStop"
-				: "you stop it with TaskStop";
-			return { content: [{ type: "text" as const, text: monitorStartedResult(id, baseline, until, isHeadless(ctx)) }], details: { taskId: id, outputFile, baseline } };
-		},
-	});
-
-	pi.registerTool({
 		name: "SendMessage",
 		label: "SendMessage",
 		description: [
-			"Send a message to an agent you launched, by its agentId or name, or to a collaborator by its name (main is the lead).",
-			"A running agent gets it at its next tool round and folds it into its current work; a running Claude or Codex worker gets it when its current run ends. An agent that finished, failed or that you stopped resumes with its full context under the same agentId and notifies again. An agent the user stopped is not resumed. A collaborator gets it at its next idle, merged with anything else sent meanwhile.",
+			"Send a message to an agent you launched, by its agentId or name.",
+			"A running agent gets it at its next tool round and folds it into its current work. An agent that finished, failed or that you stopped resumes with its full context under the same agentId and notifies again. An agent the user stopped is not resumed.",
 		].join("\n"),
-		promptSnippet: "Steer or continue an agent, or message a collaborator.",
+		promptSnippet: "Steer or continue an agent.",
 		parameters: Type.Object({
-			to: Type.String({ description: "The agentId or name of the agent, or a collaborator's name" }),
+			to: Type.String({ description: "The agentId or name of the agent" }),
 			message: Type.String({ description: "The message" }),
 			summary: Type.Optional(Type.String({ description: "A 5-10 word preview of the message" })),
-			images: Type.Optional(Type.Array(Type.String(), { description: "Image files for a collaborator, by path" })),
 		}),
-		async execute(toolCallId, params: { to: string; message: string; images?: string[] }, _signal, _onUpdate, ctx) {
+		async execute(toolCallId, params: { to: string; message: string }, _signal, _onUpdate, ctx) {
 			const session = ctx.sessionManager.getSessionId();
-			const entry = tasks.find(params.to, session, "agent") ?? tasks.find(params.to, session, "collaborator") ?? await storedAgent(ctx, params.to);
-			if (entry?.send) {
-				const text = await entry.send(params.message, (params.images ?? []).map((image) => resolve(ctx.cwd, image)));
-				return { content: [{ type: "text" as const, text }], details: { taskId: entry.id, kind: entry.kind } };
-			}
+			const entry = tasks.find(params.to, session, "agent") ?? await storedAgent(ctx, params.to);
 			if (!entry) {
-				const known = tasks.list(session).filter((task) => task.kind === "agent" || task.send).map((task) => task.name ?? task.id);
+				const known = tasks.list(session).filter((task) => task.kind === "agent").map((task) => task.name ?? task.id);
 				throw new Error(unknownAgentResult(params.to, known, tasks.list(session).filter((task) => task.kind === "workflow").map((task) => task.id)));
 			}
 			const outcome = await send(await ensureEngine(ctx), entry.id, params.message, toolCallId);
@@ -312,7 +226,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "ListAgents",
 		label: "ListAgents",
-		description: "List this session's background tasks, each labelled by kind (agent, workflow, job, monitor, collaborator), with its id, name, status and description.",
+		description: "List this session's background tasks, each labelled by kind (agent or workflow), with its id, name, status and description.",
 		parameters: Type.Object({}),
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 			const entries = recent(tasks.list(ctx.sessionManager.getSessionId()));
@@ -323,7 +237,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("agents", {
-		description: "Background tasks, the Mission, agent types and models; /agents <id> tails a running agent, /agents stop <id> stops a task or pauses the Mission",
+		description: "Background tasks, agent types and models; /agents <id> tails a running agent, /agents stop <id> stops a task",
 		handler: async (args, ctx) => {
 			const [verb = "", id = ""] = args.trim().split(/\s+/);
 			if (!verb) return showTextViewer(ctx, "Agents", overview(ctx, await models(ctx)));
@@ -334,12 +248,6 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				if (!watched) return showTail(ctx, undefined);
 				return tail(ctx);
 			}
-			const mission = currentMission(ctx.cwd);
-			if (!tasks.find(id, ctx.sessionManager.getSessionId()) && mission?.slug === id) {
-				mission.state.status = "paused";
-				saveMission(mission, "Paused by the user from /agents.");
-				return ctx.ui.notify(`Paused mission ${id}`, "info");
-			}
 			try {
 				const { entry } = await stopTask(ctx, id, "user");
 				ctx.ui.notify(`Stopped ${entry.id} (${entry.description})`, "info");
@@ -349,8 +257,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.on("tool_call", (event, ctx) => isToolCallEventType("bash", event) ? guardBashCall(event.input.command, ctx.cwd) : undefined);
-	pi.on("session_start", async (event, ctx) => {
+		pi.on("session_start", async (event, ctx) => {
 		clearInterval(widget);
 		let shown = "";
 		widget = setInterval(() => {
@@ -368,7 +275,6 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			ctx.ui.notify(`The lead stays on Pi's model: ${error instanceof Error ? error.message : String(error)}`, "warning");
 		});
 		await resumeSession(ctx).catch((error) => ctx.ui.notify(`Agents of this session did not resume: ${error instanceof Error ? error.message : String(error)}`, "error"));
-		tasks.markResumed(ctx.sessionManager.getSessionId());
 	});
 	pi.on("session_shutdown", async (event, ctx) => {
 		clearInterval(widget);
@@ -408,8 +314,7 @@ async function workflowSource(params: WorkflowParams, ctx: ExtensionContext): Pr
 
 /** `args` given as a JSON string of an object or array is parsed, as CC does. */
 function coerceArgs(args: WorkflowParams["args"]): WorkflowParams["args"] {
-	// oxlint-disable-next-line anti-slop/no-runtime-typeof -- args arrive untyped from the model: this is their decoding boundary.
-	if (!(typeof args === "string" && /^\s*[[{]/.test(args))) return args;
+		if (!(typeof args === "string" && /^\s*[[{]/.test(args))) return args;
 	try {
 		return JSON.parse(args);
 	} catch {
@@ -427,7 +332,7 @@ function runningWorkflows(ctx: ExtensionContext): Progress[] {
 
 /** The /agents <id> widget: the agent and the last 8 lines of its transcript. */
 function tailLines(entry: RosterEntry, log: string | undefined): string[] {
-	const lines = log === undefined ? ["(a Claude Code or Codex worker keeps its own transcript)"] : log.split("\n").filter(Boolean).slice(-8);
+	const lines = (log ?? "").split("\n").filter(Boolean).slice(-8);
 	return [`${entry.id} · ${entry.description}`, ...lines.map((line) => line.slice(0, 200))];
 }
 
@@ -481,17 +386,11 @@ function rosterLines(entries: RosterEntry[]): string[] {
 	];
 }
 
-function missionLines(cwd: string): string[] {
-	const mission = currentMission(cwd);
-	return mission ? ["", `Mission ${mission.slug}: ${mission.state.status}${mission.state.next ? ` · next: ${mission.state.next}` : ""}`] : [];
-}
-
 function overview(ctx: ExtensionContext, models: ModelContext): string {
 	return [
 		...rosterLines(recent(tasks.list(ctx.sessionManager.getSessionId()))),
 		...workflowProgress(ctx.sessionManager.getSessionId()).flatMap(workflowLines),
-		...missionLines(ctx.cwd),
-		"",
+				"",
 		"Agent types",
 		...agentTypes().map((type) => `- ${type.name}: ${type.tools.join(", ")}`),
 		"",

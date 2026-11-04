@@ -16,9 +16,7 @@ import { workerPrompt, workflowAgentType } from "../definitions.ts";
 import { parseWorkflow } from "../workflow/meta.ts";
 import { driveWorkflow, framePrompt, newProgress, runRecord, usage, type AgentRunner, type CallOutcome, type Progress } from "../workflow/run.ts";
 import type { AgentOptions, JsonValue } from "../workflow/sandbox.ts";
-import { decoded, json, post } from "./background.ts";
-import { cliAnswer, CONTINUE, newProgress as newCliProgress, spawnWorker, type CliWorker } from "./cli.ts";
-import { acquire, BACKGROUND, cliWorker, CTX, failure, host, placeAgent, release, scan, text, totalTokens, transcriptLog, type ConversationId, type Ctx, type D, type Engine, type Kit, type WorkflowsDoc } from "./host.ts";
+import { acquire, BACKGROUND, CTX, decoded, failure, host, json, placeAgent, post, release, scan, text, totalTokens, transcriptLog, type ConversationId, type Ctx, type D, type Engine, type Kit, type WorkflowsDoc } from "./host.ts";
 
 const ObjectRoot = Type.Object({ type: Type.Literal("object"), properties: Type.Record(Type.String(), Type.Unknown()), required: Type.Optional(Type.Array(Type.String())) });
 const STRUCTURED_OUTPUT = "StructuredOutput";
@@ -52,7 +50,7 @@ export interface WorkflowRecord {
 	schemas?: Durable.JsonObject[];
 }
 /** The crash map: one per agent() call, keyed by prompt, options and occurrence; written with the call's conversation, then with its outcome, whose `worktree` is the one kept. */
-export type CallRecord = Partial<CallOutcome> & { agentId: string; conversationId?: ConversationId; cli?: CliWorker; sessionId?: string; isolated?: AgentWorktree };
+export type CallRecord = Partial<CallOutcome> & { agentId: string; conversationId?: ConversationId; isolated?: AgentWorktree };
 type WorkflowRuntime = Durable.TaskRuntime<WorkflowInput, { phase: "run" }, null, object>;
 
 const checkedSchemas = new Set<string>();
@@ -82,7 +80,7 @@ function schemaExtension(D: D, session: string, schema: Durable.JsonObject): Dur
 		parameters: schema as TSchema,
 		replay: "safe",
 		// SAFETY: pi-ai validated `args` against an object schema, so they are a JSON object.
-		execute: async (args) => ({ content: [{ type: "text", text: "Structured output provided successfully" }], details: args as Durable.JsonObject, control: { terminate: true } }),
+		execute: async (args) => ({ output: [{ type: "text", text: "Structured output provided successfully" }], details: args as Durable.JsonObject, control: { terminate: true } }),
 	});
 	// `terminate` ends a run only when every call of the batch asks for it; a valid call batched with other tools, or the
 	// cap's last failed call, ends it here: the request waits until the abort reaches this generation, so it is never sent.
@@ -137,7 +135,7 @@ function structuredFailure(result: { failed: string[] }, settled: Durable.Settle
 }
 
 export const workflowRecords = (doc: WorkflowsDoc | undefined) => decoded<Record<string, WorkflowRecord>>(doc?.workflows) ?? {};
-const callRecord = (doc: Readonly<Durable.JsonObject> | undefined) => (doc?.conversationId === undefined && doc?.cli === undefined ? undefined : decoded<CallRecord>(doc));
+const callRecord = (doc: Readonly<Durable.JsonObject> | undefined) => (doc?.conversationId === undefined ? undefined : decoded<CallRecord>(doc));
 
 export async function launchWorkflow(engine: Engine, input: WorkflowInput, description: string): Promise<void> {
 	const { kit, root } = engine;
@@ -238,10 +236,7 @@ export async function abortWorkflowTask(docs: WorkflowDocs, input: WorkflowInput
 	tasks.update(input.taskId, { status: "killed" });
 }
 
-/**
- * agent() over durable: a slot of the global throttle, then a conversation the run owns, answered once even across a Pi exit.
- * A `claude:` or `codex:` model runs as that CLI instead; its session id is kept on the call, so a rerun after a crash resumes it.
- */
+/** agent() over durable: a slot of the global throttle, then a conversation the run owns, answered once even across a Pi exit. */
 function callRunner(D: D, docs: WorkflowDocs, engine: Engine, input: WorkflowInput, runtime: WorkflowRuntime, context: Ctx): AgentRunner {
 	const instructions = new Map<string, string>();
 	const member = (key: string) => `${input.taskId}:${key}`;
@@ -257,13 +252,7 @@ function callRunner(D: D, docs: WorkflowDocs, engine: Engine, input: WorkflowInp
 		const type = workflowAgentType(options.agentType);
 		const resolved = resolveModel(options.model ?? type.model, await (models ??= workflowModels(input)), LEVELS.find((level) => level === options.effort) ?? type.effort);
 		const agentId = newAgentId();
-		const at = await placeAgent(type, resolved, resolve(input.cwd, options.cwd ?? "."), agentId, options.isolation);
-		const { worktree, cwd } = at;
-		if (resolved.harness !== "pi") {
-			const call: CallRecord = { agentId, isolated: worktree, cli: cliWorker(engine, type, resolved, at, agentId, options.schema) };
-			await save(key, agentId, call);
-			return call;
-		}
+		const { worktree, cwd } = await placeAgent(type, resolve(input.cwd, options.cwd ?? "."), agentId, options.isolation);
 		const structured = options.schema && useSchema(D, engine, options.schema);
 		const prompt = `${type.name}\0${cwd}`;
 		// Context files and skills are read once per type and directory, not once per agent.
@@ -309,17 +298,6 @@ function callRunner(D: D, docs: WorkflowDocs, engine: Engine, input: WorkflowInp
 		if (structuredError) outcome.structuredError = structuredError;
 		return { outcome, log: `${transcriptLog(transcript)}\n\n${answer}\n` };
 	};
-	const askCli = async (key: string, call: CallRecord, prompt: string): Promise<{ outcome: CallOutcome; log: string }> => {
-		const worker = call.cli!;
-		const progress = newCliProgress();
-		const run = call.sessionId ? { resume: call.sessionId, prompt: CONTINUE } : { prompt };
-		const exit = await spawnWorker({ agentId: call.agentId, worker }, engine.dir, run, progress, runtime.signal, host.workers, (sessionId) => save(key, call.agentId, { agentId: call.agentId, sessionId }));
-		const answer = await cliAnswer(worker, exit, progress);
-		const outcome: CallOutcome = { agentId: call.agentId, status: answer.ok ? "done" : "failed", result: answer.ok ? (worker.schema ? answer.structured ?? null : answer.text) : null, tokens: progress.tokens, toolUses: progress.toolUses };
-		if (!answer.ok) outcome.error = answer.error;
-		if (worker.schema && !answer.ok && exit.code === 0 && progress.error === undefined) outcome.structuredError = "agent({schema}): subagent completed without calling StructuredOutput";
-		return { outcome, log: `${progress.log.join("\n")}\n\n${answer.text}\n` };
-	};
 	return {
 		async stored(key) {
 			const call = await read(key);
@@ -339,7 +317,7 @@ function callRunner(D: D, docs: WorkflowDocs, engine: Engine, input: WorkflowInp
 				const call = await read(key) ?? await create(key, options);
 				start(call.agentId);
 				const framed = framePrompt(input.request, prompt);
-				const { outcome, log } = call.cli ? await askCli(key, call, framed) : await askPi(key, call, framed, options.schema);
+				const { outcome, log } = await askPi(key, call, framed, options.schema);
 				if (runtime.signal.aborted) throw new Error("Workflow aborted");
 				const kept = call.isolated && existsSync(call.isolated.path) ? await finishAgentWorktree(call.isolated).catch(() => call.isolated) : undefined;
 				if (kept) outcome.worktree = { path: kept.path, branch: kept.branch };

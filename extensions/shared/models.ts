@@ -1,30 +1,21 @@
-import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { clampThinkingLevel, type Api, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
-import { Value } from "typebox/value";
 import { trustedKitValues, type Trust } from "./config.ts";
 
 export type ModelCatalog = Pick<ModelRegistry, "getAll" | "getAvailable" | "find" | "isUsingOAuth">;
 export type KitConfig = { models: Record<string, string>; lead?: string | null };
-export type CodexCatalog = { slugs: string[]; model?: string };
 
 export interface ModelContext {
 	config: KitConfig;
 	registry: ModelCatalog;
 	/** The lead's live model and level: `inherit` takes both, and a Pi spec without a level takes the level. */
 	lead?: { model: Model<Api>; level: ModelThinkingLevel };
-	codex?: CodexCatalog;
 	/** Only Pi OAuth (ChatGPT) logins resolve: the built-in lead never moves a session onto API billing, as `OPENAI_API_KEY` would. */
 	oauthOnly?: boolean;
 }
 
 type Leveled = { level?: ModelThinkingLevel; clampedFrom?: ModelThinkingLevel };
-export type ResolvedModel =
-	| ({ harness: "pi"; model: Model<Api> } & Leveled)
-	| ({ harness: "claude" | "codex"; model: string } & Leveled);
+export type ResolvedModel = { model: Model<Api> } & Leveled;
 type Miss = { reason: string };
 
 export const KIT_DEFAULTS = {
@@ -34,10 +25,6 @@ export const KIT_DEFAULTS = {
 		astra: "openai/gpt-*-astra|openai-codex/gpt-*-astra",
 		luna: "openai/gpt-*-luna|openai-codex/gpt-*-luna",
 		terra: "openai/gpt-*-terra|openai-codex/gpt-*-terra",
-		opus: "claude:opus",
-		sonnet: "claude:sonnet",
-		haiku: "claude:haiku",
-		fable: "claude:fable",
 	},
 	lead: "sol",
 } satisfies KitConfig;
@@ -45,30 +32,19 @@ export const KIT_DEFAULTS = {
 export const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ModelThinkingLevel[];
 const DATED = /-\d{8}$/;
 const BUILT_IN: Record<string, string> = KIT_DEFAULTS.models;
-const CodexCache = Type.Object({ models: Type.Array(Type.Object({ slug: Type.String() })) });
 
-/** What a resolution takes, built fresh for each one so an edit to pi-kit.json or Codex's catalog applies to the next call. */
+/** What a resolution takes, built fresh for each one so an edit to pi-kit.json applies to the next call. */
 export async function modelContext(ctx: Trust & { modelRegistry: ModelCatalog }, lead?: ModelContext["lead"]): Promise<ModelContext> {
-	return { config: await loadKitConfig(ctx), registry: ctx.modelRegistry, lead, codex: readCodexCatalog(process.env.CODEX_HOME || join(homedir(), ".codex")) };
+	return { config: await loadKitConfig(ctx), registry: ctx.modelRegistry, lead };
 }
 
-/** A trusted project over global over kit defaults, per name; an untrusted project could point every Agent at a `bypassPermissions` Claude worker. */
+/** A trusted project over global over kit defaults, per name; an untrusted project could point every Agent at a model of its choosing. */
 export async function loadKitConfig(ctx: Trust, dir?: string): Promise<KitConfig> {
 	const leads = trustedKitValues("lead", ctx, dir);
 	return {
 		models: Object.assign({}, KIT_DEFAULTS.models, ...trustedKitValues("models", ctx, dir)),
 		lead: leads.reduce<string | null | undefined>((lead, file) => (file === undefined ? lead : file), undefined),
 	};
-}
-
-/** Codex's model cache and the top-level `model` of its config.toml; either may be missing. */
-export function readCodexCatalog(codexHome: string): CodexCatalog {
-	let cache;
-	try { cache = JSON.parse(readFileSync(join(codexHome, "models_cache.json"), "utf8")); } catch {}
-	let toml = "";
-	try { toml = readFileSync(join(codexHome, "config.toml"), "utf8"); } catch {}
-	const model = /^model\s*=\s*["']([^"'\n]+)["']/m.exec(toml.split(/^\s*\[/m)[0])?.[1];
-	return { slugs: Value.Check(CodexCache, cache) ? cache.models.map((entry) => entry.slug) : [], model };
 }
 
 /** `*` stands for a version only; the highest version wins numerically, and an undated id beats its `-YYYYMMDD` twin. */
@@ -113,29 +89,27 @@ export function resolveModel(spec: string | undefined, ctx: ModelContext, effort
 			builtIn = current === BUILT_IN[body];
 			continue;
 		}
-		const outcomes = body.split("|").map((alternative) => resolveSpec(alternative === body ? current : alternative, alternative, level, ctx));
+		const outcomes = body.split("|").map((alternative) => resolveSpec(alternative, level, ctx));
 		const resolved = outcomes.filter((outcome): outcome is ResolvedModel => !("reason" in outcome));
-		const chosen = (builtIn && resolved.length > 1 && resolved.find((r) => r.harness === "pi" && ctx.registry.isUsingOAuth(r.model))) || resolved[0];
+		const chosen = (builtIn && resolved.length > 1 && resolved.find((r) => ctx.registry.isUsingOAuth(r.model))) || resolved[0];
 		if (chosen) return chosen;
 		throw resolutionError(tried, badLevel(current) ?? outcomes.flatMap((outcome) => ("reason" in outcome ? [outcome.reason] : [])).join("; "), ctx);
 	}
 }
 
 /** The `lead` key for a new session; `undefined` when it is `null`, or unset and the default does not resolve. The level stays Pi's setting unless the spec carries one. */
-export function resolveLead(ctx: ModelContext): Extract<ResolvedModel, { harness: "pi" }> | undefined {
+export function resolveLead(ctx: ModelContext): ResolvedModel | undefined {
 	if (ctx.config.lead === undefined) {
 		const oauthOnly = ctx.config.models.sol === KIT_DEFAULTS.models.sol;
 		try { return resolveLead({ ...ctx, oauthOnly, config: { ...ctx.config, lead: KIT_DEFAULTS.lead } }); } catch { return undefined; }
 	}
 	if (ctx.config.lead === null) return undefined;
-	const resolved = resolveModel(ctx.config.lead, { ...ctx, lead: undefined });
-	if (resolved.harness === "pi") return resolved;
-	throw new Error(`The lead must be a Pi model, but "${ctx.config.lead}" is ${modelLabel(resolved)}.`);
+	return resolveModel(ctx.config.lead, { ...ctx, lead: undefined });
 }
 
-/** What ran, for launch results: `openai-codex/gpt-6-astra:high`, `claude:opus`. */
+/** What ran, for launch results: `openai-codex/gpt-6-astra:high`. */
 export function modelLabel(resolved: ResolvedModel): string {
-	const target = resolved.harness === "pi" ? ref(resolved.model) : `${resolved.harness}:${resolved.model}`;
+	const target = ref(resolved.model);
 	const label = resolved.level ? `${target}:${resolved.level}` : target;
 	return resolved.clampedFrom ? `${label} (${resolved.clampedFrom} is not supported)` : label;
 }
@@ -151,11 +125,9 @@ export function modelsTable(ctx: ModelContext): string[] {
 	});
 }
 
-function resolveSpec(spec: string, body: string, level: ModelThinkingLevel | undefined, ctx: ModelContext): ResolvedModel | Miss {
+function resolveSpec(body: string, level: ModelThinkingLevel | undefined, ctx: ModelContext): ResolvedModel | Miss {
 	const { registry, lead } = ctx;
 	if (body === "inherit") return lead ? pi(lead.model, level ?? lead.level) : { reason: "there is no lead model to inherit" };
-	if (spec.startsWith("claude:")) return claude(body.slice(7), level, registry);
-	if (spec.startsWith("codex:")) return codex(body.slice(6), level, ctx);
 	const slash = body.indexOf("/");
 	if (slash > 0) {
 		const provider = body.slice(0, slash);
@@ -176,31 +148,7 @@ function resolveSpec(spec: string, body: string, level: ModelThinkingLevel | und
 const loggedIn = ({ registry, oauthOnly }: ModelContext): Model<Api>[] => registry.getAvailable().filter((model) => !oauthOnly || registry.isUsingOAuth(model));
 
 function pi(model: Model<Api>, level: ModelThinkingLevel | undefined): ResolvedModel {
-	return { harness: "pi", model, ...clamp(model, level) };
-}
-
-/** CC's `--effort` has no `off` or `minimal`: `off` leaves CC's default and `minimal` becomes `low`. */
-function claude(name: string, level: ModelThinkingLevel | undefined, registry: ModelCatalog): ResolvedModel | Miss {
-	const ids = registry.getAll().filter((model) => model.provider === "anthropic").map((model) => model.id);
-	const family = name.replace(/\[1m\]$/, "");
-	const id = ids.includes(family) ? family : newest(`claude-${family}-*`, ids);
-	if (!id) {
-		const families = [...new Set(ids.flatMap((known) => /^claude-([a-z]+)-\d/.exec(known)?.[1] ?? []))];
-		return { reason: `Claude Code takes ${families.join(", ")} or a claude-* id from Pi's catalog` };
-	}
-	const clamped = clamp(registry.find("anthropic", id), level).level;
-	const effort = clamped === "off" ? undefined : clamped === "minimal" ? "low" : clamped;
-	return { harness: "claude", model: name, level: effort, clampedFrom: effort === level ? undefined : level };
-}
-
-/** A slug from Pi's `openai-codex` catalog, Codex's cache or its config.toml; no slug takes the lead's id on `openai` (Pi 1.0.4's ChatGPT login) or `openai-codex`, else config.toml's. */
-function codex(slug: string, level: ModelThinkingLevel | undefined, ctx: ModelContext): ResolvedModel | Miss {
-	const piIds = ctx.registry.getAll().filter((model) => model.provider === "openai-codex").map((model) => model.id);
-	const known = [...new Set([...piIds, ...(ctx.codex?.slugs ?? []), ...(ctx.codex?.model ? [ctx.codex.model] : [])])];
-	const leadId = ["openai", "openai-codex"].includes(ctx.lead?.model.provider ?? "") ? ctx.lead?.model.id : undefined;
-	const chosen = slug ? newest(slug, known) : (leadId ?? ctx.codex?.model);
-	if (!chosen) return { reason: slug ? `Codex knows ${known.join(", ")}` : "the lead is not on openai or openai-codex and ~/.codex/config.toml names no model" };
-	return { harness: "codex", model: chosen, ...clamp(ctx.registry.find("openai-codex", chosen) ?? ctx.registry.find("openai", chosen), level) };
+	return { model, ...clamp(model, level) };
 }
 
 function clamp(model: Model<Api> | undefined, level: ModelThinkingLevel | undefined): Leveled {
@@ -216,7 +164,7 @@ function splitLevel(spec: string): [string, ModelThinkingLevel | undefined] {
 }
 
 function badLevel(spec: string): string | undefined {
-	const word = /:([a-z]+)$/.exec(spec.replace(/^(claude|codex):/, ""))?.[1];
+	const word = /:([a-z]+)$/.exec(spec)?.[1];
 	return word && !LEVELS.some((known) => known === word) ? `${word} is not a level; the levels are ${LEVELS.join(", ")}` : undefined;
 }
 
