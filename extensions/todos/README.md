@@ -10,4 +10,4 @@ One `todo_list` tool: a session todo list shown as a widget. How the model shoul
 
 - Statuses: `pending`, `in_progress`, `blocked`, `done`.
 - `write` replaces the whole list: at most 40 items, unique string ids, titles up to 120 characters, notes up to 1,000.
-- The list lives in the session file (each `todo_list` result), so it follows `/resume` and tree navigation. It is not project memory; use chains for handoffs.
+- The list lives in the session file (each `todo_list` result), so it follows `/resume` and tree navigation. It is not project memory.

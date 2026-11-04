@@ -2,23 +2,19 @@
 // /reload, pause when Pi exits and continue when their session reopens; their reports reach the lead exactly once.
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { access, mkdir, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { access, mkdir, realpath, rm, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { cleanupSessionResources, type Api, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { createBashTool, createEditTool, createFindTool, createGrepTool, createLsTool, createReadTool, createWriteTool, getAgentDir, type ExtensionContext, type ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
-import { guardBashCall } from "../../shared/guard.ts";
-import { trySignalGroup } from "../../shared/process-group.ts";
 import { agentSummary, recent, sessionAcks, tasks, type RosterEntry, type TaskNotification, type TaskStatus } from "../../shared/tasks.ts";
-import { addWorktree, agentWorktreeAt, finishAgentWorktree, git, type AgentWorktree } from "../../shared/worktree.ts";
+import { addWorktree, finishAgentWorktree, git, type AgentWorktree } from "../../shared/worktree.ts";
 import { PI_TOOLS, type PiToolName } from "../definitions.ts";
-import { cliAnswer, CONTINUE, newProgress as newCliProgress, spawnWorker, type CliExit, type CliWorker } from "./cli.ts";
-import { backgroundTasks, decoded, firstLook, json, outboxItems, post, pruneOutbox, unsent, type BackgroundDoc, type BackgroundRecord, type JobInput, type MonitorInput, type OutboxDoc, type OutboxItem } from "./background.ts";
-import { acquire, BACKGROUND, CTX, failure, host, release, scan, text, totalTokens, transcriptLog, type AgentsDoc, type ConversationId, type Ctx, type D, type Engine, type Kit, type Live, type Modules, type WorkflowsDoc } from "./host.ts";
+import { acquire, BACKGROUND, CTX, decoded, failure, host, json, outboxItems, post, pruneOutbox, release, scan, text, totalTokens, transcriptLog, unsent, type AgentsDoc, type ConversationId, type Ctx, type D, type Engine, type Kit, type Live, type Modules, type OutboxDoc, type OutboxItem, type WorkflowsDoc } from "./host.ts";
 import { bunSqlite, lock, prune, reap, SETTLED, unlock } from "./storage.ts";
 import { abortWorkflowTask, installSchemas, registerWorkflow, runWorkflowTask, workflowRecords, type WorkflowInput } from "./workflow.ts";
 
-export { cliWorker, placeAgent, queuedAhead, userRequests } from "./host.ts";
+export { placeAgent, queuedAhead, userRequests } from "./host.ts";
 export { checkSchema, launchWorkflow, workflowProgress } from "./workflow.ts";
 
 const SAFE_TOOLS = new Set<PiToolName>(["read", "grep", "find", "ls"]);
@@ -37,25 +33,19 @@ interface LaunchBase {
 	foreground: boolean;
 	worktree?: AgentWorktree;
 }
-/** A Pi model runs in-process on a durable conversation; a `claude:` or `codex:` model runs as that CLI. */
-export type LaunchSpec = LaunchBase & ({
-	cli?: undefined;
+/** An agent runs in-process on a durable conversation. */
+export interface LaunchSpec extends LaunchBase {
 	model: Model<Api>;
 	level?: ModelThinkingLevel;
 	tools: PiToolName[];
 	instructions: string;
 	limits: Limits;
-} | { cli: CliWorker });
+}
 
 interface AgentRecord {
 	name?: string;
 	description: string;
-	/** A Pi agent's conversation; a CLI worker has `cli` and the CLI's own session instead. */
-	conversationId?: ConversationId;
-	cli?: CliWorker;
-	sessionId?: string;
-	/** SendMessages to a running CLI worker, delivered by resume when its run ends. */
-	queued?: string[];
+	conversationId: ConversationId;
 	startedAt: number;
 	status: TaskStatus;
 	cwd: string;
@@ -83,9 +73,6 @@ export interface ReporterInput extends RunInput {
 	limits: Limits;
 	/** Where a resumed run starts in its conversation, so its report counts only its own entries and tokens. */
 	from?: { entries: number; tokens: number };
-}
-export interface CliInput extends RunInput {
-	worker: CliWorker;
 }
 
 tasks.addSource({
@@ -130,7 +117,7 @@ export async function reinstall(): Promise<void> {
 	for (const pending of host.engines.values()) {
 		const engine = await pending.catch(() => undefined);
 		if (!engine) continue;
-		engine.kit = buildKit(D, engine.dir, engine.project);
+		engine.kit = buildKit(D, engine.dir);
 		engine.registry.install(engine.kit.extension);
 		installSchemas(D, engine.registry, engine.session, workflowRecords(await engine.harness.snapshot(engine.kit.Workflows, engine.root.id, CTX)));
 	}
@@ -160,7 +147,7 @@ export async function closeAll(ctx?: ExtensionContext): Promise<void> {
 /** Nothing running or paused, and every report in the session file: only such a store may be pruned. */
 async function settled({ harness, kit, root, session }: Engine, acks: ReturnType<typeof sessionAcks> | undefined): Promise<boolean> {
 	await root.commit(async (tx) => pruneOutbox(await tx.doc(kit.Outbox, root.id), session, acks), CTX);
-	const records = [agentRecords(await harness.snapshot(kit.Agents, root.id, CTX)), workflowRecords(await harness.snapshot(kit.Workflows, root.id, CTX)), backgroundRecords(await harness.snapshot(kit.Background, root.id, CTX))].flatMap(Object.values);
+	const records = [agentRecords(await harness.snapshot(kit.Agents, root.id, CTX)), workflowRecords(await harness.snapshot(kit.Workflows, root.id, CTX))].flatMap(Object.values);
 	return records.every((record) => record.status !== "running") && outboxItems(await harness.snapshot(kit.Outbox, root.id, CTX)).length === 0;
 }
 
@@ -171,14 +158,8 @@ export async function launch(engine: Engine, spec: LaunchSpec): Promise<{ output
 	const startedAt = Date.now();
 	const done = spec.foreground ? new Promise<TaskNotification>((resolve) => host.waiters.set(agentId, { claimed: false, timedOut: false, resolve })) : undefined;
 	const { kit, root } = engine;
-	const record: AgentRecord = { name: spec.name, description: spec.description, startedAt, status: "running", cwd: spec.cwd, writer: spec.writer, worktree: spec.worktree };
+	let record: AgentRecord | undefined;
 	await root.commit(async (tx) => {
-		if (spec.cli) {
-			const cliRecord: AgentRecord = { ...record, cli: spec.cli };
-			await tx.createTask(kit.CliTask, { ...cliInput({ session: engine.session, outputFile }, agentId, cliRecord, spec.prompt, spec.toolUseId), startedAt }, BACKGROUND);
-			(await tx.doc(kit.Agents, root.id)).agents[agentId] = json(cliRecord);
-			return;
-		}
 		const anchor = await tx.createTask(kit.Anchor, null, BACKGROUND);
 		const child = await tx.createConversation({ ownership: { kind: "task", taskId: anchor } });
 		await D.configure(tx, child.id, {
@@ -191,9 +172,10 @@ export async function launch(engine: Engine, spec: LaunchSpec): Promise<{ output
 		});
 		const input: ReporterInput = { agentId, session: engine.session, conversationId: child.id, prompt: spec.prompt, requestId: `agent:${agentId}`, description: spec.description, toolUseId: spec.toolUseId, limits: spec.limits, startedAt, outputFile, worktree: spec.worktree };
 		await tx.createTask(kit.Reporter, input, BACKGROUND);
-		(await tx.doc(kit.Agents, root.id)).agents[agentId] = json({ ...record, conversationId: child.id });
+		record = { name: spec.name, description: spec.description, startedAt, status: "running", conversationId: child.id, cwd: spec.cwd, writer: spec.writer, worktree: spec.worktree };
+		(await tx.doc(kit.Agents, root.id)).agents[agentId] = json(record);
 	}, CTX);
-	registerAgent(engine, agentId, record);
+	registerAgent(engine, agentId, record!);
 	return { outputFile, done };
 }
 
@@ -212,14 +194,13 @@ function registerAgent(engine: Engine, id: string, record: AgentRecord): void {
 }
 
 /**
- * SendMessage: a running agent gets a steer at its next tool round, a queued one right after its prompt, a running CLI worker
- * gets it by resume once its run ends; a finished one is resumed on its own conversation by a new reporter and notifies again.
+ * SendMessage: a running agent gets a steer at its next tool round, a queued one right after its prompt; a finished one is
+ * resumed on its own conversation by a new reporter and notifies again.
  * Nothing is submitted to an idle conversation from here, since that would start a run outside its reporter and the throttle.
  */
-export async function send(engine: Engine, agentId: string, message: string, toolUseId: string): Promise<"steered" | "queued" | "resumed" | "refused"> {
+export async function send(engine: Engine, agentId: string, message: string, toolUseId: string): Promise<"steered" | "resumed" | "refused"> {
 	const record = await agentRecord(engine, agentId);
 	if (record.stoppedBy === "user") return "refused";
-	if (!record.conversationId) return sendCli(engine, agentId, message, toolUseId);
 	const conversationId = record.conversationId;
 	const conversation = (await engine.harness.conversation(conversationId, CTX))!;
 	const live = host.live.get(agentId);
@@ -255,27 +236,7 @@ export async function send(engine: Engine, agentId: string, message: string, too
 	return outcome;
 }
 
-async function sendCli(engine: Engine, agentId: string, message: string, toolUseId: string): Promise<"queued" | "resumed"> {
-	const outcome = await engine.root.commit(async (tx) => {
-		const current = agentRecords(await tx.doc(engine.kit.Agents, engine.root.id))[agentId]!;
-		if (current.status === "running") {
-			current.queued = [...current.queued ?? [], message];
-			return "queued" as const;
-		}
-		current.status = "running";
-		current.stopped = false;
-		await tx.createTask(engine.kit.CliTask, cliInput({ session: engine.session, outputFile: agentOutput(engine, agentId) }, agentId, current, message, toolUseId), BACKGROUND);
-		return "resumed" as const;
-	}, CTX);
-	if (outcome === "resumed") tasks.update(agentId, { status: "running" });
-	return outcome;
-}
-
 const agentOutput = (engine: Engine, agentId: string): string => join(engine.dir, "out", `${agentId}.md`);
-
-function cliInput(at: Pick<RunInput, "session" | "outputFile">, agentId: string, record: AgentRecord, prompt: string, toolUseId: string): CliInput {
-	return { agentId, session: at.session, prompt, description: record.description, toolUseId, startedAt: Date.now(), outputFile: at.outputFile, worktree: record.worktree, worker: record.cli! };
-}
 
 async function agentRecord(engine: Engine, agentId: string): Promise<AgentRecord> {
 	return agentRecords(await engine.harness.snapshot(engine.kit.Agents, engine.root.id, CTX))[agentId]!;
@@ -320,10 +281,10 @@ export async function settle(agentId: string, done: Promise<TaskNotification>, m
 	return "background";
 }
 
-/** The end of a Pi agent's transcript, its newest 20 entries, for /agents <id>; undefined for a Claude Code or Codex worker, which keeps its own. */
+/** The end of an agent's transcript, its newest 20 entries, for /agents <id>. */
 export async function transcriptTail(engine: Engine, agentId: string): Promise<string | undefined> {
 	const { conversationId } = await agentRecord(engine, agentId);
-	const conversation = conversationId === undefined ? undefined : await engine.harness.conversation(conversationId, CTX);
+	const conversation = await engine.harness.conversation(conversationId, CTX);
 	return conversation ? transcriptLog([...(await conversation.entries({}, 20, undefined, CTX)).items].reverse()) : undefined;
 }
 
@@ -339,60 +300,12 @@ export async function stop(engine: Engine, agentId: string, by?: "user"): Promis
 	}, CTX);
 	const queued = host.queue.findIndex((entry) => entry.agentId === agentId);
 	if (queued >= 0) host.queue.splice(queued, 1)[0]!.go(false);
-	const worker = host.workers.get(agentId)?.pid;
-	if (worker) trySignalGroup(worker, "SIGKILL");
 	if (conversationId !== undefined) await (await engine.harness.conversation(conversationId, CTX))?.abort(CTX);
 	return host.live.get(agentId)?.done;
 }
 
-type Launch<T> = Omit<T, "session" | "owner" | "outputFile" | "startedAt">;
-
-/** `job_start`: the command runs in its own process group; its exit code and report are committed together. Returns the log. */
-export const startJob = (engine: Engine, input: Launch<JobInput>): Promise<string> => startBackground(engine, "job", input);
-
-/** Monitor: a path, url or cron watch looks first, so it reports what changes from now on. Returns the log and that look. */
-/** The first look comes before `engine()`, so a bad cron, path or URL opens no store. */
-export async function startMonitor(engine: () => Promise<Engine>, input: Omit<Launch<MonitorInput>, "seen">, signal: AbortSignal | undefined): Promise<{ outputFile: string; baseline?: string }> {
-	const look = await firstLook(input.source, input.target, signal ?? new AbortController().signal);
-	return { outputFile: await startBackground(await engine(), "monitor", { ...input, seen: look.seen }), baseline: look.baseline };
-}
-
-async function startBackground(engine: Engine, kind: "job" | "monitor", launch: Launch<JobInput> | Launch<MonitorInput>): Promise<string> {
-	const { kit, root } = engine;
-	const input = { ...launch, session: engine.session, owner: engine.dir, outputFile: join(engine.dir, "out", `${launch.id}.log`), startedAt: Date.now() };
-	await writeFile(input.outputFile, "");
-	const record: BackgroundRecord = { kind, description: input.description, startedAt: input.startedAt, status: "running", taskId: 0 };
-	// Listed before the commit: a quick command can settle, and update its row, before the commit returns.
-	registerBackground(engine, input.id, record, "timeout" in input && input.timeout ? input.startedAt + input.timeout : undefined);
-	try {
-		await root.commit(async (tx) => {
-			// SAFETY: the kind picks the task whose input this is.
-			const taskId = kind === "job" ? await tx.createTask(kit.Job, input as JobInput, BACKGROUND) : await tx.createTask(kit.Monitor, input as MonitorInput, BACKGROUND);
-			(await tx.doc(kit.Background, root.id)).tasks[input.id] = json({ ...record, taskId: Number(taskId) });
-		}, CTX);
-	} catch (error) {
-		tasks.remove(input.id);
-		throw error;
-	}
-	return input.outputFile;
-}
-
-function registerBackground(engine: Engine, id: string, record: BackgroundRecord, deadline?: number): void {
-	tasks.register({ id, kind: record.kind, description: record.description, status: record.status, ownerSession: engine.session, startedAt: record.startedAt, deadline, stop: () => stopBackground(engine, id) });
-}
-
-/** TaskStop of a job or monitor: the run is signalled (its process group killed), then its abort handler settles it. */
-async function stopBackground(engine: Engine, id: string): Promise<void> {
-	const record = backgroundRecords(await engine.harness.snapshot(engine.kit.Background, engine.root.id, CTX))[id];
-	if (!record) return;
-	// SAFETY: taskId was stored from the TaskId this harness created.
-	await engine.harness.abortTask(record.taskId as Durable.TaskId, CTX);
-}
-
 async function open(session: string, cwd: string, acks: ReturnType<typeof sessionAcks>): Promise<Engine> {
 	const dir = await storageDir(cwd, session);
-	// The folder's mtime is its last heartbeat or unlock: about when Pi last held this engine.
-	const from = await stat(dir).then((info) => info.mtimeMs, () => undefined);
 	await mkdir(join(dir, "out"), { recursive: true });
 	await lock(join(dir, "engine.lock"));
 	await rm(join(dir, SETTLED), { force: true });
@@ -402,7 +315,7 @@ async function open(session: string, cwd: string, acks: ReturnType<typeof sessio
 		await reap(`PI_KIT_OWNER=${dir}`);
 		const { D, openStorage } = await (host.modules ??= loadModules());
 		const registry = D.createRegistry();
-		const kit = buildKit(D, dir, cwd);
+		const kit = buildKit(D, dir);
 		registry.install(kit.extension);
 		harness = await D.Harness.open(await openStorage(join(dir, "engine.sqlite")), {
 			models: modelsAdapter(),
@@ -413,7 +326,7 @@ async function open(session: string, cwd: string, acks: ReturnType<typeof sessio
 		}, CTX);
 		heartbeat = setInterval(() => void utimes(dir, new Date(), new Date()).catch(() => {}), 30_000);
 		heartbeat.unref();
-		return await resume({ session, dir, project: cwd, harness, root: await harness.root(CTX), registry, kit, heartbeat }, D, from, acks);
+		return await resume({ session, dir, harness, root: await harness.root(CTX), registry, kit, heartbeat }, D, acks);
 	} catch (error) {
 		clearInterval(heartbeat);
 		await harness?.close(CTX).catch(() => {});
@@ -423,25 +336,22 @@ async function open(session: string, cwd: string, acks: ReturnType<typeof sessio
 }
 
 /** Lists the session's tasks on the roster, holds the slots of runs Pi closed mid-way, then lets durable continue them. */
-async function resume(engine: Engine, D: D, from: number | undefined, acks: ReturnType<typeof sessionAcks>): Promise<Engine> {
+async function resume(engine: Engine, D: D, acks: ReturnType<typeof sessionAcks>): Promise<Engine> {
 	const { session, harness, root, registry, kit } = engine;
 	const records = agentRecords(await harness.snapshot(kit.Agents, root.id, CTX));
 	const workflows = workflowRecords(await harness.snapshot(kit.Workflows, root.id, CTX));
 	installSchemas(D, registry, session, workflows);
 	void prune(join(getAgentDir(), "pi-kit")).catch(() => {});
-	const background = backgroundRecords(await harness.snapshot(kit.Background, root.id, CTX));
-	const shown = new Set(recent([records, workflows, background].flatMap((doc) => Object.entries(doc).map(([id, record]) => ({ id, ...record })))).map((entry) => entry.id));
+	const shown = new Set(recent([records, workflows].flatMap((doc) => Object.entries(doc).map(([id, record]) => ({ id, ...record })))).map((entry) => entry.id));
 	for (const [id, record] of Object.entries(records)) if (shown.has(id)) registerAgent(engine, id, record);
 	for (const [id, record] of Object.entries(workflows)) if (shown.has(id)) registerWorkflow(engine, id, record);
-	for (const [id, record] of Object.entries(background)) if (shown.has(id)) registerBackground(engine, id, record);
 	// ponytail: a resumed run takes its slot without waiting; reopening a session while another fills the 16 exceeds them until the extra runs end.
 	const unsettled = new Set((await harness.inspect(CTX)).submissions.map((submission) => submission.conversationId));
 	for (const [id, record] of Object.entries(records)) {
-		if (record.status !== "running" || record.conversationId === undefined || !unsettled.has(record.conversationId)) continue;
+		if (record.status !== "running" || !unsettled.has(record.conversationId)) continue;
 		host.running++;
 		host.reserved.add(id);
 	}
-	host.closed.set(session, { from, to: Date.now() });
 	await root.commit(async (tx) => pruneOutbox(await tx.doc(kit.Outbox, root.id), session), CTX);
 	harness.resume();
 	const undelivered = outboxItems(await harness.snapshot(kit.Outbox, root.id, CTX)).filter((item) => !acks.delivered.has(item.notificationId));
@@ -472,24 +382,23 @@ function modelsAdapter(): Durable.HarnessOptions["models"] {
 		if (!host.models) throw new Error("Pi's model registry is not available yet.");
 		return host.models;
 	};
-	// SAFETY: durable calls only these five members of pi-ai's Models; the rest of that interface is never reached.
-	// oxlint-disable-next-line anti-slop/no-chained-type-assertions
+	// SAFETY: durable's generations call only getModel and streamSimple, and it binds getAuth up front; the rest of pi-ai's Models is never reached.
 	return {
 		getModel: (provider: string, id: string) => registry().find(provider, id),
 		streamSimple: (...args: Parameters<ModelRegistry["streamSimple"]>) => registry().streamSimple(...args),
 		completeSimple: (...args: Parameters<ModelRegistry["streamSimple"]>) => registry().streamSimple(...args).result(),
 		fetchDeferred: () => { throw new Error("Deferred model calls are not available to kit agents."); },
 		cancelDeferred: async () => {},
+		getAuth: async () => { throw new Error("Provider auth goes through Pi's model registry."); },
 	} as unknown as Durable.HarnessOptions["models"];
 }
 
-/** `project` is the lead's cwd: the guard's rm root for every agent, whatever cwd the lead gave it, except an isolated agent's own worktree. */
-function buildKit(D: D, owner: string, project: string): Kit {
-	const Outbox = D.defineDoc<OutboxDoc>({ kind: "pi-kit.outbox", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ items: [] }) });
-	const Agents = D.defineDoc<AgentsDoc>({ kind: "pi-kit.agents", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ agents: {} }) });
-	const Workflows = D.defineDoc<WorkflowsDoc>({ kind: "pi-kit.workflows", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ workflows: {} }) });
+function buildKit(D: D, owner: string): Kit {
+	const Outbox = D.defineDoc<OutboxDoc>({ kind: "pi-kit.outbox", version: 1, scope: "conversation", history: "latest", fork: "initial", checkpointWhen: () => false, initial: () => ({ items: [] }) });
+	const Agents = D.defineDoc<AgentsDoc>({ kind: "pi-kit.agents", version: 1, scope: "conversation", history: "latest", fork: "initial", checkpointWhen: () => false, initial: () => ({ agents: {} }) });
+	const Workflows = D.defineDoc<WorkflowsDoc>({ kind: "pi-kit.workflows", version: 1, scope: "conversation", history: "latest", fork: "initial", checkpointWhen: () => false, initial: () => ({ workflows: {} }) });
 	// On the lead's conversation, keyed by run and call: a task's own documents are all retired in its terminal commit.
-	const Calls = D.defineDocFamily<Durable.JsonObject, string>({ kind: "pi-kit.workflow-call", version: 1, scope: "conversation", history: "latest", fork: "initial", family: true, initial: (agentId) => ({ agentId }) });
+	const Calls = D.defineDocFamily<Durable.JsonObject, string>({ kind: "pi-kit.workflow-call", version: 1, scope: "conversation", history: "latest", fork: "initial", family: true, checkpointWhen: () => false, initial: (agentId) => ({ agentId }) });
 	const terminal = <S extends { phase: string }>(status: "completed" | "aborted") => (_task: Durable.RunningTask<unknown, S, null>, runtime: Durable.TaskRuntime<unknown, S, null, object>, context: Ctx) =>
 		runtime.commit(() => (status === "completed" ? { status: "terminal", outcome: { status, result: null } } : { status: "terminal", outcome: { status } }), context);
 	// Owns the agent's conversation so it outlives its report, for a later SendMessage.
@@ -499,13 +408,6 @@ function buildKit(D: D, owner: string, project: string): Kit {
 		version: 1,
 		initial: () => ({ phase: "run" }),
 		phases: { run: (task, runtime, context) => report(D, { Outbox, Agents }, task.input, runtime, context).catch(failRun({ Outbox, Agents }, task.input, runtime, context)) },
-		abort: terminal("aborted"),
-	});
-	const CliTask: Kit["CliTask"] = D.defineTask<CliInput, { phase: "run" }, null>({
-		name: "pi-kit.cli-worker",
-		version: 1,
-		initial: () => ({ phase: "run" }),
-		phases: { run: (task, runtime, context) => runCli({ Outbox, Agents, CliTask }, owner, task.input, runtime, context).catch(failRun({ Outbox, Agents }, task.input, runtime, context)) },
 		abort: terminal("aborted"),
 	});
 	// SAFETY: one entry for every PI_TOOLS name.
@@ -519,18 +421,8 @@ function buildKit(D: D, owner: string, project: string): Kit {
 		phases: { run: (task, runtime, context) => runWorkflowTask(D, docs, task.input, runtime, context) },
 		abort: (task, runtime, context) => abortWorkflowTask(docs, task.input, runtime, context),
 	});
-	const guard = D.hook(D.ToolTask, {
-		beforeTool: async (call, api, context) => {
-			if (call.name !== "bash") return undefined;
-			const cwd = (await api.snapshot(D.AgentDoc, api.conversationId, context))?.cwd ?? process.cwd();
-			const blocked = guardBashCall(String(call.arguments.command ?? ""), cwd, agentWorktreeAt(cwd, getAgentDir()) ?? project, project);
-			return blocked ? { block: blocked.reason } : undefined;
-		},
-	});
-	const Background = D.defineDoc<BackgroundDoc>({ kind: "pi-kit.background", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ tasks: {} }) });
-	const { Job, Monitor } = backgroundTasks(D, { Outbox, Background }, host);
-	const extension = D.defineExtension({ name: "pi-kit", tasks: [Anchor, Reporter, CliTask, Job, Monitor, Workflow], tools: Object.values(tools), hooks: [guard] });
-	return { extension, tools, Outbox, Agents, Workflows, Calls, Anchor, Reporter, CliTask, Background, Job, Monitor, Workflow };
+	const extension = D.defineExtension({ name: "pi-kit", tasks: [Anchor, Reporter, Workflow], tools: Object.values(tools) });
+	return { extension, tools, Outbox, Agents, Workflows, Calls, Anchor, Reporter, Workflow };
 }
 
 /** Pi's own tool, built for the agent's cwd at each call and without a Pi context, so no lead session env leaks in. */
@@ -549,7 +441,7 @@ function piTool(D: D, name: PiToolName, owner: string): Durable.ToolRegistration
 			const cwd = (await api.agent(context)).cwd ?? process.cwd();
 			// SAFETY: durable validated `args` against this very tool's parameters before execute().
 			const result = await make(cwd).execute(api.callId, args as never, context.abortSignal);
-			return { content: result.content };
+			return { output: result.content };
 		},
 	});
 }
@@ -629,26 +521,21 @@ async function report(D: D, docs: Pick<Kit, "Outbox" | "Agents">, input: Reporte
 type Outcome = Pick<TaskNotification, "summary" | "result" | "usage" | "limited"> & Required<Pick<TaskNotification, "status">>;
 type RunRuntime = Pick<Durable.TaskRuntime<unknown, { phase: "run" }, null, object>, "taskId" | "conversationId" | "commit" | "signal">;
 
-/** Commits a run's report: the record's status, the notification in the Outbox and, for a CLI worker with queued messages, its next run. */
-async function commitReport(docs: Pick<Kit, "Outbox" | "Agents"> & { CliTask?: Kit["CliTask"] }, input: RunInput, runtime: RunRuntime, context: Ctx, log: string, outcome: Outcome): Promise<{ n: OutboxItem; claimed: boolean }> {
+/** Commits a run's report: the record's status and the notification in the Outbox. */
+async function commitReport(docs: Pick<Kit, "Outbox" | "Agents">, input: RunInput, runtime: RunRuntime, context: Ctx, log: string, outcome: Outcome): Promise<{ n: OutboxItem; claimed: boolean }> {
 	const kept = input.worktree && existsSync(input.worktree.path) ? await finishAgentWorktree(input.worktree).catch(() => input.worktree) : undefined;
 	const n: OutboxItem = { notificationId: `${input.agentId}:${String(runtime.taskId)}`, taskId: input.agentId, kind: "agent", ownerSession: input.session, toolUseId: input.toolUseId, outputFile: input.outputFile, ...outcome };
 	if (kept) n.worktree = { path: kept.path, branch: kept.branch };
 	await writeFile(input.outputFile, `${log}\n\n${outcome.result}\n`).catch(() => {});
 	const waiter = host.waiters.get(input.agentId);
-	let next = false;
 	await runtime.commit(async (tx) => {
 		const record = agentRecords(await tx.doc(docs.Agents, runtime.conversationId))[input.agentId];
-		if (record?.queued?.length && docs.CliTask && !record.stopped) {
-			await tx.createTask(docs.CliTask, cliInput(input, input.agentId, record, record.queued.join("\n\n"), input.toolUseId), BACKGROUND);
-			record.queued = [];
-			next = true;
-		} else if (record) record.status = outcome.status;
+		if (record) record.status = outcome.status;
 		if (waiter && !waiter.timedOut) waiter.claimed = true;
 		post(await tx.doc(docs.Outbox, runtime.conversationId), { ...n, silent: waiter?.claimed || undefined });
 		return { status: "terminal", outcome: { status: "completed", result: null } };
 	}, context);
-	tasks.update(input.agentId, { status: next ? "running" : outcome.status });
+	tasks.update(input.agentId, { status: outcome.status });
 	return { n, claimed: Boolean(waiter?.claimed) };
 }
 
@@ -669,50 +556,6 @@ async function deliver(agentId: string, n: OutboxItem, claimed: boolean): Promis
 	if (!claimed) return tasks.notify(n);
 	host.waiters.get(agentId)?.resolve(n);
 	host.waiters.delete(agentId);
-}
-
-/**
- * A Claude Code or Codex worker. The intent is memoed before the spawn and the CLI's session id at its first event, so after
- * Pi closed, the reaper having killed the old process group, the run resumes that session, or starts again if none began.
- */
-async function runCli(docs: Pick<Kit, "Outbox" | "Agents" | "CliTask">, owner: string, input: CliInput, runtime: Durable.TaskRuntime<CliInput, { phase: "run" }, null, object>, context: Ctx): Promise<void> {
-	const record = async () => agentRecords(await runtime.snapshot(docs.Agents, runtime.conversationId, context))[input.agentId];
-	const intent = await runtime.memo<{ prompt: string; resume: string | null }>("intent", { prompt: input.prompt, resume: (await record())?.sessionId ?? null }, context);
-	const interrupted = await runtime.memo<string>("session", context);
-	const run = interrupted ? { resume: interrupted, prompt: CONTINUE } : { resume: intent.resume ?? undefined, prompt: intent.prompt };
-	const worktree = input.worktree && await reopenWorktree(input.worktree);
-	const progress = newCliProgress();
-	let exit: CliExit | undefined;
-	const held = await acquire(input.agentId);
-	try {
-		if (held && !(await record())?.stopped) {
-			exit = await spawnWorker(input, owner, run, progress, runtime.signal, host.workers, async (session) => {
-				await runtime.memo("session", session, context);
-				await runtime.commit(async (tx) => {
-					const current = agentRecords(await tx.doc(docs.Agents, runtime.conversationId))[input.agentId];
-					if (current) current.sessionId = session;
-					return undefined;
-				}, context);
-			});
-		}
-	} finally {
-		if (held) release();
-	}
-	// Quitting Pi kills the worker before the harness closes; the run is not over, and resumes with the session.
-	if (host.closing || runtime.signal.aborted) {
-		await new Promise((resolve) => (runtime.signal.aborted ? resolve(undefined) : runtime.signal.addEventListener("abort", resolve, { once: true })));
-		throw new Error("Pi closed while the worker ran.");
-	}
-	const stopped = (await record())?.stopped;
-	const answer = await cliAnswer(input.worker, exit, progress);
-	const status = !exit || stopped ? "killed" : answer.ok ? "completed" : "failed";
-	const { n, claimed } = await commitReport(docs, { ...input, worktree }, runtime, context, progress.log.join("\n"), {
-		status,
-		summary: agentSummary(input.description, status, { error: answer.error, byUser: (await record())?.stoppedBy === "user" }),
-		result: status === "completed" ? answer.text : "",
-		usage: { subagentTokens: progress.tokens, toolUses: progress.toolUses, durationMs: Date.now() - input.startedAt },
-	});
-	await deliver(input.agentId, n, claimed);
 }
 
 /**
@@ -745,4 +588,3 @@ function watchLimits(D: D, engine: Engine, input: ReporterInput, turns: number, 
 }
 
 const agentRecords = (doc: AgentsDoc | undefined) => decoded<Record<string, AgentRecord>>(doc?.agents) ?? {};
-const backgroundRecords = (doc: BackgroundDoc | undefined) => decoded<Record<string, BackgroundRecord>>(doc?.tasks) ?? {};

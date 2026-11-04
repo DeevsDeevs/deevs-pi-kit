@@ -1,10 +1,8 @@
-import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { readProcessIdentity } from "../extensions/shared/process-group.ts";
-import { cappedLog, exited } from "../extensions/subagents/engine/background.ts";
 import { bunSqlite, lock, prune, SETTLED, unlock } from "../extensions/subagents/engine/storage.ts";
 
 const dirs: string[] = [];
@@ -79,19 +77,4 @@ describe("engine storage", () => {
 		expect(log.slice(0, log.indexOf("d"))).toContain("timer");
 	});
 
-	it("cuts a command's output file at 10 MB across runs", async () => {
-		const file = join(scratch(), "out.log");
-		const first = cappedLog(file);
-		first.write(Buffer.alloc(6_000_000));
-		await first.end();
-		const second = cappedLog(file);
-		second.write(Buffer.alloc(6_000_000));
-		await second.end();
-		expect([statSync(file).size, first.cut, second.cut]).toEqual([10_000_000, false, true]);
-	});
-
-	it("kills a command spawned after its invocation was aborted, so a quit racing a job's start does not wait for it to exit", async () => {
-		const child = spawn("bash", ["-c", "sleep 30"], { detached: true, stdio: ["ignore", "pipe", "pipe"] });
-		expect(await exited(child, AbortSignal.abort())).toBe(137);
-	});
 });

@@ -12,12 +12,7 @@ const KEYS = {
 	models: Type.Record(Type.String(), Type.String()),
 	lead: Type.Union([Type.String(), Type.Null()]),
 	autonomy: Type.Boolean(),
-	guard: Type.Object({ detached: Flag, forcePush: Flag, rmRf: Flag, block: Type.Optional(Type.Array(Type.String())) }),
 	codexFast: Type.Boolean(),
-	notifier: Type.Object({
-		enabled: Flag, title: Text, body: Text, terminal: Flag, bell: Flag, terminalRequiresTty: Flag,
-		command: Type.Optional(Type.Array(Type.String())), jsonl: Text, minIntervalMs: Type.Optional(Type.Number()),
-	}),
 };
 const KitFile = Type.Partial(Type.Object(KEYS));
 const JsonObject = Type.Object({});
@@ -30,7 +25,7 @@ export type KitValue<K extends KitKey> = Static<(typeof KEYS)[K]>;
 type Kit = Static<typeof KitFile>;
 export type Trust = { cwd: string; isProjectTrusted(): boolean };
 
-/** Pi's `getAgentDir()` without importing Pi, so the standalone guard hook can read pi-kit.json too. */
+/** Pi's `getAgentDir()` without importing Pi. */
 export function agentDir(): string {
 	const dir = process.env.PI_CODING_AGENT_DIR;
 	return dir ? dir.replace(/^~(?=$|\/)/, homedir()) : join(homedir(), ".pi", "agent");
@@ -91,13 +86,12 @@ function warnOnce(problem: string): void {
 
 /**
  * Moves each legacy `.pi/<file>` of a trusted project into `.pi/pi-kit.json` once and deletes it; keys already set there win.
- * A pi-kit.json that does not parse, or a notifier.json off the schema, is left for the user.
+ * A pi-kit.json that does not parse is left for the user.
  */
 export async function migrateLegacyConfig(cwd: string): Promise<void> {
 	await upgradeAutonomy(cwd);
 	await moveLegacy(cwd, "runtime.json", Type.Object({ auto: Type.Literal(true) }), () => ({ autonomy: true }), { autonomy: false });
 	await moveLegacy(cwd, "codex-fast.json", Type.Object({ enabled: Flag }), (file) => ({ codexFast: file.enabled }), {});
-	await moveLegacy(cwd, "notifier.json", KEYS.notifier, (notifier) => ({ notifier }), undefined);
 	await moveLegacy(cwd, "subagents.json", Type.Object({ defaultModel: Text }), (file) => ({ models: file.defaultModel === undefined ? undefined : { default: file.defaultModel } }), {});
 }
 
@@ -129,7 +123,6 @@ async function moveLegacy<T extends TSchema>(cwd: string, name: string, schema: 
 	try { kit = parseFile(kitPaths(cwd)[1], KitFile) ?? {}; } catch { return; }
 	const next: Kit = { ...moved, ...kit };
 	if (moved.models && kit.models) next.models = { ...moved.models, ...kit.models };
-	if (moved.notifier && kit.notifier) next.notifier = { ...moved.notifier, ...kit.notifier };
 	await saveProjectKit(cwd, next);
 	rmSync(legacyPath, { force: true });
 }

@@ -70,6 +70,5 @@ it("keeps the always-on reminder to permission, working directly by default, whe
 	expect(skill).toMatch(/work directly by default\. Orchestrate when the work splits into independent parts taking minutes each.*, or when the user asks for, or a large multi-file change needs, an independent review: a Workflow for several agents, an Agent for one, never a one-agent workflow\./);
 	expect(skill).toMatch(/Keep the change the deliverable depends on yourself and make it work first, committed when it is a commit/);
 	expect(full).toMatch(/Make the change the deliverable depends on yourself; never end the turn with it unwritten\./);
-	const review = readFileSync(join(import.meta.dirname, "../skills/validation-review/SKILL.md"), "utf8");
-	for (const text of [full, review]) expect(text).toMatch(/[Aa]sk (each reviewer an open question|reviewers open questions)[\s\S]*hange (work that already passes|passing work) only for a finding backed by a stated requirement or a failing check; for a concrete defect[\s\S]*write the check that reproduces it first/);
+	expect(full).toMatch(/[Aa]sk (each reviewer an open question|reviewers open questions)[\s\S]*hange (work that already passes|passing work) only for a finding backed by a stated requirement or a failing check; for a concrete defect[\s\S]*write the check that reproduces it first/);
 });
