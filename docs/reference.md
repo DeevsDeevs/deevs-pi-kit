@@ -38,6 +38,7 @@ Then `/reload`; `pi config` toggles single extensions and skills. The one real d
 - `todo_list`: a session todo widget. [More](../extensions/todos/README.md).
 - `ask_user`: asks before irreversible choices.
 - `codex-fast`: `service_tier: "priority"` on the lead's ChatGPT-login requests when `codexFast` is on.
+- `chains`: at session start, the chains skill's `list --max 5` (chains newest first, each latest link's title, age and next step) for the session's folder goes into the system prompt; nothing when the folder has no chains or the skill isn't installed. No tools.
 - `hc`: inside an hc terminal (`HC_TERMINAL_ID` set), one line in the system prompt points the lead at the `hc` skill. No tools.
 
 ### Reporting and restarts
