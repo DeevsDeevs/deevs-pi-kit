@@ -1,7 +1,7 @@
 {
   "name": "deevs-pi-kit",
   "version": "0.1.0",
-  "description": "Pi package with durable Agent and Workflow tools, todos, ask_user, codex-fast and an hc hint",
+  "description": "Pi package with todos, ask_user, codex-fast, the chains digest and an hc hint",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
@@ -18,9 +18,7 @@
   "keywords": [
     "pi-package",
     "pi",
-    "coding-agent",
-    "subagents",
-    "workflows"
+    "coding-agent"
   ],
   "pi": {
     "extensions": [
@@ -41,13 +39,8 @@
     "@earendil-works/pi-coding-agent": "1.4.0",
     "@earendil-works/pi-tui": "1.4.0",
     "@types/node": "^22.19.0",
-    "js-tiktoken": "^1.0.21",
     "typebox": "1.3.27",
     "typescript": "^5.9.3",
     "vitest": "^4.1.11"
-  },
-  "dependencies": {
-    "@earendil-works/chord": "1.4.0",
-    "@earendil-works/pi-durable": "1.4.0"
   }
 }

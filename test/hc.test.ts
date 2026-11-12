@@ -18,7 +18,7 @@ it("appends the hc line once inside an hc terminal, and nothing outside one", ()
 	vi.stubEnv("HC_TERMINAL_ID", "");
 	expect(start("")).toBeUndefined();
 	vi.stubEnv("HC_TERMINAL_ID", "mac/t2");
-	const line = "You run inside hc (`mac/t2`). For long-running work, other machines or other agents, load the `hc` skill.";
+	const line = "You run inside hc (`mac/t2`). For long-running work or other machines, load the `hc` skill; to run other agents (pi, Claude Code, Codex), the `hc-flow` skill.";
 	expect(start("")).toBe(line);
 	expect(start("user text")).toBe(`user text\n\n${line}`);
 });
